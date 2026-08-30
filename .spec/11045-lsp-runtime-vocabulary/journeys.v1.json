@@ -1,0 +1,253 @@
+{
+  "journeys": [
+    {
+      "id": "cancellation_during_work",
+      "title": "Cancellation during blocking application work",
+      "proposition": "Terminal control may advance while physical application work later completes; late completion cannot publish again.",
+      "facts": [
+        "application_completed",
+        "cancellation_requested",
+        "delivery_fate_known",
+        "enqueued",
+        "execution_admitted",
+        "output_admitted",
+        "output_flush_committed",
+        "output_prepared",
+        "output_write_committed",
+        "owner_cleaned",
+        "publication_committed",
+        "request_registered",
+        "running",
+        "task_group_settled",
+        "terminal_selected"
+      ],
+      "relations": [
+        "cancel_permits_terminal",
+        "cleanup_requires_task_settlement",
+        "enqueue_requires_admission",
+        "execution_requires_registered",
+        "flush_permits_fate",
+        "publication_requires_terminal",
+        "running_requires_enqueue",
+        "terminal_requires_registered"
+      ],
+      "rejected": [
+        "application_completed_forbids_publication",
+        "application_completed_forbids_terminal",
+        "delivery_forbids_terminal"
+      ],
+      "source": 11045
+    },
+    {
+      "id": "execution_rejection",
+      "title": "Execution rejection after registration",
+      "proposition": "Registration creates a terminal and cleanup obligation even when execution is rejected.",
+      "facts": [
+        "delivery_fate_known",
+        "execution_rejected",
+        "message_observed",
+        "output_admitted",
+        "output_flush_committed",
+        "output_prepared",
+        "output_write_committed",
+        "owner_cleaned",
+        "protocol_valid",
+        "publication_committed",
+        "request_registered",
+        "request_tracking_reserved",
+        "task_group_settled",
+        "terminal_selected"
+      ],
+      "relations": [
+        "admitted_requires_prepared",
+        "cleanup_requires_delivery_fate",
+        "cleanup_requires_task_settlement",
+        "cleanup_requires_terminal",
+        "flush_permits_fate",
+        "flush_requires_write",
+        "prepared_requires_publication",
+        "publication_requires_terminal"
+      ],
+      "rejected": [
+        "valid_forbids_execution"
+      ],
+      "source": 11045
+    },
+    {
+      "id": "graceful_shutdown",
+      "title": "Graceful shutdown",
+      "proposition": "Protocol transition, application readiness, connection closeout, task settlement, and cleanup remain explicit.",
+      "facts": [
+        "application_unavailable",
+        "connection_closed",
+        "connection_closing",
+        "owner_cleaned",
+        "protocol_exited",
+        "protocol_initialized",
+        "protocol_shutdown_requested",
+        "task_group_settled"
+      ],
+      "relations": [
+        "cleanup_requires_task_settlement",
+        "protocol_initialized_independent_readiness"
+      ],
+      "rejected": [
+        "connection_closed_forbids_cleanup",
+        "connection_closed_forbids_task_settlement",
+        "protocol_exit_forbids_cleanup",
+        "protocol_exit_forbids_connection_closed"
+      ],
+      "source": 11045
+    },
+    {
+      "id": "ordinary_success",
+      "title": "Ordinary success",
+      "proposition": "Each authority establishes its own proposition; no later fact is filled by implication.",
+      "facts": [
+        "application_completed",
+        "delivery_fate_known",
+        "enqueued",
+        "execution_admitted",
+        "message_observed",
+        "output_admitted",
+        "output_flush_committed",
+        "output_prepared",
+        "output_write_committed",
+        "owner_cleaned",
+        "protocol_valid",
+        "publication_committed",
+        "request_registered",
+        "request_tracking_reserved",
+        "running",
+        "task_group_settled",
+        "terminal_selected"
+      ],
+      "relations": [
+        "admitted_requires_prepared",
+        "cleanup_requires_delivery_fate",
+        "cleanup_requires_task_settlement",
+        "cleanup_requires_terminal",
+        "enqueue_requires_admission",
+        "execution_requires_registered",
+        "flush_permits_fate",
+        "flush_requires_write"
+      ],
+      "rejected": [
+        "application_completed_forbids_publication",
+        "application_completed_forbids_terminal",
+        "flush_forbids_client_consumption",
+        "publication_forbids_write",
+        "terminal_forbids_output_admission"
+      ],
+      "source": 11045
+    },
+    {
+      "id": "request_id_reuse",
+      "title": "Request ID reuse",
+      "proposition": "The same raw numeric or string variant is rejected while prior ownership remains and is reusable only after exact cleanup within the same connection and session scope.",
+      "facts": [
+        "connection_id",
+        "delivery_fate_known",
+        "owner_cleaned",
+        "request_key",
+        "request_registered",
+        "request_tracking_reserved",
+        "session_id",
+        "task_group_settled",
+        "terminal_selected"
+      ],
+      "relations": [
+        "cleanup_permits_request_reuse",
+        "registered_requires_reserved",
+        "request_requires_connection",
+        "request_requires_session"
+      ],
+      "rejected": [
+        "request_independent_progress",
+        "request_independent_reverse"
+      ],
+      "source": 11045
+    },
+    {
+      "id": "stale_publication",
+      "title": "Stale publication",
+      "proposition": "Application completion remains evidence while currentness rejects the publication attempt.",
+      "facts": [
+        "application_completed",
+        "delivery_fate_known",
+        "enqueued",
+        "execution_admitted",
+        "owner_cleaned",
+        "request_registered",
+        "running",
+        "stale_publication_rejected",
+        "task_group_settled",
+        "terminal_selected"
+      ],
+      "relations": [
+        "cleanup_requires_delivery_fate",
+        "cleanup_requires_task_settlement",
+        "cleanup_requires_terminal",
+        "stale_rejection_requires_completion",
+        "terminal_requires_registered"
+      ],
+      "rejected": [
+        "application_completed_forbids_publication",
+        "stale_rejection_forbids_publication"
+      ],
+      "source": 11045
+    },
+    {
+      "id": "transport_loss",
+      "title": "Transport loss",
+      "proposition": "Connection closure is recorded without inventing protocol exit, delivery settlement, task settlement, or cleanup.",
+      "facts": [
+        "connection_closed",
+        "output_admitted",
+        "protocol_initialized",
+        "request_registered"
+      ],
+      "relations": [
+        "terminal_requires_registered"
+      ],
+      "rejected": [
+        "connection_closed_forbids_cleanup",
+        "connection_closed_forbids_delivery_fate",
+        "connection_closed_forbids_protocol_exit",
+        "connection_closed_forbids_task_settlement"
+      ],
+      "source": 11045
+    },
+    {
+      "id": "writer_failure",
+      "title": "Writer failure",
+      "proposition": "The selected terminal cause and committed publication remain; delivery fate becomes failed.",
+      "facts": [
+        "delivery_fate_known",
+        "output_admitted",
+        "output_failed",
+        "output_prepared",
+        "owner_cleaned",
+        "publication_committed",
+        "request_registered",
+        "task_group_settled",
+        "terminal_selected"
+      ],
+      "relations": [
+        "admitted_requires_prepared",
+        "cleanup_requires_delivery_fate",
+        "cleanup_requires_task_settlement",
+        "failure_permits_fate",
+        "failure_requires_admitted",
+        "prepared_requires_publication",
+        "publication_requires_terminal",
+        "terminal_requires_registered"
+      ],
+      "rejected": [
+        "delivery_forbids_terminal",
+        "output_failure_independent_terminal"
+      ],
+      "source": 11045
+    }
+  ]
+}
