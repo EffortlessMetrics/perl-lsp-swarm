@@ -373,6 +373,22 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             )
 
     def test_covered_rows_cite_durable_receipts_and_a_ruling(self) -> None:
+        """A `COVERED` row needs an issue/PR anchor, not just a commit.
+
+        `receipt_tokens` extracts commits too, and
+        `test_covered_receipts_appear_in_the_lane_document` binds them -- but
+        commits are additive evidence here, never a substitute for this floor.
+        Deliberately so: a commit identifies a change, while the claim a row
+        makes is that a *deliberated transition* was reached and ruled on. That
+        deliberation lives on an issue or PR, which is also where the row's
+        required `Terminal ruling` comes from -- `ci-instrument-failure` cites
+        PR #5717 and rests on #4192's `PROMOTE`.
+
+        So a row citing only a SHA is rejected on purpose. Relaxing this to
+        `cited_issues or cited_commits` would let a bare hash carry a coverage
+        claim whose ruling no reader can find, which lowers the evidentiary bar
+        this ledger exists to raise.
+        """
         for category, fields in self.rows:
             if fields.get("Status") != COVERED:
                 continue
