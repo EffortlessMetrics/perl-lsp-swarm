@@ -108,8 +108,93 @@ pub fn validate_catalog(catalog: &DistributionKwaliteeCatalog) -> Result<(), Cat
             }
         }
     }
+    let dependencies = catalog
+        .metric
+        .iter()
+        .map(|metric| {
+            let mut references = metric.depends_on.iter().map(String::as_str).collect::<Vec<_>>();
+            references.sort_unstable();
+            (metric.id.as_str(), references)
+        })
+        .collect::<BTreeMap<_, _>>();
+    if let Some(cycle) = find_dependency_cycle(&dependencies)
+        && let Some(id) = cycle.first()
+    {
+        return Err(CatalogError::InvalidMetric {
+            id: (*id).to_string(),
+            reason: format!("depends_on cycle: {}", cycle.join(" -> ")),
+        });
+    }
 
     Ok(())
+}
+
+fn find_dependency_cycle<'a>(
+    dependencies: &BTreeMap<&'a str, Vec<&'a str>>,
+) -> Option<Vec<&'a str>> {
+    let mut colors = BTreeMap::new();
+    let mut path = Vec::new();
+    let mut positions = BTreeMap::new();
+
+    for &start in dependencies.keys() {
+        if colors.get(start).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        colors.insert(start, 1);
+        path.push(start);
+        positions.insert(start, path.len() - 1);
+        let mut stack = vec![(start, 0usize)];
+
+        while !stack.is_empty() {
+            let exhausted = match stack.last() {
+                Some((node, index)) => {
+                    *index >= dependencies.get(node).map_or(0, |references| references.len())
+                }
+                None => false,
+            };
+            if exhausted {
+                let Some((node, _)) = stack.pop() else {
+                    break;
+                };
+                colors.insert(node, 2);
+                path.pop();
+                positions.remove(node);
+                continue;
+            }
+
+            let neighbor = match stack.last_mut() {
+                Some((node, index)) => {
+                    let Some(references) = dependencies.get(node) else {
+                        continue;
+                    };
+                    let Some(neighbor) = references.get(*index).copied() else {
+                        continue;
+                    };
+                    *index += 1;
+                    neighbor
+                }
+                None => break,
+            };
+            match colors.get(neighbor).copied().unwrap_or(0) {
+                0 => {
+                    colors.insert(neighbor, 1);
+                    path.push(neighbor);
+                    positions.insert(neighbor, path.len() - 1);
+                    stack.push((neighbor, 0));
+                }
+                1 => {
+                    let Some(&cycle_start) = positions.get(neighbor) else {
+                        continue;
+                    };
+                    let mut cycle = path[cycle_start..].to_vec();
+                    cycle.sort_unstable();
+                    return Some(cycle);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 fn validate_metric_row(metric: &CatalogMetric) -> Result<(), CatalogError> {
@@ -317,6 +402,38 @@ limitations = []
             parse_catalog(&toml),
             Err(CatalogError::InvalidMetric { reason, .. })
                 if reason == "depends_on must not include the row itself"
+        ));
+    }
+
+    #[test]
+    fn two_node_dependency_cycle_fails() {
+        let first = one_core_metric("first")
+            .replace("depends_on = []", r#"depends_on = ["cpants.second"]"#);
+        let second = one_core_metric("second")
+            .replace("depends_on = []", r#"depends_on = ["cpants.first"]"#);
+        let toml = format!("{}{}{}", envelope(), first, second);
+        assert!(matches!(
+            parse_catalog(&toml),
+            Err(CatalogError::InvalidMetric { reason, .. })
+                if reason.contains("cpants.first") && reason.contains("cpants.second")
+        ));
+    }
+
+    #[test]
+    fn three_node_dependency_cycle_fails() {
+        let first = one_core_metric("first")
+            .replace("depends_on = []", r#"depends_on = ["cpants.second"]"#);
+        let second = one_core_metric("second")
+            .replace("depends_on = []", r#"depends_on = ["cpants.third"]"#);
+        let third =
+            one_core_metric("third").replace("depends_on = []", r#"depends_on = ["cpants.first"]"#);
+        let toml = format!("{}{}{}{}", envelope(), first, second, third);
+        assert!(matches!(
+            parse_catalog(&toml),
+            Err(CatalogError::InvalidMetric { reason, .. })
+                if reason.contains("cpants.first")
+                    && reason.contains("cpants.second")
+                    && reason.contains("cpants.third")
         ));
     }
 

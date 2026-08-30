@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use super::catalog::validate_catalog;
 use super::error::CatalogError;
 use super::types::{
     CatalogMetric, CompatibleCoreScore, DistributionKwaliteeCatalog, InputRole, MetricClass,
@@ -14,6 +15,8 @@ pub fn derive_compatible_core_score(
     input_role: InputRole,
     observations: &[MetricObservation],
 ) -> Result<CompatibleCoreScore, CatalogError> {
+    validate_catalog(catalog)?;
+
     let mut seen = BTreeMap::new();
     let mut invalid_input_metric = None;
     for observation in observations {
@@ -109,7 +112,9 @@ mod tests {
     #![allow(clippy::panic)]
     use super::*;
     use crate::distribution_kwalitee::catalog::load_distribution_kwalitee_catalog;
-    use crate::distribution_kwalitee::types::{Applicability, MetricClass};
+    use crate::distribution_kwalitee::types::{
+        Applicability, CompatibilityRelationship, MetricClass,
+    };
 
     fn catalog() -> DistributionKwaliteeCatalog {
         load_distribution_kwalitee_catalog().expect("catalog")
@@ -156,6 +161,25 @@ mod tests {
         );
         assert_eq!(score.ratio(), Some((directory_core, directory_core)));
         assert!(score.strict_complete());
+    }
+
+    #[test]
+    fn invalid_catalog_fails_closed_before_scoring() {
+        let mut catalog = catalog();
+        let metric = catalog
+            .metric
+            .iter_mut()
+            .find(|metric| metric.id == "cpants.has_readme")
+            .expect("has_readme");
+        metric.class = MetricClass::CpantsSiteAnalogue;
+        metric.relationship = CompatibilityRelationship::SiteAnalogue;
+        metric.participates_in_core_score = true;
+        let error = derive_compatible_core_score(&catalog, InputRole::StagedDirectory, &[])
+            .expect_err("invalid catalog");
+        assert!(matches!(
+            error,
+            CatalogError::ScoreClassContradiction { id, .. } if id == "cpants.has_readme"
+        ));
     }
 
     #[test]

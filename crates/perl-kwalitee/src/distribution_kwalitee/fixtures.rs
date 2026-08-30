@@ -7,7 +7,7 @@ use super::error::FixtureError;
 use super::types::{
     CATALOG_KIND, CATALOG_VERSION, ContentStatus, DistributionKwaliteeCatalog,
     DistributionKwaliteeFixture, DistributionKwaliteeFixtureContract, ExpectationRule,
-    FIXTURE_KIND, FIXTURE_SCHEMA_VERSION, FixtureKind, MetricClass,
+    FIXTURE_KIND, FIXTURE_SCHEMA_VERSION, FixtureKind, InputRole, MetricClass,
 };
 
 const FIXTURE_TOML: &str = include_str!("../../distribution_kwalitee_fixtures.v1.toml");
@@ -113,8 +113,15 @@ fn validate_fixture_row(fixture: &DistributionKwaliteeFixture) -> Result<(), Fix
         }
         (ContentStatus::Committed, false) | (ContentStatus::Reserved, true) => {}
     }
-    match fixture.expectation_rule {
-        ExpectationRule::AllApplicableOfflineCorePass => {
+    match fixture.kind {
+        FixtureKind::MinimalValidDistribution | FixtureKind::RealisticValidDistribution => {
+            if fixture.expectation_rule != ExpectationRule::AllApplicableOfflineCorePass {
+                return Err(FixtureError::InvalidFixture {
+                    id: fixture.id.clone(),
+                    reason: "valid distribution kinds require all_applicable_offline_core_pass"
+                        .into(),
+                });
+            }
             if !fixture.primary_fail.is_empty() {
                 return Err(FixtureError::InvalidFixture {
                     id: fixture.id.clone(),
@@ -122,26 +129,32 @@ fn validate_fixture_row(fixture: &DistributionKwaliteeFixture) -> Result<(), Fix
                 });
             }
         }
-        ExpectationRule::SingleDefect => {
+        FixtureKind::SingleDefect => {
+            if fixture.expectation_rule != ExpectationRule::SingleDefect {
+                return Err(FixtureError::InvalidFixture {
+                    id: fixture.id.clone(),
+                    reason: "single_defect kind requires single_defect expectation".into(),
+                });
+            }
             if fixture.primary_fail.len() != 1 {
                 return Err(FixtureError::InvalidFixture {
                     id: fixture.id.clone(),
                     reason: "single-defect fixtures need exactly one primary_fail".into(),
                 });
             }
-            if fixture.kind != FixtureKind::SingleDefect {
+        }
+        FixtureKind::ArchiveSecurityFailure => {
+            if fixture.expectation_rule != ExpectationRule::InvalidInput {
                 return Err(FixtureError::InvalidFixture {
                     id: fixture.id.clone(),
-                    reason: "single_defect expectation requires kind `single_defect`".into(),
+                    reason: "archive_security_failure kind requires invalid_input expectation"
+                        .into(),
                 });
             }
-        }
-        ExpectationRule::InvalidInput => {
-            if fixture.kind != FixtureKind::ArchiveSecurityFailure {
+            if fixture.input_role != InputRole::Archive {
                 return Err(FixtureError::InvalidFixture {
                     id: fixture.id.clone(),
-                    reason: "invalid_input expectation is reserved for archive security failures"
-                        .into(),
+                    reason: "archive_security_failure kind requires archive input_role".into(),
                 });
             }
         }
@@ -382,6 +395,32 @@ committed_files = []
         )
     }
 
+    fn fixture_with_roles(
+        id: &str,
+        kind: &str,
+        input_role: &str,
+        expectation_rule: &str,
+    ) -> String {
+        let mut row = reserved_pass(id);
+        row = row.replace("kind = \"minimal_valid_distribution\"", &format!("kind = \"{kind}\""));
+        row = row.replace(
+            "input_role = \"staged_directory\"",
+            &format!("input_role = \"{input_role}\""),
+        );
+        row.replace(
+            "expectation_rule = \"all_applicable_offline_core_pass\"",
+            &format!("expectation_rule = \"{expectation_rule}\""),
+        )
+    }
+
+    fn assert_invalid_fixture_row(row: String, id: &str) {
+        let toml = format!("{}{}", envelope(), row);
+        assert!(matches!(
+            parse_fixture_contract(&toml),
+            Err(FixtureError::InvalidFixture { id: observed, .. }) if observed == id
+        ));
+    }
+
     #[test]
     fn checked_in_contract_binds_to_the_catalog() {
         let catalog = load_distribution_kwalitee_catalog().expect("catalog");
@@ -424,6 +463,58 @@ committed_files = []
             parse_fixture_contract(&toml),
             Err(FixtureError::Metadata(message)) if message.contains("frozen_identities")
         ));
+    }
+
+    #[test]
+    fn single_defect_kind_requires_single_defect_expectation() {
+        assert_invalid_fixture_row(
+            fixture_with_roles(
+                "single-kind-mismatch",
+                "single_defect",
+                "staged_directory",
+                "all_applicable_offline_core_pass",
+            ),
+            "single-kind-mismatch",
+        );
+    }
+
+    #[test]
+    fn archive_security_kind_requires_invalid_input_expectation() {
+        assert_invalid_fixture_row(
+            fixture_with_roles(
+                "archive-expectation-mismatch",
+                "archive_security_failure",
+                "archive",
+                "all_applicable_offline_core_pass",
+            ),
+            "archive-expectation-mismatch",
+        );
+    }
+
+    #[test]
+    fn archive_security_kind_requires_archive_input_role() {
+        assert_invalid_fixture_row(
+            fixture_with_roles(
+                "archive-role-mismatch",
+                "archive_security_failure",
+                "staged_directory",
+                "invalid_input",
+            ),
+            "archive-role-mismatch",
+        );
+    }
+
+    #[test]
+    fn valid_distribution_kind_requires_pass_all_expectation() {
+        assert_invalid_fixture_row(
+            fixture_with_roles(
+                "distribution-expectation-mismatch",
+                "minimal_valid_distribution",
+                "staged_directory",
+                "single_defect",
+            ),
+            "distribution-expectation-mismatch",
+        );
     }
 
     #[test]
