@@ -98,11 +98,7 @@ impl CorpusAssetPath {
         if serialized.is_empty() {
             return Err(CorpusAssetPathError::Empty);
         }
-
-        let bytes = serialized.as_bytes();
-        let has_drive_prefix =
-            bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
-        if serialized.starts_with('/') || serialized.starts_with(r"\\") || has_drive_prefix {
+        if looks_absolute_or_prefixed(serialized) {
             return Err(CorpusAssetPathError::AbsoluteOrPrefixed);
         }
         if serialized.ends_with('/') || serialized.contains("//") {
@@ -151,8 +147,11 @@ impl CorpusAssetPath {
         S: Into<String>,
     {
         let components = components.into_iter().map(Into::into).collect::<Vec<String>>();
-        if components.is_empty() {
+        let Some(first) = components.first() else {
             return Err(CorpusAssetPathError::Empty);
+        };
+        if looks_absolute_or_prefixed(first) {
+            return Err(CorpusAssetPathError::AbsoluteOrPrefixed);
         }
 
         for (index, component) in components.iter().enumerate() {
@@ -259,4 +258,11 @@ impl<'de> Deserialize<'de> for CorpusAssetPath {
         let serialized = String::deserialize(deserializer)?;
         Self::parse(&serialized).map_err(D::Error::custom)
     }
+}
+
+fn looks_absolute_or_prefixed(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    value.starts_with('/')
+        || value.starts_with(r"\\")
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
 }
