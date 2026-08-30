@@ -7,8 +7,8 @@ use serde_yaml_ng::Value;
 
 const CACHE_ACTION: &str = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6";
 const SHARED_KEY: &str = "corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock') }}";
-const TRUSTED_SAVE_IF: &str =
-    "${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}";
+const TRUSTED_SAVE_IF: &str = "${{ github.event_name == 'repository_dispatch' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}";
+const REPOSITORY_DISPATCH_TYPE: &str = "corpus-windows-reparse-proof";
 const CORPUS_PROOF: &str = "cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture";
 const XTASK_PROOF: &str = "cargo test --locked -p xtask --lib dangling_protected_source_rejects_before_publication_write -- --nocapture";
 const CORPUS_PROOF_ANCHOR: &str = "        run: >-\n          cargo test --locked -p perl-corpus\n          --test strict_sectioned_loading\n          public_plain_loader_rejects_windows_reparse_point\n          -- --exact --nocapture";
@@ -46,7 +46,10 @@ fn normalized(value: &str) -> String {
 }
 
 fn replace_once(source: &str, from: &str, to: &str) -> Result<String> {
-    ensure!(source.matches(from).count() == 1, "fixture anchor must occur exactly once: {from}");
+    ensure!(
+        source.matches(from).count() == 1,
+        "fixture anchor must occur exactly once: {from}"
+    );
     Ok(source.replacen(from, to, 1))
 }
 
@@ -74,8 +77,23 @@ fn validate_workflow(source: &str) -> Result<()> {
     ensure!(
         events.len() == 2
             && events.contains_key("pull_request")
-            && events.contains_key("workflow_dispatch"),
-        "workflow must not add extra trigger types"
+            && events.contains_key("repository_dispatch"),
+        "workflow must expose only pull_request and default-branch repository_dispatch"
+    );
+    let dispatch = events
+        .get("repository_dispatch")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("repository_dispatch must declare a fixed type"))?;
+    let dispatch_types: BTreeSet<_> = dispatch
+        .get("types")
+        .and_then(Value::as_sequence)
+        .ok_or_else(|| anyhow!("repository_dispatch must declare types"))?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    ensure!(
+        dispatch_types == BTreeSet::from([REPOSITORY_DISPATCH_TYPE]),
+        "repository_dispatch must accept only the Windows reparse proof event"
     );
     let paths: BTreeSet<_> = trigger
         .get("paths")
@@ -95,8 +113,14 @@ fn validate_workflow(source: &str) -> Result<()> {
             ]),
         "pull_request paths must preserve the Windows proof trigger scope"
     );
-    ensure!(events.get("workflow_dispatch").is_some(), "workflow_dispatch must remain available");
-    ensure!(events.get("pull_request_target").is_none(), "pull_request_target is not allowed");
+    ensure!(
+        events.get("workflow_dispatch").is_none(),
+        "arbitrary-ref workflow_dispatch must not own the cache producer"
+    );
+    ensure!(
+        events.get("pull_request_target").is_none(),
+        "pull_request_target is not allowed"
+    );
 
     let permissions = workflow
         .get("permissions")
@@ -106,7 +130,10 @@ fn validate_workflow(source: &str) -> Result<()> {
         permissions.get("contents").and_then(Value::as_str) == Some("read"),
         "the workflow must grant contents read permission"
     );
-    ensure!(permissions.len() == 1, "workflow permissions must not grant extra scopes");
+    ensure!(
+        permissions.len() == 1,
+        "workflow permissions must not grant extra scopes"
+    );
     let jobs = workflow
         .get("jobs")
         .and_then(Value::as_mapping)
@@ -115,7 +142,10 @@ fn validate_workflow(source: &str) -> Result<()> {
         .get("windows-reparse-proof")
         .and_then(Value::as_mapping)
         .ok_or_else(|| anyhow!("the workflow must declare the Windows reparse proof job"))?;
-    ensure!(job.get("permissions").is_none(), "the proof job must not add permissions");
+    ensure!(
+        job.get("permissions").is_none(),
+        "the proof job must not add permissions"
+    );
     ensure!(
         job.get("runs-on").and_then(Value::as_str) == Some("windows-2022"),
         "the Windows proof must run on windows-2022"
@@ -156,7 +186,7 @@ fn validate_workflow(source: &str) -> Result<()> {
         .ok_or_else(|| anyhow!("the rust-cache step must declare inputs"))?;
     ensure!(
         cache_with.get("save-if").and_then(Value::as_str) == Some(TRUSTED_SAVE_IF),
-        "rust-cache must save only for the canonical main/master refs"
+        "rust-cache must save only from default-branch repository_dispatch"
     );
     ensure!(
         cache_with.get("cache-on-failure") == Some(&Value::Bool(true)),
@@ -175,7 +205,10 @@ fn validate_workflow(source: &str) -> Result<()> {
     };
     let require_command = |name: &str, command: &str| -> Result<()> {
         let step = named_step(name)?;
-        ensure!(step.get("if").is_none(), "proof step must not be conditionally skipped: {name}");
+        ensure!(
+            step.get("if").is_none(),
+            "proof step must not be conditionally skipped: {name}"
+        );
         ensure!(
             normalized(step.get("run").and_then(Value::as_str).unwrap_or_default())
                 == normalized(command),
@@ -207,12 +240,21 @@ fn validate_workflow(source: &str) -> Result<()> {
             .iter()
             .position(|step| step.get("name").and_then(Value::as_str) == Some(name))
             .ok_or_else(|| anyhow!("missing proof step: {name}"))?;
-        ensure!(cache_index < index, "cache restore must precede proof execution: {name}");
+        ensure!(
+            cache_index < index,
+            "cache restore must precede proof execution: {name}"
+        );
     }
 
     let topology = named_step("Run exact non-skipping perl-corpus topology proofs")?;
-    ensure!(topology.get("if").is_none(), "topology proof must not be conditionally skipped");
-    let topology_raw = topology.get("run").and_then(Value::as_str).unwrap_or_default();
+    ensure!(
+        topology.get("if").is_none(),
+        "topology proof must not be conditionally skipped"
+    );
+    let topology_raw = topology
+        .get("run")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let topology_run = normalized(topology_raw);
     for command in [
         "set -euo pipefail",
@@ -227,7 +269,9 @@ fn validate_workflow(source: &str) -> Result<()> {
         );
     }
     ensure!(
-        topology_run.contains("cargo test --locked -p perl-corpus --lib -- --list \\ | sed 's/\\r$//' \\ | tee \"$test_list\""),
+        topology_run.contains(
+            "cargo test --locked -p perl-corpus --lib -- --list \\ | sed 's/\\r$//' \\ | tee \"$test_list\""
+        ),
         "topology proof must enumerate the real corpus test list"
     );
     let selected_start = topology_raw
@@ -298,11 +342,14 @@ fn contract_rejects_realistic_cache_and_permission_mutations() -> Result<()> {
     for (from, to) in [
         (CACHE_ACTION, "Swatinem/rust-cache@v2"),
         (
-            "save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}",
+            "save-if: ${{ github.event_name == 'repository_dispatch' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}",
             "save-if: true",
         ),
         (SHARED_KEY, "cross-branch-key"),
-        ("permissions:\n  contents: read", "permissions:\n  contents: read\n  actions: write"),
+        (
+            "permissions:\n  contents: read",
+            "permissions:\n  contents: read\n  actions: write",
+        ),
         (
             "      - name: Cache cargo dependencies",
             "      - uses: actions/cache/save@v4\n        with:\n          path: target\n          key: decoy\n\n      - name: Cache cargo dependencies",
@@ -328,17 +375,36 @@ fn contract_rejects_realistic_cache_and_permission_mutations() -> Result<()> {
 fn contract_rejects_decoy_commands_and_trigger_mutations() -> Result<()> {
     let source = actual_workflow()?;
     for (from, to) in [
-        (CORPUS_PROOF_ANCHOR, "        run: echo cargo test --locked -p perl-corpus"),
-        (XTASK_PROOF_ANCHOR, "        run: echo cargo test --locked -p xtask"),
+        (
+            CORPUS_PROOF_ANCHOR,
+            "        run: echo cargo test --locked -p perl-corpus",
+        ),
+        (
+            XTASK_PROOF_ANCHOR,
+            "        run: echo cargo test --locked -p xtask",
+        ),
         ("branches: [main, master]", "branches: [feature/cache]"),
         ("pull_request:", "pull_request_target:"),
-        ("  workflow_dispatch:\n", "  workflow_dispatch:\n  push:\n"),
-        ("  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 0 * * *'\n"),
+        (
+            "  repository_dispatch:\n    types: [corpus-windows-reparse-proof]\n",
+            "  workflow_dispatch:\n",
+        ),
+        (
+            "types: [corpus-windows-reparse-proof]",
+            "types: [arbitrary-cache-writer]",
+        ),
+        (
+            "  repository_dispatch:\n    types: [corpus-windows-reparse-proof]\n",
+            "  repository_dispatch:\n    types: [corpus-windows-reparse-proof]\n  push:\n",
+        ),
         (
             "            api::topology::tests::binding_rejects_intermediate_runtime_root_symlink\n",
             "",
         ),
-        (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, "          echo cargo test --locked -p perl-corpus\n"),
+        (
+            TOPOLOGY_EXECUTION_SOURCE_ANCHOR,
+            "          echo cargo test --locked -p perl-corpus\n",
+        ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, ""),
     ] {
         ensure!(
