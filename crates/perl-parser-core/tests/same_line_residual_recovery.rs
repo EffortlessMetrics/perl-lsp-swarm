@@ -238,6 +238,58 @@ fn same_line_word_operator_goto_variants_keep_their_control_flow_rhs() -> Result
 }
 
 #[test]
+fn bare_and_unary_word_goto_forms_match_perl_boundaries() -> Result<(), String> {
+    for source in ["foo or goto;", "foo and goto;", "foo xor goto;"] {
+        if !perl_compile_accepts(source)? {
+            return Err(format!("real Perl rejected valid bare goto form: {source:?}"));
+        }
+        let output = Parser::new(source).parse_with_recovery();
+        if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+            return Err(format!(
+                "bare goto form became blocking: source={source:?}, diagnostics={:?}",
+                output.diagnostics
+            ));
+        }
+    }
+
+    for (source, operator) in [
+        ("foo or not goto fail;", "or"),
+        ("foo or !goto fail;", "or"),
+        ("foo or +goto fail;", "or"),
+    ] {
+        if !perl_compile_accepts(source)? {
+            return Err(format!("real Perl rejected valid unary goto form: {source:?}"));
+        }
+        let output = Parser::new(source).parse_with_recovery();
+        if output.diagnostics.iter().any(ParseError::blocks_clean_parse)
+            || !contains_word_operator_with_goto(&output.ast, operator)
+        {
+            return Err(format!(
+                "unary goto must remain one clean word-operator control-flow expression:\nsource={source:?}\ndiagnostics={:?}\nast={}",
+                output.diagnostics,
+                output.ast.to_sexp()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn unary_word_goto_forms_do_not_hide_trailing_residue() -> Result<(), String> {
+    for (source, token) in [
+        ("foo or not goto fail; 1 2;", "2"),
+        ("foo or !goto fail; 1 2;", "2"),
+        ("foo or +goto fail; 1 2;", "2"),
+    ] {
+        if perl_compile_accepts(source)? {
+            return Err(format!("real Perl unexpectedly accepted residue: {source:?}"));
+        }
+        assert_same_line_residual_at(source, token)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn valid_low_precedence_and_directive_continuations_do_not_gain_residual_errors()
 -> Result<(), String> {
     for source in [
@@ -272,6 +324,9 @@ fn real_perl_oracle_agrees_on_supported_continuations_and_residue() -> Result<()
         ("foo or goto => 1, bar => 2; print \"ok\";", Some(("or", false))),
         ("foo and (goto => 1); print \"ok\";", Some(("and", false))),
         ("foo xor (goto => 1); print \"ok\";", Some(("xor", false))),
+        ("foo or not goto fail; print \"ok\";", Some(("or", true))),
+        ("foo or !goto fail; print \"ok\";", Some(("or", true))),
+        ("foo or +goto fail; print \"ok\";", Some(("or", true))),
     ];
     for (source, expected) in valid_sources {
         if !perl_compile_accepts(source)? {

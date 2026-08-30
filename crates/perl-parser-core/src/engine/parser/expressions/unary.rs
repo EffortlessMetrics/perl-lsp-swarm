@@ -251,7 +251,11 @@ impl<'a> Parser<'a> {
                         ));
                     }
 
-                    let operand = self.parse_power()?;
+                    let operand = if self.goto_starts_control_flow() {
+                        self.parse_goto()?
+                    } else {
+                        self.parse_power()?
+                    };
                     let end = operand.location.end;
 
                     return Ok(Node::new(
@@ -531,7 +535,9 @@ impl<'a> Parser<'a> {
                         ));
                     }
 
-                    let operand = if matches!(
+                    let operand = if self.goto_starts_control_flow() {
+                        self.parse_goto()?
+                    } else if matches!(
                         op_token.kind(),
                         TokenKind::Not | TokenKind::Backslash | TokenKind::BitwiseNot
                     ) {
