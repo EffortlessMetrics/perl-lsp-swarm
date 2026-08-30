@@ -6,13 +6,21 @@ import type * as vscode from 'vscode';
 import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { BinaryDownloader } from '../downloader';
 import { downloadBoundedFile } from '../boundedFileDownload';
+import type { CancellationTokenLike, DisposableLike } from '../boundedHttpJson';
 
 type TestRequest = EventEmitter & {
   destroy: jest.Mock;
 };
 
 type DownloaderSeams = {
-  downloadFile(url: string, dest: string, timeoutMs?: number): Promise<void>;
+  downloadFile(
+    url: string,
+    dest: string,
+    timeoutMs?: number,
+    maxRedirects?: number,
+    maxBytes?: number,
+    cancellationToken?: CancellationTokenLike,
+  ): Promise<void>;
   httpGet(...args: unknown[]): TestRequest;
   createWriteStream(dest: string): fs.WriteStream;
   removePartialFile(dest: string): void;
@@ -92,28 +100,36 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
   });
 
-  test('replaces an existing destination after a successful validated download', async () => {
-    const destination = path.join(tmpDir, 'existing-success.bin');
+  test('writes and promotes a real download with a 255-byte UTF-8 destination component', async () => {
+    const destination = path.join(tmpDir, `${'é'.repeat(125)}a.bin`);
     fs.writeFileSync(destination, 'existing');
+    let stagingDestination = '';
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
-
-    await downloadBoundedFile({
-      requestFactory: (listener) => {
-        process.nextTick(() => {
-          const response = makeResponse(200, { 'content-length': '11' });
-          listener(response as never);
-          response.emit('data', Buffer.from('replacement'));
-          response.emit('end');
-        });
-        return request as never;
-      },
-      dest: destination,
-      timeoutMs: 1000,
-      maxBytes: 11,
+    const downloader = new BinaryDownloader(
+      makeContext(tmpDir),
+      makeOutputChannel(),
+    ) as unknown as DownloaderSeams;
+    jest.spyOn(downloader, 'createWriteStream').mockImplementation((stagingPath) => {
+      stagingDestination = stagingPath;
+      return BinaryDownloader.prototype['createWriteStream'].call(downloader, stagingPath);
     });
 
+    jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      process.nextTick(() => {
+        const response = makeResponse(200, { 'content-length': '11' });
+        (callback as (response: unknown) => void)(response);
+        response.emit('data', Buffer.from('replacement'));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await downloader.downloadFile('http://localhost/archive', destination, 1000);
+
     expect(fs.readFileSync(destination, 'utf8')).toBe('replacement');
+    expect(path.dirname(stagingDestination)).toBe(tmpDir);
+    expect(Buffer.byteLength(path.basename(stagingDestination), 'utf8')).toBeLessThanOrEqual(255);
   });
 
   test('preserves the existing destination after request failure', async () => {
@@ -160,6 +176,98 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     expect(delayedCleanup).toHaveLength(1);
     delayedCleanup[0]?.();
     expect(fs.readFileSync(destination, 'utf8')).toBe('replacement');
+  });
+
+  test('preserves the existing destination after timeout', async () => {
+    const destination = path.join(tmpDir, 'timeout-existing.bin');
+    fs.writeFileSync(destination, 'existing');
+    const downloader = new BinaryDownloader(
+      makeContext(tmpDir),
+      makeOutputChannel(),
+    ) as unknown as DownloaderSeams;
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(downloader, 'httpGet').mockReturnValue(request);
+
+    await expect(
+      downloader.downloadFile('http://localhost/archive', destination, 10),
+    ).rejects.toThrow('Download timeout after 0.01 seconds');
+
+    expect(request.destroy).toHaveBeenCalled();
+    expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
+  });
+
+  test('preserves the existing destination after cancellation', async () => {
+    const destination = path.join(tmpDir, 'cancel-existing.bin');
+    fs.writeFileSync(destination, 'existing');
+    const listeners = new Set<() => void>();
+    let cancelled = false;
+    const token: CancellationTokenLike = {
+      get isCancellationRequested() {
+        return cancelled;
+      },
+      onCancellationRequested: (listener: () => void): DisposableLike => {
+        listeners.add(listener);
+        return { dispose: () => listeners.delete(listener) };
+      },
+    };
+    const downloader = new BinaryDownloader(
+      makeContext(tmpDir),
+      makeOutputChannel(),
+    ) as unknown as DownloaderSeams;
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(downloader, 'httpGet').mockImplementation(() => {
+      process.nextTick(() => {
+        cancelled = true;
+        for (const listener of [...listeners]) {
+          listener();
+        }
+      });
+      return request;
+    });
+
+    await expect(
+      downloader.downloadFile(
+        'http://localhost/archive',
+        destination,
+        1000,
+        undefined,
+        undefined,
+        token,
+      ),
+    ).rejects.toThrow('Archive download cancelled');
+
+    expect(request.destroy).toHaveBeenCalled();
+    expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
+  });
+
+  test('preserves the existing destination after a response stream error', async () => {
+    const destination = path.join(tmpDir, 'stream-error-existing.bin');
+    fs.writeFileSync(destination, 'existing');
+    const downloader = new BinaryDownloader(
+      makeContext(tmpDir),
+      makeOutputChannel(),
+    ) as unknown as DownloaderSeams;
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const response = makeResponse(200);
+    const streamError = new Error('stream failed');
+    jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      process.nextTick(() => {
+        (callback as (value: unknown) => void)(response);
+        response.emit('data', Buffer.from('partial-generation'));
+        response.emit('error', streamError);
+      });
+      return request;
+    });
+
+    await expect(
+      downloader.downloadFile('http://localhost/archive', destination, 1000),
+    ).rejects.toBe(streamError);
+
+    expect(request.destroy).toHaveBeenCalled();
+    expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
   });
 
   test('does not quarantine a replacement installed before the failed generation is renamed', async () => {
