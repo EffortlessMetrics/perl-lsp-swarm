@@ -1568,7 +1568,8 @@ sub score {
 #[serial]
 fn bdd_pull_diagnostics_workspace_fact_movement_retires_cached_ids()
 -> Result<(), Box<dyn std::error::Error>> {
-    let scenario = BddScenario::new("Pull diagnostics keep per-document resultId caches isolated");
+    let scenario =
+        BddScenario::new("Workspace fact movement retires cached pull-diagnostics result IDs");
 
     let healthy = r#"use strict;
 use warnings;
