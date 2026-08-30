@@ -384,6 +384,66 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_honors_its_deadline_while_a_watcher_callback_is_blocked() {
+        // The falsifier for the bounded-settlement claim. Cancelling through
+        // `FileWatcherDebouncer::shutdown_now` JOINS the dispatcher, and a
+        // dispatcher stuck in a blocked callback never returns -- so shutdown
+        // would hang before its first deadline check and could never record
+        // `TimedOut`. Only a blocked-callback test can catch that; the
+        // cooperative path returns promptly either way.
+        let gate: std::sync::Arc<parking_lot::Mutex<bool>> =
+            std::sync::Arc::new(parking_lot::Mutex::new(false));
+        let gate_open = std::sync::Arc::clone(&gate);
+
+        let services = RuntimeServices::new();
+        services.install_file_watcher_debouncer(FileWatcherDebouncer::with_interval(
+            Duration::from_millis(1),
+            move |_uris: Vec<String>| {
+                // Bounded block so a failing assertion can never wedge teardown.
+                let start = Instant::now();
+                while !*gate_open.lock() && start.elapsed() < Duration::from_secs(30) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            },
+        ));
+
+        assert!(services.schedule_file_watcher_uri("file:///blocked.pl"));
+
+        // Wait until the dispatcher is genuinely inside the blocked callback,
+        // so the shutdown below really does race a stuck worker.
+        let armed = (0..500).any(|_| {
+            if services.file_watcher_pressure().is_some_and(|p| p.active_subjects == 1) {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(armed, "dispatcher should be held inside the blocked callback");
+
+        let started = Instant::now();
+        let outcome = services.begin_application_shutdown(
+            ShutdownReason::ClientShutdownRequest,
+            started + Duration::from_millis(50),
+        );
+        let elapsed = started.elapsed();
+
+        // Release before asserting: a failed assertion must not leave the
+        // callback blocked, or `Drop`'s join would wedge the test run.
+        *gate.lock() = true;
+
+        assert_eq!(
+            outcome,
+            ApplicationShutdown::TimedOut,
+            "a worker that never exits must settle as TimedOut, not hang or report Complete"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "shutdown must honor its deadline rather than block on the join; took {elapsed:?}"
+        );
+    }
+
+    #[test]
     fn a_failed_parse_replacement_retires_the_previous_worker() {
         // Leaving the old worker installed while the new lifetime retains
         // `InstrumentFailed` would be a settlement lie: `parse_worker()` would

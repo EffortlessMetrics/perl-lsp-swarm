@@ -318,16 +318,22 @@ impl RuntimeServices {
                 debouncer.shutdown_now();
             }
             ApplicationTaskClass::FileWatcherDebounce => {
-                // `shutdown_now` JOINS both watcher threads after flushing a
-                // final batch. The slot is an `Arc` precisely so the handle
-                // can be cloned out and the guard released first: holding it
-                // across that join would stall every concurrent
-                // `schedule_file_watcher_uri` for the whole flush instead of
-                // giving it the fast shutting-down refusal that path
-                // promises (#8064).
+                // `signal_shutdown`, NOT `shutdown_now`: the latter joins both
+                // watcher threads, and a dispatcher stuck in a blocked
+                // callback never returns. Calling it here would strand
+                // `begin_application_shutdown` before its first deadline
+                // check, so the bounded settlement outcome this component
+                // promises could never be recorded. Signalling returns
+                // immediately; exit is observed by `worker_has_exited`, and
+                // the join stays in teardown where it belongs.
+                //
+                // The slot is an `Arc` so the handle is cloned out and the
+                // guard released before the call, keeping a concurrent
+                // `schedule_file_watcher_uri` on its fast shutting-down
+                // refusal path (#8064).
                 let debouncer = self.file_watcher_debouncer.lock().clone();
                 if let Some(debouncer) = debouncer {
-                    debouncer.shutdown_now();
+                    debouncer.signal_shutdown();
                 }
             }
         }
