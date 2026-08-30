@@ -573,11 +573,26 @@ impl LspServer {
         };
         // The request may have routed through a full index and then yielded to an
         // open-document edit before this receipt is written. Revalidate the
-        // request-local index claim at the receipt boundary so index-backed and
-        // empty answers fail closed instead of reporting a stale `full` snapshot
-        // as fresh. Live-source tiers retain their tier semantics: their freshness
-        // remains `fresh` even when this recheck downgrades the incidental index
-        // state carried in the receipt.
+        // request-local index claim here so index-backed and empty answers report
+        // `none` rather than a stale `full` snapshot. Live-source tiers retain
+        // their tier semantics: their freshness stays `fresh` even when this
+        // recheck downgrades the incidental index state carried in the receipt.
+        //
+        // This NARROWS the window; it does not close it. The call below is a
+        // point-in-time boolean, not a generation-bound join with the answer or
+        // with the write that follows, so an edit landing between this check and
+        // the trace write still produces a `fresh` receipt — the same false
+        // currency, in a shorter interval. `handle_references_revalidates_index_
+        // state_after_open_document_edit` proves the edit-before-recheck ordering
+        // only; there is no barrier-driven edit-after-recheck control, because
+        // there is no seam to place one against.
+        //
+        // Closing it needs the index/source generation that actually answered to
+        // be carried to this point and committed against the current generation
+        // under one synchronization boundary (or the receipt emitted from an
+        // immutable request snapshot). That is #14320, deliberately not attempted
+        // here: it is a concurrency-ownership change on a hot path, not a receipt
+        // repair, and this candidate's claim is scoped to the sentinel removal.
         let index_state = {
             #[cfg(feature = "workspace")]
             {
