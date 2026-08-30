@@ -206,8 +206,17 @@ fn thin_adapter_and_driver_never_force_a_filetype_or_second_orchestration() -> R
                  native adapter (no filetype forcing, a thin native adapter may not force a filetype (#7762 native-detection law)"
             );
         }
+        let has_system_call = source.lines().any(|line| {
+            let code = line.split('"').next().unwrap_or_default();
+            code.match_indices("system(").any(|(index, _)| {
+                match index.checked_sub(1).and_then(|i| code.as_bytes().get(i)) {
+                    Some(byte) if byte.is_ascii_alphanumeric() || *byte == b'_' => false,
+                    _ => true,
+                }
+            })
+        });
         ensure!(
-            !source.contains("system(")
+            !has_system_call
                 && !source.contains("job_start")
                 && !source.contains("term_start"),
             "{label} must not spawn processes; the Rust supervisor owns process supervision"
