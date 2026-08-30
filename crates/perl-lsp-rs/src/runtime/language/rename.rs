@@ -26,6 +26,8 @@ use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
 };
 use perl_lsp_rs_core::providers::rename::{RenameOptions, RenameProvider, TextEdit as RenameEdit};
+#[cfg(feature = "workspace")]
+use perl_module::is_module_identifier_char;
 use perl_parser_core::syntax::source_context::{
     RangeClassification, SourceRegionIndex, SourceRegionKind,
 };
@@ -196,7 +198,6 @@ fn add_qualified_document_rename_edits<F>(
     // come from different generations, for live, indexed, and disk documents
     // alike.
     let region_index = SourceRegionIndex::build(source);
-    let bytes = source.as_bytes();
 
     let mut skipped_unproven_region = 0_usize;
     let mut skipped_boundary = 0_usize;
@@ -221,14 +222,19 @@ fn add_qualified_document_rename_edits<F>(
             continue;
         }
 
-        // Byte-coordinate boundary validation: Perl package names are ASCII,
-        // so only ASCII name bytes (and the legacy apostrophe separator)
-        // reject a candidate. UTF-8 continuation bytes and non-ASCII
-        // neighbors are not name bytes and must not suppress a real edit.
-        let before_ok =
-            match_start == 0 || !is_perl_qualified_name_boundary_byte(bytes[match_start - 1]);
+        // Decode adjacent scalar values before applying the canonical Perl
+        // identifier class. A raw UTF-8 continuation byte is not a character
+        // boundary: it may be the tail of a Unicode package/identifier that
+        // contains this ASCII-looking substring.
+        let before_ok = source[..match_start]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !is_module_identifier_char(ch) && ch != ':' && ch != '\'');
         let after_ok =
-            name_end >= bytes.len() || !is_perl_qualified_name_boundary_byte(bytes[name_end]);
+            source[name_end..]
+                .chars()
+                .next()
+                .is_none_or(|ch| !is_module_identifier_char(ch) && ch != ':' && ch != '\'');
         if !before_ok || !after_ok {
             skipped_boundary += 1;
             continue;
@@ -264,12 +270,6 @@ fn add_qualified_document_rename_edits<F>(
             "qualified rename fallback skipped candidates failing byte boundary validation (#4964)"
         );
     }
-}
-
-/// A byte that would extend a Perl qualified name left or right: ASCII name
-/// characters, package separators, or the legacy apostrophe separator.
-fn is_perl_qualified_name_boundary_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b':' || byte == b'\''
 }
 
 impl LspServer {
@@ -2704,6 +2704,8 @@ mod tests {
             "My::Pkg::target();\n",
             "My::Pkg::target();\n",
             "Other::My::Pkg::target();\n",
+            "λMy::Pkg::target();\n",
+            "My::Pkg::targetλ();\n",
             "My::Pkg::target_suffix();\n",
             "My::Pkg::target::child();\n",
             "Other'My::Pkg::target();\n",
