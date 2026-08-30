@@ -188,6 +188,146 @@ fn cfg_test_helpers_are_excluded_from_the_census() {
     );
 }
 
+/// One file per interesting `cfg` shape, each defining a distinctly named
+/// helper, so a single census answers the whole family.
+fn cfg_shape_sources() -> Vec<(String, String)> {
+    vec![(
+        SYNTHETIC_ROOT_FILE.to_string(),
+        r#"
+        impl Server { pub fn handle_initialize(&self) {} }
+
+        #[cfg(test)]
+        fn only_under_test() {}
+
+        #[cfg(all(test, unix))]
+        fn only_under_test_on_unix() {}
+
+        #[cfg(any(test, feature = "expose_lsp_test_api"))]
+        fn shipped_when_the_feature_is_on() {}
+
+        #[cfg(not(test))]
+        fn never_under_test() {}
+
+        #[cfg(feature = "expose_lsp_test_api")]
+        fn behind_a_plain_feature() {}
+
+        #[cfg(unix)]
+        fn behind_a_target() {}
+        "#
+        .to_string(),
+    )]
+}
+
+#[test]
+fn a_cfg_that_can_never_hold_without_test_is_excluded() {
+    let census = Census::from_sources(&cfg_shape_sources());
+
+    for excluded in ["only_under_test", "only_under_test_on_unix"] {
+        assert!(
+            census.resolve(SYNTHETIC_ROOT_FILE, excluded).is_none(),
+            "{excluded} compiles only under `test` and must stay out of the census"
+        );
+    }
+}
+
+#[test]
+fn a_cfg_that_ships_outside_test_is_kept_even_when_it_mentions_test() {
+    // The census predicate must be "cannot compile without `test`", not
+    // "mentions `test`". `#[cfg(any(test, feature = "expose_lsp_test_api"))]`
+    // is a real, shipping shape in `perl-lsp-rs`, and `#[cfg(not(test))]` is
+    // production-*only*. Excluding either silently narrows the denominator,
+    // which is the direction that hides blocking work.
+    let census = Census::from_sources(&cfg_shape_sources());
+
+    for kept in [
+        "shipped_when_the_feature_is_on",
+        "never_under_test",
+        "behind_a_plain_feature",
+        "behind_a_target",
+    ] {
+        assert!(
+            census.resolve(SYNTHETIC_ROOT_FILE, kept).is_some(),
+            "{kept} can compile without `test` and must remain in the census"
+        );
+    }
+}
+
+#[test]
+fn feature_gated_blocking_work_is_still_owned_by_a_row() {
+    // The consequence that matters: a spawn behind `any(test, feature = "…")`
+    // is reachable production work, so coverage must demand a row for it.
+    let sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self) {
+                    probe_under_feature();
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            SYNTHETIC_HELPER_FILE.to_string(),
+            r#"
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            pub fn probe_under_feature() {
+                let _ = std::process::Command::new("perl").output();
+            }
+            "#
+            .to_string(),
+        ),
+    ];
+    let census = Census::from_sources(&sources);
+    let mut row = baseline_row();
+    row.owns_exposure = false;
+    row.declared_exposure = &[];
+
+    let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
+    assert_reports(&errors, "unregistered initialize work");
+    assert_reports(&errors, "probe_under_feature");
+}
+
+#[test]
+fn a_test_module_behind_a_path_attribute_is_excluded() {
+    // `#[path]` overrides the conventional file lookup, so a test module can
+    // point at a filename the conventional exclusion never names.
+    let sources = vec![
+        (
+            "crates/perl-lsp-rs/src/entry.rs".to_string(),
+            r#"
+            impl Server { pub fn handle_initialize(&self) {} }
+
+            #[cfg(test)]
+            #[path = "fixtures/entry_cases.rs"]
+            mod cases;
+            "#
+            .to_string(),
+        ),
+        (
+            "crates/perl-lsp-rs/src/entry/fixtures/entry_cases.rs".to_string(),
+            r#"
+            pub fn spawn_from_a_relocated_test_module() {
+                let _ = std::process::Command::new("perl").output();
+            }
+            "#
+            .to_string(),
+        ),
+    ];
+    let census = Census::from_sources(&sources);
+
+    assert!(
+        census
+            .resolve(
+                "crates/perl-lsp-rs/src/entry/fixtures/entry_cases.rs",
+                "spawn_from_a_relocated_test_module"
+            )
+            .is_none(),
+        "a #[path]-relocated #[cfg(test)] module must not enter the production census"
+    );
+}
+
 #[test]
 fn a_generic_method_name_does_not_resolve_outside_the_calling_file() {
     // `handle_initialize` calls `params.get("capabilities")` on a serde_json

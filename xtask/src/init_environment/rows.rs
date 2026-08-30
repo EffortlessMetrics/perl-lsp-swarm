@@ -352,9 +352,12 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             target_owner: OWNER_TOOL_ROLES,
             proof_family: "initialize_tool_detection_is_not_capability_authority",
             memoization: "result is discarded; recomputed on every initialize",
+            // Both tool rows cite the same shared `detect_tool`, so without a
+            // distinguishing argument deleting this probe would leave the row
+            // valid against the sibling's call site.
+            call_site_argument: "perlcritic",
             // The sibling perltidy row already accounts for this shared
             // mechanism's closure; both owning it would be redundant.
-            call_site_argument: "",
             owns_exposure: false,
         },
         InitOperationRow {

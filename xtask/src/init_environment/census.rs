@@ -576,24 +576,78 @@ struct FnCollector {
     found: Vec<FunctionRecord>,
 }
 
-/// Whether an item carries `#[cfg(test)]`.
+/// Whether an item's `cfg` attributes make it unreachable in every non-test
+/// build.
 ///
-/// Test modules are excluded: the census describes production reachability, and
-/// a test helper that shells out must not be attributed to the initialize path.
+/// Test-only items are excluded: the census describes production reachability,
+/// and a test helper that shells out must not be attributed to the initialize
+/// path. The predicate must be exactly "cannot compile without `test`", not
+/// "mentions `test`" — `#[cfg(any(test, feature = "expose_lsp_test_api"))]`
+/// ships whenever that feature is enabled, and `#[cfg(not(test))]` is
+/// production-*only*. Treating either as test-only silently removes production
+/// work from the denominator, which is the direction that matters.
+///
+/// Every `cfg` attribute on one item is conjunctive, so the item is excluded
+/// when any single attribute is unsatisfiable with `test` false.
 fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         if !attr.path().is_ident("cfg") {
             return false;
         }
-        let mut found = false;
-        let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("test") {
-                found = true;
-            }
-            Ok(())
-        });
-        found
+        match attr.parse_args::<syn::Meta>() {
+            // Unsatisfiable without `test` — the item exists only under test.
+            Ok(meta) => !cfg_can_hold_without_test(&meta),
+            // An unparsable `cfg` is not evidence of a test gate. Keeping the
+            // item indexed keeps the denominator wide, which fails towards a
+            // finding rather than towards a silent omission.
+            Err(_) => false,
+        }
     })
+}
+
+/// Whether the `cfg` predicate can be true in a build where `test` is false.
+///
+/// Predicates other than `test` are free: any single one may be either way, so
+/// the answer over-approximates satisfiability. That direction is deliberate —
+/// an over-approximation keeps an item in the census, and a superfluous
+/// production function can only ever produce a finding, never hide one.
+fn cfg_can_hold_without_test(meta: &syn::Meta) -> bool {
+    cfg_satisfiable(meta, true)
+}
+
+/// `cfg_satisfiable(meta, want)` — can `meta` evaluate to `want` with `test`
+/// false?
+fn cfg_satisfiable(meta: &syn::Meta, want: bool) -> bool {
+    let syn::Meta::List(list) = meta else {
+        // `test` is pinned false; `feature = "…"`, `unix`, and every other leaf
+        // is free and can take either value.
+        return if meta.path().is_ident("test") { !want } else { true };
+    };
+
+    let Ok(nested) = list.parse_args_with(
+        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+    ) else {
+        // Unparsable operands: assume the item can ship.
+        return true;
+    };
+
+    if list.path.is_ident("not") {
+        return nested.iter().all(|inner| cfg_satisfiable(inner, !want));
+    }
+    if list.path.is_ident("all") {
+        return match want {
+            true => nested.iter().all(|inner| cfg_satisfiable(inner, true)),
+            false => nested.iter().any(|inner| cfg_satisfiable(inner, false)),
+        };
+    }
+    if list.path.is_ident("any") {
+        return match want {
+            true => nested.iter().any(|inner| cfg_satisfiable(inner, true)),
+            false => nested.iter().all(|inner| cfg_satisfiable(inner, false)),
+        };
+    }
+    // Some other list-shaped predicate (`target_has_atomic(…)` and friends).
+    true
 }
 
 impl<'ast> Visit<'ast> for FnCollector {
@@ -847,11 +901,53 @@ fn collect_test_only_modules(declaring_file: &str, file: &syn::File, out: &mut B
             && item_mod.content.is_none()
             && is_cfg_test(&item_mod.attrs)
         {
+            // `#[path = "…"]` overrides the conventional lookup entirely, so a
+            // test module pointed elsewhere would otherwise stay in the
+            // production census under its real filename.
+            if let Some(path) = module_path_attribute(&item_mod.attrs) {
+                out.insert(normalize_module_path(&dir, &path));
+                continue;
+            }
             let name = item_mod.ident.to_string();
             out.insert(format!("{dir}/{name}.rs"));
             out.insert(format!("{dir}/{name}/mod.rs"));
         }
     }
+}
+
+/// The literal of a `#[path = "…"]` attribute, if the item carries one.
+fn module_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("path") {
+            return None;
+        }
+        match &attr.meta {
+            syn::Meta::NameValue(syn::MetaNameValue {
+                value: syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }),
+                ..
+            }) => Some(text.value()),
+            _ => None,
+        }
+    })
+}
+
+/// Resolve a `#[path]` literal against the declaring module's directory.
+///
+/// The literal is relative to that directory and may climb out of it, so `.`
+/// and `..` segments are folded rather than left in the key — census file names
+/// are workspace-relative and compared literally.
+fn normalize_module_path(dir: &str, declared: &str) -> String {
+    let mut segments: Vec<&str> = dir.split('/').filter(|part| !part.is_empty()).collect();
+    for part in declared.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+    segments.join("/")
 }
 
 /// The directory a file's child modules resolve against.
