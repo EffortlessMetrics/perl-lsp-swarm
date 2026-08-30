@@ -259,12 +259,32 @@ fn check_relative_path(errors: &mut Vec<String>, subject: &str, field: &str, val
     let path = Path::new(value);
     if value.trim().is_empty() {
         errors.push(format!("{subject}: {field} is empty"));
-    } else if value.contains('\\')
+        return;
+    }
+    if value.contains('\\')
         || path.is_absolute()
         || path.components().any(|part| matches!(part, Component::ParentDir | Component::RootDir))
     {
         errors.push(format!(
-            "{subject}: {field} {value:?} must be a normalized repository-relative path"
+            "{subject}: {field} {value:?} must be a repository-relative path inside the tree"
+        ));
+        return;
+    }
+    // Canonical form, not merely a safe one. `Path::components` silently folds
+    // away `./`, `//` and trailing slashes, so a row can carry a spelling that
+    // never equals the manifest path it is compared against — and for a package
+    // whose owner has externalized, nothing compares it at all.
+    let canonical = path
+        .components()
+        .filter_map(|part| match part {
+            Component::Normal(segment) => segment.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    if canonical != value {
+        errors.push(format!(
+            "{subject}: {field} {value:?} is not canonical; write it as {canonical:?}"
         ));
     }
 }
@@ -1382,13 +1402,25 @@ metadata_authority = "workspace_inherited"
     #[test]
     fn rejects_a_package_path_that_escapes_the_repository() -> TestResult {
         let source = fixture().replace("path = \"crates/beta\"", "path = \"../outside\"");
-        expect_rejected(&source, "normalized repository-relative path")
+        expect_rejected(&source, "repository-relative path inside the tree")
     }
 
     #[test]
     fn rejects_an_absolute_package_path() -> TestResult {
         let source = fixture().replace("path = \"crates/beta\"", "path = \"/etc/beta\"");
-        expect_rejected(&source, "normalized repository-relative path")
+        expect_rejected(&source, "repository-relative path inside the tree")
+    }
+
+    /// `Path::components` folds these away, so each one would otherwise reach the
+    /// projection as a spelling that never equals the manifest path.
+    #[test]
+    fn rejects_noncanonical_package_paths() -> TestResult {
+        for spelling in ["./crates/beta", "crates/beta/", "crates//beta", "crates/./beta"] {
+            let source =
+                fixture().replace("path = \"crates/beta\"", &format!("path = {spelling:?}"));
+            expect_rejected(&source, "is not canonical")?;
+        }
+        Ok(())
     }
 
     #[test]
