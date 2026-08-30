@@ -1,8 +1,8 @@
 //! Error classification inventory (#4982).
 //!
 //! Provides a read-only inventory of which error types implement `ErrorClass`
-//! and their canonical dispositions, so CI/lint tooling can detect gaps
-//! when new error types are added without classification.
+//! and their canonical dispositions, so CI/lint tooling can detect unreviewed
+//! classification changes.
 
 use crate::protocol::error_disposition::{Disposition, disposition_for};
 use perl_parser_core::ErrorCategory;
@@ -27,7 +27,8 @@ pub struct ErrorInventoryEntry {
 ///
 /// This is maintained manually and serves as a checklist for CI enforcement.
 /// When a new error type is added, it should be registered here so the
-/// inventory test can detect missing ErrorClass implementations.
+/// inventory distinguishes classified types from intentionally neutral or
+/// origin-ambiguous types.
 pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
     vec![
         // ── perl-parser-core ──
@@ -84,7 +85,9 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
         ErrorInventoryEntry {
             type_name: "JsonRpcError",
             crate_name: "perl-lsp-rs-core",
-            has_error_class: false, // Needs type refinement (#4978)
+            // Wire-only. A legacy finalized-code classifier remains outside the
+            // model until #7612 adds originating classification and provenance.
+            has_error_class: false,
             sample_category: None,
             sample_disposition: None,
         },
@@ -185,7 +188,7 @@ pub fn classified_count() -> usize {
     error_type_inventory().iter().filter(|e| e.has_error_class).count()
 }
 
-/// Returns the count of error types that still need ErrorClass.
+/// Returns the count of error types that do not implement ErrorClass.
 #[must_use]
 pub fn unclassified_count() -> usize {
     error_type_inventory().iter().filter(|e| !e.has_error_class).count()
@@ -209,12 +212,12 @@ mod tests {
     }
 
     #[test]
-    fn unclassified_types_are_jsonrpc_and_origin_ambiguous_parse_errors() {
+    fn unclassified_types_are_wire_or_origin_ambiguous() {
         let unclassified = unclassified_types();
         assert_eq!(
             unclassified,
             vec!["JsonRpcError", "StackParseError", "VariableParseError"],
-            "JsonRpcError needs type refinement (#4978); stack/variable parse enums stay unclassified without origin"
+            "JsonRpcError is wire-only; legacy finalized-code classification stays outside it pending #7612; stack/variable parse enums stay unclassified without origin"
         );
     }
 
