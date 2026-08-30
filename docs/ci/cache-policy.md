@@ -36,6 +36,13 @@ Under this guard:
   is `main` or `master` may save when that workflow/job is designed to seed the cache.
 - **Feature branches and tags:** may restore but do not satisfy the save condition.
 
+The literal `'refs/heads/master' || 'refs/heads/main'` pair above is deliberately
+pinned to the spelling the active workflows use; it is **not** interchangeable with the
+dynamic `github.ref_name == github.event.repository.default_branch` form shown for
+`actions/cache/save` below. If the repository default branch is ever renamed away from
+`master`/`main`, this literal pair silently stops matching — so the rename must update
+this example and every active workflow that uses the pinned pair in the same change.
+
 A shorter ref-only guard can remain acceptable for an existing workflow only when an
 executable contract pins its complete trigger set and proves that every candidate event
 uses a candidate or integration ref. That is a reviewed exception to the preferred
@@ -110,8 +117,9 @@ be cached. It does not prove that the current run is trusted to publish them.
 ## Scope and reachability
 
 This policy applies to every active cache consumer that can write from a workflow/job
-reachable through `pull_request`, `merge_group`, `pull_request_target`, or an indirect
-event carrying candidate-controlled inputs or artifacts. Hybrid
+reachable through `pull_request`, `merge_group`, `pull_request_target`, `workflow_call`,
+or `workflow_run`, or any indirect event carrying candidate-controlled inputs or
+artifacts. Hybrid
 schedule/dispatch/candidate workflows remain in scope. Reachability and authority are
 determined from the workflow trigger, containing job/step conditions, executed checkout
 subject, expression inputs, artifact provenance, and cached path—not from the file name
