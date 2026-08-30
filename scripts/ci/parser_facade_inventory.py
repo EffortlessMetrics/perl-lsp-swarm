@@ -17,6 +17,8 @@ DEPENDENCY_TABLE_CONTEXTS = {
     "build-dependencies": "build",
 }
 
+IGNORED_MANIFEST_DIRECTORIES = {"target", ".git", "node_modules"}
+
 FEATURE_PRODUCTION_DIRECTORIES = ("src",)
 FEATURE_TEST_DIRECTORIES = ("tests", "benches", "examples")
 
@@ -171,20 +173,33 @@ def contextual_dependency_tables(manifest: dict[str, Any]) -> Iterable[tuple[str
             for key, context in DEPENDENCY_TABLE_CONTEXTS.items():
                 value = target_table.get(key)
                 if isinstance(value, dict):
-                    yield f"target:{context}", value
+                    yield f"target({specification}):{context}", value
 
 
 def dependency_universe(manifest: dict[str, Any]) -> dict[str, DependencyFact]:
-    """Inventory every declared dependency with the contexts that declare it."""
-    facts: dict[str, DependencyFact] = {}
+    """Inventory every declared dependency with the contexts that declare it.
+
+    Optionality is not merged across contexts: a package declared optional in one
+    table and required in another is a shape this schema cannot represent honestly,
+    so it is rejected rather than collapsed to a single flag.
+    """
+    contexts_by_package: dict[str, set[str]] = {}
+    optional_by_package: dict[str, dict[str, bool]] = {}
     for context, table in contextual_dependency_tables(manifest):
         for package, optional in normalized_dependency_rows(table, context).items():
-            previous = facts.get(package)
-            contexts = set(previous.contexts) if previous else set()
-            contexts.add(context)
-            facts[package] = DependencyFact(
-                tuple(sorted(contexts)), optional or (previous.optional if previous else False)
+            contexts_by_package.setdefault(package, set()).add(context)
+            optional_by_package.setdefault(package, {})[context] = optional
+    facts: dict[str, DependencyFact] = {}
+    for package, contexts in contexts_by_package.items():
+        flags = optional_by_package[package]
+        if len(set(flags.values())) > 1:
+            optional_in = sorted(c for c, v in flags.items() if v)
+            required_in = sorted(c for c, v in flags.items() if not v)
+            raise ValueError(
+                f"dependency {package} has mixed optionality: optional in "
+                f"{','.join(optional_in)} but required in {','.join(required_in)}"
             )
+        facts[package] = DependencyFact(tuple(sorted(contexts)), next(iter(flags.values())))
     if not facts:
         raise ValueError("manifest declares no dependencies in any context")
     return facts
@@ -264,33 +279,56 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
         crate_root, FEATURE_PRODUCTION_DIRECTORIES
     ) - gated
     target_gated = target_required_features(manifest)
-    result: dict[str, str] = {}
+
+    def closure(name: str) -> set[str]:
+        """Every feature enabled by `name`, including itself.
+
+        A feature that enables another inherits its effects: `default` controls
+        production whenever anything it turns on does.
+        """
+        seen: set[str] = set()
+        pending = [name]
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            for entry in features.get(current, []):
+                if isinstance(entry, str) and entry in declared:
+                    pending.append(entry)
+        return seen
     for name, entries in features.items():
         if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
             raise ValueError(f"feature {name} must select a string list")
+
+    result: dict[str, str] = {}
+    for name in features:
+        reached = closure(name)
         selects_dependency = False
-        selects_feature = False
-        for entry in entries:
-            if entry.startswith("dep:"):
-                selects_dependency = True
-            elif "/" in entry:
-                if entry.split("/", 1)[0].removesuffix("?") in packages:
+        for member in reached:
+            for entry in features.get(member, []):
+                if entry.startswith("dep:"):
                     selects_dependency = True
-            elif entry in packages:
-                selects_dependency = True
-            elif entry in declared:
-                selects_feature = True
-        if selects_dependency and name in gated:
+                elif "/" in entry:
+                    if entry.split("/", 1)[0].removesuffix("?") in packages:
+                        selects_dependency = True
+                elif entry in packages:
+                    selects_dependency = True
+        gates_source = bool(reached & gated)
+        gates_target = bool(reached & target_gated)
+        gates_test = bool(reached & test_gated)
+        enables_feature = reached != {name}
+        if selects_dependency and gates_source:
             result[name] = "dependencies_and_source"
         elif selects_dependency:
             result[name] = "dependencies_only"
-        elif name in gated:
+        elif gates_source:
             result[name] = "source_only"
-        elif name in target_gated:
+        elif gates_target:
             result[name] = "target_only"
-        elif name in test_gated:
+        elif gates_test:
             result[name] = "test_source_only"
-        elif selects_feature:
+        elif enables_feature:
             result[name] = "feature_aggregate"
         else:
             result[name] = "taxonomy_only"
@@ -323,10 +361,14 @@ def discover_consumer_contexts(root: Path, facade_manifest: Path) -> dict[str, t
     for manifest_path in sorted(root.rglob("Cargo.toml")):
         if manifest_path == facade_manifest:
             continue
-        try:
-            manifest = load_toml(manifest_path)
-        except ValueError:
+        # Build output is not a workspace consumer: `cargo package` writes
+        # target/package/<crate>/Cargo.toml, which would otherwise appear as an
+        # unclassified consumer and fail the check on a developer's tree.
+        if set(manifest_path.relative_to(root).parts) & IGNORED_MANIFEST_DIRECTORIES:
             continue
+        # A tracked manifest that cannot be parsed must not vanish from the
+        # denominator: an unreadable consumer is unknown, never absent.
+        manifest = load_toml(manifest_path)
         contexts = {
             context
             for context, table in contextual_dependency_tables(manifest)
