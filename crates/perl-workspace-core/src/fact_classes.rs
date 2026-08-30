@@ -83,6 +83,12 @@ impl FactClasses {
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+
+    /// The raw bitset, for deterministic fingerprinting by view layers.
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
 }
 
 impl std::ops::BitOr for FactClasses {

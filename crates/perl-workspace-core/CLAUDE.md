@@ -19,9 +19,11 @@ and `docs/reference/NATIVE_STACK_POLICY.md`.
 - `Provenance` + `Confidence` + `EvidenceSource` on every fact.
 - A `FactClasses` selector so a request only pays for the fact classes it
   asks for.
-- Modules: `boundary`, `builder`, `dist`, `effects`, `error`, `export`,
-  `fact_classes`, `file`, `id`, `import` (+ `import_walk`), `model`,
-  `package`, `pod`, `provenance`, `range`, `relation`, `symbol`, `test`.
+- Modules: `boundary`, `builder`, `dist`, `effects`, `environment`,
+  `error`, `export`, `fact_classes`, `file`, `id`, `import` (+
+  `import_walk`), `model`, `package`, `pod`, `provenance`, `range`,
+  `relation`, `semantic_query_view`, `shard`, `symbol`, `test`,
+  `test_item`.
 - `SCHEMA_VERSION` -- the fact-schema version this crate emits; bump on any
   breaking model change.
 

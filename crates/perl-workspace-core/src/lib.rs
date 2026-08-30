@@ -66,6 +66,7 @@ pub mod pod;
 pub mod provenance;
 pub mod range;
 pub mod relation;
+pub mod semantic_query_view;
 mod sha2;
 pub mod shard;
 pub mod symbol;
@@ -102,6 +103,11 @@ pub use pod::{PodFact, PodSection, PodSectionKind};
 pub use provenance::{Confidence, EvidenceSource, Producer, Provenance};
 pub use range::{SourceRange, Utf8LineIndex};
 pub use relation::{RelationFact, RelationKind};
+pub use semantic_query_view::{
+    AnchorLookupWork, AnchorRow, CheckedBuildInput, DeclarationRow, FamilyWork, IndexAnswer,
+    IndexCompleteness, NotProvenReason, SemanticQueryView, ShardIdentity, SourceEntry,
+    ViewRejection, ViewWorkReceipt,
+};
 pub use shard::{ProjectDelta, ProjectFactShard, ProjectShardState, ShardError};
 pub use symbol::{SymbolFactKind, SymbolRecord, Visibility};
 pub use test::TestFact;
