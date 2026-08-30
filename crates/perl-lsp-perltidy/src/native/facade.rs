@@ -325,7 +325,7 @@ fn byte_span_for_line_range(
     lines: &[(usize, usize)],
 ) -> (usize, usize) {
     let mut byte_start = 0_usize;
-    let mut byte_end = source.len();
+    let mut byte_end = None;
     let mut found_start = false;
     for (line_index, (line_start, line_end)) in lines.iter().copied().enumerate() {
         let line_index = line_index as u32;
@@ -334,14 +334,17 @@ fn byte_span_for_line_range(
             found_start = true;
         }
         if range_includes_line(range, line_index) {
-            byte_end = line_end;
+            byte_end = Some(line_end);
         }
     }
 
     if !found_start {
         return (source.len(), source.len());
     }
-    (byte_start, byte_end)
+    match byte_end {
+        Some(byte_end) => (byte_start, byte_end),
+        None => (byte_start, byte_start),
+    }
 }
 
 fn source_line_ranges(source: &str) -> Vec<(usize, usize)> {

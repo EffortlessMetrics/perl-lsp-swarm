@@ -114,6 +114,36 @@ fn typed_range_formatting_reports_heredoc_literal_preservation() {
 }
 
 #[test]
+fn zero_width_range_above_heredoc_does_not_trigger_literal_refusal() {
+    let formatter = NativeFormatter::new();
+    let source = "my$x=1;\nprint <<'EOF';\nraw { text }\nEOF\nmy$y=2;\n";
+    let empty = TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 0));
+    let body = TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0));
+    let config = FormatConfig::default();
+
+    let empty_compat = formatter.format_range(source, empty, &config);
+    let empty_typed =
+        formatter.format_range_typed(source, empty, &config, &FormatContext::default());
+    assert!(
+        !empty_compat
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "native.format.literal_preserve_region")
+    );
+    assert_ne!(empty_typed.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
+
+    let body_compat = formatter.format_range(source, body, &config);
+    let body_typed = formatter.format_range_typed(source, body, &config, &FormatContext::default());
+    assert!(
+        body_compat
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "native.format.literal_preserve_region" })
+    );
+    assert_eq!(body_typed.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
+}
+
+#[test]
 fn compat_and_typed_ranges_gate_the_same_requests() {
     let formatter = NativeFormatter::new();
     let cases = [
