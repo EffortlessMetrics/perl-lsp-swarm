@@ -251,6 +251,11 @@ fn real_perl_oracle_agrees_on_supported_continuations_and_residue() -> Result<()
         "copy($from, $to)\nand goto fail;\nprint \"ok\";",
         "copy($from, $to)\nxor goto &fail_sub;\nprint \"ok\";",
         "foo or goto => 1; print \"ok\";",
+        "foo or (goto => 1); print \"ok\";",
+        "foo or (goto => 1, next => 2); print \"ok\";",
+        "foo or goto => 1, bar => 2; print \"ok\";",
+        "foo and (goto => 1); print \"ok\";",
+        "foo xor (goto => 1); print \"ok\";",
     ];
     for source in valid_sources {
         if !perl_compile_accepts(source)? {
