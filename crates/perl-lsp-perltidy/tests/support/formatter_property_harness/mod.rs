@@ -1,6 +1,21 @@
 //! Deterministic seedable property harness for formatter safety invariants
 //! (#10301).
 //!
+//! Recorded deviations from `.spec/10301-formatter-property-fuzz-harness/`:
+//!
+//! - This uses the transitional `format_*_typed` facade rather than the
+//!   post-#10237/#10239 byte-native seam, so the exact source/configuration
+//!   identity and widening-provenance clauses of FPH-002/003/005 are only
+//!   partially proven.
+//! - Case expansion uses SplitMix64 rather than the spec-pinned ChaCha and
+//!   domain-separated 32-byte `FPH_SEED` derivation; proptest's runner RNG is
+//!   unchanged.
+//! - No profile producer, receipt files, corpus digest contract, or validator
+//!   entry points exist here.
+//! - No runtime fuzzing campaign has been run; FPH-010 crash evidence is
+//!   decoder-replay only.
+//! - The FPH-009 index-safety clause is not mechanically scanned.
+//!
 //! The module owns four concerns:
 //!
 //! 1. an admitted safe-subset family registry where every family must carry
@@ -10,22 +25,22 @@
 //!    executed Perl (FPH-001/FPH-007);
 //! 3. the mandatory invariant checker consuming only the canonical typed
 //!    production APIs (`format_document_typed` / `format_range_typed`) plus
-//!    the independent byte-edit oracle `apply_edits_exact` (FPH-002..FPH-006);
+//!    its own strict byte-edit applicator (FPH-002..FPH-006);
 //! 4. a fail-closed dormant-disposition registry for gated invariants whose
 //!    oracles do not exist on today's tree (FPH-008).
 //!
 //! Authority boundary: this module never references the subprocess-backed
 //! compatibility adapter, never spawns processes, never reads a clock, and
-//! never applies expected bytes through production edit derivation.
+//! never applies expected bytes through production edit application.
 //!
 //! The cargo-fuzz target `fuzz/fuzz_targets/perl_tidy_formatter.rs` includes
 //! this file verbatim via `#[path]` and drives the same checker from
-//! structured byte mutations.
+//! structured byte mutations. The committed replay-control vectors are
+//! predetermined decoder controls, not crash-derived corpus evidence.
 
 use perl_lsp_perltidy::native::{
-    BracePlacement, EditSpec, FinalNewline, FormatContext, FormatDisposition,
-    FormatLineEndingDisposition, FormatReasonCode, KeywordSpacing, NativeFormatter,
-    PositionEncoding, TextRange, apply_edits_exact,
+    BracePlacement, FinalNewline, FormatContext, FormatDisposition, FormatLineEndingDisposition,
+    FormatReasonCode, KeywordSpacing, NativeFormatter, TextEdit, TextRange,
 };
 
 /// Schema version stamped into every generated case and receipt.
@@ -39,6 +54,12 @@ pub const MAX_PLAN_EDITS: usize = 64;
 
 /// Hard bound on composed source lines per generated subject.
 pub const MAX_SUBJECT_LINES: usize = 8;
+
+/// Number of case indexes reachable through the fuzz selector's low six bits.
+pub const FUZZ_INDEX_SPACE: usize = 64;
+
+/// Stable ownership marker for the formatter property harness surface.
+pub const FPH_OWNERSHIP_MARKER: &str = "formatter-property-harness.v1";
 
 /// Indentation prefixes used by the indent mutator.
 const INDENTS: [&str; 3] = ["", "  ", "\t"];
@@ -585,8 +606,11 @@ fn generate_case_with_disposition(
     // mixed separators are only written *between* lines, so a one-line subject
     // would make the line-ending profile pure metadata. Force at least one
     // interior separator (FPH-006).
-    if matches!(line_ending, LineEndingKind::BareCr | LineEndingKind::Mixed) && line_count < 2 {
+    if matches!(line_ending, LineEndingKind::BareCr) && line_count < 2 {
         line_count = 2;
+    }
+    if matches!(line_ending, LineEndingKind::Mixed) && line_count < 3 {
+        line_count = 3;
     }
 
     let mut lines: Vec<String> = Vec::with_capacity(line_count);
@@ -728,10 +752,10 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
 /// the first eight little-endian bytes select the seed, the ninth byte selects
 /// the case index (low six bits) and the invalidation path (bit 7).
 ///
-/// Both the fuzz target and the committed regression replay in
-/// `fuzz_target_and_regression_pipeline_are_wired` call this one decoder, so a
-/// crash artifact's full `(seed, selector)` pair — including invalidation-path
-/// and index >= 16 crashes — is reconstructible and replayable (FPH-010).
+/// Both the fuzz target and the predetermined replay-control vectors in
+/// `fuzz_target_and_regression_pipeline_are_wired` call this one decoder, so
+/// each full `(seed, selector)` pair exercises the same valid or invalidation
+/// path, including an index >= 16 (FPH-010).
 pub fn case_from_fuzz_input(data: &[u8]) -> Option<GeneratedCase> {
     if data.len() < 9 {
         return None;
@@ -740,7 +764,7 @@ pub fn case_from_fuzz_input(data: &[u8]) -> Option<GeneratedCase> {
     seed_bytes.copy_from_slice(&data[..8]);
     let seed = u64::from_le_bytes(seed_bytes);
     let selector = data[8];
-    let index = usize::from(selector & 0x3f) % 64;
+    let index = usize::from(selector & 0x3f) % FUZZ_INDEX_SPACE;
     Some(if selector & 0x80 != 0 {
         generate_invalidation_case(seed, index)
     } else {
@@ -803,6 +827,19 @@ fn compose_text(lines: &[String], ending: LineEndingKind) -> String {
         }
     }
     text
+}
+
+/// Check that emitted bytes contain the convention named by their profile.
+pub fn convention_present_in_bytes(kind: LineEndingKind, text: &str) -> bool {
+    match kind {
+        LineEndingKind::Lf => text.contains('\n'),
+        LineEndingKind::Crlf => text.contains("\r\n"),
+        LineEndingKind::BareCr => text.contains('\r') && !text.contains('\n'),
+        LineEndingKind::Mixed => {
+            let stripped = text.replace("\r\n", "");
+            text.contains("\r\n") && stripped.contains('\n') && !stripped.contains('\r')
+        }
+    }
 }
 
 /// Independent UTF-16 geometry table over the exact subject bytes: line count
@@ -1201,6 +1238,15 @@ fn check_bounds(case: &GeneratedCase) -> Result<(), Violation> {
             detail: "subject exceeds the composed line bound".to_string(),
         });
     }
+    if !convention_present_in_bytes(case.profile.line_ending, &case.subject.text) {
+        return Err(Violation {
+            rule: "generation.labeled_convention_absent",
+            detail: format!(
+                "subject does not contain its selected {} convention",
+                case.profile.line_ending.name()
+            ),
+        });
+    }
     Ok(())
 }
 
@@ -1293,27 +1339,173 @@ fn check_plan_ordering_and_geometry(
     Ok(())
 }
 
+#[derive(Debug)]
+struct Utf16LineIndex {
+    start_byte: usize,
+    boundaries: Vec<(u32, usize)>,
+}
+
+fn build_utf16_line_index(source: &str) -> Result<Vec<Utf16LineIndex>, Violation> {
+    let mut lines = Vec::new();
+    let mut line_start = 0;
+    let mut boundaries = vec![(0_u32, 0_usize)];
+    let mut chars = source.char_indices().peekable();
+
+    while let Some((byte, ch)) = chars.next() {
+        match ch {
+            '\r' => {
+                if chars.peek().is_some_and(|(_, next)| *next == '\n') {
+                    let _ = chars.next();
+                }
+                let next_line_start = chars.peek().map_or(source.len(), |(offset, _)| *offset);
+                lines.push(Utf16LineIndex { start_byte: line_start, boundaries });
+                line_start = next_line_start;
+                boundaries = vec![(0, line_start)];
+            }
+            '\n' => {
+                let next_line_start = chars.peek().map_or(source.len(), |(offset, _)| *offset);
+                lines.push(Utf16LineIndex { start_byte: line_start, boundaries });
+                line_start = next_line_start;
+                boundaries = vec![(0, line_start)];
+            }
+            other => {
+                let Some((column, _)) = boundaries.last().copied() else {
+                    return Err(Violation {
+                        rule: "plan.independent_application",
+                        detail: "UTF-16 index lost its line origin".to_string(),
+                    });
+                };
+                let next_column =
+                    column.checked_add(other.len_utf16() as u32).ok_or_else(|| Violation {
+                        rule: "plan.independent_application",
+                        detail: "UTF-16 column overflow while indexing source".to_string(),
+                    })?;
+                let next_byte = byte.checked_add(other.len_utf8()).ok_or_else(|| Violation {
+                    rule: "plan.independent_application",
+                    detail: "byte offset overflow while indexing source".to_string(),
+                })?;
+                boundaries.push((next_column, next_byte));
+            }
+        }
+    }
+
+    lines.push(Utf16LineIndex { start_byte: line_start, boundaries });
+    Ok(lines)
+}
+
+fn resolve_utf16_endpoint(
+    lines: &[Utf16LineIndex],
+    line: u32,
+    character: u32,
+    edit_index: usize,
+    endpoint: &str,
+) -> Result<usize, Violation> {
+    let line_index = usize::try_from(line).map_err(|error| Violation {
+        rule: "plan.independent_application",
+        detail: format!("edit {edit_index} {endpoint} line cannot be represented: {error}"),
+    })?;
+    let Some(line_geometry) = lines.get(line_index) else {
+        return Err(Violation {
+            rule: "plan.independent_application",
+            detail: format!("edit {edit_index} {endpoint} line is beyond source geometry"),
+        });
+    };
+    if let Some((_, byte_offset)) =
+        line_geometry.boundaries.iter().find(|(column, _)| *column == character)
+    {
+        return line_geometry
+            .start_byte
+            .checked_add(byte_offset.saturating_sub(line_geometry.start_byte))
+            .ok_or_else(|| Violation {
+                rule: "plan.independent_application",
+                detail: format!("edit {edit_index} {endpoint} byte offset overflowed"),
+            });
+    }
+    let line_length = line_geometry.boundaries.last().map_or(0, |(column, _)| *column);
+    if character > line_length {
+        return Err(Violation {
+            rule: "plan.independent_application",
+            detail: format!("edit {edit_index} {endpoint} character is beyond line geometry"),
+        });
+    }
+    Err(Violation {
+        rule: "plan.independent_application",
+        detail: format!("edit {edit_index} {endpoint} lands inside a UTF-16 surrogate pair"),
+    })
+}
+
+/// Apply a typed edit plan using a test-owned UTF-16 index.
+///
+/// The index treats CRLF, bare CR, and LF as one line separator and records
+/// only scalar boundaries, so a UTF-16 column inside a surrogate pair is
+/// rejected. Edits are spliced from the end toward the start over a `String`
+/// copy; because every splice uses valid `String` slices, invalid UTF-8 is
+/// structurally impossible. The final conversion nevertheless fails closed
+/// if that invariant is ever violated.
+pub fn apply_plan_strict(source: &str, edits: &[TextEdit]) -> Result<String, Violation> {
+    let lines = build_utf16_line_index(source)?;
+    let mut resolved = Vec::with_capacity(edits.len());
+    let mut previous_end = None;
+
+    for (index, edit) in edits.iter().enumerate() {
+        let start = (edit.range.start.line, edit.range.start.character);
+        let end = (edit.range.end.line, edit.range.end.character);
+        if start.0 > end.0 || (start.0 == end.0 && start.1 > end.1) {
+            return Err(Violation {
+                rule: "plan.independent_application",
+                detail: format!("edit {index} has a reversed range"),
+            });
+        }
+        let start_byte = resolve_utf16_endpoint(&lines, start.0, start.1, index, "start")?;
+        let end_byte = resolve_utf16_endpoint(&lines, end.0, end.1, index, "end")?;
+        if start_byte > end_byte {
+            return Err(Violation {
+                rule: "plan.independent_application",
+                detail: format!("edit {index} resolves to a reversed byte range"),
+            });
+        }
+        if previous_end.is_some_and(|previous| start_byte < previous) {
+            return Err(Violation {
+                rule: "plan.independent_application",
+                detail: format!("edit {index} overlaps or precedes its predecessor"),
+            });
+        }
+        previous_end = Some(end_byte);
+        resolved.push((start_byte, end_byte, edit.new_text.clone()));
+    }
+
+    let mut applied = source.to_owned();
+    for (start_byte, end_byte, replacement) in resolved.iter().rev() {
+        let Some(prefix) = applied.get(..*start_byte) else {
+            return Err(Violation {
+                rule: "plan.independent_application",
+                detail: "edit start byte offset is outside the current UTF-8 string".to_string(),
+            });
+        };
+        let Some(suffix) = applied.get(*end_byte..) else {
+            return Err(Violation {
+                rule: "plan.independent_application",
+                detail: "edit end byte offset is outside the current UTF-8 string".to_string(),
+            });
+        };
+        let mut next = String::new();
+        next.push_str(prefix);
+        next.push_str(replacement);
+        next.push_str(suffix);
+        applied = next;
+    }
+
+    String::from_utf8(applied.into_bytes()).map_err(|error| Violation {
+        rule: "plan.independent_application",
+        detail: format!("strict application produced invalid UTF-8: {error}"),
+    })
+}
+
 fn apply_edits_independently(
     source: &str,
     result: &perl_lsp_perltidy::native::FormatResult,
 ) -> Result<String, Violation> {
-    let specs: Vec<EditSpec> = result
-        .edits
-        .iter()
-        .map(|edit| {
-            EditSpec::new(
-                edit.range.start.line,
-                edit.range.start.character,
-                edit.range.end.line,
-                edit.range.end.character,
-                edit.new_text.clone(),
-            )
-        })
-        .collect();
-    apply_edits_exact(source, &specs, PositionEncoding::Utf16CodeUnits).map_err(|error| Violation {
-        rule: "plan.independent_application",
-        detail: format!("independent application rejected the plan: {error}"),
-    })
+    apply_plan_strict(source, &result.edits)
 }
 
 // ── Dormant invariants (FPH-008) ────────────────────────────────────────────
@@ -1373,8 +1565,8 @@ pub fn dormant_registry() -> &'static [DormantInvariant] {
         DormantInvariant {
             id: "strict_second_pass_typed_idempotence_for_rendered_blocks",
             gate: "already-formatted classification admits rendered closing-brace lines",
-            // Live conversion owner; #10301 (the harness claim itself) closes
-            // with this PR and must not be the only named owner.
+            // #10301 remains open; this branch lands only a bounded subset,
+            // while the explicit conversion owner remains the follow-up issue.
             owning_issues: &["13205"],
         },
         DormantInvariant {
