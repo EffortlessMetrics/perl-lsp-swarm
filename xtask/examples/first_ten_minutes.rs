@@ -1,9 +1,13 @@
-//! Validate one packaged first-ten-minutes experience receipt.
+//! Validate one packaged first-ten-minutes experience receipt and the
+//! checked-in representative fixture set.
 //!
 //! This instrument validates observation identity, the finite four-stage user
 //! journey, explicit trust-breaker counts, friction classification, and the
-//! declared pass/blocked/not-proven disposition. It does not launch VS Code,
-//! observe a user, repair findings, or authorize a release.
+//! declared pass/blocked/not-proven disposition. It also verifies that the
+//! checked-in five-family representative project set is complete and
+//! content-current, and that checked-in receipts bind real fixture identity.
+//! It does not launch VS Code, observe a user, repair findings, or authorize
+//! a release.
 
 #![allow(clippy::print_stdout)]
 
@@ -14,12 +18,14 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const CHECK: &str = "first-ten-minutes";
 const SCHEMA_VERSION: &str = "first_ten_minutes.v1";
 const VERIFIED_CHILD_SCHEMA_VERSION: &str = "verified_child_receipt.v1";
+const FIXTURE_MANIFEST_SCHEMA_VERSION: &str = "first_ten_minutes_fixtures.v1";
 const OWNER_ISSUE: &str = "#5902";
+const FIXTURE_FAMILY_COUNT: usize = 5;
 const REQUIRED_STEPS: [JourneyStepId; 4] = [
     JourneyStepId::InstallStartup,
     JourneyStepId::UnderstandProject,
@@ -33,7 +39,12 @@ const REQUIRED_STEPS: [JourneyStepId; 4] = [
 struct Args {
     /// Receipt JSON to validate.
     #[arg(long)]
-    receipt: PathBuf,
+    receipt: Option<PathBuf>,
+
+    /// Representative fixture-set root holding `manifest.json` and one
+    /// content-addressed directory per experience family.
+    #[arg(long)]
+    verify_fixture_set: Option<PathBuf>,
 
     /// Optional verified-child envelope output consumed by the public-beta fan-in.
     #[arg(long)]
@@ -65,7 +76,7 @@ enum StudyPass {
     ExactCandidateConfirmation,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 enum ProjectFamily {
     ConventionalModules,
@@ -213,6 +224,25 @@ struct VerifiedChildArtifact<'a> {
     status: ReceiptStatus,
     claim_boundary: &'a str,
     limitation: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureManifest {
+    schema_version: String,
+    owner_issue: String,
+    hash_recipe: String,
+    fixtures: Vec<FixtureEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureEntry {
+    fixture_id: String,
+    family: ProjectFamily,
+    path: String,
+    content_sha256: String,
+    exercises: String,
 }
 
 fn non_empty(value: &str, field: &str) -> Result<()> {
@@ -481,6 +511,172 @@ fn load(path: &Path) -> Result<(Receipt, String)> {
     Ok((serde_json::from_value(raw)?, source_receipt_sha256))
 }
 
+fn load_fixture_manifest(root: &Path) -> Result<FixtureManifest> {
+    let manifest_path = root.join("manifest.json");
+    let raw = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading fixture manifest {}", manifest_path.display()))?;
+    let manifest: FixtureManifest = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing fixture manifest {}", manifest_path.display()))?;
+    if manifest.schema_version != FIXTURE_MANIFEST_SCHEMA_VERSION {
+        bail!("fixture manifest schema_version must be {FIXTURE_MANIFEST_SCHEMA_VERSION}");
+    }
+    if manifest.owner_issue != OWNER_ISSUE {
+        bail!("fixture manifest owner_issue must be {OWNER_ISSUE}");
+    }
+    non_empty(&manifest.hash_recipe, "hash_recipe")?;
+    Ok(manifest)
+}
+
+fn all_families() -> BTreeSet<ProjectFamily> {
+    BTreeSet::from([
+        ProjectFamily::ConventionalModules,
+        ProjectFamily::TestHeavy,
+        ProjectFamily::FrameworkShaped,
+        ProjectFamily::EnvironmentSensitive,
+        ProjectFamily::DynamicBoundaryControl,
+    ])
+}
+
+fn collect_fixture_files(root: &Path, relative: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let directory = root.join(relative);
+    let entries =
+        fs::read_dir(&directory).with_context(|| format!("reading {}", directory.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("enumerating {}", directory.display()))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy().into_owned();
+        let child = relative.join(&name);
+        let metadata = fs::metadata(root.join(&child))
+            .with_context(|| format!("stating {}", root.join(&child).display()))?;
+        if metadata.is_dir() {
+            collect_fixture_files(root, &child, files)?;
+        } else if metadata.is_file() {
+            files.push(child);
+        }
+    }
+    Ok(())
+}
+
+/// Content digest over one fixture directory: SHA-256 across all regular
+/// files sorted by relative POSIX path, each contributing its path, LF, its
+/// decimal byte length, LF, then its bytes.
+fn fixture_content_digest(fixture_dir: &Path) -> Result<String> {
+    let mut files = Vec::new();
+    collect_fixture_files(fixture_dir, Path::new(""), &mut files)?;
+    if files.is_empty() {
+        bail!("fixture directory {} contains no files", fixture_dir.display());
+    }
+    files.sort();
+    let mut preimage = Vec::new();
+    for relative in &files {
+        let bytes = fs::read(fixture_dir.join(relative))
+            .with_context(|| format!("reading {}", fixture_dir.join(relative).display()))?;
+        let rendered = relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        preimage.extend_from_slice(rendered.as_bytes());
+        preimage.extend_from_slice(b"\n");
+        preimage.extend_from_slice(bytes.len().to_string().as_bytes());
+        preimage.extend_from_slice(b"\n");
+        preimage.extend_from_slice(&bytes);
+    }
+    Ok(sha256_hex(&preimage))
+}
+
+fn safe_fixture_relative_path(path: &str) -> Result<()> {
+    let relative = Path::new(path);
+    let unsafe_component = relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::CurDir | Component::RootDir | Component::Prefix(_)
+        )
+    });
+    if path.is_empty() || path.contains('\\') || unsafe_component {
+        bail!("fixtures[].path must be a plain relative directory name, got {path:?}");
+    }
+    Ok(())
+}
+
+fn verify_fixture_set(root: &Path) -> Result<FixtureManifest> {
+    let manifest = load_fixture_manifest(root)?;
+    let mut families = BTreeSet::new();
+    let mut ids = BTreeSet::new();
+    for entry in &manifest.fixtures {
+        non_empty(&entry.fixture_id, "fixtures[].fixture_id")?;
+        non_empty(&entry.exercises, "fixtures[].exercises")?;
+        exact_hex(&entry.content_sha256, 32, "fixtures[].content_sha256")?;
+        safe_fixture_relative_path(&entry.path)?;
+        if !ids.insert(entry.fixture_id.as_str()) {
+            bail!("duplicate fixture id: {}", entry.fixture_id);
+        }
+        if !families.insert(entry.family) {
+            bail!("family {:?} is covered by more than one fixture", entry.family);
+        }
+        let fixture_dir = root.join(&entry.path);
+        if !fixture_dir.is_dir() {
+            bail!("fixture directory {} is missing", fixture_dir.display());
+        }
+        let computed = fixture_content_digest(&fixture_dir)?;
+        if computed != entry.content_sha256 {
+            bail!(
+                "fixture {} content drifted: manifest {}, computed {} (refresh content_sha256 or restore the bytes)",
+                entry.fixture_id,
+                entry.content_sha256,
+                computed
+            );
+        }
+    }
+    if manifest.fixtures.len() != FIXTURE_FAMILY_COUNT {
+        bail!(
+            "the representative set must cover exactly {FIXTURE_FAMILY_COUNT} families, found {}",
+            manifest.fixtures.len()
+        );
+    }
+    if families != all_families() {
+        bail!("the representative set must cover each experience family exactly once");
+    }
+    Ok(manifest)
+}
+
+fn assert_receipt_binds_fixture_set(
+    receipt: &Receipt,
+    receipt_path: &Path,
+    manifest: &FixtureManifest,
+) -> Result<()> {
+    let entry = manifest
+        .fixtures
+        .iter()
+        .find(|entry| entry.fixture_id == receipt.project.fixture_id)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "receipt {} binds fixture id {} which is not in the checked-in representative set",
+                receipt_path.display(),
+                receipt.project.fixture_id
+            )
+        })?;
+    if entry.family != receipt.project.family {
+        bail!(
+            "receipt {} declares family {:?} but fixture {} is registered as {:?}",
+            receipt_path.display(),
+            receipt.project.family,
+            entry.fixture_id,
+            entry.family
+        );
+    }
+    if entry.content_sha256 != receipt.project.content_sha256 {
+        bail!(
+            "receipt {} binds stale content for fixture {}: receipt {}, set {}",
+            receipt_path.display(),
+            entry.fixture_id,
+            receipt.project.content_sha256,
+            entry.content_sha256
+        );
+    }
+    Ok(())
+}
+
 fn write_verified_child_artifact(
     receipt: &Receipt,
     receipt_sha256: &str,
@@ -522,21 +718,40 @@ fn write_verified_child_artifact(
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
-    let (receipt, receipt_sha256) = load(&args.receipt)?;
-    let status = validate(&receipt)?;
-    if let Some(path) = &args.verified_output {
-        write_verified_child_artifact(&receipt, &receipt_sha256, status, path)?;
+    if args.receipt.is_none() && args.verify_fixture_set.is_none() {
+        bail!("provide --receipt, --verify-fixture-set, or both");
     }
-    println!(
-        "first-ten-minutes: status={} pass={:?} project={} trust_breakers={} findings={}",
-        status.as_str(),
-        receipt.study_pass,
-        receipt.project.fixture_id,
-        receipt.counts.trust_breaker_total(),
-        receipt.findings.len()
-    );
-    if status != ReceiptStatus::Pass {
-        bail!("first-ten-minutes receipt is {}", status.as_str());
+    let mut fixture_manifest = None;
+    if let Some(root) = &args.verify_fixture_set {
+        let manifest = verify_fixture_set(root)?;
+        println!(
+            "first-ten-minutes: fixture set {} verified ({} families, content current)",
+            root.display(),
+            manifest.fixtures.len()
+        );
+        fixture_manifest = Some(manifest);
+    }
+    if let Some(receipt_path) = &args.receipt {
+        let (receipt, receipt_sha256) = load(receipt_path)?;
+        let status = validate(&receipt)?;
+        if let (Some(manifest), Some(root)) = (&fixture_manifest, &args.verify_fixture_set) {
+            assert_receipt_binds_fixture_set(&receipt, receipt_path, manifest)
+                .with_context(|| format!("binding receipt to fixture set {}", root.display()))?;
+        }
+        if let Some(path) = &args.verified_output {
+            write_verified_child_artifact(&receipt, &receipt_sha256, status, path)?;
+        }
+        println!(
+            "first-ten-minutes: status={} pass={:?} project={} trust_breakers={} findings={}",
+            status.as_str(),
+            receipt.study_pass,
+            receipt.project.fixture_id,
+            receipt.counts.trust_breaker_total(),
+            receipt.findings.len()
+        );
+        if status != ReceiptStatus::Pass {
+            bail!("first-ten-minutes receipt is {}", status.as_str());
+        }
     }
     Ok(())
 }
@@ -544,12 +759,19 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        OWNER_ISSUE, Receipt, ReceiptStatus, StepStatus, load, sha256_hex, validate,
-        validate_raw_shape, write_verified_child_artifact,
+        FixtureEntry, FixtureManifest, OWNER_ISSUE, Receipt, ReceiptStatus, StepStatus,
+        assert_receipt_binds_fixture_set, fixture_content_digest, load, load_fixture_manifest,
+        sha256_hex, validate, validate_raw_shape, verify_fixture_set,
+        write_verified_child_artifact,
     };
     use color_eyre::eyre::Result;
     use serde::Deserialize;
+    use std::path::{Path, PathBuf};
     use tempfile::tempdir;
+
+    fn default_fixture_set_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/ux/first_ten_minutes")
+    }
 
     /// Owned strict mirror of the written verified-child envelope. Decoding
     /// through this type enforces every required field, its type, and
@@ -772,6 +994,135 @@ mod tests {
         if validate_raw_shape(&raw).is_ok() {
             return Err(color_eyre::eyre::eyre!(
                 "duplicate steps[].limitations unexpectedly passed raw validation"
+            ));
+        }
+        Ok(())
+    }
+
+    fn checked_in_manifest() -> Result<FixtureManifest> {
+        load_fixture_manifest(&default_fixture_set_path())
+    }
+
+    /// The checked-in representative set must exist, cover each experience
+    /// family exactly once, and be content-current: any byte drift in a
+    /// fixture directory without a manifest refresh fails here.
+    #[test]
+    fn representative_fixture_set_is_complete_and_current() -> Result<()> {
+        let manifest = verify_fixture_set(&default_fixture_set_path())?;
+        assert_eq!(manifest.fixtures.len(), 5);
+        let ids: Vec<_> = manifest.fixtures.iter().map(|entry| entry.fixture_id.as_str()).collect();
+        assert_eq!(ids.len(), 5);
+        Ok(())
+    }
+
+    /// Checked-in sample receipts must bind real fixture identity from the
+    /// representative set, not placeholder hashes.
+    #[test]
+    fn checked_in_receipts_bind_checked_in_fixtures() -> Result<()> {
+        let manifest = checked_in_manifest()?;
+        for name in ["valid.json", "trust_breaker.json"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../fixtures/experience/first_ten_minutes")
+                .join(name);
+            let (receipt, _) = load(&path)?;
+            assert_receipt_binds_fixture_set(&receipt, &path, &manifest)?;
+        }
+        Ok(())
+    }
+
+    /// Negative control, red then green inside the test: content drift in a
+    /// fixture directory must be rejected, and a manifest refresh for the
+    /// drifted bytes must accept the same tree again.
+    #[test]
+    fn tampered_fixture_content_is_rejected() -> Result<()> {
+        let directory = tempdir()?;
+        let root = directory.path();
+        let fixture_dir = root.join("proj-a");
+        std::fs::create_dir(&fixture_dir)?;
+        std::fs::write(fixture_dir.join("main.pl"), "print 1;\n")?;
+        let manifest_path = root.join("manifest.json");
+        let write_manifest = |content_sha256: &str| -> Result<()> {
+            std::fs::write(
+                &manifest_path,
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "schema_version": "first_ten_minutes_fixtures.v1",
+                    "owner_issue": OWNER_ISSUE,
+                    "hash_recipe": "sorted relpath, LF, decimal length, LF, bytes",
+                    "fixtures": [{
+                        "fixture_id": "proj-a",
+                        "family": "conventional_modules",
+                        "path": "proj-a",
+                        "content_sha256": content_sha256,
+                        "exercises": "synthetic coverage"
+                    }]
+                }))?,
+            )?;
+            Ok(())
+        };
+
+        // The synthetic set is deliberately incomplete: expect the count gate.
+        let error = |root: &std::path::Path| -> String {
+            match verify_fixture_set(root) {
+                Ok(_) => "unexpectedly passed".to_string(),
+                Err(error) => format!("{error}"),
+            }
+        };
+        write_manifest(&fixture_content_digest(&fixture_dir)?)?;
+        let outcome = error(root);
+        if !outcome.contains("must cover exactly 5 families") {
+            return Err(color_eyre::eyre::eyre!(
+                "complete-but-small synthetic set failed for the wrong reason: {outcome}"
+            ));
+        }
+
+        // Red: drifted bytes are reported as drift, not as set incompleteness.
+        std::fs::write(fixture_dir.join("main.pl"), "print 2;\n")?;
+        let outcome = error(root);
+        if !outcome.contains("content drifted") {
+            return Err(color_eyre::eyre::eyre!(
+                "drifted fixture content was not discriminated as drift: {outcome}"
+            ));
+        }
+
+        // Green: refreshing the manifest hash resolves the drift report.
+        write_manifest(&fixture_content_digest(&fixture_dir)?)?;
+        let outcome = error(root);
+        if outcome.contains("content drifted") {
+            return Err(color_eyre::eyre::eyre!(
+                "refreshed manifest still reports drift: {outcome}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Negative control: a set that drops a family must fail closed even if
+    /// every remaining entry is content-current.
+    #[test]
+    fn fixture_set_missing_a_family_fails_closed() -> Result<()> {
+        let directory = tempdir()?;
+        let root = directory.path();
+        let fixture_dir = root.join("proj-a");
+        std::fs::create_dir(&fixture_dir)?;
+        std::fs::write(fixture_dir.join("main.pl"), "print 1;\n")?;
+        let computed = fixture_content_digest(&fixture_dir)?;
+        std::fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": "first_ten_minutes_fixtures.v1",
+                "owner_issue": OWNER_ISSUE,
+                "hash_recipe": "sorted relpath, LF, decimal length, LF, bytes",
+                "fixtures": [{
+                    "fixture_id": "proj-a",
+                    "family": "conventional_modules",
+                    "path": "proj-a",
+                    "content_sha256": computed,
+                    "exercises": "synthetic coverage"
+                }]
+            }))?,
+        )?;
+        if verify_fixture_set(root).is_ok() {
+            return Err(color_eyre::eyre::eyre!(
+                "an incomplete representative set unexpectedly passed verification"
             ));
         }
         Ok(())
