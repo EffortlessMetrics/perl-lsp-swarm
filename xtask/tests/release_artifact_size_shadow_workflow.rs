@@ -378,6 +378,40 @@ fn shadow_lane_cannot_promote_a_borderline_win_from_a_dispatcher_input() -> Resu
     Ok(())
 }
 
+/// The perl-dap integration target whose packaged-binary smoke the lane runs.
+const DAP_SMOKE_SOURCE: &str = "crates/perl-dap/tests/dap_stdio_transport_e2e.rs";
+
+/// The smoke adapter, which repeats the test name as its default.
+const SMOKE_ADAPTER: &str = "scripts/ci/release_artifact_size_smoke.sh";
+
+#[test]
+fn shadow_lane_names_a_dap_smoke_test_that_still_exists() -> Result<()> {
+    let (_, workflow) = workflow()?;
+    let name = text(get(&workflow, "env")?, "DAP_SMOKE_TEST")?;
+
+    // `cargo test -- --exact <name>` on a renamed test matches nothing, and the
+    // resulting failure reads as a broken test rather than a broken contract.
+    // Bind the name to the target that must declare it, so a rename breaks this
+    // proof instead of the first dispatch.
+    let source = fs::read_to_string(project_root().join(DAP_SMOKE_SOURCE))
+        .with_context(|| format!("reading {DAP_SMOKE_SOURCE}"))?;
+    ensure!(
+        source.contains(&format!("fn {name}(")),
+        "`{DAP_SMOKE_SOURCE}` declares no test named `{name}`; the lane's DAP smoke would \
+         match nothing"
+    );
+
+    // The adapter repeats the name as its fallback default; the two must agree.
+    let adapter = fs::read_to_string(project_root().join(SMOKE_ADAPTER))
+        .with_context(|| format!("reading {SMOKE_ADAPTER}"))?;
+    ensure!(
+        adapter.contains(name),
+        "`{SMOKE_ADAPTER}` defaults to a different test than the lane declares"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn shadow_lane_shell_survives_the_runner_bash() -> Result<()> {
     let (content, workflow) = workflow()?;
