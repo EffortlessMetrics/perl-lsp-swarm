@@ -107,7 +107,7 @@ _No package currently lives here._
 
 ### `perl-parser`
 
-Future native parser/compiler-front-end workspace. Preparation only: the physical split waits on the facade, incremental, position, and fact-authority gates. Package membership is frozen by #7400. Its first slice (#14259) accepted the nine front-end packages whose normal in-workspace dependency closure is already free of product-owned crates. The remaining parser-side rows stay placement-pending, each behind its own exit owned by #7400, not behind a single repository-level gate: this row's blocking_prerequisites and authority_refs carry only the repository-level ones, so read the pending package rows for the rest.
+Future native parser/compiler-front-end workspace. Preparation only: the physical split waits on the facade, incremental, position, and fact-authority gates. Package membership is frozen by #7400. Its first slice (#14259) accepted the nine front-end packages whose normal in-workspace dependency closure is already free of product-owned crates. The remaining parser-side rows stay placement-pending. This row's blocking_prerequisites and authority_refs carry the repository-level gates only. The per-package exits - parser-core utility baggage, the perl-symbol reduction, the Tree-sitter semantic overlay, the shared fact vocabulary - are held by #7400, which every pending row names as its migration_owner; they are deliberately not restated here, and the pending rows still carry #7400's generic seeded question rather than their individual exit, which #7400 owns refining.
 
 _No package currently lives here._
 
