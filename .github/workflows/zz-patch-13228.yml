@@ -10,6 +10,10 @@ on:
       - .github/patch-13228-token-tests.py
       - .github/patch-13228-grammars.py
 
+concurrency:
+  group: stage-13228-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -21,7 +25,16 @@ jobs:
       - name: Checkout branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 1
+          fetch-depth: 0
+
+      - name: Rebase staging branch onto current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git fetch origin main
+          git rebase origin/main
 
       - name: Configure Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
@@ -88,6 +101,7 @@ jobs:
       - name: Compile touched parser fronts
         shell: bash
         run: |
+          set -euo pipefail
           cargo check --locked --all-targets \
             -p perl-token \
             -p perl-lexer \
@@ -97,15 +111,30 @@ jobs:
       - name: Run focused logical XOR proofs
         shell: bash
         run: |
+          set -euo pipefail
           cargo test --locked -p perl-lexer --test perl_5_40_42_logical_xor
           cargo test --locked -p perl-parser-core --test perl_5_40_42_logical_xor
           cargo test --locked -p perl-parser-pest --all-targets
           cargo xtask ci-hygiene check-v2-bundle-sync
 
-      - name: Inventory remaining explicit operator tables
+      - name: Run affected lint and formatting gates
         shell: bash
         run: |
-          rg -n 'LogicalOrAssign|DefinedOrAssign|TokenKind::Or|TokenKind::DefinedOr|\|\|=|\^\^' \
+          set -euo pipefail
+          cargo clippy --locked --all-targets \
+            -p perl-token \
+            -p perl-lexer \
+            -p perl-parser-core \
+            -p perl-parser-pest \
+            -- -D warnings
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Inventory explicit operator tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          rg -n 'LogicalOrAssign|LogicalXorAssign|DefinedOrAssign|TokenKind::Or|TokenKind::LogicalXor|TokenKind::DefinedOr|\|\|=|\^\^' \
             crates/perl-token \
             crates/perl-lexer \
             crates/perl-parser-core \
@@ -115,12 +144,24 @@ jobs:
             tree-sitter-perl \
             archive/crates/tree-sitter-perl-rs/src/grammar.pest || true
 
-      - name: Commit verified source patch
+      - name: Commit verified source patch and remove staging machinery
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "EffortlessSteven"
-          git config user.email "git@effortlesssteven.com"
+          rm -f \
+            .github/patch-13228.py \
+            .github/patch-13228-token-tests.py \
+            .github/patch-13228-grammars.py \
+            .github/workflows/zz-patch-13228.yml
+          test ! -e .github/patch-13228.py
+          test ! -e .github/patch-13228-token-tests.py
+          test ! -e .github/patch-13228-grammars.py
+          test ! -e .github/workflows/zz-patch-13228.yml
           git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "no verified source patch was produced" >&2
+            exit 1
+          fi
           git commit -m "fix(parser): support modern logical xor (#13228)"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push --force-with-lease origin "HEAD:${GITHUB_REF_NAME}"
