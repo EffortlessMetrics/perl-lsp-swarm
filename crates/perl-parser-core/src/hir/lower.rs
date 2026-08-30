@@ -900,7 +900,16 @@ impl Lowerer {
                 // is a call, even though it descends from the class (#13817).
                 let mut direct_field_decls = Vec::new();
                 body.for_each_child_with_field(|_, child| {
-                    let declarator = match &child.kind {
+                    // A label does not change what statement this is, so look
+                    // through `LABEL: field $x;`. Only this wrapper is
+                    // unwrapped: blocks, methods and subs form scopes, and a
+                    // `field $x;` inside one is a call, not a declaration.
+                    let mut statement = child;
+                    while let NodeKind::LabeledStatement { statement: inner, .. } = &statement.kind
+                    {
+                        statement = inner;
+                    }
+                    let declarator = match &statement.kind {
                         NodeKind::VariableDeclaration { declarator, .. }
                         | NodeKind::VariableListDeclaration { declarator, .. } => {
                             Some(declarator.as_str())
@@ -908,7 +917,7 @@ impl Lowerer {
                         _ => None,
                     };
                     if declarator == Some("field") {
-                        direct_field_decls.push((child.location.start, child.location.end));
+                        direct_field_decls.push((statement.location.start, statement.location.end));
                     }
                 });
                 self.class_field_decls.extend(direct_field_decls);

@@ -308,6 +308,46 @@ fn field_call_nested_in_a_block_inside_a_class_is_not_a_field_declaration() -> T
 }
 
 #[test]
+fn a_labeled_class_level_field_is_still_a_field() -> TestResult {
+    // `LABEL: field $x;` parses cleanly into a `LabeledStatement` wrapper. A
+    // label does not change what statement it is, so the field is still a
+    // direct statement of the class body and must earn class-field storage.
+    let file = lower_source(
+        "use feature 'class';\nclass C {\n    LABEL: field $x;\n    field $plain;\n}\n",
+    );
+    for name in ["x", "plain"] {
+        assert_eq!(
+            binding(&file, name)?.storage,
+            StorageClass::ClassField,
+            "`${name}` is a class-level field declaration"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_label_does_not_promote_a_nested_field_call() -> TestResult {
+    // Unwrapping labels must not become "recurse until you find a
+    // declaration": a labeled `field` call inside a method is still a call.
+    let file = lower_source(
+        "use feature 'class';\nclass C {\n    field $real;\n    method m { LABEL: field $fake; }\n}\n",
+    );
+    let class_fields: Vec<&str> = file
+        .scope_graph
+        .bindings
+        .iter()
+        .filter(|b| b.storage == StorageClass::ClassField)
+        .map(|b| b.name.as_str())
+        .collect();
+    assert_eq!(
+        class_fields,
+        vec!["real"],
+        "a label inside a method must not turn a call into a field declaration"
+    );
+    Ok(())
+}
+
+#[test]
 fn field_in_a_nested_class_body_still_earns_class_field_storage() -> TestResult {
     // Class-body depth must be restored correctly after leaving a class, so a
     // later class in the same file is still recognized.
