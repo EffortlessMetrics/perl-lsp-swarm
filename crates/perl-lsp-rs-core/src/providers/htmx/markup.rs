@@ -189,23 +189,24 @@ fn open_start_tag_offset(source_prefix: &str) -> Option<usize> {
 /// Advance markup state across `[start, end)`, which never contains a newline.
 ///
 /// Mojolicious- and Mason-style template-code lines whose first
-/// non-whitespace byte is `%` are not markup, so while the scanner is in
-/// plain text their bytes are excluded from the scan instead of being
-/// interpreted as document text. Earlier `%` lines containing HTML-like
-/// strings therefore cannot push the scanner into a false start-tag or
-/// invalid-tag state.
+/// non-whitespace byte is `%` are removed before the document is rendered, so
+/// their bytes are excluded from the markup scan in every state. A `%` line
+/// therefore cannot mutate markup state anywhere: its Perl operators and
+/// string contents can neither close a start tag or comment, nor end a
+/// raw-text element, nor open a false one.
 ///
-/// Inside any other state the line is that state's content, so its bytes are
-/// always scanned: a `%` line may carry the very delimiter that closes the
-/// enclosing region (`%>` starting a line, `-->` inside a comment), and
-/// skipping it would trap the scanner and suppress all later completions.
+/// The one exception is a line that begins with the `%>` or `%]` closing
+/// delimiter: it is scanned so an open `<%`/`[%` region closes at its real
+/// boundary and markup after it stays reachable.
 fn scan_markup_segment(
     bytes: &[u8],
     start: usize,
     end: usize,
     mut state: MarkupState,
 ) -> MarkupState {
-    if state == MarkupState::Text && template_code_line(bytes, start, end) {
+    let code_line = template_code_line(bytes, start, end);
+    let closer_line = code_line && template_closer_line(bytes, start, end);
+    if code_line && !closer_line {
         return state;
     }
 
@@ -223,6 +224,15 @@ fn template_code_line(bytes: &[u8], start: usize, end: usize) -> bool {
         index += 1;
     }
     index < end && bytes[index] == b'%'
+}
+
+/// Whether a template-code line begins with a region-closing delimiter.
+fn template_closer_line(bytes: &[u8], start: usize, end: usize) -> bool {
+    let mut index = start;
+    while index < end && matches!(bytes[index], b' ' | b'\t') {
+        index += 1;
+    }
+    starts_with(bytes, index, b"%>") || starts_with(bytes, index, b"%]")
 }
 
 fn step_markup_state(bytes: &[u8], index: &mut usize, state: MarkupState) -> MarkupState {
@@ -765,6 +775,15 @@ mod tests {
 
         assert!(source.len() > MAX_MARKUP_SCAN_BYTES);
         assert!(htmx_attribute_name_context(&source, source.len()).is_none());
+
+        // The cap is inclusive: a proven slot ending exactly at the budget is
+        // still admitted (a `>` to `>=` regression must fail here).
+        let at_limit = format!("{}<div hx-", "x".repeat(MAX_MARKUP_SCAN_BYTES - 8));
+        assert_eq!(at_limit.len(), MAX_MARKUP_SCAN_BYTES);
+        assert!(
+            htmx_attribute_name_context(&at_limit, at_limit.len())
+                .is_some_and(|context| context.prefix == "hx-")
+        );
     }
 
     #[test]
@@ -823,12 +842,28 @@ mod tests {
 
     #[test]
     fn a_percent_line_carrying_a_region_closer_is_still_scanned() {
-        for source in
-            ["<% if ($x) {\n%>\n<div hx-", "[% IF x\n%]\n<div hx-", "<!--\n% note -->\n<div hx-"]
-        {
+        for source in ["<% if ($x) {\n%>\n<div hx-", "[% IF x\n%]\n<div hx-"] {
             assert!(
                 htmx_attribute_name_context(source, source.len()).is_some(),
                 "closer on a %-line was skipped for {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn template_code_lines_are_inert_inside_markup_states() {
+        for source in [
+            // A %-line cannot close a comment: it renders as nothing, so the
+            // comment stays open and the later slot is not proven.
+            "<!--\n% note -->\n<div hx-",
+            // A quoted fake end tag on a %-line cannot end a raw-text element.
+            "<script>\n% q(</script>);\n<div hx-",
+            // A `>` on a %-line cannot close an open start tag either.
+            "<div\n% if ($x > 1) {\nhx-",
+        ] {
+            assert!(
+                htmx_attribute_name_context(source, source.len()).is_none(),
+                "template-code line mutated markup state for {source:?}"
             );
         }
     }

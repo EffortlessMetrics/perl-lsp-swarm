@@ -121,86 +121,81 @@ mod tests {
 
     #[test]
     fn canonical_header_catalog_is_exact_and_directional() {
-        let names: Vec<&str> = HTMX_HEADERS.iter().map(|header| header.name).collect();
+        let expected: Vec<(&str, HtmxHeaderDirection)> = vec![
+            ("HX-Boosted", HtmxHeaderDirection::Request),
+            ("HX-Current-URL", HtmxHeaderDirection::Request),
+            ("HX-History-Restore-Request", HtmxHeaderDirection::Request),
+            ("HX-Location", HtmxHeaderDirection::Response),
+            ("HX-Prompt", HtmxHeaderDirection::Request),
+            ("HX-Push-Url", HtmxHeaderDirection::Response),
+            ("HX-Redirect", HtmxHeaderDirection::Response),
+            ("HX-Refresh", HtmxHeaderDirection::Response),
+            ("HX-Replace-Url", HtmxHeaderDirection::Response),
+            ("HX-Request", HtmxHeaderDirection::Request),
+            ("HX-Reselect", HtmxHeaderDirection::Response),
+            ("HX-Reswap", HtmxHeaderDirection::Response),
+            ("HX-Retarget", HtmxHeaderDirection::Response),
+            ("HX-Target", HtmxHeaderDirection::Request),
+            ("HX-Trigger", HtmxHeaderDirection::RequestAndResponse),
+            ("HX-Trigger-After-Settle", HtmxHeaderDirection::Response),
+            ("HX-Trigger-After-Swap", HtmxHeaderDirection::Response),
+            ("HX-Trigger-Name", HtmxHeaderDirection::Request),
+        ];
+        let actual: Vec<(&str, HtmxHeaderDirection)> =
+            HTMX_HEADERS.iter().map(|header| (header.name, header.direction)).collect();
 
-        assert_eq!(
-            names,
-            vec![
-                "HX-Boosted",
-                "HX-Current-URL",
-                "HX-History-Restore-Request",
-                "HX-Location",
-                "HX-Prompt",
-                "HX-Push-Url",
-                "HX-Redirect",
-                "HX-Refresh",
-                "HX-Replace-Url",
-                "HX-Request",
-                "HX-Reselect",
-                "HX-Reswap",
-                "HX-Retarget",
-                "HX-Target",
-                "HX-Trigger",
-                "HX-Trigger-After-Settle",
-                "HX-Trigger-After-Swap",
-                "HX-Trigger-Name",
-            ]
-        );
-        assert!(HTMX_HEADERS.iter().any(|header| {
-            header.name == "HX-Trigger"
-                && header.direction == HtmxHeaderDirection::RequestAndResponse
-        }));
+        assert_eq!(actual, expected);
+        assert!(HTMX_HEADERS.iter().all(|header| !header.documentation.is_empty()));
     }
 
     #[test]
     fn canonical_attribute_catalog_is_exact_and_marks_the_dynamic_family() {
-        let names: Vec<&str> = HTMX_ATTRIBUTES.iter().map(|attribute| attribute.name).collect();
+        use HtmxAttributeFamily::{EventHandler, Fixed};
 
-        assert_eq!(
-            names,
-            vec![
-                "hx-boost",
-                "hx-confirm",
-                "hx-delete",
-                "hx-disable",
-                "hx-disabled-elt",
-                "hx-disinherit",
-                "hx-encoding",
-                "hx-ext",
-                "hx-get",
-                "hx-headers",
-                "hx-history",
-                "hx-history-elt",
-                "hx-include",
-                "hx-indicator",
-                "hx-inherit",
-                "hx-on:",
-                "hx-params",
-                "hx-patch",
-                "hx-post",
-                "hx-preserve",
-                "hx-prompt",
-                "hx-push-url",
-                "hx-put",
-                "hx-replace-url",
-                "hx-request",
-                "hx-select",
-                "hx-select-oob",
-                "hx-swap",
-                "hx-swap-oob",
-                "hx-sync",
-                "hx-target",
-                "hx-trigger",
-                "hx-validate",
-                "hx-vals",
-                "hx-vars",
-            ]
-        );
-        assert!(HTMX_ATTRIBUTES.iter().any(|attribute| {
-            attribute.name == "hx-on:"
-                && attribute.family == HtmxAttributeFamily::EventHandler
-                && !attribute.deprecated
-        }));
+        let expected: Vec<(&str, HtmxAttributeFamily, bool)> = vec![
+            ("hx-boost", Fixed, false),
+            ("hx-confirm", Fixed, false),
+            ("hx-delete", Fixed, false),
+            ("hx-disable", Fixed, false),
+            ("hx-disabled-elt", Fixed, false),
+            ("hx-disinherit", Fixed, false),
+            ("hx-encoding", Fixed, false),
+            ("hx-ext", Fixed, false),
+            ("hx-get", Fixed, false),
+            ("hx-headers", Fixed, false),
+            ("hx-history", Fixed, false),
+            ("hx-history-elt", Fixed, false),
+            ("hx-include", Fixed, false),
+            ("hx-indicator", Fixed, false),
+            ("hx-inherit", Fixed, false),
+            ("hx-on:", EventHandler, false),
+            ("hx-params", Fixed, false),
+            ("hx-patch", Fixed, false),
+            ("hx-post", Fixed, false),
+            ("hx-preserve", Fixed, false),
+            ("hx-prompt", Fixed, false),
+            ("hx-push-url", Fixed, false),
+            ("hx-put", Fixed, false),
+            ("hx-replace-url", Fixed, false),
+            ("hx-request", Fixed, false),
+            ("hx-select", Fixed, false),
+            ("hx-select-oob", Fixed, false),
+            ("hx-swap", Fixed, false),
+            ("hx-swap-oob", Fixed, false),
+            ("hx-sync", Fixed, false),
+            ("hx-target", Fixed, false),
+            ("hx-trigger", Fixed, false),
+            ("hx-validate", Fixed, false),
+            ("hx-vals", Fixed, false),
+            ("hx-vars", Fixed, true),
+        ];
+        let actual: Vec<(&str, HtmxAttributeFamily, bool)> = HTMX_ATTRIBUTES
+            .iter()
+            .map(|attribute| (attribute.name, attribute.family, attribute.deprecated))
+            .collect();
+
+        assert_eq!(actual, expected);
+        assert!(HTMX_ATTRIBUTES.iter().all(|attribute| !attribute.documentation.is_empty()));
         assert!(!HTMX_ATTRIBUTES.iter().any(|attribute| attribute.name == "hx-on"));
     }
 
