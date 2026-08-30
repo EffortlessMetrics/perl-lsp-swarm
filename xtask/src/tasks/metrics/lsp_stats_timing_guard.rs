@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-pub use super::lsp_stats_admission::{
+pub use super::lsp_stats_guarded::{
     LatencyMetric, MeasuredEditorUxScorecard, RateMetric, WorkflowResult,
 };
 
@@ -26,7 +26,7 @@ pub fn run_with_receipt_dir(
     if let Some(receipts_dir) = receipt_dir {
         validate_timing_receipts(receipts_dir)?;
     }
-    super::lsp_stats_admission::run_with_receipt_dir(json, receipt_dir, output)
+    super::lsp_stats_guarded::run_with_receipt_dir(json, receipt_dir, output)
 }
 
 /// Aggregate receipts after semantic timing validation and existing admission.
@@ -36,11 +36,7 @@ pub fn aggregate_from_receipts(
     flake_ledger: Option<&Path>,
 ) -> Result<MeasuredEditorUxScorecard> {
     validate_timing_receipts(receipts_dir)?;
-    super::lsp_stats_admission::aggregate_from_receipts(
-        receipts_dir,
-        fixture_matrix,
-        flake_ledger,
-    )
+    super::lsp_stats_guarded::aggregate_from_receipts(receipts_dir, fixture_matrix, flake_ledger)
 }
 
 fn validate_timing_receipts(receipts_dir: &Path) -> Result<()> {
