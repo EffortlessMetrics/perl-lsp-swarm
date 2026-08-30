@@ -15,6 +15,7 @@ const CORPUS_PROOF: &str = "cargo test --locked -p perl-corpus --test strict_sec
 const XTASK_PROOF: &str = "cargo test --locked -p xtask --lib dangling_protected_source_rejects_before_publication_write -- --exact --nocapture";
 const CORPUS_PROOF_ANCHOR: &str = "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n";
 const XTASK_PROOF_ANCHOR: &str = "          $output = cargo test --locked -p xtask --lib dangling_protected_source_rejects_before_publication_write -- --exact --nocapture 2>&1\n";
+const CORPUS_OUTPUT_REPLAY_ANCHOR: &str = "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n          $exitCode = $LASTEXITCODE\n          $output | ForEach-Object { $_ }\n";
 const TOPOLOGY_EXECUTION_ANCHOR: &str = "for test_name in \"${selected_tests[@]}\"; do\n  test_output=\"$(mktemp)\"\n  if ! cargo test --locked -p perl-corpus --lib \"$test_name\" \\\n    -- --exact --nocapture \\\n    2>&1 | sed 's/\\r$//' | tee \"$test_output\"; then";
 const TOPOLOGY_EXECUTION_SOURCE_ANCHOR: &str = "          for test_name in \"${selected_tests[@]}\"; do\n            test_output=\"$(mktemp)\"";
 const TOPOLOGY_EXECUTION_COMMAND_SOURCE_ANCHOR: &str =
@@ -169,6 +170,18 @@ fn validate_workflow(source: &str) -> Result<()> {
         "shell bodies must not hide alternate cache writers"
     );
     ensure!(
+        all_steps.iter().all(|step| {
+            step.get("run").and_then(Value::as_str).is_none_or(|run| {
+                let run = run.to_ascii_lowercase();
+                !run.contains(".ps1")
+                    && !run.contains("curl")
+                    && !run.contains("invoke-webrequest")
+                    && !run.contains("invoke-restmethod")
+            })
+        }),
+        "shell bodies must not hide script or network cache writers"
+    );
+    ensure!(
         jobs.values()
             .filter_map(Value::as_mapping)
             .all(|candidate| candidate.get("permissions").is_none()),
@@ -212,10 +225,12 @@ fn validate_workflow(source: &str) -> Result<()> {
     );
 
     let named_step = |name: &str| -> Result<&Value> {
-        steps
+        let matches: Vec<_> = steps
             .iter()
-            .find(|step| step.get("name").and_then(Value::as_str) == Some(name))
-            .ok_or_else(|| anyhow!("missing proof step: {name}"))
+            .filter(|step| step.get("name").and_then(Value::as_str) == Some(name))
+            .collect();
+        ensure!(matches.len() == 1, "proof step name must be unique: {name}");
+        matches.first().copied().ok_or_else(|| anyhow!("missing proof step: {name}"))
     };
     let require_command = |name: &str, command: &str| -> Result<()> {
         let step = named_step(name)?;
@@ -226,6 +241,18 @@ fn validate_workflow(source: &str) -> Result<()> {
             "proof step must not continue on error: {name}"
         );
         let run = step.get("run").and_then(Value::as_str).unwrap_or_default();
+        let expected_command = format!("$output = {command} 2>&1");
+        ensure!(
+            run.lines().map(str::trim).next() == Some(expected_command.as_str()),
+            "proof command must be the first top-level PowerShell statement: {name}"
+        );
+        ensure!(
+            run.matches("$output =").count() == 1
+                && !run.contains("$output +=")
+                && !run.contains("return")
+                && !run.contains("exit 0"),
+            "proof output must come from the real command without fabricated control flow: {name}"
+        );
         ensure!(
             normalized(run).contains(&normalized(command)),
             "proof step must run its exact production command: {name}"
@@ -283,6 +310,10 @@ fn validate_workflow(source: &str) -> Result<()> {
     let topology_run = normalized(topology_raw);
     ensure!(
         !topology_raw.contains("continue")
+            && !topology_raw.contains("break")
+            && !topology_raw.contains("return")
+            && !topology_raw.contains("exit 0")
+            && !topology_raw.contains("unset selected_tests")
             && !topology_raw.contains("if false")
             && !topology_raw.contains("if [[ false"),
         "topology proof must not bypass execution with continue or false guards"
@@ -323,8 +354,14 @@ fn validate_workflow(source: &str) -> Result<()> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect();
+    let selected_count = topology_raw[selected_start + "selected_tests=(".len()..selected_end]
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .count();
     ensure!(
-        selected == BTreeSet::from(EXPECTED_TOPOLOGY_TESTS),
+        selected_count == EXPECTED_TOPOLOGY_TESTS.len()
+            && selected == BTreeSet::from(EXPECTED_TOPOLOGY_TESTS),
         "topology proof must select the complete production corpus"
     );
     let loop_marker = "for test_name in \"${selected_tests[@]}\"; do";
@@ -419,6 +456,14 @@ fn contract_rejects_decoy_commands_and_trigger_mutations() -> Result<()> {
         (CORPUS_PROOF_ANCHOR, "        run: echo cargo test --locked -p perl-corpus"),
         (XTASK_PROOF_ANCHOR, "        run: echo cargo test --locked -p xtask"),
         (
+            CORPUS_PROOF_ANCHOR,
+            "          $output = @('running 1 test', 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s')\n",
+        ),
+        (
+            "      - name: Verify exact candidate checkout\n",
+            "      - name: Run non-skipping Windows reparse proof\n",
+        ),
+        (
             "      - name: Run non-skipping Windows reparse proof\n        shell: pwsh\n",
             "      - name: Run non-skipping Windows reparse proof\n        shell: pwsh\n        continue-on-error: true\n",
         ),
@@ -436,6 +481,10 @@ fn contract_rejects_decoy_commands_and_trigger_mutations() -> Result<()> {
             "  workflow_dispatch:\n    inputs:\n      reason:\n        required: false\n",
         ),
         (
+            CORPUS_OUTPUT_REPLAY_ANCHOR,
+            "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n          $exitCode = $LASTEXITCODE\n          ./cache-writer.ps1\n",
+        ),
+        (
             "          )\n\n          test_list=\"$(mktemp)\"",
             "          )\n          selected_tests=()\n\n          test_list=\"$(mktemp)\"",
         ),
@@ -448,11 +497,20 @@ fn contract_rejects_decoy_commands_and_trigger_mutations() -> Result<()> {
             "        shell: bash\n        run: |\n          set -euo pipefail\n          actions/cache/save\n\n          selected_tests=(",
         ),
         (
+            "          echo \"Selected topology symlink tests:\"\n",
+            "          curl https://example.invalid/cache\n",
+        ),
+        (
             "            api::topology::tests::binding_rejects_intermediate_runtime_root_symlink\n",
             "",
         ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, "          echo cargo test --locked -p perl-corpus\n"),
         (TOPOLOGY_EXECUTION_COMMAND_SOURCE_ANCHOR, "            if false; then\n"),
+        ("          echo \"- $test_name\"\n", "          break\n"),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          unset selected_tests\n\n          test_list=\"$(mktemp)\"",
+        ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, ""),
     ] {
         ensure!(
