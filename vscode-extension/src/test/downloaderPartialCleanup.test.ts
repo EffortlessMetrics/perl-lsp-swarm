@@ -383,8 +383,10 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const requestError = new Error('request failed after data');
+    let stagingDestination = '';
     let file: fs.WriteStream | undefined;
     jest.spyOn(downloader, 'createWriteStream').mockImplementation((stagingPath) => {
+      stagingDestination = stagingPath;
       file = fs.createWriteStream(stagingPath, { emitClose: false });
       file.write('data');
       return file;
@@ -411,6 +413,8 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
       downloader.downloadFile('http://localhost/archive', destination, 1000),
     ).rejects.toBe(requestError);
     expect(fs.readFileSync(destination, 'utf8')).toBe('partial');
+    expect(stagingDestination).not.toBe('');
+    expect(fs.existsSync(stagingDestination)).toBe(false);
   });
 
   test('settles immediately when a stream double closes synchronously', async () => {
@@ -424,6 +428,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const requestError = new Error('request failed after synchronous close');
+    let stagingDestination = '';
     const file = new EventEmitter() as EventEmitter & {
       closed: boolean;
       destroy: jest.Mock;
@@ -437,6 +442,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     file.write = jest.fn(() => true);
     file.end = jest.fn();
     jest.spyOn(downloader, 'createWriteStream').mockImplementation((stagingPath) => {
+      stagingDestination = stagingPath;
       fs.writeFileSync(stagingPath, 'partial');
       return file as unknown as fs.WriteStream;
     });
@@ -467,5 +473,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     ).rejects.toBe(requestError);
     expect(file.destroy).toHaveBeenCalledTimes(1);
     expect(fs.readFileSync(destination, 'utf8')).toBe('partial');
+    expect(stagingDestination).not.toBe('');
+    expect(fs.existsSync(stagingDestination)).toBe(false);
   });
 });
