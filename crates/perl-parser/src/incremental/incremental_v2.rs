@@ -19,7 +19,7 @@
 //!
 //! - **Simple value edits**: Number and string literal changes
 //! - **Variable name edits**: Identifier modifications within bounds
-//! - **Whitespace and comment edits**: Non-structural changes
+//! - **Whitespace edits**: Lexically stable, source-coherent trivia changes
 //! - **Multiple edits**: Batch processing with cumulative position tracking
 //!
 //! ## Usage Example
@@ -59,8 +59,12 @@ fn isize_to_usize_clamped(v: isize) -> usize {
     v.max(0) as usize
 }
 
-use super::incremental_advanced_reuse::{
-    AdvancedReuseAnalyzer, ReuseAnalysisResult, ReuseConfig, ReuseStrategy, ReuseType,
+use super::{
+    MAX_INCREMENTAL_EDIT_BATCH,
+    incremental_advanced_reuse::{
+        AdvancedReuseAnalyzer, ReuseAnalysisResult, ReuseConfig, ReuseStrategy, ReuseType,
+    },
+    whitespace_geometry::WhitespaceEditMap,
 };
 use perl_parser_core::{
     ast::{Node, NodeKind, SourceLocation},
@@ -319,7 +323,7 @@ impl IncrementalParserV2 {
             // Check if this was a fallback due to too many edits, invalid conditions, or empty source
             // In such cases, we should report 0 reused nodes as it's truly a full reparse
             let should_skip_reuse = source.is_empty()
-                || self.pending_edits.len() > 10
+                || self.pending_edits.len() > MAX_INCREMENTAL_EDIT_BATCH
                 || self.last_tree.as_ref().is_none_or(|tree| !self.is_simple_value_edit(tree));
 
             if should_skip_reuse {
@@ -345,23 +349,26 @@ impl IncrementalParserV2 {
     }
 
     fn try_incremental_parse(&mut self, source: &str, last_tree: &IncrementalTree) -> Option<Node> {
-        // Try advanced reuse analysis first
+        // Exact, lexically stable whitespace edits can reuse the complete old
+        // tree. Select this before advanced analysis, which parses a fresh tree
+        // in order to estimate reuse and would otherwise shadow the fast path.
+        if let Some(edit_map) =
+            WhitespaceEditMap::try_new(&last_tree.source, source, &self.pending_edits)
+        {
+            return self.incremental_parse_whitespace(source, last_tree, &edit_map);
+        }
+
+        // Try advanced reuse analysis for edits that need structural comparison.
         if let Some(advanced_result) = self.try_advanced_reuse_parse(source, last_tree) {
             return Some(advanced_result);
         }
 
-        // Fall back to original strategies for compatibility
-        let is_simple = self.is_simple_value_edit(last_tree);
-        if is_simple {
+        // Fall back to original value-update strategy for compatibility.
+        if self.is_simple_value_edit(last_tree) {
             return self.incremental_parse_simple(source, last_tree);
         }
 
-        // Check for other incremental opportunities
-        if self.is_whitespace_or_comment_edit(last_tree, source) {
-            return self.incremental_parse_whitespace(source, last_tree);
-        }
-
-        // For complex structural changes, fall back to full parse
+        // For complex structural changes, fall back to full parse.
         None
     }
 
@@ -525,7 +532,7 @@ impl IncrementalParserV2 {
 
     fn is_simple_value_edit(&self, tree: &IncrementalTree) -> bool {
         // Don't attempt incremental parsing for too many edits at once
-        if self.pending_edits.len() > 10 {
+        if self.pending_edits.len() > MAX_INCREMENTAL_EDIT_BATCH {
             return false;
         }
 
@@ -582,105 +589,21 @@ impl IncrementalParserV2 {
         true
     }
 
-    /// Check if all edits only affect whitespace or comments
-    fn is_whitespace_or_comment_edit(&self, tree: &IncrementalTree, source: &str) -> bool {
-        for edit in self.pending_edits.edits() {
-            // Validate both sides of the edit:
-            // - old source text being replaced
-            // - new source text inserted by the edit
-            // If either side introduces structural tokens, fall back.
-            if !self.is_edit_non_structural(
-                tree,
-                source,
-                edit.start_byte,
-                edit.old_end_byte,
-                edit.new_end_byte,
-            ) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn is_edit_non_structural(
-        &self,
-        tree: &IncrementalTree,
-        source: &str,
-        start: usize,
-        old_end: usize,
-        new_end: usize,
-    ) -> bool {
-        if old_end > start && !self.is_in_non_structural_content(&tree.source, start, old_end) {
-            return false;
-        }
-
-        if new_end > start && !self.is_in_non_structural_content(source, start, new_end) {
-            return false;
-        }
-
-        true
-    }
-
-    /// Check if the given range only contains whitespace or comments
-    ///
-    /// Uses lexical analysis to determine if the edited range contains only
-    /// non-structural content (whitespace, comments) that doesn't affect AST structure.
-    fn is_in_non_structural_content(&self, text: &str, start: usize, end: usize) -> bool {
-        use perl_lexer::{PerlLexer, TokenType};
-
-        if start >= end || end > text.len() {
-            return false;
-        }
-
-        let affected_text = &text[start..end];
-
-        // Create a lexer to analyze the tokens in this range
-        let mut lexer = PerlLexer::new(affected_text);
-
-        // Analyze all tokens in the range
-        loop {
-            match lexer.next_token() {
-                Some(token) => {
-                    match token.token_type {
-                        // These token types are non-structural
-                        TokenType::Whitespace | TokenType::Newline | TokenType::Comment(_) => {
-                            // Continue checking
-                        }
-                        TokenType::EOF => {
-                            // Reached end - all tokens were non-structural
-                            return true;
-                        }
-                        _ => {
-                            // Found a structural token
-                            return false;
-                        }
-                    }
-                }
-                None => {
-                    // No more tokens - all were non-structural
-                    return true;
-                }
-            }
-        }
-    }
-
-    /// Parse with whitespace/comment optimizations
+    /// Reuse the complete prior tree for a validated whitespace-only edit batch.
     fn incremental_parse_whitespace(
         &mut self,
-        _source: &str,
+        source: &str,
         last_tree: &IncrementalTree,
+        edit_map: &WhitespaceEditMap,
     ) -> Option<Node> {
-        // For whitespace-only changes, we can often reuse the entire tree
-        // with just position adjustments
-        let shift = self.calculate_total_shift();
+        let new_root = edit_map.clone_tree(&last_tree.root)?;
+        if !self.validate_incremental_result(&new_root, source) {
+            return None;
+        }
+
         self.reused_nodes = self.count_nodes(&last_tree.root);
         self.reparsed_nodes = 0;
-        Some(self.clone_with_shifted_positions(&last_tree.root, shift))
-    }
-
-    /// Calculate the total byte shift from all edits
-    fn calculate_total_shift(&self) -> isize {
-        self.pending_edits.edits().iter().map(|edit| edit.byte_shift()).sum()
+        Some(new_root)
     }
 
     fn incremental_parse_simple(
@@ -2092,25 +2015,29 @@ if ($condition) {
     }
 
     #[test]
-    fn test_whitespace_insertion_reuses_tree() -> ParseResult<()> {
+    fn whitespace_insertion_uses_fast_path_and_matches_fresh_parse() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
 
         parser.edit(Edit::new(
-            5,
-            5,
+            6,
+            6,
             7,
-            Position::new(5, 1, 6),
-            Position::new(5, 1, 6),
+            Position::new(6, 1, 7),
+            Position::new(6, 1, 7),
             Position::new(7, 1, 8),
         ));
 
         let source2 = "my $x  = 42;";
-        parser.parse(source2)?;
+        let incremental = parser.parse(source2)?;
+        let fresh = Parser::new(source2).parse()?;
 
-        assert!(parser.reused_nodes > 0, "Whitespace insertion should reuse prior tree");
-        assert!(parser.reparsed_nodes <= 1, "Whitespace insertion should avoid broad reparsing");
+        assert_eq!(incremental, fresh);
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+        assert_eq!(parser.reparsed_nodes, 0);
+        assert_eq!(parser.reused_nodes, parser.count_nodes(&old_tree));
         Ok(())
     }
 
@@ -2198,77 +2125,74 @@ if ($condition) {
         Ok(())
     }
 
-    /// Whitespace inserted before an operator must produce a fresh-parse tree.
-    ///
-    /// This asserted `reused_nodes > 0` until reuse counting was narrowed to
-    /// subtrees that are actually materializable. That assertion was vacuous:
-    /// no path reuses a tree for this edit. `is_simple_value_edit` and
-    /// `is_whitespace_or_comment_edit` both decline it, so the only reporter of
-    /// reuse was `try_advanced_reuse_parse`, which returns a *freshly parsed*
-    /// tree and attached the analyzer's estimate to it. The count was therefore
-    /// never evidence that anything was reused, and asserting it again would
-    /// re-pin an estimate to a tree that was parsed from scratch.
-    ///
-    /// Assert the properties that discriminate instead: the incremental result
-    /// must equal a fresh parse, and the counters must describe the tree they
-    /// report on. Reuse for whitespace edits is tracked separately — see the
-    /// two `..._reuses_tree` cases that still hold, which exercise the edits
-    /// the whitespace fast path does accept.
     #[test]
-    fn whitespace_before_operator_matches_a_fresh_parse() -> ParseResult<()> {
+    fn whitespace_before_operator_uses_fast_path_and_maps_selective_geometry() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
         parser.edit(Edit::new(
             6,
             6,
-            9,
+            8,
             Position::new(6, 1, 7),
             Position::new(6, 1, 7),
-            Position::new(9, 1, 10),
+            Position::new(8, 1, 9),
         ));
         let source2 = "my $x   = 42;";
         let incremental = parser.parse(source2)?;
-
         let fresh = Parser::new(source2).parse()?;
+
         assert_eq!(
             incremental, fresh,
             "incremental result must equal a fresh parse in shape and span geometry"
         );
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+        assert_eq!(parser.reparsed_nodes, 0);
+        assert_eq!(parser.reused_nodes, parser.count_nodes(&old_tree));
 
-        let produced = parser.count_nodes(&incremental);
-        assert_eq!(
-            parser.reused_nodes + parser.reparsed_nodes,
-            produced,
-            "reuse accounting must reconcile to the produced node count"
-        );
+        if let NodeKind::Program { statements } = &incremental.kind
+            && let NodeKind::VariableDeclaration {
+                variable, initializer: Some(initializer), ..
+            } = &statements[0].kind
+        {
+            assert_eq!(variable.location, SourceLocation { start: 3, end: 5 });
+            assert_eq!(initializer.location, SourceLocation { start: 10, end: 12 });
+        } else {
+            return Err(perl_parser_core::error::ParseError::UnexpectedEof);
+        }
         Ok(())
     }
 
     #[test]
-    fn test_comment_insertion_reuses_tree() -> ParseResult<()> {
-        let mut parser = IncrementalParserV2::new();
+    fn comment_insertion_is_not_admitted_as_whitespace_reuse() -> ParseResult<()> {
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
-        parser.edit(Edit::new(
-            10,
-            11,
-            24,
-            Position::new(10, 1, 11),
-            Position::new(11, 1, 12),
-            Position::new(24, 1, 25),
-        ));
         let source2 = "my $x = 42; # comment";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        let edit = Edit::new(
+            11,
+            11,
+            21,
+            Position::new(11, 1, 12),
+            Position::new(11, 1, 12),
+            Position::new(21, 1, 22),
+        );
+        let mut edits = EditSet::new();
+        edits.add(edit.clone());
+        assert!(WhitespaceEditMap::try_new(source1, source2, &edits).is_none());
+
+        let mut parser = IncrementalParserV2::new();
+        parser.parse(source1)?;
+        parser.edit(edit);
+        let incremental = parser.parse(source2)?;
+        assert_eq!(incremental, Parser::new(source2).parse()?);
         Ok(())
     }
 
     #[test]
-    fn test_trailing_whitespace_reuses_tree() -> ParseResult<()> {
+    fn trailing_whitespace_uses_fast_path_without_expanding_program_span() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
         parser.edit(Edit::new(
             11,
             11,
@@ -2278,16 +2202,20 @@ if ($condition) {
             Position::new(16, 1, 17),
         ));
         let source2 = "my $x = 42;     ";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        let incremental = parser.parse(source2)?;
+        assert_eq!(incremental, Parser::new(source2).parse()?);
+        assert_eq!(incremental.location, old_tree.location);
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+        assert_eq!(parser.reparsed_nodes, 0);
         Ok(())
     }
 
     #[test]
-    fn test_newline_insertion_reuses_tree() -> ParseResult<()> {
+    fn newline_insertion_uses_fast_path_without_expanding_program_span() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
         parser.edit(Edit::new(
             11,
             11,
@@ -2297,55 +2225,65 @@ if ($condition) {
             Position::new(12, 2, 1),
         ));
         let source2 = "my $x = 42;\n";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        let incremental = parser.parse(source2)?;
+        assert_eq!(incremental, Parser::new(source2).parse()?);
+        assert_eq!(incremental.location, old_tree.location);
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+        assert_eq!(parser.reparsed_nodes, 0);
         Ok(())
     }
 
     #[test]
-    /// A pure whitespace deletion must produce a fresh-parse tree.
-    ///
-    /// See `whitespace_before_operator_matches_a_fresh_parse` for why the
-    /// previous `reused_nodes > 0` assertion did not discriminate: this edit is
-    /// declined by both `is_simple_value_edit` and
-    /// `is_whitespace_or_comment_edit`, so the tree is parsed from scratch and
-    /// the old count reported an analyzer estimate against it.
-    #[test]
-    fn whitespace_deletion_matches_a_fresh_parse() -> ParseResult<()> {
+    fn whitespace_deletion_uses_fast_path_and_maps_selective_geometry() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my  $x  =  42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
         parser.edit(Edit::new(
             3,
-            5,
             4,
+            3,
             Position::new(3, 1, 4),
-            Position::new(5, 1, 6),
             Position::new(4, 1, 5),
+            Position::new(3, 1, 4),
         ));
         let source2 = "my $x  =  42;";
         let incremental = parser.parse(source2)?;
-
         let fresh = Parser::new(source2).parse()?;
+
         assert_eq!(
             incremental, fresh,
             "incremental result must equal a fresh parse in shape and span geometry"
         );
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+        assert_eq!(parser.reparsed_nodes, 0);
+        assert_eq!(parser.reused_nodes, parser.count_nodes(&old_tree));
 
-        let produced = parser.count_nodes(&incremental);
-        assert_eq!(
-            parser.reused_nodes + parser.reparsed_nodes,
-            produced,
-            "reuse accounting must reconcile to the produced node count"
-        );
+        if let NodeKind::Program { statements } = &incremental.kind
+            && let NodeKind::VariableDeclaration {
+                variable, initializer: Some(initializer), ..
+            } = &statements[0].kind
+        {
+            assert_eq!(variable.location, SourceLocation { start: 3, end: 5 });
+            assert_eq!(initializer.location, SourceLocation { start: 10, end: 12 });
+        } else {
+            return Err(perl_parser_core::error::ParseError::UnexpectedEof);
+        }
         Ok(())
     }
 
     #[test]
-    fn test_whitespace_at_statement_boundary() -> ParseResult<()> {
+    fn whitespace_at_statement_boundary_shifts_only_the_following_statement() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "print 'hello';my $x = 42;";
-        parser.parse(source1)?;
+        let old_tree = parser.parse(source1)?;
+        let (old_first, old_second) = if let NodeKind::Program { statements } = &old_tree.kind {
+            (statements[0].location, statements[1].location)
+        } else {
+            return Err(perl_parser_core::error::ParseError::UnexpectedEof);
+        };
+
         parser.edit(Edit::new(
             14,
             14,
@@ -2355,27 +2293,44 @@ if ($condition) {
             Position::new(15, 1, 16),
         ));
         let source2 = "print 'hello'; my $x = 42;";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        let incremental = parser.parse(source2)?;
+        assert_eq!(incremental, Parser::new(source2).parse()?);
+        assert!(parser.used_incremental_path());
+        assert!(!parser.used_advanced_reuse());
+
+        if let NodeKind::Program { statements } = &incremental.kind {
+            assert_eq!(statements[0].location, old_first);
+            assert_eq!(
+                statements[1].location,
+                SourceLocation { start: old_second.start + 1, end: old_second.end + 1 }
+            );
+        } else {
+            return Err(perl_parser_core::error::ParseError::UnexpectedEof);
+        }
         Ok(())
     }
 
     #[test]
-    fn test_whitespace_edit_checks_both_old_and_new() -> ParseResult<()> {
-        let mut parser = IncrementalParserV2::new();
+    fn structural_replacement_is_not_admitted_as_whitespace_reuse() -> ParseResult<()> {
         let source1 = "my $x = 42;";
-        parser.parse(source1)?;
-        parser.edit(Edit::new(
+        let source2 = "my $x += 42;";
+        let edit = Edit::new(
             6,
             7,
             8,
             Position::new(6, 1, 7),
             Position::new(7, 1, 8),
             Position::new(8, 1, 9),
-        ));
-        let source2 = "my $x=  42;";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        );
+        let mut edits = EditSet::new();
+        edits.add(edit.clone());
+        assert!(WhitespaceEditMap::try_new(source1, source2, &edits).is_none());
+
+        let mut parser = IncrementalParserV2::new();
+        parser.parse(source1)?;
+        parser.edit(edit);
+        let incremental = parser.parse(source2)?;
+        assert_eq!(incremental, Parser::new(source2).parse()?);
         Ok(())
     }
 }
