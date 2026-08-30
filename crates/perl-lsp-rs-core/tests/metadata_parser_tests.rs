@@ -825,3 +825,55 @@ fn cpanfile_brace_delimited_regex_and_substitution_do_not_alter_block_state() {
         ],
     );
 }
+
+#[test]
+fn cpanfile_dynamic_argument_expressions_produce_no_advisory_fact() {
+    // Helper calls, ternaries, and concatenations are dynamic expressions:
+    // strings nested inside them must not become unconditional advisories.
+    let cpanfile = concat!(
+        r#"requires feature_helper('Helper::Dep');"#,
+        "\n",
+        r#"requires($^O eq 'MSWin32' ? 'Win32::Only' : 'Unix::Only');"#,
+        "\n",
+        r#"requires 'Concat' . '::Tail';"#,
+        "\n",
+        r#"requires 'Real::One';"#,
+    );
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![DeclaredDependency::new(
+            "Real::One",
+            None,
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        )],
+    );
+}
+
+#[test]
+fn cpanfile_substitution_replacement_braces_do_not_corrupt_blocks() {
+    // A slash-delimited replacement beginning with text and containing
+    // braces must be consumed with the operand, not leaked into block state.
+    let cpanfile = concat!(
+        r#"my $count = s/pattern/b{r}ace/;"#,
+        "\n",
+        r#"my $odd = s/odd/x{y/;"#,
+        "\n",
+        r#"requires 'After::Subst';"#,
+    );
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![DeclaredDependency::new(
+            "After::Subst",
+            None,
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        )],
+    );
+}

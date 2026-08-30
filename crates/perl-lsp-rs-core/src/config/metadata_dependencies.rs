@@ -162,7 +162,8 @@ pub fn detect_declared_dependencies(workspace_root: &Path) -> Vec<DeclaredDepend
 /// declarations keep their literal relation keyword, canonical
 /// `on '<phase>' => sub { ... }` blocks are attributed as
 /// `{phase}.{relation}`, and declarations inside `feature` blocks,
-/// conditionals, loops, arbitrary callbacks, or unknown `on` phases are
+/// conditionals, loops, arbitrary callbacks, unknown `on` phases, or dynamic
+/// argument expressions (helper calls, ternaries, concatenations) are
 /// suppressed because `DeclaredDependency` cannot retain their predicates.
 /// Regex and quote-like operands (`qr/../`, `q(..)`, `s/../../`, ...) are
 /// skipped before block state updates so their delimiters and unbalanced
@@ -306,27 +307,42 @@ fn cpanfile_statement_args(source: &str, start: usize) -> (Vec<String>, bool) {
     let bytes = source.as_bytes();
     let mut values = Vec::new();
     let mut idx = start;
+    // Any expression syntax outside the direct literal call shapes (quoted
+    // strings, commas, parentheses, fat commas, bare version numbers) makes
+    // the statement dynamic: helper calls, ternaries, and concatenations
+    // must suppress the advisory instead of naming undeclared modules.
+    let mut dynamic = false;
 
     while idx < bytes.len() {
         if let Some((value, consumed)) = parse_quoted_string(source, idx) {
-            values.push(value);
+            if !dynamic {
+                values.push(value);
+            }
             idx += consumed;
             continue;
         }
         match bytes[idx] {
-            b';' | b'{' => return (values, false),
+            b';' | b'{' | b'}' => return (values, dynamic),
+            c if c.is_ascii_whitespace() || c == b',' || c == b'(' || c == b')' => idx += 1,
+            b'=' if bytes.get(idx + 1) == Some(&b'>') => idx += 2,
+            c if c.is_ascii_digit() => idx += 1,
+            b'.' if idx > 0 && bytes[idx - 1].is_ascii_digit() => idx += 1,
             c if c.is_ascii_alphabetic() || c == b'_' => {
                 let end = ascii_ident_end(bytes, idx).unwrap_or(idx + 1);
                 if matches!(&source[idx..end], "if" | "unless") {
                     return (values, true);
                 }
+                dynamic = true;
                 idx = end;
             }
-            _ => idx += 1,
+            _ => {
+                dynamic = true;
+                idx += 1;
+            }
         }
     }
 
-    (values, false)
+    (values, dynamic)
 }
 
 /// Whether the source position after a relation keyword can start its
@@ -491,15 +507,19 @@ fn skip_quotelike_operand(bytes: &[u8], word_end: usize, word: &str) -> Option<u
         while matches!(bytes.get(end), Some(b' ') | Some(b'\t')) {
             end += 1;
         }
-        // Bracketing delimiters may pair with any delimiter for the second
-        // operand (`s{pattern}{replacement}`); non-bracketing delimiters reuse
-        // the same character as the closing delimiter
-        // (`s/pattern/replacement/`).
+        let bracketing_first = matches!(delimiter, b'{' | b'(' | b'[' | b'<');
+        // Bracketing first delimiters may pair with any delimiter for the
+        // second operand (`s{pattern}{replacement}`); non-bracketing
+        // delimiters reuse the same character as the closing delimiter
+        // (`s/pattern/replacement/`), so the replacement body must always be
+        // consumed — braces inside it would otherwise corrupt block state.
         if let Some(&second) = bytes.get(end) {
             if matches!(second, b'{' | b'(' | b'[' | b'<') {
                 end = skip_quotelike_delimited(bytes, end, second)?;
-            } else if !second.is_ascii_alphanumeric() && second != b'_' {
+            } else if !bracketing_first {
                 end = skip_quotelike_to_delimiter(bytes, end, delimiter)?;
+            } else if !second.is_ascii_alphanumeric() && second != b'_' {
+                end = skip_quotelike_to_delimiter(bytes, end, second)?;
             }
         }
     }
