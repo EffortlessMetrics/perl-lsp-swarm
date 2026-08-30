@@ -50,6 +50,17 @@
 # #8890, and carries no row. A symbol whose visibility changes also fails the
 # task: its disposition was audited against the old reachability.
 #
+# On `reference_kind`: the kinds a path decides are enforced. A row under
+# `crates/perl-tree-sitter-compat/` must be `own_crate`, `Cargo.lock` must be
+# `lockfile`, and a manifest declaring a Cargo dependency must be
+# `cargo_dependency` — that last one is load-bearing, because `unused` is
+# permitted only when the Cargo population is empty. The remaining kinds
+# (`documentation`, `policy`, `tooling`, `rust_import`) describe what a file
+# DOES with the reference, which its path cannot settle, so they are an
+# auditor's judgment and are not machine-checked. No reconciliation rule branches
+# on them; for those rows the ledger proves the reference exists and carries
+# exactly one disposition, not that its label is the best one.
+#
 # A row's disposition is about the BEHAVIOUR, not only the symbol. A symbol may
 # be obsolete as an authority while the behaviour it produces is still required
 # by another row; `pascal_to_snake` is exactly that case and carries a migration
