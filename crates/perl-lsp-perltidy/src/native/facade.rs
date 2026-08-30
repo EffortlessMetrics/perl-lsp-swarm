@@ -76,21 +76,19 @@ impl NativeFormatter {
         context: &FormatContext,
     ) -> TypedFormatResult {
         let engine = implementation::NativeFormatter::new();
-        let baseline = engine.format_range_typed(source, range, config, context);
-        if matches!(config.mode, FormatterMode::Off)
-            || baseline.outcome.reason == FormatReasonCode::UnsafeRange
-        {
-            return baseline;
+        if matches!(config.mode, FormatterMode::Off) {
+            return engine.format_range_typed(source, range, config, context);
         }
 
-        if range_overlaps_completed_heredoc(source, range, &source_line_ranges(source)) {
-            return typed_heredoc_range_refusal(
-                source,
-                range,
-                config,
-                context,
-                baseline.outcome.identity,
-            );
+        if valid_range(source, range)
+            && range_overlaps_completed_heredoc(source, range, &source_line_ranges(source))
+        {
+            return typed_heredoc_range_refusal(source, range, config, context);
+        }
+
+        let baseline = engine.format_range_typed(source, range, config, context);
+        if baseline.outcome.reason == FormatReasonCode::UnsafeRange {
+            return baseline;
         }
 
         let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
@@ -214,6 +212,9 @@ fn unused_two_letter_sentinel(source: &str) -> Option<String> {
 
     for first in b'A'..=b'Z' {
         for second in b'A'..=b'Z' {
+            if first == second {
+                continue;
+            }
             let index = usize::from(first - b'A') * 26 + usize::from(second - b'A');
             if used[index / 64] & (1_u64 << (index % 64)) == 0 {
                 let mut candidate = String::with_capacity(2);
@@ -265,17 +266,14 @@ fn typed_heredoc_range_refusal(
     range: TextRange,
     config: &FormatConfig,
     context: &FormatContext,
-    source_identity: FormatIdentity,
 ) -> TypedFormatResult {
-    let mut typed = classify_format_result(
+    classify_format_result(
         source,
         config,
         context,
         FormatRequestTarget::Range { range },
         heredoc_range_refusal(source),
-    );
-    typed.outcome.identity = source_identity;
-    typed
+    )
 }
 
 fn heredoc_range_refusal(source: &str) -> FormatResult {
@@ -380,6 +378,11 @@ mod tests {
     #[test]
     fn sentinel_selection_scans_all_existing_ascii_pairs() {
         assert_eq!(unused_two_letter_sentinel("AA AB AC <<LABEL"), Some("AD".to_string()));
+    }
+
+    #[test]
+    fn sentinel_selection_skips_equal_letter_pairs() {
+        assert_eq!(unused_two_letter_sentinel(""), Some("AB".to_string()));
     }
 
     #[test]

@@ -36,6 +36,47 @@ fn typed_document_formatting_ignores_marker_text_inside_string_and_comment() {
 }
 
 #[test]
+fn marker_preceded_by_sentinel_first_byte_round_trips_every_entry_point() {
+    let formatter = NativeFormatter::new();
+    let source = "my $s = \"A<<EOF\";\n";
+    let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(1, 0));
+    let config = FormatConfig::default();
+
+    let document = formatter.format_document(source, &config);
+    let typed_document =
+        formatter.format_document_typed(source, &config, &FormatContext::default());
+    let ranged = formatter.format_range(source, range, &config);
+    let typed_range =
+        formatter.format_range_typed(source, range, &config, &FormatContext::default());
+
+    assert_eq!(document.formatted, source);
+    assert_eq!(typed_document.result.formatted, source);
+    assert_eq!(ranged.formatted, source);
+    assert_eq!(typed_range.result.formatted, source);
+
+    assert!(!document.formatted.contains("AB"));
+    assert!(!typed_document.result.formatted.contains("AB"));
+    assert!(!ranged.formatted.contains("AB"));
+    assert!(!typed_range.result.formatted.contains("AB"));
+    assert!(document.edits.iter().all(|edit| !edit.new_text.contains("AB")));
+    assert!(typed_document.result.edits.iter().all(|edit| !edit.new_text.contains("AB")));
+    assert!(ranged.edits.iter().all(|edit| !edit.new_text.contains("AB")));
+    assert!(typed_range.result.edits.iter().all(|edit| !edit.new_text.contains("AB")));
+    assert!(document.diagnostics.iter().all(|diagnostic| !diagnostic.message.contains("AB")));
+    assert!(
+        typed_document
+            .result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("AB"))
+    );
+    assert!(ranged.diagnostics.iter().all(|diagnostic| !diagnostic.message.contains("AB")));
+    assert!(
+        typed_range.result.diagnostics.iter().all(|diagnostic| !diagnostic.message.contains("AB"))
+    );
+}
+
+#[test]
 fn range_formatting_refuses_completed_heredoc_body() {
     let formatter = NativeFormatter::new();
     let source = "print <<'EOF';\nmy$x=1;\nEOF\nmy$y=2;\n";
