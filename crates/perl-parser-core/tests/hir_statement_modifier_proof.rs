@@ -9,8 +9,8 @@
 use std::{error::Error, fmt};
 
 use perl_parser_core::hir::{
-    lower_ast, AccessMode, AssignMode, HirBody, HirExpr, HirExprId, HirFile, HirKind, HirStmt,
-    RecoveryConfidence, Sigil, StatementModifierKind, VariableKind, HIR_BODY_MODEL_VERSION,
+    AccessMode, AssignMode, HIR_BODY_MODEL_VERSION, HirBody, HirExpr, HirExprId, HirFile, HirKind,
+    HirStmt, RecoveryConfidence, Sigil, StatementModifierKind, VariableKind, lower_ast,
 };
 use perl_parser_core::{ParseError, ParseOutput, Parser};
 
