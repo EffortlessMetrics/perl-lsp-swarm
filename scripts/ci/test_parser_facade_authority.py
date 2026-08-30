@@ -298,6 +298,19 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
     def feature_row(self, name: str) -> dict:
         return next(row for row in self.ledger["features"] if row["name"] == name)
 
+    def independent_source_only_feature(self) -> dict:
+        """A `source_only` feature no default aggregate depends on.
+
+        Mutating a feature inside the default closure would change `default`'s own
+        class too, so these tests pick one outside it to keep the assertion pointed
+        at the feature under test.
+        """
+        return next(
+            row for row in self.ledger["features"]
+            if row["isolation"] == "source_only"
+            and row["name"] not in self.ledger["default_features"]
+        )
+
     # --- dependency universe -------------------------------------------------
 
     def test_new_normal_dependency_without_a_row_fails(self) -> None:
@@ -397,9 +410,9 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             check(self.root, self.ledger_path)
 
     def test_removing_a_feature_cfg_gate_invalidates_source_isolation(self) -> None:
-        gated = [name for name in self.gated_features if self.feature_row(name)["isolation"] == "source_only"]
-        self.write_feature_gates([name for name in self.gated_features if name != gated[0]])
-        with self.assertRaisesRegex(ValueError, f"feature {gated[0]} claims isolation source_only"):
+        target = self.independent_source_only_feature()["name"]
+        self.write_feature_gates([name for name in self.gated_features if name != target])
+        with self.assertRaisesRegex(ValueError, f"feature {target} claims isolation source_only"):
             check(self.root, self.ledger_path)
 
     def test_test_only_gate_cannot_claim_production_source_isolation(self) -> None:
@@ -413,9 +426,7 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             check(self.root, self.ledger_path)
 
     def test_moving_a_gate_from_src_to_tests_downgrades_isolation(self) -> None:
-        gated = next(
-            r["name"] for r in self.ledger["features"] if r["isolation"] == "source_only"
-        )
+        gated = self.independent_source_only_feature()["name"]
         self.write_feature_gates(
             [name for name in self.gated_features if name != gated],
             self.test_gated_features + [gated],
@@ -542,7 +553,7 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
 
     def test_feature_gated_only_inside_a_cfg_test_module_is_not_a_source_boundary(self) -> None:
         """A gate inside `#[cfg(test)] mod tests` gates test code, not production."""
-        row = next(r for r in self.ledger["features"] if r["isolation"] == "source_only")
+        row = self.independent_source_only_feature()
         self.write_feature_gates(
             [name for name in self.gated_features if name != row["name"]],
             self.test_gated_features,
@@ -556,9 +567,43 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, f'feature {row["name"]} claims isolation source_only'):
             check(self.root, self.ledger_path)
 
+    def write_conditional_module(self, guard: str, gated: str) -> None:
+        """A module declared behind `guard`, containing a cfg gate for `gated`."""
+        lib = self.root / "crates/perl-parser/src/lib.rs"
+        lib.write_text(
+            lib.read_text() + f'\n#[cfg(feature = "{guard}")]\nmod conditional_probe;\n'
+        )
+        self.write(
+            "crates/perl-parser/src/conditional_probe/mod.rs",
+            f'#[cfg(feature = "{gated}")]\nfn probe() {{}}\n',
+        )
+
+    def test_gate_inside_a_conditionally_compiled_module_is_not_production_source(self) -> None:
+        """The module only exists when its own feature is on, so the gate is conditional."""
+        guard = self.independent_source_only_feature()["name"]
+        taxonomy = next(
+            r["name"] for r in self.ledger["features"] if r["isolation"] == "taxonomy_only"
+        )
+        self.write_conditional_module(guard, taxonomy)
+        check(self.root, self.ledger_path)
+
+    def test_disabling_the_conditional_module_exclusion_would_promote_the_gate(self) -> None:
+        """Negative control: the same gate outside a conditional module does count."""
+        taxonomy = next(
+            r["name"] for r in self.ledger["features"] if r["isolation"] == "taxonomy_only"
+        )
+        self.write(
+            "crates/perl-parser/src/unconditional_probe.rs",
+            f'#[cfg(feature = "{taxonomy}")]\nfn probe() {{}}\n',
+        )
+        with self.assertRaisesRegex(
+            ValueError, f"feature {taxonomy} claims isolation taxonomy_only but selects source_only"
+        ):
+            check(self.root, self.ledger_path)
+
     def test_production_gate_outside_a_test_module_still_counts(self) -> None:
         """Negative control: the cfg(test) strip must not swallow real gates."""
-        row = next(r for r in self.ledger["features"] if r["isolation"] == "source_only")
+        row = self.independent_source_only_feature()
         self.write_feature_gates(
             [name for name in self.gated_features if name != row["name"]],
             self.test_gated_features,
