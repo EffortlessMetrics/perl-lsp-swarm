@@ -133,6 +133,8 @@ impl LspServer {
             active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
             document_symbols_before_commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            document_symbols_before_install_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
@@ -318,6 +320,8 @@ impl LspServer {
             active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
             document_symbols_before_commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            document_symbols_before_install_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),
@@ -444,6 +448,8 @@ impl LspServer {
             active_document_readiness: super::readiness::ActiveDocumentParserReadiness::default(),
             #[cfg(test)]
             document_symbols_before_commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            document_symbols_before_install_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
             #[cfg(feature = "incremental")]
             incremental_eager: AtomicBool::new(false),

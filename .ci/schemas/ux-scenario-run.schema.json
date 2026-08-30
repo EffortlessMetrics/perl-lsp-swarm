@@ -74,8 +74,14 @@
         "module_resolution",
         "workspace_symbols",
         "rename",
+        "safe_delete",
         "hover",
         "goto_definition",
+        "signature_help",
+        "code_lens",
+        "folding_range",
+        "semantic_tokens",
+        "code_actions",
         "infra",
         "ai_completion"
       ]
@@ -100,7 +106,10 @@
       "minimum": 0
     },
     "time_to_first_useful_result_ms": {
-      "type": "number",
+      "type": [
+        "number",
+        "null"
+      ],
       "minimum": 0
     },
     "operation_timings": {
@@ -116,7 +125,10 @@
             "minLength": 1
           },
           "time_to_first_useful_result_ms": {
-            "type": "number",
+            "type": [
+              "number",
+              "null"
+            ],
             "minimum": 0
           },
           "timing_status": {
@@ -166,16 +178,13 @@
       "additionalProperties": false
     },
     "failure_class": {
-      "enum": [
-        "provider_regression",
-        "server_crash",
-        "timeout",
-        "test_race",
-        "infra",
-        "matrix_drift",
-        "baseline_drift",
-        "new_test_bug",
-        "unknown"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/failure_class"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "route": {
@@ -220,7 +229,67 @@
           "skip_reason"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "enum": [
+              "fail",
+              "quarantined",
+              "skipped"
+            ]
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "required": [
+          "failure_class"
+        ],
+        "properties": {
+          "failure_class": {
+            "$ref": "#/$defs/failure_class"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "pass"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "failure_class": {
+            "type": "null"
+          }
+        }
+      }
     }
   ],
+  "$defs": {
+    "failure_class": {
+      "enum": [
+        "provider_regression",
+        "server_crash",
+        "timeout",
+        "test_race",
+        "infra",
+        "matrix_drift",
+        "baseline_drift",
+        "new_test_bug",
+        "unknown"
+      ]
+    }
+  },
   "additionalProperties": false
 }

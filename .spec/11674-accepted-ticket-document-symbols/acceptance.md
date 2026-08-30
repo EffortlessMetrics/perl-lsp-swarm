@@ -8,4 +8,5 @@
 | Exact-empty result supersedes prior symbols; parse-failure clear supersedes old exact symbols | preservation tests over handler flows |
 | Close/reopen remains distinct instances; eviction still clears | lifecycle eviction unchanged (raw removal, documented exception) |
 | Committed identity recorded as the #6729 anchor | monotonic per-URI `(generation, sequence)` ledger + test receipt accessor |
+| Sink outcomes use the shared #11672 vocabulary | `commit_document_symbols` returns `ParseEffectCommitOutcomeV1`; claim-local enum removed; mapping documented in the sink module docs and context.md |
 | No symbol algorithm, workspace-index, semantic-token, cache-redesign, or parser change | diff limited to the sink, call-site identity plumbing, tests, `.spec` |

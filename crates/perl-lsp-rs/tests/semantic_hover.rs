@@ -840,6 +840,32 @@ mod module_hover_tests {
         Ok(())
     }
 
+    #[test]
+    fn hover_on_versioned_use_resolves_module_head() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let module_dir = workspace.join("lib").join("Foo");
+        fs::create_dir_all(&module_dir)?;
+        fs::write(module_dir.join("Module.pm"), "package Foo::Module; 1;")?;
+
+        let workspace_path = workspace.to_str().ok_or("non-UTF-8 workspace path")?;
+        let server = TestServerBuilder::new().with_workspace(workspace_path).build();
+
+        let code = "use Foo::Module 1.23;\nmy $x = 1;\n";
+        let uri = "file:///test.pl";
+        server.open_document(uri, code);
+
+        let response = server.get_hover(uri, 0, 5);
+        let content = hover_content(&response).ok_or("expected hover content for versioned use")?;
+
+        assert!(content.contains("Foo::Module"), "hover should show module head, got: {content}");
+        assert!(
+            content.contains("Module.pm") && content.contains("Go to module"),
+            "versioned use should resolve the module head, got: {content}"
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn hover_on_use_statement_honors_absolute_perl5lib_outside_workspace()
