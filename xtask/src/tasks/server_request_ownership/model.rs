@@ -111,6 +111,12 @@ pub(super) struct CatalogRow {
     pub(super) spec: String,
     /// Declared protocol area (`workspace`, `window`, `protocol`, …).
     pub(super) area: String,
+    /// Whether the catalog advertises the method.
+    pub(super) advertised: bool,
+    /// Catalog maturity (`proven`, `not_proven`, …).
+    pub(super) maturity: String,
+    /// Catalog state owner, `missing` when none is recorded.
+    pub(super) state_owner: String,
 }
 
 /// The joined view of the three discovered surfaces.

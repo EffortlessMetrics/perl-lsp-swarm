@@ -519,6 +519,41 @@ fn check_row(
                 ));
             }
         }
+
+        // The catalog is the authority on maturity and ownership. A row may not
+        // grant itself support the catalog does not record.
+        if let Some(catalog) = catalog_spec {
+            if !catalog.advertised {
+                violations.push(Violation::new(
+                    "support-contradicts-catalog",
+                    &row.id,
+                    format!(
+                        "`{}` records `{}` as not advertised, so the row may not claim `supported`",
+                        meta.feature_catalog, row.feature_catalog_row
+                    ),
+                ));
+            }
+            if catalog.maturity != "proven" {
+                violations.push(Violation::new(
+                    "support-contradicts-catalog",
+                    &row.id,
+                    format!(
+                        "`{}` records `{}` as maturity `{}`, so the row may not claim `supported`",
+                        meta.feature_catalog, row.feature_catalog_row, catalog.maturity
+                    ),
+                ));
+            }
+            if missing(&catalog.state_owner) || catalog.state_owner.is_empty() {
+                violations.push(Violation::new(
+                    "support-contradicts-catalog",
+                    &row.id,
+                    format!(
+                        "`{}` records no state owner for `{}`, so the row may not claim `supported`",
+                        meta.feature_catalog, row.feature_catalog_row
+                    ),
+                ));
+            }
+        }
     }
 
     // A method nothing emits cannot carry credit for being carried.

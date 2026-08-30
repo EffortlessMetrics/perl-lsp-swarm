@@ -83,7 +83,13 @@ fn agreeing_discovery() -> Discovered {
 }
 
 fn catalog(spec: &str, area: &str) -> CatalogRow {
-    CatalogRow { spec: spec.to_string(), area: area.to_string() }
+    CatalogRow {
+        spec: spec.to_string(),
+        area: area.to_string(),
+        advertised: true,
+        maturity: "not_proven".to_string(),
+        state_owner: "missing".to_string(),
+    }
 }
 
 fn matrix_of(rows: Vec<RequestRow>) -> Matrix {
@@ -582,6 +588,46 @@ impl Server {
         emitted.get("client/unregisterCapability").map(Vec::as_slice),
         Some(["src/runtime/synthetic.rs#unregister".to_string()].as_slice()),
         "a concrete method passed to a declared forwarder must still be discovered"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// The catalog is the authority on maturity and ownership: a row may not grant
+/// itself support the catalog does not record, even with well-formed cells.
+#[test]
+fn support_contradicting_the_catalog_fails() {
+    let mut row = passing_row();
+    row.disposition = "supported".to_string();
+    row.terminal_state_owner = "#6724".to_string();
+    row.exact_process_proof = "#7016".to_string();
+
+    let found = rules(vec![row], &agreeing_discovery());
+    assert!(
+        found.contains(&"support-contradicts-catalog"),
+        "features.toml records this row as not_proven with no state owner: {found:?}"
+    );
+}
+
+/// A comment between the callee and its argument list is valid Rust and must
+/// not hide a send site.
+#[test]
+fn a_comment_before_the_argument_list_is_still_discovered() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    pub fn emit_commented(&self) {
+        self.send_request /* refresh */ ("workspace/codeLens/refresh", json!(null));
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#emit_commented".to_string()].as_slice()),
+        "a block comment before `(` must not hide a send site"
     );
     assert!(findings.is_empty(), "{findings:?}");
     Ok(())

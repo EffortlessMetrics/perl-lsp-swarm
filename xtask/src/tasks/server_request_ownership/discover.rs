@@ -79,13 +79,32 @@ fn identifier_at(source: &str, from: usize) -> &str {
 
 /// Byte index just past the `(` that opens a call whose callee ends at `from`.
 ///
-/// Rust permits whitespace and comments between a callee and its argument list.
-/// Requiring the `(` to be adjacent let `self.send_request ("m", p)` — valid
-/// source — slip past discovery silently.
+/// Rust permits whitespace *and comments* between a callee and its argument
+/// list. Requiring the `(` to be adjacent let `self.send_request ("m", p)` slip
+/// past discovery silently; accepting only whitespace left the same hole open
+/// for `self.send_request /* why */ ("m", p)`.
 fn call_open_paren(source: &str, from: usize) -> Option<usize> {
-    let rest = &source[from..];
-    let offset = rest.find(|c: char| !c.is_whitespace())?;
-    if rest[offset..].starts_with('(') { Some(from + offset + 1) } else { None }
+    let mut cursor = from;
+    loop {
+        let rest = &source[cursor..];
+        let offset = rest.find(|c: char| !c.is_whitespace())?;
+        let at = &rest[offset..];
+
+        if at.starts_with('(') {
+            return Some(cursor + offset + 1);
+        }
+        if at.starts_with("//") {
+            let end = at.find('\n')?;
+            cursor += offset + end;
+            continue;
+        }
+        if at.starts_with("/*") {
+            let end = at.find("*/")?;
+            cursor += offset + end + 2;
+            continue;
+        }
+        return None;
+    }
 }
 
 /// Leading identifier of an argument, when the argument is exactly one.
@@ -482,6 +501,12 @@ struct FeatureRow {
     area: String,
     #[serde(default)]
     direction: String,
+    #[serde(default)]
+    advertised: bool,
+    #[serde(default)]
+    maturity: String,
+    #[serde(default)]
+    state_owner: String,
 }
 
 /// Collect `features.toml` rows declaring `direction = "server_to_client"`,
@@ -497,7 +522,18 @@ pub(super) fn parse_feature_catalog(source: &str) -> Result<BTreeMap<String, Cat
         .feature
         .into_iter()
         .filter(|row| row.direction == "server_to_client")
-        .map(|row| (row.id, CatalogRow { spec: row.spec, area: row.area }))
+        .map(|row| {
+            (
+                row.id,
+                CatalogRow {
+                    spec: row.spec,
+                    area: row.area,
+                    advertised: row.advertised,
+                    maturity: row.maturity,
+                    state_owner: row.state_owner,
+                },
+            )
+        })
         .collect())
 }
 

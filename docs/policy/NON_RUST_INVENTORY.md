@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12406 |
-| Rust-family files | 3814 |
-| Non-Rust files | 8592 |
-| Allowlisted | 6357 |
+| Total tracked files | 12412 |
+| Rust-family files | 3819 |
+| Non-Rust files | 8593 |
+| Allowlisted | 6358 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
+| config | 491 |
 | documentation | 2804 |
 | generated | 2 |
 | production | 348 |
@@ -6370,6 +6370,7 @@
 | `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/server-request-ownership.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/skill-provider-parity.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/standalone-archive-safety.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
