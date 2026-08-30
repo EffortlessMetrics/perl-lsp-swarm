@@ -104,6 +104,7 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
         controller_only["implementation_prs"] = []
         controller_only["merged_shas"] = []
         controller_only["implementation_contributions"] = []
+        controller_only["landed_integrations"] = []
         controller_only["review"].update(
             {
                 "authority_kind": "semantic_controller",
@@ -114,9 +115,27 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
         )
         MODULE.validate_blocker_closeout(controller_only, lambda _ancestor, _subject: True)
 
+    def test_landed_tree_review_can_bind_the_exact_observed_tree(self) -> None:
+        packet = copy.deepcopy(self.base)
+        packet["review"].update(
+            {
+                "authority_kind": "landed_tree",
+                "authority_number": None,
+                "current_head_synthesis": {
+                    "kind": "repository_receipt",
+                    "ref": f"repo:receipts/landed-tree-review.json@{packet['observed_main_sha']}",
+                    "digest": "sha256:abababababababababababababababababababababababababababababababab",
+                },
+                "reviewed_head": packet["observed_main_sha"],
+            }
+        )
+        model = MODULE.validate_blocker_closeout(packet, lambda _ancestor, _subject: True)
+        self.assertEqual(model.review_authority_kind, "landed_tree")
+        self.assertIsNone(model.review_authority_number)
+
     def test_each_fail_closed_rule_has_a_focused_negative_fixture(self) -> None:
         negative_cases = [case for case in self.cases if case["name"].startswith("reject_")]
-        self.assertGreaterEqual(len(negative_cases), 28)
+        self.assertGreaterEqual(len(negative_cases), 38)
         for case in negative_cases:
             with self.subTest(case=case["name"]):
                 packet = _apply_case(self.base, case)

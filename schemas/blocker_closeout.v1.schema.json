@@ -16,6 +16,7 @@
     "implementation_prs",
     "merged_shas",
     "implementation_contributions",
+    "landed_integrations",
     "review",
     "proof",
     "claim_effect",
@@ -44,6 +45,10 @@
     "implementation_contributions": {
       "type": "array",
       "items": {"$ref": "#/$defs/implementation_contribution"}
+    },
+    "landed_integrations": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/landed_integration"}
     },
     "review": {"$ref": "#/$defs/review"},
     "proof": {"$ref": "#/$defs/proof"},
@@ -76,7 +81,15 @@
         "kind": {"enum": ["github_issue", "github_issue_comment", "github_pull", "github_review", "github_check", "repository_blob", "repository_receipt"]},
         "ref": {"type": "string", "minLength": 1},
         "digest": {"$ref": "#/$defs/digest"}
-      }
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "github_issue"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+$"}}}},
+        {"if": {"properties": {"kind": {"const": "github_issue_comment"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+#issuecomment-[0-9]+$"}}}},
+        {"if": {"properties": {"kind": {"const": "github_pull"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[0-9]+$"}}}},
+        {"if": {"properties": {"kind": {"const": "github_review"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[0-9]+#pullrequestreview-[0-9]+$"}}}},
+        {"if": {"properties": {"kind": {"const": "github_check"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/[0-9]+/job/[0-9]+$"}}}},
+        {"if": {"properties": {"kind": {"enum": ["repository_blob", "repository_receipt"]}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^repo:[^@\\s]+@[0-9a-f]{40}$"}}}}
+      ]
     },
     "semantic_controller": {
       "type": "object",
@@ -91,12 +104,25 @@
     "implementation_contribution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["implementation_pr", "merged_sha", "claim_ids", "relation", "evidence"],
+      "required": ["implementation_pr", "candidate_head_sha", "merged_sha", "claim_ids", "relation", "evidence"],
       "properties": {
         "implementation_pr": {"type": "integer", "minimum": 1},
+        "candidate_head_sha": {"$ref": "#/$defs/sha"},
         "merged_sha": {"$ref": "#/$defs/sha"},
         "claim_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}},
         "relation": {"enum": ["implements", "contributes", "supersedes", "absorbs"]},
+        "evidence": {"$ref": "#/$defs/durable_evidence"}
+      }
+    },
+    "landed_integration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation_pr", "candidate_head_sha", "landed_sha", "kind", "evidence"],
+      "properties": {
+        "implementation_pr": {"type": "integer", "minimum": 1},
+        "candidate_head_sha": {"$ref": "#/$defs/sha"},
+        "landed_sha": {"$ref": "#/$defs/sha"},
+        "kind": {"enum": ["squash", "merge", "fast_forward"]},
         "evidence": {"$ref": "#/$defs/durable_evidence"}
       }
     },
@@ -105,8 +131,8 @@
       "additionalProperties": false,
       "required": ["authority_kind", "authority_number", "current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"],
       "properties": {
-        "authority_kind": {"enum": ["implementation_pr", "semantic_controller"]},
-        "authority_number": {"type": "integer", "minimum": 1},
+        "authority_kind": {"enum": ["implementation_pr", "semantic_controller", "landed_tree"]},
+        "authority_number": {"type": ["integer", "null"], "minimum": 1},
         "current_head_synthesis": {"$ref": "#/$defs/durable_evidence"},
         "reviewed_head": {"$ref": "#/$defs/sha"},
         "status": {"enum": ["current", "stale", "not_proven"]},
@@ -126,7 +152,16 @@
         "proof_class": {"enum": ["product_test", "installed_acceptance", "workflow", "review", "repository_receipt", "mechanism", "fixture"]},
         "claim_scope": {"enum": ["repository_mechanism", "product_behavior", "installed_user_behavior"]},
         "evidence": {"$ref": "#/$defs/durable_evidence"}
-      }
+      },
+      "allOf": [
+        {"if": {"properties": {"proof_class": {"const": "product_test"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "product_behavior"}, "evidence": {"properties": {"kind": {"enum": ["github_check", "repository_receipt"]}}}}}},
+        {"if": {"properties": {"proof_class": {"const": "installed_acceptance"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "installed_user_behavior"}, "evidence": {"properties": {"kind": {"enum": ["github_check", "repository_receipt"]}}}}}},
+        {"if": {"properties": {"proof_class": {"const": "workflow"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"enum": ["github_check", "repository_receipt"]}}}}}},
+        {"if": {"properties": {"proof_class": {"const": "review"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"const": "github_review"}}}}}},
+        {"if": {"properties": {"proof_class": {"const": "repository_receipt"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"const": "repository_receipt"}}}}}},
+        {"if": {"properties": {"proof_class": {"const": "mechanism"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"enum": ["github_check", "repository_blob", "repository_receipt"]}}}}}},
+        {"if": {"properties": {"proof_class": {"const": "fixture"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"enum": ["repository_blob", "repository_receipt"]}}}}}}
+      ]
     },
     "proof": {
       "type": "object",

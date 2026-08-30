@@ -55,15 +55,34 @@ EVIDENCE_KINDS = {
     "repository_blob",
     "repository_receipt",
 }
+PROOF_AUTHORITY_MATRIX = {
+    ("product_test", "product_behavior"): {"github_check", "repository_receipt"},
+    ("installed_acceptance", "installed_user_behavior"): {"github_check", "repository_receipt"},
+    ("workflow", "repository_mechanism"): {"github_check", "repository_receipt"},
+    ("review", "repository_mechanism"): {"github_review"},
+    ("repository_receipt", "repository_mechanism"): {"repository_receipt"},
+    ("mechanism", "repository_mechanism"): {"github_check", "repository_blob", "repository_receipt"},
+    ("fixture", "repository_mechanism"): {"repository_blob", "repository_receipt"},
+}
 PRIVATE_REF = re.compile(
     r"(?:(?:^|repo:)[A-Za-z]:[\\/]|^/tmp/|^/home/|\.codex(?:[\\/]|$)|worktrees?(?:[\\/]|$))",
     re.IGNORECASE,
 )
-GITHUB_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/(?:issues|pull|actions/runs)/[0-9]+(?:[#/?].*)?$")
-ISSUE_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/([0-9]+)(?:[#/?].*)?$")
-PULL_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/pull/([0-9]+)(?:[#/?].*)?$")
+ISSUE_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/([0-9]+)$")
+ISSUE_COMMENT_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/([0-9]+)#issuecomment-[0-9]+$")
+PULL_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/pull/([0-9]+)$")
 PULL_REVIEW_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/pull/([0-9]+)#pullrequestreview-[0-9]+$")
-REPOSITORY_REF = re.compile(r"^repo:[^@\s]+@[0-9a-f]{40}$")
+CHECK_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/[0-9]+/job/[0-9]+$")
+REPOSITORY_REF = re.compile(r"^repo:[^@\s]+@([0-9a-f]{40})$")
+EVIDENCE_REF_PATTERNS = {
+    "github_issue": ISSUE_REF,
+    "github_issue_comment": ISSUE_COMMENT_REF,
+    "github_pull": PULL_REF,
+    "github_review": PULL_REVIEW_REF,
+    "github_check": CHECK_REF,
+    "repository_blob": REPOSITORY_REF,
+    "repository_receipt": REPOSITORY_REF,
+}
 
 
 def _require(condition: bool, message: str) -> None:
@@ -131,10 +150,10 @@ class DurableEvidence:
         _require(kind in EVIDENCE_KINDS, f"{name}.kind is invalid")
         reference = _string(data["ref"], f"{name}.ref")
         _require(PRIVATE_REF.search(reference) is None, f"{name}.ref must not contain a private or worktree path")
-        if kind.startswith("github_"):
-            _require(GITHUB_REF.fullmatch(reference) is not None, f"{name}.ref must be a durable repository GitHub reference")
-        else:
-            _require(REPOSITORY_REF.fullmatch(reference) is not None, f"{name}.ref must bind a repository path to an exact SHA")
+        _require(
+            EVIDENCE_REF_PATTERNS[kind].fullmatch(reference) is not None,
+            f"{name}.ref does not match exact grammar for {kind}",
+        )
         digest = _string(data["digest"], f"{name}.digest")
         _require(DIGEST.fullmatch(digest) is not None, f"{name}.digest must be sha256:<64 lowercase hex>")
         return cls(kind, reference, digest)
@@ -143,6 +162,7 @@ class DurableEvidence:
 @dataclass(frozen=True)
 class ImplementationContribution:
     implementation_pr: int
+    candidate_head_sha: str
     merged_sha: str
     claim_ids: tuple[str, ...]
     relation: str
@@ -151,14 +171,38 @@ class ImplementationContribution:
     @classmethod
     def parse(cls, value: Any, name: str) -> "ImplementationContribution":
         data = _object(value, name)
-        _exact_keys(data, name, {"implementation_pr", "merged_sha", "claim_ids", "relation", "evidence"})
+        _exact_keys(data, name, {"implementation_pr", "candidate_head_sha", "merged_sha", "claim_ids", "relation", "evidence"})
         relation = _string(data["relation"], f"{name}.relation")
         _require(relation in {"implements", "contributes", "supersedes", "absorbs"}, f"{name}.relation is invalid")
         return cls(
             _positive_int(data["implementation_pr"], f"{name}.implementation_pr"),
+            _sha(data["candidate_head_sha"], f"{name}.candidate_head_sha"),
             _sha(data["merged_sha"], f"{name}.merged_sha"),
             _unique_strings(data["claim_ids"], f"{name}.claim_ids", nonempty=True, identifiers=True),
             relation,
+            DurableEvidence.parse(data["evidence"], f"{name}.evidence"),
+        )
+
+
+@dataclass(frozen=True)
+class LandedIntegration:
+    implementation_pr: int
+    candidate_head_sha: str
+    landed_sha: str
+    kind: str
+    evidence: DurableEvidence
+
+    @classmethod
+    def parse(cls, value: Any, name: str) -> "LandedIntegration":
+        data = _object(value, name)
+        _exact_keys(data, name, {"implementation_pr", "candidate_head_sha", "landed_sha", "kind", "evidence"})
+        kind = _string(data["kind"], f"{name}.kind")
+        _require(kind in {"squash", "merge", "fast_forward"}, f"{name}.kind is invalid")
+        return cls(
+            _positive_int(data["implementation_pr"], f"{name}.implementation_pr"),
+            _sha(data["candidate_head_sha"], f"{name}.candidate_head_sha"),
+            _sha(data["landed_sha"], f"{name}.landed_sha"),
+            kind,
             DurableEvidence.parse(data["evidence"], f"{name}.evidence"),
         )
 
@@ -183,18 +227,27 @@ class ProofObservation:
         _require(status in PROOF_STATUSES, f"{name}.status is invalid")
         _require(proof_class in PROOF_CLASSES, f"{name}.proof_class is invalid")
         _require(claim_scope in CLAIM_SCOPES, f"{name}.claim_scope is invalid")
+        evidence = DurableEvidence.parse(data["evidence"], f"{name}.evidence")
+        admitted_evidence = PROOF_AUTHORITY_MATRIX.get((proof_class, claim_scope))
         _require(
-            not (proof_class in {"mechanism", "fixture"} and claim_scope != "repository_mechanism"),
-            f"{name} cannot represent mechanism or fixture evidence as product behavior",
+            admitted_evidence is not None and evidence.kind in admitted_evidence,
+            f"{name} proof_class/claim_scope/evidence kind is not admitted by the proof authority matrix",
         )
+        subject_sha = _sha(data["subject_sha"], f"{name}.subject_sha")
+        if evidence.kind == "repository_receipt":
+            receipt_match = REPOSITORY_REF.fullmatch(evidence.ref)
+            _require(
+                receipt_match is not None and receipt_match.group(1) == subject_sha,
+                f"{name} repository receipt subject SHA does not match proof observation subject_sha",
+            )
         return cls(
             _identifier(data["id"], f"{name}.id"),
             _unique_strings(data["claim_ids"], f"{name}.claim_ids", nonempty=True, identifiers=True),
-            _sha(data["subject_sha"], f"{name}.subject_sha"),
+            subject_sha,
             status,
             proof_class,
             claim_scope,
-            DurableEvidence.parse(data["evidence"], f"{name}.evidence"),
+            evidence,
         )
 
 
@@ -208,8 +261,9 @@ class BlockerCloseoutV1:
     status: str
     observed_main_sha: str
     contributions: tuple[ImplementationContribution, ...]
+    landed_integrations: tuple[LandedIntegration, ...]
     review_authority_kind: str
-    review_authority_number: int
+    review_authority_number: int | None
     review_evidence: DurableEvidence
     review_status: str
     reviewed_head: str
@@ -227,6 +281,8 @@ def _all_evidence(packet: dict[str, Any]) -> Iterable[DurableEvidence]:
     yield DurableEvidence.parse(controller["evidence"], "semantic_controller.evidence")
     for index, item in enumerate(packet["implementation_contributions"]):
         yield DurableEvidence.parse(_object(item, f"implementation_contributions[{index}]")["evidence"], f"implementation_contributions[{index}].evidence")
+    for index, item in enumerate(packet["landed_integrations"]):
+        yield DurableEvidence.parse(_object(item, f"landed_integrations[{index}]")["evidence"], f"landed_integrations[{index}].evidence")
     review = _object(packet["review"], "review")
     yield DurableEvidence.parse(review["current_head_synthesis"], "review.current_head_synthesis")
     yield from _parse_evidence_array(review["finding_refs"], "review.finding_refs")
@@ -250,7 +306,7 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
     root_keys = {
         "schema_version", "release", "blocker_id", "controller_issue", "semantic_controller",
         "status", "observed_main_sha", "implementation_prs", "merged_shas",
-        "implementation_contributions", "review", "proof", "claim_effect", "follow_ups",
+        "implementation_contributions", "landed_integrations", "review", "proof", "claim_effect", "follow_ups",
         "invalidation_paths", "shared_implementation_relations",
     }
     _exact_keys(packet, "packet", root_keys)
@@ -272,7 +328,8 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
         controller_evidence.kind in {"github_issue", "github_issue_comment"},
         "semantic_controller.evidence must be issue authority",
     )
-    controller_match = ISSUE_REF.fullmatch(controller_evidence.ref)
+    controller_pattern = ISSUE_REF if controller_evidence.kind == "github_issue" else ISSUE_COMMENT_REF
+    controller_match = controller_pattern.fullmatch(controller_evidence.ref)
     _require(
         controller_match is not None and int(controller_match.group(1)) == controller_issue,
         "semantic_controller.evidence ref does not match controller_issue",
@@ -306,11 +363,39 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
             contribution_match is not None and int(contribution_match.group(1)) == contribution.implementation_pr,
             "implementation contribution evidence ref does not match implementation_pr",
         )
+
+    raw_integrations = packet["landed_integrations"]
+    _require(isinstance(raw_integrations, list), "landed_integrations must be an array")
+    integrations = tuple(LandedIntegration.parse(item, f"landed_integrations[{index}]") for index, item in enumerate(raw_integrations))
+    integration_prs = tuple(item.implementation_pr for item in integrations)
+    _require(len(integration_prs) == len(set(integration_prs)), "landed integration PRs cannot be double-counted")
+    _require(tuple(sorted(integration_prs)) == implementation_prs, "landed_integrations must exactly cover implementation contributions")
+    contributions_by_pr = {item.implementation_pr: item for item in contributions}
+    for integration in integrations:
+        contribution = contributions_by_pr[integration.implementation_pr]
+        _require(
+            integration.candidate_head_sha == contribution.candidate_head_sha,
+            "landed integration candidate head contradicts implementation contribution",
+        )
+        _require(
+            integration.landed_sha == contribution.merged_sha,
+            "landed integration SHA contradicts implementation contribution",
+        )
+        _require(integration.evidence.kind == "repository_receipt", "landed integration requires repository-receipt authority")
+        receipt_match = REPOSITORY_REF.fullmatch(integration.evidence.ref)
+        _require(
+            receipt_match is not None and receipt_match.group(1) == integration.landed_sha,
+            "landed integration receipt SHA does not match landed_sha",
+        )
+        if integration.kind == "squash":
+            _require(integration.candidate_head_sha != integration.landed_sha, "squash integration must distinguish candidate head from landed SHA")
+        elif integration.kind == "fast_forward":
+            _require(integration.candidate_head_sha == integration.landed_sha, "fast-forward integration requires candidate head to equal landed SHA")
         try:
-            reachable = is_ancestor(contribution.merged_sha, observed_main_sha)
+            reachable = is_ancestor(integration.landed_sha, observed_main_sha)
         except Exception as error:  # instrument failure must fail closed
-            raise ValueError(f"merged SHA reachability is not proven: {error}") from error
-        _require(reachable, f"merged SHA {contribution.merged_sha} is not reachable from observed_main_sha")
+            raise ValueError(f"landed SHA reachability is not proven: {error}") from error
+        _require(reachable, f"landed SHA {integration.landed_sha} is not reachable from observed_main_sha")
 
     review = _object(packet["review"], "review")
     _exact_keys(
@@ -319,10 +404,13 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
         {"authority_kind", "authority_number", "current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"},
     )
     review_authority_kind = _string(review["authority_kind"], "review.authority_kind")
-    _require(review_authority_kind in {"implementation_pr", "semantic_controller"}, "review.authority_kind is invalid")
-    review_authority_number = _positive_int(review["authority_number"], "review.authority_number")
+    _require(review_authority_kind in {"implementation_pr", "semantic_controller", "landed_tree"}, "review.authority_kind is invalid")
     review_evidence = DurableEvidence.parse(review["current_head_synthesis"], "review.current_head_synthesis")
+    reviewed_head = _sha(review["reviewed_head"], "review.reviewed_head")
+    review_status = _string(review["status"], "review.status")
+    _require(review_status in {"current", "stale", "not_proven"}, "review.status is invalid")
     if review_authority_kind == "implementation_pr":
+        review_authority_number = _positive_int(review["authority_number"], "review.authority_number")
         _require(review_authority_number in implementation_prs, "review authority is not a modeled implementation PR")
         review_match = PULL_REVIEW_REF.fullmatch(review_evidence.ref)
         _require(
@@ -331,24 +419,39 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
             and int(review_match.group(1)) == review_authority_number,
             "review synthesis evidence ref does not match implementation PR authority",
         )
-    else:
+        if review_status == "current":
+            _require(
+                reviewed_head == contributions_by_pr[review_authority_number].candidate_head_sha,
+                "current PR review head does not match modeled candidate head",
+            )
+    elif review_authority_kind == "semantic_controller":
+        review_authority_number = _positive_int(review["authority_number"], "review.authority_number")
         _require(review_authority_number == controller_issue, "review authority is not the semantic controller")
-        review_match = ISSUE_REF.fullmatch(review_evidence.ref)
+        review_pattern = ISSUE_REF if review_evidence.kind == "github_issue" else ISSUE_COMMENT_REF
+        review_match = review_pattern.fullmatch(review_evidence.ref)
         _require(
             review_evidence.kind in {"github_issue", "github_issue_comment"}
             and review_match is not None
             and int(review_match.group(1)) == controller_issue,
             "review synthesis evidence ref does not match semantic-controller authority",
         )
-    reviewed_head = _sha(review["reviewed_head"], "review.reviewed_head")
-    review_status = _string(review["status"], "review.status")
-    _require(review_status in {"current", "stale", "not_proven"}, "review.status is invalid")
+        if review_status == "current":
+            _require(reviewed_head == observed_main_sha, "current semantic-controller review refers to a superseded landed head")
+    else:
+        _require(review["authority_number"] is None, "landed-tree review authority_number must be null")
+        review_authority_number = None
+        _require(review_evidence.kind == "repository_receipt", "landed-tree review requires repository-receipt authority")
+        receipt_match = REPOSITORY_REF.fullmatch(review_evidence.ref)
+        _require(
+            receipt_match is not None and receipt_match.group(1) == reviewed_head,
+            "landed-tree review receipt SHA does not match reviewed_head",
+        )
+        if review_status == "current":
+            _require(reviewed_head == observed_main_sha, "current landed-tree review refers to a superseded landed head")
     unresolved_findings = review["unresolved_material_findings"]
     _require(type(unresolved_findings) is int and unresolved_findings >= 0, "review.unresolved_material_findings must be a non-negative integer")
     finding_refs = _parse_evidence_array(review["finding_refs"], "review.finding_refs")
     _require(len(finding_refs) >= unresolved_findings, "unresolved material findings require durable finding references")
-    if review_status == "current":
-        _require(reviewed_head == observed_main_sha, "current review refers to a superseded candidate head")
 
     proof = _object(packet["proof"], "proof")
     _exact_keys(proof, "proof", {"required", "passed", "not_proven", "observations"})
@@ -384,14 +487,14 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
         for claim_id in observation.claim_ids
     }
     if status == "resolved":
-        _require(review_authority_kind == "implementation_pr", "resolved requires implementation-PR review authority")
+        _require(review_authority_kind in {"implementation_pr", "landed_tree"}, "resolved requires implementation-PR candidate or landed-tree review authority")
         _require(review_status == "current", "resolved requires current review")
         _require(unresolved_findings == 0, "resolved cannot retain unresolved material findings")
         _require(not not_proven and all(item.status == "passed" for item in observations), "resolved requires every required proof to pass")
         _require(set(preserves) == set(controller_claims) and not narrows, "resolved must preserve every semantic-controller claim")
         _require(set(preserves) <= passed_claim_coverage, "resolved preserved claim lacks observation proof coverage")
     elif status == "bounded_limitation":
-        _require(review_authority_kind == "implementation_pr", "bounded_limitation requires implementation-PR review authority")
+        _require(review_authority_kind in {"implementation_pr", "landed_tree"}, "bounded_limitation requires implementation-PR candidate or landed-tree review authority")
         _require(review_status == "current", "bounded_limitation requires current review")
         _require(unresolved_findings == 0, "bounded_limitation cannot retain unresolved material findings")
         _require(all(item.status == "passed" for item in observations), "bounded_limitation requires every required proof to pass within its narrowed claim")
@@ -438,7 +541,7 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
 
     return BlockerCloseoutV1(
         release, blocker_id, controller_issue, controller_claims,
-        controller_evidence, status, observed_main_sha, contributions,
+        controller_evidence, status, observed_main_sha, contributions, integrations,
         review_authority_kind, review_authority_number, review_evidence,
         review_status, reviewed_head, unresolved_findings, observations,
     )

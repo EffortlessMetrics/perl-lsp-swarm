@@ -19,6 +19,7 @@
   "implementation_contributions": [
     {
       "implementation_pr": 90002,
+      "candidate_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "merged_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
       "claim_ids": ["example.installed", "example.product"],
       "relation": "implements",
@@ -26,6 +27,19 @@
         "kind": "github_pull",
         "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002",
         "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    }
+  ],
+  "landed_integrations": [
+    {
+      "implementation_pr": 90002,
+      "candidate_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "landed_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+      "kind": "squash",
+      "evidence": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/example-integration.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+        "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
       }
     }
   ],
@@ -37,7 +51,7 @@
       "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002#pullrequestreview-1",
       "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
     },
-    "reviewed_head": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+    "reviewed_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "status": "current",
     "unresolved_material_findings": 0,
     "finding_refs": []
@@ -69,7 +83,7 @@
         "claim_scope": "product_behavior",
         "evidence": {
           "kind": "github_check",
-          "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90003",
+          "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90003/job/90004",
           "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
         }
       }
