@@ -218,6 +218,12 @@ fn parse_json(bytes: &[u8], label: &str) -> Res<Value> {
     })
 }
 
+/// Read and parse the registry manifest without validating it.
+///
+/// This is deliberately *not* an admission gate: it will happily return a
+/// manifest that [`validate_manifest_file`] would reject. Every caller that
+/// renders reason text or projects a consequence must validate first, or a
+/// locally drifted registry can produce confident but wrong output.
 pub fn load_manifest(root: &Path) -> Res<Value> {
     let bytes = read_repo_bytes(root, MANIFEST_PATH)?;
     parse_json(&bytes, MANIFEST_PATH)
@@ -350,6 +356,10 @@ pub fn additional_reasons_for<'a>(
 // Listing and explanation
 // ---------------------------------------------------------------------------
 
+/// Collect every declared reason ID, primary reasons first then additional.
+///
+/// Order within each family is the manifest's own array order, which for
+/// `primary_reasons` is also first-match evaluation order.
 pub fn list_reason_ids(manifest: &Value) -> Vec<String> {
     let mut ids = Vec::new();
     for key in ["primary_reasons", "additional_reasons"] {
@@ -364,6 +374,10 @@ pub fn list_reason_ids(manifest: &Value) -> Vec<String> {
     ids
 }
 
+/// Render one reason row as pretty JSON, or `None` if no such reason exists.
+///
+/// Searches `primary_reasons` then `additional_reasons`. The caller is
+/// responsible for having validated the manifest — see [`load_manifest`].
 pub fn explain_reason(manifest: &Value, reason_id: &str) -> Option<String> {
     for key in ["primary_reasons", "additional_reasons"] {
         let Some(reasons) = manifest.get(key).and_then(Value::as_array) else {
@@ -387,6 +401,14 @@ pub fn explain_reason(manifest: &Value, reason_id: &str) -> Option<String> {
 // Manifest validation
 // ---------------------------------------------------------------------------
 
+/// Validate the committed registry, and return what it covers.
+///
+/// This is the single admission gate for the registry. It checks canonical
+/// bytes, agreement with both the registry schema and the input transition
+/// schema, vocabulary, actions, templates, selectors, totality over the closed
+/// cross-product, first-match reachability, and that no ordinary reason
+/// shadows an `inv_` invariant. Any failure is reported as a violation naming
+/// the reason, the field, and why the rule exists.
 pub fn validate_manifest_file(root: &Path) -> Res<ValidationStats> {
     let bytes = read_repo_bytes(root, MANIFEST_PATH)?;
     let manifest = parse_json(&bytes, MANIFEST_PATH)?;
@@ -1370,6 +1392,12 @@ pub struct TransitionPacket {
     pub route_mode: String,
 }
 
+/// Admit a transition packet and return only its typed combination.
+///
+/// A thin projection of [`read_packet`] for callers that need the selector
+/// coordinates and not the rest of the admitted record. Admission still
+/// applies in full, so an inadmissible packet is an error rather than a
+/// diagnosable outcome.
 pub fn combination_from_packet(packet: &Value) -> Res<Combination> {
     read_packet(packet).map(|admitted| admitted.combination)
 }
