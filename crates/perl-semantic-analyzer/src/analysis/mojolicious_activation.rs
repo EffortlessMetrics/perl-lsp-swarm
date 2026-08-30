@@ -25,8 +25,9 @@
 //! authority this profile is required to consume.
 
 use crate::ast::{Node, NodeKind};
+use perl_semantic_facts::framework_adapters::mojolicious::MOJOLICIOUS_LITE_MODULE;
 use perl_semantic_facts::framework_adapters::mojolicious::{
-    MojoliciousLiteImportEvidence, MojoliciousSiteAnchor, parse_mojolicious_lite_import_args,
+    MojoliciousLiteImportEvidence, MojoliciousSiteAnchor, mojolicious_lite_import_evidence,
 };
 use perl_semantic_facts::{AnchorId, FileId, SourceGeneration};
 
@@ -64,11 +65,15 @@ fn is_exact_mojolicious_lite_import(module: &str) -> bool {
 /// Extract every exact Mojolicious::Lite activation site from `ast`, in
 /// source order.
 ///
-/// `generation` is the current source generation of that file and is
-/// retained on every site.
+/// `source` is the text the AST was parsed from; it distinguishes
+/// `use Mojolicious::Lite;` from `use Mojolicious::Lite ();`, which the parser
+/// reports with the same empty argument vector but which Perl treats
+/// differently. `generation` is the current source generation of that file and
+/// is retained on every site.
 #[must_use]
 pub fn extract_mojolicious_lite_activation_sites(
     ast: &Node,
+    source: &str,
     file_id: FileId,
     generation: SourceGeneration,
 ) -> Vec<MojoliciousLiteActivationSite> {
@@ -77,12 +82,35 @@ pub fn extract_mojolicious_lite_activation_sites(
     // default activation scope for script-style Lite apps, which are the
     // overwhelmingly common shape.
     let mut current_package: Option<String> = Some("main".to_string());
-    walk_activation_sites(ast, file_id, generation, &mut current_package, &mut sites);
+    walk_activation_sites(ast, source, file_id, generation, &mut current_package, &mut sites);
     sites
+}
+
+/// Whether one `use` statement carries an explicit empty import list.
+///
+/// `use Mojolicious::Lite ();` calls no `import`, so the Lite DSL is never
+/// installed. The parser reports it with the same empty argument vector as the
+/// bare import, so the distinction is recovered from the statement's own source
+/// interval. An unlocatable interval never fabricates suppression.
+fn has_explicit_empty_import(source: &str, span_start: u32, span_end: u32) -> bool {
+    let start = span_start as usize;
+    let end = (span_end as usize).min(source.len());
+    if start >= end {
+        return false;
+    }
+    let Some(statement) = source.get(start..end) else {
+        return false;
+    };
+    let Some(module_at) = statement.find(MOJOLICIOUS_LITE_MODULE) else {
+        return false;
+    };
+    let rest = &statement[module_at + MOJOLICIOUS_LITE_MODULE.len()..];
+    rest.trim_start().starts_with("()")
 }
 
 fn walk_activation_sites(
     node: &Node,
+    source: &str,
     file_id: FileId,
     generation: SourceGeneration,
     current_package: &mut Option<String>,
@@ -104,11 +132,14 @@ fn walk_activation_sites(
                     None,
                     generation.clone(),
                 ),
-                evidence: parse_mojolicious_lite_import_args(args),
+                evidence: mojolicious_lite_import_evidence(
+                    args,
+                    has_explicit_empty_import(source, span_start, span_end),
+                ),
             });
         }
         NodeKind::Package { name, block: Some(block), .. } => {
-            walk_package_block(block, name, file_id, generation, sites);
+            walk_package_block(block, name, source, file_id, generation, sites);
             return;
         }
         NodeKind::Package { name, block: None, .. } => {
@@ -120,6 +151,7 @@ fn walk_activation_sites(
             for statement in statements {
                 walk_activation_sites(
                     statement,
+                    source,
                     file_id,
                     generation.clone(),
                     current_package,
@@ -136,6 +168,7 @@ fn walk_activation_sites(
             for statement in statements {
                 walk_activation_sites(
                     statement,
+                    source,
                     file_id,
                     generation.clone(),
                     &mut block_package,
@@ -147,13 +180,14 @@ fn walk_activation_sites(
         _ => {}
     }
     for child in node.children() {
-        walk_activation_sites(child, file_id, generation.clone(), current_package, sites);
+        walk_activation_sites(child, source, file_id, generation.clone(), current_package, sites);
     }
 }
 
 fn walk_package_block(
     block: &Node,
     name: &str,
+    source: &str,
     file_id: FileId,
     generation: SourceGeneration,
     sites: &mut Vec<MojoliciousLiteActivationSite>,
@@ -163,6 +197,7 @@ fn walk_package_block(
         for statement in statements {
             walk_activation_sites(
                 statement,
+                source,
                 file_id,
                 generation.clone(),
                 &mut package_scope,
@@ -182,7 +217,12 @@ mod tests {
     fn sites(code: &str) -> Vec<MojoliciousLiteActivationSite> {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        extract_mojolicious_lite_activation_sites(&ast, FileId(1), SourceGeneration::known("gen-1"))
+        extract_mojolicious_lite_activation_sites(
+            &ast,
+            code,
+            FileId(1),
+            SourceGeneration::known("gen-1"),
+        )
     }
 
     #[test]
@@ -265,6 +305,45 @@ mod tests {
         assert!(anchor.span_end_byte as usize <= code.len());
         assert_eq!(anchor.source_generation, SourceGeneration::known("gen-1"));
         assert_eq!(anchor.parent_range, None, "a Lite import has no literal parent spelling");
+    }
+
+    #[test]
+    fn an_explicit_empty_import_list_is_recorded_as_suppressed() {
+        // `use Mojolicious::Lite ();` loads the module but calls no `import`,
+        // so the Lite DSL is never installed. The parser reports the same
+        // empty argument vector as the bare import, so the distinction comes
+        // from the statement's own source interval.
+        let found = sites("use Mojolicious::Lite ();\n");
+        assert_eq!(found.len(), 1, "the site is still observed; only the role is refused");
+        assert_eq!(found[0].evidence.selection, MojoliciousLiteImportSelection::ImportSuppressed);
+    }
+
+    #[test]
+    fn a_bare_import_beside_the_suppressed_form_stays_default() {
+        // Negative control: the ordinary import must not be swept up by the
+        // suppression check.
+        let found = sites("use Mojolicious::Lite;\n");
+        assert_eq!(found[0].evidence.selection, MojoliciousLiteImportSelection::Default);
+    }
+
+    #[test]
+    fn a_vstring_version_import_still_activates() {
+        // The parser puts a v-string in the argument list rather than folding
+        // it into the module name, unlike the numeric spelling.
+        let found = sites("use Mojolicious::Lite v9.34;\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].evidence.selection, MojoliciousLiteImportSelection::Default);
+        assert!(found[0].evidence.unmodeled_options.is_empty());
+    }
+
+    #[test]
+    fn a_hash_import_argument_is_a_dynamic_boundary() {
+        let found = sites("use Mojolicious::Lite %options;\n");
+        assert_eq!(found.len(), 1);
+        assert!(matches!(
+            found[0].evidence.selection,
+            MojoliciousLiteImportSelection::Dynamic { .. }
+        ));
     }
 
     #[test]

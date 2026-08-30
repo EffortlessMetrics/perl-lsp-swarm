@@ -69,6 +69,7 @@ fn lite_facts(code: &str, generation: &str) -> Vec<MojoliciousActivationFacts> {
     let ast = must(parser.parse());
     let sites = extract_mojolicious_lite_activation_sites(
         &ast,
+        code,
         FileId(1),
         SourceGeneration::known(generation),
     );
@@ -284,6 +285,7 @@ fn an_unresolvable_framework_retires_the_lite_role() {
     let ast = must(parser.parse());
     let sites = extract_mojolicious_lite_activation_sites(
         &ast,
+        code,
         FileId(1),
         SourceGeneration::known(GENERATION),
     );
@@ -306,6 +308,34 @@ fn an_unresolvable_framework_retires_the_lite_role() {
         .map(|site| mojolicious_lite_activation_facts(&detection, &site.anchor, &site.evidence))
         .collect();
     assert_eq!(roles(&facts), vec![None]);
+}
+
+#[test]
+fn a_suppressed_import_loads_the_module_but_owns_no_role() {
+    // End-to-end control for the `use Module ();` Perl semantics: the module
+    // is loaded, `import` is never called, so no Lite DSL and no role.
+    let facts = lite_facts("use Mojolicious::Lite ();\n\n1;\n", GENERATION);
+    assert_eq!(roles(&facts), vec![None]);
+    assert!(matches!(
+        facts[0].outcome,
+        MojoliciousActivationOutcome::AbsentWithCompleteEvidence { .. }
+    ));
+}
+
+#[test]
+fn a_vstring_version_requirement_still_owns_the_lite_role() {
+    let facts = lite_facts("use Mojolicious::Lite v9.34;\n\nget '/' => sub { 1 };\n", GENERATION);
+    assert_eq!(roles(&facts), vec![Some(MojoliciousRole::LiteApplication)]);
+}
+
+#[test]
+fn a_computed_import_argument_owns_no_role() {
+    let facts = lite_facts("use Mojolicious::Lite %options;\n", GENERATION);
+    assert_eq!(roles(&facts), vec![None]);
+    assert!(matches!(
+        facts[0].outcome,
+        MojoliciousActivationOutcome::DynamicOrUnmodeledParent { .. }
+    ));
 }
 
 #[test]

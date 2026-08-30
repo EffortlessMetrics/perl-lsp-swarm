@@ -194,6 +194,21 @@ pub fn detect_mojolicious_lite(input: &AdapterDetectionInput) -> AdapterDetectio
             },
         ),
         ModuleSelectorOutcome::Matched { activation, evidence_class } => {
+            if activation.module_name != MOJOLICIOUS_LITE_MODULE {
+                // The row is filed under the owned selector but resolves to a
+                // different module. That contradiction is never Mojolicious
+                // evidence, for this adapter or for a direct detector consumer.
+                return AdapterDetectionResult::for_input(
+                    input,
+                    DetectionOutcome::Conflicting {
+                        conflict_descriptions: vec![format!(
+                            "selector `{MOJOLICIOUS_LITE_MODULE}` matched module `{}`; the \
+                             owned selector must resolve to its own module",
+                            activation.module_name
+                        )],
+                    },
+                );
+            }
             let identity_confidence = evidence_class.confidence_ceiling();
             if identity_confidence != Confidence::High {
                 // A module merely named Mojolicious::Lite without resolved
@@ -271,6 +286,10 @@ pub enum MojoliciousLiteImportSelection {
     Default,
     /// `use Mojolicious::Lite -signatures;` — the reviewed signatures form.
     Signatures,
+    /// `use Mojolicious::Lite ();` — an explicit empty import list. Perl
+    /// calls no `import`, so the Lite DSL is never installed and the package
+    /// owns no Lite role even though the module is loaded.
+    ImportSuppressed,
     /// Computed import argument — an explicit dynamic boundary.
     Dynamic {
         /// Bounded dynamic-boundary explanation.
@@ -307,8 +326,38 @@ pub struct MojoliciousLiteImportEvidence {
 /// normalized into a profile.
 #[must_use]
 pub fn parse_mojolicious_lite_import_args(args: &[String]) -> MojoliciousLiteImportEvidence {
+    mojolicious_lite_import_evidence(args, false)
+}
+
+/// Build Lite import evidence from parser argument tokens plus the source-level
+/// fact of whether the import carried an explicit empty list.
+///
+/// The parser reports `use Mojolicious::Lite;` and `use Mojolicious::Lite ();`
+/// with the same empty argument vector, but Perl treats them differently: the
+/// explicit empty list suppresses `import` entirely, so the Lite DSL is never
+/// installed. `explicit_empty_import` carries that distinction from the source
+/// side; it is only meaningful when `args` is empty.
+///
+/// A leading v-string (`use Mojolicious::Lite v9.34;`) is a version
+/// requirement, not an import option: Perl still calls `import` with no
+/// arguments, so it does not widen the reviewed profile. The numeric spelling
+/// (`use Mojolicious::Lite 9.34;`) never reaches here — the parser folds it
+/// into the module name instead.
+#[must_use]
+pub fn mojolicious_lite_import_evidence(
+    args: &[String],
+    explicit_empty_import: bool,
+) -> MojoliciousLiteImportEvidence {
     let mut evidence = MojoliciousLiteImportEvidence::default();
-    for token in normalize_import_tokens(args) {
+    let tokens = normalize_import_tokens(args);
+    if tokens.is_empty() && explicit_empty_import {
+        evidence.selection = MojoliciousLiteImportSelection::ImportSuppressed;
+        return evidence;
+    }
+    for (index, token) in tokens.into_iter().enumerate() {
+        if index == 0 && is_version_requirement(&token) {
+            continue;
+        }
         if token == "-signatures" {
             evidence.signatures = true;
             if evidence.selection == MojoliciousLiteImportSelection::Default {
@@ -357,11 +406,24 @@ fn dynamic_token_reason(token: &str) -> Option<String> {
     let interpolates = token.starts_with('"')
         && token.ends_with('"')
         && token.len() >= 2
-        && token[1..token.len() - 1].contains(['$', '@']);
-    if token.starts_with(['$', '@']) || interpolates {
+        && token[1..token.len() - 1].contains(['$', '@', '%']);
+    if token.starts_with(['$', '@', '%', '\\']) || interpolates {
         return Some(format!("computed import argument `{token}` is a dynamic boundary"));
     }
     None
+}
+
+/// Whether one leading import token is a v-string version requirement.
+///
+/// `use Mojolicious::Lite v9.34;` requires a version and still imports the
+/// DSL with no arguments; the token is not an import option.
+fn is_version_requirement(token: &str) -> bool {
+    let Some(digits) = token.strip_prefix('v') else {
+        return false;
+    };
+    !digits.is_empty()
+        && digits.starts_with(|c: char| c.is_ascii_digit())
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
 }
 
 /// Load-bearing site identity for one Mojolicious activation site.
@@ -611,6 +673,14 @@ pub fn mojolicious_lite_activation_facts(
                 MojoliciousActivationOutcome::DynamicOrUnmodeledParent { reason: reason.clone() };
             return facts;
         }
+        MojoliciousLiteImportSelection::ImportSuppressed => {
+            facts.outcome = MojoliciousActivationOutcome::AbsentWithCompleteEvidence {
+                reason: "`use Mojolicious::Lite ();` suppresses `import`, so the Lite DSL is \
+                         never installed and the package owns no Lite role"
+                    .to_string(),
+            };
+            return facts;
+        }
         _ => {}
     }
 
@@ -649,8 +719,11 @@ pub fn mojolicious_lite_activation_facts(
         };
         return facts;
     };
-    facts.confidence = *confidence;
-    facts.framework_version = framework_version.clone().unwrap_or_default();
+    // Detection-reported confidence and version stay local until the
+    // evidence behind them is reconciled: a refused fact must never publish
+    // an unverified framework version as if it had been observed.
+    let reported_confidence = *confidence;
+    let reported_version = framework_version.clone().unwrap_or_default();
 
     // 5. Evidence completeness: a raw or deserialized `Detected` result does
     // not become exact activation without its contributing module identity,
@@ -688,7 +761,11 @@ pub fn mojolicious_lite_activation_facts(
         return facts;
     }
 
-    // 8. Exact Lite activation under the reviewed profile.
+    // 8. Exact Lite activation under the reviewed profile. Only here, with
+    // every generation current and the evidence reconciled, do the observed
+    // confidence and framework version become published facts.
+    facts.confidence = reported_confidence;
+    facts.framework_version = reported_version;
     facts.outcome =
         MojoliciousActivationOutcome::ExactActivation { role: MojoliciousRole::LiteApplication };
     facts
@@ -837,18 +914,45 @@ fn identity_reconciliation_reason(detection: &AdapterDetectionResult) -> Option<
             owned.len()
         ));
     };
-    match &evaluation.outcome {
-        ModuleSelectorOutcome::Matched { activation, .. }
-            if activation.module_name == MOJOLICIOUS_LITE_MODULE
-                && activation.generation == detection.project_generation =>
-        {
-            None
-        }
-        _ => Some(
+    let ModuleSelectorOutcome::Matched { activation, .. } = &evaluation.outcome else {
+        return Some(
             "the owned selector's terminal evaluation does not reconcile with the detection"
                 .to_string(),
-        ),
+        );
+    };
+    if activation.module_name != MOJOLICIOUS_LITE_MODULE
+        || activation.generation != detection.project_generation
+    {
+        return Some(
+            "the owned selector's terminal evaluation does not reconcile with the detection"
+                .to_string(),
+        );
     }
+    // The result's own module and version evidence must be the input row's,
+    // not merely present. A deserialized or mutated result can carry a valid
+    // input identity beside fabricated contributing evidence; binding them
+    // here is what stops that from becoming exact activation.
+    if detection.contributing_modules.as_slice() != std::slice::from_ref(activation) {
+        return Some(
+            "contributing module evidence does not equal the owned selector's matched \
+             activation; fabricated identities cannot become exact activation"
+                .to_string(),
+        );
+    }
+    if detection.version_evidence.as_ref() != activation.observed_version.as_ref() {
+        return Some(
+            "version evidence does not equal the matched activation's observed version".to_string(),
+        );
+    }
+    if let DetectionOutcome::Detected { framework_version: Some(reported), .. } = &detection.outcome
+        && activation.observed_version.as_ref().map(|evidence| &evidence.version) != Some(reported)
+    {
+        return Some(
+            "reported framework version does not equal the matched activation's observed version"
+                .to_string(),
+        );
+    }
+    None
 }
 
 fn staleness_reason(
@@ -1602,6 +1706,179 @@ mod tests {
                 "derived missing {expected}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Evidence integrity (Devin review on PR #14266)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_selector_row_resolving_to_another_module_is_a_conflict() {
+        // The row is filed under `Mojolicious::Lite` but resolves to a
+        // different module. A direct detector consumer must not receive a
+        // Detected Mojolicious identity from it.
+        let input = AdapterDetectionInput::new(
+            mojolicious_lite_descriptor(),
+            receipt(
+                "gen-1",
+                vec![lite_evaluation(
+                    "Some::Other::Module",
+                    Some("9.34"),
+                    "gen-1",
+                    DetectionEvidenceClass::ResolvedModule,
+                )],
+            ),
+            None,
+            AdapterCancellation::active(),
+        );
+        assert!(matches!(
+            detect_mojolicious_lite(&input).outcome,
+            DetectionOutcome::Conflicting { .. }
+        ));
+    }
+
+    #[test]
+    fn fabricated_contributing_module_cannot_become_exact_activation() {
+        // A result can be deserialized or mutated: it may carry a genuine
+        // input identity beside contributing evidence that was never observed.
+        let mut detection = detect_mojolicious_lite(&lite_input("gen-1"));
+        assert!(matches!(detection.outcome, DetectionOutcome::Detected { .. }));
+        detection.contributing_modules = vec![
+            ModuleActivationIdentity::new(
+                "Totally::Different",
+                Some(FileId(99)),
+                SourceGeneration::known("gen-1"),
+            )
+            .with_observed_version(ModuleVersionEvidence::new(
+                "9.34",
+                SourceGeneration::known("gen-1"),
+            )),
+        ];
+        let facts = mojolicious_lite_activation_facts(
+            &detection,
+            &lite_anchor("main", "gen-1"),
+            &parse(&[]),
+        );
+        assert_eq!(facts.role(), None);
+        assert!(matches!(
+            facts.outcome,
+            MojoliciousActivationOutcome::StaleOrIncompleteInput { .. }
+        ));
+    }
+
+    #[test]
+    fn fabricated_version_evidence_cannot_become_exact_activation() {
+        let mut detection = detect_mojolicious_lite(&lite_input("gen-1"));
+        detection.version_evidence =
+            Some(ModuleVersionEvidence::new("8.11", SourceGeneration::known("gen-1")));
+        let facts = mojolicious_lite_activation_facts(
+            &detection,
+            &lite_anchor("main", "gen-1"),
+            &parse(&[]),
+        );
+        assert_eq!(facts.role(), None);
+    }
+
+    #[test]
+    fn a_reported_framework_version_must_match_the_observed_one() {
+        let mut detection = detect_mojolicious_lite(&lite_input("gen-1"));
+        detection.outcome = DetectionOutcome::Detected {
+            confidence: Confidence::High,
+            framework_version: Some("9.99".to_string()),
+        };
+        let facts = mojolicious_lite_activation_facts(
+            &detection,
+            &lite_anchor("main", "gen-1"),
+            &parse(&[]),
+        );
+        assert_eq!(facts.role(), None);
+        assert_ne!(
+            facts.framework_version, "9.99",
+            "a fabricated version must not be published as an exact fact"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Import-form semantics (Devin review on PR #14266)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn an_explicit_empty_import_list_suppresses_the_role() {
+        // `use Mojolicious::Lite ();` loads the module but calls no `import`,
+        // so the Lite DSL is never installed.
+        let evidence = mojolicious_lite_import_evidence(&[], true);
+        assert_eq!(evidence.selection, MojoliciousLiteImportSelection::ImportSuppressed);
+        let facts = mojolicious_lite_activation_facts(
+            &detect_mojolicious_lite(&lite_input("gen-1")),
+            &lite_anchor("main", "gen-1"),
+            &evidence,
+        );
+        assert_eq!(facts.role(), None);
+        assert!(matches!(
+            facts.outcome,
+            MojoliciousActivationOutcome::AbsentWithCompleteEvidence { .. }
+        ));
+    }
+
+    #[test]
+    fn a_bare_import_is_still_exact_beside_the_suppressed_form() {
+        // Negative control for the suppression fix: the ordinary import must
+        // keep its role.
+        assert_eq!(
+            mojolicious_lite_import_evidence(&[], false).selection,
+            MojoliciousLiteImportSelection::Default
+        );
+    }
+
+    #[test]
+    fn a_hash_import_argument_is_a_dynamic_boundary() {
+        // The parser emits `%options` as the tokens `%` and `options`; a
+        // computed hash must not become an unmodeled literal option.
+        assert!(matches!(
+            parse(&["%", "options"]).selection,
+            MojoliciousLiteImportSelection::Dynamic { .. }
+        ));
+        assert!(matches!(
+            parse(&["%opts"]).selection,
+            MojoliciousLiteImportSelection::Dynamic { .. }
+        ));
+    }
+
+    #[test]
+    fn a_vstring_version_requirement_is_not_an_import_option() {
+        // `use Mojolicious::Lite v9.34;` requires a version and still imports
+        // the DSL with no arguments.
+        let evidence = parse(&["v9.34"]);
+        assert_eq!(evidence.selection, MojoliciousLiteImportSelection::Default);
+        assert!(evidence.unmodeled_options.is_empty());
+        let facts = mojolicious_lite_activation_facts(
+            &detect_mojolicious_lite(&lite_input("gen-1")),
+            &lite_anchor("main", "gen-1"),
+            &evidence,
+        );
+        assert_eq!(facts.role(), Some(MojoliciousRole::LiteApplication));
+    }
+
+    #[test]
+    fn a_vstring_beside_signatures_keeps_both_facts() {
+        let evidence = parse(&["v9.34", "-signatures"]);
+        assert_eq!(evidence.selection, MojoliciousLiteImportSelection::Signatures);
+        assert!(evidence.signatures);
+    }
+
+    #[test]
+    fn a_vstring_shaped_option_in_a_later_slot_still_widens_the_profile() {
+        // Only the leading token can be a version requirement; a later one is
+        // an ordinary unreviewed option.
+        let evidence = parse(&["-signatures", "v9.34"]);
+        assert_eq!(evidence.unmodeled_options, vec!["v9.34".to_string()]);
+    }
+
+    #[test]
+    fn a_bareword_starting_with_v_is_not_a_version_requirement() {
+        assert!(!is_version_requirement("verbose"));
+        assert!(!is_version_requirement("v"));
+        assert!(is_version_requirement("v9.34"));
     }
 
     #[test]
