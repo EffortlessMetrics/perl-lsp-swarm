@@ -1221,12 +1221,13 @@ gates:
 
   - name: unit_dap_support_full
     tier: merge_gate
-    description: "DAP, CI hygiene, test support, and tree-sitter workspace library tests"
+    description: "DAP, CI hygiene, test support, and tree-sitter workspace tests"
     required: true
-    # `--lib` excludes tests/. 143 integration targets in these crates are
-    # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
+    # Keep the broad support-crate portion --lib-only because the remaining
+    # integration suites are tracked red debt (#11708). The four perl-dap
+    # test-helpers targets below are healthy and must be executed explicitly:
+    # `cargo test --tests` otherwise skips them silently when the feature is off
+    # (#14333).
     #   perl-ci-hygiene               6
     #   perl-dap                    115
     #   perl-tdd-support              4
@@ -1239,11 +1240,17 @@ gates:
       -p perl-ci-hygiene -p perl-dap
       -p perl-tdd-support -p perl-test-generators -p perl-test-must
       -p tree-sitter-perl-c -p tree-sitter-perl-rs
+      -- --test-threads=4 &&
+      cargo test --locked --features test-helpers -p perl-dap
+      --test eval_ref_cache_miss_resume_tests
+      --test dap_evaluate_comprehensive_tests
+      --test dap_variable_reference_hardening_tests
+      --test pause_signal_delivery_tests
       -- --test-threads=4
-    timeout_seconds: 300
+    timeout_seconds: 900
     retry_count: 1
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 720000
     quarantine: false
     tags:
       - test
