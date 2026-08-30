@@ -164,8 +164,10 @@ pub fn detect_declared_dependencies(workspace_root: &Path) -> Vec<DeclaredDepend
 /// `{phase}.{relation}`, and declarations inside `feature` blocks,
 /// conditionals, loops, arbitrary callbacks, or unknown `on` phases are
 /// suppressed because `DeclaredDependency` cannot retain their predicates.
-/// Exact duplicate identity remains delegated to the complete-identity path
-/// (#13628).
+/// Regex and quote-like operands (`qr/../`, `q(..)`, `s/../../`, ...) are
+/// skipped before block state updates so their delimiters and unbalanced
+/// braces cannot open phantom blocks. Exact duplicate identity remains
+/// delegated to the complete-identity path (#13628).
 #[must_use]
 pub fn extract_cpanfile_requirements(source: &str) -> Vec<DeclaredDependency> {
     let source = strip_comments_preserving_strings(source);
@@ -202,6 +204,9 @@ pub fn extract_cpanfile_requirements(source: &str) -> Vec<DeclaredDependency> {
                         block_phase,
                         &mut dependencies,
                     );
+                } else if let Some(skipped) = skip_quotelike_operand(bytes, idx, word) {
+                    idx = skipped;
+                    pending_start = idx;
                 }
                 continue;
             }
@@ -240,7 +245,19 @@ pub fn extract_cpanfile_requirements(source: &str) -> Vec<DeclaredDependency> {
                 pending_start = idx + 1;
                 idx += 1;
             }
-            _ => idx += 1,
+            _ => {
+                if let Some(end) = ascii_ident_end(bytes, idx) {
+                    let word = &source[idx..end];
+                    if let Some(skipped) = skip_quotelike_operand(bytes, end, word) {
+                        idx = skipped;
+                        pending_start = idx;
+                        continue;
+                    }
+                    idx = end;
+                } else {
+                    idx += 1;
+                }
+            }
         }
     }
 
@@ -409,6 +426,14 @@ fn next_cpanfile_token<'a>(source: &'a str, idx: &mut usize) -> Option<CpanfileT
     None
 }
 
+/// Quote-like and regex operator keywords whose operands must never update
+/// cpanfile block state.
+const QUOTE_LIKE_OPERATORS: &[&str] = &["q", "qq", "qw", "qr", "m", "s", "tr", "y"];
+
+/// Regex-like operators that consume a replacement or transliteration operand
+/// after the pattern operand.
+const TWO_OPERAND_QUOTE_LIKES: &[&str] = &["s", "tr", "y"];
+
 /// Whether the `{` at `open_idx` opens a block instead of a hash subscript
 /// such as `$ENV{name}` or `$hash->{name}`.
 fn is_block_opener(bytes: &[u8], open_idx: usize) -> bool {
@@ -438,6 +463,109 @@ fn is_block_opener(bytes: &[u8], open_idx: usize) -> bool {
         }
         _ => true,
     }
+}
+
+/// If the scanned word is a quote-like or regex operator followed by a
+/// delimiter, return the index just past its full operand list.
+///
+/// Regex and string operands may contain unbalanced braces, so they must never
+/// update block state: `qr/\{/` previously opened a phantom unsupported block
+/// that suppressed every later top-level declaration.
+fn skip_quotelike_operand(bytes: &[u8], word_end: usize, word: &str) -> Option<usize> {
+    if !QUOTE_LIKE_OPERATORS.contains(&word) {
+        return None;
+    }
+    // Horizontal whitespace between the operator and its delimiter is legal
+    // Perl; a separator such as `=` means the word is not an operator use
+    // (e.g. a fat-comma bareword key).
+    let mut idx = word_end;
+    while matches!(bytes.get(idx), Some(b' ') | Some(b'\t')) {
+        idx += 1;
+    }
+    let &delimiter = bytes.get(idx)?;
+    if delimiter == b'=' || delimiter == b'>' {
+        return None;
+    }
+    let mut end = skip_quotelike_delimited(bytes, idx, delimiter)?;
+    if TWO_OPERAND_QUOTE_LIKES.contains(&word) {
+        while matches!(bytes.get(end), Some(b' ') | Some(b'\t')) {
+            end += 1;
+        }
+        // Bracketing delimiters may pair with any delimiter for the second
+        // operand (`s{pattern}{replacement}`); non-bracketing delimiters reuse
+        // the same character as the closing delimiter
+        // (`s/pattern/replacement/`).
+        if let Some(&second) = bytes.get(end) {
+            if matches!(second, b'{' | b'(' | b'[' | b'<') {
+                end = skip_quotelike_delimited(bytes, end, second)?;
+            } else if !second.is_ascii_alphanumeric() && second != b'_' {
+                end = skip_quotelike_to_delimiter(bytes, end, delimiter)?;
+            }
+        }
+    }
+    Some(end)
+}
+
+/// Skip one quote-like operand starting at its open delimiter, returning the
+/// index just past the closing delimiter. Bracketing delimiters nest and
+/// backslash escapes hide the next byte; other delimiters run to the next
+/// unescaped occurrence of the same byte.
+fn skip_quotelike_delimited(bytes: &[u8], open_idx: usize, delimiter: u8) -> Option<usize> {
+    let (open, close) = match delimiter {
+        b'{' => (b'{', b'}'),
+        b'(' => (b'(', b')'),
+        b'[' => (b'[', b']'),
+        b'<' => (b'<', b'>'),
+        other => (other, other),
+    };
+    let mut depth = 0usize;
+    let mut idx = open_idx;
+    while let Some(&byte) = bytes.get(idx) {
+        if byte == b'\\' {
+            idx = idx.checked_add(2)?;
+            continue;
+        }
+        if open == close {
+            // Non-bracketing delimiters cannot nest; occurrences alternate
+            // between opening and closing the operand.
+            if byte == open {
+                depth = 1 - depth;
+                if depth == 0 {
+                    return Some(idx + 1);
+                }
+            }
+        } else if byte == open {
+            depth = depth.checked_add(1)?;
+        } else if byte == close {
+            if depth == 0 {
+                return None;
+            }
+            depth -= 1;
+            if depth == 0 {
+                return Some(idx + 1);
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// Skip a non-bracketing operand body to just past the next unescaped
+/// occurrence of `delimiter`, such as the replacement half of
+/// `s/pattern/replacement/`.
+fn skip_quotelike_to_delimiter(bytes: &[u8], start_idx: usize, delimiter: u8) -> Option<usize> {
+    let mut idx = start_idx;
+    while let Some(&byte) = bytes.get(idx) {
+        if byte == b'\\' {
+            idx = idx.checked_add(2)?;
+            continue;
+        }
+        if byte == delimiter {
+            return Some(idx + 1);
+        }
+        idx += 1;
+    }
+    None
 }
 
 /// End index of the ASCII identifier starting at `start`, if any.

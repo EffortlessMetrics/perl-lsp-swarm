@@ -747,3 +747,81 @@ fn cpanfile_keyword_boundaries_and_substrate_keywords() {
         ],
     );
 }
+
+#[test]
+fn cpanfile_subscript_braces_between_block_opener_and_declaration_keep_phase() {
+    // Review finding repro: a hash subscript (`$ENV{...}`) between the block
+    // opener and a declaration must not disturb canonical block attribution.
+    let cpanfile = r#"
+        on 'test' => sub {
+            my $x = $ENV{WHATEVER};
+            requires 'Test::More';
+        };
+    "#;
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        cpanfile_dependency(&deps, "Test::More"),
+        Some(&DeclaredDependency::new(
+            "Test::More",
+            None,
+            "test.requires",
+            DeclaredDependencySource::Cpanfile,
+        )),
+    );
+}
+
+#[test]
+fn cpanfile_regex_literal_braces_do_not_open_blocks() {
+    // Review finding repro: a regex literal containing a brace before a
+    // top-level declaration must not suppress the later declaration.
+    let cpanfile = concat!(r#"my $pattern = qr/\{/;"#, "\n", r#"requires 'Always::There';"#,);
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![DeclaredDependency::new(
+            "Always::There",
+            None,
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        )],
+    );
+}
+
+#[test]
+fn cpanfile_brace_delimited_regex_and_substitution_do_not_alter_block_state() {
+    let cpanfile = concat!(
+        r#"my $open = qr{\d+};"#,
+        "\n",
+        r#"my $clean = s/;requires "Leak::One";/ /gr;"#,
+        "\n",
+        r#"my $swap = tr/a-z/A-Z/;"#,
+        "\n",
+        r#"requires 'Real::One';"#,
+        "\n",
+        r#"on 'test' => sub { requires 'Real::Two'; };"#,
+    );
+
+    let deps = extract_cpanfile_requirements(cpanfile);
+
+    assert_eq!(
+        deps,
+        vec![
+            DeclaredDependency::new(
+                "Real::One",
+                None,
+                "requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+            DeclaredDependency::new(
+                "Real::Two",
+                None,
+                "test.requires",
+                DeclaredDependencySource::Cpanfile,
+            ),
+        ],
+    );
+}
