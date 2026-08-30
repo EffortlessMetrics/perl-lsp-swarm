@@ -71,23 +71,49 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
       }
     };
 
+    const removePartialAndReject = (error: Error): void => {
+      try {
+        removePartialFile(dest);
+      } catch {
+        // Best effort: an injected remover must not replace the download error.
+      }
+      // Callers may inject a callback-based removal seam that returns before
+      // deletion. Keep that seam observable, then enforce this helper's own
+      // post-rejection cleanup contract before settling the promise.
+      if (fs.existsSync(dest)) {
+        defaultRemovePartialFile(dest);
+      }
+      reject(error);
+    };
+
     const fail = (error: Error): void => {
       if (settled) {
         return;
       }
       settled = true;
       cleanup();
-      if (file) {
+
+      if (!file || file.closed) {
+        removePartialAndReject(error);
+        return;
+      }
+
+      let closeHandled = false;
+      const rejectAfterClose = (): void => {
+        if (closeHandled) {
+          return;
+        }
+        closeHandled = true;
+        removePartialAndReject(error);
+      };
+
+      file.once('close', rejectAfterClose);
+      try {
         file.destroy();
+      } catch {
+        file.removeListener('close', rejectAfterClose);
+        rejectAfterClose();
       }
-      removePartialFile(dest);
-      // Callers may inject a best-effort callback-based removal seam. Preserve
-      // that seam for observation and platform wrappers, but do not let an
-      // early return weaken this function's post-rejection cleanup contract.
-      if (fs.existsSync(dest)) {
-        defaultRemovePartialFile(dest);
-      }
-      reject(error);
     };
 
     const succeed = (): void => {
