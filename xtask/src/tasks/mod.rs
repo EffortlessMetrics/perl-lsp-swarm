@@ -120,6 +120,7 @@ pub mod native_format;
 pub mod native_neovim_train;
 pub mod native_product_surface;
 pub mod native_tooling;
+pub mod no_publish_side_effects;
 pub mod oracle_fixture_manifest;
 pub mod oracle_receipt_schema;
 pub mod oracle_runner;
