@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 492 |
-| documentation | 2796 |
+| documentation | 2794 |
 | generated | 2 |
 | production | 346 |
-| test | 2042 |
+| test | 2044 |
 | tooling | 658 |
 | unclassified | 2235 |
 
@@ -8588,8 +8588,8 @@
 | `xtask/tests/fixtures/dependency-hygiene/machete-malformed.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
 | `xtask/tests/fixtures/dependency-hygiene/machete-missing-unused.json` | test | `non-rust-dependency-hygiene-machete-fixtures` | devex/dependency-hygiene |
-| `xtask/tests/fixtures/lsp-318-changelog/PROVENANCE.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `xtask/tests/fixtures/lsp-318-changelog/specification.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `xtask/tests/fixtures/lsp-318-changelog/PROVENANCE.md` | test | `non-rust-lsp-318-changelog-fixture` | protocol/lsp-318-claims |
+| `xtask/tests/fixtures/lsp-318-changelog/specification.md` | test | `non-rust-lsp-318-changelog-fixture` | protocol/lsp-318-claims |
 | `xtask/tests/fixtures/module-train-live/raw-clean-surface.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/module-train-live/raw-corpus.json` | test | `non-rust-module-train-live-observation-fixtures` | devex/module-train |
 | `xtask/tests/fixtures/native-critic/false-positive/checked_io.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |

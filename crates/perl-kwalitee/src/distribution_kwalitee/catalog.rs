@@ -9,6 +9,8 @@ use super::types::{
 };
 
 const CATALOG_TOML: &str = include_str!("../../distribution_kwalitee_catalog.v1.toml");
+const CORE_UNVERIFIED_SEMANTICS: &str = "stays in the compatible-core denominator";
+const NON_CORE_UNVERIFIED_SEMANTICS: &str = "never enters the compatible-core denominator";
 
 /// Checked-in catalog TOML.
 pub fn catalog_toml() -> &'static str {
@@ -28,9 +30,11 @@ pub fn load_distribution_kwalitee_catalog() -> Result<DistributionKwaliteeCatalo
     parse_catalog(CATALOG_TOML)
 }
 
-/// Compact identity used by the fixture contract.
+/// Order-independent identity over the metric-id set.
 pub fn catalog_fingerprint(catalog: &DistributionKwaliteeCatalog) -> String {
-    let ids = catalog.metric.iter().map(|metric| metric.id.as_str()).collect::<Vec<_>>().join(",");
+    let mut ids = catalog.metric.iter().map(|metric| metric.id.as_str()).collect::<Vec<_>>();
+    ids.sort_unstable();
+    let ids = ids.join(",");
     format!("{}:{}:{}:{}", catalog.kind, catalog.catalog_version, catalog.metric.len(), ids)
 }
 
@@ -126,6 +130,22 @@ fn validate_metric_row(metric: &CatalogMetric) -> Result<(), CatalogError> {
             reason: format!("id must be `{expected_id}`"),
         });
     }
+    let valid_unverified_semantics = if metric.participates_in_core_score {
+        metric.unverified_semantics.contains(CORE_UNVERIFIED_SEMANTICS)
+    } else {
+        metric.unverified_semantics.contains(NON_CORE_UNVERIFIED_SEMANTICS)
+            && !metric.unverified_semantics.contains(CORE_UNVERIFIED_SEMANTICS)
+    };
+    if !valid_unverified_semantics {
+        let reason = if metric.participates_in_core_score {
+            format!("unverified_semantics must contain `{CORE_UNVERIFIED_SEMANTICS}`")
+        } else if metric.unverified_semantics.contains(CORE_UNVERIFIED_SEMANTICS) {
+            format!("unverified_semantics must not contain `{CORE_UNVERIFIED_SEMANTICS}`")
+        } else {
+            format!("unverified_semantics must contain `{NON_CORE_UNVERIFIED_SEMANTICS}`")
+        };
+        return Err(CatalogError::ScoreClassContradiction { id: metric.id.clone(), reason });
+    }
     if metric.title.is_empty()
         || metric.source_module.is_empty()
         || metric.source_version.is_empty()
@@ -186,7 +206,7 @@ applicability = "all_distributions"
 pass_semantics = "pass"
 fail_semantics = "fail"
 not_applicable_semantics = "na"
-unverified_semantics = "unverified"
+unverified_semantics = "Required facts were not produced; this row stays in the compatible-core denominator and is reported as unverified."
 depends_on = []
 permitted_cascades = []
 remediation_owner = "distribution_author"
@@ -208,6 +228,15 @@ limitations = []
         assert!(catalog.metric.iter().any(|metric| metric.id == "cpants.has_manifest"));
         assert!(catalog.metric.iter().any(|metric| metric.id == "cpants.prereq_matches_use"));
         assert!(catalog_fingerprint(&catalog).contains("cpants.has_manifest"));
+    }
+
+    #[test]
+    fn catalog_fingerprint_is_order_independent() {
+        let catalog = load_distribution_kwalitee_catalog().expect("catalog");
+        let expected = catalog_fingerprint(&catalog);
+        let mut reordered = catalog.clone();
+        reordered.metric.reverse();
+        assert_eq!(catalog_fingerprint(&reordered), expected);
     }
 
     #[test]
@@ -306,6 +335,36 @@ limitations = []
         assert!(matches!(
             validate_catalog(&catalog),
             Err(CatalogError::ScoreClassContradiction { .. })
+        ));
+    }
+
+    #[test]
+    fn non_core_row_with_core_unverified_semantics_fails() {
+        let mut catalog =
+            parse_catalog(&format!("{}{}", envelope(), one_core_metric("has_readme")))
+                .expect("base");
+        catalog.metric[0].class = MetricClass::CpantsOfflineExtra;
+        catalog.metric[0].participates_in_core_score = false;
+        catalog.metric[0].unverified_semantics =
+            "Required facts were not produced; this row stays in the compatible-core denominator and is reported as unverified, but it never enters the compatible-core denominator."
+                .into();
+        assert!(matches!(
+            validate_catalog(&catalog),
+            Err(CatalogError::ScoreClassContradiction { id, .. }) if id == "cpants.has_readme"
+        ));
+    }
+
+    #[test]
+    fn core_row_with_non_core_unverified_semantics_fails() {
+        let mut catalog =
+            parse_catalog(&format!("{}{}", envelope(), one_core_metric("has_readme")))
+                .expect("base");
+        catalog.metric[0].unverified_semantics =
+            "Required facts were not produced; this row is reported as unverified and never enters the compatible-core denominator."
+                .into();
+        assert!(matches!(
+            validate_catalog(&catalog),
+            Err(CatalogError::ScoreClassContradiction { id, .. }) if id == "cpants.has_readme"
         ));
     }
 
