@@ -598,9 +598,9 @@ impl<'a> Parser<'a> {
         }
 
         // The command-line fixture models `perl -ne 'print;'` as `-ne print;`.
-        // The wrapper flag is an expression statement containing unary `-` over
-        // the `ne` identifier; the following body token is not residue.
-        if Self::is_command_line_option_wrapper(stmt) {
+        // Only that known wrapper/body boundary is exempt: an arbitrary unary
+        // `-ne` expression must still enter ordinary residue classification.
+        if self.is_command_line_option_wrapper(stmt) {
             return Ok(());
         }
 
@@ -862,16 +862,24 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn is_command_line_option_wrapper(stmt: &Node) -> bool {
+    fn is_command_line_option_wrapper(&mut self, stmt: &Node) -> bool {
         let NodeKind::ExpressionStatement { expression } = &stmt.kind else {
             return false;
         };
-        matches!(
+        let is_wrapper = matches!(
             &expression.kind,
             NodeKind::Unary { op, operand }
                 if op == "-"
                     && matches!(&operand.kind, NodeKind::Identifier { name } if name == "ne")
-        )
+        );
+        is_wrapper
+            && self
+                .tokens
+                .peek()
+                .ok()
+                .is_some_and(|token| {
+                    token.kind() == TokenKind::Identifier && token.text.as_ref() == "print"
+                })
     }
 
     /// Whether the subtree declares a heredoc.
