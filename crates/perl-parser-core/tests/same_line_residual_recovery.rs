@@ -5,6 +5,7 @@ mod cpan_test_helpers;
 use cpan_test_helpers::assert_clean_parse;
 use perl_parser_core::error::{ParseError, RecoveryKind, RecoverySite};
 use perl_parser_core::{Node, NodeKind, Parser};
+use std::process::Command;
 
 fn has_recovery_node(node: &Node) -> bool {
     if matches!(node.kind, NodeKind::Error { .. } | NodeKind::MissingExpression) {
@@ -104,6 +105,23 @@ fn assert_no_same_line_residual(source: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn perl_compile_accepts(source: &str) -> Result<bool, String> {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let output = Command::new("perl")
+        .args(["-c", "-e", source])
+        .env_clear()
+        .env("PATH", path)
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .env_remove("PERL5LIB")
+        .env_remove("PERL5OPT")
+        .env_remove("PERL_LOCAL_LIB_ROOT")
+        .env_remove("PERL_LOCAL_LIB_PREFIX")
+        .output()
+        .map_err(|error| format!("real-Perl oracle unavailable: {error}"))?;
+    Ok(output.status.success())
 }
 
 #[test]
@@ -237,6 +255,39 @@ fn malformed_guard_boundaries_are_not_claimed_as_same_line_residue() -> Result<(
         "my $x = <<'END';\nunterminated\n",
     ] {
         assert_no_same_line_residual(source)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn real_perl_oracle_agrees_on_supported_continuations_and_residue() -> Result<(), String> {
+    let valid_sources = [
+        "copy($from, $to) or goto fail; print \"ok\";",
+        "copy($from, $to)\nand goto fail;\nprint \"ok\";",
+        "copy($from, $to)\nxor goto &fail_sub;\nprint \"ok\";",
+    ];
+    for source in valid_sources {
+        if !perl_compile_accepts(source)? {
+            return Err(format!("real Perl rejected a supported continuation: {source:?}"));
+        }
+        let output = Parser::new(source).parse_with_recovery();
+        if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+            return Err(format!(
+                "Rust parser rejected a real-Perl-supported continuation:\nsource={source:?}\ndiagnostics={:?}",
+                output.diagnostics
+            ));
+        }
+    }
+
+    for source in [
+        "my $x = 1 print \"hi\";",
+        "my $x = 1 2;",
+        "$value x = 3;",
+    ] {
+        if perl_compile_accepts(source)? {
+            return Err(format!("real Perl unexpectedly accepted invalid residue: {source:?}"));
+        }
+        assert_non_clean(source)?;
     }
     Ok(())
 }
