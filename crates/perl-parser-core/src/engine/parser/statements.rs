@@ -718,8 +718,8 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Whether only whitespace containing at least one newline separates the
-    /// previous token from the one the parser is positioned on.
+    /// Whether a line break belongs to the continuation that reaches the
+    /// current token.
     ///
     /// Scans the raw source backwards rather than trusting
     /// `previous_position()`. `last_end_position` is only updated by
@@ -728,13 +728,37 @@ impl<'a> Parser<'a> {
     /// — on `my $x = 1` it sits at the end of `$x`, not of `1`. A window keyed
     /// on it is wider than the actual gap and can contain a newline that is not
     /// between the statement and the leftover token (found in review, #5503).
+    /// Word operators need one extra step: the expression parser may already
+    /// have consumed `or`/`and`/`xor`, leaving the right-hand token current, as
+    /// in `copy(...)\n or goto fail_inner;`.
     fn line_break_precedes_current_token(&mut self) -> bool {
         let start = self.current_position().min(self.src_bytes.len());
-        self.src_bytes[..start]
-            .iter()
-            .rev()
-            .take_while(|byte| byte.is_ascii_whitespace())
-            .any(|&byte| byte == b'\n')
+        let mut cursor = start;
+        let mut whitespace_has_line_break = false;
+        while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_whitespace() {
+            whitespace_has_line_break |= self.src_bytes[cursor - 1] == b'\n';
+            cursor -= 1;
+        }
+        if whitespace_has_line_break {
+            return true;
+        }
+
+        let operator_end = cursor;
+        while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_alphabetic() {
+            cursor -= 1;
+        }
+        let operator = &self.src_bytes[cursor..operator_end];
+        if !matches!(operator, b"or" | b"and" | b"xor") {
+            return false;
+        }
+
+        while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_whitespace() {
+            if self.src_bytes[cursor - 1] == b'\n' {
+                return true;
+            }
+            cursor -= 1;
+        }
+        false
     }
 
     /// Whether this token can never be the first token of a Perl statement.
