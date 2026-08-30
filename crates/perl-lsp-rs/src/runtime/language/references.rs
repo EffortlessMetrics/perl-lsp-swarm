@@ -315,14 +315,27 @@ impl ReferencesAnsweringTier {
     /// distinction and is deliberately not attempted here.
     pub(crate) fn freshness(self, index_state: &str) -> &'static str {
         match self {
-            // These tiers read live compiler facts or the live open buffer, so no
-            // cached index stands between the request and the source it answered
-            // from. They are current whatever the workspace index is doing.
-            Self::SemanticSourceBacked | Self::OpenDocumentText | Self::SemanticAnalyzer => "fresh",
+            // These two read the live open buffer and the live parsed AST for the
+            // current file, so no cached index stands between the request and the
+            // source they answered from. They stay current whatever the workspace
+            // index is doing, including an edit that lands mid-request: the edit
+            // is to the very buffer they read.
+            Self::OpenDocumentText | Self::SemanticAnalyzer => "fresh",
             // `WorkspaceExact`, `WorkspaceMixed`, and `PartialIndex` answer from
             // the workspace index, so they are only as current as it is. `Empty`
             // joins them because a "no references" claim is exactly as complete
             // as the index coverage behind it.
+            //
+            // `SemanticSourceBacked` belongs here too, despite reading compiler
+            // facts rather than raw index entries: it resolves them through
+            // `workspace_index.with_semantic_queries_for_uri`, so its cross-file
+            // facts are index-derived and can be invalidated by an edit. The
+            // source-backed path declines outright on an index it observes to be
+            // stale (`SourceBackedReferenceDecline::WorkspaceIndexStale`), so in
+            // the ordinary case it only ever answers over a full index and this
+            // branch yields `fresh`. Deriving from `index_state` rather than
+            // asserting `fresh` is what makes it fail closed when the receipt
+            // boundary revalidates that state away underneath it.
             //
             // `WorkspaceText` is grouped here for reachability, not data source:
             // its results come from `bounded_open_document_snapshot`, a scan of
@@ -330,10 +343,11 @@ impl ReferencesAnsweringTier {
             // `OpenDocumentText`. It is only ever reached from inside the
             // `IndexAccessMode::Full` arm, where this branch yields `fresh`
             // anyway, so the two groupings are indistinguishable today. If that
-            // path ever becomes reachable under a partial or absent index, move
-            // it to the live-source arm above rather than letting it report
-            // `unknown` for an answer read from live buffers.
-            Self::WorkspaceExact
+            // path ever becomes reachable under a lesser index state, move it to
+            // the live-source arm above rather than letting it report `unknown`
+            // for an answer read from live buffers.
+            Self::SemanticSourceBacked
+            | Self::WorkspaceExact
             | Self::WorkspaceMixed
             | Self::WorkspaceText
             | Self::PartialIndex
@@ -2122,14 +2136,12 @@ mod tests {
     {
         use ReferencesAnsweringTier as Tier;
 
-        // Live-source tiers answer from the compiler or the open buffer, so they
-        // stay fresh even when the workspace index is stale or missing entirely.
+        // Live-source tiers read the live open buffer and the live parsed AST, so
+        // they stay fresh even when the workspace index is stale or missing.
+        // `SemanticSourceBacked` is deliberately NOT in this group: it resolves its
+        // facts through `workspace_index.with_semantic_queries_for_uri`, so they are
+        // index-derived and must fail closed with the index.
         for index_state in ["full", "partial", "none"] {
-            assert_eq!(
-                Tier::SemanticSourceBacked.freshness(index_state),
-                "fresh",
-                "source-backed tier answers from live facts ({index_state})"
-            );
             assert_eq!(
                 Tier::OpenDocumentText.freshness(index_state),
                 "fresh",
@@ -2143,9 +2155,16 @@ mod tests {
         }
 
         // Index-backed tiers are only as current as the index behind them.
-        for tier in
-            [Tier::WorkspaceExact, Tier::WorkspaceMixed, Tier::WorkspaceText, Tier::PartialIndex]
-        {
+        // `SemanticSourceBacked` is included: its compiler facts are resolved
+        // through the workspace index, so an index the receipt boundary has
+        // revalidated away must not leave it claiming currency.
+        for tier in [
+            Tier::SemanticSourceBacked,
+            Tier::WorkspaceExact,
+            Tier::WorkspaceMixed,
+            Tier::WorkspaceText,
+            Tier::PartialIndex,
+        ] {
             assert_eq!(
                 tier.freshness("full"),
                 "fresh",
@@ -2200,7 +2219,7 @@ mod tests {
 
         // Both canonical values this derivation can emit are actually reachable,
         // so neither branch is dead.
-        assert_eq!(Tier::SemanticSourceBacked.freshness("none"), "fresh");
+        assert_eq!(Tier::SemanticAnalyzer.freshness("none"), "fresh");
         assert_eq!(Tier::WorkspaceText.freshness("none"), "unknown");
 
         Ok(())
