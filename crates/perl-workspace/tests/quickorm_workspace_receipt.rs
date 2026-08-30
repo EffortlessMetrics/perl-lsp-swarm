@@ -20,7 +20,7 @@ table "users" => sub {
 1;
 "#;
 
-    index.index_file(uri.clone(), source.to_string())?;
+    index.index_initial_file(uri.clone(), source.to_string())?;
 
     let shard =
         index.file_fact_shard(uri.as_str()).ok_or("WorkspaceIndex did not retain a fact shard")?;
@@ -89,7 +89,7 @@ table outer_users => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     let generated = index.search_generated_workspace_symbols("qorm_table", None);
     assert_eq!(generated.len(), 2);
     assert!(
@@ -124,7 +124,7 @@ fn workspace_index_receipts_keep_perl_interpolation_dynamic()
             "package MyApp::Schema::{name};\nuse DBIx::QuickORM type => 'table';\ntable \"{table_name}\" => sub {{}};\n1;\n"
         );
 
-        index.index_file(uri, source)?;
+        index.index_initial_file(uri, source)?;
         assert!(
             index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
             "interpolated table name {table_name} must not reach generated workspace symbols"
@@ -146,7 +146,7 @@ table "later_users" => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     assert!(
         index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
         "a current-package qualified table call must consume authority without earning a direct package fact"
@@ -167,7 +167,7 @@ table "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     let generated = index.search_generated_workspace_symbols("qorm_table", None);
     assert_eq!(generated.len(), 1);
     assert_eq!(
@@ -190,7 +190,7 @@ table "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     assert!(
         index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
         "a competing imported table builder must invalidate QuickORM authority in the production index"
@@ -211,7 +211,7 @@ table "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     assert_eq!(index.search_generated_workspace_symbols("qorm_table", None).len(), 1);
     Ok(())
 }
@@ -229,7 +229,7 @@ table "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     assert_eq!(index.search_generated_workspace_symbols("qorm_table", None).len(), 1);
     Ok(())
 }
@@ -248,7 +248,7 @@ table "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     Ok(())
 }
@@ -265,7 +265,7 @@ view "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     Ok(())
 }
@@ -282,7 +282,7 @@ table "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     assert!(
         index.search_generated_workspace_symbols("qorm_table", None).is_empty(),
         "an unknown hash-shaped competing importer must invalidate authority in the production index"
@@ -303,7 +303,7 @@ table "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     Ok(())
 }
@@ -326,7 +326,7 @@ table "second_users" => sub {};
 1;
 "#;
 
-    index.index_file(uri.clone(), source.to_string())?;
+    index.index_initial_file(uri.clone(), source.to_string())?;
     let generated = index.search_generated_workspace_symbols("qorm_table", None);
     assert_eq!(generated.len(), 2);
     assert!(
@@ -353,7 +353,7 @@ table "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri.clone(), source.to_string())?;
+    index.index_initial_file(uri.clone(), source.to_string())?;
     let shard =
         index.file_fact_shard(uri.as_str()).ok_or("WorkspaceIndex did not retain a fact shard")?;
     assert!(
@@ -381,7 +381,7 @@ table "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri.clone(), source.to_string())?;
+    index.index_initial_file(uri.clone(), source.to_string())?;
 
     let shard =
         index.file_fact_shard(uri.as_str()).ok_or("WorkspaceIndex did not retain a fact shard")?;
@@ -429,7 +429,7 @@ table "users" => sub {};
 1;
 "#;
 
-    index.index_file(uri, source.to_string())?;
+    index.index_initial_file(uri, source.to_string())?;
     assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     Ok(())
 }
@@ -448,7 +448,7 @@ fn workspace_index_blocks_quickorm_rename_skip_and_unknown_options()
             "package MyApp::Schema::{name};\nuse DBIx::QuickORM type => 'table', {options};\ntable users => sub {{}};\n1;\n"
         );
 
-        index.index_file(uri.clone(), source.clone())?;
+        index.index_initial_file(uri.clone(), source.clone())?;
         assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
 
         let query_offset = u32::try_from(source.len())?;
@@ -491,7 +491,7 @@ fn workspace_index_blocks_competing_quote_like_imports() -> Result<(), Box<dyn s
             delimiter = delimiter
         );
 
-        index.index_file(uri, source)?;
+        index.index_initial_file(uri, source)?;
         assert!(index.search_generated_workspace_symbols("qorm_table", None).is_empty());
     }
     Ok(())
@@ -511,7 +511,7 @@ table second => sub {};
 1;
 "#;
 
-    index.index_file(uri.clone(), source.to_string())?;
+    index.index_initial_file(uri.clone(), source.to_string())?;
     let shard =
         index.file_fact_shard(uri.as_str()).ok_or("WorkspaceIndex did not retain a fact shard")?;
     assert!(

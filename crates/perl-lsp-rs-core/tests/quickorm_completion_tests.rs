@@ -23,7 +23,7 @@ fn labels(items: &[CompletionItem]) -> Vec<&str> {
 fn quickorm_table_package_surfaces_only_earned_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/User.pm")?,
         r#"
 package MyApp::Schema::User;
@@ -57,7 +57,7 @@ table users => sub {
 fn dynamic_quickorm_configuration_does_not_surface_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/Dynamic.pm")?,
         r#"
 package MyApp::Schema::Dynamic;
@@ -81,7 +81,7 @@ table users => sub {};
 fn bare_quickorm_import_does_not_surface_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/Bare.pm")?,
         r#"
 package MyApp::Schema::Bare;
@@ -105,7 +105,7 @@ table users => sub {};
 fn current_package_qualified_builder_does_not_surface_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/Qualified.pm")?,
         r#"
 package MyApp::Schema::Qualified;
@@ -130,7 +130,7 @@ table later_users => sub {};
 fn unrelated_qualified_builder_does_not_surface_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/UnrelatedQualified.pm")?,
         r#"
 package MyApp::Schema::UnrelatedQualified;
@@ -154,7 +154,7 @@ Other::table users => sub {};
 fn competing_imported_table_builder_does_not_surface_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/Competing.pm")?,
         r#"
 package MyApp::Schema::Competing;
@@ -186,7 +186,7 @@ fn quote_like_competing_imports_do_not_surface_generated_completion()
         ("Angle", "<table>"),
     ] {
         let index = Arc::new(WorkspaceIndex::new());
-        index.index_file(
+        index.index_initial_file(
             Url::parse(&format!("file:///workspace/MyApp/Schema/Competing{name}.pm"))?,
             format!(
                 "package MyApp::Schema::Competing{name};\nuse DBIx::QuickORM type => 'table';\nuse Other::DSL qw{delimiter};\ntable users => sub {{}};\n1;\n",
@@ -208,7 +208,7 @@ fn quote_like_competing_imports_do_not_surface_generated_completion()
 fn zero_argument_qualified_call_preserves_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/ZeroArgQualified.pm")?,
         r#"
 package MyApp::Schema::ZeroArgQualified;
@@ -233,7 +233,7 @@ table users => sub {};
 fn later_quickorm_import_restores_generated_completion_after_builder_shadow()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/LaterImport.pm")?,
         r#"
 package MyApp::Schema::LaterImport;
@@ -258,7 +258,7 @@ table users => sub {};
 fn required_competing_import_call_does_not_surface_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/RequiredImport.pm")?,
         r#"
 package MyApp::Schema::RequiredImport;
@@ -284,7 +284,7 @@ table users => sub {};
 fn competing_view_method_import_does_not_surface_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/CompetingView.pm")?,
         r#"
 package MyApp::Schema::CompetingView;
@@ -306,7 +306,7 @@ view users => sub {};
 fn nested_qualified_builder_initializer_does_not_surface_generated_completion()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/NestedInitializer.pm")?,
         r#"
 package MyApp::Schema::NestedInitializer;
@@ -328,7 +328,7 @@ table users => sub {};
 fn nested_package_completion_is_scoped_to_declared_package()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/MyApp/Schema/Nested.pm")?,
         r#"
 package MyApp::Schema::Outer {

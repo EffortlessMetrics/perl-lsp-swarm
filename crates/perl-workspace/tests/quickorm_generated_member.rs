@@ -35,7 +35,7 @@ table users => sub {
 
     let index = WorkspaceIndex::new();
     let uri = Url::parse("file:///lib/MyApp/Schema/User.pm")?;
-    index.index_file(uri, source.to_string()).map_err(std::io::Error::other)?;
+    index.index_initial_file(uri, source.to_string()).map_err(std::io::Error::other)?;
 
     let generated = index.search_generated_workspace_symbols("qorm_table", None);
     assert_eq!(generated.len(), 1, "expected one generated qorm_table symbol: {generated:?}");
@@ -87,7 +87,7 @@ package MyApp::Schema::Outer {
 
     let index = WorkspaceIndex::new();
     let uri = Url::parse("file:///lib/MyApp/Schema/Nested.pm")?;
-    index.index_file(uri, source.to_string()).map_err(std::io::Error::other)?;
+    index.index_initial_file(uri, source.to_string()).map_err(std::io::Error::other)?;
 
     let generated = index.search_generated_workspace_symbols("qorm_table", None);
     assert_eq!(generated.len(), 1, "expected only the nested generated symbol: {generated:?}");
