@@ -265,6 +265,7 @@ fn real_perl_oracle_agrees_on_supported_continuations_and_residue() -> Result<()
         "copy($from, $to) or goto fail; print \"ok\";",
         "copy($from, $to)\nand goto fail;\nprint \"ok\";",
         "copy($from, $to)\nxor goto &fail_sub;\nprint \"ok\";",
+        "foo or goto => 1; print \"ok\";",
     ];
     for source in valid_sources {
         if !perl_compile_accepts(source)? {
@@ -288,6 +289,34 @@ fn real_perl_oracle_agrees_on_supported_continuations_and_residue() -> Result<()
             return Err(format!("real Perl unexpectedly accepted invalid residue: {source:?}"));
         }
         assert_non_clean(source)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn fat_arrow_goto_bareword_is_not_consumed_as_control_flow() -> Result<(), String> {
+    let source = "foo or goto => 1; print \"ok\";";
+    if !perl_compile_accepts(source)? {
+        return Err("real Perl rejected the fat-arrow goto bareword regression".to_string());
+    }
+
+    let output = Parser::new(source).parse_with_recovery();
+    if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+        return Err(format!(
+            "fat-arrow goto was incorrectly treated as control flow:\ndiagnostics={:?}\nast={}",
+            output.diagnostics,
+            output.ast.to_sexp()
+        ));
+    }
+    let statements = match &output.ast.kind {
+        NodeKind::Program { statements } => statements,
+        kind => return Err(format!("expected a program, got {}", kind.kind_name())),
+    };
+    if statements.len() != 2 || !output.ast.to_sexp().contains("binary_or") {
+        return Err(format!(
+            "fat-arrow goto must remain in the word-operator expression with a later print statement:\n{}",
+            output.ast.to_sexp()
+        ));
     }
     Ok(())
 }
