@@ -12,7 +12,7 @@
 
 use super::native::CriticRelatedInformation;
 use super::normalized::{
-    CriticFindingCandidate, CriticSourceIdentity, NormalizedCriticFinding,
+    CriticFindingCandidate, CriticPolicyRetention, CriticSourceIdentity, NormalizedCriticFinding,
     normalize_critic_findings,
 };
 use super::{
@@ -483,12 +483,18 @@ pub fn account_unresolved_native_identities(
 
 /// Normalize candidates and apply native policy exactly once post-merge.
 ///
-/// Order: canonical alias merge, then severity threshold, then
-/// include/exclude over approved aliases, then scoped suppression.
-/// Deterministic output order is owned entirely by
-/// [`normalize_critic_findings`]. Filtering here, on merged rows,
-/// is what makes "exclude/suppress one spelling" unable to leave a registered
-/// sibling spelling behind.
+/// Order: canonical alias merge, then critic-owned severity threshold and
+/// include/exclude retention, then scoped suppression. The severity and
+/// include/exclude filters are Critic-producer policy: they strip the Critic
+/// contribution from a merged row while an independently emitted built-in core
+/// proposition survives ([`NormalizedCriticFinding::retained_under_critic_policy`],
+/// #13798), and they still remove critic-owned rows wholesale - as does an
+/// exclude naming the built-in code itself, which revokes the core
+/// proposition and keeps "exclude one spelling removes the whole alias set"
+/// true. Deterministic output order is owned entirely by
+/// [`normalize_critic_findings`]. Filtering merged rows here is what makes
+/// "exclude/suppress one spelling" unable to leave a registered sibling
+/// spelling behind.
 #[must_use]
 pub fn normalize_with_native_policy(
     candidates: impl IntoIterator<Item = CriticFindingCandidate>,
@@ -496,10 +502,42 @@ pub fn normalize_with_native_policy(
 ) -> Vec<NormalizedCriticFinding> {
     normalize_critic_findings(candidates)
         .into_iter()
-        .filter(|finding| severity_passes_threshold(finding.severity(), policy.severity_threshold))
-        .filter(|finding| include_exclude_admits(finding, policy.include, policy.exclude))
+        .filter_map(|finding| {
+            let retention = critic_policy_retention(&finding, policy);
+            finding.retained_under_critic_policy(retention)
+        })
         .filter(|finding| !policy.suppressions.suppresses_normalized(finding))
         .collect()
+}
+
+/// Evaluate critic-owned severity and include/exclude policy for one merged
+/// row (#13798).
+///
+/// An admitted row keeps every contributor. A rejected row strips its Critic
+/// contributors while an independently owned built-in core proposition
+/// survives, unless the exclude set names the built-in code itself - the one
+/// spelling that revokes the core row.
+fn critic_policy_retention(
+    finding: &NormalizedCriticFinding,
+    policy: &NativeCriticPolicy<'_>,
+) -> CriticPolicyRetention {
+    let severity_admitted =
+        severity_passes_threshold(finding.severity(), policy.severity_threshold);
+    if severity_admitted && include_exclude_admits(finding, policy.include, policy.exclude) {
+        return CriticPolicyRetention::Admitted;
+    }
+
+    let core_named_by_exclude = policy.exclude.iter().any(|excluded| {
+        finding.contributors().iter().any(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic
+                && contributor.identity().code() == excluded.as_str()
+        })
+    });
+    if core_named_by_exclude {
+        CriticPolicyRetention::RemoveRow
+    } else {
+        CriticPolicyRetention::StripCritic
+    }
 }
 
 /// Whether one normalized row survives the configured severity threshold.
