@@ -26,7 +26,7 @@ the open authority for that surface.
 | Exact fatal-construct admission | [#13688](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13688) (open) | Replace message- or path-shaped exemptions with exact governed identities and receipts. |
 | Panic-equivalent operations | [#13693](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13693) (open) | Inventory indexing, arithmetic, recursion, allocation, subprocess, concurrency, FFI, generated, and platform failure surfaces. |
 | Test-side panic debt | [#13423](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13423) (open) | Own test targets, test helpers, test-only suppressions, and conversion cohorts. |
-| Parser never-panic invariant | [#1820](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1820) (closed) | Settled corpus and fuzz invariant that the parser does not panic on arbitrary input; it grants no new work. |
+| Parser never-panic invariant | [#1820](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1820) (closed) | Settled corpus and fuzz invariant that the parser does not panic on the sampled inputs exercised there; it grants no new work. |
 | Parser budget and cancellation proof | [#7112](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7112) (open) | Own remaining depth, work-budget, and cancellation evidence for adversarial parser inputs. |
 
 Current explicit production migrations remain separate because their degraded
@@ -40,6 +40,9 @@ semantics are different:
 A child may consume another authority's evidence, but it must not silently take
 over that authority. In particular, production convergence does not create a
 second parser fuzzer or a second test-debt programme.
+Corpus and fuzz evidence is sampled rather than exhaustive; it establishes the
+invariant as currently held, and remaining adversarial-input proof stays with
+#7112.
 
 ## Current guardrails
 
@@ -218,7 +221,10 @@ The rule is binary for the `must*` symbols: new code must import them from
 and workspace migration state governed by #8605 and #8436. Depending on
 `perl-tdd-support` for helpers it still genuinely owns remains allowed and is
 governed by those same issues; adding that dependency solely to obtain `must*`
-is not.
+is not. [`docs/adr/0012-error-handling-strategy.md`](adr/0012-error-handling-strategy.md)
+still shows a `perl_tdd_support::{must, must_some}` test example; that example
+is migration residue governed by #8605 and #8436, and `perl-test-must` is the
+current import site for new code.
 
 Intentional assertion panics and explicit panic-injection tests require narrow,
 reviewed exceptions at the actual panic owner. They do not make accidental panic
