@@ -32,14 +32,13 @@ const RUNTIME_OWNERSHIP_PATH: &str = "policy/workspace-runtime-ownership.v1.tsv"
 const UPDATE_ENV: &str = "WSI_LIFECYCLE_MAP_UPDATE";
 const COLUMN_COUNT: usize = 18;
 
-/// Modules that exist solely to define index lifecycle vocabulary. EVERY public
-/// enum or struct declared in these files must carry a ledger row — there is no
-/// per-name allowlist to forget, so a lifecycle type with a novel name cannot
-/// appear unmapped.
-const LIFECYCLE_SCOPED_MODULES: &[&str] = &[
-    "crates/perl-workspace/src/monitoring/mod.rs",
-    "crates/perl-workspace/src/state_machine/mod.rs",
-];
+/// Module *directories* that exist solely to define index lifecycle vocabulary.
+/// EVERY public enum or struct in EVERY `.rs` file beneath them must carry a
+/// ledger row. Scoping this to `mod.rs` would let a new submodule introduce
+/// lifecycle types that silently bypass the ratchet, which is how
+/// `monitoring/indexing_receipt.rs` went unmapped.
+const LIFECYCLE_SCOPED_MODULE_DIRS: &[&str] =
+    &["crates/perl-workspace/src/monitoring", "crates/perl-workspace/src/state_machine"];
 
 /// `workspace_index.rs` is a large mixed module: it legitimately declares symbol,
 /// location and index-storage types alongside lifecycle ones. Only the lifecycle
@@ -87,6 +86,7 @@ const OVERLAPPING_TYPES: &[(&str, &str)] = &[
     ("state_machine", "BuildPhase"),
     ("monitoring", "IndexPhaseTransition"),
     ("state_machine", "BuildPhaseTransition"),
+    ("monitoring", "IndexingPhase"),
 ];
 
 const ALLOWED_STATES: &[&str] = &["live", "absent_on_main", "doctrine_only"];
@@ -601,9 +601,19 @@ fn declared_lifecycle_sites() -> Result<BTreeSet<(String, String)>> {
     let root = repo_root()?;
     let mut sites = BTreeSet::new();
 
-    for path in LIFECYCLE_SCOPED_MODULES.iter().chain(std::iter::once(&MIXED_MODULE)) {
-        let source = fs::read_to_string(root.join(path)).with_context(|| format!("read {path}"))?;
-        let restricted = *path == MIXED_MODULE;
+    let mut scanned: Vec<(PathBuf, bool)> = Vec::new();
+    for dir in LIFECYCLE_SCOPED_MODULE_DIRS {
+        for path in rust_files_in(&root.join(dir))? {
+            scanned.push((path, false));
+        }
+    }
+    scanned.push((root.join(MIXED_MODULE), true));
+
+    for (path, restricted) in scanned {
+        let relative =
+            path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+        let source =
+            fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         for line in source.lines() {
             let keyword = if line.starts_with("pub enum ") {
                 "pub enum"
@@ -618,7 +628,7 @@ fn declared_lifecycle_sites() -> Result<BTreeSet<(String, String)>> {
             if restricted && !MIXED_MODULE_LIFECYCLE_TYPES.contains(&name.as_str()) {
                 continue;
             }
-            sites.insert(((*path).to_string(), format!("{keyword} {name}")));
+            sites.insert((relative.clone(), format!("{keyword} {name}")));
         }
     }
     Ok(sites)
@@ -1030,13 +1040,48 @@ struct MemberRow {
     successor_issue: String,
 }
 
-fn module_path(module: &str) -> Option<&'static str> {
+fn module_dir(module: &str) -> Option<&'static str> {
     match module {
-        "monitoring" => Some("crates/perl-workspace/src/monitoring/mod.rs"),
-        "state_machine" => Some("crates/perl-workspace/src/state_machine/mod.rs"),
-        "workspace_index" => Some("crates/perl-workspace/src/workspace/workspace_index.rs"),
+        "monitoring" => Some("crates/perl-workspace/src/monitoring"),
+        "state_machine" => Some("crates/perl-workspace/src/state_machine"),
         _ => None,
     }
+}
+
+/// Every `.rs` file, sorted, that a module's declarations may live in.
+fn rust_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files: Vec<PathBuf> = fs::read_dir(dir)
+        .with_context(|| format!("read dir {}", dir.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .collect();
+    files.sort();
+    ensure!(!files.is_empty(), "no Rust files found under {}", dir.display());
+    Ok(files)
+}
+
+fn module_files(module: &str) -> Result<Vec<PathBuf>> {
+    let root = repo_root()?;
+    if module == "workspace_index" {
+        return Ok(vec![root.join(MIXED_MODULE)]);
+    }
+    let dir = module_dir(module).with_context(|| format!("unknown lifecycle module {module}"))?;
+    rust_files_in(&root.join(dir))
+}
+
+/// The repository-relative path of the file a module type is declared in.
+fn declaring_file(module: &str, type_name: &str) -> Result<PathBuf> {
+    for path in module_files(module)? {
+        let source =
+            fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        if source.lines().any(|line| {
+            (line.starts_with("pub enum ") || line.starts_with("pub struct "))
+                && declared_type_name(line).as_deref() == Some(type_name)
+        }) {
+            return Ok(path);
+        }
+    }
+    bail!("{module}::{type_name} is not declared in any file of module {module}")
 }
 
 fn load_member_rows() -> Result<Vec<MemberRow>> {
@@ -1106,9 +1151,8 @@ fn field_name(line: &str, indent: &str, prefix: Option<&str>) -> Option<String> 
 /// from current source. This is the member denominator: it is read from the
 /// tree, never from the ledger, so the ledger cannot certify its own coverage.
 fn declared_members(module: &str, type_name: &str) -> Result<Vec<(String, String)>> {
-    let root = repo_root()?;
-    let path = module_path(module).with_context(|| format!("unknown lifecycle module {module}"))?;
-    let source = fs::read_to_string(root.join(path)).with_context(|| format!("read {path}"))?;
+    let path = declaring_file(module, type_name)?;
+    let source = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
 
     let mut start = None;
     let mut is_enum = false;
@@ -1126,8 +1170,7 @@ fn declared_members(module: &str, type_name: &str) -> Result<Vec<(String, String
             break;
         }
     }
-    let start =
-        start.with_context(|| format!("{module}::{type_name} is not declared in {path}"))?;
+    let start = start.with_context(|| format!("{module}::{type_name} declaration vanished"))?;
 
     let mut members = Vec::new();
     let mut depth: i32 = 0;
@@ -1197,8 +1240,13 @@ fn validate_member_rows(rows: &[MemberRow], type_rows: &[PropositionRow]) -> Res
         // Existence is not enough: the referenced row must describe this member's
         // own declaration, or the ledger could publish a false ownership and
         // successor relationship for a member of a different type.
-        let expected_path = module_path(&row.module)
-            .with_context(|| format!("{}: unknown lifecycle module {}", row.id, row.module))?;
+        let root = repo_root()?;
+        let declaring = declaring_file(&row.module, &row.type_name)?;
+        let expected_path = declaring
+            .strip_prefix(&root)
+            .unwrap_or(&declaring)
+            .to_string_lossy()
+            .replace('\\', "/");
         ensure!(
             type_row.source_path == expected_path,
             "{}: type_row {} describes {}, not {}",
@@ -1404,9 +1452,8 @@ fn member_row_cannot_reference_a_missing_type_row() -> Result<()> {
 /// variant, a macro-generated member, an unusual layout — must fail loudly here
 /// rather than silently shrink the member denominator.
 fn unclassified_body_lines(module: &str, type_name: &str) -> Result<Vec<String>> {
-    let root = repo_root()?;
-    let path = module_path(module).with_context(|| format!("unknown lifecycle module {module}"))?;
-    let source = fs::read_to_string(root.join(path)).with_context(|| format!("read {path}"))?;
+    let path = declaring_file(module, type_name)?;
+    let source = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
 
     let mut start = None;
     let mut is_enum = false;
@@ -1424,8 +1471,7 @@ fn unclassified_body_lines(module: &str, type_name: &str) -> Result<Vec<String>>
             break;
         }
     }
-    let start =
-        start.with_context(|| format!("{module}::{type_name} is not declared in {path}"))?;
+    let start = start.with_context(|| format!("{module}::{type_name} declaration vanished"))?;
 
     let mut unclassified = Vec::new();
     let mut depth: i32 = 0;

@@ -100,3 +100,6 @@ WSIM-MON-INDEXPHASETRANSITION-001|WSI-INSTR-002|monitoring|IndexPhaseTransition|
 WSIM-MON-INDEXPHASETRANSITION-002|WSI-INSTR-002|monitoring|IndexPhaseTransition|to|struct_field|telemetry_member|#10791
 WSIM-SM-BUILDPHASETRANSITION-001|WSI-TRANS-003|state_machine|BuildPhaseTransition|from|struct_field|duplicate_of_canonical_member|#10828
 WSIM-SM-BUILDPHASETRANSITION-002|WSI-TRANS-003|state_machine|BuildPhaseTransition|to|struct_field|duplicate_of_canonical_member|#10828
+WSIM-MON-INDEXINGPHASE-001|WSI-PHASE-002|monitoring|IndexingPhase|Discovery|variant|telemetry_member|#10791
+WSIM-MON-INDEXINGPHASE-002|WSI-PHASE-002|monitoring|IndexingPhase|Read|variant|telemetry_member|#10791
+WSIM-MON-INDEXINGPHASE-003|WSI-PHASE-002|monitoring|IndexingPhase|IndexFileOperation|variant|telemetry_member|#10791
