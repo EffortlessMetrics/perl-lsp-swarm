@@ -1452,7 +1452,28 @@ export class BinaryDownloader {
   }
 
   private removePartialFile(dest: string): void {
-    fs.unlink(dest, () => {});
+    let original: fs.Stats;
+    try {
+      original = fs.statSync(dest);
+    } catch {
+      return;
+    }
+
+    // The bounded helper performs a synchronous fallback before rejecting, so
+    // this callback may run after a caller has reused the destination. Keep
+    // the delayed cleanup tied to the file generation observed at scheduling
+    // time; a replacement must never be removed by this stale callback.
+    setImmediate(() => {
+      try {
+        const current = fs.statSync(dest);
+        if (current.dev !== original.dev || current.ino !== original.ino) {
+          return;
+        }
+        fs.unlinkSync(dest);
+      } catch {
+        // Best effort: the partial file may already be gone or replaced.
+      }
+    });
   }
 
   private async calculateSHA256(filePath: string): Promise<string> {

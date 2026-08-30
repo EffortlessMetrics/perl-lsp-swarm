@@ -57,19 +57,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     request.destroy = jest.fn();
     const requestError = Object.assign(new Error('request failed'), { code: 'ECONNRESET' });
 
-    const removePartialFile = jest
-      .spyOn(downloader, 'removePartialFile')
-      .mockImplementation((filePath) => {
-        // Model the production callback-based fs.unlink seam: it returns now
-        // and would remove the file only on a later event-loop turn.
-        setImmediate(() => {
-          try {
-            fs.unlinkSync(filePath);
-          } catch {
-            // The bounded helper may already have completed the cleanup.
-          }
-        });
-      });
+    const removePartialFile = jest.spyOn(downloader, 'removePartialFile');
     jest.spyOn(downloader, 'httpGet').mockImplementation(() => {
       process.nextTick(() => request.emit('error', requestError));
       return request;
@@ -81,9 +69,10 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
 
     expect(removePartialFile).toHaveBeenCalledTimes(1);
     expect(removePartialFile).toHaveBeenCalledWith(destination);
-    expect(fs.existsSync(destination)).toBe(false);
+    fs.writeFileSync(destination, 'replacement');
 
     await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(fs.readFileSync(destination, 'utf8')).toBe('replacement');
   });
 
   test('does not wait forever when the production write stream suppresses close', async () => {
