@@ -701,16 +701,21 @@ impl LspHarness {
         let mut attempt = 0;
         let mut last_observation = "no workspace/symbol response received".to_string();
 
-        while start.elapsed() < budget && attempt < max_attempts {
+        while start.elapsed() < budget {
             attempt += 1;
 
             // Progressive timeout increase for reliability
-            let timeout = Duration::from_millis(initial_timeout + (attempt * 50).min(200));
+            let timeout =
+                Duration::from_millis(initial_timeout + (attempt.min(max_attempts) * 50).min(200));
+            let remaining = budget.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
 
             let res = self.request_with_timeout(
                 "workspace/symbol",
                 serde_json::json!({ "query": query }),
-                timeout,
+                timeout.min(remaining),
             );
 
             match res {
@@ -733,11 +738,19 @@ impl LspHarness {
                 // Local/Performance: Faster backoff
                 (10 * attempt).min(max_sleep)
             };
-            thread::sleep(Duration::from_millis(sleep_ms));
+            let remaining = budget.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(sleep_ms).min(remaining));
 
             // Give server more time between attempts in CI
             if is_ci && attempt > 3 {
-                thread::sleep(Duration::from_millis(50));
+                let remaining = budget.saturating_sub(start.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50).min(remaining));
             }
         }
 

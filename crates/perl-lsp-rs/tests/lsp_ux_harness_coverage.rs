@@ -7,7 +7,7 @@
 mod support;
 
 use serde_json::json;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use support::lsp_harness::{LspHarness, WaitForSymbolMode, workspace_symbol_response_contains};
 
 #[test]
@@ -205,15 +205,18 @@ fn wait_for_symbol_rejects_matching_name_from_wrong_uri() -> Result<(), String> 
     }
 
     for mode in [WaitForSymbolMode::Default, WaitForSymbolMode::Fast] {
-        let result = harness.wait_for_symbol_with_mode(
-            "target",
-            Some(&other_uri),
-            Duration::from_secs(2),
-            mode,
-        );
+        let budget = Duration::from_secs(2);
+        let started = Instant::now();
+        let result = harness.wait_for_symbol_with_mode("target", Some(&other_uri), budget, mode);
         if result.is_ok() {
             return Err(format!(
                 "matching name from another URI must not satisfy wait_for_symbol in {mode:?}"
+            ));
+        }
+        let elapsed = started.elapsed();
+        if elapsed < budget.saturating_sub(Duration::from_millis(250)) {
+            return Err(format!(
+                "matching name from another URI returned too early in {mode:?}: elapsed {elapsed:?}"
             ));
         }
     }
