@@ -25,6 +25,7 @@ use perl_parser_core::hir::{
     AccessMode, HirBindingId, HirExpr, HirExprId, HirFile, HirStmt, HirStmtId, StorageClass,
     VariableKind, lower_ast,
 };
+use perl_tdd_support::must_some;
 
 /// Parse `source` and run the canonical two-pass HIR lowering.
 fn lower(source: &str) -> HirFile {
@@ -59,7 +60,7 @@ fn occurrences(file: &HirFile) -> Vec<Occurrence> {
         for idx in 0..body.source_map.expr_ranges.len() {
             let id = HirExprId(idx as u32);
             if let Some(HirExpr::Variable(var)) = body.expr(id) {
-                let range = body.source_map.expr_range(id).expect("expr range");
+                let range = must_some(body.source_map.expr_range(id));
                 found.push(Occurrence {
                     name: var.name.clone(),
                     access: var.access,
@@ -96,29 +97,24 @@ fn declarations(file: &HirFile) -> Vec<Declaration> {
 
 /// Storage class behind a canonical binding identity.
 fn storage_of(file: &HirFile, id: HirBindingId) -> StorageClass {
-    file.scope_graph
-        .bindings
-        .iter()
-        .find(|binding| binding.id == id)
-        .expect("binding id refers to a real binding")
-        .storage
+    must_some(file.scope_graph.bindings.iter().find(|binding| binding.id == id)).storage
 }
 
 /// Byte offset of the `n`-th (0-based) occurrence of `needle` in `source`.
 fn nth_offset(source: &str, needle: &str, n: usize) -> usize {
     let mut from = 0usize;
     for _ in 0..n {
-        let at = source[from..].find(needle).expect("occurrence exists") + from;
+        let at = must_some(source[from..].find(needle)) + from;
         from = at + needle.len();
     }
-    source[from..].find(needle).expect("occurrence exists") + from
+    must_some(source[from..].find(needle)) + from
 }
 
 /// Byte span of the inner (second) brace-delimited block in `source`.
 fn inner_block_span(source: &str) -> (usize, usize) {
-    let outer = source.find('{').expect("outer block brace");
-    let start = outer + 1 + source[outer + 1..].find('{').expect("inner block brace");
-    let end = start + source[start..].find('}').expect("inner block close");
+    let outer = must_some(source.find('{'));
+    let start = outer + 1 + must_some(source[outer + 1..].find('{'));
+    let end = start + must_some(source[start..].find('}'));
     (start, end)
 }
 
@@ -138,18 +134,9 @@ const NESTED: &str = r#"sub outer {
 /// Canonical identities of the outer and inner `my $x` in [`NESTED`], in that order.
 fn nested_binding_ids(file: &HirFile) -> (HirBindingId, HirBindingId) {
     let decls = declarations(file);
-    let outer = decls
-        .iter()
-        .find(|d| d.start == nth_offset(NESTED, "$x", 0))
-        .expect("outer `my $x` declaration");
-    let inner = decls
-        .iter()
-        .find(|d| d.start == nth_offset(NESTED, "$x", 1))
-        .expect("inner `my $x` declaration");
-    (
-        outer.binding.expect("outer declaration carries canonical binding identity"),
-        inner.binding.expect("inner declaration carries canonical binding identity"),
-    )
+    let outer = must_some(decls.iter().find(|d| d.start == nth_offset(NESTED, "$x", 0)));
+    let inner = must_some(decls.iter().find(|d| d.start == nth_offset(NESTED, "$x", 1)));
+    (must_some(outer.binding), must_some(inner.binding))
 }
 
 /// The load-bearing property: one body, one spelling, two nested scopes, two
@@ -276,11 +263,9 @@ fn our_and_my_of_the_same_spelling_remain_distinct_bindings() {
 
     // The trailing `print $v` sits outside the `if` block and must resolve back
     // to the `our` binding, not the inner lexical.
-    let outer_read = occurrences(&file)
-        .into_iter()
-        .filter(|o| o.name == "v" && o.access == AccessMode::Read)
-        .next_back()
-        .expect("trailing read of `$v`");
+    let outer_read = must_some(
+        occurrences(&file).into_iter().rfind(|o| o.name == "v" && o.access == AccessMode::Read),
+    );
     assert_eq!(
         outer_read.binding.map(|id| storage_of(&file, id)),
         Some(StorageClass::PackageOur),
@@ -301,10 +286,9 @@ fn our_and_my_of_the_same_spelling_remain_distinct_bindings() {
 #[test]
 fn package_top_level_declarations_are_not_visible_to_program_root_occurrences() {
     let lexical = lower("package P;\nmy $lex = 1;\nprint $lex;\n");
-    let read = occurrences(&lexical)
-        .into_iter()
-        .find(|o| o.name == "lex" && o.access == AccessMode::Read)
-        .expect("read of `$lex`");
+    let read = must_some(
+        occurrences(&lexical).into_iter().find(|o| o.name == "lex" && o.access == AccessMode::Read),
+    );
     assert_eq!(read.binding, None, "package-top-level `my` is not resolvable from program root");
     assert_eq!(
         read.kind,
@@ -315,10 +299,9 @@ fn package_top_level_declarations_are_not_visible_to_program_root_occurrences() 
     // Without the `package` statement the very same code resolves correctly,
     // which isolates the cause to package-scope descent rather than to `my`.
     let plain = lower("my $lex = 1;\nprint $lex;\n");
-    let read = occurrences(&plain)
-        .into_iter()
-        .find(|o| o.name == "lex" && o.access == AccessMode::Read)
-        .expect("read of `$lex`");
+    let read = must_some(
+        occurrences(&plain).into_iter().find(|o| o.name == "lex" && o.access == AccessMode::Read),
+    );
     assert!(read.binding.is_some(), "file-scope `my` resolves to its binding");
     assert_eq!(read.kind, VariableKind::Lexical);
 }
@@ -346,12 +329,8 @@ fn same_scope_redeclarations_get_distinct_declaration_identities() {
 
     // Each declaration's identity matches the binding recorded at its own span.
     for decl in declarations(&file) {
-        let binding = file
-            .scope_graph
-            .bindings
-            .iter()
-            .find(|b| b.range.start == decl.start)
-            .expect("a binding recorded at the declaration span");
+        let binding =
+            must_some(file.scope_graph.bindings.iter().find(|b| b.range.start == decl.start));
         assert_eq!(
             decl.binding,
             Some(binding.id),
@@ -383,11 +362,9 @@ fn self_referential_initializer_reads_the_shadowing_binding() {
     assert_ne!(outer, inner, "the two declarations are distinct bindings");
 
     // The initializer read sits after the inner declaration token.
-    let rhs = occurrences(&file)
-        .into_iter()
-        .filter(|o| o.name == "x" && o.access == AccessMode::Read)
-        .next_back()
-        .expect("initializer read of `$x`");
+    let rhs = must_some(
+        occurrences(&file).into_iter().rfind(|o| o.name == "x" && o.access == AccessMode::Read),
+    );
     assert_eq!(
         rhs.binding,
         Some(inner),
@@ -440,22 +417,13 @@ fn foreach_iterator_shares_the_enclosing_scope_and_does_not_shadow() {
 fn signature_parameter_occurrences_resolve_to_parameter_bindings() {
     let source = "use feature 'signatures';\nsub g($a, $b) { return $a + $b; }\n";
     let file = lower(source);
-    let body_brace = source.find('{').expect("sub body brace");
+    let body_brace = must_some(source.find('{'));
     let occs = occurrences(&file);
 
     for want in ["a", "b"] {
-        let occ = occs
-            .iter()
-            .find(|o| o.name == want && o.start > body_brace)
-            .unwrap_or_else(|| panic!("expected an occurrence of `${want}` in the body"));
-        let id = occ
-            .binding
-            .unwrap_or_else(|| panic!("`${want}` occurrence must carry canonical identity"));
-        assert_eq!(
-            storage_of(&file, id),
-            StorageClass::Parameter,
-            "`${want}` must resolve to its signature parameter binding"
-        );
+        let occ = must_some(occs.iter().find(|o| o.name == want && o.start > body_brace));
+        let id = must_some(occ.binding);
+        assert_eq!(storage_of(&file, id), StorageClass::Parameter);
     }
 }
 
@@ -466,7 +434,7 @@ fn unresolved_package_global_carries_no_fabricated_identity() {
     let file = lower("print $Foo::bar;\n");
     let occs = occurrences(&file);
 
-    let occ = occs.iter().find(|o| o.name.contains("Foo")).expect("package-global occurrence");
+    let occ = must_some(occs.iter().find(|o| o.name.contains("Foo")));
     assert_eq!(
         occ.binding, None,
         "an unresolved package global must carry no binding identity, not a fabricated one"
@@ -482,25 +450,25 @@ fn declared_qualified_global_carries_canonical_identity() {
     let source = "our $Foo::x = 1;\nprint $Foo::x;\n";
     let file = lower(source);
 
-    let declared = file
-        .scope_graph
-        .bindings
-        .iter()
-        .find(|b| b.name == "Foo::x")
-        .expect("scope graph records a binding for `our $Foo::x`");
+    let declared = must_some(file.scope_graph.bindings.iter().find(|b| b.name == "Foo::x"));
     assert_eq!(declared.storage, StorageClass::PackageOur);
 
-    let decl = declarations(&file)
-        .into_iter()
-        .find(|d| d.name == "Foo::x")
-        .expect("`our $Foo::x` declaration");
+    let decl = must_some(declarations(&file).into_iter().find(|d| d.name == "Foo::x"));
     assert_eq!(
         decl.binding,
         Some(declared.id),
         "a declared qualified global must carry its recorded binding"
     );
 
-    for occ in occurrences(&file).iter().filter(|o| o.name == "Foo::x") {
+    let qualified: Vec<Occurrence> =
+        occurrences(&file).into_iter().filter(|o| o.name == "Foo::x").collect();
+    assert_eq!(
+        qualified.len(),
+        2,
+        "expected the declaration write-place and the trailing read of `$Foo::x`, got {qualified:?}"
+    );
+
+    for occ in &qualified {
         assert_eq!(
             occ.binding,
             Some(declared.id),
@@ -518,10 +486,7 @@ fn declared_qualified_global_carries_canonical_identity() {
 #[test]
 fn undeclared_variable_carries_no_identity() {
     let file = lower("sub f { return $never_declared; }\n");
-    let occ = occurrences(&file)
-        .into_iter()
-        .find(|o| o.name == "never_declared")
-        .expect("undeclared occurrence");
+    let occ = must_some(occurrences(&file).into_iter().find(|o| o.name == "never_declared"));
     assert_eq!(occ.binding, None, "an undeclared variable must carry no binding identity");
 }
 
@@ -530,12 +495,18 @@ fn undeclared_variable_carries_no_identity() {
 #[test]
 fn variable_kind_classification_is_unchanged() {
     let file = lower(NESTED);
-    for occ in occurrences(&file).iter().filter(|o| o.name == "x") {
+    let lexical: Vec<Occurrence> =
+        occurrences(&file).into_iter().filter(|o| o.name == "x").collect();
+    assert_eq!(lexical.len(), 6, "expected every `$x` occurrence in the fixture, got {lexical:?}");
+    for occ in &lexical {
         assert_eq!(occ.kind, VariableKind::Lexical, "`my $x` occurrences remain lexical: {occ:?}");
     }
 
     let pkg = lower("our $g = 1;\nprint $g;\n");
-    for occ in occurrences(&pkg).iter().filter(|o| o.name == "g") {
+    let package: Vec<Occurrence> =
+        occurrences(&pkg).into_iter().filter(|o| o.name == "g").collect();
+    assert_eq!(package.len(), 2, "expected the `our $g` write-place and its read, got {package:?}");
+    for occ in &package {
         assert_eq!(occ.kind, VariableKind::Package, "`our $g` occurrences remain package: {occ:?}");
     }
 }
