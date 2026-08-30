@@ -4,11 +4,12 @@
 //! tests bind its complete current output and prove that count-preserving swaps
 //! and source mutations change the retained population identity.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::PathBuf;
 
 use xtask::parser_accuracy_legacy_population::{
-    LegacyApplicability, LegacyFixtureInput, LegacyPopulationError,
+    LegacyApplicability, LegacyFixtureInput, LegacyPopulation, LegacyPopulationError,
     build_legacy_whitespace_population, load_legacy_whitespace_population,
 };
 
@@ -93,17 +94,17 @@ fn equal_count_case_swap_changes_population_identity() -> TestResult {
     assert_eq!(original.applied_count(), swapped.applied_count());
     assert_ne!(original.population_identity()?, swapped.population_identity()?);
 
-    let original_applied = original
-        .rows()
-        .iter()
-        .find(|row| row.legacy_applicability == LegacyApplicability::Applied)
-        .map(|row| row.case_id.as_str());
-    let swapped_applied = swapped
-        .rows()
-        .iter()
-        .find(|row| row.legacy_applicability == LegacyApplicability::Applied)
-        .map(|row| row.case_id.as_str());
-    assert_ne!(original_applied, swapped_applied);
+    // Compare the full applied case-id sets so the discriminator does not
+    // depend on exactly one of the two fixtures landing `Applied`.
+    let applied_case_ids = |population: &LegacyPopulation| -> BTreeSet<String> {
+        population
+            .rows()
+            .iter()
+            .filter(|row| row.legacy_applicability == LegacyApplicability::Applied)
+            .map(|row| row.case_id.clone())
+            .collect()
+    };
+    assert_ne!(applied_case_ids(&original), applied_case_ids(&swapped));
 
     Ok(())
 }

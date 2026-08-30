@@ -398,7 +398,12 @@ pub fn build_legacy_whitespace_population(
     Ok(LegacyPopulation { manifest_schema_version, rows })
 }
 
-fn legacy_whitespace_case_applies(source: &str) -> bool {
+/// The single retained legacy applicability definition.
+///
+/// The legacy parser-accuracy scorer consumes this predicate so the sampled
+/// whitespace denominator cannot drift from the pinned population identity.
+#[must_use]
+pub fn legacy_whitespace_case_applies(source: &str) -> bool {
     if source.contains("<<") || source.contains("__DATA__") || source.contains("__END__") {
         return false;
     }
@@ -439,7 +444,9 @@ fn validate_source_path(fixture_id: &str, source_path: &str) -> Result<(), Legac
 
     let mut components = source_path.split('/');
     let first = components.next().unwrap_or(source_path);
-    if first.ends_with(':') {
+    // Reject every platform prefix, including drive-relative ones such as
+    // `C:fixture.pl`, whose joining could escape the repository root.
+    if first.contains(':') {
         return Err(invalid("prefixed"));
     }
     for component in std::iter::once(first).chain(components) {
@@ -458,4 +465,48 @@ fn validate_source_path(fixture_id: &str, source_path: &str) -> Result<(), Legac
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    // Assertions in this unit-test module favor `expect_err`/`panic!` with
+    // descriptive messages; the workspace-wide deny is a production-code rule.
+    #![allow(clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    #[test]
+    fn validate_source_path_rejects_every_documented_reason() {
+        let cases: [(&str, &str, &str); 10] = [
+            ("empty", "", "empty"),
+            ("absolute", "/abs/fixture.pl", "absolute"),
+            ("backslash_separator", "fixtures\\fixture.pl", "backslash_separator"),
+            ("trailing_separator", "fixtures/", "trailing_separator"),
+            ("windows_drive_absolute", "C:/fixtures/fixture.pl", "prefixed"),
+            ("windows_drive_relative", "C:fixture.pl", "prefixed"),
+            ("empty_component", "fixtures//fixture.pl", "empty_component"),
+            ("current_component", "./fixtures/fixture.pl", "current_component"),
+            ("parent_component", "fixtures/../fixture.pl", "parent_component"),
+            ("control_character", "fixtures/\u{7}fixture.pl", "control_character"),
+        ];
+
+        for (fixture_id, source_path, expected_reason) in cases {
+            let error = validate_source_path(fixture_id, source_path)
+                .expect_err("hostile source path must be rejected");
+            match error {
+                LegacyPopulationError::InvalidSourcePath { reason, .. } => {
+                    assert_eq!(reason, expected_reason, "case {fixture_id}");
+                }
+                other => {
+                    panic!("case {fixture_id}: unexpected error {other:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn validate_source_path_accepts_portable_relative_paths() {
+        assert!(validate_source_path("fixture", "fixtures/fixture.pl").is_ok());
+        assert!(validate_source_path("fixture", "a/b/c/fixture.pl").is_ok());
+    }
 }
