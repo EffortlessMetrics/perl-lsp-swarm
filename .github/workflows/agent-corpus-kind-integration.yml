@@ -1,0 +1,42 @@
+name: Agent corpus kind integration
+
+on:
+  push:
+    branches:
+      - codex/9140-corpus-kind-validation
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: codex/9140-corpus-kind-validation
+
+      - name: Remove disposable probe from candidate tree
+        run: |
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git rm .github/workflows/agent-corpus-kind-integration.yml
+          git commit -m 'chore(agent): remove corpus kind integration probe'
+
+      - name: Test exact candidate merged with current main
+        run: |
+          git fetch origin main
+          git merge --no-commit --no-ff origin/main
+          cargo fmt -p perl-corpus -- --check
+          git diff --check HEAD
+          cargo test -p perl-corpus --lib api::topology --locked
+          cargo test -p perl-corpus --all-targets --locked
+          cargo xtask non-rust inventory --check
+          git merge --abort
+
+      - name: Publish source-identical verified head
+        run: git push origin HEAD:codex/9140-corpus-kind-validation
