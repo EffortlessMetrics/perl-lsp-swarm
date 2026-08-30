@@ -302,11 +302,11 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
          to properly resolve package_args for rust_scoped gates like unit_routed_full"
     );
     assert!(
-        workflow.contains("timeout-minutes: 50"),
-        "pr-smoke job timeout must include the observed heavy routed integration-test path"
+        workflow.contains("timeout-minutes: 60"),
+        "pr-smoke job timeout must leave room for the inner watchdog and always-run receipt steps"
     );
     assert!(
-        workflow.contains("PR-fast timeout policy: GitHub job 50m, outer runner watchdog 45m"),
+        workflow.contains("PR-fast timeout policy: GitHub job 60m, outer runner watchdog 45m"),
         "pr-smoke log message must document the active watchdog policy"
     );
     // The watchdog invocation is asserted by its durable parts rather than as one
