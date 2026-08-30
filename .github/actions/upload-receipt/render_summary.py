@@ -156,14 +156,22 @@ def status_line(gates: Sequence[dict]) -> str:
             f"({', '.join(summary_code(s) for s in RECOGNIZED_STATUSES)})"
         )
 
-    not_passing = sum(counts[status] for status in BLOCKING_STATUSES)
-    if not_passing:
+    failing = sum(counts[status] for status in BLOCKING_STATUSES)
+    if failing:
         detail = ", ".join(
             f"{counts[status]} {BLOCKING_LABELS[status]}"
             for status in BLOCKING_STATUSES
             if counts[status]
         )
-        return f"**Status**: {not_passing}/{total} gates not passing ({detail})"
+        # Lead with the failures, then account for every remaining gate: a
+        # skipped gate did not pass either, and dropping it here would let the
+        # headline describe fewer gates than the receipt contains.
+        parts = [f"**Status**: {failing}/{total} gates failing ({detail})"]
+        if counts[SKIP_STATUS]:
+            parts.append(f"{counts[SKIP_STATUS]} skipped")
+        if counts[PASS_STATUS]:
+            parts.append(f"{counts[PASS_STATUS]} passed")
+        return ", ".join(parts)
 
     if counts[SKIP_STATUS]:
         return (

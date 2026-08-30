@@ -82,7 +82,7 @@ class FailingReceiptTests(unittest.TestCase):
             receipt(*(gate(f"gate_{i}", "fail") for i in range(5)))
         )
         self.assertNotIn("gates passed", rendered)
-        self.assertIn("**Status**: 5/5 gates not passing (5 failed)", rendered)
+        self.assertIn("**Status**: 5/5 gates failing (5 failed)", rendered)
 
     def test_the_exact_reported_string_is_gone(self) -> None:
         rendered = render_summary.render(
@@ -100,8 +100,32 @@ class FailingReceiptTests(unittest.TestCase):
         rendered = render_summary.render(
             receipt(gate("fmt", "pass"), gate("clippy", "fail"), gate("unit", "pass"))
         )
-        self.assertIn("**Status**: 1/3 gates not passing (1 failed)", rendered)
+        self.assertIn("**Status**: 1/3 gates failing (1 failed), 2 passed", rendered)
         self.assertIn("| clippy | **FAIL** | 1 | 1.5s |", rendered)
+
+
+    def test_a_failing_headline_accounts_for_every_gate(self) -> None:
+        """Skips must not vanish from the headline once a failure is present."""
+        gates = (
+            [gate(f"p{i}", "pass") for i in range(6)]
+            + [gate("unit", "fail")]
+            + [gate(f"s{i}", "skip") for i in range(4)]
+        )
+        line = next(
+            line
+            for line in render_summary.render(receipt(*gates)).splitlines()
+            if line.startswith("**Status**")
+        )
+        self.assertIn("4 skipped", line)
+        tallied = [
+            int(n)
+            for n in re.findall(
+                r"(\d+) (?:failed|timed out|errored|skipped|passed)", line
+            )
+        ]
+        self.assertEqual(
+            sum(tallied), len(gates), f"headline does not account for every gate: {line}"
+        )
 
 
 class BlockingStatusTests(unittest.TestCase):
@@ -109,12 +133,12 @@ class BlockingStatusTests(unittest.TestCase):
 
     def test_timeout_blocks(self) -> None:
         rendered = render_summary.render(receipt(gate("unit", "timeout")))
-        self.assertIn("**Status**: 1/1 gates not passing (1 timed out)", rendered)
+        self.assertIn("**Status**: 1/1 gates failing (1 timed out)", rendered)
         self.assertNotIn("gates passed", rendered)
 
     def test_error_blocks(self) -> None:
         rendered = render_summary.render(receipt(gate("unit", "error")))
-        self.assertIn("**Status**: 1/1 gates not passing (1 errored)", rendered)
+        self.assertIn("**Status**: 1/1 gates failing (1 errored)", rendered)
         self.assertNotIn("gates passed", rendered)
 
     def test_mixed_blocking_statuses_are_itemised(self) -> None:
@@ -127,7 +151,7 @@ class BlockingStatusTests(unittest.TestCase):
             )
         )
         self.assertIn(
-            "**Status**: 3/4 gates not passing (1 failed, 1 timed out, 1 errored)",
+            "**Status**: 3/4 gates failing (1 failed, 1 timed out, 1 errored), 1 passed",
             rendered,
         )
 
@@ -282,13 +306,13 @@ class CanonicalExampleReceiptTests(unittest.TestCase):
                     self.assertIn("gates passed", rendered)
                 else:
                     self.assertNotIn("gates passed", rendered)
-                    self.assertIn("gates not passing", rendered)
+                    self.assertIn("gates failing", rendered)
 
     def test_the_committed_partial_failure_receipt_is_not_reported_as_passed(self) -> None:
         """The headline case, against a receipt the repository already ships."""
         path = REPO_ROOT / ".ci" / "examples" / "receipt-partial-failure.json"
         rendered = render_summary.render_receipt_file(str(path))
-        self.assertIn("**Status**: 1/11 gates not passing (1 failed)", rendered)
+        self.assertIn("**Status**: 1/11 gates failing (1 failed), 4 skipped, 6 passed", rendered)
         self.assertNotIn("gates passed", rendered)
         self.assertIn("| test-lib | **FAIL** |", rendered)
         self.assertIn("| policy | skip |", rendered)
@@ -484,7 +508,7 @@ class FileEntryPointTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True):
                 self.assertEqual(render_summary.main(), 0)
             written = summary_path.read_text(encoding="utf-8")
-        self.assertIn("**Status**: 1/1 gates not passing (1 failed)", written)
+        self.assertIn("**Status**: 1/1 gates failing (1 failed)", written)
 
     def test_main_is_a_no_op_without_a_step_summary(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
