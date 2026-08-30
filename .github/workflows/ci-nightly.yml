@@ -215,6 +215,13 @@ jobs:
         # the current metadata (15 bench targets, all 15 listed below); if a
         # new bench target is added to the workspace, add it here too.
         export NATIVE_PIPELINE_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_SHA}"
+        RUSTC_VV="$(rustc -vV)"
+        RUSTC_RELEASE="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^release: //p')"
+        RUSTC_COMMIT_HASH="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^commit-hash: //p' | cut -c1-12)"
+        RUSTC_HOST="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^host: //p')"
+        RUSTC_ARCH="${RUSTC_HOST%%-*}"
+        RUSTC_OS="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^host: //p' | cut -d- -f3)"
+        export NATIVE_PIPELINE_TOOLCHAIN_TAG="rustc-${RUSTC_RELEASE}-${RUSTC_COMMIT_HASH}-${RUSTC_ARCH}-${RUSTC_OS}"
         declare -a BENCH_TARGETS=(
           "perl-workspace:workspace_index_benchmark:workspace"
           "perl-token:token_scorecard:"

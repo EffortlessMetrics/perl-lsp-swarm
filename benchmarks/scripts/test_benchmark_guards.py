@@ -193,6 +193,26 @@ class CompareMissingBenchmarkGuardTests(unittest.TestCase):
             self.assertIn("REGRESSION DETECTED", proc.stdout)
 
 
+class NightlyWorkflowGuardTests(unittest.TestCase):
+    def test_nightly_bench_exports_rustc_derived_toolchain_tag(self) -> None:
+        workflow = _WORKFLOW.read_text(encoding="utf-8")
+        match = re.search(
+            r"(?ms)^    - name: Run benchmarks \(explicit Criterion targets\)\n"
+            r"(?P<step>.*?)(?=^    - name:|\Z)",
+            workflow,
+        )
+        self.assertIsNotNone(match, "nightly benchmark step is missing")
+        step = match.group("step")
+        self.assertIn("rustc -vV", step)
+        self.assertRegex(step, r'RUSTC_RELEASE=.*sed .*release:')
+        self.assertRegex(step, r'RUSTC_COMMIT_HASH=.*sed .*commit-hash:')
+        self.assertRegex(
+            step,
+            r'export NATIVE_PIPELINE_TOOLCHAIN_TAG="rustc-\$\{RUSTC_RELEASE\}-'
+            r'\$\{RUSTC_COMMIT_HASH\}-\$\{RUSTC_ARCH\}-\$\{RUSTC_OS\}"',
+        )
+
+
 class NativePipelineSidecarGuardTests(unittest.TestCase):
     EXPECTED = [
         "native_pipeline_document/delimited_n8_lf_tabs",

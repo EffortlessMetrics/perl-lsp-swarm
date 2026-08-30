@@ -9,6 +9,15 @@
 //! `target/criterion/native-pipeline-measurements.v1.json` for the nightly
 //! receipt chain, which uploads it alongside Criterion output.
 //!
+//! Identity construction is a deliberate two-pass trade-off:
+//! `build_subject_identities` measures each subject through
+//! `format_document_typed_with_counters` (scope install, `record_with`,
+//! `pipeline_invocations`) while Criterion's timing iterations re-run the plain
+//! `format_document_typed` path. The sidecar `elapsed` and Criterion's estimates
+//! therefore come from different code paths, and each subject is measured twice
+//! (nightly bench work scales with 2x subject count). Closing that divergence is
+//! out of scope for this bounded slice.
+//!
 //! Wall-clock here is advisory evidence only: per #3979/#5282 the nightly
 //! baseline comparison stays `continue-on-error: true` and no PR gate reads
 //! these numbers.
@@ -54,7 +63,11 @@ fn write_subject_identities(rows: &[serde_json::Value]) {
         "run_id": run_id,
         "subjects": rows,
     });
-    std::fs::write(&output, serde_json::to_string_pretty(&payload).unwrap_or_default())
+    let serialized = serde_json::to_string_pretty(&payload).unwrap_or_else(|error| {
+        eprintln!("native pipeline bench: cannot serialize {}: {error}", output.display());
+        std::process::exit(2);
+    });
+    std::fs::write(&output, serialized)
         .unwrap_or_else(|error| {
             eprintln!("native pipeline bench: cannot write {}: {error}", output.display());
             std::process::exit(2);

@@ -237,8 +237,9 @@ fn identity_row_from_production_identity(
     })
 }
 
-/// Toolchain/environment tag for receipt rows. Deterministic per environment;
-/// `NATIVE_PIPELINE_TOOLCHAIN_TAG` overrides for cross-run labeling.
+/// Toolchain/environment tag for receipt rows. The host-only fallback is for
+/// local runs; CI supplies the exact rustc identity through
+/// `NATIVE_PIPELINE_TOOLCHAIN_TAG`.
 #[must_use]
 pub fn toolchain_tag() -> String {
     if let Some(override_tag) =
