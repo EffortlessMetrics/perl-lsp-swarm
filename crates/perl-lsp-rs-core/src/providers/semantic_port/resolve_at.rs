@@ -642,6 +642,17 @@ where
         };
     };
 
+    // The identity takes `entity_id` from the occurrence but every other field
+    // from the entity, so the two must describe the same entity. `ResolveAtSource`
+    // is a public trait: an implementation that returns a mismatched pair would
+    // otherwise yield an "exact" hybrid — one entity's id carrying another's
+    // kind, name, anchor, and evidence. That is the conflation this layer exists
+    // to prevent, so it is refused as an instrument failure rather than
+    // resolved. The workspace adapter cannot produce it; a future source could.
+    if entity.id != entity_id {
+        return ResolveAtOutcome::InstrumentFailure("source_entity_occurrence_mismatch");
+    }
+
     // Checked before building the resolved occurrence: this path discards it,
     // and building it clones the canonical name and allocates the limitation
     // vector.

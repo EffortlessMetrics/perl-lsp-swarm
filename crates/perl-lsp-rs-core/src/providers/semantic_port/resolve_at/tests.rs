@@ -685,6 +685,42 @@ fn an_unseen_uri_yields_an_unknown_document_generation_with_a_known_workspace() 
     assert_eq!(basis.workspace_generation, SourceGeneration::known("workspace-index@2"));
 }
 
+/// A source that hands back an entity which is not the one the occurrence binds
+/// must be refused, not silently combined. Otherwise the result would carry one
+/// entity's id alongside another's kind, name, anchor, and evidence — an
+/// "exact" identity describing no real entity at all.
+#[test]
+fn a_source_pairing_mismatched_facts_is_refused() {
+    let source = StubSource::default().with_symbol(
+        10,
+        // This entity is #2 …
+        entity(2, EntityKind::Subroutine, "Beta::run", Some(200)),
+        // … but the occurrence binds #1.
+        occurrence(50, OccurrenceKind::Call, Some(1), 101),
+    );
+
+    let outcome = resolve(&source, 10);
+
+    assert_eq!(outcome.stage(), "instrument_failure");
+    assert_eq!(outcome.reason(), Some("source_entity_occurrence_mismatch"));
+    assert!(outcome.exact().is_none(), "a hybrid identity must never be exact");
+    assert_eq!(outcome.bound_entity_id(), None, "no entity may be reported from a mismatched pair");
+    assert!(!outcome.occurrence_was_published());
+}
+
+/// The check is an equality test on identity, not a coincidence of the fixtures:
+/// the same pair with matching ids resolves normally.
+#[test]
+fn a_source_pairing_matched_facts_still_resolves() {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Subroutine, "Alpha::run", Some(100)),
+        occurrence(50, OccurrenceKind::Call, Some(1), 101),
+    );
+
+    assert_eq!(resolve(&source, 10).stage(), "exact");
+}
+
 // ── Exactness depends on both halves of the identity, and on the basis ──
 
 /// The identity is occurrence *and* entity, so a weak entity cannot be laundered
