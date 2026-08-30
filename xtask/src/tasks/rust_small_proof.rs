@@ -31,6 +31,7 @@
 
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -200,6 +201,16 @@ pub struct StepRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofSubject {
     pub git_sha: String,
+    /// Digest of the working-tree delta against `HEAD`, or `None` when the
+    /// tree is clean.
+    ///
+    /// `git diff --check` only rejects whitespace and conflict-marker errors,
+    /// so a well-formatted uncommitted edit passes the lane. Binding the SHA
+    /// alone would then certify `HEAD` while the cargo steps actually proved
+    /// different source. A dirty receipt therefore cannot verify against the
+    /// clean commit, or against a differently-dirty tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_delta: Option<String>,
     pub rustc_version: String,
     pub cargo_version: String,
     pub scorecard_profile: String,
@@ -326,10 +337,16 @@ pub fn verify_receipt(
                 }
             }
             StepOutcome::Ok => {
-                if let Some(code) = step.exit_code
-                    && code != 0
-                {
-                    bail!("receipt step '{}' recorded ok with nonzero exit code {code}", step.name);
+                // A successful process always reports code 0, so an `ok` step
+                // with a missing or nonzero code did not come from this lane.
+                // Accepting `None` would let a receipt drop every process
+                // status and still certify a green proof.
+                if step.exit_code != Some(0) {
+                    bail!(
+                        "receipt step '{}' recorded ok with exit code {:?} rather than 0",
+                        step.name,
+                        step.exit_code
+                    );
                 }
             }
             StepOutcome::ProductFailure => {}
@@ -385,19 +402,13 @@ pub fn verify_receipt(
                     step.outcome
                 );
             }
-            // A census the lane never reached cannot have produced a count.
-            if let Some(census_step) = receipt.steps.get(CARGO_STEPS.len())
-                && census_step.outcome == StepOutcome::NotRun
-                && receipt.scorecard_census.is_some()
-            {
-                bail!(
-                    "receipt reports a scorecard census of {:?} while the census step was never \
-                     run",
-                    receipt.scorecard_census
-                );
-            }
         }
     }
+
+    // Refines the result/step reconciliation above, so it runs after it: a
+    // contradictory terminal result should be named as such rather than
+    // surfacing as a census disagreement.
+    verify_census_agrees_with_its_step(receipt)?;
 
     if let Some(expected_subject) = expected_subject
         && &receipt.subject != expected_subject
@@ -410,6 +421,45 @@ pub fn verify_receipt(
     }
 
     Ok(())
+}
+
+/// `scorecard_census` must agree with what the census step recorded, for every
+/// terminal result. Without this a receipt can report a count from a census
+/// that failed or never ran, or claim an `ok` census that produced nothing.
+fn verify_census_agrees_with_its_step(receipt: &RustSmallProofReceipt) -> Result<()> {
+    let Some(census) = receipt.steps.get(CARGO_STEPS.len()) else {
+        return Ok(());
+    };
+    let count = receipt.scorecard_census;
+    match (census.outcome, census.exit_code) {
+        // Counted successfully: the listing must be non-empty, which is the
+        // whole point of the census.
+        (StepOutcome::Ok, _) => match count {
+            Some(found) if found > 0 => Ok(()),
+            other => bail!(
+                "receipt records an ok references scorecard census with count {other:?}: an ok \
+                 census must report a positive count"
+            ),
+        },
+        // The one product failure an exit code cannot express: the process
+        // exited 0 and listed nothing. The count must say exactly that.
+        (StepOutcome::ProductFailure, Some(0)) => match count {
+            Some(0) => Ok(()),
+            other => bail!(
+                "receipt records the zero-census gate failure with count {other:?}: that failure \
+                 must report a census of 0"
+            ),
+        },
+        // Every other census state produced no usable listing at all.
+        _ => match count {
+            None => Ok(()),
+            Some(found) => bail!(
+                "receipt reports a scorecard census of {found} while the census step recorded \
+                 {:?}: a census that did not complete cannot produce a count",
+                census.outcome
+            ),
+        },
+    }
 }
 
 fn capture_stdout(program: &str, args: &[&str]) -> Result<String> {
@@ -454,12 +504,32 @@ fn capture_subject() -> Result<ProofSubject> {
     })?;
     Ok(ProofSubject {
         git_sha: capture_stdout("git", &["rev-parse", "HEAD"])?,
+        worktree_delta: capture_worktree_delta()?,
         rustc_version: capture_stdout("rustc", &["--version"])?,
         cargo_version: capture_stdout("cargo", &["--version"])?,
         scorecard_profile,
         scorecard_features,
         locked: SCORECARD_RUN_ARGS.contains(&"--locked"),
     })
+}
+
+/// Digest the working tree's difference from `HEAD`, or `None` when clean.
+///
+/// `git status --porcelain` covers staged, unstaged, and untracked *paths*;
+/// `git diff HEAD` pins the exact tracked *content*. Hashing both means two
+/// different edits to the same file produce different subjects. A clean CI
+/// checkout digests to `None`, so hosted lanes are unaffected.
+fn capture_worktree_delta() -> Result<Option<String>> {
+    let status = capture_stdout("git", &["status", "--porcelain"])?;
+    if status.is_empty() {
+        return Ok(None);
+    }
+    let tracked_diff = capture_stdout("git", &["diff", "HEAD"])?;
+    let mut hasher = Sha256::new();
+    hasher.update(status.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(tracked_diff.as_bytes());
+    Ok(Some(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()))
 }
 
 /// Remove a receipt left by an earlier run. A receipt that cannot be destroyed
@@ -484,7 +554,16 @@ fn write_receipt(path: &Path, receipt: &RustSmallProofReceipt) -> Result<()> {
     }
     let json = serde_json::to_string_pretty(receipt)
         .wrap_err("serializing the Rust Small proof receipt")?;
-    fs::write(path, json).wrap_err_with(|| format!("writing receipt {}", path.display()))
+    // Write-then-rename: a cancelled lane must not leave a half-written
+    // receipt where artifact collection would pick it up as this run's
+    // evidence. The temporary sits beside the destination so the rename stays
+    // within one filesystem and is atomic.
+    let staging = path.with_extension("json.partial");
+    fs::write(&staging, json)
+        .wrap_err_with(|| format!("writing receipt staging file {}", staging.display()))?;
+    fs::rename(&staging, path).wrap_err_with(|| {
+        format!("publishing receipt {} from {}", path.display(), staging.display())
+    })
 }
 
 /// Read and validate a receipt against the current checkout. Runs no proof
@@ -606,22 +685,26 @@ fn run_proof(receipt_path: &Path) -> Result<()> {
     if !census_output.status.success() {
         // Nonzero census exit is a product/test failure (the scorecard target
         // failed to build or run), kept distinct from the spawn-instrument
-        // failure above (#8407 acceptance: product vs instrument failure).
-        recorder.record(
-            CENSUS_STEP,
-            census_argv,
-            StepOutcome::ProductFailure,
-            census_output.status.code(),
-        );
+        // failure above (#8407 acceptance: product vs instrument failure) and
+        // from termination without an exit code, which is not-completed —
+        // the same three-way split `execute_step` makes.
+        let (outcome, result) = match census_output.status.code() {
+            Some(_) => (StepOutcome::ProductFailure, ProofResult::ProductFailure),
+            None => (StepOutcome::NotCompleted, ProofResult::NotCompleted),
+        };
+        recorder.record(CENSUS_STEP, census_argv, outcome, census_output.status.code());
         return fail_closed(
             receipt_path,
             &subject,
             recorder,
             census_count,
-            ProofResult::ProductFailure,
+            result,
             eyre!(
-                "[{done}/{total}] references scorecard census product/test failure \
-                 (exit {:?}): {}",
+                "[{done}/{total}] references scorecard census {} (exit {:?}): {}",
+                match outcome {
+                    StepOutcome::NotCompleted => "not completed: terminated without an exit code",
+                    _ => "product/test failure",
+                },
                 census_output.status.code(),
                 bounded_stderr(&census_output.stderr)
             ),
@@ -1057,6 +1140,7 @@ tests::gamma: test
     fn sample_subject() -> ProofSubject {
         ProofSubject {
             git_sha: "c626bb1e5f0000000000000000000000000000ab".to_string(),
+            worktree_delta: None,
             rustc_version: "rustc 1.90.0 (deadbeef 2026-01-01)".to_string(),
             cargo_version: "cargo 1.90.0 (deadbeef 2026-01-01)".to_string(),
             scorecard_profile: "agent".to_string(),
@@ -1295,7 +1379,8 @@ tests::gamma: test
     ) -> RustSmallProofReceipt {
         let mut receipt = success_receipt();
         receipt.result = result;
-        receipt.scorecard_census = None;
+        // The census only has a count if the lane got past it successfully.
+        receipt.scorecard_census = if fail_at > CARGO_STEPS.len() { Some(42) } else { None };
         receipt.steps[fail_at].outcome = outcome;
         receipt.steps[fail_at].exit_code = match outcome {
             StepOutcome::ProductFailure => Some(101),
@@ -1373,7 +1458,7 @@ tests::gamma: test
 
         let mut ok_with_nonzero = success_receipt();
         ok_with_nonzero.steps[0].exit_code = Some(101);
-        assert!(rejection(&ok_with_nonzero, None).contains("ok with nonzero exit code 101"));
+        assert!(rejection(&ok_with_nonzero, None).contains("recorded ok with exit code Some(101)"));
     }
 
     #[test]
@@ -1382,7 +1467,7 @@ tests::gamma: test
             failure_receipt(1, StepOutcome::ProductFailure, ProofResult::ProductFailure);
         receipt.scorecard_census = Some(42);
         let text = rejection(&receipt, None);
-        assert!(text.contains("census step was never run"), "{text}");
+        assert!(text.contains("cannot produce a count"), "{text}");
     }
 
     #[test]
@@ -1439,6 +1524,130 @@ tests::gamma: test
             panic!("temp dir must be creatable");
         };
         dir
+    }
+
+    // ---------------------------------------------------------------------
+    // Review round 2 (Devin Review on #13882).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn an_ok_step_without_an_exit_status_is_refused() {
+        // A receipt that drops every process status must not still certify a
+        // green proof: a successful process always reports 0.
+        let mut receipt = success_receipt();
+        receipt.steps[3].exit_code = None;
+        let text = rejection(&receipt, None);
+        assert!(text.contains("recorded ok with exit code None rather than 0"), "{text}");
+    }
+
+    #[test]
+    fn a_dirty_worktree_receipt_cannot_verify_against_the_clean_commit() {
+        // `git diff --check` only rejects whitespace errors, so a cleanly
+        // formatted uncommitted edit passes the lane. Binding the SHA alone
+        // would certify HEAD while the steps proved different source.
+        let mut dirty = success_receipt();
+        dirty.subject.worktree_delta = Some("a".repeat(64));
+
+        let clean_checkout = sample_subject();
+        let text = rejection(&dirty, Some(&clean_checkout));
+        assert!(text.contains("does not match the verifying checkout"), "{text}");
+
+        // And a differently-dirty tree is a different subject too.
+        let mut other_dirty = sample_subject();
+        other_dirty.worktree_delta = Some("b".repeat(64));
+        assert!(rejection(&dirty, Some(&other_dirty)).contains("does not match"));
+
+        // Same delta verifies: the digest binds the tree, it does not ban it.
+        let mut same_dirty = sample_subject();
+        same_dirty.worktree_delta = Some("a".repeat(64));
+        assert!(verify_receipt(&dirty, Some(&same_dirty)).is_ok());
+    }
+
+    #[test]
+    fn the_worktree_delta_reflects_this_checkout() {
+        // Exercises the real capture against the repository the tests run in:
+        // whatever it reports must round-trip through a receipt subject.
+        let Ok(delta) = capture_worktree_delta() else {
+            panic!("worktree delta capture must succeed in a git checkout");
+        };
+        if let Some(digest) = &delta {
+            assert_eq!(digest.len(), 64, "a sha256 digest is 64 hex chars: {digest}");
+            assert!(digest.chars().all(|c| c.is_ascii_hexdigit()), "{digest}");
+        }
+        // Stable across calls when nothing changes in between.
+        let Ok(again) = capture_worktree_delta() else {
+            panic!("worktree delta capture must succeed on a second call");
+        };
+        assert_eq!(delta, again, "the delta must be deterministic for one tree state");
+    }
+
+    #[test]
+    fn a_census_count_must_agree_with_the_census_step() {
+        let census_at = CARGO_STEPS.len();
+
+        // Devin's case: a later step fails, so the terminal result is
+        // coherent, but the ok census reports no count at all.
+        let mut ok_without_count = failure_receipt(
+            CARGO_STEPS.len() + 1,
+            StepOutcome::ProductFailure,
+            ProofResult::ProductFailure,
+        );
+        ok_without_count.scorecard_census = None;
+        let text = rejection(&ok_without_count, None);
+        assert!(text.contains("must report a positive count"), "{text}");
+
+        // A count from a census that failed to build.
+        let mut failed_with_count =
+            failure_receipt(census_at, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        failed_with_count.steps[census_at].exit_code = Some(101);
+        failed_with_count.scorecard_census = Some(42);
+        let text = rejection(&failed_with_count, None);
+        assert!(text.contains("cannot produce a count"), "{text}");
+
+        // A count from a census that never ran.
+        let mut never_ran =
+            failure_receipt(1, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        never_ran.scorecard_census = Some(7);
+        assert!(rejection(&never_ran, None).contains("cannot produce a count"));
+
+        // The zero-census gate failure must say exactly 0, not something else.
+        let mut wrong_zero =
+            failure_receipt(census_at, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+        wrong_zero.steps[census_at].exit_code = Some(0);
+        wrong_zero.scorecard_census = Some(5);
+        assert!(rejection(&wrong_zero, None).contains("must report a census of 0"));
+    }
+
+    #[test]
+    fn a_positive_census_survives_a_later_step_failure() {
+        // Negative control for the census rules: once the census has counted,
+        // a replay or diff-hygiene failure must not invalidate the count.
+        for failing in [CARGO_STEPS.len() + 1, CARGO_STEPS.len() + 2] {
+            let mut receipt =
+                failure_receipt(failing, StepOutcome::ProductFailure, ProofResult::ProductFailure);
+            receipt.scorecard_census = Some(42);
+            assert!(
+                verify_receipt(&receipt, Some(&sample_subject())).is_ok(),
+                "a counted census must survive a failure at step {failing}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_receipt_is_published_atomically_leaving_no_partial_file() {
+        // A cancelled lane must not leave a truncated receipt where artifact
+        // collection would read it as this run's evidence.
+        let dir = scratch_dir("atomic");
+        let path = dir.join("emitted.json");
+        let Ok(()) = write_receipt(&path, &success_receipt()) else {
+            panic!("write must succeed");
+        };
+        assert!(path.exists());
+        assert!(
+            !path.with_extension("json.partial").exists(),
+            "no staging file may survive a completed write"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1577,7 +1786,7 @@ tests::gamma: test
             let mut bad_exit = success_receipt();
             bad_exit.steps[index].exit_code = Some(101);
             assert!(
-                rejection(&bad_exit, None).contains("ok with nonzero exit code"),
+                rejection(&bad_exit, None).contains("rather than 0"),
                 "an ok step {index} ({}) with a nonzero exit code was accepted",
                 name()
             );

@@ -25,14 +25,30 @@ candidate SHA, `rustc`/`cargo` versions, and the scorecard profile/features
 read out of the pinned argv — to a typed outcome for every selected step
 (`ok`, `product_failure`, `not_completed`, `instrument_failure`, `not_run`).
 
-A failed lane still emits a complete receipt: the failing step keeps its
-classification and every step the lane never reached is recorded `not_run`, so
-an omitted step and an unreached step stay distinguishable.
+A lane that fails *after* subject capture still emits a complete receipt: the
+failing step keeps its classification and every step the lane never reached is
+recorded `not_run`, so an omitted step and an unreached step stay
+distinguishable.
+
+A lane that fails *during* preflight — invalidation or subject capture — leaves
+no receipt at all, deliberately. There is no subject to bind at that point, and
+a receipt that named no candidate would be worse than none. Absence of a
+receipt is therefore itself a lane state: it means the run never established
+what it was proving.
 
 Any receipt left by an earlier run is destroyed before the first fallible step.
 `target/` is reused across runs, so without that a failed rerun of the same
 candidate could leave the previous run's green receipt in place, still
-verifying — an artifact describing a run that did not happen.
+verifying — an artifact describing a run that did not happen. Receipts are
+published by write-then-rename, so a cancelled lane cannot leave a truncated
+one behind.
+
+The subject binds the working tree, not just `HEAD`. `git diff --check` only
+rejects whitespace and conflict-marker errors, so a well-formatted uncommitted
+edit passes the lane; binding the commit alone would certify `HEAD` while the
+cargo steps proved different source. A dirty tree contributes a
+`worktree_delta` digest, so such a receipt cannot verify against the clean
+commit. A clean CI checkout has no delta, so hosted lanes are unaffected.
 
 `--verify-receipt <path>` re-reads a receipt against the current checkout and
 runs no proof steps, so it is the cheap consumer seam for asking whether an
@@ -42,11 +58,21 @@ artifact actually certifies this candidate. It exits nonzero on:
 - a missing, extra, renamed, or reordered step, or argv that is not the pinned
   lane argv;
 - a success claimed over a non-`ok` step, or over a zero/absent census;
+- a `scorecard_census` that disagrees with the census step: an `ok` census must
+  report a positive count, the zero-census gate failure must report exactly 0,
+  and a census that did not complete cannot carry a count at all;
 - a failure result over steps that all recorded `ok`, a terminal result that
   contradicts the first failing step, `not_run` steps that do not form a
   suffix, a census count from a step that never ran, or an outcome and exit
   code that cannot co-occur;
-- a subject that is not this candidate, toolchain, or scorecard profile.
+- a subject that is not this candidate, working tree, toolchain, or scorecard
+  profile.
+
+**Verification proves honesty, not success.** `--verify-receipt` exits zero for
+a coherent *failed* run — that is what makes an honest failure receipt usable
+evidence. A consumer deciding whether the lane passed must read the receipt's
+`result` field; treating a zero exit from the verifier as proof of a green lane
+would be wrong.
 
 **Trust boundary.** The receipt certifies its subject *as observed at capture
 time*. Subject capture is the trust root: the producer's self-check and
