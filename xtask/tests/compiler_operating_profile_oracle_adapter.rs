@@ -1298,6 +1298,85 @@ mod compiler_operating_profile_oracle_adapter {
     }
 
     #[test]
+    fn falsifier_17_evidence_fields_are_deliberately_not_subject_fields() -> Result<()> {
+        // The line this suite draws, pinned so it is not re-litigated field by
+        // field: a subject dimension carries the *configuration under which the
+        // observation was made*; it must never carry *what the observation
+        // found*. If findings entered the subject, two runs over one fixture
+        // that disagreed would become two different subjects, and nothing could
+        // ever be compared — which is the whole point of binding a subject.
+        //
+        // `generated_inputs` is a finding, not a configuration: it records what
+        // the extractor discovered in the fixture. Its inputs are already bound
+        // exactly — `source_snapshot.content_hash` crosses whole in
+        // FixtureSeries, and the extractor name, version, and fact model cross
+        // in Toolchain and CompilerPolicy — so under a deterministic extractor
+        // it is a function of the subject rather than a component of it, and
+        // adds no discriminating identity.
+        //
+        // This is exactly why `ambient_inputs` goes the other way: an ambient
+        // input is external configuration, determined by nothing the receipt
+        // otherwise binds. Being a `preserved_field` is not the test — so are
+        // `normalized_facts.rust` and `stale_facts`, which plainly must not
+        // enter the subject.
+        let moo = agreeing_with(|receipt| {
+            receipt["generated_inputs"] = json!([{
+                "framework": "Moo",
+                "provenance": "SourceBackedGenerated",
+                "source_range": {
+                    "path_class": "public_test_fixture",
+                    "start_line": 7, "start_character": 0,
+                    "end_line": 7, "end_character": 12
+                }
+            }]);
+        });
+        let moose = agreeing_with(|receipt| {
+            receipt["generated_inputs"] = json!([{
+                "framework": "Moose",
+                "provenance": "SourceBackedGenerated",
+                "source_range": {
+                    "path_class": "public_test_fixture",
+                    "start_line": 9, "start_character": 0,
+                    "end_line": 9, "end_character": 20
+                }
+            }]);
+        });
+
+        // Both are accepted, so this is a statement about accepted evidence.
+        for receipt in [&moo, &moose] {
+            assert_eq!(
+                adapt(receipt)?.ceiling.claim_ceiling(),
+                ClaimCeiling::AcceptedCompatibility
+            );
+        }
+
+        // Same subject on every bound dimension: these are two observations
+        // *of one candidate*, which is what makes them comparable at all.
+        assert_eq!(
+            adapt(&moo)?.subject,
+            adapt(&moose)?.subject,
+            "a differing finding must not manufacture a different candidate"
+        );
+
+        // ...and yet the difference is not lost. It lands where a finding
+        // belongs: in the receipt digest, and so in the observation identity,
+        // which hashes the whole semantic text rather than the subject alone.
+        // Without this half the test would also pass if the adapter simply
+        // discarded `generated_inputs`.
+        assert_ne!(
+            digest(&moo)?,
+            digest(&moose)?,
+            "a differing finding must still change the receipt digest"
+        );
+        assert_ne!(
+            identity(&moo)?,
+            identity(&moose)?,
+            "two observations of one subject are still two observations"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn falsifier_17_declared_ambient_inputs_are_load_bearing_in_the_subject() -> Result<()> {
         // `ambient_inputs.authority` is a preserved field, and a declared
         // ambient input is part of the environment the evidence was gathered
