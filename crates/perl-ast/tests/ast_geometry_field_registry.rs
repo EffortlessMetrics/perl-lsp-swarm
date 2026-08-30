@@ -835,6 +835,66 @@ fn a_duplicate_registry_row_is_rejected() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// Two dotted rows sharing a base but spelling the suffix differently are drift.
+///
+/// Raised in review: geometry rows use dotted identities (`catch_blocks.variable`)
+/// while every other governance bucket uses top-level field names, so the
+/// bucket-exclusivity check in `ast_invariant_policy_registry.rs` compares
+/// `catch_blocks.variable` against a bare `catch_blocks` and finds no collision.
+/// The concern was that duplicate ownership of one base could therefore pass
+/// unnoticed.
+///
+/// It does not, but the protection is *incidental* rather than stated: the
+/// observer emits exactly one identity per nested record, so a second row on the
+/// same base has nothing observing it and reconciliation rejects it as a stale
+/// row. `DuplicateRow` does not fire here — the two strings differ — which is
+/// precisely why this deserves its own control instead of being assumed to fall
+/// out of the duplicate check.
+///
+/// Pinning it means a future change that makes reconciliation tolerant of
+/// unobserved rows fails here, naming the reason, rather than silently reopening
+/// the gap.
+#[test]
+fn a_second_dotted_row_on_the_same_base_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    let mutated = [
+        AstGeometryField {
+            kind_name: "Try",
+            field: "catch_blocks.variable",
+            shape: AstGeometryShape::Nested,
+            mapping: AstGeometryMapping::MapRange,
+            disposition: AstGeometryDisposition::SourceExact,
+        },
+        AstGeometryField {
+            kind_name: "Try",
+            field: "catch_blocks.var",
+            shape: AstGeometryShape::Nested,
+            mapping: AstGeometryMapping::MapRange,
+            disposition: AstGeometryDisposition::SourceExact,
+        },
+    ];
+
+    // What the observer actually reports for a Try bearing one bound variable.
+    let observed = [ObservedGeometryField {
+        field: "catch_blocks.variable",
+        shape: AstGeometryShape::Nested,
+        occurrences: 1,
+    }];
+
+    let Err(drift) = reconcile_geometry_rows("Try", &mutated, &observed) else {
+        return Err("a second dotted row on the same base must fail the gate".into());
+    };
+
+    assert_eq!(
+        drift,
+        AstGeometryDrift::StaleRow {
+            kind_name: "Try".to_string(),
+            field: "catch_blocks.var".to_string(),
+        },
+        "the misspelled suffix must be named, so the author sees which spelling is unbacked"
+    );
+    Ok(())
+}
+
 /// An absent optional span is legitimate and must not be reported as drift.
 ///
 /// This is the opposite-direction control for the unregistered-field test: the
