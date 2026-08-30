@@ -88,6 +88,13 @@ REQUIRED_FIELDS = (
 # A defining transition has to name the routing decision the evidence shows.
 # A bare category label restated as a sentence fragment does not, and the
 # cheapest way to keep that honest is a floor on how much was actually said.
+#
+# These are length-and-vocabulary floors only. They reject a row that restates
+# its own category name and nothing else; they do not and cannot judge whether
+# the narrative is true of the lane. That judgment is review's -- it is what
+# demoted `feedback-repair-and-focused-rereview` to `ABSENT` after every
+# structural check on that row had passed. Do not try to grow these constants
+# into a semantic check; grow the review instead.
 MIN_TRANSITION_CHARS = 60
 MIN_TRANSITION_TERMS = 12
 MIN_UNPROVED_CHARS = 30
@@ -361,7 +368,8 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             self.assertTrue(
                 ISSUE_REF.search(receipts),
                 f"{category}: COVERED must cite at least one durable issue or "
-                f"PR reference, got {receipts!r}",
+                f"PR reference as `#NNNN` (a full GitHub link may accompany it, "
+                f"but the bare number is what is matched), got {receipts!r}",
             )
             ruling = fields.get("Terminal ruling", "")
             self.assertNotEqual(

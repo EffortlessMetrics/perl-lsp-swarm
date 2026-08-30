@@ -154,3 +154,13 @@ Write the document, then add its receipts to the row it covers and flip that row
 `COVERED`. A row moves to `COVERED` only when the named document narrates that row's
 defining transition on the receipts cited — not when a PR appears in a matrix, and not
 when an adjacent category already points at the same document.
+
+Two mechanics that are easy to get wrong:
+
+- **Cite issues and PRs as `#NNNN`.** A full GitHub link is welcome alongside it, but the
+  bare `#NNNN` is what the check looks for, so `PR 5717` or `see pull 5717` fails.
+- **`Source receipts` is what the row relies on, not an index of the lane.** The binding
+  is one-way: every receipt a row cites must appear in its lane document, but the lane
+  may reference more than the row does. `ci-instrument-failure` cites only #5717 while
+  its lane also names #4588, #4589 and #5713 — the row is a focused claim about one
+  transition, not a bibliography.
