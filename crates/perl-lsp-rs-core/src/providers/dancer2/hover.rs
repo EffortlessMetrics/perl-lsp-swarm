@@ -361,7 +361,7 @@ mod tests {
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
-        let facts = canonical_file_facts(&ast, FileId(1), source, &activations);
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
         Setup { activations, facts, ast }
     }
 
@@ -435,7 +435,7 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
         let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
-        let facts = canonical_file_facts(&ast, FileId(1), source, &activations);
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
         assert!(hover_projection_at(&activations, &facts, &ast, "main", 5).is_none());
     }
 

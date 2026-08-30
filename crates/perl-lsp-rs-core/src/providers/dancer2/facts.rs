@@ -153,9 +153,6 @@ fn span_contains(anchor: &perl_semantic_facts::SourceAnchor, offset: usize) -> b
 
 /// Mint the canonical Dancer2 fact family for one document.
 ///
-/// `source` is the exact text the AST was parsed from; the hook extractor
-/// needs it to tell an auto-quoted bareword operand from a computed one.
-///
 /// Uses only the canonical producers; when no package is exactly activated
 /// the result is empty (zero facts of any kind). The generation embedded in
 /// each activation's exact state (from [`super::activation::file_activations`])
@@ -164,7 +161,6 @@ fn span_contains(anchor: &perl_semantic_facts::SourceAnchor, offset: usize) -> b
 pub fn canonical_file_facts(
     ast: &Node,
     file_id: FileId,
-    source: &str,
     activations: &Dancer2FileActivations,
 ) -> CanonicalDancer2FileFacts {
     let mut facts = CanonicalDancer2FileFacts::default();
@@ -174,7 +170,7 @@ pub fn canonical_file_facts(
 
     let route_contexts = extract_dancer2_route_contexts(ast, file_id);
     let hook_declarations: Vec<Dancer2HookDeclaration> =
-        extract_dancer2_hook_declarations(ast, file_id, source);
+        extract_dancer2_hook_declarations(ast, file_id);
 
     for activation in &activations.packages {
         if !activation.facts.is_exact() {

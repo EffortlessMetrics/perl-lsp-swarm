@@ -1265,6 +1265,17 @@ impl<'a> Parser<'a> {
                                             break;
                                         }
 
+                                        // A fat comma auto-quotes the bareword to its
+                                        // left, exactly as it does in a parenthesised
+                                        // call. Without this the two spellings of one
+                                        // list-operator call disagree about whether the
+                                        // operand names something or calls it.
+                                        if self.peek_kind() == Some(TokenKind::FatArrow)
+                                            && let Some(arg) = args.last_mut()
+                                        {
+                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                        }
+
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
                                             break;

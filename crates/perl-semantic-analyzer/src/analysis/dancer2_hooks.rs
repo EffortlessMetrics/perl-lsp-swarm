@@ -38,21 +38,22 @@ use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::dancer2_hooks::{
     Dancer2HookDeclaration, normalize_dancer2_hook_name,
 };
-use perl_semantic_facts::handler::FrameworkHandler;
 use perl_semantic_facts::hook::{HookDeclaration, HookName, HookNameSelection};
 use perl_semantic_facts::{AnchorId, FileId, SourceAnchor};
 
 /// Extract every supported Dancer2 hook declaration from `ast`, in source
 /// order, with per-declaration package/file identity and a source-order
 /// declaration index.
-/// `source` is the exact document text the AST was parsed from; it is the
-/// only evidence that distinguishes an auto-quoted bareword operand from a
-/// computed one (see [`promote_fat_comma_barewords`]).
+///
+/// The auto-quoted/computed distinction for a bareword operand
+/// (`hook before => sub {...}` versus `hook(before, sub {...})`) is decided by
+/// the parser, which quotes the operand left of a fat comma as Perl does. This
+/// function therefore reads only `ast`: a literal operand arrives as a string
+/// node, and anything else stays a computed boundary.
 #[must_use]
 pub fn extract_dancer2_hook_declarations(
     ast: &Node,
     file_id: FileId,
-    source: &str,
 ) -> Vec<Dancer2HookDeclaration> {
     let targets = SubroutineTargetIndex::build(ast, file_id);
     let mut declarations = Vec::new();
@@ -67,130 +68,7 @@ pub fn extract_dancer2_hook_declarations(
         &targets,
         false,
     );
-    for declaration in &mut declarations {
-        promote_fat_comma_barewords(declaration, source);
-    }
     declarations
-}
-
-/// The byte offset at which the tree says this declaration's handler operand
-/// begins, when that operand owns a source interval.
-fn handler_start_byte(declaration: &Dancer2HookDeclaration) -> Option<u32> {
-    match &declaration.hook.handler {
-        FrameworkHandler::InlineSub { anchor } | FrameworkHandler::StaticCoderef { anchor, .. } => {
-            Some(anchor.start_byte)
-        }
-        FrameworkHandler::Bounded { anchor, .. } => anchor.map(|anchor| anchor.start_byte),
-        _ => None,
-    }
-}
-
-/// Promote a bareword hook-name operand that Perl's fat comma auto-quotes.
-///
-/// `hook before => sub { ... }` is the canonical Dancer2 spelling: `=>`
-/// auto-quotes the bareword immediately before it, so the operand is a
-/// *literal* hook name. The parser already performs that quoting inside a
-/// parenthesised call (`hook(before => sub {...})` yields a string), but the
-/// paren-less list-operator form leaves a bare `Identifier`, which is
-/// indistinguishable at the AST level from a genuine call:
-///
-/// ```text
-/// hook before => sub {...}   auto-quoted literal   -> promote
-/// hook(before, sub {...})    calls before()        -> stays computed
-/// ```
-///
-/// The separator is the only thing that tells them apart, so the exact source
-/// text is the authority. Promotion requires a plain bareword at the operand's
-/// own span followed by `=>`, with only whitespace and comments in between —
-/// Perl auto-quotes across those, so `hook before # note` / newline / `=> ...`
-/// is still a literal. Anything else — a comma, a qualified or sigil-bearing
-/// name, an interpolation — fails closed and stays a computed boundary.
-fn promote_fat_comma_barewords(declaration: &mut Dancer2HookDeclaration, source: &str) {
-    // `source` is a second authority beside `ast`. Nothing in the signature
-    // forces the two to describe the same document, so before letting source
-    // bytes exactify a dynamic operand we require the two to *agree on the
-    // geometry of this declaration*: the separator the source shows must end
-    // exactly where the tree says the next operand begins.
-    //
-    // A per-operand check cannot do this — the same bareword can sit at the
-    // same offset in two different documents — but the handoff point between
-    // the two operands is a position both authorities independently commit
-    // to, and a tree describing another document disagrees about it.
-    let Some(handler_start) = handler_start_byte(declaration) else {
-        return;
-    };
-    let HookNameSelection::Dynamic { anchor, .. } = &declaration.hook.name else {
-        return;
-    };
-    let (Ok(start), Ok(end), Ok(handler_start)) = (
-        usize::try_from(anchor.start_byte),
-        usize::try_from(anchor.end_byte),
-        usize::try_from(handler_start),
-    ) else {
-        return;
-    };
-    if start >= end || end > source.len() || handler_start > source.len() {
-        return;
-    }
-    let Some(literal) = source.get(start..end) else {
-        return;
-    };
-    if !is_plain_bareword(literal) {
-        return;
-    }
-    let Some(rest) = source.get(end..) else {
-        return;
-    };
-    let after_trivia = skip_separator_trivia(rest);
-    let Some(after_arrow) = after_trivia.strip_prefix("=>") else {
-        return;
-    };
-    // Where the source's separator actually hands over, measured in the same
-    // coordinates the tree used.
-    let handover = source.len() - skip_separator_trivia(after_arrow).len();
-    if handover != handler_start {
-        // The tree and the text disagree about this declaration's shape, so
-        // the text is not describing this tree. Fail closed.
-        return;
-    }
-    declaration.hook.name = HookNameSelection::Literal(HookName {
-        normalization: normalize_dancer2_hook_name(literal),
-        literal: literal.to_string(),
-        anchor: *anchor,
-    });
-}
-
-/// Skip what Perl allows between a bareword and the fat comma that quotes it:
-/// whitespace and line comments, in any order.
-///
-/// Only these two forms are skipped. Anything else ends the scan, so the
-/// caller still sees the next real token and a non-`=>` separator keeps the
-/// operand computed.
-fn skip_separator_trivia(mut rest: &str) -> &str {
-    loop {
-        let trimmed = rest.trim_start();
-        let Some(after_hash) = trimmed.strip_prefix('#') else {
-            return trimmed;
-        };
-        // A line comment runs to the end of the line; an unterminated one runs
-        // to the end of the file, leaving nothing for the caller to match.
-        rest = match after_hash.find('\n') {
-            Some(newline) => &after_hash[newline + 1..],
-            None => "",
-        };
-    }
-}
-
-/// Whether `value` is a plain Perl bareword: the only shape `=>` auto-quotes
-/// into a simple string. A `::`-qualified name, a sigil, or anything else is
-/// rejected rather than guessed.
-fn is_plain_bareword(value: &str) -> bool {
-    let mut chars = value.chars();
-    match chars.next() {
-        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Whether a node makes its subtree's execution conditional: control flow
@@ -419,7 +297,7 @@ mod tests {
     fn declarations(code: &str) -> Vec<Dancer2HookDeclaration> {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        extract_dancer2_hook_declarations(&ast, FileId(1), code)
+        extract_dancer2_hook_declarations(&ast, FileId(1))
     }
 
     fn literal_name(declaration: &Dancer2HookDeclaration) -> &HookName {

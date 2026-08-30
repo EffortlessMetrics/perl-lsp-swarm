@@ -159,7 +159,7 @@ mod tests {
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
-        canonical_file_facts(&ast, FileId(1), source, &activations)
+        canonical_file_facts(&ast, FileId(1), &activations)
     }
 
     #[test]

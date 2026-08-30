@@ -1,11 +1,11 @@
 #![deny(clippy::map_err_ignore)]
 //! Bounded external oracle for the fat-comma hook-name rule (#13604).
 //!
-//! The hook extractor promotes `hook before => sub {...}` to a *literal* name
-//! but leaves `hook(before, sub {...})` computed. That distinction is a claim
-//! about Perl itself, not about this repository, so repository-only tests
-//! cannot establish it. This file asks the real `perl` interpreter what each
-//! form means and requires the extractor's classification to agree.
+//! `hook before => sub {...}` carries a *literal* name while
+//! `hook(before, sub {...})` is computed. That distinction is a claim about
+//! Perl itself, not about this repository, so repository-only tests cannot
+//! establish it. This file asks the real `perl` interpreter what each form
+//! means and requires the parser's classification to agree.
 //!
 //! The oracle is bounded: a few tiny programs, no network, no CPAN, no
 //! Dancer2. It runs `perl` only as a semantics reference — never to execute
@@ -66,7 +66,7 @@ fn require_oracle() {
 fn hook_name(code: &str) -> HookNameSelection {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
-    let declarations = extract_dancer2_hook_declarations(&ast, FileId(1), code);
+    let declarations = extract_dancer2_hook_declarations(&ast, FileId(1));
     must_some(declarations.into_iter().next()).hook.name
 }
 
@@ -190,41 +190,31 @@ fn perl_auto_quotes_across_a_comment_before_the_fat_comma() {
     );
 }
 
-/// The separator repair made `source` a second authority beside the AST, and
-/// nothing in the signature forces the two to describe the same document.
-/// Source bytes must therefore not be able to exactify a tree they do not
-/// describe, even when the two documents are the same length and the operand
-/// bareword sits at the same offset in both.
+/// The separator is decided while parsing, not recovered afterwards from
+/// source bytes at tree-derived offsets.
+///
+/// That distinction matters because byte offsets do not identify a document:
+/// these two fixtures are the same length and put `before` at the same offset,
+/// so any classifier that re-read the operand's span and looked for a nearby
+/// `=>` could be pointed at the wrong document and would exactify a computed
+/// name. The extractor takes no source argument at all — the only input is the
+/// tree — so that whole failure mode is unrepresentable rather than guarded.
+/// This test pins the discrimination that remains observable: identical
+/// operand geometry, opposite classifications.
 #[test]
-fn source_bytes_cannot_exactify_another_tree() {
-    // Same length, same `before` at the same offset; only the separator and
-    // the handler position differ.
+fn identical_operand_geometry_still_classifies_by_separator() {
     let computed = "package App;\nuse Dancer2;\nhook(before , sub { 1 });";
     let promoted = "package App;\nuse Dancer2;\nhook before => sub { 1 };";
     assert_eq!(computed.len(), promoted.len(), "the two fixtures must be the same length");
     let operand = must_some(computed.find("before"));
     assert_eq!(operand, must_some(promoted.find("before")), "operand offset must coincide");
 
-    // Each source against its own tree: the expected classifications.
     assert!(
         matches!(hook_name(computed), HookNameSelection::Dynamic { .. }),
-        "the comma form is computed"
+        "the comma form calls a sub, so its name is not statically known"
     );
     assert!(
         matches!(hook_name(promoted), HookNameSelection::Literal(_)),
-        "the fat-comma form is a literal"
-    );
-
-    // Now cross them: parse the computed form, then hand the extractor the
-    // *other* document's bytes. The fat comma is present at the right offset
-    // in those bytes, so an unbound implementation would promote. It must not.
-    let mut parser = Parser::new(computed);
-    let ast = must(parser.parse());
-    let crossed = extract_dancer2_hook_declarations(&ast, FileId(1), promoted);
-    let crossed = must_some(crossed.into_iter().next());
-    assert!(
-        matches!(crossed.hook.name, HookNameSelection::Dynamic { .. }),
-        "source bytes must not exactify a tree they do not describe: {:?}",
-        crossed.hook.name
+        "the fat-comma form auto-quotes to a literal"
     );
 }

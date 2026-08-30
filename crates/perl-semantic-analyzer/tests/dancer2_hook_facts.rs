@@ -74,7 +74,7 @@ fn canonical_facts_with_input(
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let sites = extract_dancer2_activation_sites(&ast, FileId(1));
-    let declarations = extract_dancer2_hook_declarations(&ast, FileId(1), code);
+    let declarations = extract_dancer2_hook_declarations(&ast, FileId(1));
     let detection = detect_dancer2(detection_input);
     let mut facts = Vec::new();
     for site in &sites {

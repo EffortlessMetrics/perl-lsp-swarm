@@ -402,6 +402,26 @@ impl<'a> Parser<'a> {
         false
     }
 
+    /// Apply Perl's fat-comma auto-quoting to the operand immediately left of a
+    /// `=>`.
+    ///
+    /// `before => 1` passes the *string* `before` even when a sub of that name
+    /// is in scope, whereas `before, 1` calls it. The separator alone decides,
+    /// so the distinction belongs to the parser: a consumer that recovers it
+    /// later from source bytes is reading a second, unbound authority beside
+    /// the tree.
+    ///
+    /// Only a bare identifier is rewritten. Anything already carrying a value
+    /// (a literal, a variable, a call with arguments) is left untouched.
+    pub(crate) fn auto_quote_bareword_before_fat_comma(arg: &mut Node) {
+        if let NodeKind::Identifier { ref name } = arg.kind {
+            *arg = Node::new(
+                NodeKind::String { value: name.clone(), interpolated: false },
+                arg.location,
+            );
+        }
+    }
+
     /// Parse a statement-start user function call with space-separated arguments.
     fn parse_unknown_lowercase_bareword_call(&mut self) -> ParseResult<Node> {
         self.with_recursion_guard(|s| {
@@ -431,6 +451,16 @@ impl<'a> Parser<'a> {
                 args.push(s.parse_assignment_or_declaration()?);
 
                 if matches!(s.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
+                    // A fat comma auto-quotes the bareword on its left, exactly
+                    // as it does inside `parse_args`. Without this the
+                    // parenthesised and parenthesis-free spellings of the same
+                    // call disagree about whether the operand is a name or a
+                    // call of a same-named sub.
+                    if s.peek_kind() == Some(TokenKind::FatArrow)
+                        && let Some(arg) = args.last_mut()
+                    {
+                        Self::auto_quote_bareword_before_fat_comma(arg);
+                    }
                     s.tokens.next()?;
                 } else if Self::is_statement_terminator(s.peek_kind())
                     || s.is_statement_modifier_keyword()
@@ -869,14 +899,7 @@ impl<'a> Parser<'a> {
                 // Check for fat arrow after the argument
                 // If we see =>, the argument should be auto-quoted if it's a bare identifier
                 if s.peek_kind() == Some(TokenKind::FatArrow) {
-                    // Auto-quote bare identifiers before =>
-                    if let NodeKind::Identifier { ref name } = arg.kind {
-                        // Convert identifier to string (auto-quoting)
-                        arg = Node::new(
-                            NodeKind::String { value: name.clone(), interpolated: false },
-                            arg.location,
-                        );
-                    }
+                    Self::auto_quote_bareword_before_fat_comma(&mut arg);
                     args.push(arg);
                     s.tokens.next()?; // consume =>
                     if s.peek_kind() == Some(TokenKind::FatArrow) {
