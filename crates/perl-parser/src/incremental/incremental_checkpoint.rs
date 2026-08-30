@@ -114,7 +114,7 @@ impl TokenSegment {
 /// clamps to an illegally empty span, the token becomes synthetic `Unknown`
 /// (or EOF if even that constructor fails) instead of being dropped.
 fn retain_shifted_cached_token(token: &Token, start: usize, end: usize) -> Token {
-    match Token::new_checked(token.kind(), token.text.clone(), start, end) {
+    match token.with_span(start, end) {
         Ok(token) => token,
         Err(_) => {
             let ordered_start = start.min(end);
@@ -603,8 +603,7 @@ impl CheckpointedIncrementalParser {
 
         // Convert raw lexer tokens to parser tokens (trivia-filtered + kind-mapped)
         // and cache them for reuse in incremental reparses.
-        let parser_tokens =
-            TokenStream::lexer_tokens_to_parser_tokens_from_source(raw_tokens, &self.source);
+        let parser_tokens = TokenStream::lexer_tokens_to_parser_tokens(raw_tokens);
 
         if let (Some(first), Some(last)) = (parser_tokens.first(), parser_tokens.last()) {
             let start = first.start();
@@ -749,8 +748,7 @@ impl CheckpointedIncrementalParser {
         }
         self.stats.bytes_relexed += bytes_relexed_this_phase;
 
-        let converted =
-            TokenStream::lexer_tokens_to_parser_tokens_from_source(raw_relexed, &self.source);
+        let converted = TokenStream::lexer_tokens_to_parser_tokens(raw_relexed);
         newly_lexed_parser_tokens.extend(converted.iter().cloned());
         parser_tokens.extend(converted);
 
@@ -786,8 +784,7 @@ impl CheckpointedIncrementalParser {
                     self.stats.tokens_relexed += 1;
                 }
                 self.stats.tail_fallback_bytes += tail_bytes;
-                let tail_converted =
-                    TokenStream::lexer_tokens_to_parser_tokens_from_source(raw_tail, &self.source);
+                let tail_converted = TokenStream::lexer_tokens_to_parser_tokens(raw_tail);
                 newly_lexed_parser_tokens.extend(tail_converted.iter().cloned());
                 parser_tokens.extend(tail_converted);
             }

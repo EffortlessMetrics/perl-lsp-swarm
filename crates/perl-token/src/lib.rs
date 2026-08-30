@@ -226,6 +226,33 @@ mod tests {
     }
 
     #[test]
+    fn geometry_only_unknown_rest_preserves_span_without_payload() -> Result<(), TokenSpanError> {
+        let token = Token::unknown_rest_at(12, 70)?;
+        assert_eq!(token.kind(), TokenKind::UnknownRest);
+        assert!(token.text.is_empty());
+        assert_eq!(token.len(), 58);
+        assert!(token.is_geometry_only());
+
+        let borrowed = token.as_ref_token();
+        assert!(borrowed.is_geometry_only());
+        let owned = borrowed.to_owned_token();
+        assert_eq!(owned.start(), 12);
+        assert_eq!(owned.end(), 70);
+        assert!(owned.text.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn geometry_only_unknown_rest_shifts_without_reconstruction() -> Result<(), TokenSpanError> {
+        let token = Token::unknown_rest_at(100, 200)?;
+        let shifted = token.with_span(112, 212)?;
+        assert_eq!((shifted.start(), shifted.end()), (112, 212));
+        assert!(shifted.is_geometry_only());
+        assert!(shifted.text.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn token_eof_at() {
         let eof = Token::eof_at(42);
         assert_eq!(eof.kind(), TokenKind::Eof);

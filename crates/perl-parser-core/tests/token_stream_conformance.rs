@@ -191,3 +191,37 @@ fn hash_and_sub_sigils_as_identifier_tokens_keep_sigil_kind() {
         "bare %/& as Identifier tokens must map to sigil kinds, not operator kinds"
     );
 }
+
+#[test]
+fn live_budget_recovery_keeps_geometry_only_unknown_rest() {
+    let source = format!("/{};\n", "a".repeat(70_000));
+    let mut stream = TokenStream::new(&source);
+    let token = stream.peek().expect("live stream should expose recovery token");
+
+    assert_eq!(token.kind(), TokenKind::UnknownRest);
+    assert!(token.text.is_empty());
+    assert!(token.is_geometry_only());
+    assert!(token.start() < token.end());
+    assert_eq!(token.end(), source.len());
+}
+
+#[test]
+fn buffered_budget_recovery_keeps_geometry_without_source_copy() {
+    let source = format!("/{};\n", "a".repeat(70_000));
+    let mut lexer = PerlLexer::new(&source);
+    let raw: Vec<_> = lexer.by_ref().collect();
+    let recovery = raw
+        .iter()
+        .find(|token| matches!(token.token_type, TokenType::UnknownRest))
+        .expect("over-budget regex should emit UnknownRest");
+    assert!(recovery.text.is_empty());
+
+    let converted = TokenStream::lexer_tokens_to_parser_tokens(raw);
+    let token = converted
+        .iter()
+        .find(|token| token.kind() == TokenKind::UnknownRest)
+        .expect("buffered conversion must preserve UnknownRest");
+    assert!(token.text.is_empty());
+    assert!(token.is_geometry_only());
+    assert_eq!(token.end() - token.start(), source.len() - token.start());
+}
