@@ -450,7 +450,8 @@ impl<'a> PerlLexer<'a> {
                     // Over-budget recovery is geometry-only in the helper above.
                     // Boundedness (body <= MAX_HEREDOC_BYTES) is what makes this
                     // payload copy safe; see the budget-stop recovery contract
-                    // in the crate docs.
+                    // in the crate docs. Its silent degradation at the parser
+                    // token-stream conversion is a separate seam (#14158).
                     if !found_terminator {
                         self.pending_heredocs.remove(0);
                         self.position = self.input.len();
@@ -623,7 +624,11 @@ impl<'a> PerlLexer<'a> {
         self.position = self.input.len();
         Some(Token {
             token_type: TokenType::UnknownRest,
-            text: Arc::from(""),
+            // The token payload must cover its span: the parser-side checked
+            // token constructor rejects geometry-only tokens, and their
+            // conversion fallback would silently synthesize `Eof`, erasing
+            // the typed lexer-budget stop cause (#14158).
+            text: Arc::from(&self.input[start..self.position]),
             start,
             end: self.position,
         })
