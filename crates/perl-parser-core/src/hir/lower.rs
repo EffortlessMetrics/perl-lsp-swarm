@@ -3259,6 +3259,13 @@ impl<'a> BodyBuilder2<'a> {
     /// (lower.rs ~1892). Starting from `start_scope`, walk up through
     /// `scope_graph.scopes[id].parent` until None — matching the identical
     /// algorithm used in pass 1.
+    ///
+    /// A class field resolves `Lexical` because that is the truthful side of a
+    /// binary split, not because a field is a lexical slot. [`VariableKind`]
+    /// therefore does **not** distinguish a field read from a `my` read: a
+    /// consumer that needs that distinction must inspect the binding's
+    /// [`StorageClass::ClassField`] directly. The two are not redundant
+    /// (#13817).
     fn resolve_variable_kind(
         &self,
         sigil: &str,
