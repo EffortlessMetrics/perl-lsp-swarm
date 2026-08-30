@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12416 |
-| Rust-family files | 3821 |
-| Non-Rust files | 8595 |
-| Allowlisted | 6360 |
-| Unclassified | 2235 |
+| Total tracked files | 12445 |
+| Rust-family files | 3838 |
+| Non-Rust files | 8607 |
+| Allowlisted | 6370 |
+| Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
-| documentation | 2803 |
+| config | 491 |
+| documentation | 2804 |
 | generated | 2 |
 | production | 348 |
-| test | 2055 |
-| tooling | 662 |
-| unclassified | 2235 |
+| test | 2058 |
+| tooling | 667 |
+| unclassified | 2237 |
 
 ## Unclassified files
 
@@ -1951,6 +1951,8 @@
 | `test_corpus/gold/completion_method_arrow/expected_completion.json` | `json` |
 | `test_corpus/gold/completion_package_colon/expected.json` | `json` |
 | `test_corpus/gold/completion_package_colon/expected_completion.json` | `json` |
+| `test_corpus/gold/completion_scope_ranking/expected_completion.json` | `json` |
+| `test_corpus/gold/completion_scope_sibling/expected_completion.json` | `json` |
 | `test_corpus/gold/eval_string_pragma/expected.json` | `json` |
 | `test_corpus/gold/goto_inherited_method/expected.json` | `json` |
 | `test_corpus/gold/goto_inherited_method/expected_goto.json` | `json` |
@@ -2939,6 +2941,7 @@
 | `.github/workflows/publish-crates.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/publish-dry-run.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/publish-extension.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/release-artifact-size-shadow.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/release-orchestration.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/release-settings-closeout.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/release.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3136,6 +3139,7 @@
 | `.spec/10918-emacs-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11036-lsp-runtime-train-schema/lsp_runtime_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11079-pl700-removal-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3940,6 +3944,7 @@
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/substitution_literal_preserve.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/transliteration_literal_preserve.expected.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/transliteration_literal_preserve.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-lsp-perltidy/tests/inferred_line_ending_tests.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-lsp-rs-core/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-rs-core/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-rs-core/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
@@ -4717,6 +4722,7 @@
 | `docs/ci/pr-plan.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/queue-health-modes.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/receipt-contract.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/ci/release-artifact-size-shadow.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/release-evidence.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/review-gates.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/review-receipts.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6586,6 +6592,8 @@
 | `scripts/ci/pr_smoke_disk_guard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/receipts-to-junit.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/reconcile_github_enforcement_snapshot.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/release_artifact_size_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/release_artifact_size_stage.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ripr_summary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/route-codecov-packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/run_gate_shard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6699,6 +6707,7 @@
 | `scripts/llvm.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/lsp-smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/maintenance/rebuild_11983_current_main.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/maintenance/verify_11983_reject_identities.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/marketing/check-demo-assets.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/marketing/render-walkthrough-gif.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/migrate-legacy-authority-banners.py` | tooling | `non-rust-legacy-authority-banner-migrator` | release/ci |
@@ -6827,6 +6836,7 @@
 | `scripts/tests/test-publish-receipts-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-publish-topo.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-quick-receipts-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-rebuild-11983-reject-identities.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-review-lease.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-review-threads-inline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-run-gates-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6967,6 +6977,8 @@
 | `test_corpus/gold/completion_lexical_var/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/completion_method_arrow/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/completion_package_colon/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/gold/completion_scope_ranking/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/gold/completion_scope_sibling/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/eval_string_pragma/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/goto_inherited_method/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/goto_local_sub/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
