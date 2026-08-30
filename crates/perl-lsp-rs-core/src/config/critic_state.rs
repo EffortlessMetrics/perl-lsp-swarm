@@ -139,17 +139,22 @@ pub(crate) fn canonical_rule_ids(values: &[String]) -> Vec<String> {
 pub struct AcceptedCriticSnapshot {
     state: EffectiveCriticState,
     owning_root: Option<String>,
-    fingerprint: String,
 }
 
 impl AcceptedCriticSnapshot {
     /// Capture the accepted subject for one owning root, in a single read of
     /// the accepted-state authority.
+    ///
+    /// The only constructor. There is deliberately no `Default` and no
+    /// field-wise public constructor: a caller must not be able to pair a state
+    /// with a root or digest it was not derived from, which is the same class of
+    /// split authority this type exists to remove.
     #[must_use]
     pub fn capture(config: &ServerConfig, owning_root: Option<&str>) -> Self {
-        let state = config.effective_critic_state(owning_root);
-        let fingerprint = state.fingerprint();
-        Self { state, owning_root: owning_root.map(ToOwned::to_owned), fingerprint }
+        Self {
+            state: config.effective_critic_state(owning_root),
+            owning_root: owning_root.map(ToOwned::to_owned),
+        }
     }
 
     /// The accepted state this subject evaluates under.
@@ -165,9 +170,13 @@ impl AcceptedCriticSnapshot {
     }
 
     /// Deterministic identity of the accepted state.
+    ///
+    /// Derived rather than stored: the digest is a pure function of the state,
+    /// so keeping a copy would add an independently representable fact that
+    /// could disagree with it.
     #[must_use]
-    pub fn fingerprint(&self) -> &str {
-        &self.fingerprint
+    pub fn fingerprint(&self) -> String {
+        self.state.fingerprint()
     }
 
     /// Whether live configuration still accepts this exact subject.
@@ -177,8 +186,7 @@ impl AcceptedCriticSnapshot {
     /// root's live policy.
     #[must_use]
     pub fn is_current(&self, config: &ServerConfig) -> bool {
-        config.effective_critic_state(self.owning_root.as_deref()).fingerprint()
-            == self.fingerprint
+        config.effective_critic_state(self.owning_root.as_deref()) == self.state
     }
 }
 
@@ -546,6 +554,58 @@ mod tests {
             exclude: Vec::new(),
             owning_root: root.map(ToOwned::to_owned),
         }
+    }
+
+    /// #12067 review: evaluation, currentness and Critic result identity used to
+    /// sample configuration independently and could disagree. The snapshot is
+    /// the single accepted subject all three consume.
+    #[test]
+    fn accepted_snapshot_is_one_authority_bound_to_its_root() {
+        let mut config = ServerConfig { perlcritic_enabled: true, ..ServerConfig::default() };
+        config.perlcritic_severity = 3;
+        let snapshot = AcceptedCriticSnapshot::capture(&config, Some("/root-a"));
+
+        assert_eq!(snapshot.owning_root(), Some("/root-a"));
+        assert_eq!(
+            snapshot.fingerprint(),
+            snapshot.state().fingerprint(),
+            "the digest must be derived from the captured state, never a separate fact"
+        );
+        assert!(snapshot.is_current(&config), "an unchanged config still accepts the subject");
+
+        // Policy movement invalidates the subject.
+        config.perlcritic_severity = 5;
+        assert!(
+            !snapshot.is_current(&config),
+            "a moved severity threshold must invalidate the captured subject"
+        );
+
+        // Currentness is judged against the root the snapshot was captured for,
+        // so a multi-root workspace cannot check one root against another.
+        let rooted = AcceptedCriticSnapshot::capture(&config, Some("/root-b"));
+        assert_eq!(rooted.owning_root(), Some("/root-b"));
+        assert!(rooted.is_current(&config));
+        assert_ne!(
+            rooted.fingerprint(),
+            AcceptedCriticSnapshot::capture(&config, Some("/root-c")).fingerprint(),
+            "distinct owning roots must be distinct accepted subjects"
+        );
+    }
+
+    /// Disabling the critic is a deliberate accepted subject, not an absence of
+    /// one: it still has an identity and can still be current.
+    #[test]
+    fn disabled_is_a_capturable_accepted_subject() {
+        let config = ServerConfig { perlcritic_enabled: false, ..ServerConfig::default() };
+        let snapshot = AcceptedCriticSnapshot::capture(&config, Some("/root"));
+        assert_eq!(snapshot.state(), &EffectiveCriticState::Disabled);
+        assert!(snapshot.is_current(&config));
+
+        let enabled = ServerConfig { perlcritic_enabled: true, ..ServerConfig::default() };
+        assert!(
+            !snapshot.is_current(&enabled),
+            "enabling the critic must invalidate a disabled subject"
+        );
     }
 
     #[test]
