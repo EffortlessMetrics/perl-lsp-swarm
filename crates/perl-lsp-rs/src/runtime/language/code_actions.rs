@@ -1610,9 +1610,53 @@ print $x;
         );
     }
 
+    /// Boundary 1: a request already cancelled when it arrives must never reach
+    /// the ordinary handler's work at all.
+    #[test]
+    fn cancelled_request_returns_request_cancelled_from_the_wrapper() {
+        let uri = "file:///action_cancel_wrapper.pl";
+        let server = server_with_document(uri);
+        let request_id = json!(4243);
+        let token = PerlLspCancellationToken::new(
+            JsonRpcId::from_value(&request_id).expect("numeric request id is valid"),
+            "textDocument/codeAction".into(),
+        );
+        let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+        token.cancel();
+
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 5, "character": 0 },
+            },
+            "context": { "diagnostics": [] },
+        });
+        let result = server.handle_code_action_cancellable(Some(params), Some(&request_id));
+        assert!(
+            result.is_err(),
+            "an already-cancelled code-action request must be refused, not answered; got: {:?}",
+            result.ok()
+        );
+        if let Err(error) = result {
+            assert_eq!(
+                error.code, REQUEST_CANCELLED,
+                "refusal must use the protocol cancellation code"
+            );
+        }
+    }
+
     /// #12067 review: the request cancellation token reached only the wrapper,
-    /// so native analysis ran under `RunGate::open()` and a cancellation during
-    /// that work still produced a full response.
+    /// so native analysis ran under `RunGate::open()`.
+    ///
+    /// This pins the *reachability* boundary — the token now backs the service's
+    /// cancellation gate — with a non-vacuity control showing the same subject
+    /// publishes when no cancellation authority is supplied. It does not pin the
+    /// mid-flight case: analysis is synchronous in-process, so a real token
+    /// cannot be flipped between the service's pre-evaluation and settlement
+    /// barriers without adding a production test hook, which is not worth its
+    /// cost here. The settlement recheck is the service's own contract, already
+    /// covered by its cancellation tests.
     #[test]
     fn cancelled_request_withholds_native_actions_from_the_service() {
         let uri = "file:///action_cancel.pl";

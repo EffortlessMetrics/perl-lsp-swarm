@@ -78,14 +78,22 @@ const NATIVE_CONSUMER_SOURCES: [&str; 4] = [
 /// and the non-vacuity control shows the native service still runs.
 #[test]
 fn migrated_diagnostic_transports_cannot_reach_an_external_critic_process() -> Result<(), String> {
-    /// Entry points into external Perl::Critic execution. `CriticAnalyzer` is
-    /// the subprocess-backed analyzer itself; the two collectors were its only
-    /// diagnostic-transport callers before the #9062 cutover removed them.
-    const EXTERNAL_PROCESS_ENTRYPOINTS: [&str; 4] = [
-        "CriticAnalyzer",
+    /// Construction and execution seams for external Perl::Critic, plus the two
+    /// collectors that were its only diagnostic-transport callers before the
+    /// #9062 cutover removed them.
+    ///
+    /// Deliberately seams rather than the bare type name: a file that merely
+    /// names or re-exports `CriticAnalyzer` in a doc comment or a type position
+    /// cannot thereby run the external tool, and banning the identifier forever
+    /// would make this gate a false-positive generator during the #9072/#9068
+    /// transition. What must stay impossible is constructing or driving it.
+    const EXTERNAL_PROCESS_ENTRYPOINTS: [&str; 6] = [
+        "CriticAnalyzer::new(",
+        "CriticAnalyzer::with_os_runtime(",
+        ".analyze_file(",
+        ".analyze_file_with_hash(",
         "collect_external_perlcritic_diagnostics",
         "collect_perlcritic_diagnostics",
-        "with_os_runtime(",
     ];
 
     for transport in ALL_MIGRATED_TRANSPORTS {
