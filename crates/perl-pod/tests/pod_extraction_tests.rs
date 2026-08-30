@@ -189,6 +189,7 @@ fn name_field_never_exceeds_source_after_link_display_text() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn synopsis_field_never_exceeds_source_after_link_display_text() {
     // Regression for the pod_extraction fuzz panic (nightly run 33230657955):
     // the SYNOPSIS arm still used markdown link rendering, so an unterminated
@@ -197,7 +198,12 @@ fn synopsis_field_never_exceeds_source_after_link_display_text() {
     let source =
         "=head1 SYNOPSIS\n\nL<b0stsor(\"\u{0}\u{FFFD} dynp and more trailing bytes here\n\n=cut\n";
     let doc = extract_pod(source);
-    let synopsis = doc.synopsis.as_deref().unwrap_or("");
+    let synopsis = doc.synopsis.as_deref().expect("SYNOPSIS should be extracted from the source");
+    assert!(!synopsis.is_empty(), "SYNOPSIS should not be empty");
+    assert!(
+        synopsis.contains("b0stsor"),
+        "SYNOPSIS should preserve the display text: {synopsis:?}"
+    );
     assert!(
         synopsis.chars().count() <= source.chars().count(),
         "SYNOPSIS ({} chars) must not exceed source ({} chars): {synopsis:?}",
