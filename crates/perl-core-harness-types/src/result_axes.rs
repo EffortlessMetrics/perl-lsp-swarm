@@ -783,11 +783,24 @@ pub struct AdmissionSummary {
     pub downstream_blocking_count: usize,
 }
 
+/// Sum a deserialized distribution without trusting it to fit.
+///
+/// These counts arrive from JSON, so a corrupt or hostile receipt can carry
+/// values whose sum exceeds `usize`. A plain `sum()` would panic in a debug
+/// build and wrap in a release one — the validator would either crash on the
+/// input it exists to reject, or silently accept a wrapped total.
+fn checked_total(counts: &BTreeMap<String, usize>) -> Option<usize> {
+    counts.values().try_fold(0usize, |total, count| total.checked_add(*count))
+}
+
 impl AdmissionSummary {
-    /// Total subjects counted by admission.
+    /// Total subjects counted by admission, saturating rather than panicking.
+    ///
+    /// Use [`AdmissionSummary::validate`] to reject a distribution whose counts
+    /// do not fit; this accessor never panics so it stays safe on any input.
     #[must_use]
     pub fn admission_total(&self) -> usize {
-        self.by_admission.values().sum()
+        self.by_admission.values().fold(0usize, |total, count| total.saturating_add(*count))
     }
 
     /// Reject a distribution that does not describe the stated denominator.
@@ -815,14 +828,22 @@ impl AdmissionSummary {
                 });
             }
         }
-        let admission_total = self.admission_total();
+        let Some(admission_total) = checked_total(&self.by_admission) else {
+            return Err(ResultReportViolation::DistributionTotalDoesNotFit {
+                axis: ResultAxis::Admission,
+            });
+        };
         if admission_total != denominator {
             return Err(ResultReportViolation::AdmissionTotalMismatch {
                 counted: admission_total,
                 denominator,
             });
         }
-        let support_total: usize = self.by_support.values().sum();
+        let Some(support_total) = checked_total(&self.by_support) else {
+            return Err(ResultReportViolation::DistributionTotalDoesNotFit {
+                axis: ResultAxis::Support,
+            });
+        };
         if support_total != denominator {
             return Err(ResultReportViolation::SupportTotalMismatch {
                 counted: support_total,
@@ -1000,6 +1021,11 @@ pub enum ResultReportViolation {
     },
     /// A complete measurement claimed valid evidence while observing nothing.
     CompleteMeasurementObservedNothing,
+    /// A distribution's counts sum beyond what `usize` can hold.
+    DistributionTotalDoesNotFit {
+        /// Which distribution overflowed.
+        axis: ResultAxis,
+    },
     /// The same file/mode or invocation identity appeared twice.
     DuplicateDetailRecord {
         /// The repeated identity.
@@ -1128,6 +1154,11 @@ impl fmt::Display for ResultReportViolation {
                 f,
                 "the {axis} distribution uses category '{category}', which is not part of that \
                  axis vocabulary"
+            ),
+            Self::DistributionTotalDoesNotFit { axis } => write!(
+                f,
+                "the {axis} distribution's counts sum beyond usize; the record is not a \
+                 countable observation"
             ),
             Self::DuplicateDetailRecord { identity } => {
                 write!(f, "detail record '{identity}' appears more than once")
@@ -3193,6 +3224,30 @@ mod tests {
             },
         );
         assert!(failing.validate().is_err(), "a rail that failed subjects backs no general claim");
+        Ok(())
+    }
+
+    /// These counts come from JSON, so the validator must survive a corrupt or
+    /// hostile receipt rather than panicking on the input it exists to reject.
+    #[test]
+    fn a_distribution_that_cannot_be_counted_is_rejected() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut candidate = valid_report()?;
+        candidate.admission.by_admission =
+            distribution(&[("implemented", usize::MAX), ("accepted_debt", 2)]);
+        assert_eq!(
+            candidate.validate(),
+            Err(ResultReportViolation::DistributionTotalDoesNotFit { axis: ResultAxis::Admission })
+        );
+        // The accessor must stay panic-free on the same input.
+        assert_eq!(candidate.admission.admission_total(), usize::MAX);
+
+        let mut support = valid_report()?;
+        support.admission.by_support = distribution(&[("general", usize::MAX), ("blocked", 2)]);
+        assert_eq!(
+            support.validate(),
+            Err(ResultReportViolation::DistributionTotalDoesNotFit { axis: ResultAxis::Support })
+        );
         Ok(())
     }
 
