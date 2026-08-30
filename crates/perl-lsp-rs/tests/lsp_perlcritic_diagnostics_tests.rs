@@ -1,701 +1,141 @@
-//! Integration tests for the perlcritic diagnostic pipeline.
+//! Deprecated critic engine settings cannot arm an external Perl::Critic
+//! subprocess on any migrated diagnostic transport (#9062).
 //!
-//! These tests exercise `collect_external_perlcritic_diagnostics` end-to-end via
-//! the pull-diagnostics path (`textDocument/diagnostic`) without needing a real
-//! `perlcritic` binary.  A mock subprocess runtime is injected through the test
-//! API exposed by `LspServer::test_install_mock_critic_runtime` and
-//! `LspServer::test_bypass_perlcritic_command_check`.
+//! This suite previously exercised `collect_external_perlcritic_diagnostics`
+//! end-to-end through a mock subprocess runtime. That production path no longer
+//! exists: after the #9062 cutover, push, document-pull and workspace-pull
+//! diagnostics all route from the accepted `EffectiveCriticState` through
+//! `NativeCriticService`, and no diagnostic transport can launch `perlcritic`
+//! or select `BuiltInAnalyzer`.
 //!
-//! Require the `expose_lsp_test_api` feature (which unlocks the internal test
-//! helpers on `LspServer`) and a non-WASM target.
+//! The external-compatibility assertions those tests carried belong to the
+//! repository conformance harness, which still owns real Perl::Critic
+//! differential capability. What a *product* LSP test should prove now is the
+//! negative: a deprecated `legacy` / `external` / `perlcritic` engine value is
+//! inert migration input and cannot change the evaluator.
 //!
-//! Run with:
-//!   RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs \
-//!     --features expose_lsp_test_api -- perlcritic --test-threads=2
+//! Retirement of the raw settings themselves is #9072; deletion of the residual
+//! `CriticEngine` / analyzer architecture is #9068. Neither is claimed here.
 //!
-//! Issue: #2018
+//! Requires the `expose_lsp_test_api` feature and a non-WASM target.
+//!
+//! Issue: #2018 (original), #9062 (cutover)
 
 #![cfg(all(not(target_arch = "wasm32"), feature = "expose_lsp_test_api"))]
-// Tests are permitted to use `.expect()`/`.expect_err()` on Result/Option per
-// the repo's coding standards (unlike production code, where they are banned).
+// Tests are permitted to use `.expect()` on Result/Option per the repo's coding
+// standards (unlike production code, where they are banned).
 #![allow(clippy::expect_used)]
 
 use perl_lsp::LspServer;
 use perl_lsp_rs_core::config::CriticEngine;
-use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
-use perl_tdd_support::must;
 use serde_json::json;
-use std::sync::Arc;
 
-/// Open `uri` with `text` via `didOpen`, then issue a pull-diagnostics request
-/// and return the result.
-fn pull_diagnostics(
-    server: &LspServer,
-    runtime: &MockSubprocessRuntime,
-    uri: &str,
-    text: &str,
-) -> serde_json::Value {
-    let parsed_uri = must(url::Url::parse(uri));
-    let path = must(parsed_uri.to_file_path());
-    must(std::fs::write(path, text));
+/// A source that a real Perl::Critic run would have flagged, so an armed
+/// subprocess would be visible in the output.
+const SOURCE: &str = "my $path = 'f.txt';\nsystem($path);\nopen(FH, '<', 'f.txt');\n";
 
-    must(server.test_handle_did_open(Some(json!({
-        "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
-    }))));
-
-    // Legacy didOpen publishes push diagnostics synchronously. Keep the
-    // pull-diagnostics assertion scoped to the invocation made by this request.
-    runtime.clear_invocations();
-
-    must(server.test_handle_document_diagnostic(Some(json!({
-        "textDocument": { "uri": uri }
-    }))))
-    .unwrap_or(json!({"items": []}))
-}
-
-fn fixture_uri(tempdir: &tempfile::TempDir, filename: &str) -> String {
-    must(url::Url::from_file_path(tempdir.path().join(filename))).to_string()
-}
-
-// ── Test A ────────────────────────────────────────────────────────────────────
-
-/// Violations must appear in pull diagnostics when perlcritic is enabled and the
-/// mock runtime returns a severity-3 violation.
-///
-/// Perlcritic severity 3 = Harsh → maps to LSP Warning (severity value 2).
-#[test]
-fn test_a_violations_appear_in_pull_diagnostics_when_enabled() {
+fn server_with_engine(engine: CriticEngine, uri: &str) -> LspServer {
     let server = LspServer::new();
-
-    // Enable perlcritic with severity threshold 3.
-    server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
+    server.test_configure_critic_engine(engine);
     server.test_configure_perlcritic(true, 3, None);
-
-    // Install a mock runtime returning one severity-3 violation for the file.
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    let mock_line =
-        b"test.pl:5:1:3:TestingAndDebugging::RequireUseStrict:Code does not use strict\n";
-    runtime.add_response(MockResponse::success(mock_line.to_vec()));
-    runtime.add_response(MockResponse::success(mock_line.to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-    server.test_bypass_perlcritic_command_check();
-
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
-    let uri = fixture_uri(&tempdir, "test.pl");
-
-    let result = pull_diagnostics(
-        &server,
-        runtime.as_ref(),
-        &uri,
-        "# line 1\n# line 2\n# line 3\n# line 4\nprint 'hello';\n",
-    );
-
-    // There must be at least one diagnostic with code
-    // "TestingAndDebugging::RequireUseStrict", severity 2 (Warning),
-    // perlcritic source attribution, and fixable=true metadata.
-    //
-    // The pull-diagnostics response has the shape:
-    //   { "kind": "full", "items": [ { "code": "...", "severity": N, ... } ], "resultId": "..." }
-    let diags = result["items"].as_array().cloned().unwrap_or_default();
-
-    let found = diags.iter().any(|d| {
-        d["code"].as_str() == Some("TestingAndDebugging::RequireUseStrict")
-            && d["severity"].as_u64() == Some(2)
-            && d["source"].as_str() == Some("perl-lsp-critic")
-            && d["data"]["fixable"].as_bool() == Some(true)
-    });
-
-    assert!(
-        found,
-        "Expected a Warning diagnostic with code \
-         TestingAndDebugging::RequireUseStrict in the pull response; \
-         got: {result}"
-    );
-}
-
-#[test]
-fn test_a1_severity_five_maps_to_error() {
-    let server = LspServer::new();
-    server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-    server.test_configure_perlcritic(true, 5, None);
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(
-        b"test.pl:2:1:5:InputOutput::RequireThreeArgOpen:Use three-arg open\n".to_vec(),
-    ));
-    runtime.add_response(MockResponse::success(
-        b"test.pl:2:1:5:InputOutput::RequireThreeArgOpen:Use three-arg open\n".to_vec(),
-    ));
-    server.test_install_mock_critic_runtime(runtime.clone());
-    server.test_bypass_perlcritic_command_check();
-
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
-    let uri = fixture_uri(&tempdir, "test_sev5.pl");
-
-    let result = pull_diagnostics(&server, runtime.as_ref(), &uri, "# line 1\nopen FH, $path;\n");
-    let diags = result["items"].as_array().cloned().unwrap_or_default();
-    assert!(
-        diags.iter().any(|d| {
-            d["code"].as_str() == Some("InputOutput::RequireThreeArgOpen")
-                && d["severity"].as_u64() == Some(1)
-                && d["source"].as_str() == Some("perl-lsp-critic")
-        }),
-        "expected severity-5 external diagnostic; got: {result}"
-    );
-    let invocations = runtime.invocations();
-    assert_eq!(invocations.len(), 1, "expected one pull invocation; got: {invocations:?}");
-}
-
-#[test]
-fn test_a_malformed_range_is_dropped_from_pull_diagnostics() {
-    let server = LspServer::new();
-    server.test_configure_perlcritic(true, 3, None);
-    server.test_configure_critic_engine(CriticEngine::Legacy);
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    let mock_response = MockResponse::success(
-        b"test.pl:1:1:3:TestingAndDebugging::RequireUseStrict:valid range\n\
-          test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad line range\n\
-          test.pl:1:99:3:TestingAndDebugging::RequireUseStrict:bad column range\n"
-            .to_vec(),
-    );
-    // didOpen also runs the push path, so provide one response for each
-    // external perlcritic invocation exercised by this pull-path test.
-    runtime.add_response(mock_response.clone());
-    runtime.add_response(mock_response);
-    server.test_install_mock_critic_runtime(runtime.clone());
-    server.test_bypass_perlcritic_command_check();
-
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
-    let uri = fixture_uri(&tempdir, "test_malformed_range.pl");
-
-    let result = pull_diagnostics(&server, runtime.as_ref(), &uri, "print 'hello';\n");
-    let diags = result["items"].as_array().cloned().unwrap_or_default();
-    assert!(
-        diags.iter().any(|diagnostic| diagnostic["message"].as_str() == Some("valid range")),
-        "valid external critic range must remain in pull diagnostics: {result}"
-    );
-    assert!(
-        !diags.iter().any(|diagnostic| {
-            matches!(diagnostic["message"].as_str(), Some("bad line range" | "bad column range"))
-        }),
-        "malformed external critic ranges must not appear in pull diagnostics: {result}"
-    );
-}
-
-#[test]
-fn test_a2_severity_one_maps_to_hint() {
-    let server = LspServer::new();
-    server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-    server.test_configure_perlcritic(true, 1, None);
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(
-        b"test.pl:2:1:1:InputOutput::ProhibitBarewordFileHandles:Bareword filehandle 'FH'\n"
-            .to_vec(),
-    ));
-    runtime.add_response(MockResponse::success(
-        b"test.pl:2:1:1:InputOutput::ProhibitBarewordFileHandles:Bareword filehandle 'FH'\n"
-            .to_vec(),
-    ));
-    server.test_install_mock_critic_runtime(runtime.clone());
-    server.test_bypass_perlcritic_command_check();
-
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
-    let uri = fixture_uri(&tempdir, "test_sev1.pl");
-
-    let result = pull_diagnostics(&server, runtime.as_ref(), &uri, "# line 1\nopen FH, $path;\n");
-    let diags = result["items"].as_array().cloned().unwrap_or_default();
-    assert!(
-        diags.iter().any(|d| {
-            d["code"].as_str() == Some("InputOutput::ProhibitBarewordFileHandles")
-                && d["severity"].as_u64() == Some(4)
-                && d["source"].as_str() == Some("perl-lsp-critic")
-        }),
-        "expected severity-1 external diagnostic; got: {result}"
-    );
-    let invocations = runtime.invocations();
-    assert_eq!(invocations.len(), 1, "expected one pull invocation; got: {invocations:?}");
-}
-
-// ── Test B ────────────────────────────────────────────────────────────────────
-
-/// No subprocess must be invoked for default native critic diagnostics.
-#[test]
-fn test_b_no_subprocess_invocation_for_default_native_critic() {
-    let server = LspServer::new();
-
-    // Install a mock runtime that records calls.
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-    // The default critic engine is native, so the external Perl::Critic
-    // subprocess path must not run.
-
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
-    let uri = fixture_uri(&tempdir, "test_disabled.pl");
-
-    pull_diagnostics(&server, runtime.as_ref(), &uri, "use strict;\nuse warnings;\n");
-
-    assert_eq!(
-        runtime.invocations().len(),
-        0,
-        "mock runtime must not be called for default native critic diagnostics"
-    );
-}
-
-// ── Test C ────────────────────────────────────────────────────────────────────
-
-/// When the `perlcritic` binary is absent from PATH, diagnostics are empty and
-/// no subprocess runs.
-///
-/// The test hook forces the availability check false so this contract is
-/// deterministic regardless of the host's PATH.
-#[test]
-fn test_c_graceful_skip_when_perlcritic_not_installed() {
-    let server = LspServer::new();
-    server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-    server.test_configure_perlcritic(true, 3, None);
-    server.test_force_perlcritic_command_unavailable();
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
-    let uri = fixture_uri(&tempdir, "test_not_installed.pl");
-
-    pull_diagnostics(&server, runtime.as_ref(), &uri, "use strict;\n");
-
-    // Legacy mode may still emit built-in policy diagnostics. The subprocess
-    // guard is the contract this test owns: no external invocation occurs.
-    assert_eq!(
-        runtime.invocations().len(),
-        0,
-        "Mock runtime must not be called when perlcritic binary is absent"
-    );
-}
-
-// ── Test D ────────────────────────────────────────────────────────────────────
-
-/// `.perlcriticrc` walk-up: a config at the workspace root must be discovered
-/// even when the file being analysed lives in a sub-directory.
-///
-/// Tree: `<root>/.perlcriticrc` and `<root>/lib/MyModule.pm`.
-/// After opening `MyModule.pm`, the analyzer must be invoked with
-/// `--profile=<root>/.perlcriticrc`.
-#[test]
-fn test_d_perlcriticrc_walkup_finds_workspace_root_config() {
-    use std::fs;
-    use tempfile::TempDir;
-
-    let tmp = TempDir::new().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let lib_dir = root.join("lib");
-    fs::create_dir_all(&lib_dir).expect("create lib/");
-
-    let rc_path = root.join(".perlcriticrc");
-    fs::write(&rc_path, "severity = 3\n").expect("write .perlcriticrc");
-
-    let module_path = lib_dir.join("MyModule.pm");
-    fs::write(&module_path, "package MyModule;\n1;\n").expect("write MyModule.pm");
-
-    let server = LspServer::new();
-    server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-    server.test_configure_perlcritic(true, 3, None);
-
-    // Tell the server where the workspace root is so the walk-up stops there.
-    server.test_set_root_path(root.clone());
-
-    // Mock runtime records calls.
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-    server.test_bypass_perlcritic_command_check();
-
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
-
-    pull_diagnostics(&server, runtime.as_ref(), &uri, "package MyModule;\n1;\n");
-
-    let invocations = runtime.invocations();
-    assert_eq!(invocations.len(), 1, "pull should make one invocation; got: {invocations:?}");
-
-    let expected_profile = rc_path.to_string_lossy().to_string();
-    let profile_arg = format!("--profile={expected_profile}");
-    assert!(
-        invocations.iter().any(|invocation| invocation.args.contains(&profile_arg)),
-        "perlcritic must be invoked with --profile pointing to the workspace root \
-         .perlcriticrc; args: {:?}",
-        invocations[0].args
-    );
-}
-
-#[test]
-fn test_e_empty_profile_falls_back_to_walkup_config() {
-    use std::fs;
-    use tempfile::TempDir;
-
-    let tmp = TempDir::new().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let lib_dir = root.join("lib");
-    fs::create_dir_all(&lib_dir).expect("create lib/");
-
-    let rc_path = root.join(".perlcriticrc");
-    fs::write(&rc_path, "severity = 3\n").expect("write .perlcriticrc");
-
-    let module_path = lib_dir.join("MyModule.pm");
-    fs::write(&module_path, "package MyModule;\n1;\n").expect("write MyModule.pm");
-
-    let server = LspServer::new();
-    server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-    server.test_configure_perlcritic(true, 3, Some(String::new()));
-    server.test_set_root_path(root.clone());
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-    server.test_bypass_perlcritic_command_check();
-
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
-
-    pull_diagnostics(&server, runtime.as_ref(), &uri, "package MyModule;\n1;\n");
-
-    let invocations = runtime.invocations();
-    assert_eq!(invocations.len(), 1, "pull should make one invocation; got: {invocations:?}");
-
-    let expected_profile = rc_path.to_string_lossy().to_string();
-    let profile_arg = format!("--profile={expected_profile}");
-    assert!(
-        invocations.iter().any(|invocation| invocation.args.contains(&profile_arg)),
-        "empty profile should fall back to workspace walk-up .perlcriticrc; args: {:?}",
-        invocations[0].args
-    );
-}
-
-#[test]
-fn test_f_missing_configured_profile_skips_subprocess_and_diagnostics() {
-    use tempfile::TempDir;
-
-    let tmp = TempDir::new().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let missing_profile = root.join("missing.perlcriticrc");
-    let module_path = root.join("NoProfile.pm");
-    std::fs::write(&module_path, "package NoProfile;\n1;\n").expect("write module");
-
-    let server = LspServer::new();
-    server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-    server.test_configure_perlcritic(true, 3, Some(missing_profile.to_string_lossy().to_string()));
-    server.test_set_root_path(root);
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-    server.test_bypass_perlcritic_command_check();
-
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
-    pull_diagnostics(&server, runtime.as_ref(), &uri, "package NoProfile;\n1;\n");
-
-    // Legacy mode may still emit built-in policy diagnostics. A missing
-    // configured profile must prevent the external subprocess from running.
-    assert_eq!(
-        runtime.invocations().len(),
-        0,
-        "subprocess should not run when configured profile path does not exist"
-    );
-}
-
-#[test]
-fn test_f2_relative_configured_profile_resolves_from_workspace_root() {
-    use std::fs;
-    use tempfile::TempDir;
-
-    let tmp = TempDir::new().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let cfg_dir = root.join("config");
-    fs::create_dir_all(&cfg_dir).expect("create config/");
-
-    let profile_path = cfg_dir.join("perlcriticrc");
-    fs::write(&profile_path, "severity = 3\n").expect("write profile");
-
-    let module_path = root.join("RelativeProfile.pm");
-    fs::write(&module_path, "package RelativeProfile;\n1;\n").expect("write module");
-
-    let server = LspServer::new();
-    server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-    server.test_set_root_path(root.clone());
-    server.test_configure_perlcritic(true, 3, Some("config/perlcriticrc".to_string()));
-    server.test_bypass_perlcritic_command_check();
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
-    pull_diagnostics(&server, runtime.as_ref(), &uri, "package RelativeProfile;\n1;\n");
-
-    let invocations = runtime.invocations();
-    assert_eq!(invocations.len(), 1, "pull should make one invocation; got: {invocations:?}");
-
-    let expected_profile = profile_path.to_string_lossy().replace('\\', "/");
-    assert!(
-        invocations[0].args.iter().any(|argument| {
-            argument
-                .strip_prefix("--profile=")
-                .map(|value| value.replace('\\', "/") == expected_profile)
-                .unwrap_or(false)
-        }),
-        "relative configured profile should resolve from workspace root; args: {:?}",
-        invocations[0].args
-    );
-}
-
-#[test]
-fn test_f3_walkup_finds_perlcriticrc_without_dot_prefix() {
-    use std::fs;
-    use tempfile::TempDir;
-
-    let tmp = TempDir::new().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let lib_dir = root.join("lib");
-    fs::create_dir_all(&lib_dir).expect("create lib/");
-
-    let rc_path = root.join("perlcriticrc");
-    fs::write(&rc_path, "severity = 3\n").expect("write perlcriticrc");
-
-    let module_path = lib_dir.join("NoDotRc.pm");
-    fs::write(&module_path, "package NoDotRc;\n1;\n").expect("write module");
-
-    let server = LspServer::new();
-    server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-    server.test_configure_perlcritic(true, 3, None);
-    server.test_set_root_path(root.clone());
-    server.test_bypass_perlcritic_command_check();
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
-    pull_diagnostics(&server, runtime.as_ref(), &uri, "package NoDotRc;\n1;\n");
-
-    let invocations = runtime.invocations();
-    assert!(
-        !invocations.is_empty(),
-        "expected perlcritic subprocess invocation; got: {invocations:?}"
-    );
-
-    let expected_profile = rc_path.to_string_lossy().to_string();
-    let profile_arg = format!("--profile={expected_profile}");
-    assert!(
-        invocations.last().is_some_and(|invocation| invocation.args.contains(&profile_arg)),
-        "walk-up should discover workspace perlcriticrc without dot; args: {:?}",
-        invocations.last().map(|invocation| &invocation.args)
-    );
-}
-
-#[test]
-fn test_g_did_change_configuration_resets_pull_perlcritic_analyzer() {
-    use std::fs;
-    use tempfile::TempDir;
-
-    let tmp = TempDir::new().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let profile_a = root.join("profile-a.perlcriticrc");
-    let profile_b = root.join("profile-b.perlcriticrc");
-    fs::write(&profile_a, "severity = 3\n").expect("write profile-a");
-    fs::write(&profile_b, "severity = 3\n").expect("write profile-b");
-
-    let module_path = root.join("ConfigSwitch.pm");
-    fs::write(&module_path, "package ConfigSwitch;\n1;\n").expect("write module");
-
-    let server = LspServer::new();
-    server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-    server.test_configure_perlcritic(false, 3, None);
-    server.test_set_root_path(root);
-    server.test_bypass_perlcritic_command_check();
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
+    server.test_configure_native_critic_profile("strict");
     server
         .test_handle_did_open(Some(json!({
             "textDocument": {
                 "uri": uri,
                 "languageId": "perl",
                 "version": 1,
-                "text": "package ConfigSwitch;\n1;\n"
+                "text": SOURCE
             }
         })))
-        .expect("didOpen should succeed");
-
-    server.test_handle_did_change_configuration(Some(json!({
-        "settings": {
-            "perl": {
-                "perlcritic": {
-                    "enabled": true,
-                    "severity": 3,
-                    "profile": profile_a.to_string_lossy().to_string()
-                }
-            }
-        }
-    })));
-    must(server.test_handle_document_diagnostic(Some(json!({
-        "textDocument": { "uri": uri }
-    }))));
-
-    server.test_handle_did_change_configuration(Some(json!({
-        "settings": {
-            "perl": {
-                "perlcritic": {
-                    "enabled": true,
-                    "severity": 3,
-                    "profile": profile_b.to_string_lossy().to_string()
-                }
-            }
-        }
-    })));
-    must(server.test_handle_document_diagnostic(Some(json!({
-        "textDocument": { "uri": uri }
-    }))));
-
-    let invocations = runtime.invocations();
-    assert_eq!(
-        invocations.len(),
-        2,
-        "expected two pull perlcritic invocations; got: {invocations:?}"
-    );
-    assert!(
-        invocations
-            .iter()
-            .any(|call| call.args.contains(&format!("--profile={}", profile_a.to_string_lossy()))),
-        "at least one invocation should use profile-a; invocations: {invocations:?}"
-    );
-    let last = invocations.last().expect("at least one invocation recorded");
-    assert!(
-        last.args.contains(&format!("--profile={}", profile_b.to_string_lossy())),
-        "last invocation should use profile-b after didChangeConfiguration; args: {:?}",
-        last.args
-    );
-}
-
-/// A severity change delivered via the native `critic.severity` key must also
-/// reset the shared analyzer. The native `critic.*` keys fold into the same
-/// `perlcritic_severity` config field, so the reset predicate must detect the
-/// change regardless of which key carried it (regression for the #3308 review:
-/// the old predicate re-parsed only `perlcritic.severity` and missed native-key
-/// severity updates, leaving a warmed analyzer stale).
-#[test]
-fn test_h_native_critic_severity_change_resets_analyzer() {
-    use std::fs;
-    use tempfile::TempDir;
-
-    let tmp = TempDir::new().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let profile = root.join("profile.perlcriticrc");
-    fs::write(&profile, "severity = 3\n").expect("write profile");
-
-    let module_path = root.join("SeveritySwitch.pm");
-    fs::write(&module_path, "package SeveritySwitch;\n1;\n").expect("write module");
-
-    let server = LspServer::new();
-    server.test_set_root_path(root);
-    server.test_bypass_perlcritic_command_check();
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
+        .expect("did_open should succeed");
     server
-        .test_handle_did_open(Some(json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "perl",
-                "version": 1,
-                "text": "package SeveritySwitch;\n1;\n"
-            }
-        })))
-        .expect("didOpen should succeed");
+}
 
-    // Establish the analyzer at severity 3 via the legacy engine + profile.
-    server.test_handle_did_change_configuration(Some(json!({
-        "settings": {
-            "perl": {
-                "critic": { "engine": "legacy" },
-                "perlcritic": {
-                    "enabled": true,
-                    "severity": 3,
-                    "profile": profile.to_string_lossy().to_string()
-                }
-            }
-        }
-    })));
-    must(server.test_handle_document_diagnostic(Some(json!({
-        "textDocument": { "uri": uri }
-    }))));
+fn document_pull_text(engine: CriticEngine, uri: &str) -> String {
+    let server = server_with_engine(engine, uri);
+    let report = server
+        .test_handle_document_diagnostic(Some(json!({ "textDocument": { "uri": uri } })))
+        .expect("document diagnostic should succeed")
+        .unwrap_or_default();
+    report.to_string()
+}
 
-    // Change severity ONLY via the native `critic.severity` key. This must reset
-    // the analyzer and force a fresh invocation on the next diagnostic cycle.
-    server.test_handle_did_change_configuration(Some(json!({
-        "settings": { "perl": { "critic": { "severity": 4 } } }
-    })));
-    must(server.test_handle_document_diagnostic(Some(json!({
-        "textDocument": { "uri": uri }
-    }))));
+fn workspace_pull_text(engine: CriticEngine, uri: &str) -> String {
+    let server = server_with_engine(engine, uri);
+    let report = server
+        .test_handle_workspace_diagnostic(Some(json!({ "previousResultIds": [] })))
+        .expect("workspace diagnostic should succeed")
+        .unwrap_or_default();
+    report.to_string()
+}
 
-    let invocations = runtime.invocations();
-    assert_eq!(
-        invocations.len(),
-        2,
-        "native critic.severity change must reset the analyzer and re-invoke; got: {invocations:?}"
+/// The external tool's brand and policy-name shape. A subprocess result would
+/// carry `Perl::Critic` as the diagnostic source and `Foo::Bar`-style policy
+/// names; native rows carry `perl-lsp` and `native.*` codes.
+fn assert_no_external_rows(text: &str, transport: &str) {
+    assert!(
+        !text.contains("Perl::Critic"),
+        "{transport}: a deprecated engine value must not produce externally branded rows; \
+         got: {text}"
+    );
+    assert!(
+        !text.contains("TestingAndDebugging::"),
+        "{transport}: a deprecated engine value must not produce external policy names; \
+         got: {text}"
+    );
+    assert!(
+        !text.contains("InputOutput::"),
+        "{transport}: a deprecated engine value must not produce external policy names; \
+         got: {text}"
     );
 }
 
-/// Workspace-supplied LSP settings must not arm the legacy perlcritic subprocess
-/// (issue #5001). Machine-scoped editor keys and server-side rejection keep
-/// hostile `.vscode/settings.json` from enabling `--profile=` injection.
 #[test]
-fn test_workspace_lsp_settings_cannot_arm_legacy_critic_subprocess() {
-    use std::fs;
-    use tempfile::TempDir;
+fn deprecated_engine_cannot_arm_the_subprocess_on_document_pull() {
+    let text = document_pull_text(CriticEngine::Legacy, "file:///deprecated_doc_pull.pl");
+    assert_no_external_rows(&text, "document pull");
+}
 
-    let tmp = must(TempDir::new());
-    let root = tmp.path().to_path_buf();
-    let module_path = root.join("Hostile.pm");
-    must(fs::write(&module_path, "package Hostile;\n1;\n"));
+#[test]
+fn deprecated_engine_cannot_arm_the_subprocess_on_workspace_pull() {
+    let text = workspace_pull_text(CriticEngine::Legacy, "file:///deprecated_ws_pull.pl");
+    assert_no_external_rows(&text, "workspace pull");
+}
 
-    let server = LspServer::new();
-    server.test_set_root_path(root);
-
-    let runtime = Arc::new(MockSubprocessRuntime::new());
-    runtime.add_response(MockResponse::success(b"".to_vec()));
-    server.test_install_mock_critic_runtime(runtime.clone());
-    server.test_bypass_perlcritic_command_check();
-
-    server.test_handle_did_change_configuration(Some(json!({
-        "settings": {
-            "perl": {
-                "critic": { "engine": "legacy" },
-                "perlcritic": {
-                    "enabled": true,
-                    "severity": 3,
-                    "profile": "/tmp/hostile/.perlcriticrc",
-                    "theme": "core && !pbp"
-                }
-            }
-        }
-    })));
-
-    let uri = must(url::Url::from_file_path(&module_path)).to_string();
-    pull_diagnostics(&server, runtime.as_ref(), &uri, "package Hostile;\n1;\n");
-
+/// The stronger proposition: the deprecated value is not merely harmless, it is
+/// inert. Document-pull output must be identical whichever engine value is set,
+/// because routing derives from the accepted state and never from the raw
+/// setting.
+#[test]
+fn deprecated_engine_value_does_not_change_document_pull_output() {
+    let uri = "file:///deprecated_engine_equivalence.pl";
+    let deprecated = document_pull_text(CriticEngine::Legacy, uri);
+    let native = document_pull_text(CriticEngine::Native, uri);
     assert_eq!(
-        runtime.invocations().len(),
-        0,
-        "hostile workspace LSP settings must not invoke the legacy perlcritic subprocess"
+        deprecated, native,
+        "a deprecated raw engine value must not change document-pull output"
+    );
+}
+
+#[test]
+fn deprecated_engine_value_does_not_change_workspace_pull_output() {
+    let uri = "file:///deprecated_engine_equivalence_ws.pl";
+    let deprecated = workspace_pull_text(CriticEngine::Legacy, uri);
+    let native = workspace_pull_text(CriticEngine::Native, uri);
+    assert_eq!(
+        deprecated, native,
+        "a deprecated raw engine value must not change workspace-pull output"
+    );
+}
+
+/// Native evaluation must still be reachable through the migrated transport, so
+/// the assertions above cannot pass merely because nothing ran.
+#[test]
+fn the_native_service_still_produces_rows_on_document_pull() {
+    let text = document_pull_text(CriticEngine::Native, "file:///native_still_runs.pl");
+    assert!(
+        text.contains("native."),
+        "the native service must still supply rows through document pull; got: {text}"
     );
 }

@@ -388,37 +388,10 @@ pub struct LspServer {
     /// on WASM).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) critic_analyzer: Mutex<Option<crate::perl_critic::CriticAnalyzer>>,
-    /// Subprocess runtime override for the `CriticAnalyzer`.
-    ///
-    /// When `Some`, the lazy-init path in `collect_external_perlcritic_diagnostics`
-    /// uses this runtime instead of `OsSubprocessRuntime`.  Always `None` in
-    /// production; set to a `MockSubprocessRuntime` by the test helper
-    /// `LspServer::test_install_mock_critic_runtime` so that tests can exercise
-    /// the full diagnostic pipeline without spawning a real `perlcritic` process.
-    ///
-    /// Using a separate runtime override (rather than pre-building the analyzer)
-    /// ensures that config-sensitive values such as the auto-discovered
-    /// `.perlcriticrc` profile path are still resolved at analysis time.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_runtime_override:
-        Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:
         Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
-    /// When `true`, skip the `command_exists("perlcritic")` guard during
-    /// diagnostic collection.  Always present on non-WASM targets but only
-    /// settable to `true` through the test API exposed via
-    /// `#[cfg(any(test, feature = "expose_lsp_test_api"))]`.
-    ///
-    /// Initialized to `false`; only the test helper methods flip this.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) skip_perlcritic_command_check: AtomicBool,
-    /// When `true`, force the perlcritic availability check to report that the
-    /// binary is missing.  Always `false` in production; only the test API can
-    /// set this flag so unavailable-binary tests do not depend on PATH.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) force_perlcritic_command_unavailable: AtomicBool,
     /// Typed, bounded dedup state for user-facing session warnings (#9769).
     ///
     /// Governs whether a repeated Perl::Critic, invalid-client-setting, or AI

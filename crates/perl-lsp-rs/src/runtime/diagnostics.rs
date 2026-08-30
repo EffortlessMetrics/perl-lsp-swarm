@@ -79,70 +79,6 @@ fn publish_diagnostics_params(uri: &str, version: Option<i32>, diagnostics: &[Va
     params
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn resolve_configured_profile_path(
-    configured_profile: &str,
-    workspace_root: Option<&std::path::Path>,
-    file_path: &std::path::Path,
-) -> Option<std::path::PathBuf> {
-    let profile_path = std::path::Path::new(configured_profile);
-    if profile_path.is_absolute() {
-        return profile_path.exists().then(|| profile_path.to_path_buf());
-    }
-
-    let file_dir = file_path.parent();
-    [
-        Some(profile_path.to_path_buf()),
-        workspace_root.map(|root| root.join(profile_path)),
-        file_dir.map(|dir| dir.join(profile_path)),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|candidate| candidate.exists())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn workspace_root_for_doc(server: &LspServer, uri: &str) -> Option<std::path::PathBuf> {
-    server
-        .folder_for_doc_uri(uri)
-        .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
-        .or_else(|| server.root_path.lock().clone())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn find_workspace_perlcritic_profile(
-    workspace_root: Option<&std::path::Path>,
-    file_path: &std::path::Path,
-) -> Option<String> {
-    let mut dir = file_path.parent().map(|p| p.to_path_buf());
-    while let Some(current) = dir {
-        for profile_name in [".perlcriticrc", "perlcriticrc"] {
-            let candidate = current.join(profile_name);
-            if candidate.exists() {
-                return candidate.to_str().map(|s| s.to_string());
-            }
-        }
-
-        if workspace_root == Some(current.as_path()) || current.parent().is_none() {
-            break;
-        }
-        dir = current.parent().map(|p| p.to_path_buf());
-    }
-    None
-}
-
-fn critic_range_to_byte_range(
-    content: &str,
-    start_line: u32,
-    start_column: u32,
-    end_line: u32,
-    end_column: u32,
-) -> Option<(usize, usize)> {
-    let start = crate::util::position_to_offset(content, start_line, start_column)?;
-    let end = crate::util::position_to_offset(content, end_line, end_column)?;
-    (start <= end).then_some((start, end))
-}
-
 fn parse_error_base_message(error: &crate::error::ParseError) -> String {
     match error {
         crate::error::ParseError::UnexpectedToken { expected, found, .. } => {
@@ -349,229 +285,6 @@ impl PullDiagnosticsOrchestrator {
             },
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             workspace_index,
-        }
-    }
-
-    /// Collect external perlcritic diagnostics.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn collect_perlcritic_diagnostics(
-        &self,
-        server: &LspServer,
-        uri: &str,
-        doc_text: &str,
-        diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
-        use perl_lsp_rs_core::tooling::perl_critic::{CriticAnalyzer, CriticConfig};
-
-        // Check config
-        let (enabled, severity, profile, theme, critic_engine) = {
-            let cfg = server.config.lock();
-            (
-                cfg.perlcritic_enabled,
-                cfg.perlcritic_severity,
-                cfg.perlcritic_profile.clone(),
-                cfg.perlcritic_theme.clone(),
-                cfg.critic_engine,
-            )
-        };
-
-        if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
-            return;
-        }
-
-        let profile = profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
-
-        // Convert URI to file path
-        let file_path = match url::Url::parse(uri) {
-            Ok(u) => match u.to_file_path() {
-                Ok(p) => p,
-                Err(()) => {
-                    tracing::warn!(uri, "perlcritic: URI is not a file path");
-                    return;
-                }
-            },
-            Err(e) => {
-                tracing::warn!(uri, error = %e, "perlcritic: failed to parse URI");
-                return;
-            }
-        };
-
-        // Check if perlcritic is available (unless bypassed for tests)
-        let skip_check = server.skip_perlcritic_command_check.load(Ordering::Relaxed);
-        let force_unavailable =
-            server.force_perlcritic_command_unavailable.load(std::sync::atomic::Ordering::Relaxed);
-        if force_unavailable
-            || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
-        {
-            self.emit_warning(
-                server,
-                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
-                None,
-                "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
-            );
-            return;
-        }
-
-        let workspace_root = workspace_root_for_doc(server, uri);
-
-        // Validate configured profile if present.
-        let resolved_configured_profile = if let Some(ref configured_profile) = profile {
-            let resolved = resolve_configured_profile_path(
-                configured_profile,
-                workspace_root.as_deref(),
-                &file_path,
-            );
-            if resolved.is_none() {
-                self.emit_warning(
-                    server,
-                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
-                    Some(configured_profile),
-                    &format!(
-                        "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
-                    ),
-                );
-                return;
-            }
-            resolved
-        } else {
-            None
-        };
-
-        // Lazy-init the CriticAnalyzer
-        {
-            let mut guard = self.critic_analyzer.lock();
-            if guard.is_none() {
-                // Walk up directory tree looking for .perlcriticrc / perlcriticrc.
-                let resolved_profile = resolved_configured_profile
-                    .as_ref()
-                    .and_then(|p| p.to_str().map(|s| s.to_string()))
-                    .or_else(|| {
-                        find_workspace_perlcritic_profile(workspace_root.as_deref(), &file_path)
-                    });
-
-                let critic_config = CriticConfig {
-                    severity,
-                    profile: resolved_profile,
-                    theme: theme.clone(),
-                    ..Default::default()
-                };
-
-                // Use injected test runtime if present, otherwise OS runtime
-                let analyzer = {
-                    let rt_guard = server.critic_runtime_override.lock();
-                    if let Some(ref rt) = *rt_guard {
-                        CriticAnalyzer::new(critic_config, std::sync::Arc::clone(rt))
-                    } else {
-                        CriticAnalyzer::with_os_runtime(critic_config)
-                    }
-                };
-
-                *guard = Some(analyzer);
-            }
-        }
-
-        // Compute content hash for cache validation (detects stale entries from
-        // external file changes that bypass the LSP didChange notification).
-        let content_hash = perl_lsp_rs_core::tooling::perl_critic::hash_content(doc_text);
-
-        // Run analysis
-        let result = {
-            let mut guard = self.critic_analyzer.lock();
-            guard
-                .as_mut()
-                .map(|a| a.analyze_file_with_hash(&file_path, content_hash, Some(doc_text)))
-        };
-
-        match result {
-            Some(Ok(violations)) => {
-                for v in violations {
-                    let internal_severity = critic_severity_to_internal(v.severity);
-                    let fixable = is_fixable_diagnostic(&v.policy);
-
-                    let Some((start_byte, end_byte)) = critic_range_to_byte_range(
-                        doc_text,
-                        v.range.start.line,
-                        v.range.start.column,
-                        v.range.end.line,
-                        v.range.end.column,
-                    ) else {
-                        tracing::trace!(
-                            uri,
-                            policy = %v.policy,
-                            start_line = v.range.start.line,
-                            start_column = v.range.start.column,
-                            end_line = v.range.end.line,
-                            end_column = v.range.end.column,
-                            "dropping malformed perlcritic diagnostic range"
-                        );
-                        continue;
-                    };
-
-                    diagnostics.push(InternalDiagnostic {
-                        range: (start_byte, end_byte),
-                        severity: internal_severity,
-                        code: Some(v.policy),
-                        message: v.description,
-                        related_information: Vec::new(),
-                        tags: Vec::new(),
-                        suggestion: None,
-                        fixable,
-                        critic_observation: None,
-                    });
-                }
-            }
-            Some(Err(e)) => {
-                self.emit_warning(
-                    server,
-                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
-                    Some(&e.to_string()),
-                    &format!("Perl::Critic execution failed: {e}"),
-                );
-                tracing::warn!(uri, error = %e, "perlcritic failed");
-            }
-            None => {}
-        }
-    }
-
-    /// No-op stub for WASM targets.
-    #[cfg(target_arch = "wasm32")]
-    pub fn collect_perlcritic_diagnostics(
-        &self,
-        _server: &LspServer,
-        _uri: &str,
-        _doc_text: &str,
-        _diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
-    }
-
-    /// Emit a workspace-scoped warning unless the same reviewed subject was
-    /// already emitted this session. Suppression identity lives in the
-    /// server's bounded session-warning dedup store (#9769), so the pull
-    /// path shares the same typed, hard-capped critic family as the push
-    /// path and retains no raw key strings of its own.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn emit_warning(
-        &self,
-        server: &LspServer,
-        code: super::session_warning_dedup::SessionWarningCode,
-        subject: Option<&str>,
-        message: &str,
-    ) {
-        let identity = match subject {
-            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
-                code,
-                super::session_warning_dedup::SessionWarningSubjectTag::None,
-                subject,
-            ),
-            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
-        };
-        if !matches!(
-            server
-                .session_warning_dedup
-                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
-            super::session_warning_dedup::SessionWarningDecision::Suppress
-        ) {
-            server.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
 
@@ -871,9 +584,6 @@ impl LspServer {
                     &mut diagnostics,
                 )
                 .published_policy();
-
-            // Add external perlcritic diagnostics (opt-in)
-            self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
 
             // Add dead code diagnostics from workspace-wide symbol analysis.
             // Re-check freshness immediately before reading the index: readiness
@@ -1514,15 +1224,6 @@ impl LspServer {
                 Some(&doc),
             );
 
-            // Collect external perlcritic diagnostics via orchestrator
-            let mut perlcritic_diags = Vec::new();
-            self.pull_diagnostics_orchestrator.collect_perlcritic_diagnostics(
-                self,
-                uri_str,
-                &doc.text,
-                &mut perlcritic_diags,
-            );
-
             // Generation-aware staleness guard: if a newer didChange arrived while
             // diagnostics were being computed, discard this result — the next
             // diagnostic request will compute from the latest version.  Mirrors the
@@ -1541,12 +1242,7 @@ impl LspServer {
             }
 
             // Convert report to JSON
-            return Ok(Some(self.document_report_to_json(
-                &report,
-                &doc,
-                uri_str,
-                &perlcritic_diags,
-            )));
+            return Ok(Some(self.document_report_to_json(&report, &doc, uri_str)));
         }
 
         // Return empty diagnostics if document not found or document not yet open
@@ -1596,29 +1292,18 @@ impl LspServer {
         report: &lsp_types::DocumentDiagnosticReport,
         doc: &crate::state::DocumentState,
         uri: &str,
-        perlcritic_diags: &[InternalDiagnostic],
     ) -> Value {
         use lsp_types::DocumentDiagnosticReport;
 
         match report {
             DocumentDiagnosticReport::Full(full) => {
                 let markup_message_support = self.client_capabilities.lock().markup_message_support;
-                let mut items: Vec<Value> = full
+                let items: Vec<Value> = full
                     .full_document_diagnostic_report
                     .items
                     .iter()
                     .map(|d| self.lsp_diagnostic_to_json(d, doc, uri, markup_message_support))
                     .collect();
-
-                // Add perlcritic diagnostics
-                for d in perlcritic_diags {
-                    items.push(self.internal_diagnostic_to_json(
-                        d,
-                        doc,
-                        uri,
-                        markup_message_support,
-                    ));
-                }
 
                 let mut payload = json!({
                     "kind": "full",
@@ -1673,88 +1358,6 @@ impl LspServer {
             Self::diagnostic_message_value(&d.message, d.data.as_ref(), markup_message_support);
         if diag.get("message") != Some(&message_value) {
             diag["message"] = message_value;
-        }
-
-        diag
-    }
-
-    /// Convert internal diagnostic to JSON value.
-    fn internal_diagnostic_to_json(
-        &self,
-        d: &InternalDiagnostic,
-        doc: &crate::state::DocumentState,
-        uri: &str,
-        markup_message_support: bool,
-    ) -> Value {
-        let start_pos = doc.line_starts.offset_to_position_rope(&doc.rope, d.range.0);
-        let end_pos = doc.line_starts.offset_to_position_rope(&doc.rope, d.range.1);
-
-        let severity = match d.severity {
-            InternalDiagnosticSeverity::Error => 1,
-            InternalDiagnosticSeverity::Warning => 2,
-            InternalDiagnosticSeverity::Information => 3,
-            InternalDiagnosticSeverity::Hint => 4,
-            // Forward-compatible fallback for future variants (#2898)
-            _ => 1,
-        };
-        let code_str = d.code.as_deref().unwrap_or("");
-        let message_val = Self::diagnostic_message_value(&d.message, None, markup_message_support);
-
-        let mut diag = diagnostic_json(
-            start_pos.0,
-            start_pos.1,
-            end_pos.0,
-            end_pos.1,
-            severity,
-            code_str,
-            diagnostic_source(d.code.as_deref()),
-            message_val.as_str().unwrap_or("").to_string(),
-        );
-
-        if !d.tags.is_empty() {
-            diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
-        }
-
-        if !d.related_information.is_empty() {
-            diag["relatedInformation"] = json!(
-                d.related_information
-                    .iter()
-                    .map(|ri| {
-                        let ri_start =
-                            doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.0);
-                        let ri_end =
-                            doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.1);
-                        json!({
-                            "location": {
-                                "uri": uri,
-                                "range": {
-                                    "start": {"line": ri_start.0, "character": ri_start.1},
-                                    "end":   {"line": ri_end.0,   "character": ri_end.1},
-                                }
-                            },
-                            "message": ri.message
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            );
-        }
-
-        if let Some(ref code_str) = d.code {
-            let category = DiagnosticCode::parse_code(code_str)
-                .map(|dc| format!("{:?}", dc.category()))
-                .unwrap_or_else(|| "Other".to_string());
-            let fixable = d.fixable;
-            let tag_strings: Vec<String> = d
-                .tags
-                .iter()
-                .map(|t| match t {
-                    InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
-                    InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
-                    // Forward-compatible fallback for future variants (#2898)
-                    _ => "Unnecessary".to_string(),
-                })
-                .collect();
-            diag["data"] = diagnostic_data(code_str, &category, fixable, &tag_strings);
         }
 
         diag
@@ -2002,9 +1605,6 @@ impl LspServer {
                     critic_source_identity,
                     &mut diagnostics,
                 );
-
-                // Add external perlcritic diagnostics (opt-in)
-                self.collect_external_perlcritic_diagnostics(uri_str, &doc.text, &mut diagnostics);
 
                 // Add dead code diagnostics from workspace-wide symbol analysis
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -2421,250 +2021,6 @@ impl LspServer {
             fingerprint: expected_fingerprint,
         })
     }
-
-    /// Collect external perlcritic diagnostics if the feature is enabled.
-    ///
-    /// Checks the `perlcritic_enabled` config flag and whether `perlcritic` is
-    /// installed on the system. If both conditions are met, runs perlcritic on
-    /// the file and appends violations with severity mapped from Perl::Critic's
-    /// 1-5 scale to LSP severity levels (5 -> Error, 4/3 -> Warning,
-    /// 2 -> Information, 1 -> Hint).
-    ///
-    /// The `CriticAnalyzer` is reused across calls via `self.critic_analyzer`
-    /// so that the per-file violation cache survives between `didChange` events.
-    /// `invalidate_cache` is called from the `didChange` handler, and the
-    /// analyzer is reset to `None` from `didChangeConfiguration` whenever any
-    /// critic-related setting changes.
-    ///
-    /// Emits a workspace-scoped warning when perlcritic is unavailable,
-    /// configured profile is missing, or execution fails.
-    /// Skips file-local diagnostics for those tooling-state errors.
-    /// The `doc_text` parameter is used to convert perlcritic's line/column
-    /// positions into byte offsets for the internal diagnostic range.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn collect_external_perlcritic_diagnostics(
-        &self,
-        uri: &str,
-        doc_text: &str,
-        diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
-        // Check config: perlcritic must be explicitly enabled (opt-in)
-        let (enabled, severity, profile, theme, critic_engine) = {
-            let cfg = self.config.lock();
-            (
-                cfg.perlcritic_enabled,
-                cfg.perlcritic_severity,
-                cfg.perlcritic_profile.clone(),
-                cfg.perlcritic_theme.clone(),
-                cfg.critic_engine,
-            )
-        };
-        if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
-            return;
-        }
-        let profile = profile.and_then(|profile| (!profile.trim().is_empty()).then_some(profile));
-
-        // Convert URI to file system path; skip non-file URIs
-        let file_path = match url::Url::parse(uri) {
-            Ok(u) => match u.to_file_path() {
-                Ok(p) => p,
-                Err(()) => {
-                    tracing::warn!(uri, "perlcritic: URI is not a file path");
-                    return;
-                }
-            },
-            Err(e) => {
-                tracing::warn!(uri, error = %e, "perlcritic: failed to parse URI");
-                return;
-            }
-        };
-
-        // Warn the user once if perlcritic is not installed.
-        // The `skip_perlcritic_command_check` flag is always `false` in production
-        // and is only set to `true` through the test helper
-        // `LspServer::test_bypass_perlcritic_command_check`, enabling mock-runtime
-        // injection without a real `perlcritic` binary.
-        let skip_check =
-            self.skip_perlcritic_command_check.load(std::sync::atomic::Ordering::Relaxed);
-        let force_unavailable =
-            self.force_perlcritic_command_unavailable.load(std::sync::atomic::Ordering::Relaxed);
-        if force_unavailable
-            || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
-        {
-            self.emit_perlcritic_workspace_warning(
-                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
-                None,
-                "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
-            );
-            return;
-        }
-
-        let workspace_root = workspace_root_for_doc(self, uri);
-        let resolved_configured_profile = if let Some(ref configured_profile) = profile {
-            let resolved = resolve_configured_profile_path(
-                configured_profile,
-                workspace_root.as_deref(),
-                &file_path,
-            );
-            if resolved.is_none() {
-                self.emit_perlcritic_workspace_warning(
-                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
-                    Some(configured_profile),
-                    &format!(
-                        "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
-                    ),
-                );
-                return;
-            }
-            resolved
-        } else {
-            None
-        };
-
-        // Lazy-init the shared CriticAnalyzer.  If the profile or severity
-        // changed, `didChangeConfiguration` has already reset the field to
-        // `None`, so we rebuild here with the current config.
-        //
-        // The `.perlcriticrc` walk-up is intentionally placed inside the
-        // `is_none()` branch so that filesystem stat calls are skipped on
-        // every subsequent diagnostic cycle once the analyzer is warm.
-        {
-            let mut guard = self.critic_analyzer.lock();
-            if guard.is_none() {
-                // Walk up the directory tree from the file's parent to the
-                // workspace root looking for `.perlcriticrc`.  Ensures that a
-                // repo-root config is found even when the file lives in a
-                // sub-directory.  Only runs when the analyzer needs (re-)init.
-                let resolved_profile = resolved_configured_profile
-                    .as_ref()
-                    .and_then(|p| p.to_str().map(|s| s.to_string()))
-                    .or_else(|| {
-                        find_workspace_perlcritic_profile(workspace_root.as_deref(), &file_path)
-                    });
-                let critic_config = crate::perl_critic::CriticConfig {
-                    severity,
-                    profile: resolved_profile,
-                    theme: theme.clone(),
-                    ..crate::perl_critic::CriticConfig::default()
-                };
-                // Use the injected test runtime when present; otherwise fall back
-                // to the OS subprocess runtime.
-                let analyzer = {
-                    let rt_guard = self.critic_runtime_override.lock();
-                    if let Some(ref rt) = *rt_guard {
-                        crate::perl_critic::CriticAnalyzer::new(
-                            critic_config,
-                            std::sync::Arc::clone(rt),
-                        )
-                    } else {
-                        crate::perl_critic::CriticAnalyzer::with_os_runtime(critic_config)
-                    }
-                };
-                *guard = Some(analyzer);
-            }
-        }
-
-        // Compute a content hash so the cache can detect stale entries when the
-        // file changes without triggering a `didChange` LSP event (e.g. external
-        // editor or `git checkout` while the server is running).
-        let content_hash = crate::perl_critic::hash_content(doc_text);
-
-        // Borrow the shared analyzer to run the analysis.  The lock is held
-        // only for the duration of the `analyze_file_with_hash` call.
-        let result = {
-            let mut guard = self.critic_analyzer.lock();
-            guard
-                .as_mut()
-                .map(|a| a.analyze_file_with_hash(&file_path, content_hash, Some(doc_text)))
-        };
-
-        match result {
-            Some(Ok(violations)) => {
-                for v in violations {
-                    let internal_severity = critic_severity_to_internal(v.severity);
-                    let fixable = is_fixable_diagnostic(&v.policy);
-
-                    let Some((start_byte, end_byte)) = critic_range_to_byte_range(
-                        doc_text,
-                        v.range.start.line,
-                        v.range.start.column,
-                        v.range.end.line,
-                        v.range.end.column,
-                    ) else {
-                        tracing::trace!(
-                            uri,
-                            policy = %v.policy,
-                            start_line = v.range.start.line,
-                            start_column = v.range.start.column,
-                            end_line = v.range.end.line,
-                            end_column = v.range.end.column,
-                            "dropping malformed perlcritic diagnostic range"
-                        );
-                        continue;
-                    };
-
-                    diagnostics.push(InternalDiagnostic {
-                        range: (start_byte, end_byte),
-                        severity: internal_severity,
-                        code: Some(v.policy),
-                        message: v.description,
-                        related_information: Vec::new(),
-                        tags: Vec::new(),
-                        suggestion: None,
-                        fixable,
-                        critic_observation: None,
-                    });
-                }
-            }
-            Some(Err(e)) => {
-                self.emit_perlcritic_workspace_warning(
-                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
-                    Some(&e.to_string()),
-                    &format!("Perl::Critic execution failed: {e}"),
-                );
-                tracing::warn!(uri, error = %e, "perlcritic failed");
-            }
-            None => {}
-        }
-    }
-
-    /// No-op stub for WASM targets where subprocess execution is unavailable.
-    #[cfg(target_arch = "wasm32")]
-    fn collect_external_perlcritic_diagnostics(
-        &self,
-        _uri: &str,
-        _doc_text: &str,
-        _diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
-    }
-
-    /// Show a workspace-scoped Perl::Critic warning unless the same reviewed
-    /// subject was already emitted this session (#9769). `subject` is the
-    /// client/environment-controlled identity (configured profile string,
-    /// execution error text); only its deterministic fingerprint is retained.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn emit_perlcritic_workspace_warning(
-        &self,
-        code: super::session_warning_dedup::SessionWarningCode,
-        subject: Option<&str>,
-        message: &str,
-    ) {
-        let identity = match subject {
-            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
-                code,
-                super::session_warning_dedup::SessionWarningSubjectTag::None,
-                subject,
-            ),
-            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
-        };
-        if !matches!(
-            self.session_warning_dedup
-                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
-            super::session_warning_dedup::SessionWarningDecision::Suppress
-        ) {
-            self.show_message_or_log(super::window::MessageType::Warning, message);
-        }
-    }
 }
 
 /// Deduplicate diagnostics that share the same `(range, severity)`, which occurs
@@ -2737,57 +2093,6 @@ fn is_upstream_merged_alias_pair(a_code: Option<&str>, b_code: Option<&str>) -> 
 /// Returns `true` if the code string looks like a native-critic code (not a PL* code).
 fn is_native_critic_code(code: Option<&str>) -> bool {
     !code.is_some_and(|c| c.starts_with("PL"))
-}
-
-/// Returns `true` when a quick-fix code action exists for the given diagnostic code.
-///
-/// Mirrors the list in `crates/perl-lsp-rs/src/features/diagnostics/pull.rs`.
-/// The authoritative source is `crates/perl-lsp-code-actions/src/code_actions.rs`.
-fn is_fixable_diagnostic(code: &str) -> bool {
-    is_fixable_perlcritic_policy(code)
-        || matches!(
-            DiagnosticCode::parse_code(code),
-            Some(
-                DiagnosticCode::ParseError
-                    | DiagnosticCode::MissingStrict
-                    | DiagnosticCode::MissingWarnings
-                    | DiagnosticCode::PhaseScopedStrictPragma
-                    | DiagnosticCode::PhaseScopedWarningsPragma
-                    | DiagnosticCode::UnusedVariable
-                    | DiagnosticCode::UndefinedVariable
-                    | DiagnosticCode::VariableShadowing
-                    | DiagnosticCode::UnusedParameter
-                    | DiagnosticCode::UnquotedBareword
-                    | DiagnosticCode::BarewordFilehandle
-                    | DiagnosticCode::TwoArgOpen
-                    | DiagnosticCode::AssignmentInCondition
-                    | DiagnosticCode::NumericComparisonWithUndef
-                    | DiagnosticCode::DeprecatedDefined
-                    | DiagnosticCode::MissingPackageDeclaration
-                    | DiagnosticCode::VariableRedeclaration
-                    | DiagnosticCode::MisspelledPragma
-                    | DiagnosticCode::UnreachableCode
-                    | DiagnosticCode::DuplicateSubroutine
-                    | DiagnosticCode::MissingReturn
-            )
-        )
-}
-
-fn is_fixable_perlcritic_policy(code: &str) -> bool {
-    matches!(
-        code,
-        "InputOutput::ProhibitBarewordFileHandles"
-            | "InputOutput::RequireBriefOpen"
-            | "InputOutput::RequireThreeArgOpen"
-            | "TestingAndDebugging::RequireUseStrict"
-            | "TestingAndDebugging::RequireUseWarnings"
-            | "native.testing.require_use_strict"
-            | "native.testing.require_use_warnings"
-            | "native.common.undef_comparison"
-            | "native.io.bareword_filehandle"
-            | "native.io.two_arg_open"
-            | "Variables::ProhibitUnusedVariables"
-    )
 }
 
 /// Determine the diagnostic source based on the code.
@@ -3008,70 +2313,6 @@ mod tests {
             }
             std::thread::yield_now();
         }
-    }
-
-    #[test]
-    fn critic_range_mapping_rejects_malformed_positions() {
-        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 0, 0, 2), Some((0, 2)));
-        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 2, 0, 2), Some((2, 2)));
-        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 3, 0, 3, 1), None);
-        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 4, 0, 2), None);
-    }
-
-    #[test]
-    fn push_perlcritic_drops_malformed_ranges() {
-        use perl_lsp_rs_core::config::CriticEngine;
-        use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
-
-        let (server, buffer) = make_server_with_capture_and_tuning(
-            perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults(),
-        );
-        let uri = if cfg!(windows) { "file:///C:/tmp/test.pl" } else { "file:///tmp/test.pl" };
-        server.test_configure_perlcritic(true, 3, None);
-        server.test_configure_critic_engine(CriticEngine::Legacy);
-
-        let runtime = StdArc::new(MockSubprocessRuntime::new());
-        let mock_response = MockResponse::success(
-            b"test.pl:1:1:3:TestingAndDebugging::RequireUseStrict:valid range\n\
-              test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad line range\n\
-              test.pl:1:99:3:TestingAndDebugging::RequireUseStrict:bad column range\n"
-                .to_vec(),
-        );
-        runtime.add_response(mock_response);
-        let runtime_for_server: StdArc<dyn perl_subprocess_runtime::SubprocessRuntime> =
-            runtime.clone();
-        server.test_install_mock_critic_runtime(runtime_for_server);
-        server.test_bypass_perlcritic_command_check();
-
-        server
-            .test_handle_did_open(Some(json!({
-                    "textDocument": {
-                        "uri": uri,
-                        "languageId": "perl",
-                        "version": 1,
-                        "text": "print 'hello';\n"
-                    }
-            })))
-            .expect("didOpen should succeed");
-        let _initial_output =
-            capture_until(&buffer, |output| output.contains("publishDiagnostics"));
-        server
-            .test_publish_parse_for_current_generation(uri)
-            .expect("test parse should publish the current snapshot");
-        buffer.lock().clear();
-        server.publish_diagnostics(uri);
-        capture_until(&buffer, |output| output.contains("valid range"));
-        drop(server);
-        let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
-
-        assert!(
-            output.contains("valid range"),
-            "valid external critic range must publish a diagnostic: {output:?}"
-        );
-        assert!(
-            !output.contains("bad line range") && !output.contains("bad column range"),
-            "malformed external critic ranges must not publish diagnostics: {output:?}"
-        );
     }
 
     /// Positive case: when no concurrent change arrives during diagnostic computation,

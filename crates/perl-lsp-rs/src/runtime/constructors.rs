@@ -118,14 +118,8 @@ impl LspServer {
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
             #[cfg(not(target_arch = "wasm32"))]
             critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -305,14 +299,8 @@ impl LspServer {
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
             #[cfg(not(target_arch = "wasm32"))]
             critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -433,14 +421,8 @@ impl LspServer {
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
             #[cfg(not(target_arch = "wasm32"))]
             critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
