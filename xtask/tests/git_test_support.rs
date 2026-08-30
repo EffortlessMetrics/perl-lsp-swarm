@@ -8,7 +8,8 @@
 //!
 //! Hermetic contract enforced here:
 //!
-//! - `GIT_CONFIG_NOSYSTEM=1`, and `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`
+//! - `GIT_CONFIG_NOSYSTEM=1`, `GIT_ATTR_NOSYSTEM=1`, and
+//!   `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`
 //!   point at pinned fixture files (or an intentionally absent path), so
 //!   system and global configuration, aliases, hooks paths, templates,
 //!   attributes, filters, signing, and object-format defaults cannot leak in;
@@ -68,6 +69,7 @@ const AMBIENT_GIT_ENV: &[&str] = &[
     "GIT_TEMPLATE_DIR",
     "GIT_DEFAULT_HASH",
     "GIT_DEFAULT_REF_FORMAT",
+    "GIT_CONFIG",
     "GIT_AUTHOR_NAME",
     "GIT_AUTHOR_EMAIL",
     "GIT_AUTHOR_DATE",
@@ -113,6 +115,7 @@ fn scrub_ambient_git_env(cmd: &mut StdCommand) {
 fn hermetic_env_pairs(global: &Path, system: &Path) -> Vec<(&'static str, String)> {
     vec![
         ("GIT_CONFIG_NOSYSTEM", "1".to_string()),
+        ("GIT_ATTR_NOSYSTEM", "1".to_string()),
         ("GIT_CONFIG_GLOBAL", global.to_string_lossy().into_owned()),
         ("GIT_CONFIG_SYSTEM", system.to_string_lossy().into_owned()),
         ("GIT_AUTHOR_DATE", FIXTURE_TIMESTAMP.to_string()),

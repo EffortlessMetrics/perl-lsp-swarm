@@ -19,8 +19,11 @@
 //!    and [`hostile_line_ending_configuration_cannot_change_the_pinned_tree`]
 //! 5. deliberate hostile opt-in with typed refusal -> [`deliberate_hostile_opt_in_refuses_with_typed_failure`]
 //! 6. command-scoped `GIT_CONFIG_COUNT` injection -> [`hostile_command_scoped_config_injection_is_scrubbed`]
+//! 7. alternate config search paths, direct `GIT_CONFIG`, includes, and
+//!    `safe.directory` -> [`ambient_config_search_paths_and_redirects_are_blocked`]
 
 use anyhow::{Context, Result, bail, ensure};
+use assert_cmd::Command as AssertCommand;
 use std::fs;
 use std::path::Path;
 use std::process::Command as StdCommand;
@@ -56,6 +59,14 @@ fn legacy_init(repo: &Path, global: &Path) -> Result<()> {
     legacy_git(repo, &["init", "--initial-branch=main"], global)?;
     legacy_git(repo, &["config", "user.name", "Fixture User"], global)?;
     legacy_git(repo, &["config", "user.email", "fixture@example.invalid"], global)?;
+    Ok(())
+}
+
+/// Stages the common legacy subject without committing it, so tests that
+/// expect a commit refusal can prove the repository had content to commit.
+fn stage_legacy_subject(repo: &Path, global: &Path, content: &str) -> Result<()> {
+    fs::write(repo.join("tracked.txt"), content)?;
+    legacy_git(repo, &["add", "tracked.txt"], global)?;
     Ok(())
 }
 
@@ -108,6 +119,7 @@ fn hostile_global_signing_cannot_change_fixture_commits() -> Result<()> {
 
     let legacy_repo = tmp.path().join("legacy-repo");
     legacy_init(&legacy_repo, &global)?;
+    stage_legacy_subject(&legacy_repo, &global, "content\n")?;
     let legacy_outcome =
         legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &global);
     match legacy_outcome {
@@ -123,9 +135,14 @@ fn hostile_global_signing_cannot_change_fixture_commits() -> Result<()> {
                 "hostile global signing must not reproduce the pinned hermetic identity"
             );
         }
-        Err(_) => {
+        Err(error) => {
             // Without a usable signing key the legacy harness fails outright:
             // the exact false failure class from #13110.
+            ensure!(
+                error.to_string().to_ascii_lowercase().contains("sign"),
+                "legacy refusal must be attributable to signing, not an unrelated empty-repo or \
+                 fixture failure: {error}"
+            );
         }
     }
     Ok(())
@@ -151,13 +168,33 @@ fn hostile_global_object_format_cannot_change_sha1_fixture_identities() -> Resul
     // Probe whether this Git honors init.defaultObjectFormat at all; only on
     // capable Gits can the legacy harness demonstrate the drift the pin blocks.
     let probe = tempfile::tempdir()?;
-    let probe_supported = StdCommand::new("git")
-        .args(["init", "--initial-branch=main", "-c", "init.defaultObjectFormat=sha256"])
-        .arg(probe.path().join("probe"))
-        .output()?;
-    if probe_supported.status.success() {
+    let probe_repo = probe.path().join("probe");
+    let probe_repo_arg = probe_repo.to_string_lossy();
+    let probe_initialized = hermetic
+        .git(
+            probe.path(),
+            &[
+                "-c",
+                "init.defaultObjectFormat=sha256",
+                "init",
+                "--initial-branch=main",
+                &probe_repo_arg,
+            ],
+        )
+        .is_ok();
+    let probe_supported = probe_initialized
+        && hermetic
+            .git(&probe_repo, &["rev-parse", "--show-object-format"])
+            .is_ok_and(|format| format == "sha256");
+    if probe_supported {
         let legacy_repo = tmp.path().join("legacy-repo");
         legacy_init(&legacy_repo, &global)?;
+        ensure!(
+            legacy_git(&legacy_repo, &["rev-parse", "--show-object-format"], &global)? == "sha256",
+            "capable Git must honor the hostile SHA-256 precondition in the legacy repository"
+        );
+        stage_legacy_subject(&legacy_repo, &global, "content\n")?;
+        legacy_git(&legacy_repo, &["commit", "-m", "hostile control subject"], &global)?;
         let legacy_head = legacy_git(&legacy_repo, &["rev-parse", "HEAD"], &global)?;
         assert_eq!(
             legacy_head.len(),
@@ -166,6 +203,132 @@ fn hostile_global_object_format_cannot_change_sha1_fixture_identities() -> Resul
              Gits that honor the key"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn ambient_config_search_paths_and_redirects_are_blocked() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let hermetic = HermeticGit::at(&tmp.path().join("pins"))?;
+    let repo = tmp.path().join("repo");
+    hermetic.init_repo(&repo)?;
+
+    let included = tmp.path().join("included-config");
+    fs::write(&included, "[fixture]\n\tincluded = leaked\n")?;
+
+    let fake_home = tmp.path().join("home");
+    let fake_xdg = tmp.path().join("xdg");
+    let fake_program_data = tmp.path().join("program-data");
+    fs::create_dir_all(fake_xdg.join("git"))?;
+    fs::create_dir_all(fake_program_data.join("Git"))?;
+    fs::create_dir_all(&fake_home)?;
+
+    let repo_match = format!("{}/", config_path_value(&repo));
+    fs::write(
+        fake_home.join(".gitconfig"),
+        format!(
+            "[includeIf \"gitdir:{repo_match}\"]\n\tpath = {}\n\
+             [safe]\n\tdirectory = *\n[fixture]\n\thome = leaked\n",
+            config_path_value(&included)
+        ),
+    )?;
+    fs::write(fake_xdg.join("git/config"), "[fixture]\n\txdg = leaked\n")?;
+    let hostile_system = fake_program_data.join("Git/config");
+    fs::write(&hostile_system, "[fixture]\n\tsystem = leaked\n")?;
+    let redirected = tmp.path().join("redirected-config");
+    fs::write(&redirected, "[fixture]\n\tredirected = leaked\n")?;
+
+    let mut cmd = StdCommand::new("git");
+    cmd.args(["config", "--show-origin", "--get-regexp", "^(fixture\\.|safe\\.directory)"])
+        .current_dir(&repo)
+        .env("HOME", &fake_home)
+        .env("XDG_CONFIG_HOME", &fake_xdg)
+        .env("PROGRAMDATA", &fake_program_data)
+        .env("GIT_CONFIG", &redirected)
+        .env("GIT_CONFIG_GLOBAL", fake_home.join(".gitconfig"))
+        .env("GIT_CONFIG_SYSTEM", &hostile_system)
+        .env("GIT_ATTR_NOSYSTEM", "0");
+    hermetic.apply_env(&mut cmd);
+
+    let attr_nosystem = cmd
+        .get_envs()
+        .find(|(key, _)| *key == "GIT_ATTR_NOSYSTEM")
+        .and_then(|(_, value)| value)
+        .and_then(|value| value.to_str());
+    ensure!(
+        attr_nosystem == Some("1"),
+        "every hermetic Git and child process must disable the system attributes plane"
+    );
+    let config_nosystem = cmd
+        .get_envs()
+        .find(|(key, _)| *key == "GIT_CONFIG_NOSYSTEM")
+        .and_then(|(_, value)| value)
+        .and_then(|value| value.to_str());
+    ensure!(
+        config_nosystem == Some("1"),
+        "every hermetic Git and child process must disable the ordinary system config plane"
+    );
+    let direct_config = cmd.get_envs().find(|(key, _)| *key == "GIT_CONFIG");
+    ensure!(
+        direct_config.is_some_and(|(_, value)| value.is_none()),
+        "direct GIT_CONFIG redirection must be removed before fixture-local pins are written"
+    );
+    let global_config =
+        cmd.get_envs().find(|(key, _)| *key == "GIT_CONFIG_GLOBAL").and_then(|(_, value)| value);
+    ensure!(
+        global_config.is_some_and(|value| value != fake_home.join(".gitconfig").as_os_str()),
+        "the fixture-owned global config must replace HOME/XDG config discovery"
+    );
+    let system_config =
+        cmd.get_envs().find(|(key, _)| *key == "GIT_CONFIG_SYSTEM").and_then(|(_, value)| value);
+    ensure!(
+        system_config.is_some_and(|value| value != hostile_system.as_os_str()),
+        "the fixture-owned system config must replace PROGRAMDATA/system config discovery"
+    );
+    let preserved_home =
+        cmd.get_envs().find(|(key, _)| *key == "HOME").and_then(|(_, value)| value);
+    ensure!(
+        preserved_home == Some(fake_home.as_os_str()),
+        "hermetic config routing must not erase unrelated child environment such as HOME"
+    );
+
+    let mut assert_child = AssertCommand::new("git");
+    assert_child
+        .env("HOME", &fake_home)
+        .env("GIT_CONFIG", &redirected)
+        .env("GIT_ATTR_NOSYSTEM", "0");
+    hermetic.apply_env_to_assert(&mut assert_child);
+    let child_attr_nosystem = assert_child
+        .get_envs()
+        .find(|(key, _)| *key == "GIT_ATTR_NOSYSTEM")
+        .and_then(|(_, value)| value)
+        .and_then(|value| value.to_str());
+    ensure!(
+        child_attr_nosystem == Some("1"),
+        "assert_cmd children must receive the system-attributes pin"
+    );
+    let child_direct_config = assert_child.get_envs().find(|(key, _)| *key == "GIT_CONFIG");
+    ensure!(
+        child_direct_config.is_some_and(|(_, value)| value.is_none()),
+        "assert_cmd children must scrub direct GIT_CONFIG redirection"
+    );
+
+    let output = cmd.output()?;
+    ensure!(
+        output.status.code() == Some(1) && output.stdout.is_empty(),
+        "HOME/XDG/PROGRAMDATA/global/system/includeIf/safe.directory config leaked into the \
+         hermetic repository:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    ensure!(
+        hermetic.git(&repo, &["config", "--local", "--get", "user.name"])? == "Fixture User",
+        "environment scrubbing must preserve intended repository-local fixture configuration"
+    );
+    ensure!(
+        hermetic.git(&repo, &["config", "--local", "--get", "commit.gpgsign"])? == "false",
+        "environment scrubbing must preserve the local unsigned-commit pin"
+    );
     Ok(())
 }
 
