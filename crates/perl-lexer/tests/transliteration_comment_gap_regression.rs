@@ -114,6 +114,18 @@ fn unicode_whitespace_does_not_create_a_comment_gap() -> TestResult {
                 matches!(token.token_type, TokenType::Error(_)),
                 "Unicode whitespace must not admit a second-body comment gap: {source:?}"
             );
+
+            let source = format!(
+                "{operator}{{a}} {unicode_whitespace}# comment\n {{b}}; after",
+                unicode_whitespace = '\u{a0}'
+            );
+            let mut lexer = PerlLexer::new(&source);
+            let token =
+                next_non_trivia(&mut lexer).ok_or("expected mixed second-boundary token")?;
+            assert!(
+                matches!(token.token_type, TokenType::Error(_)),
+                "mixed ASCII/Unicode whitespace must not admit a second-body comment gap: {source:?}"
+            );
         }
     }
 

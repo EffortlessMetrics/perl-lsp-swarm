@@ -1261,11 +1261,12 @@ mod regex_family_geometry {
                 scan_second_body(text, pattern_scan, SecondBodyKind::Substitution)
             }
             RegexFamilyOperator::Transliteration | RegexFamilyOperator::TransliterationAlias => {
+                let replacement_open = skip_operator_gap(text, pattern_scan.rest_offset);
                 let replacement =
                     scan_second_body(text, pattern_scan, SecondBodyKind::Transliteration);
                 if replacement.is_none()
                     && text
-                        .get(pattern_scan.rest_offset..)
+                        .get(replacement_open..)
                         .and_then(|rest| rest.chars().next())
                         .is_some_and(|ch| ch.is_whitespace() && !ch.is_ascii_whitespace())
                 {
