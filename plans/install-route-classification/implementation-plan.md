@@ -766,6 +766,8 @@ def validate_closure(inventory_rows, ledger_rows, catalog_rows):
         for row in ledger_rows
         if row["kind"] == "project"
     ]
+    if len(set(catalog_projections)) != len(catalog_projections):
+        raise ValueError("catalog contains duplicate route/context pair")
     if set(referenced_projections) != set(catalog_projections):
         raise ValueError("catalog contains an unreferenced route/context")
     return True
@@ -835,6 +837,19 @@ UNREFERENCED_CATALOG = FIXTURE_CATALOG + ({
     "projection_contexts": ("fixture-context-unreferenced",),
 },)
 require_true(assert_closure_rejected(UNREFERENCED_CATALOG), "unreferenced catalog row was accepted")
+DUPLICATE_PROJECTION_CONTEXT_CATALOG = tuple(
+    {
+        **row,
+        "projection_contexts": row["projection_contexts"] + (
+            row["projection_contexts"][0],
+        ),
+    } if row["route_id"] == "fixture-route-C101" else row
+    for row in FIXTURE_CATALOG
+)
+require_true(
+    assert_closure_rejected(DUPLICATE_PROJECTION_CONTEXT_CATALOG),
+    "duplicate catalog route/context pair was accepted",
+)
 MISSING_FAMILY_PARENT_CATALOG = tuple(
     row for row in FIXTURE_CATALOG
     if row["route_id"] != "fixture-route-VS_Code_extension"
@@ -1070,6 +1085,9 @@ the expected finding disposition map rejects moving route-relevant FND-4 to an
 allowed exclusion. These are deliberate tamper controls: they fail under both
 normal Python execution and `python -O` because validation uses explicit exceptions,
 not assertion statements.
+The catalog expansion rejects duplicate `(route_id, projection_context)` pairs
+before the reverse set comparison; that set comparison is for reference closure
+only, so multiple ledger rows may support one distinct catalog projection.
 The C1208 assertion
 also proves that its opaque ID resolves to exactly one catalog row whose registry is
 Open VSX and whose projection context is compatible; an ID that resolves to the
