@@ -331,6 +331,11 @@ pub fn validate(
         if states.insert(state.state.as_str(), state).is_some() {
             errors.push(format!("duplicate migration state {:?}", state.state));
         }
+        // A blank name or description would give repositories a state to point at
+        // whose meaning is unwritten — internally consistent, and unreadable.
+        let state_subject = format!("migration state {:?}", state.state);
+        check_non_empty(&mut errors, &state_subject, "state", &state.state);
+        check_non_empty(&mut errors, &state_subject, "description", &state.description);
         if state.legal_integration_modes.is_empty() {
             errors.push(format!(
                 "migration state {:?} declares no legal integration modes",
@@ -339,6 +344,7 @@ pub fn validate(
         }
         let mut seen_modes = BTreeSet::new();
         for mode in &state.legal_integration_modes {
+            check_non_empty(&mut errors, &state_subject, "legal_integration_modes entry", mode);
             if !seen_modes.insert(mode.as_str()) {
                 errors.push(format!(
                     "migration state {:?} repeats integration mode {mode:?}",
@@ -455,6 +461,7 @@ pub fn validate(
 
     // Packages.
     let mut package_names = BTreeSet::new();
+    let mut package_paths = BTreeSet::new();
     let mut previous: Option<&str> = None;
     for package in &topology.packages {
         let subject = format!("package {:?}", package.name);
@@ -465,6 +472,14 @@ pub fn validate(
         check_relative_path(&mut errors, &subject, "path", &package.path);
         if !package_names.insert(package.name.as_str()) {
             errors.push(format!("duplicate package row {:?}", package.name));
+        }
+        // Two rows claiming one path is a contradiction the manifests cannot catch
+        // once the owner has externalized, because neither row is reconciled then.
+        if !package_paths.insert(package.path.as_str()) {
+            errors.push(format!(
+                "package {:?}: path {:?} is already claimed by another package row",
+                package.name, package.path
+            ));
         }
         // Canonical order keeps diffs and the projection deterministic.
         if let Some(prev) = previous
@@ -1509,6 +1524,37 @@ metadata_authority = "workspace_inherited"
         let topology = parse(&fixture())?;
         assert_eq!(render(&topology), render(&topology));
         Ok(())
+    }
+
+    #[test]
+    fn rejects_a_blank_migration_state_name() -> TestResult {
+        let source = fixture().replacen("state = \"embedded\"", "state = \"\"", 1);
+        expect_rejected(&source, "state is empty")
+    }
+
+    #[test]
+    fn rejects_a_blank_migration_state_description() -> TestResult {
+        let source =
+            fixture().replacen("description = \"Source lives here.\"", "description = \"  \"", 1);
+        expect_rejected(&source, "description is empty")
+    }
+
+    #[test]
+    fn rejects_a_blank_integration_mode_entry() -> TestResult {
+        let source = fixture().replacen(
+            "legal_integration_modes = [\"workspace_path\"]",
+            "legal_integration_modes = [\"workspace_path\", \"\"]",
+            1,
+        );
+        expect_rejected(&source, "legal_integration_modes entry is empty")
+    }
+
+    #[test]
+    fn rejects_two_package_rows_claiming_one_path() -> TestResult {
+        // Reconciliation cannot catch this once the owner has externalized, because
+        // neither row is compared against a manifest then.
+        let source = fixture().replace("path = \"crates/beta\"", "path = \"crates/alpha\"");
+        expect_rejected(&source, "is already claimed by another package row")
     }
 
     fn manifest_dir(body: &str) -> Result<tempfile::TempDir> {
