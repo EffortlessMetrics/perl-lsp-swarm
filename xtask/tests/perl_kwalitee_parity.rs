@@ -270,6 +270,14 @@ fn json_escaped_fragment(value: &str) -> String {
     serde_json::to_string(value).expect("encode JSON path fragment").trim_matches('"').to_string()
 }
 
+/// Normalize only the dynamic values (`generated_at`, the fixture root) in the
+/// raw CLI report text while preserving the CLI's own JSON representation.
+///
+/// The byte comparison against the committed artifact is the frozen authority:
+/// the raw text is parsed solely as a well-formedness gate and the parsed value
+/// is discarded, so a report writer change to compact output, different key
+/// ordering, or different whitespace fails the parity compare instead of being
+/// canonicalized back to the frozen bytes.
 fn normalize_raw_json(value: &[u8], root: &Path, manifest: &Manifest) -> String {
     let text = String::from_utf8(value.to_vec()).expect("CLI JSON must be UTF-8");
     let mut normalized = String::with_capacity(text.len());
@@ -295,8 +303,8 @@ fn normalize_raw_json(value: &[u8], root: &Path, manifest: &Manifest) -> String 
     normalized =
         normalized.replace(&json_escaped_fragment(&root.to_string_lossy()), &manifest.repo_token);
     normalized = normalized.replace("\\\\", "/");
-    let parsed: Value = serde_json::from_str(&normalized).expect("decode normalized report JSON");
-    format!("{}\n", serde_json::to_string_pretty(&parsed).expect("format normalized report JSON"))
+    serde_json::from_str::<Value>(&normalized).expect("decode normalized report JSON");
+    normalized
 }
 
 fn normalize_receipt(receipt: &mut KwaliteeReceipt, root: &Path, manifest: &Manifest) {
@@ -588,4 +596,58 @@ fn explain_replays_every_frozen_indicator() {
     }
 
     assert_artifact(&actual, &manifest.explain, "explain catalog");
+}
+
+/// The raw CLI report JSON must be compared bytewise against the committed
+/// artifact after normalizing only its dynamic values. A writer change to
+/// compact output, different key ordering, or different whitespace must fail
+/// the compare rather than be canonicalized back to the frozen bytes.
+#[test]
+fn raw_report_json_parity_is_byte_level_discriminating() {
+    let manifest = load_manifest();
+    let case =
+        manifest.cases.iter().find(|case| case.id == "pr_non_strict").expect("pr_non_strict case");
+    let fixture = materialize_inputs(&manifest);
+    let output_dir = tempfile::tempdir().expect("report output directory");
+    let json_path = output_dir.path().join("raw-parity.json");
+    let markdown_path = output_dir.path().join("raw-parity.md");
+
+    let output = Command::cargo_bin("xtask")
+        .expect("xtask binary")
+        .args(["perl-kwalitee", "report", "--profile", &case.profile, "--repo-root"])
+        .arg(fixture.path())
+        .arg("--json")
+        .arg(&json_path)
+        .arg("--markdown")
+        .arg(&markdown_path)
+        .output()
+        .expect("run report");
+    assert_eq!(exit_code(&output), 0, "report run must succeed");
+
+    // Positive control: the real CLI bytes, with only dynamic values
+    // normalized, must match the frozen artifact exactly.
+    let raw_json = fs::read(&json_path).expect("read report JSON");
+    let normalized = normalize_raw_json(&raw_json, fixture.path(), &manifest);
+    assert_artifact(&normalized, &case.json, "raw report JSON");
+
+    // Falsifier: a compact writer (no whitespace, alphabetical keys after a
+    // parse) must not be rescued by the comparator.
+    let parsed: Value = serde_json::from_str(&normalized).expect("decode normalized report JSON");
+    let compact = serde_json::to_string(&parsed).expect("encode compact report JSON");
+    let compact_rescued = normalize_raw_json(compact.as_bytes(), fixture.path(), &manifest);
+    assert_ne!(
+        compact_rescued,
+        read_artifact(&case.json),
+        "compact report JSON must not be canonicalized back to the frozen bytes"
+    );
+
+    // Falsifier: an indentation change must not be rescued either.
+    let reindented = normalized.replace("\n  ", "\n    ");
+    assert_ne!(reindented, normalized, "reindent control must change the bytes");
+    let reindented_rescued = normalize_raw_json(reindented.as_bytes(), fixture.path(), &manifest);
+    assert_ne!(
+        reindented_rescued,
+        read_artifact(&case.json),
+        "re-indented report JSON must not be canonicalized back to the frozen bytes"
+    );
 }
