@@ -754,6 +754,88 @@ mod compiler_operating_profile_oracle_adapter {
     }
 
     #[test]
+    fn falsifier_09c_a_declared_mismatch_over_agreeing_facts_is_not_coherent() -> Result<()> {
+        // The mirror of the test above. Each mismatch class names exactly one
+        // field pair the normalized facts carry, so a row declaring a mismatch
+        // over two facts that agree on that very field contradicts its own
+        // label just as a mislabelled `oracle_agrees` row does.
+        //
+        // Detecting this must not soften the verdict: the receipt declared a
+        // mismatch, so the product axis stays `Failed`. What changes is that
+        // the contradiction becomes visible rather than reading as a clean,
+        // confident failure.
+        let classes = [
+            ("range_mismatch", "same source range"),
+            ("provenance_mismatch", "same provenance"),
+            ("confidence_or_freshness_mismatch", "same confidence and freshness"),
+        ];
+
+        for (class, needle) in classes {
+            let receipt = agreeing_with(|receipt| {
+                receipt["comparisons"] = json!([
+                    comparison(class, "fact-isa-1", "blocks_promotion"),
+                    comparison("oracle_agrees", "fact-isa-2", "supports_promotion")
+                ]);
+            });
+            let observation = adapt(&receipt)?;
+
+            assert_eq!(
+                observation.disposition,
+                ObservationDisposition::Failed,
+                "{class}: a declared mismatch still outranks not_proven"
+            );
+            match &observation.completeness {
+                CompletenessDisposition::Partial { remainder } => assert!(
+                    remainder.contains(needle),
+                    "{class}: the remainder must name the contradiction, got {remainder:?}"
+                ),
+                other => bail!(
+                    "{class}: the self-contradiction must stay visible on the completeness \
+                     axis, got {other:?}"
+                ),
+            }
+            assert_eq!(observation.ceiling.claim_ceiling(), ClaimCeiling::ObservedEvidence);
+        }
+
+        // Negative control: the same rows over facts that genuinely differ on
+        // the field each class names are coherent. Without this, an adapter
+        // that called every mismatch incoherent would pass the loop above.
+        let genuine: [(&str, fn(&mut Value)); 3] = [
+            ("range_mismatch", |r| {
+                r["normalized_facts"]["oracle"][0]["source_range"] = json!({
+                    "path_class": "public_test_fixture",
+                    "start_line": 99, "start_character": 0,
+                    "end_line": 99, "end_character": 24
+                })
+            }),
+            ("provenance_mismatch", |r| {
+                r["normalized_facts"]["oracle"][0]["provenance"] = json!("SourceBackedGenerated")
+            }),
+            ("confidence_or_freshness_mismatch", |r| {
+                r["normalized_facts"]["oracle"][0]["confidence"] = json!("medium")
+            }),
+        ];
+
+        for (class, mutate) in genuine {
+            let mut receipt = agreeing_receipt();
+            mutate(&mut receipt);
+            receipt["comparisons"] = json!([
+                comparison(class, "fact-isa-1", "blocks_promotion"),
+                comparison("oracle_agrees", "fact-isa-2", "supports_promotion")
+            ]);
+            let observation = adapt(&receipt)?;
+
+            assert_eq!(observation.disposition, ObservationDisposition::Failed);
+            assert_eq!(
+                observation.completeness,
+                CompletenessDisposition::Complete,
+                "{class}: a genuine mismatch closes its denominator and is not incoherent"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn an_identifier_the_envelope_cannot_carry_fails_closed_by_name() -> Result<()> {
         // The schema accepts any non-empty identifier, but #12188's
         // private-safety contract governs the envelope text these reach and
@@ -1212,6 +1294,70 @@ mod compiler_operating_profile_oracle_adapter {
             .unwrap_or_default();
         assert_eq!(digest.len(), 64, "the whole sha256 digest crosses: {policy}");
         assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
+        Ok(())
+    }
+
+    #[test]
+    fn falsifier_17_declared_ambient_inputs_are_load_bearing_in_the_subject() -> Result<()> {
+        // `ambient_inputs.authority` is a preserved field, and a declared
+        // ambient input is part of the environment the evidence was gathered
+        // under. Two receipts that declare different ambient inputs are two
+        // environments; if they shared a candidate subject, evidence gathered
+        // under one would read as covering the other. A differing receipt
+        // digest is not enough — the digest ranges over the whole document,
+        // while the subject is what binds the evidence to a candidate.
+        //
+        // Unbounded and reported-only inputs are already blocked or bounded
+        // elsewhere, so the inputs that survive into an accepted row are
+        // exactly the declared ones — the case where a shared subject is wrong.
+        let locale = agreeing_with(|receipt| {
+            receipt["ambient_inputs"] =
+                json!([{ "kind": "locale", "authority": "declared_input" }]);
+        });
+        let tmpdir = agreeing_with(|receipt| {
+            receipt["ambient_inputs"] =
+                json!([{ "kind": "tmpdir", "authority": "declared_input" }]);
+        });
+
+        // Not vacuous: both really do reach the strongest ceiling, so this is a
+        // statement about accepted evidence rather than about two refusals.
+        for receipt in [&locale, &tmpdir] {
+            assert_eq!(
+                adapt(receipt)?.ceiling.claim_ceiling(),
+                ClaimCeiling::AcceptedCompatibility
+            );
+        }
+
+        assert_ne!(
+            dimension(&adapt(&locale)?, SubjectDimensionKind::ProducerConfiguration),
+            dimension(&adapt(&tmpdir)?, SubjectDimensionKind::ProducerConfiguration),
+            "a different declared ambient input is a different producer configuration"
+        );
+        assert_ne!(
+            identity(&locale)?,
+            identity(&tmpdir)?,
+            "the candidate subject must separate them, not only the receipt digest"
+        );
+
+        // The entries are canonical-JSON encoded with a quoted kind, so no kind
+        // value can forge an entry or field separator and collide two distinct
+        // environments onto one dimension. Under a plain join these two render
+        // identically: one entry whose kind carries the separator, against the
+        // two entries it impersonates.
+        let split_left = agreeing_with(|receipt| {
+            receipt["ambient_inputs"] = json!([{ "kind": "locale authority=unbounded, kind=x", "authority": "declared_input" }]);
+        });
+        let split_right = agreeing_with(|receipt| {
+            receipt["ambient_inputs"] = json!([
+                { "kind": "locale", "authority": "unbounded" },
+                { "kind": "x", "authority": "declared_input" }
+            ]);
+        });
+        assert_ne!(
+            dimension(&adapt(&split_left)?, SubjectDimensionKind::ProducerConfiguration),
+            dimension(&adapt(&split_right)?, SubjectDimensionKind::ProducerConfiguration),
+            "an ambient kind must not be able to forge an entry separator"
+        );
         Ok(())
     }
 

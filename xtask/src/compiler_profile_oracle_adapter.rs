@@ -1189,6 +1189,38 @@ fn agreed_fact_disagreement(
     None
 }
 
+/// The mirror of [`agreed_fact_disagreement`]: a receipt that declares a
+/// mismatch over two facts which agree on precisely the field that class names
+/// contradicts its own vocabulary just as an `oracle_agrees` row over two
+/// differing facts does. Each class names one field pair, so the check is
+/// exact rather than a heuristic.
+///
+/// `name` is not consulted: a differing name is its own condition and is not
+/// what any of these three classes claims.
+fn declared_mismatch_absence(
+    result_class: ResultClass,
+    rust: &NormalizedFact,
+    oracle: &NormalizedFact,
+) -> Option<&'static str> {
+    match result_class {
+        ResultClass::RangeMismatch if rust.source_range == oracle.source_range => {
+            Some("declares a range mismatch over two facts with the same source range")
+        }
+        ResultClass::ProvenanceMismatch if rust.provenance == oracle.provenance => {
+            Some("declares a provenance mismatch over two facts with the same provenance")
+        }
+        ResultClass::ConfidenceOrFreshnessMismatch
+            if rust.confidence == oracle.confidence && rust.freshness == oracle.freshness =>
+        {
+            Some(
+                "declares a confidence or freshness mismatch over two facts with the same \
+                 confidence and freshness",
+            )
+        }
+        _ => None,
+    }
+}
+
 /// Which side each result class needs evidence from, and why a receipt that
 /// does not carry it cannot be taken at its word.
 ///
@@ -1214,13 +1246,20 @@ fn evidence_incoherence(
             (Some(_), None) => Some("names no oracle fact to compare"),
             (None, None) => Some("names neither a Rust nor an oracle fact"),
         },
+        // A declared mismatch is checked the same way a declared agreement is,
+        // and for the same reason: each of these classes names exactly one
+        // field pair the normalized facts carry, so a row whose two facts
+        // agree on that field contradicts its own label. Detecting it does not
+        // soften the verdict — a declared mismatch still outranks `not_proven`
+        // on the product axis — but a receipt that disagrees with itself must
+        // not read as a clean, confident failure.
         ResultClass::RangeMismatch
         | ResultClass::ProvenanceMismatch
-        | ResultClass::ConfidenceOrFreshnessMismatch => match (in_rust, in_oracle) {
-            (true, true) => None,
-            (false, true) => Some("names no Rust fact to compare"),
-            (true, false) => Some("names no oracle fact to compare"),
-            (false, false) => Some("names neither a Rust nor an oracle fact"),
+        | ResultClass::ConfidenceOrFreshnessMismatch => match (rust, oracle) {
+            (Some(rust), Some(oracle)) => declared_mismatch_absence(result_class, rust, oracle),
+            (None, Some(_)) => Some("names no Rust fact to compare"),
+            (Some(_), None) => Some("names no oracle fact to compare"),
+            (None, None) => Some("names neither a Rust nor an oracle fact"),
         },
         ResultClass::CompilerMissing => match (in_rust, in_oracle) {
             (false, true) => None,
@@ -1642,7 +1681,8 @@ fn normalize(receipt: &OracleReceiptV1) -> Result<CompilerProfileObservationV1> 
             )?,
             InvalidationInput::new(
                 InvalidationKind::HostEnvironment,
-                "the declared or denied environment authority changed",
+                "the declared or denied environment authority, or a declared ambient input, \
+                 changed",
             )?,
         ])?,
         instrument: InstrumentAndTerminalState::new(INSTRUMENT, terminal)?,
@@ -1733,13 +1773,31 @@ fn subject_identity(receipt: &OracleReceiptV1) -> Result<CandidateSubjectIdentit
     denied.sort_unstable();
     let mut declared = receipt.environment.declared.clone();
     declared.sort();
+    // Ambient inputs are part of the execution environment the evidence was
+    // gathered under, and `ambient_inputs.authority` is a preserved field, so
+    // they must be load-bearing here: two receipts that declare different
+    // ambient inputs describe different environments and must not share a
+    // candidate subject, or evidence gathered under one would read as evidence
+    // for the other. Unbounded and reported-only inputs are already blocked or
+    // bounded by `collect_findings`, so the inputs that survive into an
+    // accepted row are exactly the declared ones — precisely the case where a
+    // shared subject would be wrong.
+    //
+    // Unlike module roots, ambient inputs carry no precedence, so they are
+    // sorted: reordering the same inputs is not a different environment. Each
+    // entry is rendered with quoted kind and canonical-JSON encoded, so no
+    // kind value can forge an entry or field separator.
+    let ambient = sorted(&receipt.ambient_inputs, |input| {
+        format!("kind={:?} authority={}", input.kind, input.authority.tag())
+    });
     subject.bind(
         SubjectDimensionKind::ProducerConfiguration,
         SubjectDimension::proven(&format!(
             "source_schema={SOURCE_SCHEMA_TAG} adapter={ADAPTER_ID}@{ADAPTER_VERSION} \
-             denied_env={} declared_env={}",
+             denied_env={} declared_env={} ambient_inputs={}",
             canonical_list(&denied)?,
             canonical_list(&declared)?,
+            canonical_list(&ambient)?,
         ))?,
     );
 
