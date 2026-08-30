@@ -46,6 +46,8 @@ Without Nix, install the pinned Rust toolchain through
 ```bash
 # Install rustup first if the toolchain manager is not present
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# The installer does not modify the shell that ran it
+source "$HOME/.cargo/env"
 
 rustup show
 cargo install just
@@ -153,6 +155,15 @@ stash state is shared across worktrees.
 git add <files>
 git commit -m "fix(scope): describe the change (#NNNN)"
 git push -u origin HEAD
+gh pr create --repo EffortlessMetrics/perl-lsp-swarm
+```
+
+Contributors without write access to `perl-lsp-swarm` cannot push a branch to it. Fork
+first and push to the fork; the pull request still targets this repository:
+
+```bash
+gh repo fork EffortlessMetrics/perl-lsp-swarm --remote --remote-name fork
+git push -u fork HEAD
 gh pr create --repo EffortlessMetrics/perl-lsp-swarm
 ```
 
