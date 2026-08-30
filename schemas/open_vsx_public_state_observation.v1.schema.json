@@ -44,7 +44,10 @@
       "description": "The exact registry identity under observation. A different namespace or name is a different subject and can never satisfy this one.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["namespace", "extension"],
+      "required": [
+        "namespace",
+        "extension"
+      ],
       "properties": {
         "namespace": {
           "$ref": "#/$defs/registry_segment"
@@ -63,20 +66,27 @@
       "description": "Exact identity of the probe implementation that produced this observation. Incomplete instrument evidence is a not-proven input, never proof of absence.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "version", "source_ref"],
+      "required": [
+        "name",
+        "version",
+        "source_ref"
+      ],
       "properties": {
         "name": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 200
         },
         "version": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 200
         },
         "source_ref": {
           "description": "Repository ref or commit identifying the probe source.",
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 200
         }
       }
     },
@@ -84,7 +94,11 @@
       "description": "Historical publication references and the version/digest identity a restoration is expected to preserve. These are inputs to comparison only: no entry here can raise the classified state on its own.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["versions", "publication_refs"],
+      "required": [
+        "versions",
+        "publication_refs",
+        "authority"
+      ],
       "properties": {
         "versions": {
           "description": "Expected published versions, most significant first. The first entry is the subject version for the versioned-file cell.",
@@ -99,15 +113,31 @@
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Bounded free-text reference retained verbatim in the durable receipt. Values are additionally validated by the classifier: control characters, filesystem paths, credential userinfo, and non-https schemes are refused."
           }
+        },
+        "authority": {
+          "description": "Where the expected byte identity came from. Null means the expected digest is unbound, in which case matching it cannot establish that the public bytes are the approved ones and available_exact is unreachable.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/expected_authority"
+            }
+          ]
         }
       }
     },
     "expected_version": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "vsix_sha256"],
+      "required": [
+        "version",
+        "vsix_sha256"
+      ],
       "properties": {
         "version": {
           "$ref": "#/$defs/version_string"
@@ -190,7 +220,11 @@
           "const": "GET"
         },
         "outcome": {
-          "enum": ["http_response", "transport_error", "not_attempted"]
+          "enum": [
+            "http_response",
+            "transport_error",
+            "not_attempted"
+          ]
         },
         "status": {
           "oneOf": [
@@ -243,12 +277,43 @@
             }
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "description": "An HTTP response carries a status; a transport error or an unattempted request cannot. The classifier refuses the other combinations as invalid, so the contract states them rather than leaving a producer to discover it.",
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "http_response"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "type": "integer"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "status": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     },
     "listing_cell": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["transport"],
+      "required": [
+        "transport"
+      ],
       "properties": {
         "transport": {
           "$ref": "#/$defs/transport"
@@ -258,41 +323,60 @@
     "search_cell": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["transport", "matched_identity"],
+      "required": [
+        "transport",
+        "matched_identity"
+      ],
       "properties": {
         "transport": {
           "$ref": "#/$defs/transport"
         },
         "matched_identity": {
           "description": "Whether the search result set contained this exact namespace and name. Discoverability is reported but never raises the classified state on its own.",
-          "type": ["boolean", "null"]
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       }
     },
     "namespace_metadata_cell": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["transport", "namespace_present"],
+      "required": [
+        "transport",
+        "namespace_present"
+      ],
       "properties": {
         "transport": {
           "$ref": "#/$defs/transport"
         },
         "namespace_present": {
-          "type": ["boolean", "null"]
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       }
     },
     "extension_metadata_cell": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["transport", "identity_matches", "versions"],
+      "required": [
+        "transport",
+        "identity_matches",
+        "versions"
+      ],
       "properties": {
         "transport": {
           "$ref": "#/$defs/transport"
         },
         "identity_matches": {
           "description": "Whether the returned record names this exact namespace and extension.",
-          "type": ["boolean", "null"]
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "versions": {
           "oneOf": [
@@ -312,7 +396,10 @@
     "version_rows_cell": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["transport", "versions"],
+      "required": [
+        "transport",
+        "versions"
+      ],
       "properties": {
         "transport": {
           "$ref": "#/$defs/transport"
@@ -336,7 +423,12 @@
       "description": "The versioned package endpoint, observed independently of the gallery listing. Public bytes are recorded only when the exact file was retrieved in full.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["transport", "version", "sha256", "byte_length"],
+      "required": [
+        "transport",
+        "version",
+        "sha256",
+        "byte_length"
+      ],
       "properties": {
         "transport": {
           "$ref": "#/$defs/transport"
@@ -371,6 +463,25 @@
               "minimum": 0
             }
           ]
+        }
+      }
+    },
+    "expected_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "sha256"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Repository-relative path or release reference naming the authority document."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
         }
       }
     }

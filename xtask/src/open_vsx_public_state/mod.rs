@@ -38,7 +38,7 @@ mod tests;
 use crate::receipt_output::{ensure_safe_output, prepare_output_parent, write_receipt};
 use clap::Parser;
 use classify::classify;
-use color_eyre::eyre::{Result, WrapErr, bail};
+use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use model::{Observation, PublicState};
 use std::fs;
 use std::io::Write;
@@ -96,9 +96,36 @@ pub fn run_with_paths(input: PathBuf, out: PathBuf) -> Result<()> {
     }
 }
 
+/// The published input contract, applied to the document before classification.
+const OBSERVATION_SCHEMA: &str =
+    include_str!("../../../schemas/open_vsx_public_state_observation.v1.schema.json");
+
 fn load_observation(path: &Path) -> Result<Observation> {
     let raw = fs::read_to_string(path)
         .wrap_err_with(|| format!("reading Open VSX observation {}", path.display()))?;
-    serde_json::from_str(&raw)
+    let document: serde_json::Value = serde_json::from_str(&raw)
+        .wrap_err_with(|| format!("parsing Open VSX observation {}", path.display()))?;
+
+    // Raised in review: deserialization alone enforces only what the Rust types
+    // happen to encode, so every published constraint the classifier does not
+    // restate — string lengths, status ranges, identity patterns — went
+    // unchecked. Validating against the schema keeps one authority for the
+    // input shape instead of two that can drift.
+    let schema: serde_json::Value = serde_json::from_str(OBSERVATION_SCHEMA)
+        .wrap_err("parsing the Open VSX observation contract")?;
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| eyre!("compiling the Open VSX observation contract: {error}"))?;
+    let violations: Vec<String> =
+        validator.iter_errors(&document).map(|error| format!("{error}")).collect();
+    if !violations.is_empty() {
+        bail!(
+            "Open VSX observation {} does not conform to {}: {}",
+            path.display(),
+            "open_vsx_public_state_observation.v1",
+            violations.join("; ")
+        );
+    }
+
+    serde_json::from_value(document)
         .wrap_err_with(|| format!("parsing Open VSX observation {}", path.display()))
 }

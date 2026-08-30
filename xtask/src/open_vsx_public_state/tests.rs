@@ -463,6 +463,158 @@ fn an_http_response_without_a_status_is_invalid() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Negative controls: unparsed data is not affirmative evidence
+//
+// These four share one root cause found in review: a surface that answered but
+// whose answer was never parsed was reading as "no objection" rather than as
+// missing evidence, which is the same collapse this module exists to prevent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_unparsed_namespace_response_cannot_underwrite_a_missing_verdict() -> Result<()> {
+    // `extension_missing` is licensed by "the namespace still resolves". A 200
+    // that produced no identity claim did not establish that.
+    let receipt = receipt_with(INCIDENT, |document| {
+        document["cells"]["namespace_metadata"]["namespace_present"] = Value::Null;
+    })?;
+    expect_state(&receipt, PublicState::ProviderNotProven, "unparsed namespace")?;
+    expect_blocker(&receipt, "namespace_identity_not_parsed")?;
+    Ok(())
+}
+
+#[test]
+fn unparsed_version_rows_cannot_reach_available_exact() -> Result<()> {
+    let receipt = receipt_with(AVAILABLE_EXACT, |document| {
+        document["cells"]["version_rows"]["versions"] = Value::Null;
+    })?;
+    expect_state(&receipt, PublicState::AvailableIdentityNotProven, "unparsed version rows")?;
+    expect_blocker(&receipt, "version_rows_not_parsed")?;
+    Ok(())
+}
+
+#[test]
+fn a_malformed_non_subject_version_is_invalid() -> Result<()> {
+    // `expected` is copied verbatim into the receipt, so a malformed entry
+    // anywhere in the list would emit a receipt violating its own schema.
+    let receipt = receipt_with(AVAILABLE_EXACT, |document| {
+        document["expected"]["versions"] = json!([
+            {"version": "0.17.0", "vsix_sha256": Value::Null},
+            {"version": "../0.16.0", "vsix_sha256": Value::Null},
+        ]);
+    })?;
+    expect_state(&receipt, PublicState::Invalid, "malformed second version")?;
+    expect_blocker(&receipt, "malformed_expected_version")?;
+    Ok(())
+}
+
+#[test]
+fn an_instant_that_cannot_be_placed_on_a_timeline_is_invalid() -> Result<()> {
+    // The receipt's whole value is that it describes a *current* state, so a
+    // non-instant — or one without an explicit offset — cannot back that claim.
+    for invalid in ["yesterday", "2026-08-14", "2026-08-14T09:12:00", "not a date", "0"] {
+        let receipt = receipt_with(AVAILABLE_EXACT, |document| {
+            document["observed_at"] = json!(invalid);
+        })?;
+        expect_state(&receipt, PublicState::Invalid, invalid)?;
+        expect_blocker(&receipt, "malformed_observed_at")?;
+    }
+    // An explicit non-UTC offset is a perfectly placeable instant.
+    let offset = receipt_with(AVAILABLE_EXACT, |document| {
+        document["observed_at"] = json!("2026-08-14T09:12:00+02:00");
+    })?;
+    expect_state(&offset, PublicState::AvailableExact, "explicit offset")?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Negative controls: the strongest claim needs evidence from outside the input
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_unbound_expected_digest_cannot_manufacture_available_exact() -> Result<()> {
+    // Raised in review: the observed digest and the expected digest arrive
+    // through the same input. A producer that simply copied the retrieved digest
+    // into `expected` would otherwise mint the strongest claim from nothing.
+    let receipt = receipt_with(AVAILABLE_EXACT, |document| {
+        document["expected"]["authority"] = Value::Null;
+    })?;
+    expect_state(&receipt, PublicState::AvailableIdentityNotProven, "unbound expected digest")?;
+    expect_blocker(&receipt, "expected_identity_unbound")?;
+    Ok(())
+}
+
+#[test]
+fn a_bounded_read_must_be_evidenced_before_exact_bytes_are_accepted() -> Result<()> {
+    // Omitting the byte count skipped the budget check entirely, so an oversized
+    // package could be reported as exact while the bounded read it claims was
+    // never established.
+    let unmeasured = receipt_with(AVAILABLE_EXACT, |document| {
+        document["cells"]["versioned_file"]["transport"]["response_bytes"] = Value::Null;
+    })?;
+    expect_state(&unmeasured, PublicState::Invalid, "unmeasured package read")?;
+    expect_blocker(&unmeasured, "unmeasured_response")?;
+
+    // A digest only covers what was actually read.
+    let short_read = receipt_with(AVAILABLE_EXACT, |document| {
+        document["cells"]["versioned_file"]["byte_length"] = json!(12);
+    })?;
+    expect_state(&short_read, PublicState::Invalid, "partial package read")?;
+    expect_blocker(&short_read, "package_byte_length_mismatch")?;
+    Ok(())
+}
+
+#[test]
+fn path_and_credential_shaped_references_cannot_cross_the_publication_boundary() -> Result<()> {
+    // These fields are free text copied verbatim into a durable, shareable
+    // receipt. Property-name closure says nothing about what a producer puts
+    // inside a string, so the values are validated too.
+    let hostile = [
+        "file:///home/someone/.ssh/id_rsa",
+        "https://user:hunter2@example.invalid/run",
+        "/home/someone/secret-notes.txt",
+        "~/.aws/credentials",
+        "C:/Users/someone/token.txt",
+        "C:\\Users\\someone\\token.txt",
+        "ftp://example.invalid/x",
+        "has\u{7}a\u{0}control",
+    ];
+
+    for value in hostile {
+        let via_refs = receipt_with(AVAILABLE_EXACT, |document| {
+            document["expected"]["publication_refs"] = json!([value]);
+        })?;
+        expect_state(&via_refs, PublicState::Invalid, value)?;
+        expect_blocker(&via_refs, "unsafe_reference_value")?;
+        if serde_json::to_string(&via_refs)?.contains("hunter2") {
+            bail!("a credential-shaped reference reached the receipt for {value:?}");
+        }
+
+        let via_instrument = receipt_with(AVAILABLE_EXACT, |document| {
+            document["instrument"]["source_ref"] = json!(value);
+        })?;
+        expect_state(&via_instrument, PublicState::Invalid, value)?;
+        expect_blocker(&via_instrument, "unsafe_reference_value")?;
+    }
+
+    // An over-long reference is refused rather than retained.
+    let oversized = receipt_with(AVAILABLE_EXACT, |document| {
+        document["expected"]["publication_refs"] = json!(["x".repeat(5000)]);
+    })?;
+    expect_state(&oversized, PublicState::Invalid, "oversized reference")?;
+    expect_blocker(&oversized, "unsafe_reference_value")?;
+
+    // The shapes a real reference actually takes still pass.
+    let benign = receipt_with(AVAILABLE_EXACT, |document| {
+        document["expected"]["publication_refs"] = json!([
+            "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/0000000000",
+            "Publish VSCode Extension / Publish Open VSX (2026-06-28) reported success",
+        ]);
+    })?;
+    expect_state(&benign, PublicState::AvailableExact, "benign references")?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Receipt shape
 // ---------------------------------------------------------------------------
 

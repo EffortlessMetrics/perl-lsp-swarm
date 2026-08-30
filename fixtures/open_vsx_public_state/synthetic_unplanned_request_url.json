@@ -18,7 +18,11 @@
         "vsix_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
       }
     ],
-    "publication_refs": []
+    "publication_refs": [],
+    "authority": {
+      "source": "release/v0.17.0/publication_manifest.v1.json",
+      "sha256": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc3"
+    }
   },
   "cells": {
     "listing": {

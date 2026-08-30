@@ -110,6 +110,77 @@ fn the_observation_contract_rejects_an_unsanctioned_method_or_state() -> Result<
 }
 
 #[test]
+fn the_receipt_contract_enforces_the_invariants_the_classifier_guarantees() -> Result<()> {
+    // Raised in review: a schema-valid receipt could previously contradict the
+    // classifier — claiming available_exact while carrying blockers, or a
+    // subject version with no plan digest. A consumer reading only the contract
+    // had no way to know those shapes were impossible.
+    let validator = validator(RECEIPT_SCHEMA)?;
+    let baseline = serde_json::to_value(receipt(AVAILABLE_EXACT)?)?;
+    validate(&validator, &baseline, "baseline")?;
+
+    let mut exact_with_blockers = baseline.clone();
+    exact_with_blockers["blockers"] = serde_json::json!([{
+        "code": "invented", "message": "invented", "owner": "#9923"
+    }]);
+    if validator.is_valid(&exact_with_blockers) {
+        bail!("available_exact with blockers passed validation");
+    }
+
+    let mut exact_without_bytes = baseline.clone();
+    exact_without_bytes["public_bytes"] = Value::Null;
+    if validator.is_valid(&exact_without_bytes) {
+        bail!("available_exact without proven public bytes passed validation");
+    }
+
+    let mut unblocked_failure = baseline.clone();
+    unblocked_failure["state"] = Value::String("extension_missing".to_owned());
+    unblocked_failure["blockers"] = serde_json::json!([]);
+    if validator.is_valid(&unblocked_failure) {
+        bail!("a non-exact state with no blocker passed validation");
+    }
+
+    let mut half_a_plan = baseline.clone();
+    half_a_plan["probe_plan_digest"] = Value::Null;
+    if validator.is_valid(&half_a_plan) {
+        bail!("a subject version with no plan digest passed validation");
+    }
+
+    let mut reordered = baseline;
+    let Some(cells) = reordered["cells"].as_array().cloned() else {
+        bail!("cells must be an array");
+    };
+    let mut swapped = cells;
+    swapped.swap(0, 1);
+    reordered["cells"] = Value::Array(swapped);
+    if validator.is_valid(&reordered) {
+        bail!("a receipt whose surfaces are out of order passed validation");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_observation_contract_couples_an_outcome_to_its_status() -> Result<()> {
+    let validator = validator(OBSERVATION_SCHEMA)?;
+    let baseline: Value = serde_json::from_str(AVAILABLE_EXACT)?;
+    validate(&validator, &baseline, "baseline")?;
+
+    let mut status_without_response = baseline.clone();
+    status_without_response["cells"]["listing"]["transport"]["outcome"] =
+        Value::String("transport_error".to_owned());
+    if validator.is_valid(&status_without_response) {
+        bail!("a transport error carrying an HTTP status passed validation");
+    }
+
+    let mut response_without_status = baseline;
+    response_without_status["cells"]["listing"]["transport"]["status"] = Value::Null;
+    if validator.is_valid(&response_without_status) {
+        bail!("an HTTP response with no status passed validation");
+    }
+    Ok(())
+}
+
+#[test]
 fn the_contracts_declare_the_versions_the_code_emits() -> Result<()> {
     let receipt_schema: Value = serde_json::from_str(RECEIPT_SCHEMA)?;
     let observation_schema: Value = serde_json::from_str(OBSERVATION_SCHEMA)?;

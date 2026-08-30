@@ -10,11 +10,12 @@
 //! never read here: `expected.publication_refs` has no path into the state.
 
 use super::model::{
-    Blocker, CellObservation, CellResult, ErrorKind, OBSERVATION_SCHEMA_VERSION, Observation,
-    PublicBytes, PublicState, RECEIPT_SCHEMA_VERSION, REGISTRY, Receipt, ReceiptIdentity,
-    Transport, TransportOutcome,
+    Blocker, CellObservation, CellResult, ErrorKind, Expected, Instrument,
+    OBSERVATION_SCHEMA_VERSION, Observation, PublicBytes, PublicState, RECEIPT_SCHEMA_VERSION,
+    REGISTRY, Receipt, ReceiptIdentity, Transport, TransportOutcome,
 };
 use super::plan::{Cell, ProbePlan, probe_plan, valid_registry_segment, valid_version};
+use chrono::DateTime;
 
 /// One decisive surface, reduced to the facts classification may use.
 struct Decisive {
@@ -112,13 +113,13 @@ pub(crate) fn classify(observation: Observation) -> Receipt {
         observed_at: observation.observed_at,
         registry: REGISTRY,
         identity: ReceiptIdentity { namespace, extension, extension_id },
-        instrument: observation.instrument,
+        instrument: publishable_instrument(observation.instrument),
         instrument_complete,
         probe_plan_digest,
         subject_version,
         cells,
         public_bytes,
-        expected: observation.expected,
+        expected: publishable_expected(observation.expected),
         limitations,
         blockers,
         state,
@@ -149,10 +150,22 @@ fn structural_findings(
             format!("registry {:?} is not {REGISTRY}", observation.registry),
         ));
     }
+    // The entire value of this receipt is that it describes a *current* state,
+    // so the instant is parsed rather than merely required to be non-blank.
+    // RFC 3339 also forces an explicit offset: a local timestamp cannot be
+    // placed on a timeline by a later reader.
     if observation.observed_at.trim().is_empty() {
         findings.push(Blocker::new(
             "missing_observed_at",
             "observation carries no observation instant, so it cannot establish current state",
+        ));
+    } else if DateTime::parse_from_rfc3339(&observation.observed_at).is_err() {
+        findings.push(Blocker::new(
+            "malformed_observed_at",
+            format!(
+                "observed_at {:?} is not an RFC 3339 instant with an explicit offset",
+                observation.observed_at
+            ),
         ));
     }
     if !valid_registry_segment(&observation.identity.namespace)
@@ -163,20 +176,63 @@ fn structural_findings(
             "namespace or extension is not a canonical registry segment",
         ));
     }
-    match subject_version {
-        None => findings.push(Blocker::new(
+    // Syntax of the subject itself is covered by the per-entry loop below.
+    if subject_version.is_none() {
+        findings.push(Blocker::new(
             "missing_expected_version",
             "no expected version was supplied, so no versioned package could be addressed",
-        )),
-        Some(version) if !valid_version(version) => findings.push(Blocker::new(
-            "malformed_expected_version",
-            format!("expected version {version:?} is not a canonical version segment"),
-        )),
-        Some(_) => {}
+        ));
+    }
+
+    // Raised in review: property-name closure proves no field is *designed* to
+    // carry a secret, but these free-text fields are copied verbatim into the
+    // durable receipt, so their values need a boundary too.
+    for (label, value) in [
+        ("instrument.name", observation.instrument.name.as_str()),
+        ("instrument.version", observation.instrument.version.as_str()),
+        ("instrument.source_ref", observation.instrument.source_ref.as_str()),
+    ] {
+        if let Some(reason) = unsafe_reference(value) {
+            findings.push(Blocker::new("unsafe_reference_value", format!("{label} {reason}")));
+        }
+    }
+    for reference in &observation.expected.publication_refs {
+        if let Some(reason) = unsafe_reference(reference) {
+            findings.push(Blocker::new(
+                "unsafe_reference_value",
+                format!("a publication reference {reason}"),
+            ));
+        }
+    }
+    if let Some(authority) = &observation.expected.authority {
+        if let Some(reason) = unsafe_reference(&authority.source) {
+            findings.push(Blocker::new(
+                "unsafe_reference_value",
+                format!("the expected-identity authority source {reason}"),
+            ));
+        }
+        if !is_sha256(&authority.sha256) {
+            findings.push(Blocker::new(
+                "malformed_authority_digest",
+                "the expected-identity authority digest is not lower-case SHA-256",
+            ));
+        }
     }
 
     let mut seen: Vec<&str> = Vec::new();
     for expected in &observation.expected.versions {
+        // Every entry, not just the subject: `expected` is copied verbatim into
+        // the receipt, so a malformed non-subject version would emit a receipt
+        // that violates its own published schema.
+        if !valid_version(&expected.version) {
+            findings.push(Blocker::new(
+                "malformed_expected_version",
+                format!(
+                    "expected version {:?} is not a canonical version segment",
+                    expected.version
+                ),
+            ));
+        }
         if seen.contains(&expected.version.as_str()) {
             findings.push(Blocker::new(
                 "duplicate_expected_version",
@@ -257,6 +313,21 @@ fn structural_findings(
                 ),
             ));
         }
+        // A 2xx that never reported how much it read cannot evidence a bounded
+        // read, and without it the budget check below silently does nothing.
+        if transport.outcome == TransportOutcome::HttpResponse
+            && transport.status.is_some_and(|status| (200..300).contains(&status))
+            && transport.response_bytes.is_none()
+        {
+            findings.push(Blocker::new(
+                "unmeasured_response",
+                format!(
+                    "{} returned a success status without reporting a response size, so no \
+                     bounded read is evidenced",
+                    cell.key()
+                ),
+            ));
+        }
         if let Some(bytes) = transport.response_bytes
             && bytes > planned.max_response_bytes
             && !transport.truncated
@@ -285,6 +356,21 @@ fn structural_findings(
         findings.push(Blocker::new(
             "incomplete_public_bytes",
             "public package digest and byte length must be recorded together",
+        ));
+    }
+    // The digest is only over what was actually read. If the parsed package size
+    // and the transport's byte count disagree, the digest describes something
+    // other than the complete public package.
+    if let Some(length) = file.byte_length
+        && let Some(read) = file.transport.response_bytes
+        && length != read
+    {
+        findings.push(Blocker::new(
+            "package_byte_length_mismatch",
+            format!(
+                "the versioned package reports {length} bytes but {read} were read, so the \
+                 digest does not cover the complete public package"
+            ),
         ));
     }
 
@@ -321,14 +407,29 @@ fn classify_state(
         ));
         return (PublicState::NamespaceOrPublisherProblem, blockers, limitations);
     }
-    if namespace_metadata == CellObservation::Present
-        && observation.cells.namespace_metadata.namespace_present == Some(false)
-    {
-        blockers.push(Blocker::new(
-            "namespace_not_confirmed",
-            "the namespace endpoint responded without confirming this namespace",
-        ));
-        return (PublicState::NamespaceOrPublisherProblem, blockers, limitations);
+    if namespace_metadata == CellObservation::Present {
+        match observation.cells.namespace_metadata.namespace_present {
+            Some(false) => {
+                blockers.push(Blocker::new(
+                    "namespace_not_confirmed",
+                    "the namespace endpoint responded without confirming this namespace",
+                ));
+                return (PublicState::NamespaceOrPublisherProblem, blockers, limitations);
+            }
+            None => {
+                // A 2xx whose body was never parsed into an identity claim is
+                // not affirmative namespace resolution. Letting it count as one
+                // would license "the extension is gone but the namespace is
+                // fine" from evidence that established neither.
+                blockers.push(Blocker::new(
+                    "namespace_identity_not_parsed",
+                    "the namespace endpoint responded but no namespace identity was parsed from \
+                     it, so namespace resolution is unproven",
+                ));
+                return (PublicState::ProviderNotProven, blockers, limitations);
+            }
+            Some(true) => {}
+        }
     }
 
     let decisive = [
@@ -380,16 +481,30 @@ fn classify_state(
             return (PublicState::AvailableIdentityNotProven, blockers, limitations);
         }
 
-        if let Some(subject) = subject_version
-            && version_rows == CellObservation::Present
-            && let Some(rows) = &observation.cells.version_rows.versions
-            && !rows.iter().any(|row| row == subject)
-        {
-            blockers.push(Blocker::new(
-                "subject_version_not_published",
-                format!("the published version rows do not list the subject version {subject:?}"),
-            ));
-            return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+        if version_rows == CellObservation::Present {
+            // Symmetric with the identity_matches requirement above: on the path
+            // to the strongest claim, a surface that answered but whose answer
+            // was never parsed proves nothing. Skipping the membership check
+            // because the rows are missing would turn absent data into consent.
+            let Some(rows) = &observation.cells.version_rows.versions else {
+                blockers.push(Blocker::new(
+                    "version_rows_not_parsed",
+                    "the versions endpoint responded but no version rows were parsed from it, so \
+                     publication of the subject version is unproven",
+                ));
+                return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+            };
+            if let Some(subject) = subject_version
+                && !rows.iter().any(|row| row == subject)
+            {
+                blockers.push(Blocker::new(
+                    "subject_version_not_published",
+                    format!(
+                        "the published version rows do not list the subject version {subject:?}"
+                    ),
+                ));
+                return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+            }
         }
 
         let Some(bytes) = public_bytes else {
@@ -435,6 +550,19 @@ fn classify_state(
                 (PublicState::AvailableIdentityNotProven, blockers, limitations)
             }
             Some(expected) if expected == bytes.sha256 => {
+                // Raised in review: the observed digest and the expected digest
+                // arrive through the same input, so digest equality alone is
+                // self-attestable. The strongest claim requires the expected
+                // identity to be bound to something outside this document.
+                if observation.expected.authority.is_none() {
+                    blockers.push(Blocker::new(
+                        "expected_identity_unbound",
+                        "the expected package digest is not bound to any independently \
+                         identified authority, so matching it cannot establish that these are \
+                         the approved bytes",
+                    ));
+                    return (PublicState::AvailableIdentityNotProven, blockers, limitations);
+                }
                 (PublicState::AvailableExact, blockers, limitations)
             }
             Some(expected) => {
@@ -584,6 +712,84 @@ fn transport_for(observation: &Observation, cell: Cell) -> &Transport {
         Cell::VersionRows => &observation.cells.version_rows.transport,
         Cell::VersionedFile => &observation.cells.versioned_file.transport,
     }
+}
+
+/// Sentinel written in place of a value that must not be published.
+const REDACTED: &str = "<redacted>";
+
+/// Strip unpublishable values from the instrument identity.
+///
+/// Flagging an unsafe value is not a boundary on its own: the receipt is a
+/// durable, shareable artifact, so a blocker sitting beside a retained
+/// credential still publishes the credential. The finding is recorded in
+/// `blockers`; the value itself never reaches the file.
+fn publishable_instrument(mut instrument: Instrument) -> Instrument {
+    for field in [&mut instrument.name, &mut instrument.version, &mut instrument.source_ref] {
+        if unsafe_reference(field).is_some() {
+            *field = REDACTED.to_owned();
+        }
+    }
+    instrument
+}
+
+/// Strip unpublishable values from the expected identity.
+fn publishable_expected(mut expected: Expected) -> Expected {
+    for reference in &mut expected.publication_refs {
+        if unsafe_reference(reference).is_some() {
+            *reference = REDACTED.to_owned();
+        }
+    }
+    if let Some(authority) = expected.authority.as_mut()
+        && unsafe_reference(&authority.source).is_some()
+    {
+        authority.source = REDACTED.to_owned();
+    }
+    expected
+}
+
+/// Why a free-text reference must not cross the publication boundary.
+///
+/// These values are retained verbatim in a durable, shareable receipt, so the
+/// rule is deliberately narrow: a bounded, control-character-free reference that
+/// is either plain text or an `https` URL without userinfo. That rejects
+/// `file://` and other local-resource schemes, credential-bearing URLs, Windows
+/// paths, and absolute POSIX paths, none of which is a publication reference.
+fn unsafe_reference(value: &str) -> Option<&'static str> {
+    const MAX_REFERENCE_BYTES: usize = 200;
+
+    if value.trim().is_empty() {
+        return Some("is empty");
+    }
+    if value.len() > MAX_REFERENCE_BYTES {
+        return Some("exceeds the reference length budget");
+    }
+    if value.chars().any(char::is_control) {
+        return Some("contains control characters");
+    }
+    if value.contains('\\') {
+        return Some("looks like a filesystem path");
+    }
+    if value.starts_with('/') || value.starts_with('~') {
+        return Some("looks like an absolute local path");
+    }
+    if value.contains('@') {
+        return Some("could carry credential userinfo");
+    }
+    if let Some((scheme, _)) = value.split_once("://")
+        && scheme != "https"
+    {
+        return Some("uses a scheme other than https");
+    }
+    // A bare Windows drive reference (`C:\...` is already rejected above, but
+    // `C:/...` is not a path separator case).
+    let mut characters = value.chars();
+    if let (Some(drive), Some(':'), Some('/')) =
+        (characters.next(), characters.next(), characters.next())
+        && drive.is_ascii_alphabetic()
+    {
+        return Some("looks like an absolute local path");
+    }
+    None
 }
 
 fn is_sha256(value: &str) -> bool {

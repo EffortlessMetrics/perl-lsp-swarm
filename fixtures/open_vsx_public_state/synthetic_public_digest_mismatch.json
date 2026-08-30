@@ -21,7 +21,11 @@
     "publication_refs": [
       "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/0000000000",
       "Publish VSCode Extension / Publish Open VSX (2026-06-28) reported success"
-    ]
+    ],
+    "authority": {
+      "source": "release/v0.17.0/publication_manifest.v1.json",
+      "sha256": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc3"
+    }
   },
   "cells": {
     "listing": {

@@ -37,6 +37,8 @@ const PERMITTED_OBSERVATION_PROPERTIES: &[&str] = &[
     "expected",
     "versions",
     "publication_refs",
+    "authority",
+    "source",
     "vsix_sha256",
     "cells",
     "listing",
@@ -137,6 +139,19 @@ fn the_receipt_is_bound_to_the_plan_digest_for_its_subject() -> Result<()> {
     Ok(())
 }
 
+/// Property names that contain a forbidden marker substring but have been
+/// reviewed and found safe.
+///
+/// The marker check is a deliberately blunt tripwire, so a name it catches is
+/// not automatically a defect — it is a prompt to look. Each entry here records
+/// that the look happened and what keeps the field safe.
+///
+/// - `authority`: names the source binding the expected byte identity. It holds
+///   a repository-relative path or release reference plus a SHA-256, both value
+///   validated by `classify::unsafe_reference` and `is_sha256`; it carries no
+///   credential and reaches nothing outside the repository.
+const MARKER_EXEMPT_PROPERTIES: &[&str] = &["authority"];
+
 #[test]
 fn the_observation_contract_has_no_field_able_to_carry_a_secret() -> Result<()> {
     let schema: Value = serde_json::from_str(OBSERVATION_SCHEMA)?;
@@ -154,11 +169,34 @@ fn the_observation_contract_has_no_field_able_to_carry_a_secret() -> Result<()> 
                  PERMITTED_OBSERVATION_PROPERTIES"
             );
         }
+        if MARKER_EXEMPT_PROPERTIES.contains(&name.as_str()) {
+            continue;
+        }
         let lowered = name.to_ascii_lowercase();
         for marker in FORBIDDEN_PROPERTY_MARKERS {
             if lowered.contains(marker) {
-                bail!("observation schema property {name:?} looks like it can carry {marker}");
+                bail!(
+                    "observation schema property {name:?} looks like it can carry {marker}; if it \
+                     genuinely cannot, record why in MARKER_EXEMPT_PROPERTIES"
+                );
             }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_marker_tripwire_still_bites_for_an_unvetted_name() -> Result<()> {
+    // An exemption list is only safe while the check it exempts from still
+    // works. These names are not in the schema; the point is that the rule
+    // would reject them if they appeared.
+    for name in ["authorization", "auth_token", "ovsx_pat", "response_body", "home_path"] {
+        let exempt = MARKER_EXEMPT_PROPERTIES.contains(&name);
+        let flagged = FORBIDDEN_PROPERTY_MARKERS
+            .iter()
+            .any(|marker| name.to_ascii_lowercase().contains(marker));
+        if exempt || !flagged {
+            bail!("{name:?} would pass the credential-shape tripwire");
         }
     }
     Ok(())
@@ -202,11 +240,22 @@ fn collect_property_names(node: &Value, found: &mut Vec<String>) {
     }
 }
 
+/// Keywords whose subschemas refine an already-declared shape rather than
+/// declaring one of their own.
+///
+/// Skipping these is not a weakening: a conditional subschema cannot admit a
+/// field, because `additionalProperties: false` on the shape it refines still
+/// applies to the same instance. Requiring closure here would instead force
+/// every narrowing clause to restate the full property set, which is how a
+/// contract drifts.
+const APPLICATOR_KEYWORDS: &[&str] = &["if", "then", "else", "not"];
+
 /// Collect the pointer of every object schema that does not close itself.
 fn collect_open_objects(node: &Value, pointer: &str, found: &mut Vec<String>) {
     if let Value::Object(map) = node {
         if map.contains_key("properties")
             && map.get("additionalProperties") != Some(&Value::Bool(false))
+            && !pointer.split('/').any(|segment| APPLICATOR_KEYWORDS.contains(&segment))
         {
             found.push(pointer.to_owned());
         }

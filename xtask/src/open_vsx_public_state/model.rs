@@ -1,9 +1,15 @@
 //! Types for the Open VSX public-state observation and receipt.
 //!
 //! The observation is deliberately narrow: it can express transport facts and
-//! parsed identity facts and nothing else. There is no field for a response
-//! body, a request header, a credential, or a local path, so a conforming
-//! observation has no place to put one.
+//! parsed identity facts and nothing else. No field is *shaped* to carry a
+//! response body, a request header, or a credential.
+//!
+//! Field shape alone is not the whole boundary, though. The free-text reference
+//! fields here — `Instrument` and `Expected::publication_refs` — are copied
+//! verbatim into a durable, shareable receipt, so their *values* are validated
+//! too (`classify::unsafe_reference`): bounded, control-character-free, and
+//! either plain text or an `https` URL without userinfo. Property-name closure
+//! proves nothing about what a producer puts inside a string.
 
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +56,25 @@ pub(crate) struct Instrument {
 pub(crate) struct Expected {
     pub(crate) versions: Vec<ExpectedVersion>,
     pub(crate) publication_refs: Vec<String>,
+    /// Where the expected byte identity came from.
+    ///
+    /// Raised in review: without this, `available_exact` is self-attestable —
+    /// the observed digest and the "approved" digest arrive through the same
+    /// unbound input, so a producer could copy the retrieved digest into
+    /// `expected` and manufacture the strongest claim. The plan digest binds the
+    /// request set, not the expected identity. Absent, the strongest reachable
+    /// claim is `available_identity_not_proven`.
+    pub(crate) authority: Option<ExpectedAuthority>,
+}
+
+/// An independently identified source for the expected byte identity.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExpectedAuthority {
+    /// Repository-relative path or release reference naming the authority.
+    pub(crate) source: String,
+    /// Digest over that authority document, so the binding is checkable.
+    pub(crate) sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

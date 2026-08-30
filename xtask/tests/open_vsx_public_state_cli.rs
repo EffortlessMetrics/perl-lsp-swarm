@@ -126,6 +126,38 @@ fn the_cargo_xtask_surface_classifies_identically() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn an_input_that_violates_the_published_contract_is_refused() -> Result<()> {
+    // Raised in review: deserialization alone enforced only what the Rust types
+    // encode, so published constraints the classifier did not restate went
+    // unchecked and could produce a receipt violating the receipt schema.
+    let root = repo_root()?;
+    let temp = tempfile::TempDir::new()?;
+    let observation = temp.path().join("observation.json");
+    let receipt_path = temp.path().join("receipt.json");
+
+    let mut document: Value = serde_json::from_slice(&fs::read(
+        root.join("fixtures/open_vsx_public_state/synthetic_available_exact.json"),
+    )?)?;
+    // Empty instrument name: admitted by the Rust type, refused by the contract.
+    document["instrument"]["name"] = Value::String(String::new());
+    fs::write(&observation, serde_json::to_vec_pretty(&document)?)?;
+
+    let output = run_probe(&observation, &receipt_path)?;
+
+    assert!(!output.status.success(), "a non-conforming observation must be refused");
+    assert!(
+        !receipt_path.exists(),
+        "no receipt may be emitted for an observation that is not a valid observation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not conform"),
+        "the refusal should name the contract; stderr={stderr}"
+    );
+    Ok(())
+}
+
 fn run_probe(input: &Path, out: &Path) -> Result<Output> {
     let mut command = cargo_bin_cmd!("open-vsx-public-state");
     Ok(command.arg("--input").arg(input).arg("--out").arg(out).output()?)
