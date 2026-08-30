@@ -44,23 +44,29 @@ fn system_candidates(with_core_authority: bool) -> Vec<CriticFindingCandidate> {
     candidates
 }
 
+fn apply_policy_with_source(
+    with_core_authority: bool,
+    threshold: u8,
+    include: &[String],
+    exclude: &[String],
+    source: &str,
+) -> Vec<NormalizedCriticFinding> {
+    let suppressions = CriticSuppressionMap::from_source(source);
+    let policy = NativeCriticPolicy::new(threshold, include, exclude, &suppressions);
+    normalize_with_native_policy(system_candidates(with_core_authority), &policy)
+}
+
 fn apply_policy(
     with_core_authority: bool,
     threshold: u8,
     include: &[String],
     exclude: &[String],
 ) -> Vec<NormalizedCriticFinding> {
-    let suppressions = CriticSuppressionMap::from_source("");
-    let policy = NativeCriticPolicy::new(threshold, include, exclude, &suppressions);
-    normalize_with_native_policy(system_candidates(with_core_authority), &policy)
+    apply_policy_with_source(with_core_authority, threshold, include, exclude, "")
 }
 
 fn require(condition: bool, message: impl Into<String>) -> Result<(), String> {
-    if condition {
-        Ok(())
-    } else {
-        Err(message.into())
-    }
+    if condition { Ok(()) } else { Err(message.into()) }
 }
 
 fn require_single_core_authority_row<'a>(
@@ -85,12 +91,18 @@ fn require_single_core_authority_row<'a>(
         ),
     )?;
     require(
+        row.canonical_id() == Some("critic.security.system_call"),
+        format!(
+            "{policy_case}: registry-mapped canonical identity must remain \
+             critic.security.system_call; got {:?}",
+            row.canonical_id()
+        ),
+    )?;
+    require(
         row.contributors().iter().any(|contributor| {
             contributor.identity().origin() == CriticFindingOrigin::BuiltInDiagnostic
         }),
-        format!(
-            "{policy_case}: survival authority must come from retained contributor provenance"
-        ),
+        format!("{policy_case}: survival authority must come from retained contributor provenance"),
     )?;
     Ok(row)
 }
@@ -147,8 +159,15 @@ fn core_security_authority_survives_critic_severity_thresholds() -> Result<(), S
         require_open_overlap_row(&rows, &format!("severity threshold {threshold}"))?;
     }
 
-    let rows = apply_policy(true, 5, &include, &exclude);
-    require_filtered_core_only_row(&rows, "severity threshold 5")
+    // The universal claim is that Critic severity cannot revoke the core
+    // proposition, so every threshold above the producers' severities must
+    // leave exactly the core-only row, not just the 5-vs-3 boundary.
+    for threshold in [4, 5, 6, 10, u8::MAX] {
+        let rows = apply_policy(true, threshold, &include, &exclude);
+        require_filtered_core_only_row(&rows, &format!("severity threshold {threshold}"))?;
+    }
+
+    Ok(())
 }
 
 #[test]
@@ -165,6 +184,62 @@ fn core_security_authority_survives_nonmatching_critic_include() -> Result<(), S
     let exclude = Vec::new();
     let rows = apply_policy(true, 1, &include, &exclude);
     require_filtered_core_only_row(&rows, "nonmatching include filter")
+}
+
+#[test]
+fn severity_conflict_is_flagged_and_resolves_to_the_more_severe_producer() -> Result<(), String> {
+    let include = Vec::new();
+    let exclude = Vec::new();
+    let suppressions = CriticSuppressionMap::from_source("");
+    let policy = NativeCriticPolicy::new(1, &include, &exclude, &suppressions);
+    let candidates = vec![
+        CriticFindingCandidate::new(
+            CriticObservedIdentity::built_in_system_call(),
+            SOURCE_IDENTITY,
+            Severity::Harsh,
+            system_range(),
+            "system() executes a shell command.",
+            None,
+        ),
+        CriticFindingCandidate::new(
+            CriticObservedIdentity::native_system_call(),
+            SOURCE_IDENTITY,
+            Severity::Gentle,
+            system_range(),
+            "Avoid system() where a safer process API is available.",
+            None,
+        ),
+    ];
+    let rows = normalize_with_native_policy(candidates, &policy);
+    let row = require_single_core_authority_row(&rows, "conflicting producer severities")?;
+    require(
+        row.contributors().len() == 2,
+        "open policy must retain both overlap contributors under a severity conflict",
+    )?;
+    require(
+        row.has_severity_conflict(),
+        "the merged PL603 row must flag disagreeing producer severities",
+    )?;
+    require(
+        row.severity() == Severity::Gentle,
+        "conflicting severities must resolve to the more severe producer (Gentle = perlcritic 5)",
+    )
+}
+
+#[test]
+fn scoped_no_critic_suppression_removes_the_whole_overlap_row_today() -> Result<(), String> {
+    // Pinned pre-#14021 behavior: a `## no critic PL603` directive suppresses
+    // the entire merged row, including the independently owned core
+    // contributor. #14021 owns the source-directive ruling; this pin makes any
+    // future change to that boundary an intentional, reviewed decision rather
+    // than a silent side effect of the merge restructuring.
+    let source = "system(\"ls\") or die; ## no critic PL603\n";
+    let include = Vec::new();
+    let exclude = Vec::new();
+    require(
+        apply_policy_with_source(true, 1, &include, &exclude, source).is_empty(),
+        "scoped `## no critic PL603` must suppress the whole merged row (ruling deferred to #14021)",
+    )
 }
 
 #[test]
