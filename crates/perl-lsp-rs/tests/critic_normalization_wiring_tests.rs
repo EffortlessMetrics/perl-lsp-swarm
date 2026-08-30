@@ -41,6 +41,7 @@ const SERVICE_ONLY_COMPOSITION: [&str; 6] = [
 const ACCOUNTING_ENTRYPOINT: &str = "native_finding_candidates_with_accounting(";
 const UNACCOUNTED_ENTRYPOINT: &str = "native_finding_candidates(";
 const POST_MERGE_POLICY_ENTRYPOINT: &str = "normalize_with_native_policy(";
+const UNGUARDED_CANDIDATE_ENTRYPOINT: &str = "native_finding_candidates((";
 
 /// Production sites still collecting raw native candidates directly (#11919):
 /// each must use the accounting entrypoint and the shared post-merge policy
@@ -81,6 +82,25 @@ fn core_source(rel_path: &str) -> Result<String, String> {
     let path = manifest_dir.join("..").join("perl-lsp-rs-core").join("src").join(rel_path);
     fs::read_to_string(&path)
         .map_err(|error| format!("production source {} must be readable: {error}", path.display()))
+}
+
+/// Require every source in a migrated-consumer denominator to exclude the
+/// direct, unaccounted candidate entrypoint (#13972).
+///
+/// Taking the denominator as an iterator makes coverage grow with the caller's
+/// manifest. A third consumer cannot be added while this check remains fixed to
+/// the first two positions.
+fn require_no_unguarded_candidate_collection<'a>(
+    sources: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<(), String> {
+    for (rel_path, source) in sources {
+        if source.contains(UNGUARDED_CANDIDATE_ENTRYPOINT) {
+            return Err(format!(
+                "{rel_path} may not collect native candidates outside the accounted service seam"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The reviewed built-in overlap cohort (#11915/#11918): exactly these seven
@@ -238,13 +258,32 @@ fn rejected_producer_identities_stay_accounted_inside_the_service() -> Result<()
         service.contains("account_unresolved_native_identities("),
         "the service must account rejected producer identities (#7475)"
     );
-    let unguarded = "native_finding_candidates((";
-    assert!(
-        !production_source(MIGRATED_TRANSPORTS[0])?.contains(unguarded)
-            && !production_source(MIGRATED_TRANSPORTS[1])?.contains(unguarded),
-        "no migrated transport may collect candidates outside the accounted seam"
-    );
-    Ok(())
+    let sources = MIGRATED_TRANSPORTS
+        .iter()
+        .map(|rel_path| production_source(rel_path).map(|source| (*rel_path, source)))
+        .collect::<Result<Vec<_>, _>>()?;
+    require_no_unguarded_candidate_collection(
+        sources.iter().map(|(rel_path, source)| (*rel_path, source.as_str())),
+    )
+}
+
+#[test]
+fn unaccounted_candidate_guard_checks_a_third_denominator_entry() -> Result<(), String> {
+    let error = require_no_unguarded_candidate_collection([
+        ("push", "NativeCriticService::analyze(subject)"),
+        ("pull", "NativeCriticService::analyze(subject)"),
+        ("future-command", "native_finding_candidates((source, findings))"),
+    ])
+    .err()
+    .ok_or_else(|| "a forbidden third denominator entry must fail the guard".to_string())?;
+
+    if error.contains("future-command") {
+        Ok(())
+    } else {
+        Err(format!(
+            "the guard must identify the third denominator entry; got: {error}"
+        ))
+    }
 }
 
 #[test]
