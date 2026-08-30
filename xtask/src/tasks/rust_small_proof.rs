@@ -216,7 +216,9 @@ pub struct ProofSubject {
     /// deltas, file modes, and submodules — surface with no consumer, since
     /// the only thing that verifies a receipt is a clean CI checkout. A claim
     /// this narrow is one the implementation can actually keep.
-    #[serde(default)]
+    /// Required, deliberately: defaulting a missing value to `false` would let
+    /// a receipt that simply omits the field verify against a clean checkout,
+    /// which is the exact check this field exists to make.
     pub worktree_dirty: bool,
     pub rustc_version: String,
     pub cargo_version: String,
@@ -1403,6 +1405,39 @@ tests::gamma: test
         let mut missing = success_receipt();
         missing.scorecard_census = None;
         assert!(rejection(&missing, None).contains("empty gate"));
+    }
+
+    #[test]
+    fn a_receipt_that_omits_a_required_field_is_refused() {
+        // Omission must be as fatal as a wrong value: defaulting
+        // `worktree_dirty` to false would let a receipt skip the field and
+        // verify against a clean checkout, defeating the check outright. The
+        // shape is strict in both directions — extra fields and missing ones.
+        let Ok(json) = serde_json::to_string(&success_receipt()) else {
+            panic!("receipt must serialize");
+        };
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&json) else {
+            panic!("receipt must parse as json");
+        };
+        let Some(subject) = value.get_mut("subject").and_then(|s| s.as_object_mut()) else {
+            panic!("receipt must carry a subject object");
+        };
+        subject.remove("worktree_dirty");
+
+        let reparsed = serde_json::from_value::<RustSmallProofReceipt>(value);
+        assert!(reparsed.is_err(), "a receipt omitting worktree_dirty must not deserialize");
+
+        // And the symmetric direction, so neither guard can regress alone.
+        let Ok(mut extra) = serde_json::from_str::<serde_json::Value>(&json) else {
+            panic!("receipt must parse as json");
+        };
+        if let Some(object) = extra.as_object_mut() {
+            object.insert("smuggled".to_string(), serde_json::Value::Bool(true));
+        }
+        assert!(
+            serde_json::from_value::<RustSmallProofReceipt>(extra).is_err(),
+            "a receipt carrying an unknown field must not deserialize"
+        );
     }
 
     #[test]
