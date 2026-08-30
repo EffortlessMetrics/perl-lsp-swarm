@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Fixed
+body: "Perl test discovery now stops at 500 .t files so very large workspaces no longer freeze the extension host while collecting tests, and binary-download redirects are bounded instead of potentially following a redirect loop indefinitely."
+time: 2026-07-27T20:07:16Z
+custom:
+  PR: "5141"
+  Slug: test-discovery-cap-and-redirect-bound
+  Breaking: "no"
