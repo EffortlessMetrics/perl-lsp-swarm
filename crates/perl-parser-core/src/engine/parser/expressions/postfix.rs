@@ -139,9 +139,9 @@ impl<'a> Parser<'a> {
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->@*
-                                self.tokens.next()?; // consume *
+                                let star = self.tokens.next()?; // consume *
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = star.end();
 
                                 record_postfix_layer()?;
                                 expr = Node::new(
@@ -196,9 +196,9 @@ impl<'a> Parser<'a> {
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->%*
-                                self.tokens.next()?; // consume *
+                                let star = self.tokens.next()?; // consume *
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = star.end();
 
                                 record_postfix_layer()?;
                                 expr = Node::new(
@@ -235,9 +235,9 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume $
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                self.tokens.next()?; // consume *
+                                let star = self.tokens.next()?; // consume *
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = star.end();
 
                                 record_postfix_layer()?;
                                 expr = Node::new(
@@ -255,9 +255,9 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume &
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                self.tokens.next()?; // consume *
+                                let star = self.tokens.next()?; // consume *
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = star.end();
 
                                 record_postfix_layer()?;
                                 expr = Node::new(
@@ -275,9 +275,9 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume first *
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                self.tokens.next()?; // consume second *
+                                let star = self.tokens.next()?; // consume second *
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = star.end();
 
                                 record_postfix_layer()?;
                                 expr = Node::new(
@@ -301,9 +301,9 @@ impl<'a> Parser<'a> {
                                     .is_ok_and(|t| t.kind() == TokenKind::Star)
                             {
                                 self.tokens.next()?; // consume $#
-                                self.tokens.next()?; // consume *
+                                let star = self.tokens.next()?; // consume *
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = star.end();
                                 record_postfix_layer()?;
                                 expr = Node::new(
                                     NodeKind::Unary {
