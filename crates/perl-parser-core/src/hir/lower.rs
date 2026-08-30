@@ -3260,18 +3260,16 @@ impl<'a> BodyBuilder2<'a> {
     /// `scope_graph.scopes[id].parent` until None — matching the identical
     /// algorithm used in pass 1.
     ///
-    /// A class field resolves `Lexical` because that is the truthful side of a
-    /// binary split, not because a field is a lexical slot. [`VariableKind`]
-    /// therefore does **not** distinguish a field read from a `my` read: a
-    /// consumer that needs that distinction must inspect the binding's
-    /// [`StorageClass::ClassField`] directly. The two are not redundant
-    /// (#13817).
-    fn resolve_variable_kind(
-        &self,
-        sigil: &str,
-        name: &str,
-        reference_start: usize,
-    ) -> VariableKind {
+    /// [`StorageClass::ClassField`] deliberately resolves `Package` here, which
+    /// is the same answer this function gave before class fields had their own
+    /// storage class. Reclassifying a field *reference* is **not** part of
+    /// #13817: doing so requires Perl's real field-visibility rules — visible
+    /// in methods but not in ordinary subs, only after the declaration, and
+    /// only for the field's own class — and modelling those belongs to #13844,
+    /// which owns class-body scope. Until then a field reference keeps its
+    /// existing answer rather than being promoted to `Lexical`, which would
+    /// export it downstream as an ordinary lexical binding fact.
+    fn resolve_variable_kind(&self, sigil: &str, name: &str) -> VariableKind {
         // Qualified names are always package-qualified.
         if name.contains("::") {
             return VariableKind::Package;
@@ -3283,34 +3281,19 @@ impl<'a> BodyBuilder2<'a> {
                     && binding.sigil == sigil
                     && binding.name == name
                 {
-                    // A class field is in scope only after its own
-                    // declaration. The surrounding lookup is otherwise
-                    // position-blind (#13868); this candidate does not widen
-                    // that defect to `field`, so a reference textually before
-                    // the declaration keeps looking outward rather than
-                    // binding to a field that is not yet declared.
-                    if binding.storage == StorageClass::ClassField
-                        && binding.range.start >= reference_start
-                    {
-                        continue;
-                    }
                     return match binding.storage {
                         StorageClass::LexicalMy
                         | StorageClass::LexicalState
-                        | StorageClass::Parameter
-                        // A `field` name is resolved by the scope chain of the
-                        // class body and its methods, and has no stash entry.
-                        // `Lexical` is the truthful side of this binary split:
-                        // reading `$x` in a method is not a read of
-                        // `$Point::x`. It also makes the reference agree with
-                        // the field declaration, which already lowers to a
-                        // lexical write (#13817).
-                        | StorageClass::ClassField => VariableKind::Lexical,
+                        | StorageClass::Parameter => VariableKind::Lexical,
                         StorageClass::PackageOur
                         | StorageClass::LocalizedPackage
                         | StorageClass::PackageGlobal
                         | StorageClass::MethodInvocant
-                        | StorageClass::Implicit => VariableKind::Package,
+                        | StorageClass::Implicit
+                        // See the note above: field-reference classification
+                        // is deferred to #13844, so this keeps the pre-#13817
+                        // answer.
+                        | StorageClass::ClassField => VariableKind::Package,
                     };
                 }
             }
@@ -3436,7 +3419,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::ExpressionStatement { expression } => self.lower_expr(expression),
 
             NodeKind::Variable { sigil, name } => {
-                let kind = self.resolve_variable_kind(sigil, name, range.start);
+                let kind = self.resolve_variable_kind(sigil, name);
                 let var = HirVariable {
                     sigil: sigil_from_str(sigil),
                     name: name.clone(),
@@ -4063,7 +4046,7 @@ impl<'a> BodyBuilder2<'a> {
         let range = node.location;
         match &node.kind {
             NodeKind::Variable { sigil, name } => {
-                let kind = self.resolve_variable_kind(sigil, name, range.start);
+                let kind = self.resolve_variable_kind(sigil, name);
                 let var =
                     HirVariable { sigil: sigil_from_str(sigil), name: name.clone(), kind, access };
                 self.alloc_expr(HirExpr::Variable(var), range)

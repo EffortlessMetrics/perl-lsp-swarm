@@ -14,14 +14,25 @@
 //!    to a never-declared `$undeclared` — a read of the package stash rather
 //!    than of the field.
 //!
-//! Point 2 is the behavior-bearing defect these tests pin: a declared field and
-//! an undeclared global must not be the same fact.
+//! These tests pin consequence 1 — the declaration's storage identity — and the
+//! boundaries that make it honest: only a `field` that is a direct statement of
+//! a class body is a declaration at all, because the parser accepts `field` as a
+//! declarator wherever the next token starts a variable.
+//!
+//! Consequence 2 is **deliberately not repaired here**. Reclassifying a field
+//! *reference* needs Perl's real field-visibility rules — visible in methods but
+//! not ordinary subs, only after the declaration, only for the field's own class
+//! — and modelling those belongs to #13844, which owns class-body scope.
+//! `resolve_variable_kind` therefore still answers `Package` for a field
+//! reference, exactly as it did before this change;
+//! `field_reference_classification_is_deferred` pins that so a future change is
+//! a deliberate decision rather than an accident.
 //!
 //! Scope note: this names *storage identity only*. Construction order,
 //! `ADJUST`, invocant rules, MRO and dispatch remain unmodeled (#6672).
 //!
 //! The implementation lives in `src/hir/lower.rs`
-//! (`storage_class_for_declarator`, `resolve_variable_kind`).
+//! (`storage_class_for_declarator`).
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
@@ -78,51 +89,60 @@ fn variable_kind(body: &HirBody, name: &str) -> Result<VariableKind, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Behavior-bearing proof: a field reference is not an undeclared global
+// Reference classification is deferred (#13844)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn field_reference_in_method_does_not_resolve_like_an_undeclared_global() -> TestResult {
-    // This is the assertion that fails on the pre-fix implementation, where
-    // `$x` and `$undeclared` both resolved to VariableKind::Package.
+fn field_reference_classification_is_deferred() -> TestResult {
+    // Giving the declaration its own storage class does NOT reclassify
+    // references to it. `VariableKind` is a binary Lexical/Package split, and
+    // promoting a field read to `Lexical` would export it downstream as an
+    // ordinary lexical binding fact (`pir::extractor::LexicalBindingFact`)
+    // while still not applying Perl's field-visibility rules.
+    //
+    // So a field reference keeps the answer it had before this change. When
+    // #13844 models class scope, this expectation should change deliberately,
+    // together with method-vs-sub visibility and declaration order.
     let file = lower_source(CLASS_SOURCE);
     let body = method_body(&file, "show")?;
-
-    let field_kind = variable_kind(body, "x")?;
-    let undeclared_kind = variable_kind(body, "undeclared")?;
-
-    assert_ne!(
-        field_kind, undeclared_kind,
-        "a declared `field $x` must not resolve like the never-declared `$undeclared`"
+    assert_eq!(
+        variable_kind(body, "x")?,
+        VariableKind::Package,
+        "field-reference classification is deferred to #13844"
     );
     Ok(())
 }
 
 #[test]
-fn field_reference_in_method_resolves_lexically() -> TestResult {
-    let file = lower_source(CLASS_SOURCE);
-    let body = method_body(&file, "show")?;
-
-    for name in ["x", "y"] {
-        assert_eq!(
-            variable_kind(body, name)?,
-            VariableKind::Lexical,
-            "`${name}` names a field of the enclosing class, not a stash entry"
-        );
-    }
-    Ok(())
-}
-
-#[test]
 fn undeclared_global_in_method_still_resolves_to_package() -> TestResult {
-    // Negative control for the test above: the fix must not make every
-    // reference lexical.
+    // Reference classification is untouched for every other case too.
     let file = lower_source(CLASS_SOURCE);
     let body = method_body(&file, "show")?;
     assert_eq!(
         variable_kind(body, "undeclared")?,
         VariableKind::Package,
         "an undeclared variable must still resolve as a package global"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_ordinary_sub_in_a_class_body_does_not_see_a_field() -> TestResult {
+    // Perl does not give ordinary subs access to class fields. Since reference
+    // classification is deferred, `$x` here is a package read — the same
+    // answer as before this change. This is a control against a future
+    // reference change quietly granting subs field access.
+    let file =
+        lower_source("use feature 'class';\nclass C {\n    field $x;\n    sub f { $x }\n}\n");
+    let body = file
+        .bodies
+        .iter()
+        .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name: Some(n) } if n == "f"))
+        .ok_or_else(|| "no lowered body for sub `f`".to_string())?;
+    assert_eq!(
+        variable_kind(body, "x")?,
+        VariableKind::Package,
+        "an ordinary sub must not resolve a class field"
     );
     Ok(())
 }
@@ -253,38 +273,6 @@ fn legacy_field_call_outside_a_class_is_not_class_field_storage() -> TestResult 
 }
 
 #[test]
-fn field_declared_after_a_method_is_not_visible_inside_it() -> TestResult {
-    // Perl 5.38 does not make a field visible before its own declaration —
-    // the reference is out of scope, not an early read of the field. The
-    // surrounding resolver is position-blind for `my`/`state` (#13868); this
-    // candidate must not widen that wrong answer to `field`.
-    let file =
-        lower_source("use feature 'class';\nclass C {\n    method m { $x }\n    field $x;\n}\n");
-    let body = method_body(&file, "m")?;
-    assert_eq!(
-        variable_kind(body, "x")?,
-        VariableKind::Package,
-        "a field declared after the method must not resolve as an in-scope field"
-    );
-    Ok(())
-}
-
-#[test]
-fn field_declared_before_a_method_is_visible_inside_it() -> TestResult {
-    // Opposite-direction control for the test above: position awareness must
-    // not make every field reference unresolved.
-    let file =
-        lower_source("use feature 'class';\nclass C {\n    field $x;\n    method m { $x }\n}\n");
-    let body = method_body(&file, "m")?;
-    assert_eq!(
-        variable_kind(body, "x")?,
-        VariableKind::Lexical,
-        "a field declared before the method must resolve as a field"
-    );
-    Ok(())
-}
-
-#[test]
 fn field_call_nested_inside_a_method_is_not_a_field_declaration() -> TestResult {
     // `field $x;` inside a method is a call, not a declaration: Perl's field
     // declarations belong to the class block itself and are merely *visible*
@@ -315,44 +303,6 @@ fn field_call_nested_in_a_block_inside_a_class_is_not_a_field_declaration() -> T
         class_fields,
         vec!["real"],
         "only the class-level declaration is a field; the nested call is not"
-    );
-    Ok(())
-}
-
-#[test]
-fn fields_do_not_leak_between_sibling_classes() -> TestResult {
-    // A field belongs to its own class. A method of a second class in the same
-    // file must not resolve a name declared only in the first class: the
-    // reference is undeclared there, so it stays a package read.
-    //
-    // Isolation here comes from the class body `Block` earning its own scope
-    // frame, so a sibling class body is not an ancestor scope. There is still
-    // no dedicated `Class` scope frame (#13844).
-    let file = lower_source(
-        "use feature 'class';\nclass A {\n    field $secret;\n}\nclass B {\n    method peek { $secret }\n}\n",
-    );
-    let body = method_body(&file, "peek")?;
-    assert_eq!(
-        variable_kind(body, "secret")?,
-        VariableKind::Package,
-        "a field of class A must not resolve as a field inside class B"
-    );
-    Ok(())
-}
-
-#[test]
-fn same_named_field_in_a_sibling_class_does_not_satisfy_a_forward_reference() -> TestResult {
-    // Both classes declare `$x`, and B's own declaration comes after its
-    // method. Neither A's field (wrong class) nor B's later field (not yet
-    // declared) may satisfy the reference.
-    let file = lower_source(
-        "use feature 'class';\nclass A {\n    field $x;\n}\nclass B {\n    method m { $x }\n    field $x;\n}\n",
-    );
-    let body = method_body(&file, "m")?;
-    assert_eq!(
-        variable_kind(body, "x")?,
-        VariableKind::Package,
-        "neither a sibling class's field nor a later field may resolve this reference"
     );
     Ok(())
 }
