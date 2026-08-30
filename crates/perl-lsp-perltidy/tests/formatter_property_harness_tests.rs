@@ -711,8 +711,10 @@ fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult 
 
 /// FPH-010: the cargo-fuzz target drives the same invariant core from
 /// structured byte mutations, is declared in the fuzz manifest with the
-/// missing perltidy dependency, and one minimized committed regression entry
-/// is replayed deterministically through the same core.
+/// missing perltidy dependency, and hand-authored decoder/replay control
+/// vectors are replayed deterministically through the same core. This proves
+/// the decode-and-replay wiring, not a discovered crash artifact; runtime fuzz
+/// execution remains NOT_PROVEN.
 #[test]
 fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
     let fuzz_manifest = fs::read_to_string(format!("{MANIFEST_DIR}/../../fuzz/Cargo.toml"))?;
@@ -767,13 +769,15 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
             // 256-bit entry stays wire-compatible with the lexer convention.
             committed_seeds.push(hex.to_string());
         }
-        // Committed fuzz crash artifacts: `seed` is the little-endian seed
-        // the cargo-fuzz input carries in its first eight bytes, `selector`
-        // is the ninth byte naming the case index (low six bits) and the
-        // invalidation path (bit 7). Both fields are replayed through the
-        // same decoder the fuzz target uses, so an invalidation-path or
-        // index >= 16 crash is reconstructible — not just seeds 0..16 of the
-        // valid path.
+        // Hand-authored decoder/replay control vectors: `seed` is the
+        // little-endian seed the cargo-fuzz input carries in its first eight
+        // bytes, `selector` is the ninth byte naming the case index (low six
+        // bits) and the invalidation path (bit 7). Both fields are replayed
+        // through the same decoder the fuzz target uses, so an
+        // invalidation-path or index >= 16 case is reconstructible — not just
+        // seeds 0..16 of the valid path. No completed `cargo fuzz` run has
+        // produced a crash artifact for this claim, so runtime fuzz execution
+        // remains NOT_PROVEN.
         if let Some(rest) = line.strip_prefix("# fuzz-replay seed=") {
             let (seed_hex, selector_part) = rest
                 .split_once(" selector=")
@@ -795,8 +799,8 @@ fn fuzz_target_and_regression_pipeline_are_wired() -> TestResult {
         run_case(&generate_case(seed, index))?;
     }
 
-    // Full-fidelity replay of every committed fuzz artifact through the
-    // shared `(seed, selector)` decoder.
+    // Full-fidelity replay of every committed decoder/replay control vector
+    // through the shared `(seed, selector)` decoder.
     assert!(
         fuzz_replays.len() >= 3,
         "committed fuzz-replay entries must cover the valid path, the invalidation path, and an index >= 16"

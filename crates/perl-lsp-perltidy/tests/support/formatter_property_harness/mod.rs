@@ -734,14 +734,15 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
     }
 }
 
-/// Decode a cargo-fuzz input into exactly the case the fuzz target would run:
-/// the first eight little-endian bytes select the seed, the ninth byte selects
-/// the case index (low six bits) and the invalidation path (bit 7).
+/// Decode a cargo-fuzz input carrying a full `(seed, selector)` pair into
+/// exactly one replayable case: the first eight little-endian bytes select the
+/// seed, the ninth byte selects the case index (low six bits) and the
+/// invalidation path (bit 7).
 ///
 /// Both the fuzz target and the committed regression replay in
 /// `fuzz_target_and_regression_pipeline_are_wired` call this one decoder, so a
-/// crash artifact's full `(seed, selector)` pair — including invalidation-path
-/// and index >= 16 crashes — is reconstructible and replayable (FPH-010).
+/// `(seed, selector)` pair — including one from a future real crash input
+/// — is reconstructible and replayable (FPH-010).
 pub fn case_from_fuzz_input(data: &[u8]) -> Option<GeneratedCase> {
     if data.len() < 9 {
         return None;

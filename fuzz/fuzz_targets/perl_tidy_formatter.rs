@@ -7,9 +7,9 @@
 //! package properties
 //! (`crates/perl-lsp-perltidy/tests/support/formatter_property_harness/`),
 //! included here verbatim via `#[path]` so the fuzz and property tiers cannot
-//! drift apart. Any violated invariant is a crash; minimized crashes shrink
-//! to a `(seed, index)` pair that is committed as a focused regression entry
-//! in the crate's `.proptest-regressions` convention.
+//! drift apart. Any violated invariant is a crash; a crash would minimize to
+//! a `(seed, selector)` pair that could be committed as a focused regression
+//! entry in the crate's `.proptest-regressions` convention.
 #![no_main]
 // The shared harness module is included verbatim; the fuzz entry point only
 // exercises its generation-and-checker surface.
