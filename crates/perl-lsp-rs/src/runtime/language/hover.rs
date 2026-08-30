@@ -1763,12 +1763,24 @@ impl LspServer {
             }
         }
 
-        // Phase 2 — AUTOLOAD fallback, same order, `UNIVERSAL` last.
+        // Phase 2 — AUTOLOAD fallback, same order. `UNIVERSAL` is deliberately
+        // NOT included here, unlike the exact pass above.
         //
-        // A user-defined `UNIVERSAL::AUTOLOAD` is Perl's last-resort handler for a
-        // call nothing else resolved, so it belongs at the end of this pass for the
-        // same reason `UNIVERSAL` belongs at the end of the exact pass.
-        for package_name in resolution_order.iter().chain(std::iter::once(&universal_pkg)) {
+        // Perl does consult `UNIVERSAL::AUTOLOAD` last, so including it looks
+        // symmetric — but the two lookups are not comparable. The exact pass is
+        // name-matched: it fires only when someone defines `UNIVERSAL::<this exact
+        // method>`. An AUTOLOAD lookup is name-independent, so adding `UNIVERSAL`
+        // here would make *every* otherwise-unresolved method in any workspace that
+        // happens to index a `UNIVERSAL::AUTOLOAD` render as dynamic dispatch
+        // through it — including when that definition is never loaded, which Perl
+        // requires before the handler can run. That is a false dynamic claim on a
+        // huge population of calls, which is the over-claiming this whole seam
+        // exists to prevent.
+        //
+        // Correctly admitting it needs the caller's effective load context, which
+        // this resolver does not have. Left unhandled and recorded rather than
+        // approximated.
+        for package_name in &resolution_order {
             if let Some(hover) = build_autoload_hover(package_name) {
                 return Some(hover);
             }
