@@ -578,6 +578,9 @@ fn json_u32(value: &Value) -> Option<u32> {
 }
 
 fn observed_rename_edits(resp: &Value) -> Option<Vec<ObservedRenameEdit>> {
+    if resp.get("error").is_some() {
+        return None;
+    }
     let Some(changes) =
         resp.get("result").and_then(|result| result.get("changes")).and_then(Value::as_object)
     else {
@@ -835,6 +838,17 @@ mod rename_oracle_tests {
         }
     }
 
+    fn rename_success_assertion(kind: RenameAssertionKind) -> RenameAssertion {
+        RenameAssertion {
+            kind,
+            line: 4,
+            character: 4,
+            new_name: "sum_values".to_string(),
+            expected_edits: Some(expected()),
+            rationale: String::new(),
+        }
+    }
+
     #[test]
     fn rename_oracle_rejects_wrong_range() -> TestResult {
         let resp = response(
@@ -1054,6 +1068,31 @@ mod rename_oracle_tests {
                 return Err(
                     format!("malformed rename response passed RenameNull: {malformed}").into()
                 );
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn successful_rename_assertions_reject_result_plus_error() -> TestResult {
+        let mut contradictory = response(
+            json!({"start":{"line":4,"character":4},"end":{"line":4,"character":19}}),
+            "sum_values",
+        );
+        contradictory["error"] = json!({"code": -32603, "message": "contradictory response"});
+        let uri = "file:///gold/rename_subroutine.pl";
+
+        for assertion in [
+            rename_success_assertion(RenameAssertionKind::RenameSucceeds),
+            rename_success_assertion(RenameAssertionKind::RenameEditCountAtLeast { min: 1 }),
+        ] {
+            if rename_assertion_passes(&assertion, &contradictory, uri) {
+                return Err(format!(
+                    "result-plus-error response passed successful rename mode: {:?}",
+                    assertion.kind
+                )
+                .into());
             }
         }
 
