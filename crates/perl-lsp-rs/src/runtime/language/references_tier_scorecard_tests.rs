@@ -24,12 +24,11 @@
 //! | `"building"` | `"partial"` |
 //! | `"none"`     | `"none"`    |
 //!
-//! The `empty` tier used to hardcode `index_state = "none"` in the handler
-//! regardless of the actual coordinator state. It no longer does (#14156): the
-//! terminal no-result return now reports the access mode actually observed, so
-//! an empty answer over a complete index is a fresh, trustworthy negative
-//! rather than one indistinguishable from an absent index. H-B is still skipped
-//! for `empty` rows because the tier is reached from several access modes.
+//! The `empty` tier now reports the access mode actually observed (#14156), so an
+//! empty answer over a complete index is a fresh, trustworthy negative rather
+//! than one indistinguishable from an absent index. A later open-document edit
+//! can still invalidate a captured full state at receipt time (#14163); H-B is
+//! skipped for `empty` rows because the tier is reached from several access modes.
 //!
 //! If the assertion fails the harness reports the discrepancy so the caller
 //! can fix `set_index_building` (or drop the "building" column and document why).
@@ -297,7 +296,7 @@ use warnings;
     ///
     /// - H-A: Receipt `uri`/`line`/`character` match what was sent (binding check).
     /// - H-B: Receipt `index_state` matches the expected value for `intended_state_label`
-    ///   (skipped for `empty` tier, which hardcodes `"none"` regardless of coordinator state).
+    ///   (skipped for `empty` tier, which can be reached from several access modes).
     fn measure(
         fixture_id: &'static str,
         intended_state_label: &'static str,
@@ -348,12 +347,10 @@ use warnings;
 
         // H-B: observed index_state matches the intended label — for non-empty tiers.
         //
-        // The `empty` tier hardcodes `index_state = "none"` in the handler
-        // (references.rs terminal return) regardless of coordinator state.  This is
-        // an implementation shortcut: when there is no symbol under the cursor the
-        // index state is irrelevant.  We skip H-B for empty rows to avoid a false
-        // assertion; the `observed_state` column in the matrix will show "none" for
-        // these rows, which is documented behaviour, not a harness bug.
+        // The `empty` tier can be reached from several access modes, and a
+        // request-local edit may also downgrade a captured full state at receipt
+        // time. We skip H-B for empty rows to avoid a false assertion; the
+        // `observed_state` column still records the state the receipt reported.
         let observed_state =
             receipt.get("index_state").and_then(Value::as_str).unwrap_or("").to_string();
         let answering_tier =

@@ -557,6 +557,27 @@ impl LspServer {
         } else {
             ("acted", "live_provider_result")
         };
+        // The request may have routed through a full index and then yielded to an
+        // open-document edit before this receipt is written. Revalidate the
+        // request-local index claim at the receipt boundary so index-backed and
+        // empty answers fail closed instead of reporting a stale `full` snapshot
+        // as fresh. Live-source tiers retain their tier semantics: their freshness
+        // remains `fresh` even when this recheck downgrades the incidental index
+        // state carried in the receipt.
+        let index_state = {
+            #[cfg(feature = "workspace")]
+            {
+                if index_state == "full" && self.workspace_index_stale_for_any_open_document() {
+                    "none"
+                } else {
+                    index_state
+                }
+            }
+            #[cfg(not(feature = "workspace"))]
+            {
+                index_state
+            }
+        };
         let fallback_state = tier.fallback_state(result_count);
         // Confidence is high only when the semantic source-backed tier answered.
         let confidence = if tier.is_source_backed() { "high" } else { "low" };
@@ -2944,6 +2965,155 @@ mod tests {
             empty.get("freshness").and_then(serde_json::Value::as_str),
             Some("fresh"),
             "an empty answer over a complete index is a current, trustworthy negative"
+        );
+
+        Ok(())
+    }
+
+    /// A document edit after index routing must invalidate a captured full state
+    /// before the decision receipt is written. The two cases exercise both
+    /// index-backed results and the terminal empty tier; neither relies on a
+    /// timing race because the edit is inserted between the inner route and the
+    /// production receipt writer (#14163).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_references_revalidates_index_state_after_open_document_edit()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        fn run_after_edit(
+            server: &LspServer,
+            params: serde_json::Value,
+            text: &str,
+        ) -> Result<serde_json::Value, Box<dyn Error>> {
+            let trace_context = LspServer::references_decision_trace_context(Some(&params))?;
+            let (
+                result,
+                tier,
+                index_state,
+                index_result_count,
+                text_result_count,
+                latency_us,
+                source_backed_attempt,
+                fallback_receipt,
+            ) = server.handle_references_inner(Some(params), None)?;
+
+            assert_eq!(index_state, "full", "the request must route through the full index first");
+            server
+                .test_replace_document_without_index(
+                    "file:///test/edit-after-reference-routing.pl",
+                    text,
+                    2,
+                )
+                .map_err(std::io::Error::other)?;
+            assert!(server.workspace_index_stale_for_any_open_document());
+
+            server.record_references_provider_decision_trace(
+                trace_context.as_ref(),
+                result.as_ref(),
+                tier,
+                index_state,
+                index_result_count,
+                text_result_count,
+                latency_us,
+                source_backed_attempt.as_ref(),
+                &fallback_receipt,
+            );
+
+            server
+                .handle_execute_command(Some(serde_json::json!({
+                    "command": "perl.explainProviderDecision",
+                    "arguments": [{"provider": "references"}]
+                })))?
+                .ok_or_else(|| "missing explain-provider-decision response".into())
+        }
+
+        let text = "my $value = 1;\nmy $other = $value;\n";
+        let uri = "file:///test/edit-after-reference-routing.pl";
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        server.test_apply_did_open(uri, text, 1)?;
+        let indexed = server.handle_references_inner(
+            Some(serde_json::json!({
+                "textDocument": {"uri": uri, "version": 1},
+                "position": {"line": 0, "character": 5},
+                "context": {"includeDeclaration": true}
+            })),
+            None,
+        )?;
+        assert_eq!(indexed.2, "full");
+        assert!(
+            matches!(
+                indexed.1,
+                ReferencesAnsweringTier::WorkspaceExact
+                    | ReferencesAnsweringTier::WorkspaceMixed
+                    | ReferencesAnsweringTier::WorkspaceText
+            ),
+            "expected an index-backed answer before the edit, got {:?}",
+            indexed.1
+        );
+
+        let indexed_receipt = run_after_edit(
+            &server,
+            serde_json::json!({
+                "textDocument": {"uri": uri, "version": 1},
+                "position": {"line": 0, "character": 5},
+                "context": {"includeDeclaration": true}
+            }),
+            text,
+        )?;
+        let indexed_receipt = indexed_receipt
+            .get("request_receipt")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing index-backed request receipt")?;
+        assert_eq!(
+            indexed_receipt.get("index_state").and_then(serde_json::Value::as_str),
+            Some("none"),
+            "an edit after routing must invalidate the captured full index state"
+        );
+        assert_eq!(
+            indexed_receipt.get("freshness").and_then(serde_json::Value::as_str),
+            Some("unknown"),
+            "an index-backed receipt must fail closed after a concurrent edit"
+        );
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        server.test_apply_did_open(uri, text, 1)?;
+        let empty_receipt = run_after_edit(
+            &server,
+            serde_json::json!({
+                "textDocument": {"uri": uri, "version": 1},
+                "position": {"line": 0, "character": 0},
+                "context": {"includeDeclaration": true}
+            }),
+            text,
+        )?;
+        let empty_receipt = empty_receipt
+            .get("request_receipt")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing empty request receipt")?;
+        assert_eq!(
+            empty_receipt.get("answering_tier").and_then(serde_json::Value::as_str),
+            Some("empty")
+        );
+        assert_eq!(
+            empty_receipt.get("index_state").and_then(serde_json::Value::as_str),
+            Some("none"),
+            "an edit after routing must invalidate the empty receipt's full state"
+        );
+        assert_eq!(
+            empty_receipt.get("freshness").and_then(serde_json::Value::as_str),
+            Some("unknown"),
+            "an empty receipt must fail closed after a concurrent edit"
         );
 
         Ok(())
