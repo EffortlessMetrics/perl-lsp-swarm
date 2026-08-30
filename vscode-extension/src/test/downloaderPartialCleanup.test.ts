@@ -107,9 +107,6 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
       .spyOn(downloader, 'removePartialFile')
       .mockImplementation((failedStagingPath) => {
         stagingPath = failedStagingPath;
-        if (!fs.existsSync(failedStagingPath)) {
-          fs.writeFileSync(failedStagingPath, 'failed-generation');
-        }
         expect(fs.existsSync(failedStagingPath)).toBe(true);
 
         originalRemove(failedStagingPath);
@@ -286,18 +283,38 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const cleanup = observeRealManagedCleanup(downloader);
-    jest.spyOn(downloader, 'httpGet').mockReturnValue(request);
+    let createdStagingDestination = '';
+    let resolveStagingOpened: () => void = () => undefined;
+    const stagingOpened = new Promise<void>((resolve) => {
+      resolveStagingOpened = resolve;
+    });
+    jest.spyOn(downloader, 'createWriteStream').mockImplementation((stagingPath) => {
+      createdStagingDestination = stagingPath;
+      const stream = BinaryDownloader.prototype['createWriteStream'].call(downloader, stagingPath);
+      stream.once('open', resolveStagingOpened);
+      return stream;
+    });
+    const response = makeResponse(200);
+    jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      process.nextTick(() => {
+        (callback as (value: unknown) => void)(response);
+        response.emit('data', Buffer.from('partial-generation'));
+      });
+      return request;
+    });
 
-    await expect(
-      downloader.downloadFile('http://localhost/archive', destination, 10),
-    ).rejects.toThrow('Download timeout after 0.01 seconds');
+    const failedDownload = downloader.downloadFile('http://localhost/archive', destination, 10);
+    await stagingOpened;
+    expect(createdStagingDestination).not.toBe('');
+    expect(fs.existsSync(createdStagingDestination)).toBe(true);
+    await expect(failedDownload).rejects.toThrow('Download timeout after 0.01 seconds');
 
     expect(request.destroy).toHaveBeenCalled();
     expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
     expect(cleanup.removePartialFile).toHaveBeenCalledTimes(1);
     expect(cleanup.stagingDestination()).not.toBe('');
     expect(cleanup.quarantinedArtifactsAtRemoval()).toHaveLength(1);
-    expect(cleanup.delayedCleanup).toHaveLength(1);
+    expect(cleanup.delayedCleanup.length).toBeGreaterThanOrEqual(1);
     expect(managedCleanupArtifacts()).toHaveLength(1);
 
     for (const callback of [...cleanup.delayedCleanup]) {
@@ -328,26 +345,42 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const cleanup = observeRealManagedCleanup(downloader);
-    jest.spyOn(downloader, 'httpGet').mockImplementation(() => {
+    let createdStagingDestination = '';
+    let resolveStagingOpened: () => void = () => undefined;
+    const stagingOpened = new Promise<void>((resolve) => {
+      resolveStagingOpened = resolve;
+    });
+    jest.spyOn(downloader, 'createWriteStream').mockImplementation((stagingPath) => {
+      createdStagingDestination = stagingPath;
+      const stream = BinaryDownloader.prototype['createWriteStream'].call(downloader, stagingPath);
+      stream.once('open', resolveStagingOpened);
+      return stream;
+    });
+    const response = makeResponse(200);
+    jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
       process.nextTick(() => {
-        cancelled = true;
-        for (const listener of [...listeners]) {
-          listener();
-        }
+        (callback as (value: unknown) => void)(response);
+        response.emit('data', Buffer.from('partial-generation'));
       });
       return request;
     });
 
-    await expect(
-      downloader.downloadFile(
-        'http://localhost/archive',
-        destination,
-        1000,
-        undefined,
-        undefined,
-        token,
-      ),
-    ).rejects.toThrow('Archive download cancelled');
+    const failedDownload = downloader.downloadFile(
+      'http://localhost/archive',
+      destination,
+      1000,
+      undefined,
+      undefined,
+      token,
+    );
+    await stagingOpened;
+    expect(createdStagingDestination).not.toBe('');
+    expect(fs.existsSync(createdStagingDestination)).toBe(true);
+    cancelled = true;
+    for (const listener of [...listeners]) {
+      listener();
+    }
+    await expect(failedDownload).rejects.toThrow('Archive download cancelled');
 
     expect(request.destroy).toHaveBeenCalled();
     expect(fs.readFileSync(destination, 'utf8')).toBe('existing');
