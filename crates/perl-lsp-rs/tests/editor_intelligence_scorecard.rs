@@ -540,9 +540,6 @@ fn rename_total_edit_count(resp: &Value) -> usize {
 }
 
 fn rename_has_structured_error(resp: &Value) -> bool {
-    if resp.get("result").is_some() {
-        return false;
-    }
     let Some(error) = resp.get("error").and_then(Value::as_object) else {
         return false;
     };
@@ -551,7 +548,11 @@ fn rename_has_structured_error(resp: &Value) -> bool {
 }
 
 fn rename_is_null(resp: &Value) -> bool {
-    matches!(resp.get("result"), Some(Value::Null)) || rename_has_structured_error(resp)
+    match (resp.get("result"), resp.get("error")) {
+        (Some(Value::Null), None) => true,
+        (None, Some(_)) => rename_has_structured_error(resp),
+        _ => false,
+    }
 }
 
 /// Extract the JSON-RPC error message from a rename response, if any, for
