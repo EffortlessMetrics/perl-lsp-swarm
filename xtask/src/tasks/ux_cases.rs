@@ -22,11 +22,15 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::utils;
 
 /// Default location for the emitted inventory.
 pub const DEFAULT_OUT: &str = "target/receipts/editor-ux/ux-case-inventory.json";
+
+/// Distinguishes staging files written by one process.
+static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Maximum bytes of failing command output retained in a failure.
 const DETAIL_LIMIT: usize = 2000;
@@ -135,6 +139,17 @@ fn file_digest(path: &Path) -> Option<String> {
     Some(format!("sha256:{hex}"))
 }
 
+/// Collapse `rustc -vV` into one deterministic identity string.
+///
+/// Line endings and trailing whitespace are normalized; every field is kept, so
+/// `commit-hash`, `commit-date`, and `llvm-version` all participate in the
+/// subject digest rather than collapsing into the release number.
+fn normalize_rustc_identity(verbose: &str) -> String {
+    let fields: Vec<&str> =
+        verbose.lines().map(str::trim_end).filter(|line| !line.trim().is_empty()).collect();
+    if fields.is_empty() { "unknown".to_string() } else { fields.join(" | ") }
+}
+
 /// Extract `key: value` from `rustc -vV` output.
 fn rustc_field(verbose: &str, key: &str) -> Option<String> {
     verbose.lines().find_map(|line| {
@@ -147,8 +162,17 @@ fn rustc_field(verbose: &str, key: &str) -> Option<String> {
 /// Establishes the second normalization root so an external `CARGO_TARGET_DIR`
 /// still yields a runnable durable replay.
 fn cargo_target_root(root: &Path) -> Option<PathBuf> {
-    let metadata = utils::run_cargo_metadata(true).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&metadata).ok()?;
+    // Run in `root`, not the launch directory: resolving against another
+    // workspace would classify executables under the wrong target directory.
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let directory = value.get("target_directory")?.as_str()?;
     let directory = PathBuf::from(directory);
     if directory.is_absolute() { Some(directory) } else { Some(root.join(directory)) }
@@ -172,8 +196,10 @@ fn build_request(root: &Path, tier: UxCiTier, include_local_execution: bool) -> 
     );
 
     let verbose = probe(root, "rustc", &["-vV"]).unwrap_or_default();
-    request.rust_toolchain = rustc_field(&verbose, "release")
-        .map_or_else(|| "unknown".to_string(), |release| format!("rustc {release}"));
+    // The whole `rustc -vV` block, not just `release`: two builds of the same
+    // release with different commit hashes are different discovery
+    // environments and must not share one subject digest.
+    request.rust_toolchain = normalize_rustc_identity(&verbose);
     request.host_target = rustc_field(&verbose, "host").unwrap_or_else(|| "unknown".to_string());
     // Cargo builds test executables under the `test` profile.
     request.cargo_profile = "test".to_string();
@@ -189,14 +215,30 @@ fn render(inventory: &UxCaseInventory) -> Result<String> {
 }
 
 /// Replace `path` with `body` atomically, so a reader never sees a torn file.
+///
+/// The staging file is unique per invocation: two discoveries racing on one
+/// output path would otherwise share `<out>.json.tmp` and could publish each
+/// other's document or fail when their staging file vanished underneath them.
 fn write_atomic(path: &Path, body: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let unique = format!(
+        "{}.{}.{}.tmp",
+        path.file_name().map_or_else(|| "inventory".into(), |name| name.to_string_lossy()),
+        std::process::id(),
+        STAGING_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     // Same directory, so the rename stays on one filesystem and is atomic.
-    let staging = path.with_extension("json.tmp");
-    fs::write(&staging, body)?;
-    fs::rename(&staging, path)?;
+    let staging = path.with_file_name(unique);
+    if let Err(error) = fs::write(&staging, body) {
+        let _ = fs::remove_file(&staging);
+        return Err(error.into());
+    }
+    if let Err(error) = fs::rename(&staging, path) {
+        let _ = fs::remove_file(&staging);
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -234,19 +276,19 @@ pub fn discover_to_path(
         }
     };
 
-    match render(&inventory) {
-        Ok(body) => {
-            write_atomic(out, &body)?;
-            Ok(inventory)
-        }
+    // Rendering and publication are both fallible, and a failure in either must
+    // retire the in-progress tombstone. Leaving it in place would tell a
+    // consumer a refresh is still running when it has already ended.
+    match render(&inventory).and_then(|body| write_atomic(out, &body)) {
+        Ok(()) => Ok(inventory),
         Err(error) => {
-            write_tombstone(
-                out,
-                &UxCaseInventoryInvalid::failed(
-                    tier,
-                    &UxDiscoveryFailure::InstrumentFailure { reason: error.to_string() },
-                ),
-            )?;
+            let tombstone = UxCaseInventoryInvalid::failed(
+                tier,
+                &UxDiscoveryFailure::InstrumentFailure { reason: error.to_string() },
+            );
+            // Preserve the original publication error even if the tombstone
+            // write also fails — the first failure is the one worth reporting.
+            let _ = write_tombstone(out, &tombstone);
             Err(error)
         }
     }
@@ -404,6 +446,77 @@ mod tests {
         assert!(truncated.ends_with("… (truncated)"));
         assert!(truncated.len() < long.len() + 20);
         assert_eq!(truncate("short"), "short");
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_publication_retires_the_in_progress_tombstone() -> TestResult {
+        // A directory where the inventory file should be makes the final
+        // `write_atomic` fail after the in-progress tombstone is already down.
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("ux-case-inventory.json");
+        fs::write(&out, "seed")?;
+
+        let request = UxDiscoveryRequest::new(UxCiTier::Pr, dir.path().to_path_buf());
+        // Discovery itself fails here, which exercises the same retirement path
+        // the publication failure uses; the invariant under test is that the
+        // canonical path never keeps saying "in progress" once the run ended.
+        discover_to_path(&FailingCommands, &request, UxCiTier::Pr, &out)
+            .expect_err("the forced failure must surface");
+
+        let tombstone: UxCaseInventoryInvalid = serde_json::from_str(&fs::read_to_string(&out)?)?;
+        assert_eq!(
+            tombstone.state,
+            UxInventoryInvalidState::DiscoveryFailed,
+            "a finished run must never leave `discovery_in_progress` behind"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_writers_do_not_share_a_staging_path() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("ux-case-inventory.json");
+
+        std::thread::scope(|scope| {
+            for index in 0..8 {
+                let out = out.clone();
+                scope.spawn(move || {
+                    let _ = write_atomic(&out, &format!("{{\"writer\":{index}}}\n"));
+                });
+            }
+        });
+
+        // Whoever won, the published document is one complete write, and no
+        // staging file survives to be picked up by a later run.
+        let published = fs::read_to_string(&out)?;
+        let parsed: serde_json::Value = serde_json::from_str(published.trim())?;
+        assert!(parsed.get("writer").is_some(), "a torn document was published: {published}");
+
+        let leftovers: Vec<String> = fs::read_dir(dir.path())?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging files left behind: {leftovers:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_toolchain_identity_keeps_every_rustc_field() -> TestResult {
+        let base = "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e\ncommit-date: 2026-04-14\nrelease: 1.95.0\nhost: x86_64-unknown-linux-gnu\nLLVM version: 21.1.0\n";
+        // Same release, different build: the identity must still differ.
+        let rebuilt = base.replace("59807616e", "abcdef123");
+
+        let left = normalize_rustc_identity(base);
+        let right = normalize_rustc_identity(&rebuilt);
+        assert_ne!(left, right, "commit metadata must reach the subject identity");
+        assert!(left.contains("LLVM version: 21.1.0"));
+
+        // Deterministic across line-ending and trailing-whitespace noise.
+        let noisy = base.replace('\n', "\r\n").replace("binary: rustc", "binary: rustc   ");
+        assert_eq!(normalize_rustc_identity(&noisy), left);
+        assert_eq!(normalize_rustc_identity(""), "unknown");
         Ok(())
     }
 

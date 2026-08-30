@@ -967,3 +967,86 @@ fn an_executable_under_neither_root_declares_an_unrunnable_replay() -> TestResul
     );
     Ok(())
 }
+
+// ── Guards added after the second review round of #13878 ─────────────────
+
+#[test]
+fn an_unparseable_cargo_json_object_cannot_silently_drop_a_target() -> TestResult {
+    // A truncated `compiler-artifact` line would otherwise vanish, shrinking
+    // the denominator by exactly the target it described.
+    let truncated = r#"{"reason":"compiler-artifact","package_id":"path+file:///x/crates/perl-lsp-ux-tests#0.1.0","target":{"kind":["test"]"#;
+    let failure = parse_cargo_test_artifacts(truncated, UX_INVENTORY_PACKAGE)
+        .expect_err("a broken JSON object must fail closed");
+    assert_eq!(failure.kind(), "malformed_cargo_message");
+
+    // Human progress output is still tolerated: it is not a message.
+    let executable = exe("ux_scenario_01_simple_file-2001");
+    let stdout = format!(
+        "   Compiling perl-lsp-ux-tests v0.1.0\n{}",
+        artifact_line("perl-lsp-ux-tests", "test", "ux_scenario_01_simple_file", &executable, &[])
+    );
+    assert_eq!(parse_cargo_test_artifacts(&stdout, UX_INVENTORY_PACKAGE)?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn duplicate_artifacts_for_one_executable_must_agree_in_full() -> TestResult {
+    let executable = exe("ux_scenario_01_simple_file-2002");
+    let first =
+        artifact_line("perl-lsp-ux-tests", "test", "ux_scenario_01_simple_file", &executable, &[]);
+    let second = artifact_line(
+        "perl-lsp-ux-tests",
+        "test",
+        "ux_scenario_01_simple_file",
+        &executable,
+        &["integration-test"],
+    );
+
+    // Identical repeats remain one fact.
+    assert_eq!(
+        parse_cargo_test_artifacts(&format!("{first}\n{first}"), UX_INVENTORY_PACKAGE)?.len(),
+        1
+    );
+
+    // Contradictory repeats must not resolve by arrival order.
+    let failure = parse_cargo_test_artifacts(&format!("{first}\n{second}"), UX_INVENTORY_PACKAGE)
+        .expect_err("contradictory messages must fail closed");
+    assert_eq!(failure.kind(), "contradictory_artifact");
+    let reversed = parse_cargo_test_artifacts(&format!("{second}\n{first}"), UX_INVENTORY_PACKAGE)
+        .expect_err("and in the other order too");
+    assert_eq!(reversed.kind(), "contradictory_artifact");
+    Ok(())
+}
+
+#[test]
+fn a_malformed_case_id_is_rejected_on_deserialization() -> TestResult {
+    // Too few components.
+    assert!(serde_json::from_str::<UxCaseId>(r#""pkg::test::target""#).is_err());
+    // An escape that decodes to nothing valid.
+    assert!(serde_json::from_str::<UxCaseId>(r#""pkg::test::target::a%ZZb""#).is_err());
+    // A well-formed identity still round-trips.
+    let id = UxCaseId::new("perl-lsp-ux-tests", "test", "t", "module::case");
+    let decoded: UxCaseId = serde_json::from_str(&serde_json::to_string(&id)?)?;
+    assert_eq!(decoded, id);
+    Ok(())
+}
+
+#[test]
+fn the_implicit_package_id_form_derives_its_name_from_the_directory() -> TestResult {
+    // Pins the documented constraint: Cargo emits this form only when package
+    // name and directory name agree, and the parser cannot detect a mismatch.
+    // The package filter in `parse_cargo_test_artifacts` is what keeps a
+    // wrongly-named target out of the denominator.
+    let mismatched = parse_package_id("path+file:///x/crates/renamed-dir#0.1.0").ok_or("parse")?;
+    assert_eq!(mismatched.name, "renamed-dir");
+
+    let executable = exe("ux_scenario_01_simple_file-2003");
+    let stdout = format!(
+        r#"{{"reason":"compiler-artifact","package_id":"path+file:///x/crates/renamed-dir#0.1.0","target":{{"kind":["test"],"name":"ux_scenario_01_simple_file","src_path":"/x/tests/a.rs"}},"profile":{{"test":true}},"features":[],"executable":"{executable}"}}"#
+    );
+    assert!(
+        parse_cargo_test_artifacts(&stdout, UX_INVENTORY_PACKAGE)?.is_empty(),
+        "a directory-derived name that is not the UX package must be filtered out"
+    );
+    Ok(())
+}

@@ -149,6 +149,13 @@ pub enum UxDiscoveryFailure {
         /// Path Cargo reported.
         path: String,
     },
+    /// Two messages for one target and executable disagree on their metadata.
+    ContradictoryArtifact {
+        /// Target identity with contradictory messages.
+        target: String,
+        /// What disagreed.
+        detail: String,
+    },
     /// Two different executables were reported for the same target.
     DuplicateArtifact {
         /// Target identity with conflicting artifacts.
@@ -253,6 +260,7 @@ impl UxDiscoveryFailure {
             Self::MalformedCargoMessage { .. } => "malformed_cargo_message",
             Self::NoTestArtifacts { .. } => "no_test_artifacts",
             Self::TestArtifactMissing { .. } => "test_artifact_missing",
+            Self::ContradictoryArtifact { .. } => "contradictory_artifact",
             Self::DuplicateArtifact { .. } => "duplicate_artifact",
             Self::WrongProfileArtifact { .. } => "wrong_profile_artifact",
             Self::ListCommandFailed { .. } => "list_command_failed",
@@ -286,6 +294,9 @@ impl fmt::Display for UxDiscoveryFailure {
             }
             Self::TestArtifactMissing { target, path } => {
                 write!(f, "test executable for `{target}` is missing at `{path}`")
+            }
+            Self::ContradictoryArtifact { target, detail } => {
+                write!(f, "contradictory cargo messages for `{target}`: {detail}")
             }
             Self::DuplicateArtifact { target, first, second } => write!(
                 f,
@@ -439,7 +450,17 @@ impl Serialize for UxCaseId {
 impl<'de> Deserialize<'de> for UxCaseId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let encoded = String::deserialize(deserializer)?;
-        Ok(Self { encoded })
+        let candidate = Self { encoded };
+        // A typed identity that cannot be decomposed is not an identity. B02
+        // consumes these; rejecting here keeps a malformed id from travelling
+        // any further than the document it arrived in.
+        if candidate.components().is_none() {
+            return Err(serde::de::Error::custom(format!(
+                "`{}` is not a well-formed ux case id (expected four escaped `::`-joined components)",
+                candidate.encoded
+            )));
+        }
+        Ok(candidate)
     }
 }
 
@@ -566,10 +587,20 @@ pub struct CargoPackageIdentity {
 
 /// Parse a Cargo package id into its durable parts.
 ///
-/// Handles the current `path+file:///…#name@version` and
-/// `path+file:///…/name#version` spellings plus the legacy
-/// `name version (source)` form. The absolute locator itself is deliberately
-/// not returned: it is machine-local detail.
+/// Handles three spellings; the absolute locator itself is deliberately not
+/// returned, being machine-local detail.
+///
+/// 1. `path+file:///…#name@version` — the name is explicit.
+/// 2. `path+file:///…/name#version` — the **implicit** form, where the name is
+///    taken from the last path segment. This is only sound because Cargo emits
+///    it exclusively when the package name equals the directory name, and
+///    switches to form 1 the moment they differ. A hand-written or
+///    wrapper-produced id of this shape with a mismatched directory would
+///    therefore yield the directory name; the mismatch is not detectable from
+///    the id alone, which is why the package filter in
+///    [`parse_cargo_test_artifacts`] is the guard that keeps a wrong name out
+///    of the denominator rather than silently renaming a target.
+/// 3. `name version (source)` — the legacy form.
 #[must_use]
 pub fn parse_package_id(package_id: &str) -> Option<CargoPackageIdentity> {
     let source = if package_id.starts_with("path+") {
@@ -644,9 +675,19 @@ pub fn parse_cargo_test_artifacts(
         if trimmed.is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-            // Non-JSON progress output is not a Cargo message; ignore it.
-            continue;
+        let value = match serde_json::from_str::<serde_json::Value>(trimmed) {
+            Ok(value) => value,
+            // A line that opens as a JSON object is a Cargo message; failing to
+            // parse it would silently drop whichever target it described.
+            Err(error) if trimmed.starts_with('{') => {
+                return Err(UxDiscoveryFailure::MalformedCargoMessage {
+                    line_number,
+                    reason: format!("unparseable cargo JSON object: {error}"),
+                });
+            }
+            // Cargo interleaves human progress output on stdout in some
+            // configurations; that is not a message and carries no target.
+            Err(_) => continue,
         };
         if value.get("reason").and_then(serde_json::Value::as_str) != Some("compiler-artifact") {
             continue;
@@ -748,9 +789,23 @@ pub fn parse_cargo_test_artifacts(
         let identity = artifact.target_identity();
 
         match by_identity.get(&identity) {
-            // Cargo repeats an artifact message for fresh targets; identical
-            // repeats are the same fact, not two targets.
-            Some(existing) if existing.executable == artifact.executable => {}
+            // Cargo repeats an artifact message for fresh targets; a repeat is
+            // the same fact only when it agrees in full. Comparing the path
+            // alone would let two contradictory messages resolve by arrival
+            // order instead of failing closed.
+            Some(existing) if *existing == artifact => {}
+            Some(existing) if existing.executable == artifact.executable => {
+                return Err(UxDiscoveryFailure::ContradictoryArtifact {
+                    target: identity,
+                    detail: format!(
+                        "two messages for the same executable disagree: features {:?} vs {:?}, package id `{}` vs `{}`",
+                        existing.features,
+                        artifact.features,
+                        existing.package_id,
+                        artifact.package_id
+                    ),
+                });
+            }
             Some(existing) => {
                 return Err(UxDiscoveryFailure::DuplicateArtifact {
                     target: identity,
