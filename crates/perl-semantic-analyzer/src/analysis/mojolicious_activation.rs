@@ -127,9 +127,6 @@ fn walk_activation_sites(
                     current_package.clone(),
                     span_start,
                     span_end,
-                    // A Lite import has no literal parent spelling; the role
-                    // comes from the module itself.
-                    None,
                     generation.clone(),
                 ),
                 evidence: mojolicious_lite_import_evidence(
@@ -304,7 +301,6 @@ mod tests {
         );
         assert!(anchor.span_end_byte as usize <= code.len());
         assert_eq!(anchor.source_generation, SourceGeneration::known("gen-1"));
-        assert_eq!(anchor.parent_range, None, "a Lite import has no literal parent spelling");
     }
 
     #[test]
@@ -344,6 +340,27 @@ mod tests {
             found[0].evidence.selection,
             MojoliciousLiteImportSelection::Dynamic { .. }
         ));
+    }
+
+    #[test]
+    fn a_block_form_package_scopes_its_own_activation() {
+        // `package NAME { ... }` installs its declared package for the block.
+        let found = sites("package MyApp {\n    use Mojolicious::Lite;\n}\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].anchor.package.as_deref(), Some("MyApp"));
+    }
+
+    #[test]
+    fn a_lexical_block_restores_the_enclosing_package_afterwards() {
+        // A statement-form `package X;` inside a bare block must not leak past
+        // the block's end.
+        let found = sites("package Outer;\n{\n    package Inner;\n}\nuse Mojolicious::Lite;\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].anchor.package.as_deref(),
+            Some("Outer"),
+            "the block-local package must not survive the block"
+        );
     }
 
     #[test]

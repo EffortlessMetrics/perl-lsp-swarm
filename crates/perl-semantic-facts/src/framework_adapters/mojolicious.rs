@@ -426,11 +426,15 @@ fn is_version_requirement(token: &str) -> bool {
         && digits.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
 }
 
-/// Load-bearing site identity for one Mojolicious activation site.
+/// Load-bearing site identity for one Mojolicious::Lite activation site.
 ///
-/// Carries the owning package, the activating statement's source interval,
-/// the literal parent's source range when the site came from a `Mojo::Base`
-/// parent, and the source generation the site was extracted from.
+/// Carries the owning package, the activating statement's source interval, and
+/// the source generation the site was extracted from.
+///
+/// There is deliberately no parent-range field: a Lite import has no literal
+/// parent spelling, and the parent-derived Application/Controller roles carry
+/// their range through [`MojoBaseActivationFacts`] instead of through this
+/// type.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MojoliciousSiteAnchor {
@@ -440,8 +444,6 @@ pub struct MojoliciousSiteAnchor {
     pub span_start_byte: u32,
     /// Import statement source interval end, in bytes.
     pub span_end_byte: u32,
-    /// Literal parent spelling's source range, for parent-derived roles.
-    pub parent_range: Option<(u32, u32)>,
     /// Source generation the site was extracted from; exact activation
     /// requires the detection generation to match it.
     pub source_generation: SourceGeneration,
@@ -454,10 +456,9 @@ impl MojoliciousSiteAnchor {
         package: Option<String>,
         span_start_byte: u32,
         span_end_byte: u32,
-        parent_range: Option<(u32, u32)>,
         source_generation: SourceGeneration,
     ) -> Self {
-        Self { package, span_start_byte, span_end_byte, parent_range, source_generation }
+        Self { package, span_start_byte, span_end_byte, source_generation }
     }
 }
 
@@ -620,7 +621,8 @@ pub fn mojolicious_lite_activation_facts(
         profile_version: MOJOLICIOUS_PROFILE_VERSION,
         package: anchor.package.clone(),
         source_interval: (anchor.span_start_byte, anchor.span_end_byte),
-        parent_range: anchor.parent_range,
+        // A Lite import has no literal parent spelling.
+        parent_range: None,
         scope_identity: detection
             .input_identity
             .as_ref()
@@ -750,7 +752,19 @@ pub fn mojolicious_lite_activation_facts(
     }
     facts.source_generation = anchor.source_generation.clone();
 
-    // 7. The reviewed profile must cover every import option.
+    // 7. A reported confidence below High is never exact activation: an
+    // exact fact that carries Low confidence contradicts itself.
+    if reported_confidence != Confidence::High {
+        facts.outcome = MojoliciousActivationOutcome::StaleOrIncompleteInput {
+            reason: format!(
+                "detection reported {reported_confidence:?} confidence; exact activation \
+                 requires High"
+            ),
+        };
+        return facts;
+    }
+
+    // 8. The reviewed profile must cover every import option.
     if !evidence.unmodeled_options.is_empty() {
         facts.outcome = MojoliciousActivationOutcome::UnsupportedVersionOrProfile {
             reason: format!(
@@ -761,7 +775,7 @@ pub fn mojolicious_lite_activation_facts(
         return facts;
     }
 
-    // 8. Exact Lite activation under the reviewed profile. Only here, with
+    // 9. Exact Lite activation under the reviewed profile. Only here, with
     // every generation current and the evidence reconciled, do the observed
     // confidence and framework version become published facts.
     facts.confidence = reported_confidence;
@@ -914,12 +928,22 @@ fn identity_reconciliation_reason(detection: &AdapterDetectionResult) -> Option<
             owned.len()
         ));
     };
-    let ModuleSelectorOutcome::Matched { activation, .. } = &evaluation.outcome else {
+    let ModuleSelectorOutcome::Matched { activation, evidence_class } = &evaluation.outcome else {
         return Some(
             "the owned selector's terminal evaluation does not reconcile with the detection"
                 .to_string(),
         );
     };
+    // `detect_mojolicious_lite` refuses a non-resolved identity, but a
+    // hand-built or deserialized result can reach this builder without ever
+    // passing through the detector. The identity gate therefore belongs here
+    // too, not only in the detector.
+    if evidence_class.confidence_ceiling() != Confidence::High {
+        return Some(format!(
+            "the owned selector's evidence class {evidence_class:?} cannot support exact \
+             activation; resolved module identity is required"
+        ));
+    }
     if activation.module_name != MOJOLICIOUS_LITE_MODULE
         || activation.generation != detection.project_generation
     {
@@ -1354,7 +1378,6 @@ mod tests {
             Some(package.to_string()),
             0,
             25,
-            None,
             SourceGeneration::known(generation),
         )
     }
@@ -1415,13 +1438,8 @@ mod tests {
 
     #[test]
     fn unknown_site_generation_refuses_the_role() {
-        let anchor = MojoliciousSiteAnchor::new(
-            Some("main".to_string()),
-            0,
-            25,
-            None,
-            SourceGeneration::Unknown,
-        );
+        let anchor =
+            MojoliciousSiteAnchor::new(Some("main".to_string()), 0, 25, SourceGeneration::Unknown);
         let facts = mojolicious_lite_activation_facts(
             &detect_mojolicious_lite(&lite_input("gen-1")),
             &anchor,
@@ -1585,6 +1603,26 @@ mod tests {
         let facts =
             mojolicious_role_facts_from_mojo_base(&mojo_base_facts("'MyApp::Controller'", "gen-1"));
         assert_eq!(facts.role(), None);
+    }
+
+    #[test]
+    fn a_parent_that_merely_starts_with_the_framework_name_owns_no_role() {
+        // Discriminates exact equality from a prefix/substring match. A
+        // classifier regressed to `starts_with` would agree with every other
+        // negative control in this suite but pass these.
+        for parent in ["'Mojolicious::ControllerFake'", "'MojoliciousApp'", "'Mojolicious2'"] {
+            let facts = mojolicious_role_facts_from_mojo_base(&mojo_base_facts(parent, "gen-1"));
+            assert_eq!(facts.role(), None, "parent {parent} must not own a role");
+        }
+    }
+
+    #[test]
+    fn a_parent_that_merely_ends_with_the_framework_name_owns_no_role() {
+        // The mirror control, against a regression to `ends_with`/`contains`.
+        for parent in ["'My::Mojolicious'", "'Vendor::Mojolicious::Controller'"] {
+            let facts = mojolicious_role_facts_from_mojo_base(&mojo_base_facts(parent, "gen-1"));
+            assert_eq!(facts.role(), None, "parent {parent} must not own a role");
+        }
     }
 
     #[test]
@@ -1796,6 +1834,125 @@ mod tests {
             facts.framework_version, "9.99",
             "a fabricated version must not be published as an exact fact"
         );
+    }
+
+    #[test]
+    fn name_only_identity_cannot_reach_exact_activation_through_the_facts_builder() {
+        // Hand-build a self-consistent result that bypasses
+        // `detect_mojolicious_lite` entirely: every field agrees with the
+        // input row, but the row's evidence class is name-only and the
+        // reported confidence is Low. An "exact activation" whose own
+        // confidence is Low is self-contradictory and must not be minted.
+        let input = AdapterDetectionInput::new(
+            mojolicious_lite_descriptor(),
+            receipt(
+                "gen-1",
+                vec![lite_evaluation(
+                    MOJOLICIOUS_LITE_MODULE,
+                    Some("9.34"),
+                    "gen-1",
+                    DetectionEvidenceClass::NameOnly,
+                )],
+            ),
+            None,
+            AdapterCancellation::active(),
+        );
+        let activation = ModuleActivationIdentity::new(
+            MOJOLICIOUS_LITE_MODULE,
+            Some(FileId(11)),
+            SourceGeneration::known("gen-1"),
+        )
+        .with_observed_version(ModuleVersionEvidence::new(
+            "9.34",
+            SourceGeneration::known("gen-1"),
+        ));
+        let version = ModuleVersionEvidence::new("9.34", SourceGeneration::known("gen-1"));
+        let forged = AdapterDetectionResult::for_input(
+            &input,
+            DetectionOutcome::Detected {
+                confidence: Confidence::Low,
+                framework_version: Some("9.34".to_string()),
+            },
+        )
+        .with_contributing_modules(vec![activation])
+        .with_version_evidence(version);
+
+        let facts =
+            mojolicious_lite_activation_facts(&forged, &lite_anchor("main", "gen-1"), &parse(&[]));
+        assert_eq!(facts.role(), None, "name-only identity must not own a role");
+        assert!(
+            matches!(facts.outcome, MojoliciousActivationOutcome::StaleOrIncompleteInput { .. }),
+            "the refusal must be typed, not a silent absence: {:?}",
+            facts.outcome
+        );
+        assert!(
+            facts.framework_version.is_empty(),
+            "a refused fact must publish no observed framework version"
+        );
+    }
+
+    #[test]
+    fn name_only_identity_is_refused_even_when_high_confidence_is_claimed() {
+        // Isolates the evidence-class gate from the confidence gate: a forged
+        // result can simply assert High confidence. Exactness must still turn
+        // on the *resolved identity class* of the observed row, which a
+        // forger does not get to restate.
+        let input = AdapterDetectionInput::new(
+            mojolicious_lite_descriptor(),
+            receipt(
+                "gen-1",
+                vec![lite_evaluation(
+                    MOJOLICIOUS_LITE_MODULE,
+                    Some("9.34"),
+                    "gen-1",
+                    DetectionEvidenceClass::NameOnly,
+                )],
+            ),
+            None,
+            AdapterCancellation::active(),
+        );
+        let activation = ModuleActivationIdentity::new(
+            MOJOLICIOUS_LITE_MODULE,
+            Some(FileId(11)),
+            SourceGeneration::known("gen-1"),
+        )
+        .with_observed_version(ModuleVersionEvidence::new(
+            "9.34",
+            SourceGeneration::known("gen-1"),
+        ));
+        let forged = AdapterDetectionResult::for_input(
+            &input,
+            DetectionOutcome::Detected {
+                confidence: Confidence::High,
+                framework_version: Some("9.34".to_string()),
+            },
+        )
+        .with_contributing_modules(vec![activation])
+        .with_version_evidence(ModuleVersionEvidence::new(
+            "9.34",
+            SourceGeneration::known("gen-1"),
+        ));
+
+        let facts =
+            mojolicious_lite_activation_facts(&forged, &lite_anchor("main", "gen-1"), &parse(&[]));
+        assert_eq!(facts.role(), None, "name-only identity must not own a role");
+        assert!(matches!(
+            facts.outcome,
+            MojoliciousActivationOutcome::StaleOrIncompleteInput { .. }
+        ));
+    }
+
+    #[test]
+    fn an_exact_role_always_carries_high_confidence() {
+        // The invariant behind the gate above: exactness and confidence can
+        // never disagree on a published fact.
+        let facts = mojolicious_lite_activation_facts(
+            &detect_mojolicious_lite(&lite_input("gen-1")),
+            &lite_anchor("main", "gen-1"),
+            &parse(&[]),
+        );
+        assert!(facts.is_exact());
+        assert_eq!(facts.confidence, Confidence::High);
     }
 
     // -----------------------------------------------------------------
