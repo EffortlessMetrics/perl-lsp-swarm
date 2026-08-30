@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12406 |
-| Rust-family files | 3814 |
-| Non-Rust files | 8592 |
-| Allowlisted | 6357 |
+| Total tracked files | 12408 |
+| Rust-family files | 3815 |
+| Non-Rust files | 8593 |
+| Allowlisted | 6358 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2804 |
 | generated | 2 |
 | production | 348 |
-| test | 2052 |
+| test | 2053 |
 | tooling | 661 |
 | unclassified | 2235 |
 
@@ -3859,6 +3859,7 @@
 | `crates/perl-line-index/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-perltidy/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-perltidy/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-lsp-perltidy/proptest-regressions/native/line_ending.txt` | test | `non-rust-proptest-default-layout-regressions` | parser/property-tests |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/comment_preserve.expected.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/comment_preserve.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/comment_preserve_matrix.expected.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
