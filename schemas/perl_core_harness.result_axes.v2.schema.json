@@ -80,6 +80,21 @@
         "required": ["axes"]
       },
       "then": {"properties": {"completion": {"const": "complete"}}}
+    },
+    {
+      "$comment": "A complete run with valid evidence must record a real product outcome. A run that finished while assessing nothing would otherwise present itself as complete, valid and authoritative on the strength of no assessment at all.",
+      "if": {
+        "properties": {
+          "completion": {"const": "complete"},
+          "axes": {"properties": {"evidence": {"const": "valid"}}, "required": ["evidence"]}
+        },
+        "required": ["completion", "axes"]
+      },
+      "then": {
+        "properties": {
+          "axes": {"properties": {"observation": {"enum": ["clean", "failures_observed"]}}}
+        }
+      }
     }
   ],
   "$defs": {

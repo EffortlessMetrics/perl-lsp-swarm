@@ -2401,7 +2401,7 @@ mod tests {
             "complete run with valid evidence that assessed nothing",
             serde_json::to_value(vacuous)?,
             false,
-            SchemaAgreement::RustStricter,
+            SchemaAgreement::Same,
         ));
 
         let mut blank_boundary = valid_report()?;
