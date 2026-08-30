@@ -27,8 +27,11 @@ impl LspServer {
         // watchers, starting indexing, and the ready log must never run on a
         // connection without an accepted contract. Every completion path —
         // the `initialized` notification and the compat auto-initialize —
-        // funnels through here, so this single gate closes them all.
-        if self.accepted_text_sync_session().is_none() {
+        // funnels through here, so this single gate closes them all. The
+        // router's -32002 arm and the formatting intercept derive from the
+        // same predicate (`initialization_accepted`), so the window cannot
+        // serve either (review 5061915323).
+        if !self.initialization_accepted() {
             tracing::warn!(
                 "Refusing to complete initialization without an accepted text-sync session contract"
             );

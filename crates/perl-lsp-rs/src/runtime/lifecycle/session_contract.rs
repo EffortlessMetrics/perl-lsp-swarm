@@ -520,6 +520,18 @@ impl super::super::LspServer {
         self.text_sync_session.lock().clone()
     }
 
+    /// Single derived serving gate: initialize has ACCEPTED a text-sync
+    /// session contract on this connection. Lifecycle completion, the
+    /// router's ServerNotInitialized (-32002) arm, and the formatting
+    /// intercept all consult this one predicate — the same stored-contract
+    /// authority — so a consumed one-shot guard without acceptance (the
+    /// failed-classification/failed-acceptance window, review 5061915323)
+    /// can neither serve requests nor complete the lifecycle. Do not add an
+    /// independent readiness truth beside it.
+    pub(crate) fn initialization_accepted(&self) -> bool {
+        self.accepted_text_sync_session().is_some()
+    }
+
     /// Accept the session contract exactly once. A second acceptance attempt
     /// is a typed internal failure — the accepted contract is never replaced.
     pub(crate) fn accept_text_sync_session(
