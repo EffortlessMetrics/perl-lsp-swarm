@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from tests.test_active_authority_contract import prose_text, workflow_event_paths
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ORCHESTRATION_SKILLS = (
@@ -102,7 +104,7 @@ def validate_transfer(text: str, heading: str) -> list[str]:
     if section is None:
         return [f"missing section {heading!r}"]
 
-    normalized = normalize(section)
+    normalized = prose_text(section, is_text=True).lower()
     failures: list[str] = []
 
     for label, alternatives in TRANSFER_REQUIREMENTS:
@@ -121,7 +123,7 @@ def validate_reviewer_reassignment(text: str) -> list[str]:
     if section is None:
         return ["missing section '### Mutation owner'"]
 
-    normalized = normalize(section)
+    normalized = prose_text(section, is_text=True).lower()
     requirements = (
         ("one candidate writer", ("one writer mutates the candidate branch/worktree at a time",)),
         (
@@ -187,7 +189,7 @@ class WriterAuthorityTransferContractTests(unittest.TestCase):
 
     def test_transfer_is_candidate_local_not_global(self) -> None:
         for provider, path, _ in ORCHESTRATION_SKILLS:
-            text = normalize(read(path))
+            text = prose_text(read(path), is_text=True).lower()
             self.assertIn(
                 "separate specified claims may use separate writers/worktrees; "
                 "one candidate still has exactly one writer",
@@ -197,11 +199,12 @@ class WriterAuthorityTransferContractTests(unittest.TestCase):
 
     def test_workflow_runs_and_triggers_this_contract(self) -> None:
         workflow = read(WORKFLOW)
-        self.assertEqual(
-            workflow.count(f"- '{SELF_TEST}'"),
-            2,
-            "writer-transfer contract must trigger for both pull_request and push",
-        )
+        for event in ("pull_request", "push"):
+            self.assertIn(
+                SELF_TEST,
+                workflow_event_paths(workflow, event),
+                f"writer-transfer contract is missing from on.{event}.paths",
+            )
         self.assertIn(
             "python3 -m unittest "
             "tests/test_active_authority_contract.py "
@@ -277,6 +280,40 @@ class WriterAuthorityTransferContractTests(unittest.TestCase):
         )
         failures = validate_transfer(text, "## A quiet worker is not a result")
         self.assertIn("transfer obligations are out of order", failures)
+
+    def test_fenced_example_does_not_satisfy_transfer_requirements(self) -> None:
+        required = transfer_fixture().split(
+            "## A quiet worker is not a result\n\n",
+            1,
+        )[1].split("\n## Root-held claim frames", 1)[0]
+        text = (
+            "## A quiet worker is not a result\n\n"
+            "```text\n"
+            + required
+            + "\n```\n\n"
+            "Silence does not transfer ownership.\n"
+            "## Root-held claim frames\n"
+        )
+        failures = validate_transfer(text, "## A quiet worker is not a result")
+        self.assertIn("missing prior-writer resumability", failures)
+        self.assertIn("missing revoke before reassign", failures)
+
+    def test_html_comment_does_not_satisfy_transfer_requirements(self) -> None:
+        required = transfer_fixture().split(
+            "## A quiet worker is not a result\n\n",
+            1,
+        )[1].split("\n## Root-held claim frames", 1)[0]
+        text = (
+            "## A quiet worker is not a result\n\n"
+            "<!--\n"
+            + required
+            + "\n-->\n\n"
+            "Silence does not transfer ownership.\n"
+            "## Root-held claim frames\n"
+        )
+        failures = validate_transfer(text, "## A quiet worker is not a result")
+        self.assertIn("missing prior-writer resumability", failures)
+        self.assertIn("missing revoke before reassign", failures)
 
     def test_matching_words_outside_the_transfer_section_do_not_count(self) -> None:
         text = transfer_fixture().replace(
