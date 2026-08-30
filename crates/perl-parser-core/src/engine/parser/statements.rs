@@ -743,15 +743,35 @@ impl<'a> Parser<'a> {
             return true;
         }
 
-        let operator_end = cursor;
+        let word_end = cursor;
         while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_alphabetic() {
             cursor -= 1;
         }
-        let operator = &self.src_bytes[cursor..operator_end];
-        if !matches!(operator, b"or" | b"and" | b"xor") {
-            return false;
+        let word = &self.src_bytes[cursor..word_end];
+        if matches!(word, b"or" | b"and" | b"xor") {
+            return self.whitespace_before_has_line_break(cursor);
         }
 
+        // A control-flow RHS such as `or goto LABEL` consumes the word
+        // operator and `goto` before this terminator seam sees the label.
+        // Inspect that one additional word, but keep the newline requirement
+        // attached to the word operator itself.
+        if word == b"goto" {
+            while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+            let operator_end = cursor;
+            while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_alphabetic() {
+                cursor -= 1;
+            }
+            if matches!(&self.src_bytes[cursor..operator_end], b"or" | b"and" | b"xor") {
+                return self.whitespace_before_has_line_break(cursor);
+            }
+        }
+        false
+    }
+
+    fn whitespace_before_has_line_break(&self, mut cursor: usize) -> bool {
         while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_whitespace() {
             if self.src_bytes[cursor - 1] == b'\n' {
                 return true;
