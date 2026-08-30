@@ -3216,8 +3216,9 @@ impl<'a> BodyBuilder2<'a> {
     ///    scope, while the program-root body still starts at the file scope, so
     ///    declarations made at package top level are not visible to program-root
     ///    occurrences and resolve to `None`. The pre-existing `VariableKind`
-    ///    fallback already mis-reported such a `my` as `Package`; see the
-    ///    follow-up issue tracked from #14166.
+    ///    fallback already mis-reported such a `my` as `Package`.
+    ///
+    /// Both boundaries are tracked by #14173.
     fn resolve_visible_binding(&self, sigil: &str, name: &str) -> Option<&'a Binding> {
         // Qualified names are always package-qualified and never lexically bound.
         if name.contains("::") {

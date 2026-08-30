@@ -18,7 +18,7 @@
 //! Fixtures nest through `if` blocks rather than bare `{ ... }` blocks: bare
 //! blocks are not lowered into the body arena at all on current `main` (they
 //! fall through to an opaque statement), which is a separate body-lowering
-//! coverage gap and not this slice's claim.
+//! coverage gap tracked by #14173 and not this slice's claim.
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
@@ -283,7 +283,7 @@ fn our_and_my_of_the_same_spelling_remain_distinct_bindings() {
 /// identical, and already mis-reported the `my` read below as `Package`.
 /// Threading identity only makes the gap visible as `None`. Pinned here so the
 /// boundary is explicit and a future fix trips this test instead of silently
-/// changing consumer-visible classification.
+/// changing consumer-visible classification. Tracked by #14173.
 #[test]
 fn package_top_level_declarations_are_not_visible_to_program_root_occurrences() {
     let lexical = lower("package P;\nmy $lex = 1;\nprint $lex;\n");
@@ -317,7 +317,7 @@ fn package_top_level_declarations_are_not_visible_to_program_root_occurrences() 
 ///
 /// This is a scope-graph modelling gap in pass 1, which this slice does not
 /// touch — threading identity only makes it observable. Pinned so the boundary
-/// is explicit and a future scope fix trips this test.
+/// is explicit and a future scope fix trips this test. Tracked by #14173.
 #[test]
 fn foreach_iterator_shares_the_enclosing_scope_and_does_not_shadow() {
     let source = "sub f { my $i = 9; foreach my $i (1,2) { print $i; } print $i; }\n";
