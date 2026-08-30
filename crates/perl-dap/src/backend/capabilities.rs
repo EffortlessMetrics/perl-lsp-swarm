@@ -239,8 +239,9 @@ pub struct NegotiatedDapCapabilities {
     pub supports_data_breakpoints: bool,
     /// `supportsEvaluateForHovers`.
     ///
-    /// Gated by [`advertises_evaluate_for_hovers`], independently of
-    /// [`Self::supports_evaluate`] (#9573).
+    /// Pinned false by the crate-internal hover authority, independently of
+    /// [`Self::supports_evaluate`], until a pure selected-frame inspection path
+    /// is proven (#9573).
     pub supports_evaluate_for_hovers: bool,
     /// Whether the backend can serve a general `evaluate` request.
     ///
