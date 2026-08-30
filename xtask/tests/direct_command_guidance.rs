@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use walkdir::WalkDir;
 
@@ -79,4 +80,33 @@ fn contains_word_matches_standalone_case_insensitively() {
     assert!(!contains_word("rtk_command", "rtk"));
     assert!(!contains_word("rtk2", "rtk"));
     assert!(!contains_word("myrtk", "rtk"));
+}
+
+fn cache_writer_contract_path(root: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = root.join("scripts/ci/test_cache_writer_authority_13924.py");
+    if !path.is_file() {
+        return Err(format!(
+            "cache-writer authority contract is not discoverable: {}",
+            path.display()
+        )
+        .into());
+    }
+    Ok(path)
+}
+
+#[test]
+fn required_harness_runs_cache_writer_authority_contract() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = repository_root()?;
+    let script = cache_writer_contract_path(&root)?;
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let status = Command::new(python).arg(script).current_dir(&root).status()?;
+    assert!(status.success(), "cache-writer authority contract failed");
+    Ok(())
+}
+
+#[test]
+fn missing_cache_writer_authority_contract_fails_discovery() {
+    let missing_root = Path::new("definitely-missing-cache-writer-contract-root");
+    assert!(cache_writer_contract_path(missing_root).is_err());
 }
