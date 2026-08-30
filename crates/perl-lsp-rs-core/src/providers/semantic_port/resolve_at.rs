@@ -595,7 +595,12 @@ fn build_resolved(
         canonical_name: entity.canonical_name.clone(),
         occurrence_anchor_id: occurrence.anchor_id,
         entity_anchor_id: entity.anchor_id,
-        scope_id: occurrence.scope_id.or(entity.scope_id),
+        // Never fall back to `entity.scope_id`: that is the entity's
+        // declaration scope, not the cursor's. For an import, a package
+        // member, or a shadowed lexical the two differ, and substituting one
+        // for the other would report a use site the occurrence never had.
+        // An unpublished occurrence scope stays absent.
+        scope_id: occurrence.scope_id,
         provenance: occurrence.provenance,
         confidence: occurrence.confidence,
         entity_provenance: entity.provenance,

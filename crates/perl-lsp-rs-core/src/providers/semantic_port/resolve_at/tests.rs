@@ -872,3 +872,45 @@ fn another_file_at_the_same_offset_does_not_satisfy_the_request() {
 
     assert_eq!(other_file.stage(), "unavailable");
 }
+
+// ── The reported scope is the occurrence's use site, never the declaration ──
+
+/// `scope_id` is documented as the scope *containing the occurrence*. The
+/// entity's scope is where it was declared, which for an import, a package
+/// member, or a shadowed lexical is a different scope entirely. An occurrence
+/// that published no scope must stay absent rather than borrow the entity's,
+/// or an exact identity would carry a use site the cursor never had.
+#[test]
+fn a_missing_occurrence_scope_is_not_filled_from_the_entity() {
+    let mut declared_elsewhere = entity(1, EntityKind::Variable, "$value", Some(100));
+    declared_elsewhere.scope_id = Some(ScopeId(77));
+    let mut used_here = occurrence(50, OccurrenceKind::Read, Some(1), 101);
+    used_here.scope_id = None;
+
+    let source = StubSource::default().with_symbol(10, declared_elsewhere, used_here);
+
+    let outcome = resolve(&source, 10);
+
+    assert_eq!(
+        expect_exact(&outcome).scope_id,
+        None,
+        "an unpublished occurrence scope must stay absent, not borrow ScopeId(77) from the entity"
+    );
+}
+
+/// Positive control on the same shape: when the occurrence does publish a
+/// scope, that scope is reported even though the entity names a different one.
+/// Pins the rule as "the occurrence's scope" rather than "whichever is Some".
+#[test]
+fn a_published_occurrence_scope_wins_over_a_different_entity_scope() {
+    let mut declared_elsewhere = entity(1, EntityKind::Variable, "$value", Some(100));
+    declared_elsewhere.scope_id = Some(ScopeId(77));
+    let mut used_here = occurrence(50, OccurrenceKind::Read, Some(1), 101);
+    used_here.scope_id = Some(ScopeId(88));
+
+    let source = StubSource::default().with_symbol(10, declared_elsewhere, used_here);
+
+    let outcome = resolve(&source, 10);
+
+    assert_eq!(expect_exact(&outcome).scope_id, Some(ScopeId(88)));
+}
