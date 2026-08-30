@@ -189,6 +189,43 @@ fn an_input_that_violates_the_published_contract_is_refused() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn a_future_dated_observation_still_leaves_its_invalid_receipt() -> Result<()> {
+    // Raised in review: temporal plausibility needs a clock, so it is judged at
+    // this boundary rather than inside the deterministic classifier. Routing it
+    // through an early error made this the one untrustworthy observation that
+    // produced no durable artifact — backwards, since that is when an operator
+    // most needs to see why.
+    let root = repo_root()?;
+    let temp = tempfile::TempDir::new()?;
+    let observation = temp.path().join("observation.json");
+    let receipt_path = temp.path().join("future.json");
+
+    let mut document: Value = serde_json::from_slice(&fs::read(
+        root.join("fixtures/open_vsx_public_state/synthetic_available_exact.json"),
+    )?)?;
+    document["observed_at"] = Value::String("2099-01-01T00:00:00Z".to_owned());
+    fs::write(&observation, serde_json::to_vec_pretty(&document)?)?;
+
+    let output = run_probe(&observation, &receipt_path)?;
+
+    assert!(!output.status.success(), "a future-dated observation must not exit zero");
+    assert!(receipt_path.is_file(), "the receipt must survive a future-dated observation");
+    let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
+    assert_eq!(receipt["state"].as_str(), Some("invalid"));
+    let codes: Vec<&str> = receipt["blockers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|blocker| blocker["code"].as_str())
+        .collect();
+    assert!(
+        codes.contains(&"observation_dated_in_the_future"),
+        "the receipt must record why it was refused; blockers={codes:?}"
+    );
+    Ok(())
+}
+
 fn run_probe(input: &Path, out: &Path) -> Result<Output> {
     let mut command = cargo_bin_cmd!("open-vsx-public-state");
     Ok(command.arg("--input").arg(input).arg("--out").arg(out).output()?)

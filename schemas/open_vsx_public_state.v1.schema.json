@@ -404,7 +404,7 @@
           ]
         },
         "identity_match": {
-          "description": "Whether this surface affirmed the exact subject identity, where the surface can express that. Null where the surface carries no identity claim. On the search surface this is scoped to a single bounded result page: false means the subject did not appear on that page, not that the registry cannot discover it. The classifier does not consume this value on any surface.",
+          "description": "Whether this surface affirmed the exact subject identity, where the surface can express that. Null where the surface carries no identity claim. On the search surface this is scoped to a single bounded result page: false means the subject did not appear on that page, not that the registry cannot discover it. The classifier does not consume the search surface's value; the namespace and extension surfaces' values do select states.",
           "type": [
             "boolean",
             "null"

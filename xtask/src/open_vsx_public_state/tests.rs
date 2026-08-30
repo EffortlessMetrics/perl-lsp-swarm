@@ -262,6 +262,58 @@ fn a_published_search_result_declares_the_page_it_was_drawn_from() -> Result<()>
     if !unattempted.limitations.iter().any(|entry| entry.contains("was not established")) {
         bail!("a search that never ran did not say discoverability was unestablished");
     }
+
+    // Raised in review against the first version of this limitation: a
+    // structurally invalid observation never reaches `classify_state`, yet the
+    // receipt still publishes the search cell's identity match. The scope has to
+    // travel with the value on that path too.
+    let invalid = receipt(UNPLANNED_URL)?;
+    expect_state(&invalid, PublicState::Invalid, "unplanned URL")?;
+    if !invalid.limitations.iter().any(|entry| entry.contains("Search discoverability")) {
+        bail!("an invalid receipt published a search verdict with no scope beside it");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_404_that_carries_affirmative_content_is_refused_rather_than_read_as_absence() -> Result<()> {
+    // The 404 is the only status treated as affirmative absence, and it was
+    // accepted regardless of what the instrument claimed to have parsed out of
+    // the same response. An observation whose transport denies the resource
+    // while its own payload names it is describing two different worlds; that is
+    // an untrustworthy instrument, and resolving it toward absence is the exact
+    // failure this module exists to prevent.
+    let contradictions: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+        (
+            "extension metadata affirms the identity",
+            Box::new(|document: &mut Value| {
+                document["cells"]["extension_metadata"]["identity_matches"] = json!(true);
+            }),
+        ),
+        (
+            "extension metadata publishes rows",
+            Box::new(|document: &mut Value| {
+                document["cells"]["extension_metadata"]["versions"] = json!(["0.17.0"]);
+            }),
+        ),
+        (
+            "the package endpoint reports bytes",
+            Box::new(|document: &mut Value| {
+                document["cells"]["versioned_file"]["version"] = json!("0.17.0");
+            }),
+        ),
+    ];
+
+    for (label, patch) in contradictions {
+        let receipt = receipt_with(INCIDENT, |document| patch(document))?;
+        expect_state(&receipt, PublicState::Invalid, label)?;
+        expect_blocker(&receipt, "contradictory_absence_payload")?;
+    }
+
+    // The unmodified incident fixture is the positive control: three clean 404s
+    // with nothing affirmative beside them still reach absence, so this rule
+    // rejects contradiction rather than rejecting 404s.
+    expect_state(&receipt(INCIDENT)?, PublicState::ExtensionMissing, "clean absences")?;
     Ok(())
 }
 

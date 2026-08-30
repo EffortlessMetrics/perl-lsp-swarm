@@ -60,6 +60,13 @@ pub(crate) fn classify(observation: Observation) -> Receipt {
         );
     }
 
+    // Stated here rather than inside `classify_state`, because an observation
+    // that fails structurally never reaches that function while `build_cells`
+    // still publishes the search surface's identity match. Raised in review
+    // against the first version of this limitation, which had exactly that hole:
+    // the scope has to accompany the value wherever the value goes.
+    limitations.push(search_scope(&observation));
+
     let public_bytes = retrievable_public_bytes(&observation);
     if public_bytes.is_none() {
         limitations.push(
@@ -127,6 +134,81 @@ pub(crate) fn classify(observation: Observation) -> Receipt {
         limitations,
         blockers,
         state,
+    }
+}
+
+/// Force a receipt to `invalid` for a finding this classifier cannot make itself.
+///
+/// Temporal plausibility is the only such finding: deciding whether an instant
+/// is in the future needs a clock, and reading one inside [`classify`] would
+/// make classification non-deterministic. Raised in review: routing that finding
+/// through an early error meant the one untrustworthy observation the CLI caught
+/// was also the only one that produced no durable receipt, which is backwards —
+/// an operator needs the artifact most when the input could not be trusted.
+pub(crate) fn invalidate(receipt: &mut Receipt, code: &str, message: impl Into<String>) {
+    receipt.blockers.push(Blocker::new(code, message));
+    receipt.blockers.sort();
+    receipt.blockers.dedup();
+    receipt.state = PublicState::Invalid;
+}
+
+/// Surfaces whose transport reported an affirmative `404` while their own parsed
+/// payload affirms the thing that `404` denies, with what each one affirmed.
+///
+/// Sorted by [`Cell::ALL`] order, so the findings are deterministic.
+fn absence_contradictions(observation: &Observation) -> Vec<(Cell, &'static str)> {
+    let cells = &observation.cells;
+    // `observe` maps 404 to ProvenAbsent, so this asks the same question the
+    // classifier will ask rather than re-reading the raw status.
+    let proven_absent =
+        |cell: Cell| observe(transport_for(observation, cell)) == CellObservation::ProvenAbsent;
+
+    let mut found = Vec::new();
+    if proven_absent(Cell::Search) && cells.search.matched_identity == Some(true) {
+        found.push((Cell::Search, "a search match for this exact identity"));
+    }
+    if proven_absent(Cell::NamespaceMetadata)
+        && cells.namespace_metadata.namespace_present == Some(true)
+    {
+        found.push((Cell::NamespaceMetadata, "that the namespace is present"));
+    }
+    if proven_absent(Cell::ExtensionMetadata) {
+        if cells.extension_metadata.identity_matches == Some(true) {
+            found.push((Cell::ExtensionMetadata, "a matching extension identity"));
+        }
+        if cells.extension_metadata.versions.as_ref().is_some_and(|rows| !rows.is_empty()) {
+            found.push((Cell::ExtensionMetadata, "published version rows"));
+        }
+    }
+    if proven_absent(Cell::VersionRows)
+        && cells.version_rows.versions.as_ref().is_some_and(|rows| !rows.is_empty())
+    {
+        found.push((Cell::VersionRows, "published version rows"));
+    }
+    if proven_absent(Cell::VersionedFile)
+        && (cells.versioned_file.sha256.is_some()
+            || cells.versioned_file.byte_length.is_some()
+            || cells.versioned_file.version.is_some())
+    {
+        found.push((Cell::VersionedFile, "retrieved package bytes"));
+    }
+    found
+}
+
+/// What the search surface's published identity match is, and is not, scoped to.
+///
+/// The planned query reads one bounded page and does not paginate, so a `false`
+/// says the subject was not on that page — never that the registry cannot
+/// discover it. The classifier does not consume this value on any path; the
+/// receipt publishes it, which is why the bound has to be published beside it.
+fn search_scope(observation: &Observation) -> String {
+    match observe(&observation.cells.search.transport) {
+        CellObservation::Present => format!(
+            "Search discoverability was assessed against a single bounded result page of at most \
+             {SEARCH_PAGE_SIZE} results, so this surface cannot establish global discoverability \
+             or its absence."
+        ),
+        _ => "Search discoverability was not established for this observation.".to_owned(),
     }
 }
 
@@ -363,6 +445,25 @@ fn structural_findings(
         }
     }
 
+    // Raised in review: a `404` is the only status this classifier treats as
+    // affirmative absence, and it was accepted no matter what the instrument
+    // claimed to have parsed out of the same response. An observation whose
+    // transport says the resource is not there while its own payload names a
+    // matching identity, published versions or retrieved package bytes is
+    // describing two different worlds. That is an untrustworthy instrument, not
+    // a registry fact, so it is refused rather than resolved in either
+    // direction — least of all toward absence, which is the conclusion this
+    // module exists to make hard to reach.
+    for (cell, affirmed) in absence_contradictions(observation) {
+        findings.push(Blocker::new(
+            "contradictory_absence_payload",
+            format!(
+                "the {} surface reported an affirmative 404 while also reporting {affirmed}",
+                cell.key()
+            ),
+        ));
+    }
+
     let file = &observation.cells.versioned_file;
     if let Some(digest) = &file.sha256
         && !is_sha256(digest)
@@ -407,27 +508,12 @@ fn classify_state(
     let mut limitations = Vec::new();
 
     let listing = observe(&observation.cells.listing.transport);
-    let search = observe(&observation.cells.search.transport);
+    // The search cell is deliberately absent from this function: discoverability
+    // is reported by the receipt and never raises or lowers the classification.
     let namespace_metadata = observe(&observation.cells.namespace_metadata.transport);
     let extension_metadata = observe(&observation.cells.extension_metadata.transport);
     let version_rows = observe(&observation.cells.version_rows.transport);
     let versioned_file = observe(&observation.cells.versioned_file.transport);
-
-    if search == CellObservation::ProviderFailed || search == CellObservation::NotAttempted {
-        limitations
-            .push("Search discoverability was not established for this observation.".to_owned());
-    } else if search == CellObservation::Present {
-        // Raised in review: the planned query reads one bounded result page, so
-        // a `false` identity match on this surface says the subject was not on
-        // that page — not that the registry cannot discover it. The classifier
-        // never consumes this value, but the receipt publishes it, and a
-        // consumer reading it as global discoverability would be over-reading.
-        limitations.push(format!(
-            "Search discoverability was assessed against a single bounded result page of at most \
-             {SEARCH_PAGE_SIZE} results, so this surface cannot establish global discoverability \
-             or its absence."
-        ));
-    }
 
     // A namespace that is gone or renamed is the narrower diagnosis; reporting
     // it as a missing extension would send the incident down the wrong path.

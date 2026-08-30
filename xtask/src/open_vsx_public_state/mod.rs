@@ -37,7 +37,7 @@ mod tests;
 
 use crate::receipt_output::{ensure_safe_output, prepare_output_parent, write_receipt};
 use clap::Parser;
-use classify::classify;
+use classify::{classify, invalidate};
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use model::{Observation, PublicState};
 use std::fs;
@@ -73,7 +73,19 @@ pub fn run_with_paths(input: PathBuf, out: PathBuf) -> Result<()> {
     prepare_output_parent(SUBJECT, &out)?;
     ensure_safe_output(SUBJECT, &out, &[input.as_path()])?;
 
-    let receipt = classify(observation);
+    let future_dated = dated_in_the_future(&observation);
+    let mut receipt = classify(observation);
+    if future_dated {
+        invalidate(
+            &mut receipt,
+            "observation_dated_in_the_future",
+            format!(
+                "observed_at is beyond the {CLOCK_SKEW_ALLOWANCE_MINUTES}-minute clock-skew \
+                 allowance, so it cannot describe a completed probe"
+            ),
+        );
+    }
+
     // The receipt is persisted before any exit decision: a durable artifact must
     // exist for every state, and a write failure must never leave a caller with
     // a green summary and no evidence.
@@ -138,21 +150,20 @@ fn load_observation(path: &Path) -> Result<Observation> {
     let observation: Observation = serde_json::from_value(document)
         .wrap_err_with(|| format!("parsing Open VSX observation {}", path.display()))?;
 
-    // Temporal plausibility lives here, not in `classify`: reading a clock would
-    // make classification non-deterministic, and determinism is a property the
-    // receipt contract depends on. An instant in the future cannot describe a
-    // probe that already ran.
-    if let Ok(observed) = chrono::DateTime::parse_from_rfc3339(&observation.observed_at) {
-        let skew = chrono::Utc::now() + chrono::Duration::minutes(CLOCK_SKEW_ALLOWANCE_MINUTES);
-        if observed.with_timezone(&chrono::Utc) > skew {
-            bail!(
-                "Open VSX observation {} is dated {}, beyond the {CLOCK_SKEW_ALLOWANCE_MINUTES}-minute \
-                 clock-skew allowance; it cannot describe a completed probe",
-                path.display(),
-                observation.observed_at
-            );
-        }
-    }
-
     Ok(observation)
+}
+
+/// Whether this observation is dated further ahead than the clock-skew allowance.
+///
+/// Temporal plausibility lives here, not in `classify`: reading a clock would
+/// make classification non-deterministic, and determinism is a property the
+/// receipt contract depends on. An instant in the future cannot describe a probe
+/// that already ran. A value that does not parse is not judged here — that is
+/// `malformed_observed_at`, which the classifier already reports.
+fn dated_in_the_future(observation: &Observation) -> bool {
+    let Ok(observed) = chrono::DateTime::parse_from_rfc3339(&observation.observed_at) else {
+        return false;
+    };
+    let allowance = chrono::Utc::now() + chrono::Duration::minutes(CLOCK_SKEW_ALLOWANCE_MINUTES);
+    observed.with_timezone(&chrono::Utc) > allowance
 }
