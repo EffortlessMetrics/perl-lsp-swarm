@@ -1,92 +1,52 @@
-# Gold Corpus — Editor Intelligence Validation
+# Gold Corpus — Diagnostics Validation Fixtures
 
-The gold corpus is a curated set of Perl fixtures with explicit expected editor behavior. The headless scorecard opens each `fixture.pl` through the real LSP server, replays the requests declared by its sidecars, and fails CI when any assertion regresses.
+The gold corpus is a curated set of Perl code fixtures with hand-verified expected diagnostics. Each fixture serves as a test case for the LSP diagnostics pipeline, validating that the parser correctly identifies (or does not identify) diagnostics for Perl code patterns.
 
-This corpus is behavior evidence. It is separate from the static UX measurement fixture and from the broader workflow receipt dashboard: adding a sidecar here adds a replayable protocol assertion, not a manually reported score.
+## Directory Structure
 
-## Directory structure
-
-Each scenario lives in its own directory:
-
-```text
+```
 test_corpus/gold/
-└── completion_scope_sibling/
-    ├── fixture.pl
-    └── expected_completion.json
+├── hello_world/
+│   ├── fixture.pl         # Perl source code to test
+│   └── expected.json      # Expected diagnostic assertions
+├── missing_strict/
+│   ├── fixture.pl
+│   └── expected.json
+├── v5_40_suppresses_strict/
+│   ├── fixture.pl
+│   └── expected.json
+└── [10+ more fixtures]
 ```
 
-A directory may carry more than one expectation file when the same Perl source is useful across editor surfaces.
+Each fixture is a subdirectory containing:
 
-| Sidecar | Surface | Harness behavior |
-|---|---|---|
-| `expected.json` | Diagnostics | Checks diagnostic presence, absence, and exact per-code counts |
-| `expected_hover.json` | Hover | Checks nullability and required or forbidden content |
-| `expected_goto.json` | Go to definition | Checks nullability and the first target line |
-| `expected_completion.json` | Completion | Checks non-empty results, Top-1/Top-5 relevance, presence, and forbidden noise |
-| `expected_symbols.json` | Document symbols | Checks symbol presence, absence, and total count |
-| `expected_rename.json` | Rename | Checks success, rejection, and minimum edit count |
-| `expected_module.json` | Module resolution consistency | Declares the expected result shared by diagnostics, hover, and go to definition |
+- **`fixture.pl`** — A Perl source file representing a single semantic pattern
+- **`expected.json`** — A JSON file specifying expected diagnostic assertions
 
-## Run the editor-intelligence scorecard
+## JSON Format Specification
 
-```bash
-RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs --test editor_intelligence_scorecard -- --nocapture
-```
-
-The test discovers supported sidecars automatically, prints per-surface pass rates, and fails if any assertion fails.
-
-The diagnostics-specific suite remains available separately:
-
-```bash
-cargo test -p perl-lsp-diagnostics --test diagnostics_gold_suite -- --nocapture
-```
-
-## Completion expectations
-
-A completion sidecar names the fixture and places each assertion at a zero-based LSP position:
+The `expected.json` file follows this schema:
 
 ```json
 {
-  "version": 1,
-  "fixture": "completion_scope_sibling",
-  "assertions": [
+  "diagnostics": [
     {
-      "kind": "completion_present",
-      "line": 5,
-      "character": 11,
-      "expected_label": "$sib_level_top",
-      "rationale": "the ancestor binding remains visible"
-    },
-    {
-      "kind": "completion_noise_absent",
-      "line": 5,
-      "character": 11,
-      "forbidden_label": "$sib_left",
-      "rationale": "an ended sibling binding is not visible"
+      "assertion": "no_diagnostics"
     }
   ]
 }
 ```
 
-Supported completion assertions:
+### Assertion Types
 
-| Assertion | Required field | Meaning |
-|---|---|---|
-| `completion_non_empty` | — | At least one completion item is returned |
-| `completion_top1` | `expected_label` | The expected label is first |
-| `completion_top5` | `expected_label` | The expected label appears in the first five items |
-| `completion_present` | `expected_label` | The expected label appears anywhere |
-| `completion_noise_absent` | `forbidden_label` | The forbidden label does not appear at any rank |
+| Assertion | Fields | Meaning |
+|-----------|--------|---------|
+| `no_diagnostics` | — | No diagnostics should be emitted for this fixture |
+| `no_diagnostic` | `code: String` | The specified diagnostic code should NOT be present |
+| `diagnostic_present` | `code: String`, `byte_offset?: usize`, `message_contains?: String` | A diagnostic with the given code should be present; optionally at a specific byte offset or containing a message substring |
+| `diagnostic_count` | `code: String`, `count: usize` | Exactly N diagnostics with the given code should be emitted |
 
-### Scope controls
-
-`completion_scope_sibling` proves lexical admission rather than an empty response: a file-scope binding sharing the prefix must remain present while the binding from an ended sibling block must be absent.
-
-`completion_scope_ranking` proves relevance among two valid candidates: the immediate-scope lexical must be Top-1, while the file-scope ancestor must remain within the Top-5.
-
-## Diagnostics expectations
-
-The diagnostics sidecar uses the `assertion` discriminator:
+### Complete Example
 
 ```json
 {
@@ -94,22 +54,105 @@ The diagnostics sidecar uses the `assertion` discriminator:
     {
       "assertion": "diagnostic_present",
       "code": "PL100",
+      "byte_offset": 24,
       "message_contains": "strict"
     }
   ]
 }
 ```
 
-| Assertion | Fields | Meaning |
-|---|---|---|
-| `no_diagnostics` | — | No diagnostics are emitted |
-| `no_diagnostic` | `code` | The specified diagnostic code is absent |
-| `diagnostic_present` | `code`, optional `byte_offset`, optional `message_contains` | A matching diagnostic is present |
-| `diagnostic_count` | `code`, `count` | Exactly `count` diagnostics with the code are emitted |
+## Bootstrap Fixtures (Initial 10)
 
-## Module-resolution consistency
+### 1. hello_world
 
-Module-resolution fixtures are consumed by `ux_scenario_14_inc_conformance`. They declare the module, the `@INC` resolution mode, and the expected agreement among PL701 diagnostics, go to definition, and hover.
+**Purpose**: Minimal sanity check with no expected diagnostics.
+
+### 2. missing_strict
+
+**Purpose**: Validates detection of missing `use strict`.
+
+### 3. v5_40_suppresses_strict
+
+**Purpose**: Validates that `use v5.40` implicitly enables `strict` and `warnings`.
+
+### 4. open_lexical_filehandle
+
+**Purpose**: Idiomatic lexical filehandle with three-argument open.
+
+### 5. push_arrayref
+
+**Purpose**: Dereferencing an arrayref with the `@$ref` syntax in `push`.
+
+### 6. local_special_var
+
+**Purpose**: Localizing special variables like `$/` for paragraph mode reading.
+
+### 7. map_with_default_var
+
+**Purpose**: Using the implicit `$_` topic variable in `map` and `grep`.
+
+### 8. eval_string_pragma
+
+**Purpose**: Dynamic pragma loading via `eval STRING`.
+
+### 9. use_if_strict
+
+**Purpose**: Conditional pragma loading via `use if $] >= 5.020, 'strict'` — validates that the `use if` idiom for runtime-conditional strict enablement is recognized and does not trigger PL100.
+
+### 10. parse_error_recovery
+
+**Purpose**: Parse error recovery with incomplete assignment (missing RHS).
+
+## Running the Test Suite
+
+To run the gold corpus diagnostics test suite:
+
+```bash
+cargo test -p perl-lsp-diagnostics --test diagnostics_gold_suite -- --nocapture
+```
+
+Or use the justfile target:
+
+```bash
+just metrics-diagnostics
+```
+
+Output includes:
+- Per-fixture pass/fail status
+- Diagnostic codes found vs. expected
+- Summary: passed, failed, total
+- Precision metrics
+
+## Extending the Corpus
+
+To add a new fixture:
+
+1. Create a subdirectory under `test_corpus/gold/` with a descriptive name
+2. Write your Perl code to `fixture.pl`
+3. Write expected assertions to `expected.json` using the schema above
+4. Run the test suite to validate
+
+## Integration with Other Scorecards
+
+The gold corpus directory structure supports sibling assertions for future scorecards:
+
+- `expected_diagnostics.json` — Diagnostics expectations (current)
+- `expected_hover.json` — Hover information expectations (future)
+- `expected_module.json` — Module resolution expectations (future)
+- `expected_completion.json` — Completion suggestions (future)
+
+Each fixture can carry multiple assertion files without conflicts.
+
+## Module Resolution Fixtures (5)
+
+These fixtures exercise the consumer-consistency harness
+(`ux_scenario_14_inc_conformance`). Each fixture declares which module it
+exercises, what `@INC` resolution mode is in play, and checks that the three
+consumers (PL701 diagnostic, goto-definition, hover) agree on the outcome.
+
+### Sidecar Format
+
+Each module-resolution fixture carries an `expected_module.json` sidecar:
 
 ```json
 {
@@ -123,25 +166,43 @@ Module-resolution fixtures are consumed by `ux_scenario_14_inc_conformance`. The
 }
 ```
 
-Current resolution modes include workspace `includePaths`, lexical `use lib`, `no lib` cancellation, `FindBin`-relative paths, and injected system `@INC` paths.
+### Module Resolution Fixtures
 
-Run that harness with:
+| Fixture | Resolution Mode |
+|---------|----------------|
+| `inc_relative_include_path` | Workspace config `includePaths: ["lib"]` |
+| `inc_use_lib_lexical` | In-source `use lib 'lib'` pragma |
+| `inc_no_lib_cancellation` | `use lib` then `no lib` — must NOT resolve |
+| `inc_findbin_relative` | `use FindBin; use lib "$FindBin::Bin/lib"` |
+| `inc_system_inc` | System `@INC` via injected tempdir |
+
+### inc_relative_include_path
+
+**Purpose**: Validates that workspace-level `includePaths` configuration resolves a relative `lib/` path.
+
+### inc_use_lib_lexical
+
+**Purpose**: Validates that a lexical `use lib 'lib'` pragma in the source enables module resolution.
+
+### inc_no_lib_cancellation
+
+**Purpose**: Validates that `use lib 'lib'` followed by `no lib 'lib'` cancels resolution — the module must NOT resolve.
+
+### inc_findbin_relative
+
+**Purpose**: Validates that `use FindBin; use lib "$FindBin::Bin/lib"` resolves a module relative to the script location.
+
+### inc_system_inc
+
+**Purpose**: Validates that a module present in system `@INC` (via injected tempdir) resolves correctly.
+
+### Running the Consumer Consistency Harness
 
 ```bash
 cargo test -p perl-lsp-ux-tests --test ux_scenario_14_inc_conformance -- --nocapture
 ```
 
-## Add a fixture
+## Related Issues
 
-1. Create `test_corpus/gold/<descriptive-name>/fixture.pl`.
-2. Add one or more supported expectation sidecars.
-3. Use zero-based LSP line and character positions.
-4. Include a positive control when asserting absence so an empty or broken response cannot pass.
-5. Run the focused scorecard and the relevant provider tests.
-
-## Related issues
-
-- #4065 — Bootstrap gold corpus seed fixtures and diagnostics scorecard
-- #4066 — Headless editor-intelligence scorecard
-- #4067 — Module-resolution consumer-consistency harness
-- #8941 — Cursor lexical-visibility admission for completion
+- **#4065** — Bootstrap gold corpus seed fixtures and diagnostics scorecard
+- **#4067** — Module resolution consumer consistency harness
