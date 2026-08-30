@@ -162,10 +162,8 @@ fn main() -> Result<()> {
         // The scanned worktree is a merge result; compare it against the base
         // tree actually incorporated into that result, resolved now.
         Some((resolve_merge_base(&root, spec)?, BaseSource::MergeBase(spec.to_owned())))
-    } else if let Some(recorded) = non_empty(args.base.as_deref()) {
-        Some((recorded.to_owned(), BaseSource::Recorded))
     } else {
-        None
+        non_empty(args.base.as_deref()).map(|recorded| (recorded.to_owned(), BaseSource::Recorded))
     };
     let (base, compared) = match &comparator {
         Some((comparator_sha, _)) => (scan_git_ref(&root, comparator_sha, &pattern)?, true),

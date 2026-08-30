@@ -2891,6 +2891,7 @@ fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
 /// one whose Cargo output includes an unrelated occurrence of the word
 /// "running" — will not produce that line. `test result:` is the harness
 /// footer; either marker alone proves the binary was reached.
+#[cfg(test)]
 fn parse_test_execution_reached(command: &str, output: &str) -> Option<bool> {
     if !is_cargo_test_command(command) {
         return None;

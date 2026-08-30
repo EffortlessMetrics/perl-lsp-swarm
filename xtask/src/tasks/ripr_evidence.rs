@@ -1534,7 +1534,7 @@ fn repo_relative_surface_path(surface: &ProductionSurface, raw_path: &str) -> Op
     // tools must not defeat the root-prefix match against cargo's plain
     // `F:/...` workspace root.
     let normalized = normalized.strip_prefix("//?/").unwrap_or(&normalized);
-    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let normalized = normalized.strip_prefix("./").unwrap_or(normalized);
     let absolute = normalized.starts_with('/') || normalized.as_bytes().get(1) == Some(&b':');
     if !absolute {
         return Some(normalized.to_string());
@@ -1755,9 +1755,7 @@ fn lexically_join(dir: &str, relative: &str) -> Option<String> {
         match component {
             "." | "" => {}
             ".." => {
-                if components.pop().is_none() {
-                    return None;
-                }
+                components.pop()?;
             }
             other => components.push(other),
         }
@@ -1833,6 +1831,7 @@ fn pr_evidence_packet_on_surface(
     )
 }
 
+#[expect(clippy::too_many_arguments)]
 fn pr_evidence_packet_with_count(
     options: &PrEvidenceOptions,
     check_value: &Value,
