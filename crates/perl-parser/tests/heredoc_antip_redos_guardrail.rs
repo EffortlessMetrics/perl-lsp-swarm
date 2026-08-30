@@ -219,11 +219,14 @@ fn antip_eval_keyword_is_not_matched_as_an_identifier_suffix() {
     );
     assert!(
         has_eval_string("CORE::eval 'print <<EOF;';\n"),
-        "CORE::eval is the builtin and must still be reported"
+        "CORE::eval names the builtin explicitly and must still be reported"
     );
+
+    // `CORE::GLOBAL::` is the override slot, not the builtin: calling it by name
+    // invokes a user-defined replacement, so it belongs with `Foo::eval`.
     assert!(
-        has_eval_string("CORE::GLOBAL::eval 'print <<EOF;';\n"),
-        "CORE::GLOBAL::eval is the builtin and must still be reported"
+        !has_eval_string("CORE::GLOBAL::eval 'print <<EOF;';\n"),
+        "CORE::GLOBAL::eval is a user override, not the builtin"
     );
 }
 

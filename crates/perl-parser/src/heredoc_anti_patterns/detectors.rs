@@ -415,8 +415,13 @@ static EVAL_HEREDOC_PATTERN: LazyLock<Regex> =
 /// * a match seeded inside a comment or string literal — masking blanks those,
 ///   so the keyword no longer reads as `eval` at this offset;
 /// * a package-qualified call such as `Foo::eval`, which the pattern's leading
-///   `\b` admits because `:` is not a word character. `CORE::eval` and
-///   `CORE::GLOBAL::eval` are the builtin under its explicit spellings and stay.
+///   `\b` admits because `:` is not a word character.
+///
+/// `CORE::eval` is the one qualified spelling that stays: it explicitly names
+/// the builtin and bypasses any override. `CORE::GLOBAL::eval` deliberately does
+/// *not* — that package is the override slot, so calling it by name invokes a
+/// user-defined replacement, which is the same "some other function" case as
+/// `Foo::eval`.
 fn eval_match_is_builtin(scan_code: &str, start: usize) -> bool {
     if scan_code.get(start..start + EVAL_KEYWORD.len()) != Some(EVAL_KEYWORD) {
         return false;
@@ -431,7 +436,7 @@ fn eval_match_is_builtin(scan_code: &str, start: usize) -> bool {
 
     match prefix[path_start..].strip_suffix("::") {
         None => true,
-        Some(qualifier) => qualifier == "CORE" || qualifier == "CORE::GLOBAL",
+        Some(qualifier) => qualifier == "CORE",
     }
 }
 
