@@ -114,13 +114,17 @@ Parser accuracy is measured against a real-Perl corpus and locked behind committ
 baselines:
 
 ```bash
-just corpus-sweep          # measure against the system Perl corpus
+just corpus-sweep          # measure against the system Perl corpus (no enforcement)
+just corpus-sweep-check    # enforce against .ci/parser-corpus-baseline.json
 just common-corpus-check   # strict pinned-module check
 just corpus-sweep-update   # lock a new .ci/parser-corpus-baseline.json
 ```
 
-The baselines are ratchets. Re-measure and lock a new baseline after a parser improvement
-lands — never widen a baseline to turn a red sweep green.
+The baselines are ratchets. `corpus-sweep` only measures; `corpus-sweep-check` is the
+recipe that fails on regression, so run it before `corpus-sweep-update` — otherwise an
+update can overwrite the committed baseline after a regression without anything reporting
+a ratchet violation. Lock a new baseline only after a parser improvement lands, never to
+turn a red sweep green.
 
 ---
 
