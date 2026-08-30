@@ -3,6 +3,15 @@
 //! Each observation runs in a fresh child test process. The parent never
 //! mutates process-global `PATH`, `PATHEXT`, or the current directory, and no
 //! fabricated command is executed.
+//!
+//! # Claim boundary
+//!
+//! This contract proves only the public free function
+//! `perl_lsp::execute_command::command_exists`. The `pub(crate)` instance
+//! method in `execute_command/provider.rs` intentionally has divergent
+//! platform behavior — Windows delegates to the hardened PATH-only resolver in
+//! `perl_subprocess_runtime`, and non-Windows spawns `which` under a 2-second
+//! timeout — and is exercised by its own scoped proof, not by this contract.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -11,9 +20,11 @@ use std::env;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -22,6 +33,8 @@ const CHILD_MODE_ENV: &str = "PERL_LSP_COMMAND_EXISTS_CHILD";
 const CHILD_COMMAND_ENV: &str = "PERL_LSP_COMMAND_EXISTS_NAME";
 const CHILD_EXPECTED_ENV: &str = "PERL_LSP_COMMAND_EXISTS_EXPECTED";
 const CHILD_FILTER: &str = "command_exists_contract_child";
+const CHILD_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+const CHILD_PROBE_POLL: Duration = Duration::from_millis(20);
 
 fn command_candidate_name(command: &str) -> String {
     #[cfg(windows)]
@@ -102,16 +115,42 @@ fn run_child_probe(
     #[cfg(not(windows))]
     let _ = path_ext;
 
-    let output = child.output()?;
-    if output.status.success() {
+    child.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let probe_started = Instant::now();
+    let mut child = child.spawn()?;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if probe_started.elapsed() >= CHILD_PROBE_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::other(format!(
+                "isolated command probe for {command:?} (expected {expected}) timed out after {CHILD_PROBE_TIMEOUT:?}"
+            ))
+            .into());
+        }
+        thread::sleep(CHILD_PROBE_POLL);
+    };
+
+    let mut probe_stdout = Vec::new();
+    let mut probe_stderr = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_end(&mut probe_stdout)?;
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_end(&mut probe_stderr)?;
+    }
+    let elapsed = probe_started.elapsed();
+
+    if status.success() {
         return Ok(());
     }
 
     Err(io::Error::other(format!(
-        "isolated command probe failed for {command:?} (expected {expected}, status {}):\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        "isolated command probe failed for {command:?} (expected {expected}, status {status}, elapsed {elapsed:?}):\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&probe_stdout),
+        String::from_utf8_lossy(&probe_stderr)
     ))
     .into())
 }
@@ -198,6 +237,21 @@ fn public_command_exists_handles_path_entries_with_spaces() -> TestResult {
     let path = joined_path(&[path_entry.as_path()])?;
 
     run_child_probe(command, Some(path.as_os_str()), platform_path_ext(), root.path(), true)
+}
+
+#[test]
+fn public_command_exists_rejects_cwd_sibling_under_empty_path_entry() -> TestResult {
+    let root = tempdir()?;
+    let command = "perl_lsp_empty_path_entry_command_subject";
+    write_valid_candidate(root.path(), command)?;
+    let path = joined_path(&[Path::new("")])?;
+
+    // A launchable sibling sits in the child's current directory and the only
+    // PATH entry is empty. The public lookup must not interpret the empty
+    // entry as the working directory (the CWD-first admission seam): it must
+    // reject the candidate. which 8.x filters empty PATH entries outright, so
+    // this row also pins that filtering as load-bearing behavior.
+    run_child_probe(command, Some(path.as_os_str()), platform_path_ext(), root.path(), false)
 }
 
 #[cfg(unix)]
