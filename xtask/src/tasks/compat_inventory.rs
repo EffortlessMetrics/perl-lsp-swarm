@@ -709,14 +709,12 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
     for line in code_lines(source) {
         let trimmed = line.trim();
 
-        let mut on_header_line = false;
         if depth == 0
             && !awaiting_impl_body
             && (trimmed.starts_with("impl ") || trimmed.starts_with("impl<"))
         {
             impl_type = inherent_impl_type(trimmed);
             awaiting_impl_body = true;
-            on_header_line = true;
         } else if let Some((name, kind, visibility)) = parse_item(trimmed) {
             if depth == 0 {
                 out.push((name, kind, visibility));
@@ -729,7 +727,7 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
         }
 
         let delta = brace_delta(trimmed);
-        if awaiting_impl_body && impl_body_opens(trimmed, delta, on_header_line) {
+        if awaiting_impl_body && impl_body_opens(trimmed, delta) {
             awaiting_impl_body = false;
         }
 
@@ -753,33 +751,35 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
 ///
 /// A brace left open can only be the body. The hard case is a line whose braces
 /// balance, which is either an empty body or a braced const-generic argument
-/// inside the type — and which one depends on where the line sits:
+/// inside the type. What separates them is not where the line sits but what the
+/// final brace group *contains*: an empty body encloses nothing, a const
+/// argument encloses an expression.
 ///
-/// | line | shape | body? |
+/// | line | final group | body? |
 /// |---|---|---|
-/// | header | `impl Foo {}` | yes — an empty body is written on the header |
-/// | header | `impl Foo<{ N + 1 }>` | no — the group is inside the type |
-/// | continuation | `{ N + 1 }` | no — a const argument spanning lines |
-/// | continuation | `{}` | yes — the body, on its own line |
+/// | `impl Foo {}` | empty | yes |
+/// | `impl Foo<{ N + 1 }>` | does not end the line | no |
+/// | `{ N + 1 }` | `N + 1` | no — a const argument spanning lines |
+/// | `{}`, `{ }`, `where T: Copy {}` | empty | yes |
 ///
-/// On the header a balanced group that *ends* the line is the body, because a
-/// type argument is always followed by the rest of the type. On a continuation
-/// line only a bare `{}` is, because a wrapped header's remaining tokens are
-/// type syntax.
-///
-/// This deliberately reads braces and line shape rather than tracking
-/// angle-bracket depth: `<` and `>` are ambiguous in Rust (comparison, shifts,
-/// nested generics), so counting them would add a larger failure surface than
-/// the one it closes. Literals and comments are already blanked by `code_lines`,
-/// so their braces cannot reach here.
-fn impl_body_opens(trimmed: &str, delta: i32, on_header_line: bool) -> bool {
-    if delta > 0 {
-        return true;
-    }
-    if delta != 0 {
+/// This deliberately reads brace structure rather than tracking angle-bracket
+/// depth: `<` and `>` are ambiguous in Rust (comparison, shifts, nested
+/// generics, and `->` in a bound), so counting them would add a larger failure
+/// surface than the one it closes. Literals and comments are already removed by
+/// `code_lines`, so `{ /* … */ }` reaches here as an empty group.
+fn impl_body_opens(trimmed: &str, delta: i32) -> bool {
+    delta > 0 || (delta == 0 && closes_an_empty_brace_group(trimmed))
+}
+
+/// Whether the line ends by closing a brace group that encloses nothing.
+fn closes_an_empty_brace_group(trimmed: &str) -> bool {
+    let Some(head) = trimmed.strip_suffix('}') else {
         return false;
+    };
+    match head.rfind('{') {
+        Some(open) => head[open + 1..].trim().is_empty(),
+        None => false,
     }
-    if on_header_line { trimmed.ends_with('}') } else { trimmed == "{}" }
 }
 
 /// The type an inherent `impl` block belongs to, or `None` for a trait impl.
@@ -2290,6 +2290,36 @@ pub fn free() -> usize {
             ],
             "a const argument spanning lines is type syntax, not the body"
         );
+        Ok(())
+    }
+
+    /// An empty body on a continuation line is not always the bare token `{}`:
+    /// a where clause can precede it, and the braces can enclose whitespace or a
+    /// comment. All of them close the impl, and failing to notice leaves the
+    /// header pending and swallows whatever `impl` comes next.
+    #[test]
+    fn empty_bodies_close_in_every_spelling() -> TestResult {
+        for body in ["{}", "{ }", "{ /* nothing to do */ }", "where T: Copy {}"] {
+            let source = format!(
+                "impl Grid<T>\n    {body}\n\nimpl Other {{\n    pub fn owned(&self) -> usize {{\n        0\n    }}\n}}\n"
+            );
+            assert_eq!(
+                parse_public_items(&source),
+                vec![("Other::owned".to_string(), SymbolKind::Method)],
+                "an empty body spelled `{body}` must close so the next impl is parsed"
+            );
+        }
+        Ok(())
+    }
+
+    /// The control that keeps the rule above from swallowing const arguments: a
+    /// brace group with an expression in it is type syntax, whatever it ends.
+    #[test]
+    fn a_nonempty_brace_group_on_a_continuation_line_is_not_a_body() -> TestResult {
+        assert!(!impl_body_opens("{ N + 1 }", 0), "a const argument is not an empty body");
+        assert!(!impl_body_opens("where T: Copy", 0), "a bare where clause opens nothing");
+        assert!(impl_body_opens("{ }", 0), "whitespace between braces is still an empty body");
+        assert!(impl_body_opens("impl Foo {", 1), "an unclosed brace is the body");
         Ok(())
     }
 
