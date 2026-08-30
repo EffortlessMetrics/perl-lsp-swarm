@@ -1602,17 +1602,28 @@ pub fn project_combination(
         action_ids.retain(|id| id != NO_ACTION);
     }
 
+    // Emit rows in *selection* order, not in the order the global action
+    // registry happens to list them. `action_ids` is built primary-reason
+    // first, then additional reasons, in each reason's own declared order, so
+    // it already carries the priority the registry author expressed; filtering
+    // the global array threw that away and substituted an unrelated one.
+    //
+    // This was user-visible. Every `inv_` reason declares
+    // `["report_instrument_failure", "inspect_exact_receipt"]`, but the global
+    // registry lists `inspect_exact_receipt` first, so a contradictory packet
+    // led with "inspect the receipt" instead of "report the instrument
+    // failure" — the wrong first move for an outcome whose whole point is that
+    // the record cannot be trusted.
     let action_rows: Vec<Value> = manifest
         .get("actions")
         .and_then(Value::as_array)
         .map(|actions| {
-            actions
+            action_ids
                 .iter()
-                .filter(|action| {
-                    action
-                        .get("action_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|id| action_ids.iter().any(|selected| selected == id))
+                .filter_map(|selected| {
+                    actions.iter().find(|action| {
+                        action.get("action_id").and_then(Value::as_str) == Some(selected.as_str())
+                    })
                 })
                 .cloned()
                 .collect()

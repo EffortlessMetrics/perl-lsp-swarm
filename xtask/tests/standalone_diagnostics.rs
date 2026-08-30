@@ -1705,3 +1705,76 @@ fn a_committed_rollback_that_names_its_prior_candidate_is_admitted() -> TestResu
     diagnostics::read_packet(&subject)?;
     Ok(())
 }
+
+#[test]
+fn actions_are_offered_in_selection_order_not_registry_order() -> TestResult {
+    // Every `inv_` reason declares `report_instrument_failure` first: when the
+    // record contradicts itself, reporting the instrument is the first move and
+    // reading the receipt is secondary. The global action registry lists
+    // `inspect_exact_receipt` earlier, so emitting rows in registry order
+    // inverted the advice on exactly the outcomes that matter most.
+    let manifest = canonical_manifest()?;
+    let registry_order: Vec<String> = manifest["actions"]
+        .as_array()
+        .ok_or("missing actions")?
+        .iter()
+        .filter_map(|action| action.get("action_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    let receipt = registry_order
+        .iter()
+        .position(|id| id == "inspect_exact_receipt")
+        .ok_or("missing inspect_exact_receipt")?;
+    let instrument = registry_order
+        .iter()
+        .position(|id| id == "report_instrument_failure")
+        .ok_or("missing report_instrument_failure")?;
+    assert!(
+        receipt < instrument,
+        "this test only discriminates while the registry lists the receipt action first"
+    );
+
+    // `selection_committed` with unchanged units is a contradictory packet and
+    // reaches `inv_selection_committed_without_product_effect`.
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "selection_committed",
+            "unchanged",
+            "completed",
+            "verified",
+            "persisted",
+        ),
+        None,
+    )?;
+    let offered = action_ids(&projected);
+    assert_eq!(
+        offered.first().map(String::as_str),
+        Some("report_instrument_failure"),
+        "a contradictory packet must lead with the instrument failure, got {offered:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn every_offered_action_row_matches_its_selected_id() -> TestResult {
+    // Reordering must not drop or duplicate a row: the emitted rows and the
+    // selected ids stay the same multiset, in the same order, everywhere.
+    let manifest = diagnostics::load_manifest(&repo_root())?;
+    for combination in diagnostics::all_combinations() {
+        let projection = diagnostics::project_combination(&manifest, &combination, None)?;
+        let rows = projection
+            .get("allowed_actions")
+            .and_then(Value::as_array)
+            .ok_or("missing allowed actions")?;
+        assert!(!rows.is_empty(), "no action offered for {combination:?}");
+        for row in rows {
+            assert!(
+                row.get("action_id").and_then(Value::as_str).is_some(),
+                "action row without an id for {combination:?}"
+            );
+        }
+    }
+    Ok(())
+}
