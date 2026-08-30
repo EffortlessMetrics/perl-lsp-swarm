@@ -789,9 +789,27 @@ mod tests {
         let result = validate_report_for_ci(&report);
         assert!(result.is_err(), "non-recovery allowlist entries must be rejected");
         if let Err(error) = result {
+            let message = error.to_string();
             assert!(
-                error.to_string().contains("is not a recovery kind"),
+                message.contains("'AmperCall'") && message.contains("recovery kind"),
                 "validator error should identify the invalid allowlist membership: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_report_for_ci_rejects_actionable_recovery_entry() {
+        // The opposite dishonest partition is also invalid: recovery-only
+        // kinds cannot be made actionable by changing their cached bucket.
+        let report = synthetic_report(vec!["Error".to_string()], Vec::new(), 73);
+
+        let result = validate_report_for_ci(&report);
+        assert!(result.is_err(), "actionable recovery entries must be rejected");
+        if let Err(error) = result {
+            let message = error.to_string();
+            assert!(
+                message.contains("'Error'") && message.contains("recovery kind"),
+                "validator error should identify the invalid actionable membership: {error}"
             );
         }
     }

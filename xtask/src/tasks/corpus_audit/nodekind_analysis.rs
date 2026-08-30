@@ -192,7 +192,7 @@ fn recovery_kind_allowlist() -> HashMap<&'static str, &'static str> {
 ///   `actionable_never_seen` and `allowlisted_never_seen` names,
 /// - every omission name is a canonical `NodeKind` name from
 ///   `NodeKind::ALL_KIND_NAMES`, and
-/// - every allowlisted omission is a recovery kind,
+/// - every allowlisted omission is a recovery kind, and
 /// - every allowlisted entry carries a non-empty rationale.
 ///
 /// Each violation yields one human-readable failure message; an empty result
@@ -438,6 +438,18 @@ mod tests {
         assert!(
             failures.iter().any(|s| s.contains("is not a recovery kind")),
             "non-recovery allowlist entry must be rejected: {failures:?}"
+        );
+
+        // A recovery kind cannot be made actionable by moving it to the
+        // ordinary-omission bucket.
+        let actionable_recovery = omission_fixture(&format!(
+            r#"{{ {base}, "never_seen": ["Error"],
+                "allowlisted_never_seen": [], "actionable_never_seen": ["Error"] }}"#
+        ));
+        let failures = omission_partition_failures(&actionable_recovery);
+        assert!(
+            failures.iter().any(|s| s.contains("is a recovery kind")),
+            "actionable recovery entry must be rejected: {failures:?}"
         );
 
         // Valid recovery-only control: never_seen is exactly the allowlisted
