@@ -244,7 +244,9 @@ fn lsp_runtime_train_parallel_exclusive_writers_are_rejected() -> Result<()> {
         "parallel_disposition",
         Value::String("parallel_safe".into()),
     )?;
-    assert_rejected(&value, "exclusive writers need an exact stack relation")
+    // The per-node witness law now catches this strictly earlier than the
+    // pair-level branch did, so that branch was removed as unreachable.
+    assert_rejected(&value, "parallel-safe while sharing an exclusive writer key")
 }
 
 #[test]
@@ -256,6 +258,7 @@ fn lsp_runtime_train_conflict_serialized_node_without_stack_relation_is_rejected
         "stack_relation",
         Value::String("independent".into()),
     )?;
+    set_node_field(&mut value, "CUTOVER7384", "stack_target", Value::Null)?;
     assert_rejected(&value, "name the candidate it stacks on")
 }
 
@@ -569,15 +572,147 @@ fn lsp_runtime_train_conflicting_writers_without_a_hard_path_are_rejected() -> R
     let mut value = real_value()?;
     // Both nodes claim a serialized disposition, but removing the hard edge
     // leaves nothing that actually orders them. A label is not an ordering.
+    // Keep a real hard edge so the per-node witness law is satisfied, but point
+    // it somewhere that does not reach FRONTIER11306 in either direction. The
+    // pair must then be unordered despite both labels being individually valid.
     set_node_field(
         &mut value,
         "CUTOVER7384",
-        "parallel_disposition",
-        Value::String("serialized_by_hard_dependency".into()),
+        "hard_dependencies",
+        Value::Array(vec![Value::String("PROBE11038".into())]),
     )?;
-    set_node_field(&mut value, "CUTOVER7384", "hard_dependencies", Value::Array(vec![]))?;
     set_node_field(&mut value, "CUTOVER7384", "consumed_authorities", Value::Array(vec![]))?;
     assert_rejected(&value, "must be backed by a real edge")
+}
+
+// ---------------------------------------------------------------------------
+// Gaps found by a second independent review (Devin, four bug findings).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lsp_runtime_train_renamed_vocabulary_value_is_rejected() -> Result<()> {
+    // Cardinality is preserved: one role is renamed, the count stays seven.
+    // A count check would pass; exact membership must not.
+    let mut value = real_value()?;
+    let roles = value
+        .get_mut("role_vocabulary")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| color_eyre::eyre::eyre!("no role_vocabulary"))?;
+    for role in roles.iter_mut() {
+        if role.get("role").and_then(Value::as_str) == Some("historical") {
+            *role.get_mut("role").ok_or_else(|| color_eyre::eyre::eyre!("no role"))? =
+                Value::String("archival".into());
+        }
+    }
+    assert_rejected(&value, "must be exactly the reviewed v1 set")
+}
+
+#[test]
+fn lsp_runtime_train_extra_edge_kind_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    value
+        .get_mut("edge_kinds")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| color_eyre::eyre::eyre!("no edge_kinds"))?
+        .push(serde_json::json!({
+            "kind": "advisory",
+            "owns": "an invented fifth class",
+            "serializes_implementation": false,
+        }));
+    assert_rejected(&value, "must be exactly the reviewed v1 set")
+}
+
+#[test]
+fn lsp_runtime_train_self_supersession_is_rejected() -> Result<()> {
+    // Self-reference satisfies reciprocity trivially, so it must fail earlier.
+    let mut value = real_value()?;
+    set_node_field(
+        &mut value,
+        "DOGFOOD11311",
+        "supersedes",
+        Value::Array(vec![Value::String("DOGFOOD11311".into())]),
+    )?;
+    set_node_field(
+        &mut value,
+        "DOGFOOD11311",
+        "superseded_by",
+        Value::Array(vec![Value::String("DOGFOOD11311".into())]),
+    )?;
+    assert_rejected(&value, "supersedes itself")
+}
+
+#[test]
+fn lsp_runtime_train_supersession_cycle_is_rejected() -> Result<()> {
+    // A reciprocal two-node cycle: each supersedes the other, so reciprocity
+    // holds in both directions and only cycle detection catches it.
+    let mut value = real_value()?;
+    set_node_field(
+        &mut value,
+        "HISTORICAL9799",
+        "supersedes",
+        Value::Array(vec![Value::String("CUTOVER7384".into())]),
+    )?;
+    push_node_string(&mut value, "CUTOVER7384", "superseded_by", "HISTORICAL9799")?;
+    assert_rejected(&value, "supersession cycle")
+}
+
+#[test]
+fn lsp_runtime_train_disarmed_value_patterns_are_rejected() -> Result<()> {
+    // The guard was defined by the data it guards: a non-empty list of
+    // harmless patterns would previously disable enforcement entirely.
+    let mut value = real_value()?;
+    *value
+        .get_mut("forbidden_value_patterns")
+        .ok_or_else(|| color_eyre::eyre::eyre!("no forbidden_value_patterns"))? =
+        serde_json::json!([{ "pattern": "zzz-never-appears", "owns": "a harmless placeholder" }]);
+    assert_rejected(&value, "must enforce every reviewed class")
+}
+
+#[test]
+fn lsp_runtime_train_dropped_conflict_sentinel_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    *value
+        .get_mut("global_conflict_key_sentinels")
+        .ok_or_else(|| color_eyre::eyre::eyre!("no sentinels"))? =
+        serde_json::json!(["something-harmless"]);
+    assert_rejected(&value, "omits the reviewed sentinel")
+}
+
+#[test]
+fn lsp_runtime_train_serialization_label_without_a_witness_is_rejected() -> Result<()> {
+    // GRAPH11037 claims serialization by hard dependency; removing its only
+    // hard edge leaves the label with nothing behind it.
+    let mut value = real_value()?;
+    set_node_field(&mut value, "GRAPH11037", "hard_dependencies", Value::Array(vec![]))?;
+    set_node_field(&mut value, "GRAPH11037", "consumed_authorities", Value::Array(vec![]))?;
+    set_node_field(&mut value, "SCHEMA11036", "consumer_edges", Value::Array(vec![]))?;
+    assert_rejected(&value, "declares no hard edge")
+}
+
+#[test]
+fn lsp_runtime_train_parallel_safe_sharing_a_writer_key_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    set_node_field(
+        &mut value,
+        "OBSERVE11040",
+        "exclusive_writer_conflict_keys",
+        Value::Array(vec![Value::String("lsp_runtime_train.packet".into())]),
+    )?;
+    assert_rejected(&value, "parallel-safe while sharing an exclusive writer key")
+}
+
+#[test]
+fn lsp_runtime_train_stack_relation_without_a_target_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    set_node_field(&mut value, "CUTOVER7384", "stack_target", Value::Null)?;
+    assert_rejected(&value, "without naming the candidate it stacks on")
+}
+
+#[test]
+fn lsp_runtime_train_independent_node_naming_a_stack_target_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    set_node_field(&mut value, "DECIDE10554", "stack_target", Value::String("SCHEMA11036".into()))?;
+    assert_rejected(&value, "stack-independent but names stack target")
 }
 
 // ---------------------------------------------------------------------------
@@ -620,7 +755,7 @@ fn lsp_runtime_train_shared_artifact_without_one_writer_is_rejected() -> Result<
         &mut value,
         "PACKET11042",
         "exclusive_writer_conflict_keys",
-        Value::Array(vec![Value::String("lsp_runtime_train.observation".into())]),
+        Value::Array(vec![]),
     )?;
     assert_rejected(&value, "a shared artifact needs one explicit writer")
 }
@@ -872,27 +1007,35 @@ fn lsp_runtime_train_self_duplicate_is_rejected() -> Result<()> {
 #[test]
 fn lsp_runtime_train_unexercised_stack_relation_is_rejected() -> Result<()> {
     let mut value = real_value()?;
-    value
-        .get_mut("stack_relations")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| color_eyre::eyre::eyre!("no stack_relations"))?
-        .push(serde_json::json!({
-            "value": "restacked_from",
-            "owns": "declared but exercised by no fixture",
-        }));
+    // CUTOVER7384 is the only `stacked_on` fixture; moving it to independent
+    // leaves that declared relation exercised by nothing.
+    set_node_field(
+        &mut value,
+        "CUTOVER7384",
+        "stack_relation",
+        Value::String("independent".into()),
+    )?;
+    set_node_field(&mut value, "CUTOVER7384", "stack_target", Value::Null)?;
+    set_node_field(
+        &mut value,
+        "CUTOVER7384",
+        "parallel_disposition",
+        Value::String("serialized_by_hard_dependency".into()),
+    )?;
     assert_rejected(&value, "no fixture node exercises these stack relations")
 }
 
 #[test]
 fn lsp_runtime_train_unexercised_parallel_disposition_is_rejected() -> Result<()> {
     let mut value = real_value()?;
-    value
-        .get_mut("parallel_dispositions")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| color_eyre::eyre::eyre!("no parallel_dispositions"))?
-        .push(serde_json::json!({
-            "value": "serialized_by_authorization",
-            "owns": "declared but exercised by no fixture",
-        }));
+    // CUTOVER7384 is the only `serialized_by_conflict` fixture. Keep its stack
+    // relation intact so stack coverage still passes and this reaches the
+    // parallel-disposition law specifically.
+    set_node_field(
+        &mut value,
+        "CUTOVER7384",
+        "parallel_disposition",
+        Value::String("serialized_by_hard_dependency".into()),
+    )?;
     assert_rejected(&value, "no fixture node exercises these parallel dispositions")
 }

@@ -52,7 +52,7 @@ pub const SCHEMA_VERSION: u64 = 1;
 /// together with the manifest bytes; patching around it silently is exactly
 /// what the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "5873E02BD8813E042CDA0657FF5F5EF2B18D5292247D29D35A0E8874A0E19749";
+    "98BFDE8AEB5B9B610C45DDADAC21B15E3166152377B1A793703EB744491EF63C";
 
 /// The only population status `v1` may claim. Completing the graph is #11037's
 /// authority, so a manifest that calls itself complete fails closed here.
@@ -60,6 +60,92 @@ const REQUIRED_POPULATION_STATUS: &str = "schema_fixture_subset";
 
 /// Roles whose nodes are never selected as work.
 const NON_SELECTABLE_PROPOSITION_PREFIX: &str = "none";
+
+// ---------------------------------------------------------------------------
+// Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
+// rename a value and keep the count, so the reviewed sets live here and are
+// compared for exact membership.
+// ---------------------------------------------------------------------------
+
+const V1_ROLES: [&str; 7] = [
+    "controller",
+    "implementation",
+    "proof",
+    "decision",
+    "cutover",
+    "external_action",
+    "historical",
+];
+
+const V1_RELEASE_HORIZONS: [&str; 6] = [
+    "shipped_correctness",
+    "runtime_spine",
+    "package_api",
+    "product_cutover",
+    "externalization",
+    "optional_breadth",
+];
+
+const V1_CLAIM_CEILINGS: [&str; 5] =
+    ["none", "schema_contract", "implementation_slice", "programme_stage", "programme"];
+
+const V1_EDGE_KINDS: [&str; 4] = ["hard", "evidence", "authorization", "consumer"];
+
+const V1_OLD_PATH_DISPOSITIONS: [&str; 7] = [
+    "none",
+    "delete",
+    "unreachable",
+    "forwarding_with_exit",
+    "oracle_with_exit",
+    "intentionally_independent",
+    "external_transition",
+];
+
+const V1_STACK_RELATIONS: [&str; 2] = ["independent", "stacked_on"];
+
+const V1_PARALLEL_DISPOSITIONS: [&str; 3] =
+    ["parallel_safe", "serialized_by_conflict", "serialized_by_hard_dependency"];
+
+const V1_AUTHORITY_PLANES: [&str; 6] = [
+    "stable_graph",
+    "artifact_and_proof_map",
+    "current_tree_observation",
+    "offline_frontier",
+    "live_collaboration",
+    "external_authorization",
+];
+
+/// Conflict-key spellings that would imply one global actor or lock. The
+/// manifest must declare at least these; it may add more.
+const V1_REQUIRED_CONFLICT_SENTINELS: [&str; 5] = ["*", "global", "all", "repository", "workspace"];
+
+/// Probes the declared `forbidden_value_patterns` must actually reject. The
+/// guard is otherwise defined by the data it guards: a repinned manifest could
+/// swap every pattern for a harmless one and keep the list non-empty. Asserting
+/// behavior rather than pattern text keeps the semantics code-owned while
+/// leaving the exact expressions reviewable in the manifest.
+const V1_MUTABLE_STATE_PROBES: [(&str, &str); 6] = [
+    ("commit-shaped identifier", "landed at 0c07a9841c34ff3e"),
+    ("live pull-request verdict", "PR #13869 is green"),
+    ("check or review verdict", "the merge gate is failing"),
+    ("readiness verdict", "ready = true"),
+    ("writer assignment", "assigned to the runtime lane writer"),
+    ("current-tree claim", "reproduced on current main"),
+];
+
+/// Exact set comparison for a reviewed v1 vocabulary.
+fn ensure_exact_vocabulary(actual: &BTreeSet<&str>, expected: &[&str], label: &str) -> Result<()> {
+    let expected_set: BTreeSet<&str> = expected.iter().copied().collect();
+    if actual == &expected_set {
+        return Ok(());
+    }
+    let missing: Vec<&&str> = expected_set.difference(actual).collect();
+    let extra: Vec<&&str> = actual.difference(&expected_set).collect();
+    bail!(
+        "{label} must be exactly the reviewed v1 set; missing={missing:?} unexpected={extra:?}. \
+         A count check would let a renamed value pass with the cardinality intact"
+    );
+}
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
@@ -239,6 +325,7 @@ struct TrainNode {
     exclusive_writer_conflict_keys: Vec<String>,
     shared_artifact_keys: Vec<String>,
     stack_relation: String,
+    stack_target: Option<String>,
     parallel_disposition: String,
     old_path_disposition: String,
     old_path_exit_owner: Option<String>,
@@ -549,12 +636,7 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
             bail!("authority plane {} carries an empty law", plane.plane);
         }
     }
-    if planes.len() < 6 {
-        bail!(
-            "lsp_runtime_train.v1 requires its six reviewed non-substitution planes, found {}",
-            planes.len()
-        );
-    }
+    ensure_exact_vocabulary(&planes, &V1_AUTHORITY_PLANES, "authority_planes")?;
 
     // Closed vocabularies.
     let roles: BTreeSet<&str> = m.role_vocabulary.iter().map(|r| r.role.as_str()).collect();
@@ -566,22 +648,17 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
             bail!("role {} carries an empty ownership law", entry.role);
         }
     }
-    if roles.len() != 7 {
-        bail!("the reviewed role vocabulary has seven roles, found {}", roles.len());
-    }
+    ensure_exact_vocabulary(&roles, &V1_ROLES, "role_vocabulary")?;
 
     let horizon_rank = ladder_ranks(&m.release_horizon_ladder, "release_horizon")?;
     let claim_rank = ladder_ranks(&m.claim_ceiling_ladder, "claim_ceiling")?;
-    if horizon_rank.len() != 6 {
-        bail!("the reviewed release-horizon ladder has six rungs, found {}", horizon_rank.len());
-    }
+    let horizon_values: BTreeSet<&str> = horizon_rank.keys().copied().collect();
+    ensure_exact_vocabulary(&horizon_values, &V1_RELEASE_HORIZONS, "release_horizon_ladder")?;
+    let ceiling_values: BTreeSet<&str> = claim_rank.keys().copied().collect();
+    ensure_exact_vocabulary(&ceiling_values, &V1_CLAIM_CEILINGS, "claim_ceiling_ladder")?;
 
     let edge_kind_names: BTreeSet<&str> = m.edge_kinds.iter().map(|e| e.kind.as_str()).collect();
-    for expected in ["hard", "evidence", "authorization", "consumer"] {
-        if !edge_kind_names.contains(expected) {
-            bail!("edge_kinds must distinguish '{expected}'; the four classes are contract");
-        }
-    }
+    ensure_exact_vocabulary(&edge_kind_names, &V1_EDGE_KINDS, "edge_kinds")?;
     for edge in &m.edge_kinds {
         if edge.owns.trim().is_empty() {
             bail!("edge kind {} carries an empty ownership law", edge.kind);
@@ -603,12 +680,12 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
 
     let dispositions: BTreeMap<&str, bool> =
         m.old_path_dispositions.iter().map(|d| (d.value.as_str(), d.requires_exit_owner)).collect();
-    if dispositions.len() != 7 {
-        bail!(
-            "the reviewed old-path disposition set has seven values, found {}",
-            dispositions.len()
-        );
-    }
+    let disposition_values: BTreeSet<&str> = dispositions.keys().copied().collect();
+    ensure_exact_vocabulary(
+        &disposition_values,
+        &V1_OLD_PATH_DISPOSITIONS,
+        "old_path_dispositions",
+    )?;
     for entry in &m.old_path_dispositions {
         if entry.owns.trim().is_empty() {
             bail!("old-path disposition {} carries an empty ownership law", entry.value);
@@ -626,11 +703,8 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
             bail!("vocabulary entry {} carries an empty ownership law", entry.value);
         }
     }
-    if !parallel_values.contains("parallel_safe")
-        || !parallel_values.contains("serialized_by_conflict")
-    {
-        bail!("parallel dispositions must distinguish parallel_safe from serialized_by_conflict");
-    }
+    ensure_exact_vocabulary(&stack_values, &V1_STACK_RELATIONS, "stack_relations")?;
+    ensure_exact_vocabulary(&parallel_values, &V1_PARALLEL_DISPOSITIONS, "parallel_dispositions")?;
 
     // Role claim caps cover exactly the role vocabulary.
     let capped: BTreeSet<&str> = m.role_claim_caps.iter().map(|c| c.role.as_str()).collect();
@@ -710,8 +784,18 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
     if m.forbidden_mutable_fields.is_empty() {
         bail!("forbidden_mutable_fields must name the mutable facts this contract refuses");
     }
-    if m.global_conflict_key_sentinels.is_empty() {
-        bail!("global_conflict_key_sentinels must name the keys that would imply a global lock");
+    // The sentinel set is a guard defined by the data it guards, so a repinned
+    // manifest could keep the list non-empty while dropping every real
+    // sentinel. Code owns the floor; the manifest may only add to it.
+    let declared_sentinels: BTreeSet<&str> =
+        m.global_conflict_key_sentinels.iter().map(String::as_str).collect();
+    for required in V1_REQUIRED_CONFLICT_SENTINELS {
+        if !declared_sentinels.contains(required) {
+            bail!(
+                "global_conflict_key_sentinels omits the reviewed sentinel '{required}'; a \
+                 non-empty list is not the same as an enforcing one"
+            );
+        }
     }
 
     // Node-level laws.
@@ -1154,6 +1238,52 @@ fn validate_nodes(
             );
         }
 
+        // An ordering label needs a witness. Without this, a node can announce
+        // serialization that nothing in the graph provides, and a consumer can
+        // schedule work from an invented order.
+        let shares_conflict_key = m.nodes.iter().any(|other| {
+            other.stable_node_id != node.stable_node_id
+                && other
+                    .exclusive_writer_conflict_keys
+                    .iter()
+                    .any(|key| node.exclusive_writer_conflict_keys.contains(key))
+        });
+        match node.parallel_disposition.as_str() {
+            "serialized_by_hard_dependency" if node.hard_dependencies.is_empty() => {
+                bail!("node {id} claims serialization by hard dependency but declares no hard edge")
+            }
+            "serialized_by_conflict" if !shares_conflict_key => bail!(
+                "node {id} claims serialization by conflict but shares no exclusive writer key \
+                 with another node"
+            ),
+            "parallel_safe" if shares_conflict_key => bail!(
+                "node {id} claims to be parallel-safe while sharing an exclusive writer key with \
+                 another node"
+            ),
+            _ => {}
+        }
+
+        // A stack relation names the candidate it stands on, or it is a label
+        // with nothing behind it.
+        match (node.stack_relation.as_str(), &node.stack_target) {
+            ("independent", Some(target)) => {
+                bail!("node {id} is stack-independent but names stack target '{target}'")
+            }
+            ("independent", None) => {}
+            (_, None) => bail!(
+                "node {id} declares stack relation '{}' without naming the candidate it stacks on",
+                node.stack_relation
+            ),
+            (_, Some(target)) => {
+                if !ids.contains(target.as_str()) {
+                    bail!("node {id} names unknown stack_target '{target}'");
+                }
+                if target == id {
+                    bail!("node {id} stacks on itself");
+                }
+            }
+        }
+
         // Law 8: conflict keys are semantic, never a global lock.
         for key in &node.exclusive_writer_conflict_keys {
             if m.global_conflict_key_sentinels.iter().any(|s| s == key) {
@@ -1226,17 +1356,18 @@ fn validate_nodes(
         }
     }
     for (artifact, holders) in &by_artifact {
-        let concurrent: Vec<&&TrainNode> =
-            holders.iter().filter(|n| n.parallel_disposition == "parallel_safe").collect();
-        let mut writers: BTreeSet<&str> = BTreeSet::new();
-        for node in &concurrent {
-            for key in &node.exclusive_writer_conflict_keys {
-                if !writers.insert(key.as_str()) {
-                    bail!(
-                        "nodes sharing artifact '{artifact}' are parallel_safe but reuse the \
-                         exclusive writer key '{key}'; a shared artifact needs one explicit writer"
-                    );
-                }
+        // Reusing one key across concurrent holders is already rejected by the
+        // per-node witness law. What remains for the artifact plane is that a
+        // concurrently-written artifact must have an *identified* writer: a
+        // parallel_safe holder with no key at all leaves the artifact with
+        // concurrent writers and nothing naming them.
+        for node in holders.iter().filter(|n| n.parallel_disposition == "parallel_safe") {
+            if node.exclusive_writer_conflict_keys.is_empty() {
+                bail!(
+                    "node {} is a parallel_safe holder of shared artifact '{artifact}' but \
+                     declares no exclusive writer key; a shared artifact needs one explicit writer",
+                    node.stable_node_id
+                );
             }
         }
     }
@@ -1256,6 +1387,16 @@ fn validate_nodes(
                     node.stable_node_id
                 );
             }
+        }
+        // A node is never its own replacement. Self-reference satisfies
+        // reciprocity trivially, so it must be rejected before that check.
+        if node.supersedes.contains(&node.stable_node_id)
+            || node.superseded_by.contains(&node.stable_node_id)
+        {
+            bail!(
+                "node {} supersedes itself; a supersession names a different node",
+                node.stable_node_id
+            );
         }
         // The reverse direction needs its own check: referential integrity only
         // proves the id resolves, so a `superseded_by` entry whose alleged
@@ -1288,17 +1429,9 @@ fn validate_nodes(
         if holders.len() < 2 {
             continue;
         }
-        let parallel: Vec<&str> = holders
-            .iter()
-            .filter(|n| n.parallel_disposition == "parallel_safe")
-            .map(|n| n.stable_node_id.as_str())
-            .collect();
-        if parallel.len() > 1 {
-            bail!(
-                "nodes {parallel:?} share the exclusive writer key '{key}' but are all marked \
-                 parallel_safe; exclusive writers need an exact stack relation"
-            );
-        }
+        // Note: "two parallel_safe holders of one key" needs no check here —
+        // the per-node witness law above already rejects any parallel_safe node
+        // that shares a key, so a branch for it would be unreachable.
         for holder in holders {
             if holder.parallel_disposition == "serialized_by_conflict"
                 && holder.stack_relation == "independent"
@@ -1331,9 +1464,40 @@ fn validate_nodes(
         }
     }
 
+    // A supersession cycle would make every node in it both predecessor and
+    // successor, which reciprocity alone cannot catch.
+    detect_supersession_cycle(m)?;
+
     // Hard edges must be acyclic: a cycle would make the spine unbuildable.
     detect_hard_cycle(m)?;
 
+    Ok(())
+}
+
+/// Supersession must be a strict order: a cycle would make every node in it
+/// both the replaced and the replacement.
+fn detect_supersession_cycle(m: &Manifest) -> Result<()> {
+    let mut state: BTreeMap<&str, u8> = BTreeMap::new();
+
+    fn walk<'a>(node: &'a str, m: &'a Manifest, state: &mut BTreeMap<&'a str, u8>) -> Result<()> {
+        match state.get(node) {
+            Some(1) => bail!("supersession cycle reached '{node}'"),
+            Some(2) => return Ok(()),
+            _ => {}
+        }
+        state.insert(node, 1);
+        if let Some(found) = m.nodes.iter().find(|n| n.stable_node_id == node) {
+            for target in &found.supersedes {
+                walk(target.as_str(), m, state)?;
+            }
+        }
+        state.insert(node, 2);
+        Ok(())
+    }
+
+    for node in &m.nodes {
+        walk(node.stable_node_id.as_str(), m, &mut state)?;
+    }
     Ok(())
 }
 
@@ -1498,6 +1662,19 @@ fn validate_no_mutable_live_values(value: &Value, m: &Manifest) -> Result<()> {
             color_eyre::eyre::eyre!("forbidden value pattern '{}' is invalid: {e}", entry.pattern)
         })?;
         compiled.push((re, entry.owns.as_str()));
+    }
+
+    // Behavioral floor: the declared patterns must actually reject each
+    // reviewed class of mutable state. Comparing pattern *text* would freeze
+    // the expressions; asserting what they catch keeps the semantics
+    // code-owned while leaving the expressions reviewable in the manifest.
+    for (semantic, probe) in V1_MUTABLE_STATE_PROBES {
+        if !compiled.iter().any(|(re, _)| re.is_match(probe)) {
+            bail!(
+                "forbidden_value_patterns no longer reject a {semantic} (probe: \"{probe}\"); the \
+                 declared patterns must enforce every reviewed class, not merely be non-empty"
+            );
+        }
     }
 
     let mut offender: Option<(String, String)> = None;

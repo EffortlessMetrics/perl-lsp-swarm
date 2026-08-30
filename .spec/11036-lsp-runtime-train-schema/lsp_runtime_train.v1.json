@@ -149,13 +149,34 @@
     }
   ],
   "role_claim_caps": [
-    { "role": "controller", "max_claim": "programme" },
-    { "role": "implementation", "max_claim": "implementation_slice" },
-    { "role": "proof", "max_claim": "implementation_slice" },
-    { "role": "decision", "max_claim": "schema_contract" },
-    { "role": "cutover", "max_claim": "implementation_slice" },
-    { "role": "external_action", "max_claim": "none" },
-    { "role": "historical", "max_claim": "none" }
+    {
+      "role": "controller",
+      "max_claim": "programme"
+    },
+    {
+      "role": "implementation",
+      "max_claim": "implementation_slice"
+    },
+    {
+      "role": "proof",
+      "max_claim": "implementation_slice"
+    },
+    {
+      "role": "decision",
+      "max_claim": "schema_contract"
+    },
+    {
+      "role": "cutover",
+      "max_claim": "implementation_slice"
+    },
+    {
+      "role": "external_action",
+      "max_claim": "none"
+    },
+    {
+      "role": "historical",
+      "max_claim": "none"
+    }
   ],
   "edge_kinds": [
     {
@@ -180,28 +201,83 @@
     }
   ],
   "old_path_dispositions": [
-    { "value": "none", "owns": "no authority moves, so no prior path is left behind", "requires_exit_owner": false },
-    { "value": "delete", "owns": "the prior path is removed in the same candidate", "requires_exit_owner": true },
-    { "value": "unreachable", "owns": "the prior path remains compiled but no live caller selects it", "requires_exit_owner": true },
-    { "value": "forwarding_with_exit", "owns": "the prior entrypoint forwards to the successor until a named exit removes it", "requires_exit_owner": true },
-    { "value": "oracle_with_exit", "owns": "the prior path is retained only as a differential oracle until a named exit retires it", "requires_exit_owner": true },
-    { "value": "intentionally_independent", "owns": "the prior path is a deliberate peer and is never withdrawn", "requires_exit_owner": false },
-    { "value": "external_transition", "owns": "withdrawal depends on an action outside this repository", "requires_exit_owner": true }
+    {
+      "value": "none",
+      "owns": "no authority moves, so no prior path is left behind",
+      "requires_exit_owner": false
+    },
+    {
+      "value": "delete",
+      "owns": "the prior path is removed in the same candidate",
+      "requires_exit_owner": true
+    },
+    {
+      "value": "unreachable",
+      "owns": "the prior path remains compiled but no live caller selects it",
+      "requires_exit_owner": true
+    },
+    {
+      "value": "forwarding_with_exit",
+      "owns": "the prior entrypoint forwards to the successor until a named exit removes it",
+      "requires_exit_owner": true
+    },
+    {
+      "value": "oracle_with_exit",
+      "owns": "the prior path is retained only as a differential oracle until a named exit retires it",
+      "requires_exit_owner": true
+    },
+    {
+      "value": "intentionally_independent",
+      "owns": "the prior path is a deliberate peer and is never withdrawn",
+      "requires_exit_owner": false
+    },
+    {
+      "value": "external_transition",
+      "owns": "withdrawal depends on an action outside this repository",
+      "requires_exit_owner": true
+    }
   ],
   "stack_relations": [
-    { "value": "independent", "owns": "the node stands on integrated authority only" },
-    { "value": "stacked_on", "owns": "the node is built on a named unintegrated candidate and names it exactly" }
+    {
+      "value": "independent",
+      "owns": "the node stands on integrated authority only"
+    },
+    {
+      "value": "stacked_on",
+      "owns": "the node is built on a named unintegrated candidate and names it exactly"
+    }
   ],
   "parallel_dispositions": [
-    { "value": "parallel_safe", "owns": "no exclusive writer key is shared with a concurrently selectable node" },
-    { "value": "serialized_by_conflict", "owns": "an exclusive writer key is shared, so an exact stack relation orders the work" },
-    { "value": "serialized_by_hard_dependency", "owns": "a hard edge already orders the work" }
+    {
+      "value": "parallel_safe",
+      "owns": "no exclusive writer key is shared with a concurrently selectable node"
+    },
+    {
+      "value": "serialized_by_conflict",
+      "owns": "an exclusive writer key is shared, so an exact stack relation orders the work"
+    },
+    {
+      "value": "serialized_by_hard_dependency",
+      "owns": "a hard edge already orders the work"
+    }
   ],
   "authorization_classes": [
-    { "id": "#maintainer_submission", "subject": "a human maintainer submits prepared material to a repository this programme does not own" },
-    { "id": "#external_registry_publication", "subject": "a package or extension registry entry is created or updated" },
-    { "id": "#release_publication", "subject": "a tag, release, or published artifact is produced" },
-    { "id": "#repository_creation", "subject": "a new repository or published namespace is created" }
+    {
+      "id": "#maintainer_submission",
+      "subject": "a human maintainer submits prepared material to a repository this programme does not own"
+    },
+    {
+      "id": "#external_registry_publication",
+      "subject": "a package or extension registry entry is created or updated"
+    },
+    {
+      "id": "#release_publication",
+      "subject": "a tag, release, or published artifact is produced"
+    },
+    {
+      "id": "#repository_creation",
+      "subject": "a new repository or published namespace is created"
+    }
   ],
   "generic_mechanics_boundary": {
     "note": "Generic schema mechanics carry graph semantics only; product implementation vocabulary stays in node payloads and never in the mechanics sections.",
@@ -214,7 +290,13 @@
       "stack_relations",
       "parallel_dispositions"
     ],
-    "forbidden_type_substrings": ["Perl", "Provider", "DocumentStore", "WorkspaceModel", "Backend"]
+    "forbidden_type_substrings": [
+      "Perl",
+      "Provider",
+      "DocumentStore",
+      "WorkspaceModel",
+      "Backend"
+    ]
   },
   "forbidden_mutable_fields": [
     "current_main_sha",
@@ -240,14 +322,38 @@
     "support_verdict",
     "release_verdict"
   ],
-  "global_conflict_key_sentinels": ["*", "global", "all", "repository", "workspace"],
+  "global_conflict_key_sentinels": [
+    "*",
+    "global",
+    "all",
+    "repository",
+    "workspace"
+  ],
   "forbidden_value_patterns": [
-    { "pattern": "\\b[0-9a-f]{7,40}\\b", "owns": "a commit-shaped identifier: a stable node never names a tree it was true on" },
-    { "pattern": "(?i)\\b(pr|issue)\\s*#\\s*\\d+\\s+(is|was|has)\\b", "owns": "a verdict about a live pull request or issue" },
-    { "pattern": "(?i)\\b(is|are|was|were)\\s+(green|red|merged|approved|passing|failing)\\b", "owns": "a check, review, or merge verdict" },
-    { "pattern": "(?i)\\bready\\s*=\\s*(true|false)\\b", "owns": "a readiness verdict, which the offline frontier owns and this contract never records" },
-    { "pattern": "(?i)\\bassigned\\s+to\\b", "owns": "a writer or agent assignment" },
-    { "pattern": "(?i)\\b(current|latest)\\s+(main|head|sha|commit)\\b", "owns": "a claim about the current tree" }
+    {
+      "pattern": "\\b[0-9a-f]{7,40}\\b",
+      "owns": "a commit-shaped identifier: a stable node never names a tree it was true on"
+    },
+    {
+      "pattern": "(?i)\\b(pr|issue)\\s*#\\s*\\d+\\s+(is|was|has)\\b",
+      "owns": "a verdict about a live pull request or issue"
+    },
+    {
+      "pattern": "(?i)\\b(is|are|was|were)\\s+(green|red|merged|approved|passing|failing)\\b",
+      "owns": "a check, review, or merge verdict"
+    },
+    {
+      "pattern": "(?i)\\bready\\s*=\\s*(true|false)\\b",
+      "owns": "a readiness verdict, which the offline frontier owns and this contract never records"
+    },
+    {
+      "pattern": "(?i)\\bassigned\\s+to\\b",
+      "owns": "a writer or agent assignment"
+    },
+    {
+      "pattern": "(?i)\\b(current|latest)\\s+(main|head|sha|commit)\\b",
+      "owns": "a claim about the current tree"
+    }
   ],
   "schema_evolution": {
     "unknown_version_policy": "reject: an unrecognized schema_version fails closed rather than being read under v1 semantics",
@@ -264,9 +370,24 @@
   },
   "shared_mechanics_ruling": {
     "inventory": [
-      { "subject": "import_cleanup_train.v1", "path": "xtask/src/import_cleanup_train_manifest.rs", "landed": true, "reusable_seam": "manifest-as-data loading shape: strict deny-unknown-fields deserialization, closed vocabularies, contiguous ladders, and a pinned canonical digest" },
-      { "subject": "emacs_train_context", "path": "xtask/src/tasks/emacs_train_context/mod.rs", "landed": true, "reusable_seam": "train context resolution and digest rendering; its model is client-subject specific and carries no node or authority vocabulary" },
-      { "subject": "module_train", "path": "xtask/src/tasks/module_train_tests.rs", "landed": true, "reusable_seam": "train projection digest family; no stable node or authority contract" }
+      {
+        "subject": "import_cleanup_train.v1",
+        "path": "xtask/src/import_cleanup_train_manifest.rs",
+        "landed": true,
+        "reusable_seam": "manifest-as-data loading shape: strict deny-unknown-fields deserialization, closed vocabularies, contiguous ladders, and a pinned canonical digest"
+      },
+      {
+        "subject": "emacs_train_context",
+        "path": "xtask/src/tasks/emacs_train_context/mod.rs",
+        "landed": true,
+        "reusable_seam": "train context resolution and digest rendering; its model is client-subject specific and carries no node or authority vocabulary"
+      },
+      {
+        "subject": "module_train",
+        "path": "xtask/src/tasks/module_train_tests.rs",
+        "landed": true,
+        "reusable_seam": "train projection digest family; no stable node or authority contract"
+      }
     ],
     "reused": "the landed import_cleanup_train.v1 loading shape (strict schema, closed vocabularies, ladders, pinned digest) is mirrored rather than reinvented",
     "runtime_local_reason": "node roles, release horizons, edge kinds, old-path dispositions, and authorization classes are runtime-programme semantics; centralizing them now would satisfy structural symmetry, not landed reuse",
@@ -300,6 +421,7 @@
       "exclusive_writer_conflict_keys": [],
       "shared_artifact_keys": [],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "parallel_safe",
       "old_path_disposition": "none",
       "old_path_exit_owner": null,
@@ -310,9 +432,15 @@
       "current_tree_probe_ids": [],
       "rollback_boundary": "none: no candidate is ever opened against this node",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["a stage leaf reports that the stage decomposition itself is wrong"],
-      "stop_conditions": ["never assign this node; select one of its stage leaves instead"],
-      "limitations": ["controller nodes carry no proposition and no rollback unit"]
+      "return_to_issue_conditions": [
+        "a stage leaf reports that the stage decomposition itself is wrong"
+      ],
+      "stop_conditions": [
+        "never assign this node; select one of its stage leaves instead"
+      ],
+      "limitations": [
+        "controller nodes carry no proposition and no rollback unit"
+      ]
     },
     {
       "stable_node_id": "SCHEMA11036",
@@ -323,19 +451,32 @@
       "release_horizon": "runtime_spine",
       "one_pr_proposition": "define the versioned stable node and authority contract, its validator, and its fixtures, with no populated graph and no current state",
       "claim_ceiling": "schema_contract",
-      "authority_before": ["no repository-owned stable contract can represent the runtime programme"],
-      "authority_after": ["lsp_runtime_train.v1 owns the stable node and authority vocabulary"],
+      "authority_before": [
+        "no repository-owned stable contract can represent the runtime programme"
+      ],
+      "authority_after": [
+        "lsp_runtime_train.v1 owns the stable node and authority vocabulary"
+      ],
       "consumed_authorities": [],
       "hard_dependencies": [],
       "evidence_dependencies": [],
       "authorization_dependencies": [],
-      "consumer_edges": ["GRAPH11037", "PROOF11033", "DECIDE10554"],
+      "consumer_edges": [
+        "GRAPH11037",
+        "PROOF11033",
+        "DECIDE10554"
+      ],
       "supersedes": [],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.schema"],
-      "shared_artifact_keys": [".spec/11036-lsp-runtime-train-schema"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.schema"
+      ],
+      "shared_artifact_keys": [
+        ".spec/11036-lsp-runtime-train-schema"
+      ],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "parallel_safe",
       "old_path_disposition": "none",
       "old_path_exit_owner": null,
@@ -353,19 +494,29 @@
         "unknown_version_or_field",
         "nondeterministic_normalization"
       ],
-      "positive_proof_obligation_ids": ["every_role_represented", "every_horizon_represented", "every_old_path_disposition_represented"],
+      "positive_proof_obligation_ids": [
+        "every_role_represented",
+        "every_horizon_represented",
+        "every_old_path_disposition_represented"
+      ],
       "artifact_map_required": true,
       "checked_spec_disposition_required": true,
-      "current_tree_probe_ids": ["lsp_runtime_train_manifest_loads"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_manifest_loads"
+      ],
       "rollback_boundary": "revert the manifest, loader module, and focused tests; no other node reads them yet",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["a later stage needs a semantic distinction this vocabulary cannot express"],
+      "return_to_issue_conditions": [
+        "a later stage needs a semantic distinction this vocabulary cannot express"
+      ],
       "stop_conditions": [
         "stop before populating the complete graph",
         "stop before deriving current-tree state or readiness",
         "stop before any GitHub query or agent packet"
       ],
-      "limitations": ["the node set here is a schema fixture subset, not the runtime programme graph"]
+      "limitations": [
+        "the node set here is a schema fixture subset, not the runtime programme graph"
+      ]
     },
     {
       "stable_node_id": "GRAPH11037",
@@ -376,32 +527,61 @@
       "release_horizon": "runtime_spine",
       "one_pr_proposition": "populate every current node under the stable contract and reject cycles, duplicate authority, and stale supersession",
       "claim_ceiling": "implementation_slice",
-      "authority_before": ["the stable contract exists but no complete graph is represented"],
-      "authority_after": ["the complete static runtime graph is represented and integrity-checked"],
-      "consumed_authorities": ["lsp_runtime_train.v1 owns the stable node and authority vocabulary"],
-      "hard_dependencies": ["SCHEMA11036"],
+      "authority_before": [
+        "the stable contract exists but no complete graph is represented"
+      ],
+      "authority_after": [
+        "the complete static runtime graph is represented and integrity-checked"
+      ],
+      "consumed_authorities": [
+        "lsp_runtime_train.v1 owns the stable node and authority vocabulary"
+      ],
+      "hard_dependencies": [
+        "SCHEMA11036"
+      ],
       "evidence_dependencies": [],
       "authorization_dependencies": [],
-      "consumer_edges": ["ARTMAP11072"],
+      "consumer_edges": [
+        "ARTMAP11072"
+      ],
       "supersedes": [],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.graph"],
-      "shared_artifact_keys": [".spec/11036-lsp-runtime-train-schema"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.graph"
+      ],
+      "shared_artifact_keys": [
+        ".spec/11036-lsp-runtime-train-schema"
+      ],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "serialized_by_hard_dependency",
       "old_path_disposition": "none",
       "old_path_exit_owner": null,
-      "required_falsifier_ids": ["cycle_rejected", "duplicate_authority_rejected", "stale_supersession_rejected"],
-      "positive_proof_obligation_ids": ["every_current_node_populated"],
+      "required_falsifier_ids": [
+        "cycle_rejected",
+        "duplicate_authority_rejected",
+        "stale_supersession_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "every_current_node_populated"
+      ],
       "artifact_map_required": true,
       "checked_spec_disposition_required": true,
-      "current_tree_probe_ids": ["lsp_runtime_train_graph_complete"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_graph_complete"
+      ],
       "rollback_boundary": "revert the populated node set; the contract itself remains current",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["population reveals a role or edge kind the contract cannot express"],
-      "stop_conditions": ["stop before proof routing or current-tree probes"],
-      "limitations": ["population does not establish that any node is implemented"]
+      "return_to_issue_conditions": [
+        "population reveals a role or edge kind the contract cannot express"
+      ],
+      "stop_conditions": [
+        "stop before proof routing or current-tree probes"
+      ],
+      "limitations": [
+        "population does not establish that any node is implemented"
+      ]
     },
     {
       "stable_node_id": "ARTMAP11072",
@@ -412,32 +592,59 @@
       "release_horizon": "runtime_spine",
       "one_pr_proposition": "bind every active leaf to its canonical contract, spec, test, docs, and evidence owners",
       "claim_ceiling": "implementation_slice",
-      "authority_before": ["the graph names nodes but not their artifact owners"],
-      "authority_after": ["every active leaf names its canonical artifact and regeneration owner"],
-      "consumed_authorities": ["the complete static runtime graph is represented and integrity-checked"],
-      "hard_dependencies": ["GRAPH11037"],
+      "authority_before": [
+        "the graph names nodes but not their artifact owners"
+      ],
+      "authority_after": [
+        "every active leaf names its canonical artifact and regeneration owner"
+      ],
+      "consumed_authorities": [
+        "the complete static runtime graph is represented and integrity-checked"
+      ],
+      "hard_dependencies": [
+        "GRAPH11037"
+      ],
       "evidence_dependencies": [],
       "authorization_dependencies": [],
-      "consumer_edges": ["PROOF11033"],
+      "consumer_edges": [
+        "PROOF11033"
+      ],
       "supersedes": [],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.artifact_map"],
-      "shared_artifact_keys": [".spec/11036-lsp-runtime-train-schema"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.artifact_map"
+      ],
+      "shared_artifact_keys": [
+        ".spec/11036-lsp-runtime-train-schema"
+      ],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "serialized_by_hard_dependency",
       "old_path_disposition": "none",
       "old_path_exit_owner": null,
-      "required_falsifier_ids": ["agent_only_parallel_spec_system_rejected"],
-      "positive_proof_obligation_ids": ["every_active_leaf_has_an_artifact_owner"],
+      "required_falsifier_ids": [
+        "agent_only_parallel_spec_system_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "every_active_leaf_has_an_artifact_owner"
+      ],
       "artifact_map_required": true,
       "checked_spec_disposition_required": true,
-      "current_tree_probe_ids": ["lsp_runtime_train_artifact_map_complete"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_artifact_map_complete"
+      ],
       "rollback_boundary": "revert the artifact map; the graph remains current",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["a leaf has no existing artifact owner and creating one needs its own review"],
-      "stop_conditions": ["stop before resolving proof commands"],
-      "limitations": ["naming an artifact owner does not prove the artifact is current"]
+      "return_to_issue_conditions": [
+        "a leaf has no existing artifact owner and creating one needs its own review"
+      ],
+      "stop_conditions": [
+        "stop before resolving proof commands"
+      ],
+      "limitations": [
+        "naming an artifact owner does not prove the artifact is current"
+      ]
     },
     {
       "stable_node_id": "PROOF11033",
@@ -448,32 +655,61 @@
       "release_horizon": "shipped_correctness",
       "one_pr_proposition": "map every leaf to the smallest sufficient falsifiers and the broader routed gates that select it",
       "claim_ceiling": "implementation_slice",
-      "authority_before": ["artifact owners are named but no proof route is resolved"],
-      "authority_after": ["every leaf names its focused falsifiers and its routed gates"],
-      "consumed_authorities": ["every active leaf names its canonical artifact and regeneration owner"],
-      "hard_dependencies": ["ARTMAP11072"],
-      "evidence_dependencies": ["SCHEMA11036"],
+      "authority_before": [
+        "artifact owners are named but no proof route is resolved"
+      ],
+      "authority_after": [
+        "every leaf names its focused falsifiers and its routed gates"
+      ],
+      "consumed_authorities": [
+        "every active leaf names its canonical artifact and regeneration owner"
+      ],
+      "hard_dependencies": [
+        "ARTMAP11072"
+      ],
+      "evidence_dependencies": [
+        "SCHEMA11036"
+      ],
       "authorization_dependencies": [],
-      "consumer_edges": ["PROBE11038"],
+      "consumer_edges": [
+        "PROBE11038"
+      ],
       "supersedes": [],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.proof_profile"],
-      "shared_artifact_keys": [".spec/11036-lsp-runtime-train-schema"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.proof_profile"
+      ],
+      "shared_artifact_keys": [
+        ".spec/11036-lsp-runtime-train-schema"
+      ],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "serialized_by_hard_dependency",
       "old_path_disposition": "none",
       "old_path_exit_owner": null,
-      "required_falsifier_ids": ["stale_or_skipped_proof_is_non_pass"],
-      "positive_proof_obligation_ids": ["every_leaf_has_a_focused_falsifier"],
+      "required_falsifier_ids": [
+        "stale_or_skipped_proof_is_non_pass"
+      ],
+      "positive_proof_obligation_ids": [
+        "every_leaf_has_a_focused_falsifier"
+      ],
       "artifact_map_required": true,
       "checked_spec_disposition_required": false,
-      "current_tree_probe_ids": ["lsp_runtime_train_proof_profile_resolves"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_proof_profile_resolves"
+      ],
       "rollback_boundary": "revert the proof profile; the artifact map remains current",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["a leaf has no discriminating proof at any layer"],
-      "stop_conditions": ["stop before running current-tree probes"],
-      "limitations": ["a resolved proof route is not a passing proof"]
+      "return_to_issue_conditions": [
+        "a leaf has no discriminating proof at any layer"
+      ],
+      "stop_conditions": [
+        "stop before running current-tree probes"
+      ],
+      "limitations": [
+        "a resolved proof route is not a passing proof"
+      ]
     },
     {
       "stable_node_id": "PROBE11038",
@@ -484,32 +720,58 @@
       "release_horizon": "runtime_spine",
       "one_pr_proposition": "classify each node against one exact tree as absent, partial, landed, superseded, transferred, contradictory, or not-proven",
       "claim_ceiling": "implementation_slice",
-      "authority_before": ["no offline probe classifies a node against an exact tree"],
-      "authority_after": ["proposition-specific probes classify every node on one exact tree"],
-      "consumed_authorities": ["every leaf names its focused falsifiers and its routed gates"],
-      "hard_dependencies": ["PROOF11033"],
+      "authority_before": [
+        "no offline probe classifies a node against an exact tree"
+      ],
+      "authority_after": [
+        "proposition-specific probes classify every node on one exact tree"
+      ],
+      "consumed_authorities": [
+        "every leaf names its focused falsifiers and its routed gates"
+      ],
+      "hard_dependencies": [
+        "PROOF11033"
+      ],
       "evidence_dependencies": [],
       "authorization_dependencies": [],
-      "consumer_edges": ["FRONTIER11306"],
+      "consumer_edges": [
+        "FRONTIER11306"
+      ],
       "supersedes": [],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.probe"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.probe"
+      ],
       "shared_artifact_keys": [],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "serialized_by_hard_dependency",
       "old_path_disposition": "none",
       "old_path_exit_owner": null,
-      "required_falsifier_ids": ["probe_claims_readiness_rejected", "probe_queries_github_rejected"],
-      "positive_proof_obligation_ids": ["every_node_classified_on_one_tree"],
+      "required_falsifier_ids": [
+        "probe_claims_readiness_rejected",
+        "probe_queries_github_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "every_node_classified_on_one_tree"
+      ],
       "artifact_map_required": true,
       "checked_spec_disposition_required": false,
-      "current_tree_probe_ids": ["lsp_runtime_train_probe_classifies"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_probe_classifies"
+      ],
       "rollback_boundary": "revert the probe module; the proof profile remains current",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["a proposition cannot be probed offline without running the product"],
-      "stop_conditions": ["stop before computing readiness or reading GitHub"],
-      "limitations": ["a probe classifies integration, never behavior or support"]
+      "return_to_issue_conditions": [
+        "a proposition cannot be probed offline without running the product"
+      ],
+      "stop_conditions": [
+        "stop before computing readiness or reading GitHub"
+      ],
+      "limitations": [
+        "a probe classifies integration, never behavior or support"
+      ]
     },
     {
       "stable_node_id": "FRONTIER11306",
@@ -520,32 +782,59 @@
       "release_horizon": "runtime_spine",
       "one_pr_proposition": "derive all and only structurally ready leaves, shortest blocker explanations, and conflict-safe parallel groups from exact repository facts",
       "claim_ceiling": "implementation_slice",
-      "authority_before": ["#7384 and #9150 each maintain a hand-kept operational frontier"],
-      "authority_after": ["one derived offline frontier replaces every hand-kept frontier"],
-      "consumed_authorities": ["proposition-specific probes classify every node on one exact tree"],
-      "hard_dependencies": ["PROBE11038"],
+      "authority_before": [
+        "#7384 and #9150 each maintain a hand-kept operational frontier"
+      ],
+      "authority_after": [
+        "one derived offline frontier replaces every hand-kept frontier"
+      ],
+      "consumed_authorities": [
+        "proposition-specific probes classify every node on one exact tree"
+      ],
+      "hard_dependencies": [
+        "PROBE11038"
+      ],
       "evidence_dependencies": [],
       "authorization_dependencies": [],
-      "consumer_edges": ["OBSERVE11040", "PACKET11042"],
+      "consumer_edges": [
+        "OBSERVE11040",
+        "PACKET11042"
+      ],
       "supersedes": [],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.frontier"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.frontier"
+      ],
       "shared_artifact_keys": [],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "serialized_by_hard_dependency",
       "old_path_disposition": "forwarding_with_exit",
       "old_path_exit_owner": "CUTOVER7384",
-      "required_falsifier_ids": ["frontier_claims_work_unclaimed_rejected", "frontier_mutates_state_rejected"],
-      "positive_proof_obligation_ids": ["ready_set_is_exactly_derivable"],
+      "required_falsifier_ids": [
+        "frontier_claims_work_unclaimed_rejected",
+        "frontier_mutates_state_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "ready_set_is_exactly_derivable"
+      ],
       "artifact_map_required": true,
       "checked_spec_disposition_required": false,
-      "current_tree_probe_ids": ["lsp_runtime_train_frontier_derives"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_frontier_derives"
+      ],
       "rollback_boundary": "revert the frontier derivation; the hand-kept frontiers still forward until CUTOVER7384 removes them",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["readiness cannot be derived without a live fact"],
-      "stop_conditions": ["stop before observing live collaboration state"],
-      "limitations": ["structural readiness never implies that no one is already working on the leaf"]
+      "return_to_issue_conditions": [
+        "readiness cannot be derived without a live fact"
+      ],
+      "stop_conditions": [
+        "stop before observing live collaboration state"
+      ],
+      "limitations": [
+        "structural readiness never implies that no one is already working on the leaf"
+      ]
     },
     {
       "stable_node_id": "OBSERVE11040",
@@ -556,32 +845,60 @@
       "release_horizon": "runtime_spine",
       "one_pr_proposition": "observe live candidate, check, and review state read-only and return a routing recommendation without mutating anything",
       "claim_ceiling": "implementation_slice",
-      "authority_before": ["no read-only observation of live collaboration state exists"],
-      "authority_after": ["live collaboration state is observable and returns a typed recommendation"],
-      "consumed_authorities": ["one derived offline frontier replaces every hand-kept frontier"],
-      "hard_dependencies": ["FRONTIER11306"],
+      "authority_before": [
+        "no read-only observation of live collaboration state exists"
+      ],
+      "authority_after": [
+        "live collaboration state is observable and returns a typed recommendation"
+      ],
+      "consumed_authorities": [
+        "one derived offline frontier replaces every hand-kept frontier"
+      ],
+      "hard_dependencies": [
+        "FRONTIER11306"
+      ],
       "evidence_dependencies": [],
       "authorization_dependencies": [],
-      "consumer_edges": ["CLOSEOUT11044"],
+      "consumer_edges": [
+        "CLOSEOUT11044"
+      ],
       "supersedes": [],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.observation"],
-      "shared_artifact_keys": ["lsp_runtime_train.generated_outputs"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.observation"
+      ],
+      "shared_artifact_keys": [
+        "lsp_runtime_train.generated_outputs"
+      ],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "parallel_safe",
       "old_path_disposition": "intentionally_independent",
       "old_path_exit_owner": null,
-      "required_falsifier_ids": ["observation_mutates_github_rejected", "observation_overwrites_stable_truth_rejected"],
-      "positive_proof_obligation_ids": ["recommendation_is_typed_and_read_only"],
+      "required_falsifier_ids": [
+        "observation_mutates_github_rejected",
+        "observation_overwrites_stable_truth_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "recommendation_is_typed_and_read_only"
+      ],
       "artifact_map_required": true,
       "checked_spec_disposition_required": false,
-      "current_tree_probe_ids": ["lsp_runtime_train_observation_read_only"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_observation_read_only"
+      ],
       "rollback_boundary": "revert the observer; offline planes stay current and unchanged",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["a recommendation cannot be made without mutating remote state"],
-      "stop_conditions": ["stop before any write to a remote surface"],
-      "limitations": ["a rate-limited or refused observation is not evidence that no candidate exists"]
+      "return_to_issue_conditions": [
+        "a recommendation cannot be made without mutating remote state"
+      ],
+      "stop_conditions": [
+        "stop before any write to a remote surface"
+      ],
+      "limitations": [
+        "a rate-limited or refused observation is not evidence that no candidate exists"
+      ]
     },
     {
       "stable_node_id": "PACKET11042",
@@ -592,32 +909,62 @@
       "release_horizon": "runtime_spine",
       "one_pr_proposition": "emit content-addressed builder and independent reviewer packets bounded to one authority delta",
       "claim_ceiling": "implementation_slice",
-      "authority_before": ["no bounded handoff packet exists for a builder or a reviewer"],
-      "authority_after": ["builder and reviewer packets are derived from stable and offline facts"],
-      "consumed_authorities": ["one derived offline frontier replaces every hand-kept frontier"],
-      "hard_dependencies": ["FRONTIER11306"],
-      "evidence_dependencies": ["OBSERVE11040"],
+      "authority_before": [
+        "no bounded handoff packet exists for a builder or a reviewer"
+      ],
+      "authority_after": [
+        "builder and reviewer packets are derived from stable and offline facts"
+      ],
+      "consumed_authorities": [
+        "one derived offline frontier replaces every hand-kept frontier"
+      ],
+      "hard_dependencies": [
+        "FRONTIER11306"
+      ],
+      "evidence_dependencies": [
+        "OBSERVE11040"
+      ],
       "authorization_dependencies": [],
-      "consumer_edges": ["CLOSEOUT11044"],
+      "consumer_edges": [
+        "CLOSEOUT11044"
+      ],
       "supersedes": [],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.packet"],
-      "shared_artifact_keys": ["lsp_runtime_train.generated_outputs"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.packet"
+      ],
+      "shared_artifact_keys": [
+        "lsp_runtime_train.generated_outputs"
+      ],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "parallel_safe",
       "old_path_disposition": "none",
       "old_path_exit_owner": null,
-      "required_falsifier_ids": ["offline_packet_infers_no_candidate_rejected", "packet_authorizes_mutation_rejected"],
-      "positive_proof_obligation_ids": ["packet_is_content_addressed_and_bounded"],
+      "required_falsifier_ids": [
+        "offline_packet_infers_no_candidate_rejected",
+        "packet_authorizes_mutation_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "packet_is_content_addressed_and_bounded"
+      ],
       "artifact_map_required": true,
       "checked_spec_disposition_required": false,
-      "current_tree_probe_ids": ["lsp_runtime_train_packet_bounded"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_packet_bounded"
+      ],
       "rollback_boundary": "revert the packet generator; no consumer depends on its output yet",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["a bounded packet cannot carry enough context to start work"],
-      "stop_conditions": ["stop before authorizing any mutation from a packet"],
-      "limitations": ["an offline packet cannot conclude that no candidate exists"]
+      "return_to_issue_conditions": [
+        "a bounded packet cannot carry enough context to start work"
+      ],
+      "stop_conditions": [
+        "stop before authorizing any mutation from a packet"
+      ],
+      "limitations": [
+        "an offline packet cannot conclude that no candidate exists"
+      ]
     },
     {
       "stable_node_id": "CLOSEOUT11044",
@@ -628,35 +975,60 @@
       "release_horizon": "shipped_correctness",
       "one_pr_proposition": "extend the canonical PR checker so one exact candidate head proves one node's structural authority move",
       "claim_ceiling": "implementation_slice",
-      "authority_before": ["structural closeout is asserted in prose rather than checked on an exact head"],
-      "authority_after": ["one exact head is checked against one node's structural authority move"],
+      "authority_before": [
+        "structural closeout is asserted in prose rather than checked on an exact head"
+      ],
+      "authority_after": [
+        "one exact head is checked against one node's structural authority move"
+      ],
       "consumed_authorities": [
         "live collaboration state is observable and returns a typed recommendation",
         "builder and reviewer packets are derived from stable and offline facts"
       ],
-      "hard_dependencies": ["OBSERVE11040", "PACKET11042"],
+      "hard_dependencies": [
+        "OBSERVE11040",
+        "PACKET11042"
+      ],
       "evidence_dependencies": [],
       "authorization_dependencies": [],
-      "consumer_edges": ["DOGFOOD11311"],
+      "consumer_edges": [
+        "DOGFOOD11311"
+      ],
       "supersedes": [],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.closeout"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.closeout"
+      ],
       "shared_artifact_keys": [],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "serialized_by_hard_dependency",
       "old_path_disposition": "oracle_with_exit",
       "old_path_exit_owner": "DOGFOOD11311",
-      "required_falsifier_ids": ["closeout_passing_treated_as_review_rejected", "controller_scope_accepted_rejected"],
-      "positive_proof_obligation_ids": ["exact_head_structural_evidence"],
+      "required_falsifier_ids": [
+        "closeout_passing_treated_as_review_rejected",
+        "controller_scope_accepted_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "exact_head_structural_evidence"
+      ],
       "artifact_map_required": true,
       "checked_spec_disposition_required": false,
-      "current_tree_probe_ids": ["lsp_runtime_train_closeout_checks"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_closeout_checks"
+      ],
       "rollback_boundary": "revert the checker extension; the existing checker behavior is unchanged",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["structural closeout cannot be decided without substantive review"],
-      "stop_conditions": ["stop before treating a passing check as review, merge, or release"],
-      "limitations": ["passing closeout is not substantive review, CI, merge, or authorization"]
+      "return_to_issue_conditions": [
+        "structural closeout cannot be decided without substantive review"
+      ],
+      "stop_conditions": [
+        "stop before treating a passing check as review, merge, or release"
+      ],
+      "limitations": [
+        "passing closeout is not substantive review, CI, merge, or authorization"
+      ]
     },
     {
       "stable_node_id": "DOGFOOD11311",
@@ -667,32 +1039,55 @@
       "release_horizon": "optional_breadth",
       "one_pr_proposition": "prove fresh start, resume, repair, safe parallel work, and correct refusal across disposable agent cohorts",
       "claim_ceiling": "implementation_slice",
-      "authority_before": ["the control-plane interface is unproven against an agent with no prior conversation"],
-      "authority_after": ["the interface is proven for fresh, resuming, and correctly refusing agents"],
-      "consumed_authorities": ["one exact head is checked against one node's structural authority move"],
-      "hard_dependencies": ["CLOSEOUT11044"],
+      "authority_before": [
+        "the control-plane interface is unproven against an agent with no prior conversation"
+      ],
+      "authority_after": [
+        "the interface is proven for fresh, resuming, and correctly refusing agents"
+      ],
+      "consumed_authorities": [
+        "one exact head is checked against one node's structural authority move"
+      ],
+      "hard_dependencies": [
+        "CLOSEOUT11044"
+      ],
       "evidence_dependencies": [],
       "authorization_dependencies": [],
       "consumer_edges": [],
       "supersedes": [],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.dogfood"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.dogfood"
+      ],
       "shared_artifact_keys": [],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "serialized_by_hard_dependency",
       "old_path_disposition": "none",
       "old_path_exit_owner": null,
-      "required_falsifier_ids": ["cohort_result_not_reproducible_rejected"],
-      "positive_proof_obligation_ids": ["fresh_agent_can_start_resume_or_refuse"],
+      "required_falsifier_ids": [
+        "cohort_result_not_reproducible_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "fresh_agent_can_start_resume_or_refuse"
+      ],
       "artifact_map_required": false,
       "checked_spec_disposition_required": false,
-      "current_tree_probe_ids": ["lsp_runtime_train_dogfood_cohorts"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_dogfood_cohorts"
+      ],
       "rollback_boundary": "revert the cohort harness; no production surface is touched",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["a cohort exposes an interface defect owned by an earlier node"],
-      "stop_conditions": ["stop before changing an earlier node's contract to make a cohort pass"],
-      "limitations": ["a cohort result is evidence about the interface, not about product behavior"]
+      "return_to_issue_conditions": [
+        "a cohort exposes an interface defect owned by an earlier node"
+      ],
+      "stop_conditions": [
+        "stop before changing an earlier node's contract to make a cohort pass"
+      ],
+      "limitations": [
+        "a cohort result is evidence about the interface, not about product behavior"
+      ]
     },
     {
       "stable_node_id": "DECIDE10554",
@@ -703,11 +1098,17 @@
       "release_horizon": "package_api",
       "one_pr_proposition": "none: record whether landed duplication now satisfies the shared extraction start gate",
       "claim_ceiling": "schema_contract",
-      "authority_before": ["each train implements its own loading shape"],
-      "authority_after": ["a recorded ruling states whether extraction is warranted yet"],
+      "authority_before": [
+        "each train implements its own loading shape"
+      ],
+      "authority_after": [
+        "a recorded ruling states whether extraction is warranted yet"
+      ],
       "consumed_authorities": [],
       "hard_dependencies": [],
-      "evidence_dependencies": ["SCHEMA11036"],
+      "evidence_dependencies": [
+        "SCHEMA11036"
+      ],
       "authorization_dependencies": [],
       "consumer_edges": [],
       "supersedes": [],
@@ -716,6 +1117,7 @@
       "exclusive_writer_conflict_keys": [],
       "shared_artifact_keys": [],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "parallel_safe",
       "old_path_disposition": "none",
       "old_path_exit_owner": null,
@@ -726,9 +1128,15 @@
       "current_tree_probe_ids": [],
       "rollback_boundary": "none: a ruling is superseded by a later ruling, never rolled back",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["a third train lands the same loading shape"],
-      "stop_conditions": ["do not extract while the start gate is unmet"],
-      "limitations": ["planned schemas and similar prose are not extraction evidence"]
+      "return_to_issue_conditions": [
+        "a third train lands the same loading shape"
+      ],
+      "stop_conditions": [
+        "do not extract while the start gate is unmet"
+      ],
+      "limitations": [
+        "planned schemas and similar prose are not extraction evidence"
+      ]
     },
     {
       "stable_node_id": "CUTOVER7384",
@@ -739,32 +1147,57 @@
       "release_horizon": "product_cutover",
       "one_pr_proposition": "withdraw the hand-kept operational frontiers once the derived frontier is current",
       "claim_ceiling": "implementation_slice",
-      "authority_before": ["two hand-kept frontiers compete with the derived frontier"],
-      "authority_after": ["the derived frontier is the only operational frontier"],
-      "consumed_authorities": ["one derived offline frontier replaces every hand-kept frontier"],
-      "hard_dependencies": ["FRONTIER11306"],
+      "authority_before": [
+        "two hand-kept frontiers compete with the derived frontier"
+      ],
+      "authority_after": [
+        "the derived frontier is the only operational frontier"
+      ],
+      "consumed_authorities": [
+        "one derived offline frontier replaces every hand-kept frontier"
+      ],
+      "hard_dependencies": [
+        "FRONTIER11306"
+      ],
       "evidence_dependencies": [],
       "authorization_dependencies": [],
       "consumer_edges": [],
-      "supersedes": ["HISTORICAL9799"],
+      "supersedes": [
+        "HISTORICAL9799"
+      ],
       "superseded_by": [],
       "duplicate_of": null,
-      "exclusive_writer_conflict_keys": ["lsp_runtime_train.frontier"],
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.frontier"
+      ],
       "shared_artifact_keys": [],
       "stack_relation": "stacked_on",
+      "stack_target": "FRONTIER11306",
       "parallel_disposition": "serialized_by_conflict",
       "old_path_disposition": "delete",
       "old_path_exit_owner": "CUTOVER7384",
-      "required_falsifier_ids": ["hand_kept_frontier_still_readable_rejected"],
-      "positive_proof_obligation_ids": ["no_competing_frontier_remains"],
+      "required_falsifier_ids": [
+        "hand_kept_frontier_still_readable_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "no_competing_frontier_remains"
+      ],
       "artifact_map_required": true,
       "checked_spec_disposition_required": false,
-      "current_tree_probe_ids": ["lsp_runtime_train_single_frontier"],
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_single_frontier"
+      ],
       "rollback_boundary": "restore the hand-kept frontier documents; the derived frontier keeps working",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["the derived frontier cannot express a distinction the hand-kept one carried"],
-      "stop_conditions": ["do not withdraw the old frontier before the derived one is current"],
-      "limitations": ["withdrawal is documentation-level and changes no runtime behavior"]
+      "return_to_issue_conditions": [
+        "the derived frontier cannot express a distinction the hand-kept one carried"
+      ],
+      "stop_conditions": [
+        "do not withdraw the old frontier before the derived one is current"
+      ],
+      "limitations": [
+        "withdrawal is documentation-level and changes no runtime behavior"
+      ]
     },
     {
       "stable_node_id": "EXTERNAL11311P",
@@ -775,12 +1208,23 @@
       "release_horizon": "externalization",
       "one_pr_proposition": "none: a human publishes the proven control-plane interface outside this repository",
       "claim_ceiling": "none",
-      "authority_before": ["the interface is proven only inside this repository"],
-      "authority_after": ["the interface is published under a freshly granted external authorization"],
-      "consumed_authorities": ["the interface is proven for fresh, resuming, and correctly refusing agents"],
-      "hard_dependencies": ["DOGFOOD11311"],
+      "authority_before": [
+        "the interface is proven only inside this repository"
+      ],
+      "authority_after": [
+        "the interface is published under a freshly granted external authorization"
+      ],
+      "consumed_authorities": [
+        "the interface is proven for fresh, resuming, and correctly refusing agents"
+      ],
+      "hard_dependencies": [
+        "DOGFOOD11311"
+      ],
       "evidence_dependencies": [],
-      "authorization_dependencies": ["#maintainer_submission", "#release_publication"],
+      "authorization_dependencies": [
+        "#maintainer_submission",
+        "#release_publication"
+      ],
       "consumer_edges": [],
       "supersedes": [],
       "superseded_by": [],
@@ -788,19 +1232,28 @@
       "exclusive_writer_conflict_keys": [],
       "shared_artifact_keys": [],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "serialized_by_hard_dependency",
       "old_path_disposition": "external_transition",
       "old_path_exit_owner": "CTRL10360",
-      "required_falsifier_ids": ["authorization_inferred_from_dependencies_rejected"],
+      "required_falsifier_ids": [
+        "authorization_inferred_from_dependencies_rejected"
+      ],
       "positive_proof_obligation_ids": [],
       "artifact_map_required": false,
       "checked_spec_disposition_required": false,
       "current_tree_probe_ids": [],
       "rollback_boundary": "none: an external action is withdrawn externally, never by reverting this repository",
       "transfer_owner": "a human maintainer",
-      "return_to_issue_conditions": ["authorization is refused or withdrawn"],
-      "stop_conditions": ["never perform this action from an automated context"],
-      "limitations": ["completing every dependency never grants this authorization"]
+      "return_to_issue_conditions": [
+        "authorization is refused or withdrawn"
+      ],
+      "stop_conditions": [
+        "never perform this action from an automated context"
+      ],
+      "limitations": [
+        "completing every dependency never grants this authorization"
+      ]
     },
     {
       "stable_node_id": "HISTORICAL9799",
@@ -819,11 +1272,14 @@
       "authorization_dependencies": [],
       "consumer_edges": [],
       "supersedes": [],
-      "superseded_by": ["CUTOVER7384"],
+      "superseded_by": [
+        "CUTOVER7384"
+      ],
       "duplicate_of": null,
       "exclusive_writer_conflict_keys": [],
       "shared_artifact_keys": [],
       "stack_relation": "independent",
+      "stack_target": null,
       "parallel_disposition": "parallel_safe",
       "old_path_disposition": "unreachable",
       "old_path_exit_owner": "GRAPH11037",
@@ -834,9 +1290,15 @@
       "current_tree_probe_ids": [],
       "rollback_boundary": "none: historical nodes are never selected",
       "transfer_owner": null,
-      "return_to_issue_conditions": ["provenance is disputed"],
-      "stop_conditions": ["never select a historical node as work"],
-      "limitations": ["retained for provenance only; it carries no current authority"]
+      "return_to_issue_conditions": [
+        "provenance is disputed"
+      ],
+      "stop_conditions": [
+        "never select a historical node as work"
+      ],
+      "limitations": [
+        "retained for provenance only; it carries no current authority"
+      ]
     }
   ],
   "limitations": [
