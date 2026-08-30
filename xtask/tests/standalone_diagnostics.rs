@@ -260,6 +260,21 @@ fn rejects_a_template_that_renders_free_text() -> TestResult {
 
 #[test]
 fn rejects_an_allowed_render_parameter_that_is_not_typed() -> TestResult {
+    // `elapsed_seconds` is absent from `forbidden_parameters`, so the overlap
+    // check cannot fire and the untyped-parameter branch is the only thing that
+    // can reject this. An earlier version of this test pushed `install_root`,
+    // which is forbidden, so it passed on the overlap message and would have
+    // kept passing if the branch it names were deleted.
+    let mut manifest = canonical_manifest()?;
+    manifest["render"]["allowed_parameters"]
+        .as_array_mut()
+        .ok_or("missing allowed parameters")?
+        .push(json!("elapsed_seconds"));
+    expect_violation(&manifest, "which is not a typed selector field or route_mode")
+}
+
+#[test]
+fn rejects_a_render_parameter_that_is_allowed_and_forbidden() -> TestResult {
     let mut manifest = canonical_manifest()?;
     manifest["render"]["allowed_parameters"]
         .as_array_mut()
@@ -1368,19 +1383,23 @@ fn deferred_cleanup_is_outstanding_without_being_called_actionable() -> TestResu
 fn a_candidate_only_outcome_does_not_invent_a_known_good_installation() -> TestResult {
     let manifest = diagnostics::load_manifest(&repo_root())?;
     for disposition in ["candidate_verified", "candidate_published_unselected"] {
-        let projection = diagnostics::project_packet(
-            &manifest,
-            &packet(
-                disposition,
-                json!({
-                    "product_units": "not_applicable",
-                    "cleanup": "completed",
-                    "process_startup": "unproven",
-                    "path_persistence": "not_applicable"
-                }),
-                "candidate stage only; nothing installed before",
-            ),
-        )?;
+        let mut subject = packet(
+            disposition,
+            json!({
+                "product_units": "not_applicable",
+                "cleanup": "completed",
+                "process_startup": "unproven",
+                "path_persistence": "not_applicable"
+            }),
+            "candidate stage only; nothing installed before",
+        );
+        // `candidate_published_unselected` must name the candidate it
+        // published; the origin authority resolves that id against the
+        // catalog, so a null here is not an admissible packet.
+        if disposition == "candidate_published_unselected" {
+            subject["candidate_id"] = json!("b".repeat(64));
+        }
+        let projection = diagnostics::project_packet(&manifest, &subject)?;
         assert_eq!(
             projection.pointer("/consequences/known_good").and_then(Value::as_str),
             Some("not_established_by_this_transaction"),
@@ -1447,5 +1466,242 @@ fn a_rollback_that_did_not_commit_is_not_reported_as_unnecessary() -> TestResult
         projection.pointer("/consequences/rollback").and_then(Value::as_str),
         Some("not_required_current_preserved")
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Review pass: malformed templates, aggregated retryability, ill-typed fields,
+// and dispositions that cannot be described without an identity.
+// ---------------------------------------------------------------------------
+
+/// Replace the text of the first summary template and expect a violation.
+fn expect_template_text_violation(text: &str, needle: &str) -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    manifest["summary_templates"]
+        .as_array_mut()
+        .and_then(|items| items.first_mut())
+        .ok_or("missing template")?["text"] = json!(text);
+    expect_violation(&manifest, needle)
+}
+
+#[test]
+fn rejects_a_template_with_an_unterminated_placeholder() -> TestResult {
+    // The dangerous case is precisely this one: the fragment after `{` is
+    // `operation`, an allowed parameter, so the old parser handed back a legal
+    // parameter name and the malformed text validated.
+    expect_template_text_violation("Install failed: {operation", "unterminated `{` at byte")
+}
+
+#[test]
+fn rejects_a_template_with_an_unmatched_closing_brace() -> TestResult {
+    expect_template_text_violation("Install failed: operation}", "unmatched `}` at byte")
+}
+
+#[test]
+fn rejects_a_template_with_an_empty_placeholder() -> TestResult {
+    expect_template_text_violation("Install failed: {}", "empty placeholder `{}` at byte")
+}
+
+#[test]
+fn rejects_a_template_with_nested_placeholder_braces() -> TestResult {
+    expect_template_text_violation("Install failed: {oper{ation}", "nested `{` at byte")
+}
+
+#[test]
+fn a_well_formed_template_is_still_accepted() -> TestResult {
+    // Negative control for the four rejections above: the brace check must not
+    // reject the shape the registry actually uses.
+    let mut manifest = canonical_manifest()?;
+    manifest["summary_templates"]
+        .as_array_mut()
+        .and_then(|items| items.first_mut())
+        .ok_or("missing template")?["text"] = json!("The {operation} finished via {route_mode}.");
+    diagnostics::validate_manifest_value(&manifest)?;
+    Ok(())
+}
+
+#[test]
+fn a_failed_cleanup_raises_the_retry_precondition() -> TestResult {
+    // `failed_preserved_current` is `retryable_same_subject` on its own. With
+    // residue retained, telling a consumer to retry the same subject omits the
+    // manual resolution that must happen first.
+    let manifest = canonical_manifest()?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "failed_preserved_current",
+            "unchanged",
+            "failed_preserved",
+            "not_applicable",
+            "not_applicable",
+        ),
+        None,
+    )?;
+    assert_eq!(projected["primary_retryability"], json!("retryable_same_subject"));
+    assert_eq!(projected["retryability"], json!("retryable_after_user_action"));
+    Ok(())
+}
+
+#[test]
+fn an_unproven_cleanup_forbids_a_bare_retry() -> TestResult {
+    let manifest = canonical_manifest()?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "failed_preserved_current",
+            "unchanged",
+            "not_proven",
+            "not_applicable",
+            "not_applicable",
+        ),
+        None,
+    )?;
+    assert_eq!(projected["retryability"], json!("retry_forbidden_requires_replan"));
+    Ok(())
+}
+
+#[test]
+fn a_deferred_cleanup_does_not_forbid_retrying_the_failure_it_accompanies() -> TestResult {
+    // Negative control against over-aggregating. `cleanup_deferred_pending`
+    // carries `not_retryable`, but that is a statement about the cleanup, not a
+    // prohibition on retrying the install, so the primary must survive.
+    let manifest = canonical_manifest()?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "failed_preserved_current",
+            "unchanged",
+            "deferred",
+            "not_applicable",
+            "not_applicable",
+        ),
+        None,
+    )?;
+    assert_eq!(projected["retryability"], json!("retryable_same_subject"));
+    Ok(())
+}
+
+#[test]
+fn outstanding_work_never_makes_a_successful_outcome_retryable() -> TestResult {
+    // The opposite direction: a primary that has nothing to retry must not be
+    // turned into an invitation to reinstall by an accompanying obligation.
+    let manifest = canonical_manifest()?;
+    let projected = diagnostics::project_combination(
+        &manifest,
+        &combination(
+            "install",
+            "selection_committed",
+            "installed",
+            "failed_preserved",
+            "verified",
+            "persisted",
+        ),
+        None,
+    )?;
+    assert_eq!(projected["retryability"], json!("not_retryable"));
+    Ok(())
+}
+
+#[test]
+fn a_present_but_non_string_typed_field_is_not_reported_as_missing() -> TestResult {
+    let mut subject = valid_packet();
+    subject["outcome_dimensions"]["cleanup"] = json!(7);
+    let error = admission_error(&subject);
+    assert!(
+        error.contains("`cleanup` must be a string in the typed domain"),
+        "expected an ill-shaped-value diagnostic, got:\n{error}"
+    );
+    assert!(
+        !error.contains("missing `cleanup`"),
+        "a present field must not be reported as missing, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_top_level_non_string_typed_field_is_not_reported_as_missing() -> TestResult {
+    let mut subject = valid_packet();
+    subject["operation"] = json!(7);
+    let error = admission_error(&subject);
+    assert!(
+        error.contains("`operation` must be a string in the typed domain"),
+        "expected an ill-shaped-value diagnostic, got:\n{error}"
+    );
+    assert!(
+        !error.contains("missing `operation`"),
+        "a present field must not be reported as missing, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_absent_typed_field_is_still_reported_as_missing() -> TestResult {
+    // Negative control: the missing-key message must survive for genuinely
+    // absent keys, which is the case the ill-shaped arm could have swallowed.
+    let mut subject = valid_packet();
+    subject
+        .as_object_mut()
+        .ok_or("packet must be an object")?
+        .remove("operation")
+        .ok_or("packet must carry operation")?;
+    let error = admission_error(&subject);
+    assert!(
+        error.contains("transition packet is missing `operation`"),
+        "expected a missing-key diagnostic, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_committed_rollback_must_name_the_candidate_it_demoted() -> TestResult {
+    let mut subject = valid_packet();
+    subject["operation"] = json!("rollback");
+    subject["disposition"] = json!("rollback_committed");
+    subject["outcome_dimensions"]["product_units"] = json!("rolled_back");
+    let error = admission_error(&subject);
+    assert!(
+        error.contains("`rollback_committed` must name `prior_current_candidate_id`"),
+        "expected an identity admission failure, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_published_candidate_must_name_itself() -> TestResult {
+    let mut subject = valid_packet();
+    subject["disposition"] = json!("candidate_published_unselected");
+    subject["outcome_dimensions"]["product_units"] = json!("not_applicable");
+    let error = admission_error(&subject);
+    assert!(
+        error.contains("`candidate_published_unselected` must name `candidate_id`"),
+        "expected an identity admission failure, got:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_committed_selection_is_not_required_to_name_a_candidate_id() -> TestResult {
+    // Negative control against a false invariant. The origin authority binds
+    // `selection_committed` identity through the packet's `next_selection`
+    // record, which the transition record does not carry; requiring
+    // `candidate_id` here would reject packets the authority admits.
+    let subject = valid_packet();
+    assert_eq!(subject["candidate_id"], json!(null));
+    diagnostics::read_packet(&subject)?;
+    Ok(())
+}
+
+#[test]
+fn a_committed_rollback_that_names_its_prior_candidate_is_admitted() -> TestResult {
+    // Positive control for the rollback identity rule.
+    let mut subject = valid_packet();
+    subject["operation"] = json!("rollback");
+    subject["disposition"] = json!("rollback_committed");
+    subject["outcome_dimensions"]["product_units"] = json!("rolled_back");
+    subject["prior_current_candidate_id"] = json!("a".repeat(64));
+    diagnostics::read_packet(&subject)?;
     Ok(())
 }

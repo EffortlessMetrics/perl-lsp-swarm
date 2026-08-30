@@ -826,6 +826,10 @@ fn validate_templates(
         if templates.contains_key(id) {
             violations.push(format!("duplicate template id `{id}`"));
         }
+        if let Some(error) = template_brace_error(text) {
+            violations.push(format!("template `{id}` has malformed placeholder syntax: {error}"));
+            continue;
+        }
         for parameter in template_parameters(text) {
             if render.forbidden.contains(&parameter) {
                 violations
@@ -841,25 +845,104 @@ fn validate_templates(
     templates
 }
 
-/// Placeholders are `{name}` spans. An unterminated brace is a violation
-/// surfaced by the caller as an unknown parameter.
+/// Placeholder names from the well-formed `{name}` spans of `text`.
+///
+/// Brace *structure* is not this function's job — [`template_brace_error`]
+/// owns it, and `validate_templates` runs that first. Returning only
+/// well-formed spans here is deliberate: an earlier version returned the
+/// trailing fragment of an unterminated brace as though it were a parameter,
+/// so the malformed template `"Install failed: {operation"` yielded the
+/// parameter `operation`, which is allowed, and the malformed text validated.
+/// A registry that passes `check` could then render a literal `{operation` to
+/// a user.
 pub fn template_parameters(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find('{') {
         let after = &rest[start + 1..];
-        match after.find('}') {
-            Some(end) => {
-                out.push(after[..end].to_string());
-                rest = &after[end + 1..];
-            }
-            None => {
-                out.push(after.to_string());
-                break;
-            }
-        }
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        out.push(after[..end].to_string());
+        rest = &after[end + 1..];
     }
     out
+}
+
+/// How much must happen before this subject can be retried.
+///
+/// This orders *preconditions*, which is why `not_retryable` is absent: it does
+/// not say "retrying is hard", it says there is nothing here to retry, and that
+/// is a property of the primary outcome rather than a precondition an
+/// additional reason can impose.
+fn retry_precondition_rank(retryability: &str) -> u8 {
+    match retryability {
+        "retryable_same_subject" => 0,
+        "retryable_after_user_action" => 1,
+        "retry_forbidden_requires_replan" => 2,
+        // `not_retryable` and anything unrecognised impose no precondition.
+        _ => 0,
+    }
+}
+
+/// Aggregate retryability across the primary and every matching additional
+/// reason, the way terminality and actions already are.
+///
+/// Reporting the primary's value alone let a retryable failure whose cleanup
+/// also failed project `retryable_same_subject`, telling a consumer to retry
+/// immediately while residue still required manual resolution.
+///
+/// Two directions are both refused. An additional reason may raise the
+/// precondition but may not invite a retry the primary forbids; and a primary
+/// `not_retryable` — a success, or an outcome with nothing to retry — stays
+/// `not_retryable` however much outstanding work exists, because outstanding
+/// work is carried by terminality, limitations, and actions. Otherwise a
+/// deferred cleanup, which is `not_retryable` about *itself*, would forbid
+/// retrying the install it merely accompanies.
+fn reported_retryability(primary_retryability: &str, additional: &[&Value]) -> String {
+    if primary_retryability == "not_retryable" {
+        return primary_retryability.to_string();
+    }
+    let mut strongest = primary_retryability;
+    for reason in additional {
+        let Some(candidate) = reason.get("retryability").and_then(Value::as_str) else {
+            continue;
+        };
+        if retry_precondition_rank(candidate) > retry_precondition_rank(strongest) {
+            strongest = candidate;
+        }
+    }
+    strongest.to_string()
+}
+
+/// Reject malformed placeholder syntax before any parameter is judged.
+///
+/// Catches an unmatched `{`, an unmatched `}`, an empty `{}`, and a nested `{`
+/// inside an open placeholder. Each of these can otherwise reach rendered user
+/// text through a registry that passed `check`.
+pub fn template_brace_error(text: &str) -> Option<String> {
+    let mut open: Option<usize> = None;
+    for (index, character) in text.char_indices() {
+        match (character, open) {
+            ('{', None) => open = Some(index),
+            ('{', Some(start)) => {
+                return Some(format!(
+                    "nested `{{` at byte {index} inside the placeholder opened at byte {start}"
+                ));
+            }
+            ('}', None) => {
+                return Some(format!("unmatched `}}` at byte {index}"));
+            }
+            ('}', Some(start)) => {
+                if text[start + 1..index].trim().is_empty() {
+                    return Some(format!("empty placeholder `{{}}` at byte {start}"));
+                }
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    open.map(|start| format!("unterminated `{{` at byte {start}"))
 }
 
 fn check_reason_token(
@@ -1184,13 +1267,26 @@ fn validate_invariants_are_never_shadowed(manifest: &Value, violations: &mut Vec
 ///
 /// `bounded_reason` is required by the input schema and deliberately dropped
 /// here: it may never influence reason selection or reach a rendered parameter.
+/// Read one typed enum field, distinguishing the three ways it can be wrong.
+///
+/// Matching on [`Map::get`] rather than [`opt_str`] is deliberate: `opt_str`
+/// collapses "absent" and "present but not a string" into `None`, which made a
+/// packet carrying `"operation": 7` report `operation` as *missing* when it is
+/// present and ill-typed. An admission diagnostic that misdescribes the defect
+/// sends the reader looking for the wrong thing.
 fn typed_field(parent: &Map<String, Value>, key: &str, violations: &mut Vec<String>) -> String {
-    match opt_str(parent, key) {
-        Some(value) if domain_for(key).is_some_and(|domain| domain.contains(&value)) => {
-            value.to_string()
+    match parent.get(key) {
+        Some(Value::String(value))
+            if domain_for(key).is_some_and(|domain| domain.contains(&value.as_str())) =>
+        {
+            value.clone()
         }
-        Some(value) => {
+        Some(Value::String(value)) => {
             violations.push(format!("`{key}` value `{value}` is outside the typed domain"));
+            String::new()
+        }
+        Some(_) => {
+            violations.push(format!("`{key}` must be a string in the typed domain"));
             String::new()
         }
         None => {
@@ -1279,6 +1375,33 @@ pub fn read_packet(packet: &Value) -> Res<TransitionPacket> {
 
     let operation = typed_field(object, "operation", &mut violations);
     let disposition = typed_field(object, "disposition", &mut violations);
+
+    // Two dispositions cannot be described at all without naming an identity,
+    // and the origin authority
+    // (`xtask/examples/standalone_candidate_selection.rs`) says so directly:
+    // `rollback_committed` must equal the demoted candidate
+    // (`prior_current_candidate_id != Some(prior.selected_candidate_id)` is
+    // rejected), and `candidate_published_unselected` must name a cataloged
+    // candidate through `candidate_id`. A null there is not a missing optional
+    // field; it is a diagnostic asserting a transition it cannot identify.
+    //
+    // The requirement stops there deliberately. `selection_committed` and
+    // `selection_unchanged` bind their identity through the packet's
+    // `next_selection`/`prior_selection` records, which the transition record
+    // does not carry, so demanding a non-null `candidate_id` for them would
+    // invent a rule the authority does not have.
+    let required_identity: &[&str] = match disposition.as_str() {
+        "rollback_committed" => &["prior_current_candidate_id"],
+        "candidate_published_unselected" => &["candidate_id"],
+        _ => &[],
+    };
+    for key in required_identity {
+        if !matches!(object.get(*key), Some(Value::String(text)) if is_sha256(text)) {
+            violations.push(format!(
+                "`{disposition}` must name `{key}`; a null or absent identity cannot identify the transition it reports"
+            ));
+        }
+    }
 
     let empty = Map::new();
     let dimensions = match object.get("outcome_dimensions").and_then(Value::as_object) {
@@ -1641,10 +1764,13 @@ pub fn project_combination(
         };
     projection.insert("terminality".to_string(), Value::from(reported_terminality));
     projection.insert("primary_terminality".to_string(), Value::from(primary_terminality));
+    let primary_retryability =
+        primary.get("retryability").and_then(Value::as_str).unwrap_or_default();
     projection.insert(
         "retryability".to_string(),
-        primary.get("retryability").cloned().unwrap_or(Value::Null),
+        Value::from(reported_retryability(primary_retryability, &additional)),
     );
+    projection.insert("primary_retryability".to_string(), Value::from(primary_retryability));
     projection.insert("stage_states".to_string(), Value::Object(stage_states));
     projection.insert("consequences".to_string(), Value::Object(consequences));
     projection.insert("allowed_actions".to_string(), Value::from(action_rows));

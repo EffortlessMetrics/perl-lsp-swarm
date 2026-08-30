@@ -182,7 +182,7 @@
       ]
     },
     "selector": {
-      "description": "Predicate over typed standalone_install_transition.v1 fields. An omitted field is a wildcard. An empty selector is rejected for additional reasons and permitted only as the terminating primary reason.",
+      "description": "Predicate over typed standalone_install_transition.v1 fields. An omitted field is a wildcard. An empty selector is rejected for every reason: totality must come from explicit typed selectors, not from an unconditional catch-all.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
