@@ -650,6 +650,7 @@ struct BodyVisitor {
 }
 
 const FS_FREE_FUNCTIONS: &[&str] = &[
+    "read",
     "read_to_string",
     "write",
     "copy",
