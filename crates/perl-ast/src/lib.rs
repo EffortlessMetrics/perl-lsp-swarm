@@ -74,6 +74,8 @@
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
 pub mod classification;
+/// Owner-neutral source syntax for declaration attributes.
+pub mod declaration;
 /// Field-level authority for independent source-geometry payload fields.
 ///
 /// Registers which payload fields carry byte offsets of their own, what shape
@@ -107,6 +109,12 @@ pub use ast::{
     NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR,
     NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
     NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork, Node, NodeKind,
+};
+/// Owner-neutral declaration-attribute source contracts.
+pub use declaration::{
+    DeclarationAttributeArgumentDisposition, DeclarationAttributeArgumentSyntax,
+    DeclarationAttributeCompleteness, DeclarationAttributeDelimiter, DeclarationAttributeSeparator,
+    DeclarationAttributeSyntax, DeclarationAttributeSyntaxError,
 };
 /// Field-level source-geometry registry types, observation, and reconciliation.
 pub use geometry_policy::{

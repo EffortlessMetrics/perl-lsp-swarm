@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12438 |
-| Rust-family files | 3831 |
-| Non-Rust files | 8607 |
-| Allowlisted | 6370 |
+| Total tracked files | 12503 |
+| Rust-family files | 3870 |
+| Non-Rust files | 8633 |
+| Allowlisted | 6396 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 491 |
-| documentation | 2805 |
+| config | 496 |
+| documentation | 2816 |
 | generated | 2 |
 | production | 348 |
-| test | 2057 |
+| test | 2067 |
 | tooling | 667 |
 | unclassified | 2237 |
 
@@ -2339,15 +2339,21 @@
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13073-Fixed-020212.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13123-Fixed-021700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13125-Fixed-021800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13159-Fixed-023400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13169-Fixed-024536.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13180-Fixed-025800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13237-Fixed-111500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13796-Fixed-174500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13890-Fixed-225841.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13985-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14076-Fixed-024700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2876,6 +2882,8 @@
 | `.github/actions/setup-rust/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/setup-vscode-toolchain/action.yml` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/action.yml` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/render_summary.py` | config | `non-rust-github-actions` | release/ci |
+| `.github/actions/upload-receipt/test_render_summary.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/test_validate_paths.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/actions/upload-receipt/validate_paths.py` | config | `non-rust-github-actions` | release/ci |
 | `.github/ci-config.yml` | config | `non-rust-github-policy` | release/ci |
@@ -3145,6 +3153,9 @@
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11084-import-cleanup-train-manifest/import_cleanup_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11097-declaration-attribute-syntax/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11097-declaration-attribute-syntax/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11097-declaration-attribute-syntax/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11178-lite-xl-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11178-lite-xl-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11178-lite-xl-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3849,6 +3860,17 @@
 | `crates/perl-incremental-parsing/behavior_disposition.json` | tooling | `non-rust-behavior-disposition-ledger` | parser/incremental |
 | `crates/perl-incremental-parsing/benches/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-kwalitee/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-kwalitee/distribution_kwalitee_catalog.v1.toml` | config | `non-rust-distribution-kwalitee-catalog-v1` | distribution/kwalitee |
+| `crates/perl-kwalitee/distribution_kwalitee_fixtures.v1.toml` | config | `non-rust-distribution-kwalitee-fixture-contract-v1` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/Changes` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/LICENSE` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/MANIFEST` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/META.json` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/META.yml` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/Makefile.PL` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/README` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/lib/Acme/CatalogFreeze.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/t/00-load.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
 | `crates/perl-lexer/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lexer/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-lexer/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
@@ -3945,6 +3967,7 @@
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/substitution_literal_preserve.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/transliteration_literal_preserve.expected.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/transliteration_literal_preserve.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `crates/perl-lsp-perltidy/tests/inferred_line_ending_tests.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-lsp-rs-core/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-rs-core/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lsp-rs-core/features_sot.toml` | config | `non-rust-crate-features-sot` | lsp/features |
@@ -4492,6 +4515,7 @@
 | `docs/agents/workflow-outcome.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/perl-oracle-subprocess-contract.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/perl-subprocess-seams.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/architecture/repository-topology.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/archive/DAP_0_9_SHIM_DESIGN.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/articles/AGGREGATOR_ABSORPTION_PATTERN.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/articles/AI_NATIVE_OPERATIONS.md` | documentation | `non-rust-docs-tree` | docs |
@@ -5281,6 +5305,7 @@
 | `docs/reference/DAP_PROTOCOL_SCHEMA.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/DIATAXIS_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/DISTRIBUTED_ENGINEERING_LINEAGE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/reference/DISTRIBUTION_KWALITEE_CATALOG.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/DOCUMENTATION_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/DOWNSTREAM_DAP_INTEGRATIONS.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/EDGE_CASES.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6375,6 +6400,7 @@
 | `policy/release-channel-actuals.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/release-container-actuals.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/release-tag-provenance.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/repository-topology.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
