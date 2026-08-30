@@ -736,7 +736,10 @@ fn a_target_that_lists_one_name_twice_fails_closed() -> TestResult {
 
     let failure = discover_cases(&commands, &request(UxCiTier::Pr))
         .expect_err("a colliding case id must fail closed");
-    assert_eq!(failure.kind(), "duplicate_case_id");
+    // Distinct from a cross-target collision: naming one target twice would
+    // read as "claimed by `t` and `t`".
+    assert_eq!(failure.kind(), "duplicate_case_within_target");
+    assert!(failure.to_string().contains("twice"), "{failure}");
     Ok(())
 }
 
@@ -939,8 +942,8 @@ fn an_external_cargo_target_dir_keeps_a_runnable_replay() -> TestResult {
     );
     assert_eq!(
         target.list_argv.first().map(String::as_str),
-        Some("${CARGO_TARGET_DIR}/debug/deps/ux_scenario_01_simple_file-1003.exe"),
-        "the replay must remain runnable via $CARGO_TARGET_DIR"
+        Some("{cargo:target_directory}/debug/deps/ux_scenario_01_simple_file-1003.exe"),
+        "the replay must name a rule that resolves without an env var"
     );
     assert!(
         !inventory.limitations.contains(&UxInventoryLimitation::ReplayNotSelfContained),
@@ -1089,4 +1092,16 @@ fn unknown_subject_facts_are_declared_rather_than_passed_off_as_known() -> TestR
         assert!(!complete.limitations.contains(&absent), "{absent:?} must not be declared");
     }
     Ok(())
+}
+
+#[test]
+fn the_replay_placeholder_names_a_rule_that_always_resolves() {
+    // An external target directory can come from `.cargo/config.toml` with no
+    // `CARGO_TARGET_DIR` set, so an env-shaped placeholder would name something
+    // unset at replay time.
+    assert!(
+        !CARGO_TARGET_DIR_PLACEHOLDER.contains("$"),
+        "the placeholder must not read as a shell/env expansion: {CARGO_TARGET_DIR_PLACEHOLDER}"
+    );
+    assert_eq!(CARGO_TARGET_DIR_PLACEHOLDER, "{cargo:target_directory}");
 }

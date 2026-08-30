@@ -227,6 +227,13 @@ pub enum UxDiscoveryFailure {
         /// Digest observed after listing.
         after: String,
     },
+    /// One target listed the same case name twice.
+    DuplicateCaseWithinTarget {
+        /// Target identity that repeated a case.
+        target: String,
+        /// The repeated case identity.
+        case_id: String,
+    },
     /// Two executable cases normalized to one case identity.
     DuplicateCaseId {
         /// The colliding identity.
@@ -268,6 +275,7 @@ impl UxDiscoveryFailure {
             Self::MissingListSummary { .. } => "missing_list_summary",
             Self::ListCountMismatch { .. } => "list_count_mismatch",
             Self::ExecutableChangedDuringDiscovery { .. } => "executable_changed_during_discovery",
+            Self::DuplicateCaseWithinTarget { .. } => "duplicate_case_within_target",
             Self::DuplicateCaseId { .. } => "duplicate_case_id",
             Self::DigestUnavailable { .. } => "digest_unavailable",
             Self::InstrumentFailure { .. } => "instrument_failure",
@@ -333,6 +341,9 @@ impl fmt::Display for UxDiscoveryFailure {
                 f,
                 "the executable for `{target}` changed during discovery: {before} before listing, {after} after"
             ),
+            Self::DuplicateCaseWithinTarget { target, case_id } => {
+                write!(f, "target `{target}` lists case `{case_id}` twice")
+            }
             Self::DuplicateCaseId { case_id, first_target, second_target } => write!(
                 f,
                 "case id `{case_id}` is claimed by both `{first_target}` and `{second_target}`"
@@ -970,17 +981,25 @@ pub enum UxExecutableRole {
     WorkspaceOther,
     /// Outside the workspace, but under the declared Cargo target directory.
     ///
-    /// This is the ordinary shape when `CARGO_TARGET_DIR` points outside the
-    /// checkout, which `.cargo/config.local.toml.example` supports. The replay
-    /// stays runnable because the path is recorded relative to
-    /// `$CARGO_TARGET_DIR` rather than to the checkout.
+    /// This is the ordinary shape when the Cargo target directory sits outside
+    /// the checkout — set either by `CARGO_TARGET_DIR` or by
+    /// `.cargo/config.toml`, both of which `.cargo/config.local.toml.example`
+    /// documents. The replay stays runnable because the path is recorded
+    /// relative to that directory rather than to the checkout.
     CargoTargetDir,
     /// Outside both the workspace root and the declared target directory.
     OutsideWorkspace,
 }
 
 /// Placeholder the replay argv uses for a Cargo-target-dir-relative executable.
-pub const CARGO_TARGET_DIR_PLACEHOLDER: &str = "${CARGO_TARGET_DIR}";
+///
+/// Deliberately **not** `${CARGO_TARGET_DIR}`: the target directory can come
+/// from `.cargo/config.toml` rather than that environment variable, so an
+/// env-shaped placeholder would name something that is often unset at replay
+/// time. This token instead denotes a rule that always resolves —
+/// `cargo metadata --format-version 1 --no-deps`, field `target_directory`,
+/// evaluated in the workspace the inventory's subject names.
+pub const CARGO_TARGET_DIR_PLACEHOLDER: &str = "{cargo:target_directory}";
 
 /// A limitation that the inventory cannot resolve and must not hide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1026,8 +1045,8 @@ pub struct UxExecutableIdentity {
     /// Slash-normalized workspace-relative path, when the executable is inside.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_relative_path: Option<String>,
-    /// Slash-normalized `$CARGO_TARGET_DIR`-relative path, when the executable
-    /// lives in an external target directory.
+    /// Slash-normalized target-directory-relative path, when the executable
+    /// lives in an external Cargo target directory.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_dir_relative_path: Option<String>,
     /// Executable file name.
@@ -1534,6 +1553,14 @@ pub fn discover_cases(
                 &case.test_name,
             );
             if let Some(first_target) = seen_case_ids.get(case_id.as_str()) {
+                // Same target twice and two different targets are different
+                // faults; reporting both as "claimed by `t` and `t`" hides which.
+                if *first_target == identity {
+                    return Err(UxDiscoveryFailure::DuplicateCaseWithinTarget {
+                        target: identity,
+                        case_id: case_id.as_str().to_string(),
+                    });
+                }
                 return Err(UxDiscoveryFailure::DuplicateCaseId {
                     case_id: case_id.as_str().to_string(),
                     first_target: first_target.clone(),
@@ -1753,8 +1780,9 @@ fn executable_identity(
 impl UxExecutableIdentity {
     /// How the replay argv names this executable.
     ///
-    /// Workspace-relative where possible, `$CARGO_TARGET_DIR`-relative for an
-    /// external target directory, and the bare file name only when the
+    /// Workspace-relative where possible, target-directory-relative for an
+    /// external target directory (see [`CARGO_TARGET_DIR_PLACEHOLDER`] for how
+    /// that token resolves), and the bare file name only when the
     /// executable is under neither root — which is the case
     /// [`UxInventoryLimitation::ReplayNotSelfContained`] declares.
     #[must_use]

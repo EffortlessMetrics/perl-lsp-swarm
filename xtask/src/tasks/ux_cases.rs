@@ -133,8 +133,38 @@ impl UxDiscoveryCommands for SystemDiscoveryCommands {
 /// A failed probe becomes an explicit unknown subject fact rather than a
 /// fabricated default.
 fn probe(root: &Path, program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).current_dir(root).output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    let label = format!("{program} {}", args.join(" "));
+    match Command::new(program).args(args).current_dir(root).output() {
+        Ok(output) if output.status.success() => {
+            Some(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        // The subject fact still becomes `unknown`; this only makes the reason
+        // recoverable during triage, where "missing binary" and "non-zero exit"
+        // are otherwise indistinguishable.
+        Ok(output) => {
+            report_probe_failure(
+                &label,
+                &format!(
+                    "exit {:?}: {}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            );
+            None
+        }
+        Err(error) => {
+            report_probe_failure(&label, &error.to_string());
+            None
+        }
+    }
+}
+
+/// Record why a subject probe could not answer, without changing the subject.
+fn report_probe_failure(label: &str, detail: &str) {
+    eprintln!(
+        "ux cases discover: subject probe `{label}` unavailable ({}) — the affected subject field is recorded as unknown and declared as a limitation",
+        truncate(detail)
+    );
 }
 
 fn file_digest(path: &Path) -> Option<String> {
@@ -167,21 +197,43 @@ fn rustc_field(verbose: &str, key: &str) -> Option<String> {
 ///
 /// Establishes the second normalization root so an external `CARGO_TARGET_DIR`
 /// still yields a runnable durable replay.
-fn cargo_target_root(root: &Path) -> Option<PathBuf> {
-    // Run in `root`, not the launch directory: resolving against another
-    // workspace would classify executables under the wrong target directory.
+/// `cargo metadata` for `root`, or `None` when it could not be read.
+///
+/// Always run in `root`, not the launch directory: resolving against another
+/// workspace would classify executables under the wrong target directory.
+fn cargo_metadata_value(root: &Path) -> Option<serde_json::Value> {
     let output = Command::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .current_dir(root)
         .output()
         .ok()?;
     if !output.status.success() {
+        report_probe_failure("cargo metadata", &String::from_utf8_lossy(&output.stderr));
         return None;
     }
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+fn cargo_target_root(root: &Path) -> Option<PathBuf> {
+    let value = cargo_metadata_value(root)?;
     let directory = value.get("target_directory")?.as_str()?;
     let directory = PathBuf::from(directory);
     if directory.is_absolute() { Some(directory) } else { Some(root.join(directory)) }
+}
+
+/// Manifest path for the UX package, as `cargo metadata` resolves it.
+fn package_manifest_path(root: &Path) -> Option<PathBuf> {
+    let value = cargo_metadata_value(root)?;
+    let packages = value.get("packages")?.as_array()?;
+    packages
+        .iter()
+        .find(|package| {
+            package.get("name").and_then(serde_json::Value::as_str)
+                == Some(case_inventory::UX_INVENTORY_PACKAGE)
+        })
+        .and_then(|package| package.get("manifest_path"))
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
 }
 
 fn build_request(root: &Path, tier: UxCiTier, include_local_execution: bool) -> UxDiscoveryRequest {
@@ -197,11 +249,20 @@ fn build_request(root: &Path, tier: UxCiTier, include_local_execution: bool) -> 
         None => UxDirtyState::Unknown,
     };
     request.cargo_lock_digest = file_digest(&root.join("Cargo.lock"));
-    request.package_manifest_digest = file_digest(
-        &root.join("crates").join(case_inventory::UX_INVENTORY_PACKAGE).join("Cargo.toml"),
-    );
+    // Resolved through `cargo metadata` so a package rename or a workspace
+    // relayout cannot silently drop the digest; the hardcoded layout is only a
+    // fallback, and a miss is a declared limitation either way.
+    request.package_manifest_digest =
+        package_manifest_path(root).as_deref().and_then(file_digest).or_else(|| {
+            file_digest(
+                &root.join("crates").join(case_inventory::UX_INVENTORY_PACKAGE).join("Cargo.toml"),
+            )
+        });
 
-    let verbose = probe(root, "rustc", &["-vV"]).unwrap_or_default();
+    // Cargo compiles with `$RUSTC` when it is set, so probing the PATH `rustc`
+    // would record a compiler that never touched these executables.
+    let compiler = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let verbose = probe(root, &compiler, &["-vV"]).unwrap_or_default();
     // The whole `rustc -vV` block, not just `release`: two builds of the same
     // release with different commit hashes are different discovery
     // environments and must not share one subject digest.
@@ -229,7 +290,9 @@ fn render(inventory: &UxCaseInventory) -> Result<String> {
 /// output path would otherwise share `<out>.json.tmp` and could publish each
 /// other's document or fail when their staging file vanished underneath them.
 fn write_atomic(path: &Path, body: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
+    // `Path::parent` of a bare file name is `Some("")`, and `create_dir_all("")`
+    // fails — so `--out inventory.json` would never write anything.
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     let unique = format!(
@@ -250,7 +313,7 @@ fn write_atomic(path: &Path, body: &str) -> Result<()> {
     }
     // Persist the directory entry too: without it a crash after a reported
     // success can lose an inventory a downstream gate already believes exists.
-    if let Some(parent) = path.parent()
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty())
         && let Ok(dir) = fs::File::open(parent)
     {
         let _ = dir.sync_all();
@@ -264,6 +327,30 @@ fn write_and_sync(path: &Path, body: &str) -> Result<()> {
     file.write_all(body.as_bytes())?;
     file.sync_all()?;
     Ok(())
+}
+
+/// Publish `inventory` to `out`, retiring the in-progress tombstone on failure.
+///
+/// Split out so the publication path is directly testable: a rename or render
+/// failure here must leave a `discovery_failed` document rather than a stale
+/// `discovery_in_progress` one.
+///
+/// # Errors
+///
+/// Returns the rendering or publication failure. The original error is
+/// preserved even when the tombstone write also fails.
+fn publish_or_retire(out: &Path, tier: UxCiTier, inventory: &UxCaseInventory) -> Result<()> {
+    match render(inventory).and_then(|body| write_atomic(out, &body)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let tombstone = UxCaseInventoryInvalid::failed(
+                tier,
+                &UxDiscoveryFailure::InstrumentFailure { reason: error.to_string() },
+            );
+            let _ = write_tombstone(out, &tombstone);
+            Err(error)
+        }
+    }
 }
 
 fn write_tombstone(path: &Path, tombstone: &UxCaseInventoryInvalid) -> Result<()> {
@@ -303,19 +390,8 @@ pub fn discover_to_path(
     // Rendering and publication are both fallible, and a failure in either must
     // retire the in-progress tombstone. Leaving it in place would tell a
     // consumer a refresh is still running when it has already ended.
-    match render(&inventory).and_then(|body| write_atomic(out, &body)) {
-        Ok(()) => Ok(inventory),
-        Err(error) => {
-            let tombstone = UxCaseInventoryInvalid::failed(
-                tier,
-                &UxDiscoveryFailure::InstrumentFailure { reason: error.to_string() },
-            );
-            // Preserve the original publication error even if the tombstone
-            // write also fails — the first failure is the one worth reporting.
-            let _ = write_tombstone(out, &tombstone);
-            Err(error)
-        }
-    }
+    publish_or_retire(out, tier, &inventory)?;
+    Ok(inventory)
 }
 
 /// Run `ux cases discover`.
@@ -474,17 +550,12 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_publication_retires_the_in_progress_tombstone() -> TestResult {
-        // A directory where the inventory file should be makes the final
-        // `write_atomic` fail after the in-progress tombstone is already down.
+    fn a_failed_discovery_retires_the_in_progress_tombstone() -> TestResult {
         let dir = tempfile::tempdir()?;
         let out = dir.path().join("ux-case-inventory.json");
         fs::write(&out, "seed")?;
 
         let request = UxDiscoveryRequest::new(UxCiTier::Pr, dir.path().to_path_buf());
-        // Discovery itself fails here, which exercises the same retirement path
-        // the publication failure uses; the invariant under test is that the
-        // canonical path never keeps saying "in progress" once the run ended.
         discover_to_path(&FailingCommands, &request, UxCiTier::Pr, &out)
             .expect_err("the forced failure must surface");
 
@@ -494,6 +565,73 @@ mod tests {
             UxInventoryInvalidState::DiscoveryFailed,
             "a finished run must never leave `discovery_in_progress` behind"
         );
+        Ok(())
+    }
+
+    /// A minimal real inventory, produced through the ordinary discovery path.
+    fn sample_inventory() -> Result<UxCaseInventory> {
+        struct OneCase;
+        const EXE: &str = "/w/target/debug/deps/t-1";
+
+        impl UxDiscoveryCommands for OneCase {
+            fn compile_test_targets(&self, _argv: &[String]) -> Result<String, UxDiscoveryFailure> {
+                Ok(format!(
+                    r#"{{"reason":"compiler-artifact","package_id":"path+file:///w/crates/perl-lsp-ux-tests#0.1.0","target":{{"kind":["test"],"name":"t","src_path":"/w/tests/t.rs"}},"profile":{{"test":true}},"features":[],"executable":"{EXE}"}}"#
+                ))
+            }
+            fn list_cases(
+                &self,
+                _target: &str,
+                _executable: &Path,
+                _argv: &[String],
+            ) -> Result<String, UxDiscoveryFailure> {
+                Ok("a: test\n\n1 test, 0 benchmarks\n".to_string())
+            }
+            fn executable_digest(
+                &self,
+                _target: &str,
+                _executable: &Path,
+            ) -> Result<String, UxDiscoveryFailure> {
+                Ok(sha256_hex(b"stable"))
+            }
+            fn executable_exists(&self, _executable: &Path) -> bool {
+                true
+            }
+        }
+
+        let request = UxDiscoveryRequest::new(UxCiTier::Pr, PathBuf::from("/w"));
+        case_inventory::discover_cases(&OneCase, &request).map_err(|failure| eyre!("{failure}"))
+    }
+
+    #[test]
+    fn a_failed_publication_surfaces_rather_than_reporting_success() -> TestResult {
+        // Exercises the publication path itself, not the discovery path: a
+        // directory sitting at the output path makes the final rename fail
+        // after discovery has already succeeded.
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("occupied");
+        fs::create_dir(&out)?;
+
+        let error = publish_or_retire(&out, UxCiTier::Pr, &sample_inventory()?)
+            .expect_err("renaming onto a directory must fail");
+        assert!(!out.is_file(), "a failed publication must not leave a document claiming success");
+        assert!(!error.to_string().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_bare_output_file_name_still_publishes() -> TestResult {
+        // `Path::parent` of a bare name is `Some("")`; `create_dir_all("")`
+        // fails, so this used to write nothing at all.
+        let dir = tempfile::tempdir()?;
+        let previous = std::env::current_dir()?;
+        std::env::set_current_dir(dir.path())?;
+        let result = write_atomic(Path::new("ux-case-inventory.json"), "{}\n");
+        let written = dir.path().join("ux-case-inventory.json").is_file();
+        std::env::set_current_dir(previous)?;
+
+        result?;
+        assert!(written, "a bare --out file name must publish into the working directory");
         Ok(())
     }
 
