@@ -318,6 +318,12 @@ fn assert_stale_frame_has_no_scopes(
     session: &mut DapWorkflowSession,
     frame_id: i64,
 ) -> Result<(), String> {
+    // `handle_scopes` → `exact_current_stopped_frame_id` admits a frame only
+    // when the session is Stopped and the requested id equals the current
+    // banner frame's id, so a prior-generation id gets an empty scope list
+    // rather than another frame's pad. The sibling positive control below,
+    // which asserts the current frame's Locals contain `@big` and `$marker`,
+    // keeps this stale-frame assertion from passing vacuously.
     let scopes = scopes_for_frame(session, frame_id)?;
     if !scopes.is_empty() {
         return Err(format!(

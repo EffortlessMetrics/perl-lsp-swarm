@@ -215,15 +215,9 @@ impl DebugAdapter {
                 // the splice the stored frame already carries the banner
                 // location, so re-splicing is a no-op.
                 if session.state == crate::debug_adapter::DebugState::Stopped
-                    && let Some(stopped) = session.stack_frames.first().cloned()
-                    && let Some(first) = bound_frames.first_mut()
-                    && (first.line != stopped.line || first.source.path != stopped.source.path)
+                    && let Some(stopped) = session.stack_frames.first()
                 {
-                    first.line = stopped.line;
-                    first.source = stopped.source;
-                    if !stopped.name.is_empty() {
-                        first.name = stopped.name;
-                    }
+                    Self::apply_stopped_banner_location(&mut bound_frames, stopped);
                 }
                 session.stack_frames = bound_frames.clone();
             }
@@ -357,6 +351,32 @@ impl DebugAdapter {
 }
 
 impl DebugAdapter {
+    /// Apply a current stop banner's location to the innermost parsed frame.
+    ///
+    /// This depends on per-suspension banner ownership: every resume clears
+    /// `session.stack_frames` in `execution.rs`, and the output reader rewrites
+    /// it from the new stop banner in `process.rs` before publishing
+    /// `DebugState::Stopped`. Therefore `stack_frames[0]` can only belong to
+    /// the current suspension. If the banner is missing,
+    /// `session.stack_frames.first()` in `handle_stack_trace` is `None`, so
+    /// this helper is not called and the parsed call-site frame is published
+    /// unchanged as an honest fallback.
+    fn apply_stopped_banner_location(frames: &mut [StackFrame], stopped: &StackFrame) -> bool {
+        let Some(first) = frames.first_mut() else {
+            return false;
+        };
+        if first.line == stopped.line && first.source.path == stopped.source.path {
+            return false;
+        }
+
+        first.line = stopped.line;
+        first.source = stopped.source.clone();
+        if !stopped.name.is_empty() {
+            first.name = stopped.name.clone();
+        }
+        true
+    }
+
     fn paginate_stack_frames(
         stack_frames: Vec<StackFrame>,
         start_frame: usize,
@@ -452,6 +472,86 @@ mod pagination_tests {
 
         let rejected = DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(100_000));
         assert!(rejected.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_banner_location_splices_first_frame_only() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut frames = vec![make_frame(7, "caller"), make_frame(8, "outer")];
+        let deeper_before = frames.get(1).cloned().ok_or("missing deeper frame")?;
+        let stopped = StackFrame {
+            id: 99,
+            name: "callee".to_string(),
+            source: Source {
+                name: Some("stopped.pl".to_string()),
+                path: "/workspace/stopped.pl".to_string(),
+                source_reference: Some(4),
+            },
+            line: 42,
+            column: 3,
+            end_line: Some(42),
+            end_column: Some(8),
+        };
+
+        assert!(DebugAdapter::apply_stopped_banner_location(&mut frames, &stopped));
+        let first = frames.first().ok_or("missing first frame")?;
+        assert_eq!(first.id, 7);
+        assert_eq!(first.line, 42);
+        assert_eq!(first.source, stopped.source);
+        assert_eq!(first.name, "callee");
+        assert_eq!(frames.get(1), Some(&deeper_before));
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_banner_empty_name_does_not_clobber_parsed_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut frames = vec![make_frame(7, "parsed::callee")];
+        let stopped = StackFrame {
+            id: 99,
+            name: String::new(),
+            source: Source::new("/workspace/stopped.pl"),
+            line: 42,
+            column: 1,
+            end_line: None,
+            end_column: None,
+        };
+
+        assert!(DebugAdapter::apply_stopped_banner_location(&mut frames, &stopped));
+        let first = frames.first().ok_or("missing first frame")?;
+        assert_eq!(first.name, "parsed::callee");
+        assert_eq!(first.line, stopped.line);
+        assert_eq!(first.source, stopped.source);
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_banner_location_reapplication_is_idempotent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut frames = vec![make_frame(7, "callee")];
+        let stopped = StackFrame {
+            id: 99,
+            name: "callee".to_string(),
+            source: Source::new("/tmp/test.pl"),
+            line: 7,
+            column: 1,
+            end_line: None,
+            end_column: None,
+        };
+
+        assert!(!DebugAdapter::apply_stopped_banner_location(&mut frames, &stopped));
+        assert_eq!(frames.first().ok_or("missing first frame")?.id, 7);
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_banner_location_with_empty_frames_is_a_noop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut frames = [];
+        let stopped = make_frame(99, "callee");
+
+        assert!(!DebugAdapter::apply_stopped_banner_location(&mut frames, &stopped));
         Ok(())
     }
 
