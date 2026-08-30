@@ -156,7 +156,11 @@ def parse_ledger(text: str | None = None) -> list[tuple[str, dict[str, str]]]:
     vanished -- so a row could carry a fabricated receipt or lose half its
     defining transition while the suite stayed green. Folding removes the
     hiding place; a line before a row's first field, which has no field to
-    fold into, is a hard failure instead.
+    fold into, is a hard failure instead. A line before the section's first
+    category is the same failure one level up, and a worse one: with no row to
+    belong to it reads as a statement about the whole ledger, so "all eight
+    categories are carried by the landed lane" could sit above rows saying the
+    opposite and no check would see it.
     """
     lines = (_read(LEDGER) if text is None else text).splitlines()
     try:
@@ -209,8 +213,16 @@ def parse_ledger(text: str | None = None) -> list[tuple[str, dict[str, str]]]:
                 )
             fields[field_name] = field.group(2).strip()
             continue
-        if not line.strip() or current is None:
+        if not line.strip():
             continue
+        if current is None:
+            raise AssertionError(
+                f"{LEDGER.relative_to(ROOT)}:{offset}: text in "
+                f"'{LEDGER_SECTION}' before its first category heading; the "
+                f"section holds category rows and nothing else, because a "
+                f"line with no row to belong to reads as a claim about every "
+                f"row and no check below can contradict it"
+            )
         if field_name is None:
             raise AssertionError(
                 f"{LEDGER.relative_to(ROOT)}:{offset}: text inside category "
@@ -566,6 +578,51 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             "Coverage note",
             str(caught.exception),
             "the failure must name the unknown field",
+        )
+
+    def test_a_ledger_preamble_is_rejected(self) -> None:
+        """A line above the first category is a claim about every category.
+
+        The rows are individually checked, so the way to state something the
+        oracle cannot contradict is to state it where no row owns it. A
+        sentence between the section heading and the first `###` renders as an
+        introduction to the whole table -- "all eight categories are carried by
+        the landed lane" reads as current and survives every per-row check,
+        because the parser had no row to attach it to and dropped it.
+
+        Field labels above the first heading are the same hole: they parse as
+        a row nobody validates. Both are rejected; blank lines and the prose
+        sections outside the ledger are unaffected.
+        """
+        def ledger(*preamble: str) -> str:
+            lines = [
+                f"- **{name}:** a sufficiently long placeholder value"
+                for name in REQUIRED_FIELDS
+            ]
+            return "\n".join(
+                [LEDGER_SECTION, "", *preamble, "### example", "", *lines, ""]
+            )
+
+        preambles = {
+            "prose": "All eight categories are carried by the landed lane.",
+            "field label": "- **Status:** COVERED",
+            "list item": "- every row below is superseded",
+        }
+        for label, line in preambles.items():
+            with self.subTest(preamble=label):
+                with self.assertRaises(AssertionError) as caught:
+                    parse_ledger(ledger(line, ""))
+                self.assertIn(
+                    LEDGER_SECTION,
+                    str(caught.exception),
+                    "the failure must name the section the text sits in",
+                )
+
+        parsed = parse_ledger(ledger())
+        self.assertEqual(
+            [category for category, _ in parsed],
+            ["example"],
+            "blank lines between the heading and the first category are fine",
         )
 
     def test_lane_paths_cannot_escape_the_corpus(self) -> None:
