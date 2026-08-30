@@ -1993,3 +1993,47 @@ void test('a throwing projection cannot change the exit code even with stderr cl
     process.stderr.write = originalWrite;
   }
 });
+
+// Reporting a channel failure must not take down the channels that still work
+// (#13816 review).
+void test('a closed diagnostic channel does not cost the job summary', () => {
+  const appended = [];
+
+  const summary = publishCheckSummary(checkReceipt(), {
+    summaryPath: '/tmp/step-summary',
+    appendSummary: (target, text) => appended.push([target, text]),
+    writeAnnotation: () => {
+      throw new Error('EPIPE: stdout closed');
+    },
+    writeDiagnostic: () => {
+      throw new Error('EPIPE: stderr closed');
+    },
+  });
+
+  // Both reporting channels are gone; the independent summary still lands.
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0][1], summary.markdown);
+});
+
+void test('a closed diagnostic channel does not mask a summary write failure', () => {
+  const receipt = checkReceipt();
+
+  // Every output channel is unusable: publishing still returns its composition
+  // rather than throwing, and the receipt is untouched.
+  const summary = publishCheckSummary(receipt, {
+    summaryPath: '/tmp/step-summary',
+    appendSummary: () => {
+      throw new Error('EROFS: read-only file system');
+    },
+    writeAnnotation: () => {
+      throw new Error('EPIPE: stdout closed');
+    },
+    writeDiagnostic: () => {
+      throw new Error('EPIPE: stderr closed');
+    },
+  });
+
+  assert.equal(summary.headline.length > 0, true);
+  assert.equal(receipt.overall, 'pass');
+  assert.equal(receipt.instrument_failure, null);
+});

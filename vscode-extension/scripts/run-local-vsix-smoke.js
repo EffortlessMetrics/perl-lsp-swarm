@@ -979,13 +979,26 @@ function publishCheckSummary(receipt, options = {}) {
   } = options;
 
   const summary = composeCheckSummary(receipt);
-  // The two channels fail independently: a closed stdout (EPIPE) must not also
-  // cost the job summary, which writes to a different destination entirely.
+
+  // Reporting that a channel failed must not itself take down the channels that
+  // still work: with both stdout and stderr closed, the job summary writes to a
+  // different destination entirely and is still worth having.
+  const reportDiagnostic = (line) => {
+    try {
+      writeDiagnostic(line);
+    } catch {
+      // Nothing left to report through, and nothing here is worth losing an
+      // output channel over.
+    }
+  };
+
+  // The channels fail independently: a closed stdout (EPIPE) must not cost the
+  // job summary, and vice versa.
   for (const annotation of summary.annotations) {
     try {
       writeAnnotation(annotation);
     } catch (error) {
-      writeDiagnostic(
+      reportDiagnostic(
         `Unable to emit a smoke stage annotation: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -994,7 +1007,7 @@ function publishCheckSummary(receipt, options = {}) {
     try {
       appendSummary(summaryPath, summary.markdown);
     } catch (error) {
-      writeDiagnostic(
+      reportDiagnostic(
         `Unable to append the smoke stage summary: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
