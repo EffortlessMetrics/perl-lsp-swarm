@@ -1861,6 +1861,28 @@ struct PrEvidenceContext<'a> {
     production_surface: Option<&'a ProductionSurface>,
 }
 
+/// Pin the no-`Default` property the doc comment above claims, so it is
+/// checked rather than merely documented (#13809 review).
+///
+/// Every field would satisfy `#[derive(Default)]` — `usize` and `Option<&_>`
+/// both have one — so a future derive added to silence an unrelated lint
+/// would compile silently and hand callers an empty measurement basis. The
+/// focused tests cannot catch that: they construct the struct explicitly, so
+/// a `Default` impl would simply go unused.
+///
+/// Two blanket impls overlap only when `PrEvidenceContext: Default`, which
+/// makes the item reference below ambiguous and fails the build. This is the
+/// `static_assertions::assert_not_impl_any!` pattern, inlined to avoid a new
+/// dev-dependency for one assertion.
+const _: fn() = || {
+    trait AmbiguousIfDefault<A> {
+        fn marker() {}
+    }
+    impl<T> AmbiguousIfDefault<()> for T {}
+    impl<T: Default> AmbiguousIfDefault<u8> for T {}
+    let _ = <PrEvidenceContext<'static> as AmbiguousIfDefault<_>>::marker;
+};
+
 fn pr_evidence_packet_with_count(
     options: &PrEvidenceOptions,
     check_value: &Value,
