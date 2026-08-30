@@ -1,0 +1,289 @@
+name: Prove binary repetition term classes 13929
+
+on:
+  push:
+    branches:
+      - fix/13929-binary-repetition-term-classes
+    paths:
+      - .github/workflows/prove-parser-13929.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prove-parser-13929
+  cancel-in-progress: false
+
+jobs:
+  prove-and-patch:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact stacked branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/13929-binary-repetition-term-classes
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Materialize focused AST regressions
+        shell: bash
+        run: |
+          cat > crates/perl-parser-core/tests/string_repetition_term_classes.rs <<'RS'
+          mod cpan_test_helpers;
+
+          use cpan_test_helpers::{assert_clean_parse, parse};
+          use perl_parser_core::{Node, NodeKind, Parser};
+
+          fn find_repetition(node: &Node) -> Option<&Node> {
+              if matches!(&node.kind, NodeKind::Binary { op, .. } if op == "x") {
+                  return Some(node);
+              }
+              node.children().into_iter().find_map(find_repetition)
+          }
+
+          fn assert_repetition(source: &str, rhs_prefix: &str) -> Result<(), String> {
+              assert_clean_parse(source);
+              let ast = parse(source);
+              let repetition = find_repetition(&ast).ok_or_else(|| {
+                  format!("expected ordinary binary repetition for {source:?}:\n{}", ast.to_sexp())
+              })?;
+              let NodeKind::Binary { left, right, .. } = &repetition.kind else {
+                  return Err(format!("expected binary repetition, got {:?}", repetition.kind));
+              };
+
+              let expression_start = source
+                  .find("\"x\"")
+                  .ok_or_else(|| format!("fixture is missing repetition lhs: {source:?}"))?;
+              let expression_end = source
+                  .find(';')
+                  .ok_or_else(|| format!("fixture is missing statement terminator: {source:?}"))?;
+              if repetition.location.start != expression_start
+                  || repetition.location.end != expression_end
+                  || left.location.start != expression_start
+                  || repetition.location.end != right.location.end
+              {
+                  return Err(format!(
+                      "unexpected repetition bounds for {source:?}: repetition={:?}, left={:?}, right={:?}",
+                      repetition.location, left.location, right.location
+                  ));
+              }
+
+              let rhs_source = source
+                  .get(right.location.start..right.location.end)
+                  .ok_or_else(|| format!("RHS bounds are not valid UTF-8: {:?}", right.location))?;
+              if !rhs_source.starts_with(rhs_prefix) {
+                  return Err(format!(
+                      "expected RHS starting with {rhs_prefix:?}, got {rhs_source:?}:\n{}",
+                      ast.to_sexp()
+                  ));
+              }
+              Ok(())
+          }
+
+          fn assert_non_repetition(source: &str) -> Result<(), String> {
+              assert_clean_parse(source);
+              let ast = parse(source);
+              if find_repetition(&ast).is_some() {
+                  return Err(format!(
+                      "contextual spelling x must remain non-repetition for {source:?}:\n{}",
+                      ast.to_sexp()
+                  ));
+              }
+              Ok(())
+          }
+
+          #[test]
+          fn repetition_accepts_vstring_rhs() -> Result<(), String> {
+              assert_repetition(r#"my $value = "x" x v1.2.3;"#, "v1.2.3")
+          }
+
+          #[test]
+          fn repetition_accepts_quote_word_and_command_rhs() -> Result<(), String> {
+              assert_repetition(r#"my @value = "x" x qw(3 4);"#, "qw")?;
+              assert_repetition(r#"my $value = "x" x qx{printf 3};"#, "qx")
+          }
+
+          #[test]
+          fn repetition_accepts_regex_rhs_forms() -> Result<(), String> {
+              for (source, prefix) in [
+                  (r#"my $value = "x" x /3/;"#, "/3/"),
+                  (r#"my $value = "x" x m{3};"#, "m{"),
+                  (r#"my $value = "x" x qr{3};"#, "qr{"),
+              ] {
+                  assert_repetition(source, prefix)?;
+              }
+              Ok(())
+          }
+
+          #[test]
+          fn repetition_accepts_substitution_rhs() -> Result<(), String> {
+              assert_repetition(r#"my $value = "x" x s/a/b/;"#, "s/")
+          }
+
+          #[test]
+          fn repetition_accepts_transliteration_rhs() -> Result<(), String> {
+              assert_repetition(r#"my $value = "x" x tr/a/b/;"#, "tr/")
+          }
+
+          #[test]
+          fn repetition_accepts_eval_rhs_forms() -> Result<(), String> {
+              assert_repetition(r#"my $value = "x" x eval { 3 };"#, "eval")?;
+              assert_repetition(r#"my $value = "x" x eval "3";"#, "eval")
+          }
+
+          #[test]
+          fn repetition_accepts_heredoc_rhs() -> Result<(), String> {
+              assert_repetition("my $value = \"x\" x <<'END';\n3\nEND\n", "<<'END'")
+          }
+
+          #[test]
+          fn repetition_accepts_ellipsis_rhs() -> Result<(), String> {
+              assert_repetition(r#"my $value = "x" x ...;"#, "...")
+          }
+
+          #[test]
+          fn contextual_x_spellings_remain_non_repetition() -> Result<(), String> {
+              for source in [
+                  "sub configure; configure x => 3;",
+                  "my %h = (x => 3);",
+                  "my $obj; $obj->x(3);",
+                  "Pkg::x(3);",
+                  "my %h; my $value = $h{x};",
+                  "sub x { 3 } my $value = x();",
+              ] {
+                  assert_non_repetition(source)?;
+              }
+              Ok(())
+          }
+
+          #[test]
+          fn missing_rhs_does_not_fabricate_repetition() -> Result<(), String> {
+              let source = r#"my $value = "x" x;"#;
+              let output = Parser::new(source).parse_with_recovery();
+              if find_repetition(&output.ast).is_some() {
+                  return Err(format!(
+                      "missing RHS must not fabricate successful repetition:\n{}",
+                      output.ast.to_sexp()
+                  ));
+              }
+              if output.diagnostics.is_empty() {
+                  return Err("missing repetition RHS must remain diagnostic-bearing".to_string());
+              }
+              Ok(())
+          }
+          RS
+
+      - name: Prove current stacked base is red
+        shell: bash
+        run: |
+          set +e
+          cargo test --locked -p perl-parser-core --test string_repetition_term_classes -- --nocapture 2>&1 | tee red.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ "$status" -eq 0 ]]; then
+            echo "::error::Stacked base already satisfies #13929; refusing a stale parser patch."
+            exit 1
+          fi
+          if ! grep -q "repetition_accepts_vstring_rhs" red.log; then
+            echo "::error::Red proof did not fail in the intended term-class regressions."
+            exit 1
+          fi
+
+      - name: Admit the proven parser-supported term identities
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/perl-parser-core/src/engine/parser/expressions/precedence.rs")
+          text = path.read_text(encoding="utf-8")
+          replacements = (
+              (
+                  "                            TokenKind::Number\n"
+                  "                            | TokenKind::ScalarSigil\n",
+                  "                            TokenKind::Number\n"
+                  "                            | TokenKind::VString\n"
+                  "                            | TokenKind::ScalarSigil\n",
+              ),
+              (
+                  "                            | TokenKind::String\n"
+                  "                            | TokenKind::QuoteSingle\n",
+                  "                            | TokenKind::String\n"
+                  "                            | TokenKind::Regex\n"
+                  "                            | TokenKind::Substitution\n"
+                  "                            | TokenKind::Transliteration\n"
+                  "                            | TokenKind::QuoteSingle\n",
+              ),
+              (
+                  "                            | TokenKind::QuoteDouble\n"
+                  "                            | TokenKind::Undef\n",
+                  "                            | TokenKind::QuoteDouble\n"
+                  "                            | TokenKind::QuoteWords\n"
+                  "                            | TokenKind::QuoteCommand\n"
+                  "                            | TokenKind::HeredocStart\n"
+                  "                            | TokenKind::Eval\n"
+                  "                            | TokenKind::Undef\n",
+              ),
+              (
+                  "                            | TokenKind::Sub\n"
+                  "                            | TokenKind::Not\n",
+                  "                            | TokenKind::Sub\n"
+                  "                            | TokenKind::Ellipsis\n"
+                  "                            | TokenKind::Not\n",
+              ),
+          )
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one repetition discriminator seam, found {count}")
+              text = text.replace(old, new)
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          cat > .changes/unreleased/product-13929-Fixed-000000.yaml <<'YAML'
+          project: product
+          component: Parser and lexer
+          kind: Fixed
+          body: Accepted v-string, quote, regex-like, eval, heredoc, and ellipsis terms after Perl's binary string-repetition operator.
+          time: 2026-08-30T00:00:00Z
+          custom:
+            PR: "pending"
+            Slug: parser-binary-repetition-term-classes
+            Breaking: "no"
+          YAML
+
+          git diff --check
+
+      - name: Prove focused behavior, formatting, and lint
+        shell: bash
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked -p perl-parser-core --test string_repetition_term_classes -- -D warnings
+          cargo test --locked -p perl-parser-core --test string_repetition_composite_rhs -- --nocapture
+          cargo test --locked -p perl-parser-core --test string_repetition_term_classes -- --nocapture
+          git diff --check
+
+      - name: Commit the proven candidate
+        shell: bash
+        run: |
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add \
+            crates/perl-parser-core/src/engine/parser/expressions/precedence.rs \
+            crates/perl-parser-core/tests/string_repetition_term_classes.rs \
+            .changes/unreleased/product-13929-Fixed-000000.yaml
+          git commit -m "fix(parser-core): accept remaining repetition RHS terms (#13929)"
+          git push origin HEAD:${GITHUB_REF_NAME}
