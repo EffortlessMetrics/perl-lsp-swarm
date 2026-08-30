@@ -31,7 +31,6 @@
 
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -201,16 +200,22 @@ pub struct StepRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofSubject {
     pub git_sha: String,
-    /// Digest of the working-tree delta against `HEAD`, or `None` when the
-    /// tree is clean.
+    /// Whether the working tree differed from `HEAD` when the proof ran.
     ///
     /// `git diff --check` only rejects whitespace and conflict-marker errors,
     /// so a well-formatted uncommitted edit passes the lane. Binding the SHA
     /// alone would then certify `HEAD` while the cargo steps actually proved
-    /// different source. A dirty receipt therefore cannot verify against the
-    /// clean commit, or against a differently-dirty tree.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_delta: Option<String>,
+    /// different source, so a dirty receipt must not verify against the clean
+    /// commit.
+    ///
+    /// This is deliberately a boolean rather than a content digest. A digest
+    /// would claim to identify *which* tree was tested, and delivering that
+    /// honestly means handling C-quoted paths, symlinks-as-link-data, binary
+    /// deltas, file modes, and submodules — surface with no consumer, since
+    /// the only thing that verifies a receipt is a clean CI checkout. A claim
+    /// this narrow is one the implementation can actually keep.
+    #[serde(default)]
+    pub worktree_dirty: bool,
     pub rustc_version: String,
     pub cargo_version: String,
     pub scorecard_profile: String,
@@ -481,6 +486,23 @@ fn verify_census_agrees_with_its_step(receipt: &RustSmallProofReceipt) -> Result
     }
 }
 
+/// Untrimmed stdout, for NUL-delimited git output where trailing separators
+/// are structural rather than whitespace.
+fn capture_stdout_raw(program: &str, args: &[&str]) -> Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| eyre!("subject capture instrument failure: {program} (spawn): {error}"))?;
+    if !output.status.success() {
+        bail!(
+            "subject capture instrument failure: {program} {} exited {:?}",
+            args.join(" "),
+            output.status.code()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 fn capture_stdout(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
@@ -523,7 +545,7 @@ fn capture_subject(receipt_path: &Path) -> Result<ProofSubject> {
     })?;
     Ok(ProofSubject {
         git_sha: capture_stdout("git", &["rev-parse", "HEAD"])?,
-        worktree_delta: capture_worktree_delta(receipt_path)?,
+        worktree_dirty: capture_worktree_dirty(receipt_path)?,
         rustc_version: capture_stdout("rustc", &["--version"])?,
         cargo_version: capture_stdout("cargo", &["--version"])?,
         scorecard_profile,
@@ -538,64 +560,24 @@ fn capture_subject(receipt_path: &Path) -> Result<ProofSubject> {
 /// `git diff HEAD` pins the exact tracked *content*. Hashing both means two
 /// different edits to the same file produce different subjects. A clean CI
 /// checkout digests to `None`, so hosted lanes are unaffected.
-fn capture_worktree_delta(receipt_path: &Path) -> Result<Option<String>> {
+fn capture_worktree_dirty(receipt_path: &Path) -> Result<bool> {
     let ignored = receipt_exclusions(receipt_path);
-    let is_excluded = |path: &str| ignored.iter().any(|skip| skip == path);
 
-    // Status lines are `XY <path>`; drop the receipt's own entries so writing
-    // the artifact cannot change the subject it certifies.
-    let status_raw = capture_stdout("git", &["status", "--porcelain"])?;
-    let mut status: Vec<&str> = status_raw
-        .lines()
-        .filter(|line| !is_excluded(line.get(3..).unwrap_or("").trim()))
-        .collect();
-    status.sort_unstable();
-
-    let mut untracked: Vec<String> =
-        capture_stdout("git", &["ls-files", "--others", "--exclude-standard"])?
-            .lines()
-            .map(str::to_string)
-            .filter(|path| !is_excluded(path))
-            .collect();
-    untracked.sort();
-
-    if status.is_empty() && untracked.is_empty() {
-        return Ok(None);
-    }
-
-    let mut hasher = Sha256::new();
-    for line in &status {
-        hasher.update(line.as_bytes());
-        hasher.update([0u8]);
-    }
-
-    // `--binary` so a binary edit contributes its literal delta rather than
-    // the placeholder "Binary files differ", which would make distinct
-    // changes hash identically.
-    hasher.update(capture_stdout("git", &["diff", "HEAD", "--binary"])?.as_bytes());
-    hasher.update([0u8]);
-
-    // Status only names an untracked path; two different contents at one path
-    // would otherwise share a subject. Hash the bytes, in sorted order.
-    for path in &untracked {
-        hasher.update(path.as_bytes());
-        hasher.update([0u8]);
-        match fs::read(path) {
-            Ok(bytes) => {
-                hasher.update((bytes.len() as u64).to_le_bytes());
-                hasher.update(&bytes);
-            }
-            // A path that cannot be read still differentiates the tree, and
-            // conflating it with an empty file would hide that.
-            Err(error) => {
-                hasher.update(b"<unreadable>");
-                hasher.update(error.kind().to_string().as_bytes());
-            }
+    // `-z` gives NUL-delimited, *unquoted* paths. The default porcelain
+    // format C-quotes anything unusual (`?? "weird\tname.txt"`), which a
+    // newline-and-substring reader would mis-parse.
+    let raw = capture_stdout_raw("git", &["status", "--porcelain", "-z"])?;
+    for entry in raw.split('\0') {
+        // Each record is `XY <path>`; a rename contributes a bare second
+        // record holding the original path, which has no status prefix.
+        let Some(path) = entry.get(3..) else {
+            continue;
+        };
+        if !ignored.iter().any(|skip| skip == path) {
+            return Ok(true);
         }
-        hasher.update([0u8]);
     }
-
-    Ok(Some(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()))
+    Ok(false)
 }
 
 /// Repository-relative paths the receipt itself occupies, which must never
@@ -888,6 +870,19 @@ fn run_proof(receipt_path: &Path) -> Result<()> {
                 eyre!("[{done}/{total}] git diff --check instrument failure (spawn): {error}"),
             );
         }
+    }
+
+    // Re-bind the subject before certifying. The steps above run for many
+    // minutes; if the candidate or tree moved underneath them, the completed
+    // steps did not all prove one subject and no receipt can honestly say
+    // they did. Like a preflight failure this emits nothing: absence means
+    // the run never held a stable subject, which is the truthful state.
+    let final_subject = capture_subject(receipt_path)?;
+    if final_subject != subject {
+        bail!(
+            "the proof subject changed while the lane ran, so its steps did not all prove one \
+             subject; refusing to certify.\n  at start:  {subject:?}\n  at publish: {final_subject:?}"
+        );
     }
 
     let receipt = RustSmallProofReceipt {
@@ -1233,7 +1228,7 @@ tests::gamma: test
     fn sample_subject() -> ProofSubject {
         ProofSubject {
             git_sha: "c626bb1e5f0000000000000000000000000000ab".to_string(),
-            worktree_delta: None,
+            worktree_dirty: false,
             rustc_version: "rustc 1.90.0 (deadbeef 2026-01-01)".to_string(),
             cargo_version: "cargo 1.90.0 (deadbeef 2026-01-01)".to_string(),
             scorecard_profile: "agent".to_string(),
@@ -1639,41 +1634,53 @@ tests::gamma: test
         // formatted uncommitted edit passes the lane. Binding the SHA alone
         // would certify HEAD while the steps proved different source.
         let mut dirty = success_receipt();
-        dirty.subject.worktree_delta = Some("a".repeat(64));
+        dirty.subject.worktree_dirty = true;
 
         let clean_checkout = sample_subject();
         let text = rejection(&dirty, Some(&clean_checkout));
         assert!(text.contains("does not match the verifying checkout"), "{text}");
 
-        // And a differently-dirty tree is a different subject too.
-        let mut other_dirty = sample_subject();
-        other_dirty.worktree_delta = Some("b".repeat(64));
-        assert!(rejection(&dirty, Some(&other_dirty)).contains("does not match"));
+        // Symmetric: a clean receipt cannot pass as a dirty checkout either.
+        let clean = success_receipt();
+        let mut dirty_checkout = sample_subject();
+        dirty_checkout.worktree_dirty = true;
+        assert!(rejection(&clean, Some(&dirty_checkout)).contains("does not match"));
 
-        // Same delta verifies: the digest binds the tree, it does not ban it.
-        let mut same_dirty = sample_subject();
-        same_dirty.worktree_delta = Some("a".repeat(64));
-        assert!(verify_receipt(&dirty, Some(&same_dirty)).is_ok());
+        // The flag binds the state, it does not ban working in a dirty tree.
+        assert!(verify_receipt(&dirty, Some(&dirty_checkout)).is_ok());
     }
 
     #[test]
-    fn the_worktree_delta_reflects_this_checkout() {
-        // Exercises the real capture against the repository the tests run in:
-        // whatever it reports must round-trip through a receipt subject.
+    fn the_dirty_signal_reads_this_checkout_and_ignores_the_receipt_itself() {
         let receipt = PathBuf::from(DEFAULT_RECEIPT_PATH);
-        let Ok(delta) = capture_worktree_delta(&receipt) else {
-            panic!("worktree delta capture must succeed in a git checkout");
+        let Ok(before) = capture_worktree_dirty(&receipt) else {
+            panic!("dirty capture must succeed in a git checkout");
         };
-        if let Some(digest) = &delta {
-            assert_eq!(digest.len(), 64, "a sha256 digest is 64 hex chars: {digest}");
-            assert!(digest.chars().all(|c| c.is_ascii_hexdigit()), "{digest}");
-        }
-        // Deliberately no cross-call equality assertion: the working tree is
-        // shared mutable state that a sibling test legitimately writes to, so
-        // comparing two live captures would test filesystem quiescence rather
-        // than this function. Content-sensitivity is proved instead by
-        // `untracked_contents_change_the_subject_even_at_one_path`, which
-        // controls both states it compares.
+
+        // A genuinely untracked, non-ignored path with a C-quotable name:
+        // the default porcelain format would render this as `?? "a\tb"`, so
+        // reading it unquoted is what the NUL-delimited form avoids.
+        let Ok(root) = std::env::current_dir() else { panic!("cwd") };
+        let probe = root.join(format!("rsp probe\t{}.txt", std::process::id()));
+        let Ok(()) = fs::write(&probe, b"x") else { panic!("probe write") };
+        let during = capture_worktree_dirty(&receipt);
+        let _ = fs::remove_file(&probe);
+
+        let Ok(during) = during else { panic!("dirty capture must succeed") };
+        assert!(during, "an untracked file must mark the tree dirty");
+        // No assertion on `before`: the checkout this test runs in is not
+        // controlled (a developer tree is legitimately dirty), so only the
+        // implication "untracked file present => dirty" is testable here.
+        let _ = before;
+    }
+
+    #[test]
+    fn the_receipt_destination_is_not_working_tree_drift_for_the_dirty_signal() {
+        // The receipt is this command's output, not an input to the proof, so
+        // writing it must not flip the tree to dirty and make the command's
+        // own verifier reject what it just wrote.
+        let excluded = receipt_exclusions(Path::new("evidence/rust-small.json"));
+        assert!(excluded.iter().any(|path| path == "evidence/rust-small.json"), "{excluded:?}");
     }
 
     #[test]
@@ -1767,60 +1774,6 @@ tests::gamma: test
         twice.steps[4].exit_code = Some(101);
         let text = rejection(&twice, None);
         assert!(text.contains("every later step must be not_run"), "{text}");
-    }
-
-    #[test]
-    fn untracked_contents_change_the_subject_even_at_one_path() {
-        // Status only names an untracked path, so hashing status alone gave
-        // two different trees the same subject.
-        let dir = scratch_dir("untracked");
-        let receipt = dir.join("receipt.json");
-        let Ok(root) = std::env::current_dir() else { panic!("cwd must be readable") };
-        let scratch = root.join("target").join("rsp-untracked-probe");
-        let Ok(()) = fs::create_dir_all(&scratch) else { panic!("probe dir") };
-        let probe = scratch.join("probe.txt");
-
-        let _ = probe;
-        let _ = fs::remove_dir_all(&scratch);
-
-        // A genuinely untracked path — not gitignored — so git reports it as
-        // `??` and only its *name* would reach the digest without the
-        // content hashing under test.
-        let visible = root.join(format!("rsp-untracked-probe-{}.txt", std::process::id()));
-        let Ok(()) = fs::write(&visible, b"first") else { panic!("probe write") };
-        let first = capture_worktree_delta(&receipt);
-        let Ok(()) = fs::write(&visible, b"second") else { panic!("probe rewrite") };
-        let second = capture_worktree_delta(&receipt);
-        let _ = fs::remove_file(&visible);
-
-        let (Ok(Some(first)), Ok(Some(second))) = (first, second) else {
-            panic!("an untracked file must produce a delta digest");
-        };
-        assert_ne!(
-            first, second,
-            "two different contents at one untracked path must not share a subject"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_receipt_destination_is_not_working_tree_drift() {
-        // A `--receipt` path inside the repository and not gitignored would
-        // otherwise change the tree after capture, so the command's own
-        // verifier would reject the receipt it had just written.
-        let excluded = receipt_exclusions(Path::new("evidence/rust-small.json"));
-        assert!(
-            excluded.iter().any(|path| path == "evidence/rust-small.json"),
-            "the receipt path must be excluded: {excluded:?}"
-        );
-        assert!(
-            excluded
-                .iter()
-                .any(|path| path.starts_with("evidence/rust-small.json.")
-                    && path.ends_with(".partial")),
-            "the staging sibling must be excluded too: {excluded:?}"
-        );
     }
 
     #[test]

@@ -53,17 +53,22 @@ The subject binds the working tree, not just `HEAD`. `git diff --check` only
 rejects whitespace and conflict-marker errors, so a well-formatted uncommitted
 edit passes the lane; binding the commit alone would certify `HEAD` while the
 cargo steps proved different source. A dirty tree contributes a
-`worktree_delta` digest, so such a receipt cannot verify against the clean
-commit. A clean CI checkout has no delta, so hosted lanes are unaffected.
+`worktree_dirty` flag, so such a receipt cannot verify against the clean
+commit. A clean CI checkout is never dirty, so hosted lanes are unaffected.
 
-The digest covers tracked content (`git diff HEAD --binary`, so binary edits
-contribute their literal delta rather than a "Binary files differ" placeholder)
-and the bytes of every untracked, non-ignored file — status alone names an
-untracked path but not its contents, which would let two different trees share
-one subject. The receipt's own destination and staging file are excluded, so
-writing the artifact cannot change the subject it certifies; without that, a
-`--receipt` path inside the repository and not gitignored would make the
-command's own verifier reject the receipt it had just written.
+The signal is a boolean, not a content digest. A digest would claim to
+identify *which* tree was tested, and delivering that honestly means handling
+C-quoted paths, symlinks as link data, binary deltas, file modes, and
+submodules — surface with no consumer, since the only thing that verifies a
+receipt is a clean CI checkout. The narrower claim is one the implementation
+can actually keep. The receipt's own destination and staging file are excluded
+from the signal, so writing the artifact cannot flip the tree to dirty and make
+the command reject the receipt it just wrote.
+
+The subject is re-bound before the receipt is published. The steps run for many
+minutes; if the candidate or working tree moves underneath them, the completed
+steps did not all prove one subject, and the lane fails without emitting a
+receipt rather than certifying a subject its later steps did not use.
 
 `--verify-receipt <path>` re-reads a receipt against the current checkout and
 runs no proof steps, so it is the cheap consumer seam for asking whether an
@@ -77,11 +82,11 @@ artifact actually certifies this candidate. It exits nonzero on:
   report a positive count, the zero-census gate failure must report exactly 0,
   and a census that did not complete cannot carry a count at all;
 - a failure result over steps that all recorded `ok`, a terminal result that
-  contradicts the first failing step, `not_run` steps that do not form a
-  suffix, a census count from a step that never ran, or an outcome and exit
-  code that cannot co-occur;
-- a subject that is not this candidate, working tree, toolchain, or scorecard
-  profile.
+  contradicts the first failing step, any executed step after the one that
+  stopped the lane, a census count from a step that never ran, or an outcome
+  and exit code that cannot co-occur;
+- a subject that is not this candidate, working-tree state, toolchain, or
+  scorecard profile.
 
 **Verification proves honesty, not success.** `--verify-receipt` exits zero for
 a coherent *failed* run — that is what makes an honest failure receipt usable
