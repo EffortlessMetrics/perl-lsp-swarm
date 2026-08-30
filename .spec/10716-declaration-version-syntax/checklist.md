@@ -51,8 +51,8 @@
 ## Verification
 
 - [x] `cargo test -p perl-ast --test declaration_version_syntax --locked` (15 rows)
-- [x] Eleven mutation controls applied, caught, and reverted (see `acceptance.md`)
-- [x] Grammar differentialled against Perl 5.38.2 over 36 spellings: 36 agree,
+- [x] Twelve mutation controls applied, caught, and reverted (see `acceptance.md`)
+- [x] Grammar differentialled against Perl 5.38.2 over 44 spellings: 44 agree,
       0 disagreements
 - [x] `cargo xtask non-rust inventory --check`
 - [x] `cargo test -p perl-ast --all-targets --locked`

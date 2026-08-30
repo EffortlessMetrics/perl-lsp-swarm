@@ -421,6 +421,11 @@ fn exact_forms_reject_cross_tag_and_malformed_spellings() {
         (DeclarationVersionForm::VString, "v0.0.0"),
         // Leading zeros are rejected only in the first component.
         (DeclarationVersionForm::VString, "v1.02.3"),
+        // Three digits between decimals is the maximum, and it is allowed.
+        (DeclarationVersionForm::VString, "v1.22.333"),
+        (DeclarationVersionForm::VString, "v1.2.999"),
+        // The first component has no length cap.
+        (DeclarationVersionForm::VString, "v1000.2.3"),
     ] {
         let source = format!("package A {spelling};");
         assert!(
@@ -447,6 +452,12 @@ fn exact_forms_reject_cross_tag_and_malformed_spellings() {
         (DeclarationVersionForm::VString, "v1.2.3_4"),
         // A dotted-decimal must begin with `v`, so the bare form is not one.
         (DeclarationVersionForm::VString, "1.2.3"),
+        // Perl caps components after the first at three digits.
+        (DeclarationVersionForm::VString, "v1.2.1000"),
+        (DeclarationVersionForm::VString, "v1.1000.3"),
+        (DeclarationVersionForm::VString, "v1.2.3333"),
+        // Four characters, even though the value is under 1000.
+        (DeclarationVersionForm::VString, "v1.2.0999"),
     ] {
         let source = format!("package A {spelling};");
         let end = 10 + spelling.len();

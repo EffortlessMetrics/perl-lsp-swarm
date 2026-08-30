@@ -35,28 +35,37 @@ $ perl -e 'package A <spelling>; 1;'
 | Spelling | Perl | Reason Perl gives when it rejects |
 | --- | --- | --- |
 | `0`, `1`, `10`, `0.0`, `1.0`, `1.23`, `0.001`, `5.036`, `10.5` | accept | — |
-| `v1.2.3`, `v1.2.3.4`, `v0.0.0`, `v1.02.3` | accept | — |
+| `v1.2.3`, `v1.2.3.4`, `v0.0.0`, `v1.02.3`, `v1.22.333`, `v1.2.999`, `v1000.2.3` | accept | — |
 | `00`, `01`, `v01.2.3` | reject | no leading zeros |
 | `1_2`, `1.23_45`, `v1.2.3_4` | reject | no underscores |
 | `v5`, `v1.2`, `v`, `vv1.2.3` | reject | dotted-decimal versions require at least three parts |
 | `1.2.3`, `1.2.3.4`, `1.23.45` | reject | dotted-decimal versions must begin with `v` |
+| `v1.2.1000`, `v1.1000.3`, `v1.2.3333`, `v1.2.0999` | reject | maximum 3 digits between decimals |
 | `1.` | reject | fractional part required |
 | `.5` | reject | 0 before decimal required |
 
 A throwaway differential compared this crate's `DeclarationVersionForm::accepts`
-against `perl -e 'package A <spelling>; 1;'` over a 36-spelling corpus covering
-every row above plus `1.0.0`, `v10.20.30`, `v1.2.3.4.5`, `007`, and `1.007`:
-**36 compared, 36 agree, 0 disagreements.** The differential harness is not
+against `perl -e 'package A <spelling>; 1;'` over a 44-spelling corpus covering
+every row above plus `1.0.0`, `v10.20.30`, `v1.2.3.4.5`, `007`, `1.007`,
+`1.123456`, `1.99999999`, `v999.999.999`, and `v1.0.0`:
+**44 compared, 44 agree, 0 disagreements.** The differential harness is not
 checked in — `perl-ast` is a Tier 1 leaf crate and adding a Perl subprocess to
 its test target would introduce a dependency and a CI surface this claim does
 not own. The corpus and verdicts are pinned in DVS-014 instead, and this table
 is the record of where they came from.
 
-Note the two spellings that a reasonable reading of "v-string" gets wrong, and
-which the differential caught: `v5` is **not** a legal declaration version
-(Perl requires at least three parts even with the `v`), and a bare `1.2.3` is
-**not** one either (Perl requires the leading `v`). An earlier revision of this
-contract accepted both as exact.
+Note the spellings that a reasonable reading of "v-string" gets wrong, all of
+which the oracle caught rather than review or intuition:
+
+- `v5` is **not** a legal declaration version — Perl requires at least three
+  parts even with the `v`.
+- a bare `1.2.3` is **not** one either — Perl requires the leading `v`.
+- components *after the first* are capped at three digits, so `v1.2.1000` and
+  even `v1.2.0999` are rejected, while `v1000.2.3` is fine: the cap is
+  "between decimals", not on the whole spelling.
+
+Successive revisions of this contract got each of these wrong before the
+interpreter was consulted.
 
 ## Oracle notes
 
@@ -105,6 +114,7 @@ named rows failed and the suite returned to 15/15 green afterwards.
 | leading-zero rule dropped (`is_leading_zero_free_digits` → `is_plain_digits`) | DVS-014 |
 | v-string minimum component count lowered from three to one | DVS-014 |
 | `Display` writes the raw spelling unescaped | DVS-015 |
+| v-string three-digit component cap dropped | DVS-014 |
 
 Two of these are worth naming because they initially *survived* and forced a
 change rather than confirming one. The `PartialEq`-ignoring-the-spelling mutant

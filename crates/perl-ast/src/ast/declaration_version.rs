@@ -62,7 +62,11 @@ use std::fmt;
 pub enum DeclarationVersionForm {
     /// Decimal spelling, such as `1.23` or `0.001`.
     Decimal,
-    /// V-string spelling, such as `v1.2.3` or `v5`.
+    /// V-string spelling, such as `v1.2.3` or `v1.2.3.4`.
+    ///
+    /// Perl requires the leading `v` and at least three components in a
+    /// declaration header, so `v5` is *not* one of these — it is a
+    /// [`Self::RecoveredOrUnknown`] reading.
     VString,
     /// A version was present in the header but is not an exact reading of
     /// either spelling above — malformed, truncated, or otherwise recovered.
@@ -154,12 +158,18 @@ fn is_decimal_spelling(spelling: &str) -> bool {
     }
 }
 
+/// Maximum digits Perl allows in a v-string component after the first:
+/// `v1.2.1000` fails with "maximum 3 digits between decimals".
+const VSTRING_MAX_DIGITS_BETWEEN_DECIMALS: usize = 3;
+
 /// A v-string declaration VERSION: `v` plus at least three dot-separated
-/// components (`v1.2.3`, `v1.2.3.4`, `v0.0.0`).
+/// components (`v1.2.3`, `v1.2.3.4`, `v0.0.0`, `v1000.2.3`).
 ///
 /// Perl requires the leading `v` and at least three parts, so it rejects both
 /// `v5` and a bare `1.2.3`. The first component carries the no-leading-zero
-/// rule (`v01.2.3` is rejected); later components do not (`v1.02.3` is fine).
+/// rule and has no length cap (`v01.2.3` rejected, `v1000.2.3` accepted).
+/// Every later component allows leading zeros but is capped at three digits
+/// (`v1.02.3` accepted, `v1.2.1000` and `v1.2.0999` rejected).
 fn is_vstring_spelling(spelling: &str) -> bool {
     let Some(rest) = spelling.strip_prefix('v') else {
         return false;
@@ -173,7 +183,7 @@ fn is_vstring_spelling(spelling: &str) -> bool {
     }
     let mut count = 1usize;
     for component in components {
-        if !is_plain_digits(component) {
+        if component.len() > VSTRING_MAX_DIGITS_BETWEEN_DECIMALS || !is_plain_digits(component) {
             return false;
         }
         count += 1;
