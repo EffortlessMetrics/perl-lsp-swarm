@@ -3843,6 +3843,9 @@ enum MetricsCommand {
         /// Directory containing ux_scenario_run receipt JSON files.
         #[arg(long)]
         receipt_dir: Option<PathBuf>,
+        /// Output path for --json (defaults to .ci/metrics/editor_ux.json).
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// [stub] Workspace index memory and timing statistics.
     WorkspaceStats,
@@ -6237,8 +6240,12 @@ fn run_cli(cli: Cli) -> Result<()> {
             MetricsCommand::HirCoverage { json, output, write_status, check } => {
                 metrics::hir_coverage::run(json, output, write_status, check)
             }
-            MetricsCommand::LspStats { json, receipt_dir } => {
-                metrics::lsp_stats::run_with_receipt_dir(json, receipt_dir.as_deref())
+            MetricsCommand::LspStats { json, receipt_dir, output } => {
+                metrics::lsp_stats::run_with_receipt_dir(
+                    json,
+                    receipt_dir.as_deref(),
+                    output.as_deref(),
+                )
             }
             MetricsCommand::WorkspaceStats => metrics::workspace_stats::run(),
             MetricsCommand::DiagnosticsStats => metrics::diagnostics_stats::run(),

@@ -209,7 +209,8 @@ fn test_range_formatting_uses_utf16_columns_for_non_bmp_text() {
 }
 
 #[test]
-fn test_public_range_formatting_replay_preserves_non_bmp_prefix_and_crlf() {
+fn test_public_range_formatting_replay_preserves_non_bmp_prefix_and_crlf()
+-> Result<(), Box<dyn std::error::Error>> {
     let formatter = CodeFormatter::new();
     let options = FormattingOptions {
         tab_size: 4,
@@ -232,12 +233,15 @@ fn test_public_range_formatting_replay_preserves_non_bmp_prefix_and_crlf() {
     assert_ne!(selected_line.len(), selected_line.encode_utf16().count());
     let start = utf16_offset(source, edit.range.start.line, edit.range.start.character);
     let end = utf16_offset(source, edit.range.end.line, edit.range.end.character);
-    assert_eq!(start, source.find("while").expect("edited line must be present"));
+    let expected_start =
+        source.find("while").ok_or_else(|| std::io::Error::other("edited line must be present"))?;
+    assert_eq!(start, expected_start);
     assert_eq!(end - start, selected_line.len());
     let mut replayed = source.to_string();
     replayed.replace_range(start..end, &edit.new_text);
 
     assert_eq!(replayed, "my $emoji = \"😀\";\r\nwhile ($n) {\r\n    next;\r\n} # 😀\r\n");
+    Ok(())
 }
 
 #[test]
