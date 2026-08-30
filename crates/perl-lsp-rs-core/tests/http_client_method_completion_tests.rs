@@ -158,6 +158,33 @@ fn for_paragraph_blank_line_stays_pod_until_cut() {
 }
 
 #[test]
+fn runtime_import_forms_stay_position_bounded_and_decoy_immune() {
+    let sources = [
+        // Runtime-only loading (`require` + `->import`) is not `use` evidence:
+        // the method-completion path never consulted the runtime import
+        // authority, so this stays quiet exactly as before the textual scan
+        // (parser-backed flow is owned by #13244).
+        "require HTTP::Tiny;\nHTTP::Tiny->import(qw());\nmy $http = HTTP::Tiny->new;\n$http->po",
+        "require LWP::UserAgent;\nLWP::UserAgent->import(qw());\nmy $ua = LWP::UserAgent->new;\n$ua->re",
+        // Near-miss module names must not arm the HTTP catalogs.
+        "use HTTP::Tinyish;\nmy $http = HTTP::Tiny->new;\n$http->po",
+        "use LWP::UserAgent::Mock;\nmy $ua = LWP::UserAgent->new;\n$ua->re",
+        // A `use` statement after the completion position is not import
+        // evidence: the scan is position-bounded.
+        "my $http = HTTP::Tiny->new;\n$http->po\nuse HTTP::Tiny;",
+    ];
+
+    for source in sources {
+        let item_labels = labels(&completions_at_end(source));
+        let forbidden = if source.contains("LWP::UserAgent") { "request" } else { "post" };
+        assert!(
+            !has_label(&item_labels, forbidden),
+            "runtime/decoy/unplaced import evidence must not arm the catalog in {source:?}"
+        );
+    }
+}
+
+#[test]
 fn constructor_inference_respects_lexical_shadowing_and_scope_exit() {
     let outer_shadowed = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n{\n    my $http = Other::Client->new;\n    $http->po\n}";
     let outer_shadowed_labels = labels(&completions_at_end(outer_shadowed));

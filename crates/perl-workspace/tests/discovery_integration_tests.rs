@@ -13,11 +13,15 @@ use tempfile::TempDir;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn create_file(root: &Path, relative: &str) -> TestResult {
+    create_file_with_content(root, relative, "# integration fixture\n")
+}
+
+fn create_file_with_content(root: &Path, relative: &str, content: &str) -> TestResult {
     let path = root.join(relative);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, "# integration fixture\n")?;
+    fs::write(path, content)?;
     Ok(())
 }
 
@@ -96,6 +100,22 @@ fn discovers_files_via_walkdir_when_root_is_not_git_repo() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn discovers_extensionless_perl_shebang_via_walkdir() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path();
+
+    create_file_with_content(root, "bin/perl-tool", "#!/usr/bin/env perl\nsub run { 1 }\n")?;
+    create_file_with_content(root, "bin/shell-tool", "#!/bin/sh # perl\necho hi\n")?;
+
+    let result = discover_perl_files(root);
+
+    assert_eq!(result.method, DiscoveryMethod::Walk);
+    assert!(contains_relative_file(&result.files, "bin/perl-tool"));
+    assert!(!contains_relative_file(&result.files, "bin/shell-tool"));
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn external_symlink_requires_explicit_include_path() -> TestResult {
@@ -136,6 +156,27 @@ fn discovers_files_via_git_and_honors_gitignore() -> TestResult {
     assert!(result.files.iter().any(|path| path.ends_with("lib/One.pm")));
     assert!(!result.files.iter().any(|path| path.to_string_lossy().contains("/target/")));
 
+    Ok(())
+}
+
+#[test]
+fn discovers_extensionless_perl_shebang_via_git() -> TestResult {
+    if !git_available() {
+        return Ok(());
+    }
+
+    let tmp = TempDir::new()?;
+    let root = tmp.path();
+
+    run_git(root, &["init", "--quiet"])?;
+    create_file_with_content(root, "script/perl-tool", "#!/usr/bin/perl\nsub run { 1 }\n")?;
+    create_file_with_content(root, "script/shell-tool", "#!/bin/sh # perl\necho hi\n")?;
+
+    let result = discover_perl_files(root);
+
+    assert_eq!(result.method, DiscoveryMethod::Git);
+    assert!(contains_relative_file(&result.files, "script/perl-tool"));
+    assert!(!contains_relative_file(&result.files, "script/shell-tool"));
     Ok(())
 }
 

@@ -412,7 +412,7 @@ fn project_native_document(
         FormatDisposition::Applied | FormatDisposition::NoChange => {}
     }
 
-    let formatted = apply_lsp_whitespace_options(&result.formatted, options);
+    let formatted = apply_lsp_whitespace_options_from_source(&result.formatted, options, content);
     let edits = if formatted == content {
         Vec::new()
     } else if formatted == result.formatted {
@@ -592,7 +592,8 @@ fn projected_native_range(
         options,
         admitted.end_byte == content.len(),
         admitted_end_is_line_end(formatted, formatted_end),
-        formatted.get(..admitted.start_byte).is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
+        content.get(..admitted.start_byte).is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
+        content,
     );
     let mut updated = String::with_capacity(formatted.len() - native_slice.len() + projected.len());
     updated.push_str(&formatted[..admitted.start_byte]);
@@ -643,7 +644,7 @@ fn whitespace_within_admitted(
                     .is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
             )
         {
-            projected.push('\n');
+            projected.push_str(inferred_line_ending(content));
         }
     }
     if projected == slice {
@@ -814,7 +815,15 @@ fn native_edit_to_format_edit(edit: crate::tooling::perltidy::TextEdit) -> Forma
 }
 
 fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> String {
-    apply_lsp_whitespace_options_with_eof(content, options, true, true, false)
+    apply_lsp_whitespace_options_with_eof(content, options, true, true, false, content)
+}
+
+fn apply_lsp_whitespace_options_from_source(
+    content: &str,
+    options: &FormattingOptions,
+    line_ending_source: &str,
+) -> String {
+    apply_lsp_whitespace_options_with_eof(content, options, true, true, false, line_ending_source)
 }
 
 fn apply_lsp_whitespace_options_with_eof(
@@ -823,8 +832,10 @@ fn apply_lsp_whitespace_options_with_eof(
     allow_final_newline: bool,
     trim_tail: bool,
     prefix_terminated: bool,
+    line_ending_source: &str,
 ) -> String {
     let mut output = content.to_string();
+    let document_line_ending = inferred_line_ending(line_ending_source);
 
     if options.trim_trailing_whitespace.unwrap_or(false) {
         output = trim_trailing_whitespace_in_slice(&output, trim_tail);
@@ -836,10 +847,19 @@ fn apply_lsp_whitespace_options_with_eof(
         && options.insert_final_newline.unwrap_or(false)
         && !projected_tail_is_terminated(&output, prefix_terminated)
     {
-        output.push('\n');
+        output.push_str(document_line_ending);
     }
 
     output
+}
+
+fn inferred_line_ending(content: &str) -> &'static str {
+    let bytes = content.as_bytes();
+    let Some(last_lf) = bytes.iter().rposition(|byte| *byte == b'\n') else {
+        return "\n";
+    };
+
+    if last_lf > 0 && bytes[last_lf - 1] == b'\r' { "\r\n" } else { "\n" }
 }
 
 /// Whether the document tail is already line-terminated after projection.
@@ -1406,6 +1426,27 @@ mod decision_projection_tests {
         .expect("projection must not error");
         assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
         assert_eq!(decision.document.text, interior_source);
+    }
+
+    #[test]
+    fn no_change_true_eof_range_reinserts_the_source_crlf_terminator() {
+        let mut options = range_options();
+        options.trim_trailing_whitespace = Some(true);
+        options.insert_final_newline = Some(true);
+        options.trim_final_newlines = Some(true);
+        let source = "my $x = 1;  \r\n";
+        let geometry = SourceGeometry::new(source);
+        let admitted = admitted_fixture(source, 0, 0, 1, 0);
+
+        let decision =
+            project_native_range(source, &geometry, &admitted, &options, no_change_typed(source))
+                .expect("projection must not error");
+
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(decision.document.text, "my $x = 1;\r\n");
+        assert_eq!(decision.document.edits.len(), 1);
+        assert_eq!(decision.document.edits[0].new_text, "my $x = 1;\r\n");
+        assert!(!decision.document.edits[0].new_text.ends_with("\n\n"));
     }
 
     #[test]

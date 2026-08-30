@@ -51,16 +51,17 @@ use tasks::{
     native_product_surface, native_tooling, oracle_fixture_manifest, oracle_receipt_schema,
     oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
     perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
-    product_health_rail_contract, protocol_type_substrate_matrix, provider_confidence_matrix,
-    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
-    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
-    release, release_artifact_check, release_evidence, release_notes, release_turnkey,
-    repo_hygiene, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
-    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
-    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
-    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
-    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
-    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
+    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
+    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
+    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
+    release_notes, release_turnkey, repo_hygiene, ripr_evidence, rust_small_proof, seam_diff,
+    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
+    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
+    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
+    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -165,6 +166,19 @@ enum Commands {
     /// Validate the dependency-neutral product-health rail/adapter registry contract.
     #[command(name = "check-product-health-rail-contract")]
     CheckProductHealthRailContract,
+
+    /// Deterministic generic assembly of independent product-health rails
+    /// (`product_health_status.v1`, #12360).  Read-only offline
+    /// `build`/`check`/`show`/`diff` over one checked
+    /// `product_health_rail_registry.v1` (#12359) and its repository-local
+    /// source packets.  Fails closed: a rail without real evidence keeps a
+    /// typed state, never synthetic green; no support/release/publication
+    /// authority is granted.
+    #[command(name = "product-health")]
+    ProductHealth {
+        #[command(subcommand)]
+        command: tasks::product_health_status::ProductHealthCommand,
+    },
 
     /// Validate the shared bounded builder-packet contract
     /// (agent_implementation_packet.v1, #10872): the closed schema, the
@@ -3820,6 +3834,9 @@ enum MetricsCommand {
         /// Directory containing ux_scenario_run receipt JSON files.
         #[arg(long)]
         receipt_dir: Option<PathBuf>,
+        /// Output path for --json (defaults to .ci/metrics/editor_ux.json).
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// [stub] Workspace index memory and timing statistics.
     WorkspaceStats,
@@ -4789,6 +4806,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
+        Commands::ProductHealth { command } => product_health_status::run(command),
         Commands::CheckAgentImplementationPacket { update_golden } => {
             agent_implementation_packet::run(update_golden)
         }
@@ -6212,8 +6230,12 @@ fn run_cli(cli: Cli) -> Result<()> {
             MetricsCommand::HirCoverage { json, output, write_status, check } => {
                 metrics::hir_coverage::run(json, output, write_status, check)
             }
-            MetricsCommand::LspStats { json, receipt_dir } => {
-                metrics::lsp_stats::run_with_receipt_dir(json, receipt_dir.as_deref())
+            MetricsCommand::LspStats { json, receipt_dir, output } => {
+                metrics::lsp_stats::run_with_receipt_dir(
+                    json,
+                    receipt_dir.as_deref(),
+                    output.as_deref(),
+                )
             }
             MetricsCommand::WorkspaceStats => metrics::workspace_stats::run(),
             MetricsCommand::DiagnosticsStats => metrics::diagnostics_stats::run(),
