@@ -3009,6 +3009,10 @@ impl FallbackGuidanceAccumulator {
 /// seams are dropped before sorting and truncation so the
 /// [`FALLBACK_GUIDANCE_LIMIT`] slice cannot crowd out a production seam that
 /// actually keeps `new_unresolved` positive.
+/// This function is retained as the pre-streaming DOM oracle for the parity
+/// tests and has no production caller since the streaming accumulator replaced
+/// it.
+#[cfg(test)]
 fn fallback_seam_entries(
     findings: &[Value],
     suppressions: &RiprSuppressionRules,
