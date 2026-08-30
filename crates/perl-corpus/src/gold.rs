@@ -1,3 +1,4 @@
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -119,7 +120,7 @@ pub fn load_gold_fixtures_from<P: AsRef<Path>>(
 
 /// Assertion kind for hover gold corpus entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum HoverAssertionKind {
     /// Response must have non-null, non-empty content
     HoverNonNull,
@@ -144,6 +145,7 @@ pub struct HoverAssertion {
 
 /// On-disk representation of `expected_hover.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HoverGoldExpected {
     pub version: u32,
     pub fixture: String,
@@ -210,7 +212,7 @@ pub fn load_hover_gold_fixtures<P: AsRef<Path>>(
 
 /// Assertion kind for goto-definition gold corpus entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum GotoAssertionKind {
     /// Response must return at least one location
     GotoNonNull,
@@ -233,6 +235,7 @@ pub struct GotoAssertion {
 
 /// On-disk representation of `expected_goto.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GotoGoldExpected {
     pub version: u32,
     pub fixture: String,
@@ -293,7 +296,7 @@ pub fn load_goto_gold_fixtures<P: AsRef<Path>>(
 
 /// Assertion kind for completion gold corpus entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum CompletionAssertionKind {
     /// Completion list must not be empty
     CompletionNonEmpty,
@@ -320,6 +323,7 @@ pub struct CompletionAssertion {
 
 /// On-disk representation of `expected_completion.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompletionGoldExpected {
     pub version: u32,
     pub fixture: String,
@@ -384,7 +388,7 @@ pub fn load_completion_gold_fixtures<P: AsRef<Path>>(
 
 /// Assertion kind for document-symbol gold corpus entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum DocumentSymbolAssertionKind {
     /// Symbols list must not be empty
     SymbolNonEmpty,
@@ -407,6 +411,7 @@ pub struct DocumentSymbolAssertion {
 
 /// On-disk representation of `expected_symbols.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DocumentSymbolGoldExpected {
     pub version: u32,
     pub fixture: String,
@@ -482,19 +487,113 @@ pub enum RenameAssertionKind {
 }
 
 /// A single rename assertion at a given (line, character) position
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RenameAssertion {
     #[serde(flatten)]
     pub kind: RenameAssertionKind,
     pub line: u32,
     pub character: u32,
     pub new_name: String,
+    /// Exact edits expected when this assertion exercises a concrete rename.
+    /// Omission preserves the count-only contract of older fixtures; an explicit
+    /// empty list remains an exact expectation of no edits. `null` is rejected
+    /// so it cannot silently weaken an assertion to count-only mode. Omission
+    /// serializes as omission so the legacy mode round-trips.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_expected_edits"
+    )]
+    pub expected_edits: Option<Vec<RenameExpectedEdit>>,
     #[serde(default)]
     pub rationale: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RenameAssertionUnchecked {
+    #[serde(flatten)]
+    kind: RenameAssertionKind,
+    line: u32,
+    character: u32,
+    new_name: String,
+    #[serde(default, deserialize_with = "deserialize_expected_edits")]
+    expected_edits: Option<Vec<RenameExpectedEdit>>,
+    #[serde(default)]
+    rationale: String,
+}
+
+impl<'de> Deserialize<'de> for RenameAssertion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| de::Error::custom("rename assertion must be a JSON object"))?;
+        const FIELDS: &[&str] =
+            &["kind", "line", "character", "new_name", "min", "expected_edits", "rationale"];
+        for field in object.keys() {
+            if !FIELDS.contains(&field.as_str()) {
+                return Err(de::Error::unknown_field(field, FIELDS));
+            }
+        }
+        let has_min = object.contains_key("min");
+
+        let unchecked: RenameAssertionUnchecked =
+            serde_json::from_value(value).map_err(de::Error::custom)?;
+        if has_min && !matches!(&unchecked.kind, RenameAssertionKind::RenameEditCountAtLeast { .. })
+        {
+            return Err(de::Error::custom(
+                "min is only supported for rename_edit_count_at_least assertions",
+            ));
+        }
+        if matches!(&unchecked.kind, RenameAssertionKind::RenameNull)
+            && unchecked.expected_edits.is_some()
+        {
+            return Err(de::Error::custom(
+                "expected_edits is only supported for rename assertions that inspect edits",
+            ));
+        }
+        Ok(Self {
+            kind: unchecked.kind,
+            line: unchecked.line,
+            character: unchecked.character,
+            new_name: unchecked.new_name,
+            expected_edits: unchecked.expected_edits,
+            rationale: unchecked.rationale,
+        })
+    }
+}
+
+/// One expected text edit in a rename workspace edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenameExpectedEdit {
+    pub line: u32,
+    pub character: u32,
+    pub end_line: u32,
+    pub end_character: u32,
+    pub new_text: String,
+}
+
+fn deserialize_expected_edits<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<RenameExpectedEdit>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<Vec<RenameExpectedEdit>>::deserialize(deserializer)? {
+        Some(edits) => Ok(Some(edits)),
+        None => Err(de::Error::custom(
+            "expected_edits must be omitted or an array; null is not supported",
+        )),
+    }
+}
+
 /// On-disk representation of `expected_rename.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RenameGoldExpected {
     pub version: u32,
     pub fixture: String,
@@ -627,6 +726,83 @@ mod tests {
             matches!(&assertion, GoldAssertion::DiagnosticCount { code, count: 3 } if code == "PL001"),
             "Expected DiagnosticCount variant with code PL001 and count 3"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rename_expected_edits_round_trips_omission_and_rejects_null()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let omitted: RenameAssertion = serde_json::from_str(
+            r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values"}"#,
+        )?;
+        if omitted.expected_edits.is_some() {
+            return Err("omitted expected_edits must remain count-only mode".into());
+        }
+        let serialized = serde_json::to_value(&omitted)?;
+        if serialized.get("expected_edits").is_some() {
+            return Err("omitted expected_edits must serialize as omission".into());
+        }
+        let round_tripped: RenameAssertion = serde_json::from_value(serialized)?;
+        if round_tripped.expected_edits.is_some() {
+            return Err("omitted expected_edits must round-trip as count-only mode".into());
+        }
+
+        let explicit_null = serde_json::from_str::<RenameAssertion>(
+            r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":null}"#,
+        );
+        if explicit_null.is_ok() {
+            return Err("explicit null expected_edits must fail closed".into());
+        }
+
+        let rename_null_with_edits = r#"{"kind":"rename_null","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#;
+        if serde_json::from_str::<RenameAssertion>(rename_null_with_edits).is_ok() {
+            return Err("expected_edits for rename_null must fail closed".into());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rename_schema_rejects_nested_typos_and_variant_mismatched_fields()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let nested_typo = r#"{
+            "version": 1,
+            "fixture": "fixture",
+            "assertions": [{
+                "kind": "rename_succeeds",
+                "line": 4,
+                "character": 4,
+                "new_name": "sum_values",
+                "expected_edits": [{
+                    "line": 4,
+                    "character": 4,
+                    "end_line": 4,
+                    "end_character": 19,
+                    "new_text": "sum_values",
+                    "new_texxt": "sum_values"
+                }]
+            }]
+        }"#;
+        if serde_json::from_str::<RenameGoldExpected>(nested_typo).is_ok() {
+            return Err("unknown nested expected edit field was accepted".into());
+        }
+
+        for kind in ["rename_succeeds", "rename_null"] {
+            let mismatched = format!(
+                r#"{{"kind":"{kind}","line":4,"character":4,"new_name":"sum_values","min":1}}"#
+            );
+            if serde_json::from_str::<RenameAssertion>(&mismatched).is_ok() {
+                return Err(format!("min was accepted for {kind}").into());
+            }
+        }
+
+        let count = serde_json::from_str::<RenameAssertion>(
+            r#"{"kind":"rename_edit_count_at_least","min":1,"line":4,"character":4,"new_name":"sum_values"}"#,
+        )?;
+        if !matches!(count.kind, RenameAssertionKind::RenameEditCountAtLeast { min: 1 }) {
+            return Err("min was not retained for rename_edit_count_at_least".into());
+        }
+
         Ok(())
     }
 }
