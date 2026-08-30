@@ -213,3 +213,13 @@ successor = "docs/agents/DEVELOPMENT_METHOD.md"
 historical_source_commit = "4dc745fd3513d1a345cd1d6258bb96a13e284ae2"
 historical_source_blob_sha1 = "5d27670786f80b7274e7e1d9ff357d7ee65bfb3b"
 notes = "Superseded active-rails selector. Current work selection follows provider-native method plus the issue-owned graph; #3949 owns durable change-graph placement."
+path = "docs/agents/RESERVED_SURFACES.md"
+status = "current"
+successor = ""
+notes = "PR #12781 lands the advisory ownership-boundary index requested by #12562. It declares itself the current reserved-surface register and defers runtime liveness and topology to root AGENTS.md and live GitHub state."
+
+[[documents]]
+path = "docs/agents/reserved_surfaces.toml"
+status = "current"
+successor = ""
+notes = "PR #12781 lands the machine companion of docs/agents/RESERVED_SURFACES.md. Rows record durable surface ownership boundaries only, never lane liveness, topology, or task order."

@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12413 |
-| Rust-family files | 3819 |
-| Non-Rust files | 8594 |
-| Allowlisted | 6359 |
+| Total tracked files | 12417 |
+| Rust-family files | 3820 |
+| Non-Rust files | 8597 |
+| Allowlisted | 6362 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 490 |
-| documentation | 2802 |
+| documentation | 2805 |
 | generated | 2 |
 | production | 348 |
 | test | 2055 |
@@ -4462,6 +4462,7 @@
 | `docs/agents/IMPLEMENTATION_WORKER.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/ORCHESTRATION_ROLES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/README.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/agents/RESERVED_SURFACES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/REVIEW_CURRENTNESS.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/ROLE_ROUTER_FIXTURES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/SCOUT_PROMPTS.md` | documentation | `non-rust-docs-tree` | docs |
@@ -4484,6 +4485,7 @@
 | `docs/agents/lenses/test-economics.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/lenses/vision-alignment.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/pr-ledger.schema.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/agents/reserved_surfaces.toml` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/workflow-outcome.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/perl-oracle-subprocess-contract.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/perl-subprocess-seams.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6049,6 +6051,7 @@
 | `docs/specs/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/RELEASE_CANDIDATE_BASELINE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/WORKTREE_FORENSIC_EVIDENCE_V1.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/specs/lsp-318-closure-ownership.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-318-conformance-matrix.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-final-surface-inventory.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/protocol-type-substrate-matrix.json` | documentation | `non-rust-docs-tree` | docs |
