@@ -199,13 +199,21 @@ fn shape_coverage_is_an_explicit_denominator() {
 /// hand-maintained payload mapper). Convention alone does not survive; this
 /// keeps it executable.
 #[test]
-fn the_observer_never_uses_a_rest_pattern() {
+fn the_observer_never_uses_a_rest_pattern() -> Result<(), Box<dyn std::error::Error>> {
     const SOURCE: &str = include_str!("../src/geometry_policy.rs");
 
-    let body =
-        SOURCE.split_once("pub fn observe_geometry_fields").map(|(_, rest)| rest).unwrap_or(SOURCE);
+    let (_, after_signature) = SOURCE
+        .split_once("pub fn observe_geometry_fields")
+        .ok_or("observe_geometry_fields must exist; it is the observation authority")?;
 
-    for (offset, line) in body.lines().enumerate() {
+    // Bound the scan to the function body so an unrelated later item using a
+    // range expression cannot fail this guard for the wrong reason. The body
+    // ends at the first line that closes a top-level item at column zero.
+    let body: Vec<&str> =
+        after_signature.lines().take_while(|line| !line.starts_with('}')).collect();
+    assert!(!body.is_empty(), "the observer body must be scannable");
+
+    for (offset, line) in body.iter().enumerate() {
         let code = line.split("//").next().unwrap_or(line);
         assert!(
             !code.contains(".."),
@@ -216,6 +224,7 @@ fn the_observer_never_uses_a_rest_pattern() {
             line.trim()
         );
     }
+    Ok(())
 }
 
 /// A node that carries no geometry reconciles to an empty set, not a default.
