@@ -10,6 +10,7 @@
 //! They do not speak for `next_edit::insertion_line_ending`, which still
 //! decides the same question by a different rule — see the owner module's
 //! documentation.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_lsp_perltidy::native::inferred_line_ending;
 use proptest::prelude::*;
