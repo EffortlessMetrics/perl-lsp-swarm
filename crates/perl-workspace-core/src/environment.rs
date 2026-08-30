@@ -1977,96 +1977,114 @@ mod tests {
 
     #[test]
     fn empty_path_fields_identify_owner_and_field() {
-        let include_input = input(
-            "include.empty",
-            EnvironmentInputAuthority::UserConfiguration,
-            "include",
-            "include",
-        );
-        let include = IncludeEntry::new(
-            IncludeEntryRole::Other,
-            EnvironmentPathRef::new("", "include:public"),
-            include_input.id.clone(),
-            0,
-        );
-        let include_result =
+        let include = |path: EnvironmentPathRef| {
+            let candidate = input(
+                "include.empty",
+                EnvironmentInputAuthority::UserConfiguration,
+                "include",
+                "include",
+            );
             ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
-                .with_input(include_input)
-                .with_include_entry(include)
-                .build();
-        assert!(matches!(
-            include_result,
-            Err(EnvironmentBuildError::EmptyPathField {
-                owner: "include_entry",
-                field: "normalized"
-            })
-        ));
-
-        let root_input =
-            input("root.empty", EnvironmentInputAuthority::UserConfiguration, "root", "root");
-        let root = ProjectRoot::new(
-            ProjectRootRole::Other,
-            EnvironmentPathRef::new("/repo/root", ""),
-            root_input.id.clone(),
-        );
-        let root_result =
-            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
-                .with_input(root_input)
-                .with_project_root(root)
-                .build();
-        assert!(matches!(
-            root_result,
-            Err(EnvironmentBuildError::EmptyPathField {
-                owner: "project_root",
-                field: "public_id"
-            })
-        ));
-
-        let tool_input =
-            input("tool.empty", EnvironmentInputAuthority::UserConfiguration, "tool", "tool");
-        let tool = ToolCandidate::new(
-            ToolCandidateRole::Other("empty".to_string()),
-            "tool",
-            EnvironmentPathRef::new("", "tool:public"),
-            tool_input.id.clone(),
-        );
-        let tool_result =
-            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
-                .with_input(tool_input)
-                .with_tool_candidate(tool)
-                .build();
-        assert!(matches!(
-            tool_result,
-            Err(EnvironmentBuildError::EmptyPathField {
-                owner: "tool_candidate",
-                field: "normalized"
-            })
-        ));
-
-        let interpreter_input = input(
-            "interpreter.empty",
-            EnvironmentInputAuthority::UserConfiguration,
-            "interpreter",
-            "interpreter",
-        );
-        let interpreter = InterpreterIdentityRef {
-            logical_id: "perl:empty".to_string(),
-            executable: EnvironmentPathRef::new("/usr/bin/perl", ""),
-            evidence_fingerprint: Digest::of("interpreter"),
-            input_id: interpreter_input.id.clone(),
+                .with_input(candidate.clone())
+                .with_include_entry(IncludeEntry::new(
+                    IncludeEntryRole::Other,
+                    path,
+                    candidate.id,
+                    0,
+                ))
+                .build()
         };
-        let interpreter_result =
+        let root = |path: EnvironmentPathRef| {
+            let candidate =
+                input("root.empty", EnvironmentInputAuthority::UserConfiguration, "root", "root");
             ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
-                .with_input(interpreter_input)
-                .with_selected_interpreter(interpreter)
-                .build();
-        assert!(matches!(
-            interpreter_result,
-            Err(EnvironmentBuildError::EmptyPathField {
-                owner: "selected_interpreter",
-                field: "public_id",
-            })
-        ));
+                .with_input(candidate.clone())
+                .with_project_root(ProjectRoot::new(ProjectRootRole::Other, path, candidate.id))
+                .build()
+        };
+        let tool = |path: EnvironmentPathRef| {
+            let candidate =
+                input("tool.empty", EnvironmentInputAuthority::UserConfiguration, "tool", "tool");
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(candidate.clone())
+                .with_tool_candidate(ToolCandidate::new(
+                    ToolCandidateRole::Other("empty".to_string()),
+                    "tool",
+                    path,
+                    candidate.id,
+                ))
+                .build()
+        };
+        let interpreter = |path: EnvironmentPathRef| {
+            let candidate = input(
+                "interpreter.empty",
+                EnvironmentInputAuthority::UserConfiguration,
+                "interpreter",
+                "interpreter",
+            );
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(candidate.clone())
+                .with_selected_interpreter(InterpreterIdentityRef {
+                    logical_id: "perl:empty".to_string(),
+                    executable: path,
+                    evidence_fingerprint: Digest::of("interpreter"),
+                    input_id: candidate.id,
+                })
+                .build()
+        };
+
+        for (field, path) in [
+            ("normalized", EnvironmentPathRef::new("", "include:public")),
+            ("public_id", EnvironmentPathRef::new("/repo/include", "")),
+        ] {
+            let result = include(path);
+            assert!(matches!(
+                result,
+                Err(EnvironmentBuildError::EmptyPathField {
+                    owner: "include_entry",
+                    field: actual,
+                }) if actual == field
+            ));
+        }
+        for (field, path) in [
+            ("normalized", EnvironmentPathRef::new("", "root:public")),
+            ("public_id", EnvironmentPathRef::new("/repo/root", "")),
+        ] {
+            let result = root(path);
+            assert!(matches!(
+                result,
+                Err(EnvironmentBuildError::EmptyPathField {
+                    owner: "project_root",
+                    field: actual,
+                }) if actual == field
+            ));
+        }
+        for (field, path) in [
+            ("normalized", EnvironmentPathRef::new("", "tool:public")),
+            ("public_id", EnvironmentPathRef::new("/usr/bin/tool", "")),
+        ] {
+            let result = tool(path);
+            assert!(matches!(
+                result,
+                Err(EnvironmentBuildError::EmptyPathField {
+                    owner: "tool_candidate",
+                    field: actual,
+                }) if actual == field
+            ));
+        }
+        for (field, path) in [
+            ("normalized", EnvironmentPathRef::new("", "interpreter:public")),
+            ("public_id", EnvironmentPathRef::new("/usr/bin/perl", "")),
+        ] {
+            let result = interpreter(path);
+            assert!(matches!(
+                result,
+                Err(EnvironmentBuildError::EmptyPathField {
+                    owner: "selected_interpreter",
+                    field: actual,
+                }) if actual == field
+            ));
+        }
     }
 
     #[test]
@@ -2429,13 +2447,13 @@ mod tests {
             input_id: configured.id.clone(),
         };
         let include = IncludeEntry::new(
-            IncludeEntryRole::Other,
+            IncludeEntryRole::LexicalUseLib,
             EnvironmentPathRef::new("/private/project/lib", "include:project"),
             configured.id.clone(),
             0,
         );
         let root = ProjectRoot::new(
-            ProjectRootRole::Other,
+            ProjectRootRole::Source,
             EnvironmentPathRef::new("/private/project", "root:project"),
             configured.id.clone(),
         );
@@ -2479,22 +2497,89 @@ mod tests {
                 .with_limitation(limitation)
                 .build()?;
 
+        let configured_id = snapshot.inputs[0].id.clone();
         let receipt = snapshot.public_receipt();
         let json = serde_json::to_string(&receipt)?;
+        assert_eq!(receipt.schema_version, snapshot.schema_version);
+        assert_eq!(receipt.workspace_id, snapshot.workspace_id);
+        assert_eq!(receipt.configuration_generation, snapshot.configuration_generation);
+        assert_eq!(receipt.trust, snapshot.trust);
         assert_eq!(
-            receipt.build_systems.iter().map(|build| build.kind.as_str()).collect::<BTreeSet<_>>(),
-            BTreeSet::from(["extutils_makemaker", "other:custom"])
+            receipt.inputs,
+            vec![PublicEnvironmentInput {
+                id: configured_id.clone(),
+                semantic_key: "environment.configured".to_string(),
+                authority: EnvironmentInputAuthority::UserConfiguration,
+                state: EnvironmentInputState::Accepted,
+                value_fingerprint: Some(Digest::of("configured")),
+                explanation_code: "fixture".to_string(),
+            }]
         );
         assert_eq!(
-            receipt.tool_candidates.iter().map(|tool| tool.role.as_str()).collect::<BTreeSet<_>>(),
-            BTreeSet::from(["other:shipit", "perl"])
+            receipt.selected_interpreter,
+            Some(PublicInterpreterIdentityRef {
+                logical_id: "perl:5.38".to_string(),
+                executable_public_id: "interpreter:perl-538".to_string(),
+                evidence_fingerprint: Digest::of("perl-5.38"),
+                input_id: configured_id.clone(),
+            })
+        );
+        assert_eq!(
+            receipt.include_entries,
+            vec![PublicPathEntry {
+                id: snapshot.include_entries[0].id.clone(),
+                role: "lexical_use_lib".to_string(),
+                public_id: "include:project".to_string(),
+                input_id: configured_id.clone(),
+            }]
+        );
+        assert_eq!(
+            receipt.project_roots,
+            vec![PublicPathEntry {
+                id: snapshot.project_roots[0].id.clone(),
+                role: "source".to_string(),
+                public_id: "root:project".to_string(),
+                input_id: configured_id.clone(),
+            }]
+        );
+        assert_eq!(
+            receipt.build_systems,
+            vec![
+                PublicBuildSystemFactRef {
+                    id: snapshot.build_systems[0].id.clone(),
+                    kind: "extutils_makemaker".to_string(),
+                    fact_fingerprint: Digest::of("make"),
+                    input_id: configured_id.clone(),
+                },
+                PublicBuildSystemFactRef {
+                    id: snapshot.build_systems[1].id.clone(),
+                    kind: "other:custom".to_string(),
+                    fact_fingerprint: Digest::of("custom"),
+                    input_id: configured_id.clone(),
+                },
+            ]
+        );
+        assert_eq!(
+            receipt.tool_candidates,
+            vec![
+                PublicToolCandidate {
+                    id: snapshot.tool_candidates[0].id.clone(),
+                    role: "perl".to_string(),
+                    logical_name: "perl".to_string(),
+                    executable_public_id: "tool:perl".to_string(),
+                    input_id: configured_id.clone(),
+                },
+                PublicToolCandidate {
+                    id: snapshot.tool_candidates[1].id.clone(),
+                    role: "other:shipit".to_string(),
+                    logical_name: "shipit".to_string(),
+                    executable_public_id: "tool:shipit".to_string(),
+                    input_id: configured_id,
+                },
+            ]
         );
         assert_eq!(receipt.limitation_codes, vec!["probe_limited".to_string()]);
         assert!(!json.contains("internal probe detail must remain private"));
-        assert_eq!(
-            receipt.selected_interpreter.as_ref().map(|item| item.executable_public_id.as_str()),
-            Some("interpreter:perl-538")
-        );
         assert!(!json.contains("/private/interpreters/perl"));
         assert!(!json.contains("/private/project/lib"));
         assert!(!json.contains("/private/project"));
