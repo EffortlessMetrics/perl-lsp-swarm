@@ -402,7 +402,7 @@ const EVAL_KEYWORD: &str = "eval";
 /// terminator, so the class is bounded by the closing quote alone rather than by
 /// a newline horizon. See the module docs for the governing measurement (#3597).
 static EVAL_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r#"eval\s+(?:'[^']*<<[^']*'|"[^"]*<<[^"]*")"#) {
+    LazyLock::new(|| match Regex::new(r#"\beval\s+(?:'[^']*<<[^']*'|"[^"]*<<[^"]*")"#) {
         Ok(re) => re,
         Err(_) => unreachable!("EVAL_HEREDOC_PATTERN regex failed to compile"),
     });

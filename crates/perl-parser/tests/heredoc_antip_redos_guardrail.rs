@@ -166,6 +166,47 @@ fn antip_eval_fragment_in_a_comment_does_not_seed_a_match() {
 }
 
 #[test]
+fn antip_widened_branches_are_masked_inside_comments_and_strings() {
+    // `antip_ignores_constructs_inside_comments_and_strings` only exercises the
+    // dynamic-delimiter pattern, which this PR does not widen. These are the
+    // equivalent controls for the two branches that *were* widened, so a
+    // regression in either direction cannot ship green.
+    for (label, code) in [
+        // Eval: a commented `eval '` bridging to a later quoted string.
+        ("eval bridging from a comment", "# eval '\nmy $s = 'a <<'B';\n';\n"),
+        // Eval: origin inside a string literal rather than a comment.
+        ("eval inside a string literal", "my $s = \"eval 'x<<y'\";\n"),
+        // Regex code block anchored in a comment, closing on a later line.
+        ("regex code block from a comment", "# (?{ some\n<<'X' })c\n"),
+    ] {
+        let found = detect(code);
+        assert!(
+            found.is_empty(),
+            "{label}: masked region must not seed a diagnostic; got {:?}",
+            found.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_eval_keyword_is_not_matched_as_an_identifier_suffix() {
+    // Without a leading `\b`, `myeval '...<<...'` matched at the `eval` suffix
+    // and reported PL805 on a valid custom-function call.
+    assert!(!has_eval_string("myeval 'print <<EOF;';\n"), "single-line custom eval-like call");
+    assert!(
+        !has_eval_string("myeval 'print <<\"E\";\nbody\nE\n';\n"),
+        "multi-line custom eval-like call"
+    );
+
+    // The real keyword still reports, including as a statement-initial token.
+    assert!(has_eval_string("eval 'print <<EOF;';\n"), "bare eval must still be reported");
+    assert!(
+        has_eval_string("my $r = eval 'print <<EOF;';\n"),
+        "eval after an assignment must still be reported"
+    );
+}
+
+#[test]
 fn antip_multiline_left_shift_is_not_a_dynamic_delimiter() {
     // `1 << ${...}` is a left shift of a scalar dereference, not a heredoc.
     // Keeping the dynamic-delimiter newline horizon keeps this out.
