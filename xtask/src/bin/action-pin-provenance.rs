@@ -162,10 +162,8 @@ fn main() -> Result<()> {
         // The scanned worktree is a merge result; compare it against the base
         // tree actually incorporated into that result, resolved now.
         Some((resolve_merge_base(&root, spec)?, BaseSource::MergeBase(spec.to_owned())))
-    } else if let Some(recorded) = non_empty(args.base.as_deref()) {
-        Some((recorded.to_owned(), BaseSource::Recorded))
     } else {
-        None
+        non_empty(args.base.as_deref()).map(|recorded| (recorded.to_owned(), BaseSource::Recorded))
     };
     let (base, compared) = match &comparator {
         Some((comparator_sha, _)) => (scan_git_ref(&root, comparator_sha, &pattern)?, true),
@@ -184,11 +182,7 @@ fn main() -> Result<()> {
         write_receipt(&path, &receipt)?;
     }
     if !receipt.passed {
-        bail!(
-            "action-pin provenance failed with {} error(s) and {} warning(s)",
-            receipt.error_count,
-            receipt.warning_count
-        );
+        bail!("{}", failure_summary(&receipt));
     }
     println!(
         "Action-pin provenance passed ({} external use(s), {} new/changed, {} warning(s))",
@@ -202,6 +196,34 @@ fn main() -> Result<()> {
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// Builds the single-line process failure summary. The per-issue annotations
+/// are printed above this line and can scroll out of a CI log, so the final
+/// error must itself name the failing codes and locations. A count-only
+/// summary read as an empty-message crash and repeatedly delayed diagnosis
+/// of the recurring main red (#14249).
+fn failure_summary(receipt: &Receipt) -> String {
+    const MAX_LISTED: usize = 10;
+    let errors: Vec<&Issue> = receipt.issues.iter().filter(|i| i.level == "error").collect();
+    let mut summary = format!(
+        "action-pin provenance failed with {} error(s) and {} warning(s)",
+        receipt.error_count, receipt.warning_count
+    );
+    if errors.is_empty() {
+        return summary;
+    }
+    let listed = errors.len().min(MAX_LISTED);
+    let parts: Vec<String> = errors[..listed]
+        .iter()
+        .map(|issue| format!("{} at {}:{}", issue.code, issue.path, issue.line))
+        .collect();
+    summary.push_str(": ");
+    summary.push_str(&parts.join("; "));
+    if errors.len() > listed {
+        summary.push_str(&format!("; and {} more", errors.len() - listed));
+    }
+    summary
 }
 
 fn base_source_label(comparator_sha: &str, source: &BaseSource) -> String {
@@ -328,6 +350,9 @@ fn release_pattern() -> Result<Regex> {
 fn branch_pattern() -> Result<Regex> {
     Regex::new(r"^[A-Za-z0-9._/-]+ \([A-Za-z0-9._/-]+\)$").context("compiling branch pattern")
 }
+fn immutable_sha_pattern() -> Result<Regex> {
+    Regex::new(r"^[0-9a-fA-F]{40}$").context("compiling immutable sha pattern")
+}
 
 fn load_ledger(path: &Path) -> Result<Ledger> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -389,6 +414,9 @@ fn scan_git_ref(root: &Path, base: &str, pattern: &Regex) -> Result<Vec<Occurren
 fn scan_text(path: &str, text: &str, pattern: &Regex) -> Result<Vec<Occurrence>> {
     let release = release_pattern()?;
     let branch = branch_pattern()?;
+    // Compiled once and propagated: classification must never depend on a
+    // pattern that could silently drop the occurrence being classified.
+    let immutable_sha = immutable_sha_pattern()?;
     Ok(text
         .lines()
         .enumerate()
@@ -404,7 +432,7 @@ fn scan_text(path: &str, text: &str, pattern: &Regex) -> Result<Vec<Occurrence>>
                 if let Some(image) = scalar.strip_prefix("docker://") {
                     (image.to_owned(), scalar.to_owned(), ReferenceKind::Docker)
                 } else if let Some((action, reference)) = scalar.rsplit_once('@') {
-                    let kind = if Regex::new(r"^[0-9a-fA-F]{40}$").ok()?.is_match(reference) {
+                    let kind = if immutable_sha.is_match(reference) {
                         ReferenceKind::ImmutableSha
                     } else {
                         ReferenceKind::Mutable
@@ -668,6 +696,57 @@ mod tests {
         );
         assert!(receipt.passed);
         assert_eq!(receipt.warning_count, 1);
+        Ok(())
+    }
+    #[test]
+    fn scans_bumped_codeql_pin_with_release_projection() -> Result<()> {
+        // The exact ci-security.yml line shape whose bumped pin went unproven
+        // on main (#14249): immutable SHA with a release-tag projection.
+        let source = concat!(
+            "        uses: github/codeql-action/upload-sarif@",
+            "cdf488f595d80d6e07e03d4674febd5ab45fa938",
+            "  # v4.37.9\n"
+        );
+        let got = scan(source)?;
+        assert_eq!(got.len(), 1);
+        let pin = &got[0];
+        assert_eq!(pin.action, "github/codeql-action/upload-sarif");
+        assert_eq!(pin.reference, "cdf488f595d80d6e07e03d4674febd5ab45fa938");
+        assert_eq!(pin.reference_kind, ReferenceKind::ImmutableSha);
+        assert_eq!(pin.projection_kind, Some(ProjectionKind::ReleaseTag));
+        assert_eq!(pin.comment.as_deref(), Some("v4.37.9"));
+        Ok(())
+    }
+    #[test]
+    fn failure_summary_names_unproven_locations() -> Result<()> {
+        // Regression for the recurring main red: the process summary counted
+        // failures ("failed with 2 error(s) and 87 warning(s)") without naming
+        // them, reading as an empty-message crash in CI logs. The summary must
+        // identify each error-level issue and its location.
+        let source = format!(
+            "- uses: github/codeql-action/upload-sarif@{SHA} # v4.37.9\n\
+             - uses: github/codeql-action/upload-sarif@{SHA} # v4.37.9\n"
+        );
+        let got = scan(&source)?;
+        let receipt = validate(got, vec![], true, false, &ledger(vec![]));
+        assert_eq!(receipt.error_count, 2);
+        let summary = failure_summary(&receipt);
+        assert!(summary.starts_with("action-pin provenance failed with 2 error(s)"));
+        assert!(summary.contains("ACTION_PROVENANCE_NOT_PROVEN at .github/workflows/test.yml:1"));
+        assert!(summary.contains("ACTION_PROVENANCE_NOT_PROVEN at .github/workflows/test.yml:2"));
+        Ok(())
+    }
+    #[test]
+    fn failure_summary_bounds_very_long_lists() -> Result<()> {
+        let source: String =
+            (0..16).map(|i| format!("- uses: action-{i}@{SHA} # v1.0.{i}\n")).collect();
+        let got = scan(&source)?;
+        let receipt = validate(got, vec![], true, false, &ledger(vec![]));
+        assert_eq!(receipt.error_count, 16);
+        let summary = failure_summary(&receipt);
+        assert!(summary.contains("and 6 more"));
+        assert!(summary.contains("test.yml:10"));
+        assert!(!summary.contains("test.yml:11"));
         Ok(())
     }
 }
