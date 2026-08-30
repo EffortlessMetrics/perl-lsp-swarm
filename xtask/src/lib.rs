@@ -18,6 +18,7 @@ pub mod compiler_profile_oracle_adapter;
 pub mod contributor_topology;
 pub mod editor_client_compat;
 pub mod editor_host;
+pub mod emacs_eglot_upstream_patch;
 pub mod emacs_host_run;
 pub mod emacs_stock_discovery;
 pub mod emacs_subject_fan_in;
