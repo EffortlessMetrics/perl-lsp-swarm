@@ -6,9 +6,9 @@
 //! rule, so it lives here once rather than being copied per call site.
 //!
 //! `perl-lsp-rs-core`'s `providers::inline_completion::next_edit` now consumes
-//! this helper as the shared authority. Its mixed-ending behavior is covered
-//! by next-edit regression tests, so future synthesized insertions use the
-//! same rule as formatter output.
+//! the position-aware helper as the shared authority for edits. Its
+//! mixed-ending behavior is covered by next-edit regression tests, so future
+//! synthesized insertions use the convention at their insertion point.
 //!
 //! `perl-position-tracking::detect_line_ending` is *not* a copy: it reports the
 //! predominant style for position mapping, which is a different question.
@@ -52,9 +52,39 @@ pub fn inferred_line_ending(source: &str) -> &'static str {
     if last_lf > 0 && bytes[last_lf - 1] == b'\r' { "\r\n" } else { "\n" }
 }
 
+/// The line ending to use for text generated at byte `offset` in `source`.
+///
+/// The preceding line ending is authoritative when the insertion point is
+/// after a line terminator. At the beginning of a document, the first
+/// following line ending is used instead. If neither exists, this falls back
+/// to [`inferred_line_ending`]. Invalid UTF-8 boundaries are also handled by
+/// that document-level fallback.
+#[must_use]
+pub fn inferred_line_ending_at(source: &str, offset: usize) -> &'static str {
+    let Some(prefix) = source.get(..offset) else {
+        return inferred_line_ending(source);
+    };
+    if let Some(last_lf) = prefix.as_bytes().iter().rposition(|byte| *byte == b'\n') {
+        return if last_lf > 0 && prefix.as_bytes()[last_lf - 1] == b'\r' { "\r\n" } else { "\n" };
+    }
+
+    let Some(suffix) = source.get(offset..) else {
+        return inferred_line_ending(source);
+    };
+    if let Some(first_lf) = suffix.as_bytes().iter().position(|byte| *byte == b'\n') {
+        return if first_lf > 0 && suffix.as_bytes()[first_lf - 1] == b'\r' {
+            "\r\n"
+        } else {
+            "\n"
+        };
+    }
+
+    inferred_line_ending(source)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::inferred_line_ending;
+    use super::{inferred_line_ending, inferred_line_ending_at};
 
     #[test]
     fn empty_and_unterminated_sources_fall_back_to_lf() {
@@ -96,5 +126,21 @@ mod tests {
     fn multibyte_content_before_the_terminator_is_handled_by_byte_scan() {
         assert_eq!(inferred_line_ending("my $x = \"\u{e9}\";\r\n"), "\r\n");
         assert_eq!(inferred_line_ending("my $x = \"\u{1f600}\";\n"), "\n");
+    }
+
+    #[test]
+    fn insertion_position_wins_over_a_different_document_tail_convention() {
+        let source = "package Demo;\r\nmy $value = 1;\nmy $tail = 2;\r\n";
+        let insertion = source.find("my $value").expect("fixture has insertion line");
+        assert_eq!(inferred_line_ending_at(source, insertion), "\r\n");
+
+        let later_insertion = source.find("my $tail").expect("fixture has later line");
+        assert_eq!(inferred_line_ending_at(source, later_insertion), "\n");
+    }
+
+    #[test]
+    fn beginning_insertion_uses_first_line_convention() {
+        assert_eq!(inferred_line_ending_at("package Demo;\r\n", 0), "\r\n");
+        assert_eq!(inferred_line_ending_at("package Demo;\n", 0), "\n");
     }
 }

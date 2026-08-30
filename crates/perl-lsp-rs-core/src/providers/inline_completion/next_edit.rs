@@ -5,7 +5,7 @@
 //! later next-edit providers must use before any editor-visible behavior lands.
 
 use super::PreparedInlineCompletionContext;
-use perl_lsp_perltidy::native::inferred_line_ending;
+use perl_lsp_perltidy::native::inferred_line_ending_at;
 use serde::{Deserialize, Serialize};
 
 /// Source that controls the next-edit feature gate.
@@ -659,7 +659,7 @@ impl NextEditProvider {
         }
 
         let offset = insertion_offset.unwrap_or(0);
-        let line_ending = inferred_line_ending(&request.document_text);
+        let line_ending = inferred_line_ending_at(&request.document_text, offset);
         let edit =
             NextEditTextEdit::new(offset, offset, format!("use {};{line_ending}", request.module));
         MissingImportNextEditProof {
@@ -742,7 +742,7 @@ impl NextEditProvider {
                 rejection_reasons: vec![NextEditRejectionReason::MissingAssertionVariables],
             };
         };
-        let line_ending = inferred_line_ending(&request.document_text);
+        let line_ending = inferred_line_ending_at(&request.document_text, request.insertion_byte);
         let assertion = format!("is({actual}, {expected}, 'test description');{line_ending}");
         TestAssertionNextEditProof {
             status: NextEditStatus::ReceiptOnly,
@@ -1395,10 +1395,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_import_receipt_uses_last_line_ending_for_mixed_documents()
+    fn missing_import_receipt_uses_insertion_region_line_ending_for_mixed_documents()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = NextEditProvider;
-        let source = "package Demo;\r\nuse strict;\nmy $value = My::App->new;\n";
+        let source = "package Demo;\r\nmy $value = My::App->new;\n";
         let request = MissingImportNextEditRequest::receipt_only(
             source,
             "My::App",
@@ -1409,12 +1409,12 @@ mod tests {
         let proof = provider.prove_missing_import(&request);
 
         let candidate = proof.candidate.ok_or("missing import candidate not prepared")?;
-        assert_eq!(candidate.edit.new_text, "use My::App;\n");
+        assert_eq!(candidate.edit.new_text, "use My::App;\r\n");
         Ok(())
     }
 
     #[test]
-    fn test_assertion_receipt_uses_last_line_ending_for_mixed_documents()
+    fn test_assertion_receipt_uses_insertion_region_line_ending_for_mixed_documents()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = NextEditProvider;
         let source = "use Test::More;\r\nmy $got = 1;\nmy $expected = 1;\n";
@@ -1429,6 +1429,44 @@ mod tests {
 
         let candidate = proof.candidate.ok_or("test assertion candidate not prepared")?;
         assert_eq!(candidate.edit.new_text, "is($got, $expected, 'test description');\n");
+        Ok(())
+    }
+
+    #[test]
+    fn next_edit_line_ending_does_not_follow_a_different_document_tail()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = NextEditProvider;
+        let source = "use Test::More;\r\nmy $got = 1;\nmy $expected = 1;\r\n";
+        let insertion_byte = source.find("my $expected").ok_or("missing insertion line")?;
+        let request = TestAssertionNextEditRequest::receipt_only(
+            source,
+            insertion_byte,
+            vec!["Test::More".to_string()],
+            vec!["$got".to_string(), "$expected".to_string()],
+        );
+
+        let proof = provider.prove_test_assertion(&request);
+        let candidate = proof.candidate.ok_or("test assertion candidate not prepared")?;
+        assert_eq!(candidate.edit.new_text, "is($got, $expected, 'test description');\n");
+        Ok(())
+    }
+
+    #[test]
+    fn next_edit_line_ending_uses_crlf_insertion_region_before_lf_tail()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = NextEditProvider;
+        let source = "use Test::More;\nmy $got = 1;\r\nmy $expected = 1;\n";
+        let insertion_byte = source.find("my $expected").ok_or("missing insertion line")?;
+        let request = TestAssertionNextEditRequest::receipt_only(
+            source,
+            insertion_byte,
+            vec!["Test::More".to_string()],
+            vec!["$got".to_string(), "$expected".to_string()],
+        );
+
+        let proof = provider.prove_test_assertion(&request);
+        let candidate = proof.candidate.ok_or("test assertion candidate not prepared")?;
+        assert_eq!(candidate.edit.new_text, "is($got, $expected, 'test description');\r\n");
         Ok(())
     }
 
