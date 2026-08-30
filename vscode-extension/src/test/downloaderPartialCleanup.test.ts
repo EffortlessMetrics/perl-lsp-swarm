@@ -56,6 +56,11 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const requestError = Object.assign(new Error('request failed'), { code: 'ECONNRESET' });
+    const delayedCleanup: Array<() => void> = [];
+    jest.spyOn(global, 'setImmediate').mockImplementation((callback: () => void) => {
+      delayedCleanup.push(callback);
+      return {} as NodeJS.Immediate;
+    });
 
     const removePartialFile = jest.spyOn(downloader, 'removePartialFile');
     jest.spyOn(downloader, 'httpGet').mockImplementation(() => {
@@ -71,7 +76,8 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     expect(removePartialFile).toHaveBeenCalledWith(destination);
     fs.writeFileSync(destination, 'replacement');
 
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(delayedCleanup).toHaveLength(1);
+    delayedCleanup[0]?.();
     expect(fs.readFileSync(destination, 'utf8')).toBe('replacement');
   });
 

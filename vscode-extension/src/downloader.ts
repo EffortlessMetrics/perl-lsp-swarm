@@ -1452,26 +1452,22 @@ export class BinaryDownloader {
   }
 
   private removePartialFile(dest: string): void {
-    let original: fs.Stats;
+    const cleanupPath = `${dest}.partial-cleanup-${crypto.randomUUID()}`;
     try {
-      original = fs.statSync(dest);
+      // Move the failed generation out of the caller-owned destination before
+      // scheduling delayed deletion. The unique quarantine path is the
+      // ownership token: a replacement at `dest` can never be mistaken for
+      // the failed file, even if the filesystem immediately reuses its inode.
+      fs.renameSync(dest, cleanupPath);
     } catch {
       return;
     }
 
-    // The bounded helper performs a synchronous fallback before rejecting, so
-    // this callback may run after a caller has reused the destination. Keep
-    // the delayed cleanup tied to the file generation observed at scheduling
-    // time; a replacement must never be removed by this stale callback.
     setImmediate(() => {
       try {
-        const current = fs.statSync(dest);
-        if (current.dev !== original.dev || current.ino !== original.ino) {
-          return;
-        }
-        fs.unlinkSync(dest);
+        fs.unlinkSync(cleanupPath);
       } catch {
-        // Best effort: the partial file may already be gone or replaced.
+        // Best effort: the quarantined partial file may already be gone.
       }
     });
   }
