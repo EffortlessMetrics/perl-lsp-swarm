@@ -9,6 +9,7 @@ use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -797,8 +798,9 @@ fn normalize_windows_path_prefix(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod explicit_pin_tests {
-    use super::{launch_arguments, normalize_explicit_debuggee_pin};
+    use super::{launch_arguments, normalize_explicit_debuggee_pin, resolve_debuggee_candidate};
     use std::fs;
+    use std::path::Path;
 
     #[test]
     fn nested_relative_pin_is_frozen_before_different_launch_cwd() -> Result<(), String> {
@@ -843,6 +845,43 @@ mod explicit_pin_tests {
         }
         if launch.get("cwd").and_then(|value| value.as_str()) != Some(different_cwd) {
             return Err("the launch must retain its independent working directory".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn path_only_candidate_is_frozen_to_absolute_path() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let binary = controls.path().join("perl");
+        fs::write(&binary, b"path candidate").map_err(|error| error.to_string())?;
+        let search_path =
+            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
+        let resolved =
+            resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str()))?;
+        let expected = fs::canonicalize(binary).map_err(|error| error.to_string())?;
+        if resolved != expected {
+            return Err(format!(
+                "PATH candidate was not frozen absolutely: {resolved:?} != {expected:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_only_candidate_honors_pathext_for_perl_exe() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let binary = controls.path().join("perl.exe");
+        fs::write(&binary, b"path candidate").map_err(|error| error.to_string())?;
+        let search_path =
+            std::env::join_paths([controls.path()]).map_err(|error| error.to_string())?;
+        let resolved =
+            resolve_debuggee_candidate(Path::new("perl"), Some(search_path.as_os_str()))?;
+        let expected = fs::canonicalize(binary).map_err(|error| error.to_string())?;
+        if resolved != expected {
+            return Err(format!(
+                "PATHEXT candidate was not resolved: {resolved:?} != {expected:?}"
+            ));
         }
         Ok(())
     }
@@ -2358,6 +2397,48 @@ pub fn resolve_debuggee_perl() -> Option<&'static DebuggeePerl> {
     resolved_debuggee_perl_or_reason().ok()
 }
 
+fn resolve_debuggee_candidate(path: &Path, search_path: Option<&OsStr>) -> Result<PathBuf, String> {
+    if path.is_absolute() || path.components().count() > 1 || path.starts_with(".") {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(|error| {
+                    format!("cannot resolve candidate relative to the test process: {error}")
+                })?
+                .join(path)
+        };
+        return fs::canonicalize(&absolute)
+            .map_err(|error| format!("cannot canonicalize candidate {}: {error}", path.display()));
+    }
+
+    let search_path = search_path
+        .ok_or_else(|| "PATH is unavailable while resolving a Perl candidate".to_string())?;
+    for directory in std::env::split_paths(search_path) {
+        let mut candidates = vec![directory.join(path)];
+        #[cfg(windows)]
+        if path.extension().is_none() {
+            let pathext = std::env::var_os("PATHEXT")
+                .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+            candidates.extend(
+                pathext.to_string_lossy().split(';').filter(|extension| !extension.is_empty()).map(
+                    |extension| {
+                        directory.join(path).with_extension(extension.trim_start_matches('.'))
+                    },
+                ),
+            );
+        }
+        for candidate in candidates {
+            if let Ok(canonical) = fs::canonicalize(&candidate)
+                && canonical.is_file()
+            {
+                return Ok(canonical);
+            }
+        }
+    }
+    Err(format!("candidate {} was not found on PATH", path.display()))
+}
+
 /// One uncached resolution sweep over every candidate interpreter.
 fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
     let explicit = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
@@ -2376,7 +2457,13 @@ fn resolve_debuggee_perl_uncached() -> DebuggeePerlResolution {
                 }
             }
         } else {
-            raw_candidate
+            match resolve_debuggee_candidate(&raw_candidate, std::env::var_os("PATH").as_deref()) {
+                Ok(candidate) => candidate,
+                Err(reason) => {
+                    diagnostics.push(format!("{}: {reason}", raw_candidate.display()));
+                    continue;
+                }
+            }
         };
         match probe_debuggee_perl(&candidate) {
             Ok(perl) => {

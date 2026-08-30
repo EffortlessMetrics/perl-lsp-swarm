@@ -2014,7 +2014,7 @@ fn coverage_pack_manifest_declares_generate_badges_pack_owns_badges_wrapper() ->
 }
 
 #[test]
-fn coverage_pack_manifest_routes_ripr_badge_owner_paths() -> Result<()> {
+fn coverage_pack_manifest_routes_both_ripr_badge_python_paths() -> Result<()> {
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map(PathBuf::from)
@@ -2037,7 +2037,6 @@ fn coverage_pack_manifest_routes_ripr_badge_owner_paths() -> Result<()> {
         .and_then(toml::Value::as_array)
         .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
     let routed: Vec<_> = files.iter().filter_map(toml::Value::as_str).collect();
-    assert!(routed.contains(&"badges/README.md"));
     assert!(routed.contains(&"scripts/generate-badges.py"));
     assert!(routed.contains(&"scripts/tests/test-generate-badges.py"));
     let commands = pack

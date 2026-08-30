@@ -14,13 +14,12 @@ const ALLOWLIST_BLANKET_CANCEL_IN_PROGRESS: &[&str] = &["docs-deploy.yml", "post
 /// Multi-job workflows whose jobs may inherit workflow-default write authority
 /// without declaring their own `permissions:`. Add an entry only with a
 /// documented reason and a tracking issue.
-const ALLOWLIST_INHERITED_JOB_WRITE: &[&str] = &[
-    // Every job builds or publishes images against GHCR, so `packages: write`
-    // is load-bearing for the build jobs and not merely inherited. Narrowing
-    // `init`/`summary` to `contents: read` needs a release-time verification
-    // pass rather than a static edit. Tracked by #5989 follow-up.
-    "docker-publish.yml",
-];
+///
+/// `docker-publish.yml` was removed from this list by #12888: the digest-split
+/// topology gives every job an explicit grant (`packages: write` exists only on
+/// the checkout-free `publish-ghcr` publication job) and the workflow default
+/// carries no write scope, so the allowlist entry became dead allowance.
+const ALLOWLIST_INHERITED_JOB_WRITE: &[&str] = &[];
 
 /// Workflow files that intentionally have no `policy/ci-lane-whitelist.toml`
 /// entry. Add an entry here only when there's a documented reason — e.g. a

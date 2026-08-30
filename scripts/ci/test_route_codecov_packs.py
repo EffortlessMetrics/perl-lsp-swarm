@@ -18,7 +18,7 @@ SPEC.loader.exec_module(router)
 
 
 class RouteCodecovPacksTests(unittest.TestCase):
-    def test_ripr_badge_owner_paths_select_the_focused_non_lcov_pack(self) -> None:
+    def test_both_ripr_badge_python_paths_select_the_focused_non_lcov_pack(self) -> None:
         manifest = tomllib.loads(
             (Path(__file__).parents[2] / ".ci/coverage-packs.toml").read_text(
                 encoding="utf-8"
@@ -26,7 +26,6 @@ class RouteCodecovPacksTests(unittest.TestCase):
         )
         packs = manifest["pack"]
         for path in [
-            "badges/README.md",
             "scripts/generate-badges.py",
             "scripts/tests/test-generate-badges.py",
         ]:

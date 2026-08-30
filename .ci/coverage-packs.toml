@@ -832,7 +832,6 @@ coverage_filters = [
 id = "patch-coverage-ripr-badge-endpoints"
 lcov = false
 files = [
-  "badges/README.md",
   "scripts/generate-badges.py",
   "scripts/tests/test-generate-badges.py",
 ]

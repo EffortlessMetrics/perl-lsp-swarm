@@ -21,7 +21,6 @@ pub use super::lsp_stats_impl::{
 
 const RECEIPT_SCHEMA_PATH: &str = ".ci/schemas/ux-scenario-run.schema.json";
 const FIXTURE_MATRIX_PATH: &str = "crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json";
-const DEFAULT_RECEIPT_DIR: &str = "target/receipts/editor-ux";
 
 /// Fields that distinguish an editor-UX scenario run from companion receipts
 /// such as Scenario 67's `golden_editor_workload` evidence. Generic receipt
@@ -64,11 +63,15 @@ struct ReceiptCandidate {
 }
 
 /// Run `cargo xtask metrics lsp-stats` with fail-closed receipt validation.
-pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()> {
+pub fn run_with_receipt_dir(
+    json: bool,
+    receipt_dir: Option<&Path>,
+    output: Option<&Path>,
+) -> Result<()> {
     let root = project_root()?;
     validate_run_inputs(&root, receipt_dir)?;
 
-    super::lsp_stats_impl::run_with_receipt_dir(json, receipt_dir)
+    super::lsp_stats_impl::run_with_receipt_dir(json, receipt_dir, output)
 }
 
 fn validate_run_inputs(root: &Path, receipt_dir: Option<&Path>) -> Result<()> {
@@ -309,6 +312,11 @@ fn read_receipt_candidates(receipts_dir: &Path) -> Result<Vec<ReceiptCandidate>>
 mod tests {
     use super::*;
 
+    /// Legacy receipt directory used when the CLI receives no explicit
+    /// `--receipt-dir`. Only tests reference it, so it lives here to keep
+    /// non-test builds free of dead-code warnings.
+    const DEFAULT_RECEIPT_DIR: &str = "target/receipts/editor-ux";
+
     fn validation_error(result: Result<()>, context: &str) -> Result<color_eyre::Report> {
         match result {
             Ok(()) => bail!("{context}"),
@@ -532,7 +540,7 @@ mod tests {
     #[test]
     fn no_receipt_dir_preserves_legacy_validation_boundary() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let default_receipts = temp.path().join("target/receipts/editor-ux");
+        let default_receipts = temp.path().join(DEFAULT_RECEIPT_DIR);
         fs::create_dir_all(&default_receipts)?;
         fs::write(default_receipts.join("broken.json"), "{")?;
 
