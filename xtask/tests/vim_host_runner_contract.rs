@@ -216,9 +216,7 @@ fn thin_adapter_and_driver_never_force_a_filetype_or_second_orchestration() -> R
             })
         });
         ensure!(
-            !has_system_call
-                && !source.contains("job_start")
-                && !source.contains("term_start"),
+            !has_system_call && !source.contains("job_start") && !source.contains("term_start"),
             "{label} must not spawn processes; the Rust supervisor owns process supervision"
         );
     }
