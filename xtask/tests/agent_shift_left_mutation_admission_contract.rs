@@ -4,11 +4,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const SECTION_HEADING: &str = "## Mutation admission";
+const SEMANTIC_HEADING: &str = "### Semantic key";
+const MECHANICAL_HEADING: &str = "### Mechanical key";
+const JOIN_HEADING: &str = "### Same-subject join";
+
 const PROVIDER_BUILD_SKILLS: &[(&str, &str)] = &[
     ("codex", ".agents/skills/build-candidate/SKILL.md"),
     ("claude", ".claude/skills/build-candidate/SKILL.md"),
 ];
-const REQUIREMENTS: &[(&str, &[&str])] = &[
+
+const PREAMBLE_REQUIREMENTS: &[(&str, &[&str])] = &[
     (
         "direct and delegated pre-mutation boundary",
         &[
@@ -17,7 +22,9 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
         ],
     ),
     ("one admission", &["retain one admission", "keep one admission"]),
-    ("semantic key", &["semantic key"]),
+];
+
+const SEMANTIC_REQUIREMENTS: &[(&str, &[&str])] = &[
     ("claim", &["acceptance-and-rollback claim"]),
     ("semantic owner", &["semantic owner"]),
     ("authority", &["governing authority"]),
@@ -29,9 +36,17 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
     ("proof ceiling", &["proof ceiling"]),
     ("NOT_PROVEN boundary", &["explicit `not_proven` boundary"]),
     ("deferred proof", &["deferred broader proof"]),
-    ("next or backward route", &["named next or backward route", "named next/backward route"]),
-    ("mechanical key", &["mechanical key"]),
-    ("repository identity", &["repository, common-dir, and remote identity"]),
+    (
+        "next or backward route",
+        &["named next or backward route", "named next/backward route"],
+    ),
+];
+
+const MECHANICAL_REQUIREMENTS: &[(&str, &[&str])] = &[
+    (
+        "repository identity",
+        &["repository, common-dir, and remote identity"],
+    ),
     ("issue and claim identity", &["issue and claim identity"]),
     ("candidate branch", &["candidate branch"]),
     ("expected head and base", &["expected head and base"]),
@@ -41,10 +56,22 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
     ("postcondition", &["required postcondition"]),
     (
         "writer preflight",
-        &["writer-preflight/admission decision", "writer admission/preflight decision"],
+        &[
+            "writer-preflight/admission decision",
+            "writer admission/preflight decision",
+        ],
     ),
-    ("same-subject join", &["must identify the same exact claim/candidate/writer boundary"]),
-    ("semantic/mechanical separation", &["does not establish mechanical safety"]),
+];
+
+const JOIN_REQUIREMENTS: &[(&str, &[&str])] = &[
+    (
+        "same-subject join",
+        &["must identify the same exact claim/candidate/writer boundary"],
+    ),
+    (
+        "semantic/mechanical separation",
+        &["does not establish mechanical safety"],
+    ),
     (
         "mechanical/semantic separation",
         &["does not establish authority to implement another claim"],
@@ -58,7 +85,10 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
     ),
     ("midstream coverage", &["entry midstream does not bypass admission"]),
     ("read-only precursor", &["read-only research may precede admission"]),
-    ("fresh mechanical identity", &["re-derive or revalidate volatile mechanical identity"]),
+    (
+        "fresh mechanical identity",
+        &["re-derive or revalidate volatile mechanical identity"],
+    ),
     (
         "pre-mutation refusal",
         &["do not mutate when either key is missing, stale, contradictory, or cross-subject"],
@@ -67,17 +97,52 @@ const REQUIREMENTS: &[(&str, &[&str])] = &[
     ("second-candidate refusal", &["mint a second candidate"]),
     ("prepare-issue route", &["prepare-issue"]),
     ("prepare-proof route", &["prepare-proof"]),
-    ("writer-admission route", &["routes to writer admission/preflight"]),
+    (
+        "writer-admission route",
+        &["routes to writer admission/preflight"],
+    ),
     ("writer collision", &["writer_collision"]),
     ("unsafe worktree", &["unsafe_worktree"]),
     ("blocked", &["`blocked`"]),
     ("not proven", &["`not_proven`"]),
     ("runtime-local", &["runtime-local"]),
-    ("durable exception", &["unless it changes durable claim, authority, or proof state"]),
+    (
+        "durable exception",
+        &["unless it changes durable claim, authority, or proof state"],
+    ),
     ("non-stage", &["not a stage record"]),
     ("non-database", &["second work database"]),
-    ("non-lease/scheduler/frontier", &["does not create a lease, scheduler, or tracked frontier"]),
+    (
+        "non-lease/scheduler/frontier",
+        &["does not create a lease, scheduler, or tracked frontier"],
+    ),
 ];
+
+const SEMANTIC_FIXTURE_BODY: &str = r#"Carry the acceptance-and-rollback claim, semantic owner, governing authority, current
+facts and contradictions, production or observable seam, acceptance surface, cheapest
+first falsifier, realistic negative control, proof ceiling, explicit `NOT_PROVEN`
+boundary, deferred broader proof, and named next or backward route."#;
+
+const MECHANICAL_FIXTURE_BODY: &str = r#"Carry repository, common-dir, and remote identity; issue and claim identity; candidate
+branch; expected head and base; worktree; one writer; intended mutation; required
+postcondition; and the writer-preflight/admission decision."#;
+
+const JOIN_FIXTURE_BODY: &str = r#"Both keys must identify the same exact claim/candidate/writer boundary. Semantic
+authority does not establish mechanical safety. Mechanical safety does not establish
+authority to implement another claim. Direct root edits and delegated writer edits use
+the same join, and entry midstream does not bypass admission.
+
+Read-only research may precede admission. Re-derive or revalidate volatile mechanical
+identity. Do not mutate when either key is missing, stale, contradictory, or
+cross-subject. Do not infer either key or mint a second candidate.
+
+Changed scope routes to `prepare-issue`; weak proof routes to `prepare-proof`; missing
+or stale mechanical evidence routes to writer admission/preflight. Refuse with
+`WRITER_COLLISION`, `UNSAFE_WORKTREE`, `BLOCKED`, or `NOT_PROVEN` as applicable.
+
+Keep this runtime-local unless it changes durable claim, authority, or proof state. It
+is not a stage record or second work database, and does not create a lease, scheduler,
+or tracked frontier."#;
 
 fn repo_root() -> io::Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -114,67 +179,168 @@ fn h2_headings(text: &str) -> Vec<&str> {
         .collect()
 }
 
-fn validate(text: &str) -> Vec<String> {
-    let Some(section) = h2_section(text, SECTION_HEADING) else {
-        let found = h2_headings(text).join("; ");
-        return vec![format!("missing section '{SECTION_HEADING}'; found h2 headings: [{found}]")];
-    };
-    let section = section.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+fn h3_headings(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("### "))
+        .collect()
+}
 
-    REQUIREMENTS
+fn h3_heading_count(text: &str, heading: &str) -> usize {
+    text.lines()
+        .filter(|line| line.trim().eq_ignore_ascii_case(heading))
+        .count()
+}
+
+fn h3_section(text: &str, heading: &str) -> Option<String> {
+    let mut found = false;
+    let mut in_section = false;
+    let mut lines = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("### ") {
+            if in_section {
+                break;
+            }
+            if !found && trimmed.eq_ignore_ascii_case(heading) {
+                found = true;
+                in_section = true;
+            }
+            continue;
+        }
+
+        if in_section {
+            lines.push(line);
+        }
+    }
+
+    found.then(|| lines.join("\n"))
+}
+
+fn h3_preamble(text: &str) -> String {
+    text.lines()
+        .take_while(|line| !line.trim().starts_with("### "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn validate_requirements(
+    scope: &str,
+    text: &str,
+    requirements: &[(&str, &[&str])],
+) -> Vec<String> {
+    let normalized = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+
+    requirements
         .iter()
         .filter_map(|&(label, alternatives)| {
-            (!alternatives.iter().any(|&term| section.contains(&term.to_ascii_lowercase()))).then(
-                || {
-                    format!(
-                        "mutation admission is missing {label}; expected one of: {}",
-                        alternatives.join(", ")
-                    )
-                },
-            )
+            (!alternatives
+                .iter()
+                .any(|&term| normalized.contains(&term.to_ascii_lowercase())))
+            .then(|| {
+                format!(
+                    "{scope} is missing {label}; expected one of: {}",
+                    alternatives.join(", ")
+                )
+            })
         })
         .collect()
 }
 
-fn fixture() -> String {
-    r#"
+fn validate_subsection(
+    section: &str,
+    heading: &str,
+    scope: &str,
+    requirements: &[(&str, &[&str])],
+    found_headings: &str,
+) -> Vec<String> {
+    match h3_heading_count(section, heading) {
+        0 => vec![format!(
+            "missing subsection '{heading}' inside '{SECTION_HEADING}'; found h3 headings: [{found_headings}]"
+        )],
+        1 => h3_section(section, heading)
+            .map(|subsection| validate_requirements(scope, &subsection, requirements))
+            .unwrap_or_else(|| {
+                vec![format!(
+                    "could not read subsection '{heading}' inside '{SECTION_HEADING}'"
+                )]
+            }),
+        count => vec![format!(
+            "subsection '{heading}' occurs {count} times inside '{SECTION_HEADING}'; it must occur exactly once; found h3 headings: [{found_headings}]"
+        )],
+    }
+}
+
+fn validate(text: &str) -> Vec<String> {
+    let Some(section) = h2_section(text, SECTION_HEADING) else {
+        let found = h2_headings(text).join("; ");
+        return vec![format!(
+            "missing section '{SECTION_HEADING}'; found h2 headings: [{found}]"
+        )];
+    };
+
+    let found_headings = h3_headings(&section).join("; ");
+    let mut failures = validate_requirements(
+        "mutation admission preamble",
+        &h3_preamble(&section),
+        PREAMBLE_REQUIREMENTS,
+    );
+
+    for (heading, scope, requirements) in [
+        (SEMANTIC_HEADING, "semantic key", SEMANTIC_REQUIREMENTS),
+        (
+            MECHANICAL_HEADING,
+            "mechanical key",
+            MECHANICAL_REQUIREMENTS,
+        ),
+        (JOIN_HEADING, "same-subject join", JOIN_REQUIREMENTS),
+    ] {
+        failures.extend(validate_subsection(
+            &section,
+            heading,
+            scope,
+            requirements,
+            &found_headings,
+        ));
+    }
+
+    failures
+}
+
+fn fixture_with_sections(semantic: &str, mechanical: &str, join: &str) -> String {
+    format!(
+        r#"
 ## Mutation admission
 Before the accountable root edits the candidate directly or delegates any candidate
 mutation, retain one admission.
 
 ### Semantic key
-Carry the acceptance-and-rollback claim, semantic owner, governing authority, current
-facts and contradictions, production or observable seam, acceptance surface, cheapest
-first falsifier, realistic negative control, proof ceiling, explicit `NOT_PROVEN`
-boundary, deferred broader proof, and named next or backward route.
+{semantic}
 
 ### Mechanical key
-Carry repository, common-dir, and remote identity; issue and claim identity; candidate
-branch; expected head and base; worktree; one writer; intended mutation; required
-postcondition; and the writer-preflight/admission decision.
+{mechanical}
 
 ### Same-subject join
-Both keys must identify the same exact claim/candidate/writer boundary. Semantic
-authority does not establish mechanical safety. Mechanical safety does not establish
-authority to implement another claim. Direct root edits and delegated writer edits use
-the same join, and entry midstream does not bypass admission.
-
-Read-only research may precede admission. Re-derive or revalidate volatile mechanical
-identity. Do not mutate when either key is missing, stale, contradictory, or
-cross-subject. Do not infer either key or mint a second candidate.
-
-Changed scope routes to `prepare-issue`; weak proof routes to `prepare-proof`; missing
-or stale mechanical evidence routes to writer admission/preflight. Refuse with
-`WRITER_COLLISION`, `UNSAFE_WORKTREE`, `BLOCKED`, or `NOT_PROVEN` as applicable.
-
-Keep this runtime-local unless it changes durable claim, authority, or proof state. It
-is not a stage record or second work database, and does not create a lease, scheduler,
-or tracked frontier.
+{join}
 
 ## Procedure
 Later content.
 "#
-    .to_owned()
+    )
+}
+
+fn fixture() -> String {
+    fixture_with_sections(
+        SEMANTIC_FIXTURE_BODY,
+        MECHANICAL_FIXTURE_BODY,
+        JOIN_FIXTURE_BODY,
+    )
 }
 
 #[test]
@@ -204,8 +370,14 @@ fn provider_wording_may_differ_without_changing_the_contract() {
         .replace("the accountable root", "the main Claude thread")
         .replace("retain one admission", "keep one admission")
         .replace("Direct root edits", "Direct main-thread edits")
-        .replace("writer-preflight/admission", "writer admission/preflight")
-        .replace("named next or backward route", "named next/backward route");
+        .replace(
+            "writer-preflight/admission",
+            "writer admission/preflight",
+        )
+        .replace(
+            "named next or backward route",
+            "named next/backward route",
+        );
 
     assert!(validate(&text).is_empty());
 }
@@ -216,8 +388,21 @@ fn markers_outside_the_admission_section_do_not_count() {
     let text = format!("{decoy}\n{SECTION_HEADING}\nretain one admission\n\n## Procedure\n");
     let errors = validate(&text);
 
-    assert!(errors.iter().any(|error| error.contains("same-subject join")));
-    assert!(errors.iter().any(|error| error.contains("pre-mutation refusal")));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("missing subsection '### Semantic key'"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("missing subsection '### Mechanical key'"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("missing subsection '### Same-subject join'"))
+    );
 }
 
 #[test]
@@ -227,7 +412,11 @@ fn two_keys_without_a_same_subject_join_fail_closed() {
         "Both keys are present.",
     );
 
-    assert!(validate(&text).iter().any(|error| error.contains("same-subject join")));
+    assert!(
+        validate(&text)
+            .iter()
+            .any(|error| error.contains("same-subject join is missing same-subject join"))
+    );
 }
 
 #[test]
@@ -237,9 +426,9 @@ fn delegated_only_admission_does_not_cover_direct_root_mutation() {
         "Before delegating any candidate mutation",
     );
 
-    assert!(
-        validate(&text).iter().any(|error| error.contains("direct and delegated pre-mutation"))
-    );
+    assert!(validate(&text).iter().any(|error| {
+        error.contains("mutation admission preamble is missing direct and delegated pre-mutation")
+    }));
 }
 
 #[test]
@@ -249,7 +438,126 @@ fn cross_subject_input_without_pre_mutation_refusal_fails_closed() {
         "A cross-subject key is recorded after mutation.",
     );
 
-    assert!(validate(&text).iter().any(|error| error.contains("pre-mutation refusal")));
+    assert!(
+        validate(&text)
+            .iter()
+            .any(|error| error.contains("same-subject join is missing pre-mutation refusal"))
+    );
+}
+
+#[test]
+fn swapped_semantic_and_mechanical_bodies_fail_closed() {
+    let text = fixture_with_sections(
+        MECHANICAL_FIXTURE_BODY,
+        SEMANTIC_FIXTURE_BODY,
+        JOIN_FIXTURE_BODY,
+    );
+    let errors = validate(&text);
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("semantic key is missing claim"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("mechanical key is missing repository identity"))
+    );
+}
+
+#[test]
+fn marker_in_the_wrong_key_does_not_count() {
+    let semantic = format!("{SEMANTIC_FIXTURE_BODY}\n\nOne writer appears only under this key.");
+    let mechanical = MECHANICAL_FIXTURE_BODY.replace("one writer; ", "");
+    let text = fixture_with_sections(&semantic, &mechanical, JOIN_FIXTURE_BODY);
+
+    assert!(
+        validate(&text)
+            .iter()
+            .any(|error| error.contains("mechanical key is missing one writer"))
+    );
+}
+
+#[test]
+fn accepted_claim_in_the_mechanical_key_does_not_count() {
+    let semantic = SEMANTIC_FIXTURE_BODY.replace("acceptance-and-rollback claim, ", "");
+    let mechanical =
+        format!("{MECHANICAL_FIXTURE_BODY}\n\nThe acceptance-and-rollback claim appears here only.");
+    let text = fixture_with_sections(&semantic, &mechanical, JOIN_FIXTURE_BODY);
+
+    assert!(
+        validate(&text)
+            .iter()
+            .any(|error| error.contains("semantic key is missing claim"))
+    );
+}
+
+#[test]
+fn missing_required_subsection_fails_even_when_its_markers_exist_elsewhere() {
+    let text = format!(
+        r#"
+## Mutation admission
+Before the accountable root edits the candidate directly or delegates any candidate
+mutation, retain one admission.
+
+### Semantic key
+{SEMANTIC_FIXTURE_BODY}
+
+{MECHANICAL_FIXTURE_BODY}
+
+### Same-subject join
+{JOIN_FIXTURE_BODY}
+
+## Procedure
+Later content.
+"#
+    );
+    let errors = validate(&text);
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("missing subsection '### Mechanical key'"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("found h3 headings: [Semantic key; Same-subject join]"))
+    );
+}
+
+#[test]
+fn duplicated_required_subsection_fails_closed() {
+    let text = format!(
+        r#"
+## Mutation admission
+Before the accountable root edits the candidate directly or delegates any candidate
+mutation, retain one admission.
+
+### Semantic key
+{SEMANTIC_FIXTURE_BODY}
+
+### Mechanical key
+{MECHANICAL_FIXTURE_BODY}
+
+### Mechanical key
+{MECHANICAL_FIXTURE_BODY}
+
+### Same-subject join
+{JOIN_FIXTURE_BODY}
+
+## Procedure
+Later content.
+"#
+    );
+    let errors = validate(&text);
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("subsection '### Mechanical key' occurs 2 times"))
+    );
 }
 
 #[test]
