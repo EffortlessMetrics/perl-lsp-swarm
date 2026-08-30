@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -61,6 +62,13 @@ def packet(executable: str, package: str, role: str) -> dict[str, object]:
     }
 
 
+def build_command(package: str, binary: str) -> list[str]:
+    return [
+        "cargo", "build", "--locked", "--release", "--target", TARGET,
+        "-p", package, "--bin", binary,
+    ]
+
+
 def binary_row(executable: str, package: str, role: str, build_bytes: bytes) -> dict[str, object]:
     identity_packet = packet(executable, package, role)
     return {
@@ -84,6 +92,7 @@ def candidate(root: Path) -> Path:
     archive.parent.mkdir(parents=True)
     with tarfile.open(archive, "w:gz") as bundle:
         bundle.add(package_dir, arcname=package_name)
+    shutil.rmtree(root / "package")
     (root / "dist" / "SHA256SUMS").write_text(
         f"{sha256(archive)}  {archive.name}\n", encoding="utf-8"
     )
@@ -138,7 +147,10 @@ def candidate(root: Path) -> Path:
             "input": identity,
             "runner": "cargo",
             "build_execution": "external_release_workflow",
-            "build_commands": ["cargo build perllsp", "cargo build perl-dap"],
+            "build_commands": [
+                build_command("perllsp", "perllsp"),
+                build_command("perl-dap", "perl-dap"),
+            ],
             "binaries": binaries,
             "claim_boundary": "test fixture",
         },
@@ -174,6 +186,9 @@ class ReleaseTerminalManifestTests(unittest.TestCase):
             second = subject.canonical(subject.build_manifest(root, SOURCE, TAG))
             self.assertEqual(first, second)
             self.assertEqual(json.loads(first)["status"], "eligible")
+            self.assertIn("#8576 remains NOT_PROVEN", json.loads(first)["claim_boundary"])
+            subject.write_outputs(root, SOURCE, TAG)
+            subject.check_outputs(root, SOURCE, TAG)
 
     def test_empty_sbom_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -205,19 +220,56 @@ class ReleaseTerminalManifestTests(unittest.TestCase):
     def test_malformed_nonempty_spdx_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = candidate(Path(directory))
-            write_json(root / "dist" / "sbom-spdx.json", {"spdxVersion": "SPDX-2.3", "packages": [{"name": "perllsp"}]})
-            with self.assertRaisesRegex(subject.ManifestError, "SPDX"):
-                subject.build_manifest(root, SOURCE, TAG)
+            sbom_path = root / "dist" / "sbom-spdx.json"
+            baseline = json.loads(sbom_path.read_text(encoding="utf-8"))
+            malformed = [
+                {"spdxVersion": "SPDX-2.3", "packages": [{"name": "perllsp"}]},
+                {**baseline, "packages": [{**baseline["packages"][0], "SPDXID": "../bad id"}]},
+                {**baseline, "creationInfo": {**baseline["creationInfo"], "created": "2026-08-30 00:00:00"}},
+            ]
+            for value in malformed:
+                with self.subTest(value=value):
+                    write_json(sbom_path, value)
+                    with self.assertRaisesRegex(subject.ManifestError, "SPDX"):
+                        subject.build_manifest(root, SOURCE, TAG)
 
-    def test_forged_receipt_hash_or_binary_digest_fails_closed(self) -> None:
+    def test_archive_member_drift_from_post_strip_evidence_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = candidate(Path(directory))
-            receipt_path = root / "evidence" / TARGET / "release-build-receipt.json"
-            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-            receipt["input_sha256"] = "f" * 64
-            write_json(receipt_path, receipt)
-            with self.assertRaisesRegex(subject.ManifestError, "input hash"):
+            evidence_path = root / "evidence" / TARGET / "release-package-evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["binaries"][0]["post_strip_sha256"] = "e" * 64
+            write_json(evidence_path, evidence)
+            with self.assertRaisesRegex(subject.ManifestError, "archive member"):
                 subject.build_manifest(root, SOURCE, TAG)
+        for archive_name in (
+            f"../dist/perllsp-{VERSION}-{TARGET}.tar.gz",
+            f"perllsp-{VERSION}-aarch64-unknown-linux-gnu.tar.gz",
+        ):
+            with self.subTest(archive_name=archive_name), tempfile.TemporaryDirectory() as directory:
+                root = candidate(Path(directory))
+                evidence_path = root / "evidence" / TARGET / "release-package-evidence.json"
+                evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+                evidence["archive"]["name"] = archive_name
+                write_json(evidence_path, evidence)
+                with self.assertRaisesRegex(subject.ManifestError, "canonical archive"):
+                    subject.build_manifest(root, SOURCE, TAG)
+
+    def test_forged_receipt_hash_or_command_schema_fails_closed(self) -> None:
+        for mutation in ("input-hash", "command-schema"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = candidate(Path(directory))
+                receipt_path = root / "evidence" / TARGET / "release-build-receipt.json"
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                if mutation == "input-hash":
+                    receipt["input_sha256"] = "f" * 64
+                    message = "input hash"
+                else:
+                    receipt["build_commands"] = ["cargo build perllsp", "cargo build perl-dap"]
+                    message = "producer argv"
+                write_json(receipt_path, receipt)
+                with self.assertRaisesRegex(subject.ManifestError, message):
+                    subject.build_manifest(root, SOURCE, TAG)
 
     def test_nonpassing_or_wrong_schema_receipt_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -237,16 +289,6 @@ class ReleaseTerminalManifestTests(unittest.TestCase):
             receipt["binaries"][0]["packet_sha256"] = "f" * 64
             write_json(receipt_path, receipt)
             with self.assertRaisesRegex(subject.ManifestError, "packet digest"):
-                subject.build_manifest(root, SOURCE, TAG)
-
-    def test_archive_member_drift_from_post_strip_evidence_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = candidate(Path(directory))
-            evidence_path = root / "evidence" / TARGET / "release-package-evidence.json"
-            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-            evidence["binaries"][0]["post_strip_sha256"] = "e" * 64
-            write_json(evidence_path, evidence)
-            with self.assertRaisesRegex(subject.ManifestError, "archive member"):
                 subject.build_manifest(root, SOURCE, TAG)
 
     def test_attestation_inventory_drift_fails_closed(self) -> None:

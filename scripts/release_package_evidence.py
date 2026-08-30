@@ -88,6 +88,12 @@ def build(
             path.relative_to(workspace)
         except ValueError as error:
             raise PackageEvidenceError(f"{label} escapes workspace") from error
+    expected_extension = ".zip" if "windows" in target else ".tar.gz"
+    expected_archive = f"perllsp-{version}-{target}{expected_extension}"
+    if archive.name != expected_archive:
+        raise PackageEvidenceError(
+            f"archive name is not canonical: expected {expected_archive}, got {archive.name}"
+        )
     evidence: list[dict[str, str]] = []
     observed: set[str] = set()
     for row in rows:
@@ -110,7 +116,9 @@ def build(
             raise PackageEvidenceError(f"pre-strip build output digest mismatch: {executable}")
         packaged = package_dir / file_name
         post_strip = digest(packaged)
-        member_path = f"{package_dir.name}/{file_name}"
+        # 7-Zip receives the expanded Windows file list and stores flat names;
+        # tar receives the package directory and retains its top-level prefix.
+        member_path = file_name if "windows" in target else f"{package_dir.name}/{file_name}"
         if digest_bytes(archive_member(archive, member_path)) != post_strip:
             raise PackageEvidenceError(f"archive member differs from packaged bytes: {member_path}")
         evidence.append(

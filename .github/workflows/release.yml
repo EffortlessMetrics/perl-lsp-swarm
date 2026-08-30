@@ -485,6 +485,11 @@ jobs:
     permissions:
       actions: read
       contents: write
+    env:
+      STRUCTURAL_PROOF_BOUNDARY: 'Hosted zero-public-mutation remains NOT_PROVEN until #8576 runtime rehearsal'
+
+    # Local tests prove only dependency-graph reachability. Hosted zero-public-
+    # mutation remains NOT_PROVEN until the safe runtime rehearsal owned by #8576.
 
     steps:
       - name: Checkout exact release subject validator
@@ -518,14 +523,39 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          mkdir -p target/release-tag-authority
+          gh api "/repos/${GITHUB_REPOSITORY}/rulesets/21821148" \
+            > target/release-tag-authority/ruleset.json
+          python3 scripts/release_tag_authority.py \
+            --ruleset target/release-tag-authority/ruleset.json \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA"
           gh api -X POST "/repos/${GITHUB_REPOSITORY}/git/refs" \
             -f ref="refs/tags/${TAG}" \
-            -f sha="$SOURCE_SHA" >/dev/null
-          OBSERVED_SHA=$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha')
-          if [ "$OBSERVED_SHA" != "$SOURCE_SHA" ]; then
-            printf '::error::Atomic release tag does not name exact source: expected %s, got %s\n' "$SOURCE_SHA" "$OBSERVED_SHA"
-            exit 1
-          fi
+            -f sha="$SOURCE_SHA" \
+            > target/release-tag-authority/created-ref.json
+          python3 scripts/release_tag_authority.py \
+            --ruleset target/release-tag-authority/ruleset.json \
+            --ref target/release-tag-authority/created-ref.json \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA"
+
+      - name: Revalidate immutable tag currentness before public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh api "/repos/${GITHUB_REPOSITORY}/rulesets/21821148" \
+            > target/release-tag-authority/ruleset-current.json
+          gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" \
+            > target/release-tag-authority/ref-current.json
+          python3 scripts/release_tag_authority.py \
+            --ruleset target/release-tag-authority/ruleset-current.json \
+            --ref target/release-tag-authority/ref-current.json \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA"
 
       - name: Create GitHub Release from terminal candidate
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2

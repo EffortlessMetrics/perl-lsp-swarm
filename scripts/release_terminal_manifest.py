@@ -27,6 +27,10 @@ PACKET_SCHEMA = "perl_lsp.binary_identity.v1"
 PACKAGE_SCHEMA = "perl_lsp.release_package_evidence.v1"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+SPDX_ID = re.compile(r"^SPDXRef-[A-Za-z0-9.-]+$")
+SPDX_CREATED = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$"
+)
 
 
 class ManifestError(ValueError):
@@ -103,10 +107,12 @@ def validate_spdx(value: dict[str, Any]) -> list[dict[str, Any]]:
     ):
         raise ManifestError("SPDX creationInfo requires nonempty creators")
     created = creation.get("created")
-    if not isinstance(created, str):
+    if not isinstance(created, str) or not SPDX_CREATED.fullmatch(created):
         raise ManifestError("SPDX creationInfo requires created timestamp")
     try:
-        datetime.fromisoformat(created.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
+            raise ValueError("SPDX timestamp is not UTC")
     except ValueError as error:
         raise ManifestError("SPDX creationInfo.created is not RFC3339-like") from error
     packages = value.get("packages")
@@ -126,7 +132,7 @@ def validate_spdx(value: dict[str, Any]) -> list[dict[str, Any]]:
         ):
             if not isinstance(package.get(key), str) or not package[key].strip():
                 raise ManifestError(f"SPDX package requires nonempty {key}")
-        if not package["SPDXID"].startswith("SPDXRef-") or package["SPDXID"] in package_ids:
+        if not SPDX_ID.fullmatch(package["SPDXID"]) or package["SPDXID"] in package_ids:
             raise ManifestError("SPDX package IDs must be unique SPDXRef values")
         package_ids.add(package["SPDXID"])
         if not isinstance(package.get("filesAnalyzed"), bool):
@@ -247,8 +253,15 @@ def validate_receipt(value: dict[str, Any], identity: dict[str, Any]) -> dict[st
     if not isinstance(value.get("claim_boundary"), str) or not value["claim_boundary"].strip():
         raise ManifestError("release build receipt claim boundary is missing")
     commands = value.get("build_commands")
-    if not isinstance(commands, list) or len(commands) != 2 or not all(isinstance(command, str) and command for command in commands):
-        raise ManifestError("release build receipt commands are incomplete")
+    expected_commands = [
+        [
+            value["runner"], "build", "--locked", "--release", "--target",
+            identity["target"], "-p", package, "--bin", binary,
+        ]
+        for package, binary in (("perllsp", "perllsp"), ("perl-dap", "perl-dap"))
+    ]
+    if commands != expected_commands:
+        raise ManifestError("release build receipt commands differ from producer argv")
     binaries = value.get("binaries")
     if not isinstance(binaries, list) or len(binaries) != 2:
         raise ManifestError("release build receipt requires exactly two binaries")
@@ -283,7 +296,8 @@ def archive_member_digest(archive: Path, member_path: str) -> str:
 
 
 def validate_package_evidence(
-    value: dict[str, Any], archive: Path, identity: dict[str, Any], receipt_binaries: dict[str, dict[str, Any]]
+    value: dict[str, Any], archive: Path, dist: Path, identity: dict[str, Any],
+    receipt_binaries: dict[str, dict[str, Any]], checksum_digest: str,
 ) -> None:
     require_exact_keys(
         value,
@@ -299,8 +313,25 @@ def validate_package_evidence(
     archive_row = value.get("archive")
     if not isinstance(archive_row, dict) or set(archive_row) != {"name", "sha256"}:
         raise ManifestError("release package evidence archive is malformed")
+    expected_extension = ".zip" if "windows" in identity["target"] else ".tar.gz"
+    expected_name = (
+        f"perllsp-{identity['release_version']}-{identity['target']}{expected_extension}"
+    )
+    archive_name = archive_row.get("name")
+    if (
+        archive_name != expected_name
+        or not isinstance(archive_name, str)
+        or Path(archive_name).name != archive_name
+    ):
+        raise ManifestError("release package evidence does not name its canonical archive")
+    candidate_dist = dist.resolve(strict=True)
+    archive_resolved = archive.resolve(strict=True)
+    if archive.parent.resolve(strict=True) != candidate_dist or archive_resolved.parent != candidate_dist:
+        raise ManifestError("release package evidence archive escapes candidate/dist")
     if archive_row != {"name": archive.name, "sha256": digest(archive)}:
         raise ManifestError("release package evidence archive digest mismatch")
+    if archive_row["sha256"] != checksum_digest:
+        raise ManifestError("release package evidence is not bound to its checksum row")
     binaries = value.get("binaries")
     if not isinstance(binaries, list) or len(binaries) != 2:
         raise ManifestError("release package evidence requires exactly two binaries")
@@ -321,7 +352,7 @@ def validate_package_evidence(
 
 
 def evidence_rows(
-    evidence: Path, source_sha: str, version: str
+    evidence: Path, dist: Path, archive_entries: dict[str, str], source_sha: str, version: str
 ) -> tuple[list[str], str, list[dict[str, str]]]:
     identities = sorted(evidence.rglob("release-build-identity.json"))
     receipts = sorted(evidence.rglob("release-build-receipt.json"))
@@ -354,7 +385,20 @@ def evidence_rows(
         archive_name = package.get("archive", {}).get("name") if isinstance(package.get("archive"), dict) else None
         if not isinstance(archive_name, str):
             raise ManifestError("release package evidence omits archive name")
-        validate_package_evidence(package, evidence.parent / "dist" / archive_name, row, receipt_binaries)
+        expected_extension = ".zip" if "windows" in row["target"] else ".tar.gz"
+        expected_archive = f"perllsp-{version}-{row['target']}{expected_extension}"
+        if archive_name != expected_archive or Path(archive_name).name != archive_name:
+            raise ManifestError("release package evidence does not name its canonical archive")
+        if archive_name not in archive_entries:
+            raise ManifestError("release package evidence has no one-to-one checksum row")
+        validate_package_evidence(
+            package,
+            dist / archive_name,
+            dist,
+            row,
+            receipt_binaries,
+            archive_entries[archive_name],
+        )
 
     observed_topologies = {digest(path) for path in topologies}
     if len(topology_digests) != 1 or observed_topologies != topology_digests:
@@ -374,6 +418,11 @@ def build_manifest(candidate: Path, source_sha: str, tag: str) -> dict[str, Any]
     version = tag[1:]
     dist = candidate / "dist"
     evidence = candidate / "evidence"
+    candidate_root = candidate.resolve(strict=True)
+    if dist.resolve(strict=True).parent != candidate_root:
+        raise ManifestError("candidate dist directory escapes candidate root")
+    if evidence.resolve(strict=True).parent != candidate_root:
+        raise ManifestError("candidate evidence directory escapes candidate root")
     checksum_path = dist / "SHA256SUMS"
     sbom_path = dist / "sbom-spdx.json"
     entries = checksum_entries(checksum_path)
@@ -414,7 +463,7 @@ def build_manifest(candidate: Path, source_sha: str, tag: str) -> dict[str, Any]
     packages = validate_spdx(sbom)
 
     evidence_targets, topology_digest, evidence_subjects = evidence_rows(
-        evidence, source_sha, version
+        evidence, dist, entries, source_sha, version
     )
     if sorted(targets) != evidence_targets:
         raise ManifestError("archive targets differ from exact build-evidence targets")
@@ -449,7 +498,12 @@ def build_manifest(candidate: Path, source_sha: str, tag: str) -> dict[str, Any]
             "subjects": evidence_subjects,
         },
         "attestation_subject_paths": subjects,
-        "claim_boundary": "Candidate inputs are complete and internally consistent; publication still requires successful provenance attestation and downstream workflow admission.",
+        "claim_boundary": (
+            "Candidate inputs are complete and internally consistent; publication still "
+            "requires provenance attestation and immutable exact-tag authority. Structural "
+            "graph tests do not prove hosted zero mutation; #8576 remains NOT_PROVEN until "
+            "its runtime rehearsal."
+        ),
     }
 
 

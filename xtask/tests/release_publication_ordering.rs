@@ -134,7 +134,7 @@ fn permission_is_write(job: &Value) -> bool {
     })
 }
 
-fn rehearse_failed_candidate(document: &Value) -> Result<(usize, usize, usize)> {
+fn structurally_simulate_failed_candidate(document: &Value) -> Result<(usize, usize, usize)> {
     let jobs =
         document.get("jobs").and_then(Value::as_mapping).context("jobs must be a mapping")?;
     let mut status = BTreeMap::from([
@@ -189,11 +189,18 @@ fn rehearse_failed_candidate(document: &Value) -> Result<(usize, usize, usize)> 
 
 #[test]
 fn current_release_graph_is_fail_closed() -> Result<()> {
-    validate_release_graph(&workflow("release.yml")?)
+    let document = workflow("release.yml")?;
+    let rendered_workflow = rendered(&document)?;
+    ensure!(
+        rendered_workflow.contains("Hosted zero-public-mutation remains NOT_PROVEN")
+            && rendered_workflow.contains("#8576"),
+        "workflow overclaims structural reachability as hosted runtime proof"
+    );
+    validate_release_graph(&document)
 }
 
 #[test]
-fn failed_predecessor_has_zero_publisher_dispatch_surface() -> Result<()> {
+fn orchestration_structurally_has_no_early_publisher_or_public_mutation_surface() -> Result<()> {
     let orchestration = workflow("release-orchestration.yml")?;
     let text = rendered(&orchestration)?;
     for forbidden in [
@@ -216,12 +223,28 @@ fn failed_predecessor_has_zero_publisher_dispatch_surface() -> Result<()> {
 }
 
 #[test]
-fn failed_candidate_rehearsal_enters_no_publisher_authority_or_mutation() -> Result<()> {
-    let observed = rehearse_failed_candidate(&workflow("release.yml")?)?;
+fn failed_candidate_structural_simulation_reaches_no_publisher_surface() -> Result<()> {
+    let observed = structurally_simulate_failed_candidate(&workflow("release.yml")?)?;
     ensure!(
         observed == (0, 0, 0),
-        "failed candidate reached dispatch/credential/public mutation surfaces: {observed:?}"
+        "structural failed-candidate graph reached dispatch/write/public-mutation surfaces: {observed:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn tag_authority_and_currentness_precede_public_release() -> Result<()> {
+    let publication = rendered(job(&workflow("release.yml")?, "publish-release")?)?;
+    ensure!(
+        publication.matches("release_tag_authority.py").count() >= 3,
+        "tag authority is not checked before creation and again before publication"
+    );
+    let currentness = publication
+        .find("Revalidate immutable tag currentness before public release")
+        .context("missing pre-publication tag currentness step")?;
+    let release =
+        publication.find("action-gh-release").context("missing public release mutation")?;
+    ensure!(currentness < release, "public release precedes tag-currentness proof");
     Ok(())
 }
 
