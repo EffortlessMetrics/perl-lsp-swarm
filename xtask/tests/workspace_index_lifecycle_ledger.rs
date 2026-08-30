@@ -1048,13 +1048,31 @@ fn module_dir(module: &str) -> Option<&'static str> {
     }
 }
 
-/// Every `.rs` file, sorted, that a module's declarations may live in.
+/// Every `.rs` file beneath a module, sorted, at any nesting depth.
+///
+/// The walk is recursive on purpose. A non-recursive read would let a nested
+/// directory reintroduce exactly the bypass that left `monitoring/indexing_receipt.rs`
+/// unmapped, one level lower. Recursion has no next level, so this closes the
+/// class rather than the instance.
 fn rust_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut files: Vec<PathBuf> = fs::read_dir(dir)
-        .with_context(|| format!("read dir {}", dir.display()))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .collect();
+    fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+        let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+            .with_context(|| format!("read dir {}", dir.display()))?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                walk(&path, files)?;
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    walk(dir, &mut files)?;
     files.sort();
     ensure!(!files.is_empty(), "no Rust files found under {}", dir.display());
     Ok(files)
@@ -1693,5 +1711,33 @@ fn a_longer_declaration_name_does_not_satisfy_a_shorter_marker() -> Result<()> {
         marker_binds("let x = indexing_in_progress.clone();", "indexing_in_progress"),
         "the identifier itself must still bind"
     );
+    Ok(())
+}
+
+#[test]
+fn the_module_walk_reaches_nested_directories() -> Result<()> {
+    // The lifecycle modules are flat today, so recursion is proven against a
+    // temporary tree rather than with an assertion that would pass simply
+    // because no nested directory exists.
+    let root = repo_root()?;
+    let scratch = root.join("target/lifecycle-walk-fixture");
+    let nested = scratch.join("deeply/nested");
+    fs::create_dir_all(&nested).with_context(|| format!("create {}", nested.display()))?;
+    fs::write(scratch.join("top.rs"), "pub enum Top {}\n")?;
+    fs::write(nested.join("buried.rs"), "pub enum Buried {}\n")?;
+
+    let found = rust_files_in(&scratch);
+    fs::remove_dir_all(&scratch).ok();
+    let found = found?;
+
+    let names: Vec<String> = found
+        .iter()
+        .filter_map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .collect();
+    ensure!(
+        names.contains(&"buried.rs".to_string()),
+        "the module walk did not reach a nested directory: {names:?}"
+    );
+    ensure!(names.contains(&"top.rs".to_string()), "the module walk missed a top-level file");
     Ok(())
 }
