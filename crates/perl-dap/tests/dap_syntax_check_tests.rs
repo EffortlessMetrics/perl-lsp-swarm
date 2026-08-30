@@ -5,10 +5,11 @@
 
 use perl_dap::DapMessage;
 use perl_dap::DebugAdapter;
-use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_tdd_support::must_some;
 use serde_json::json;
 use std::fs;
+
+mod common;
 
 /// Helper: create a Perl script in a temp dir.
 fn write_script(
@@ -22,7 +23,7 @@ fn write_script(
 }
 
 fn perl_available() -> bool {
-    PerlOracleEnv::for_dap_test_fixture().is_some()
+    common::debuggee_perl_or_typed_skip("dap_syntax_check_tests").is_some()
 }
 
 fn initialize_adapter(adapter: &mut DebugAdapter) {
@@ -282,10 +283,15 @@ fn test_launch_include_paths_are_receipt_only_until_dap_module_path_cutover()
         "use strict;\nuse warnings;\nuse TrustReceipt::Helper;\nprint TrustReceipt::Helper::ok();\n",
     )?;
 
+    let perl_path = common::resolve_launch_perl_path()
+        .map_err(|reason| format!("could not resolve the launch interpreter: {reason}"))?
+        .ok_or("the availability gate resolved no pipe-capable launch interpreter")?;
+
     let args = json!({
         "program": must_some(script.to_str()),
         "cwd": must_some(tmp.path().to_str()),
         "args": [],
+        "perlPath": perl_path.to_string_lossy(),
         "includePaths": [must_some(lib_dir.to_str())],
         "env": {}
     });

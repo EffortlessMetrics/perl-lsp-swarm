@@ -196,8 +196,10 @@ labels:
   # Semver compatibility
   ci:semver: 'API compatibility check'
 
-  # Public API surface ratchet
-  ci:public-api: 'Public API surface check'
+  # Public API surface ratchet. This is the complete provisioning authority.
+  ci:public-api:
+    color: '0052cc'
+    description: 'Run public API surface validation'
 
   # All tests
   ci:all-tests: 'Comprehensive test suite'

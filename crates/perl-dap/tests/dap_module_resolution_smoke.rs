@@ -14,7 +14,6 @@
     reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
 )]
 use perl_dap::{DapMessage, DebugAdapter};
-use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
@@ -37,7 +36,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const MODULE_BREAKPOINT_LINE: u64 = 14; // my $x = 1 — first executable line in sub run
 
 fn perl_available() -> bool {
-    PerlOracleEnv::for_dap_test_fixture().is_some()
+    common::debuggee_perl_or_typed_skip("dap_module_resolution_smoke").is_some()
 }
 
 fn smoke_timeout() -> Duration {
@@ -193,6 +192,10 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
     response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
     let _initialized = wait_for_event(&rx, "initialized", timeout)?;
 
+    let perl_path = common::resolve_launch_perl_path()
+        .map_err(|reason| format!("could not resolve the launch interpreter: {reason}"))?
+        .ok_or("the availability gate resolved no pipe-capable launch interpreter")?;
+
     // Launch the script (stopOnEntry so we can set breakpoints before execution begins)
     response_success(
         adapter.handle_request(
@@ -202,6 +205,7 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
                 "program": script_str,
                 "args": [],
                 "stopOnEntry": true,
+                "perlPath": perl_path.to_string_lossy(),
                 "env": {
                     "PERL_PERTURB_KEYS": "0",
                     "PERL_HASH_SEED": "0",

@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Fuzz-style stress tests for the parse → semantic-analysis pipeline.
 //!
 //! This suite targets the highest-impact path (editor open/change events):
