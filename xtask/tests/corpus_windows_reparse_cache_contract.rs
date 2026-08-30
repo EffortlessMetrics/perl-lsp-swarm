@@ -415,7 +415,13 @@ fn validate_workflow(source: &str) -> Result<()> {
     let after_selected_declaration = &topology_raw[selected_end + 2..];
     ensure!(
         !after_selected_declaration.lines().map(str::trim).any(|line| {
-            line.starts_with("selected_tests=") || line.starts_with("selected_tests+=")
+            let line = line.to_ascii_lowercase();
+            line.starts_with("selected_tests=")
+                || line.starts_with("selected_tests+=")
+                || line.starts_with("selected_tests[") && line.contains("]=")
+                || line == "unset selected_tests"
+                || (line.contains("mapfile") || line.contains("readarray"))
+                    && line.contains("selected_tests")
         }),
         "topology proof must not mutate selected tests after declaration"
     );
@@ -591,6 +597,14 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         (
             "          )\n\n          test_list=\"$(mktemp)\"",
             "          )\n          selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          selected_tests[0]=api::topology::tests::symlinked_entries_fail_closed\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          mapfile -t selected_tests < \"$test_list\"\n\n          test_list=\"$(mktemp)\"",
         ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, ""),
     ] {
