@@ -1,10 +1,28 @@
 #!/usr/bin/env python3
-"""Update manual TokenKind test tables and cardinality invariants."""
+"""Update manual TokenKind tables and the explicit public cardinality contract."""
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+
+
+def replace_exact(
+    path: str | Path,
+    old: str,
+    new: str,
+    *,
+    expected: int = 1,
+) -> int:
+    file_path = Path(path)
+    text = file_path.read_text()
+    actual = text.count(old)
+    if actual != expected:
+        raise SystemExit(
+            f"{file_path}: expected {expected} occurrences, found {actual}: {old!r}"
+        )
+    file_path.write_text(text.replace(old, new))
+    return actual
 
 
 def insert_variant(anchor: str, variant: str, minimum: int) -> int:
@@ -57,20 +75,68 @@ def insert_variant(anchor: str, variant: str, minimum: int) -> int:
     return total
 
 
-def update_cardinality_invariant() -> None:
-    path = Path("crates/perl-token/src/lib.rs")
-    text = path.read_text()
-    old = """    fn all_returns_132_variants() {\n        assert_eq!(TokenKind::all().len(), 132);\n        assert_eq!(TokenKind::metadata_count(), 132);\n    }\n"""
-    new = """    fn all_returns_134_variants() {\n        assert_eq!(TokenKind::all().len(), 134);\n        assert_eq!(TokenKind::metadata_count(), 134);\n    }\n"""
-    if text.count(old) != 1:
-        raise SystemExit("expected exactly one 132-variant TokenKind cardinality invariant")
-    path.write_text(text.replace(old, new))
+def update_cardinality_contract() -> None:
+    replace_exact(
+        "crates/perl-token/src/lib.rs",
+        """    fn all_returns_132_variants() {\n        assert_eq!(TokenKind::all().len(), 132);\n        assert_eq!(TokenKind::metadata_count(), 132);\n    }\n""",
+        """    fn all_returns_134_variants() {\n        assert_eq!(TokenKind::all().len(), 134);\n        assert_eq!(TokenKind::metadata_count(), 134);\n    }\n""",
+    )
+
+    conformance = "crates/perl-token/tests/conformance_guards.rs"
+    replace_exact(
+        conformance,
+        "const EXPECTED_TOKEN_KIND_COUNT: usize = 132;",
+        "const EXPECTED_TOKEN_KIND_COUNT: usize = 134;",
+    )
+    replace_exact(
+        conformance,
+        '            "LogicalOrAssign",\n            "DefinedOrAssign",',
+        '            "LogicalOrAssign",\n            "LogicalXorAssign",\n            "DefinedOrAssign",',
+    )
+    replace_exact(
+        conformance,
+        '            "Or",\n            "Not",',
+        '            "Or",\n            "LogicalXor",\n            "Not",',
+    )
+    replace_exact(
+        conformance,
+        "silently under-count distinct kinds while keeping the length at 132",
+        "silently under-count distinct kinds while keeping the length at 134",
+    )
+
+    for doc in (
+        "crates/perl-token/README.md",
+        "crates/perl-token/ROADMAP.md",
+    ):
+        replace_exact(doc, "TokenKind variants: 132", "TokenKind variants: 134")
+
+
+def verify_old_cardinality_is_gone() -> None:
+    checks = {
+        Path("crates/perl-token/src/lib.rs"): (
+            "all_returns_132_variants",
+            "metadata_count(), 132",
+        ),
+        Path("crates/perl-token/tests/conformance_guards.rs"): (
+            "EXPECTED_TOKEN_KIND_COUNT: usize = 132",
+            '"LogicalOrAssign",\n            "DefinedOrAssign"',
+            '"Or",\n            "Not"',
+        ),
+        Path("crates/perl-token/README.md"): ("TokenKind variants: 132",),
+        Path("crates/perl-token/ROADMAP.md"): ("TokenKind variants: 132",),
+    }
+    for path, stale_fragments in checks.items():
+        text = path.read_text()
+        for fragment in stale_fragments:
+            if fragment in text:
+                raise SystemExit(f"{path}: stale 132-variant contract remains: {fragment!r}")
 
 
 assignment_entries = insert_variant("LogicalOrAssign", "LogicalXorAssign", minimum=2)
 logical_entries = insert_variant("Or", "LogicalXor", minimum=2)
-update_cardinality_invariant()
+update_cardinality_contract()
+verify_old_cardinality_is_gone()
 print(
-    "patched token-test tables/cardinality: "
+    "patched token test/public contract: "
     f"assignment_entries={assignment_entries}, logical_entries={logical_entries}, variants=134"
 )
