@@ -253,6 +253,73 @@ fn legacy_field_call_outside_a_class_is_not_class_field_storage() -> TestResult 
 }
 
 #[test]
+fn field_declared_after_a_method_is_not_visible_inside_it() -> TestResult {
+    // Perl 5.38 does not make a field visible before its own declaration —
+    // the reference is out of scope, not an early read of the field. The
+    // surrounding resolver is position-blind for `my`/`state` (#13868); this
+    // candidate must not widen that wrong answer to `field`.
+    let file =
+        lower_source("use feature 'class';\nclass C {\n    method m { $x }\n    field $x;\n}\n");
+    let body = method_body(&file, "m")?;
+    assert_eq!(
+        variable_kind(body, "x")?,
+        VariableKind::Package,
+        "a field declared after the method must not resolve as an in-scope field"
+    );
+    Ok(())
+}
+
+#[test]
+fn field_declared_before_a_method_is_visible_inside_it() -> TestResult {
+    // Opposite-direction control for the test above: position awareness must
+    // not make every field reference unresolved.
+    let file =
+        lower_source("use feature 'class';\nclass C {\n    field $x;\n    method m { $x }\n}\n");
+    let body = method_body(&file, "m")?;
+    assert_eq!(
+        variable_kind(body, "x")?,
+        VariableKind::Lexical,
+        "a field declared before the method must resolve as a field"
+    );
+    Ok(())
+}
+
+#[test]
+fn field_call_nested_inside_a_method_is_not_a_field_declaration() -> TestResult {
+    // `field $x;` inside a method is a call, not a declaration: Perl's field
+    // declarations belong to the class block itself and are merely *visible*
+    // in methods. A descendant of a class must not manufacture a field
+    // binding just by being inside one.
+    let file = lower_source("use feature 'class';\nclass C {\n    method m { field $x; }\n}\n");
+    assert!(
+        file.scope_graph.bindings.iter().all(|b| b.storage != StorageClass::ClassField),
+        "a `field $x;` statement nested in a method must not record class-field storage"
+    );
+    Ok(())
+}
+
+#[test]
+fn field_call_nested_in_a_block_inside_a_class_is_not_a_field_declaration() -> TestResult {
+    // Same boundary through a plain nested block rather than a method.
+    let file = lower_source(
+        "use feature 'class';\nclass C {\n    field $real;\n    sub helper { field $fake; }\n}\n",
+    );
+    let class_fields: Vec<&str> = file
+        .scope_graph
+        .bindings
+        .iter()
+        .filter(|b| b.storage == StorageClass::ClassField)
+        .map(|b| b.name.as_str())
+        .collect();
+    assert_eq!(
+        class_fields,
+        vec!["real"],
+        "only the class-level declaration is a field; the nested call is not"
+    );
+    Ok(())
+}
+
+#[test]
 fn field_in_a_nested_class_body_still_earns_class_field_storage() -> TestResult {
     // Class-body depth must be restored correctly after leaving a class, so a
     // later class in the same file is still recognized.

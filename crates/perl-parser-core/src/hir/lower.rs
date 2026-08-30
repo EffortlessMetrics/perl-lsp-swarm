@@ -3,7 +3,7 @@
 use crate::{Node, NodeKind, SourceLocation};
 use perl_pragma::{CompileTimePragmaEnvironment, PragmaSnapshot};
 use perl_semantic_facts::AnchorId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
@@ -67,15 +67,18 @@ struct Lowerer {
     /// Label inherited from an enclosing `LABEL:` statement, consumed by the
     /// loop it directly wraps.
     pending_label: Option<String>,
-    /// Nesting depth of enclosing Perl 5.38+ `class` bodies.
+    /// Source spans of `field` declarations that are *direct* statements of a
+    /// Perl 5.38+ `class` body.
     ///
     /// The parser treats `field` as a declarator whenever the next token
     /// starts a variable, with no class or feature gate, so legacy code
     /// calling a `field` sub (`field $x;`) also parses as a
-    /// `VariableDeclaration`. Class-field storage is therefore only assigned
-    /// inside an actual class body; outside one, `field` keeps the ordinary
-    /// unknown-declarator treatment (#13817).
-    class_body_depth: usize,
+    /// `VariableDeclaration`. Only a declaration in the class declaration
+    /// scope itself is a real field: a `field $x;` inside a method, nested
+    /// sub, or nested block is a call, even though it is a descendant of the
+    /// class. Membership here, not subtree depth, gates class-field storage
+    /// (#13817).
+    class_field_decls: BTreeSet<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +115,7 @@ impl Lowerer {
             pragma_environment,
             scope_stack: vec![file_scope],
             pending_label: None,
-            class_body_depth: 0,
+            class_field_decls: BTreeSet::new(),
         }
     }
 
@@ -870,7 +873,7 @@ impl Lowerer {
                 // statements still lower to their own HIR items.
                 self.visit_children(node, confidence);
             }
-            NodeKind::Class { name, name_span, parents, .. } => {
+            NodeKind::Class { name, name_span, parents, body } => {
                 // First slice: shell + child traversal only. Unlike `Package`,
                 // this does not yet enter a dedicated scope frame or record a
                 // package-stash slot for the class name — `ScopeKind` has no
@@ -891,12 +894,25 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                // Track class-body nesting so `field` declarations inside this
-                // body can be told apart from a legacy `field $x;` call
-                // elsewhere in the file (#13817).
-                self.class_body_depth += 1;
+                // Register the `field` declarations that are direct
+                // statements of this class body. Only those are real field
+                // declarations; a `field $x;` nested inside a method or block
+                // is a call, even though it descends from the class (#13817).
+                let mut direct_field_decls = Vec::new();
+                body.for_each_child_with_field(|_, child| {
+                    let declarator = match &child.kind {
+                        NodeKind::VariableDeclaration { declarator, .. }
+                        | NodeKind::VariableListDeclaration { declarator, .. } => {
+                            Some(declarator.as_str())
+                        }
+                        _ => None,
+                    };
+                    if declarator == Some("field") {
+                        direct_field_decls.push((child.location.start, child.location.end));
+                    }
+                });
+                self.class_field_decls.extend(direct_field_decls);
                 self.visit_children(node, confidence);
-                self.class_body_depth -= 1;
             }
             NodeKind::Defer { .. } => {
                 self.push_item(
@@ -931,7 +947,12 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.record_declaration_bindings(declarator, &variables, item_id);
+                self.record_declaration_bindings(
+                    declarator,
+                    &variables,
+                    item_id,
+                    self.class_field_decls.contains(&(node.location.start, node.location.end)),
+                );
                 self.record_variable_stash_effects(
                     declarator,
                     &variables,
@@ -968,7 +989,12 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.record_declaration_bindings(declarator, &bindings, item_id);
+                self.record_declaration_bindings(
+                    declarator,
+                    &bindings,
+                    item_id,
+                    self.class_field_decls.contains(&(node.location.start, node.location.end)),
+                );
                 self.visit_declaration_list_entries(variables, confidence);
                 if let Some(initializer) = initializer {
                     self.visit(initializer, confidence);
@@ -1298,8 +1324,9 @@ impl Lowerer {
         declarator: &str,
         variables: &[VariableBinding],
         declaration_item: HirId,
+        is_class_field_decl: bool,
     ) {
-        let storage = storage_class_for_declarator(declarator, self.class_body_depth > 0);
+        let storage = storage_class_for_declarator(declarator, is_class_field_decl);
         for variable in variables {
             self.record_binding(
                 variable.sigil.clone(),
@@ -3229,7 +3256,12 @@ impl<'a> BodyBuilder2<'a> {
     /// (lower.rs ~1892). Starting from `start_scope`, walk up through
     /// `scope_graph.scopes[id].parent` until None — matching the identical
     /// algorithm used in pass 1.
-    fn resolve_variable_kind(&self, sigil: &str, name: &str) -> VariableKind {
+    fn resolve_variable_kind(
+        &self,
+        sigil: &str,
+        name: &str,
+        reference_start: usize,
+    ) -> VariableKind {
         // Qualified names are always package-qualified.
         if name.contains("::") {
             return VariableKind::Package;
@@ -3241,6 +3273,17 @@ impl<'a> BodyBuilder2<'a> {
                     && binding.sigil == sigil
                     && binding.name == name
                 {
+                    // A class field is in scope only after its own
+                    // declaration. The surrounding lookup is otherwise
+                    // position-blind (#13868); this candidate does not widen
+                    // that defect to `field`, so a reference textually before
+                    // the declaration keeps looking outward rather than
+                    // binding to a field that is not yet declared.
+                    if binding.storage == StorageClass::ClassField
+                        && binding.range.start >= reference_start
+                    {
+                        continue;
+                    }
                     return match binding.storage {
                         StorageClass::LexicalMy
                         | StorageClass::LexicalState
@@ -3383,7 +3426,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::ExpressionStatement { expression } => self.lower_expr(expression),
 
             NodeKind::Variable { sigil, name } => {
-                let kind = self.resolve_variable_kind(sigil, name);
+                let kind = self.resolve_variable_kind(sigil, name, range.start);
                 let var = HirVariable {
                     sigil: sigil_from_str(sigil),
                     name: name.clone(),
@@ -4010,7 +4053,7 @@ impl<'a> BodyBuilder2<'a> {
         let range = node.location;
         match &node.kind {
             NodeKind::Variable { sigil, name } => {
-                let kind = self.resolve_variable_kind(sigil, name);
+                let kind = self.resolve_variable_kind(sigil, name, range.start);
                 let var =
                     HirVariable { sigil: sigil_from_str(sigil), name: name.clone(), kind, access };
                 self.alloc_expr(HirExpr::Variable(var), range)
