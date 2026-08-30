@@ -1517,12 +1517,43 @@ fn gh_list(
     repo: &str,
 ) -> std::result::Result<Vec<Value>, ObservationFailure> {
     let text = run_gh(root, &gh_list_args(state, limit, repo))?;
-    let value: Value = serde_json::from_str(&text).map_err(|error| ObservationFailure {
+    list_rows(&text, state)
+}
+
+/// Parse a `gh pr list --json` payload into its rows.
+///
+/// The root must be an array. `gh` returns a JSON *object* for several
+/// non-list outcomes (an API error body, for instance), and a permissive
+/// `as_array().unwrap_or_default()` would turn any of them into an empty row
+/// set — which this observer reads as a proven zero-PR population, not as a
+/// failure. That is the false-absence shape the module exists to prevent: an
+/// empty open window also reports `open_truncated == false`, so absence of a
+/// candidate would be established from a response that never listed anything.
+///
+/// `[]` is a real empty population and stays `Ok`; a non-array root is an
+/// instrument failure.
+fn list_rows(text: &str, state: &str) -> std::result::Result<Vec<Value>, ObservationFailure> {
+    let failure = |detail: String| ObservationFailure {
         program: "gh".into(),
-        args: vec![format!("pr list --state {state} (malformed response)")],
-        stderr: format!("malformed JSON response: {error}"),
-    })?;
-    Ok(value.as_array().cloned().unwrap_or_default())
+        args: vec![format!("pr list --state {state}")],
+        stderr: detail,
+    };
+    let value: Value = serde_json::from_str(text)
+        .map_err(|error| failure(format!("malformed JSON response: {error}")))?;
+    match value {
+        Value::Array(rows) => Ok(rows),
+        other => Err(failure(format!(
+            "response root was {}, not the expected array of pull requests",
+            match other {
+                Value::Object(_) => "an object",
+                Value::String(_) => "a string",
+                Value::Number(_) => "a number",
+                Value::Bool(_) => "a boolean",
+                Value::Null => "null",
+                Value::Array(_) => unreachable!("array is matched above"),
+            }
+        ))),
+    }
 }
 
 fn gh_view(root: &Path, number: u64, repo: &str) -> std::result::Result<Value, ObservationFailure> {

@@ -131,6 +131,46 @@ fn observation_inventory_is_read_only() {
     }
 }
 
+/// The list leg must not be weaker than the GraphQL leg it is now joined with:
+/// a valid-but-not-a-list response is an instrument failure, never an empty
+/// population. Includes the opposite-direction control, because a gate that
+/// rejects everything would also pass the negative cases.
+#[test]
+fn a_non_array_pr_list_response_is_instrument_failure_not_absence() -> Result<()> {
+    // Opposite direction first: an empty array is a real, usable observation
+    // of zero PRs and must stay Ok.
+    assert!(list_rows("[]", "open").map_err(|e| e.to_string()).is_ok());
+    let rows = list_rows(r#"[{"number":1},{"number":2}]"#, "open")
+        .map_err(|error| color_eyre::eyre::eyre!("a populated list must parse: {error}"))?;
+    assert_eq!(rows.len(), 2);
+
+    // A syntactically valid non-array root cannot establish absence. `gh`
+    // returns an object for several non-list outcomes, and an empty open
+    // window additionally reports `open_truncated == false`, so accepting one
+    // of these would prove "no candidate exists" from a response that never
+    // listed anything.
+    for body in [
+        r#"{"message":"Not Found","documentation_url":"..."}"#,
+        r#"{}"#,
+        r#""unexpected string""#,
+        "null",
+        "0",
+        "false",
+    ] {
+        let error = list_rows(body, "open")
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("{body} must fail the instrument"))?;
+        assert!(
+            error.to_string().contains("not the expected array"),
+            "expected a shape failure for {body}, got: {error}"
+        );
+    }
+
+    // Malformed JSON stays a failure too.
+    assert!(list_rows("{ not json", "open").is_err());
+    Ok(())
+}
+
 /// The read-only law for GraphQL lives in the document, not the HTTP verb:
 /// `gh api graphql` is a POST either way.
 #[test]
