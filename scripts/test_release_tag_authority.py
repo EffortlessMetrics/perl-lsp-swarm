@@ -28,7 +28,11 @@ def ruleset() -> dict[str, object]:
         "source": "EffortlessMetrics/perl-lsp-swarm",
         "enforcement": "active",
         "conditions": {"ref_name": {"exclude": [], "include": ["refs/tags/v*"]}},
-        "rules": [{"type": "deletion"}, {"type": "non_fast_forward"}],
+        "rules": [
+            {"type": "deletion"},
+            {"type": "non_fast_forward"},
+            {"type": "update"},
+        ],
         "bypass_actors": [],
         "current_user_can_bypass": "never",
     }
@@ -46,11 +50,20 @@ class ReleaseTagAuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(subject.TagAuthorityError, "currentness"):
             subject.validate(ruleset(), tag_ref("b" * 40), TAG, SHA)
 
-    def test_missing_immutability_or_bypass_actor_is_not_proven(self) -> None:
-        for mutation in ("missing-rule", "bypass"):
+    def test_current_live_shape_without_update_is_not_proven(self) -> None:
+        value = ruleset()
+        value["rules"] = [
+            {"type": "deletion"},
+            {"type": "non_fast_forward"},
+        ]
+        with self.assertRaisesRegex(subject.TagAuthorityError, "update/deletion"):
+            subject.validate(value, tag_ref(), TAG, SHA)
+
+    def test_missing_deletion_or_bypass_actor_is_not_proven(self) -> None:
+        for mutation in ("missing-deletion", "bypass"):
             value = ruleset()
-            if mutation == "missing-rule":
-                value["rules"] = [{"type": "deletion"}]
+            if mutation == "missing-deletion":
+                value["rules"] = [{"type": "update"}]
             else:
                 value["bypass_actors"] = [{"actor_type": "OrganizationAdmin"}]
             with self.subTest(mutation=mutation), self.assertRaisesRegex(

@@ -47,8 +47,13 @@ def validate_ruleset(value: dict[str, Any]) -> None:
     rule_types = {
         row.get("type") for row in rules if isinstance(row, dict)
     } if isinstance(rules, list) else set()
-    if not {"deletion", "non_fast_forward"}.issubset(rule_types):
-        raise TagAuthorityError("NOT_PROVEN: release-tag ruleset lacks immutability rules")
+    # GitHub's non_fast_forward rule rejects only non-fast-forward movement;
+    # lightweight tags can still move forward. Exact-SHA authority therefore
+    # requires the distinct update restriction as well as deletion protection.
+    if not {"deletion", "update"}.issubset(rule_types):
+        raise TagAuthorityError(
+            "NOT_PROVEN: release-tag ruleset lacks update/deletion immutability"
+        )
     if value.get("bypass_actors") != [] or value.get("current_user_can_bypass") != "never":
         raise TagAuthorityError("NOT_PROVEN: release-tag authority is bypassable")
 
