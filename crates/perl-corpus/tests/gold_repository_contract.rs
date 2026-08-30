@@ -18,13 +18,13 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const MIN_FIXTURE_DIRECTORIES: usize = 34;
+const MIN_FIXTURE_DIRECTORIES: usize = 36;
 
 const SIDECAR_FLOORS: [(&str, usize); 7] = [
     ("expected.json", 28),
     ("expected_hover.json", 8),
     ("expected_goto.json", 3),
-    ("expected_completion.json", 4),
+    ("expected_completion.json", 6),
     ("expected_symbols.json", 2),
     ("expected_rename.json", 2),
     ("expected_module.json", 5),
@@ -146,16 +146,16 @@ fn validate_diagnostics_sidecar(path: &Path, source_len: usize) -> Result<(), Bo
     }
 
     for assertion in &expected.diagnostics {
-        if let GoldAssertion::DiagnosticPresent { byte_offset: Some(byte_offset), .. } = assertion {
-            if *byte_offset > source_len {
-                return Err(contract_error(format!(
-                    "{} declares byte_offset {} beyond fixture length {}",
-                    path.display(),
-                    byte_offset,
-                    source_len
-                ))
-                .into());
-            }
+        if let GoldAssertion::DiagnosticPresent { byte_offset: Some(byte_offset), .. } = assertion
+            && *byte_offset > source_len
+        {
+            return Err(contract_error(format!(
+                "{} declares byte_offset {} past end of fixture length {}",
+                path.display(),
+                byte_offset,
+                source_len
+            ))
+            .into());
         }
     }
 
@@ -244,8 +244,25 @@ fn validate_module_sidecar(
 
     for assertion in expected.assertions {
         let (module, consumers, rationale) = match assertion {
-            ModuleAssertion::Resolves { module, consumers, rationale, .. }
-            | ModuleAssertion::NotResolved { module, consumers, rationale, .. } => {
+            ModuleAssertion::Resolves {
+                module,
+                expected_suffix,
+                use_line,
+                use_col,
+                consumers,
+                rationale,
+            } => {
+                let _ = (expected_suffix, use_line, use_col);
+                (module, consumers, rationale)
+            }
+            ModuleAssertion::NotResolved {
+                module,
+                use_line,
+                use_col,
+                consumers,
+                rationale,
+            } => {
+                let _ = (use_line, use_col);
                 (module, consumers, rationale)
             }
         };
@@ -492,7 +509,6 @@ fn gold_repository_contract_holds() -> Result<(), Box<dyn Error>> {
     }
 
     let mut sidecar_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
-
     for directory in &directories {
         validate_fixture_directory(directory, &mut sidecar_counts)?;
     }
@@ -515,52 +531,24 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn create_file_symlink(target: &Path, link: &Path) -> Result<bool, Box<dyn Error>> {
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(target, link)?;
-            return Ok(true);
-        }
-
-        #[cfg(windows)]
-        {
-            if perl_tdd_support::symlink_test_decision().skip_visibly() {
-                return Ok(false);
-            }
-            return Ok(perl_tdd_support::try_create_file_symlink(target, link)?.is_some());
-        }
-
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = (target, link);
-            Err(contract_error("symlink contract controls are unsupported on this platform").into())
-        }
-    }
-
-    #[cfg(windows)]
-    fn create_directory_symlink(target: &Path, link: &Path) -> Result<bool, Box<dyn Error>> {
-        if perl_tdd_support::symlink_test_decision().skip_visibly() {
-            return Ok(false);
-        }
-        Ok(perl_tdd_support::try_create_dir_symlink(target, link)?.is_some())
-    }
-
     fn write_fixture_file(path: &Path, contents: &str) -> Result<(), Box<dyn Error>> {
         fs::write(path, contents)?;
         Ok(())
     }
 
+    fn validation_error<T>(result: Result<T, Box<dyn Error>>) -> Result<String, Box<dyn Error>> {
+        match result {
+            Ok(_) => Err(contract_error("invalid fixture was accepted").into()),
+            Err(error) => Ok(error.to_string()),
+        }
+    }
+
     #[test]
     fn rejects_unknown_expected_sidecars() -> Result<(), Box<dyn Error>> {
         let directory = tempdir()?;
-        let sidecar = directory.path().join("expected_future.json");
-        write_fixture_file(&sidecar, "{}")?;
-
-        let error = match reject_unknown_sidecars(directory.path()) {
-            Ok(()) => return Err(contract_error("unknown expected sidecar was accepted").into()),
-            Err(error) => error,
-        };
-        if !error.to_string().contains("unregistered gold sidecar") {
+        write_fixture_file(&directory.path().join("expected_future.json"), "{}")?;
+        let error = validation_error(reject_unknown_sidecars(directory.path()))?;
+        if !error.contains("unregistered gold sidecar") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
         Ok(())
@@ -573,14 +561,9 @@ mod tests {
         fs::create_dir(&fixture)?;
         write_fixture_file(&fixture.join("fixture.pl"), "use strict;\n")?;
 
-        let directories = fixture_directories(root.path())?;
-        let directory = directories.first().ok_or("fixture directory was not discovered")?;
         let mut sidecar_counts = BTreeMap::new();
-        let error = match validate_fixture_directory(directory, &mut sidecar_counts) {
-            Ok(()) => return Err(contract_error("fixture without a sidecar was accepted").into()),
-            Err(error) => error,
-        };
-        if !error.to_string().contains("no recognized assertion sidecar") {
+        let error = validation_error(validate_fixture_directory(&fixture, &mut sidecar_counts))?;
+        if !error.contains("no recognized assertion sidecar") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
         Ok(())
@@ -599,11 +582,8 @@ mod tests {
         ] {
             let sidecar = directory.path().join("expected_hover.json");
             write_fixture_file(&sidecar, contents)?;
-            let error = match validate_named_sidecar(&sidecar, "fixture") {
-                Ok(()) => return Err(contract_error("invalid named sidecar was accepted").into()),
-                Err(error) => error,
-            };
-            if !error.to_string().contains(expected_message) {
+            let error = validation_error(validate_named_sidecar(&sidecar, "fixture"))?;
+            if !error.contains(expected_message) {
                 return Err(contract_error(format!("unexpected validation error: {error}")).into());
             }
         }
@@ -611,217 +591,92 @@ mod tests {
     }
 
     #[test]
-    fn rejects_out_of_bounds_diagnostic_offsets() -> Result<(), Box<dyn Error>> {
+    fn diagnostics_are_closed_world_and_eof_is_a_valid_position() -> Result<(), Box<dyn Error>> {
         let directory = tempdir()?;
         let sidecar = directory.path().join("expected.json");
+
+        write_fixture_file(
+            &sidecar,
+            r#"{"diagnostics":[{"assertion":"diagnostic_present","code":"PL001","byte_offset":1}]}"#,
+        )?;
+        validate_diagnostics_sidecar(&sidecar, 1)?;
+
         write_fixture_file(
             &sidecar,
             r#"{"diagnostics":[{"assertion":"diagnostic_present","code":"PL001","byte_offset":2}]}"#,
         )?;
-
-        let error = match validate_diagnostics_sidecar(&sidecar, 1) {
-            Ok(()) => return Err(contract_error("out-of-bounds offset was accepted").into()),
-            Err(error) => error,
-        };
-        if !error.to_string().contains("beyond fixture length") {
+        let error = validation_error(validate_diagnostics_sidecar(&sidecar, 1))?;
+        if !error.contains("past end of fixture length") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
+
+        for invalid in [
+            r#"{"diagnostics":[{"assertion":"no_diagnostics"}],"diagnotics":[]}"#,
+            r#"{"diagnostics":[{"assertion":"no_diagnostic","code":"PL001","codde":"PL001"}]}"#,
+        ] {
+            write_fixture_file(&sidecar, invalid)?;
+            let error = validation_error(validate_diagnostics_sidecar(&sidecar, 1))?;
+            if !error.contains("unknown field") {
+                return Err(contract_error(format!("unexpected validation error: {error}")).into());
+            }
+        }
+
         Ok(())
     }
 
     #[test]
-    fn rejects_malformed_typed_named_assertion_members() -> Result<(), Box<dyn Error>> {
+    fn named_sidecars_reject_unknown_fields() -> Result<(), Box<dyn Error>> {
         let directory = tempdir()?;
-        let sidecar = directory.path().join("expected_hover.json");
-        write_fixture_file(&sidecar, r#"{"version":1,"fixture":"fixture","assertions":[{}]}"#)?;
+        let sidecar = directory.path().join("expected_completion.json");
+        let valid = r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"completion_present","line":0,"character":0,"expected_label":"name","rationale":"known fields"}]}"#;
+        write_fixture_file(&sidecar, valid)?;
+        validate_named_sidecar(&sidecar, "fixture")?;
 
-        let error = match validate_named_sidecar(&sidecar, "fixture") {
-            Ok(()) => return Err(contract_error("malformed typed assertion was accepted").into()),
-            Err(error) => error,
-        };
-        if !error.to_string().contains("typed assertions") {
+        let invalid = valid.replace(
+            "\"rationale\":\"known fields\"",
+            "\"rationale\":\"known fields\",\"unexpected_assertion\":true",
+        );
+        write_fixture_file(&sidecar, &invalid)?;
+        let error = validation_error(validate_named_sidecar(&sidecar, "fixture"))?;
+        if !error.contains("unexpected_assertion") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
         Ok(())
     }
 
     #[test]
-    fn named_sidecars_accept_declared_fields_and_reject_unknown_fields()
-    -> Result<(), Box<dyn Error>> {
-        let cases = [
-            (
-                "expected_hover.json",
-                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"hover_contains","line":0,"character":0,"needle":"name","rationale":"known fields"}]}"#,
-            ),
-            (
-                "expected_goto.json",
-                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"goto_line","line":0,"character":0,"expected_line":1,"rationale":"known fields"}]}"#,
-            ),
-            (
-                "expected_completion.json",
-                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"completion_present","line":0,"character":0,"expected_label":"name","rationale":"known fields"}]}"#,
-            ),
-            (
-                "expected_symbols.json",
-                r#"{"version":1,"fixture":"fixture","assertions":[{"kind":"symbol_present","name":"name","rationale":"known fields"}]}"#,
-            ),
-            (
-                "expected_module.json",
-                r#"{"version":1,"fixture":"fixture","resolution_mode":"test","assertions":[{"kind":"resolves","module":"Test","expected_suffix":"Test.pm","use_line":0,"use_col":4,"consumers":["goto_definition"],"rationale":"known fields"}]}"#,
-            ),
-        ];
-
-        for (name, valid) in cases {
-            let directory = tempdir()?;
-            let sidecar = directory.path().join(name);
-            write_fixture_file(&sidecar, valid)?;
-            validate_named_sidecar(&sidecar, "fixture")?;
-
-            let mut envelope: Value = serde_json::from_str(valid)?;
-            let envelope_object =
-                envelope.as_object_mut().ok_or("valid named sidecar must be an object")?;
-            envelope_object.insert("unexpected_envelope".to_string(), Value::Bool(true));
-            write_fixture_file(&sidecar, &serde_json::to_string(&envelope)?)?;
-            let error = match validate_named_sidecar(&sidecar, "fixture") {
-                Ok(()) => {
-                    return Err(format!("unknown envelope field was accepted for {name}").into());
-                }
-                Err(error) => error,
-            };
-            if !error.to_string().contains("unexpected_envelope") {
-                return Err(format!("unexpected envelope error for {name}: {error}").into());
-            }
-
-            let mut assertion: Value = serde_json::from_str(valid)?;
-            let assertion_object = assertion
-                .get_mut("assertions")
-                .and_then(Value::as_array_mut)
-                .and_then(|assertions| assertions.first_mut())
-                .and_then(Value::as_object_mut)
-                .ok_or("valid named sidecar must contain an assertion object")?;
-            assertion_object.insert("unexpected_assertion".to_string(), Value::Bool(true));
-            write_fixture_file(&sidecar, &serde_json::to_string(&assertion)?)?;
-            let error = match validate_named_sidecar(&sidecar, "fixture") {
-                Ok(()) => {
-                    return Err(format!("unknown assertion field was accepted for {name}").into());
-                }
-                Err(error) => error,
-            };
-            if !error.to_string().contains("unexpected_assertion") {
-                return Err(format!("unexpected assertion error for {name}: {error}").into());
-            }
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_unknown_rename_assertion_fields_without_weakening_edit_modes()
-    -> Result<(), Box<dyn Error>> {
+    fn rename_schema_rejects_unexecutable_states_and_typos() -> Result<(), Box<dyn Error>> {
         let directory = tempdir()?;
         let sidecar = directory.path().join("expected_rename.json");
-        let omitted = r#"{
-            "version": 1,
-            "fixture": "fixture",
-            "assertions": [{
-                "kind": "rename_succeeds",
-                "line": 4,
-                "character": 4,
-                "new_name": "sum_values"
-            }]
-        }"#;
-        write_fixture_file(&sidecar, omitted)?;
-        validate_named_sidecar(&sidecar, "fixture")?;
-        let parsed: RenameGoldExpected = serde_json::from_str(omitted)?;
-        if parsed
-            .assertions
-            .first()
-            .and_then(|assertion| assertion.expected_edits.as_ref())
-            .is_some()
-        {
-            return Err("omitted expected_edits must remain count-only mode".into());
-        }
-
-        let explicit_empty = omitted.replace(
-            "\"new_name\": \"sum_values\"",
-            "\"new_name\": \"sum_values\",\n                \"expected_edits\": []",
-        );
-        write_fixture_file(&sidecar, &explicit_empty)?;
-        validate_named_sidecar(&sidecar, "fixture")?;
-        let parsed: RenameGoldExpected = serde_json::from_str(&explicit_empty)?;
-        if !parsed
-            .assertions
-            .first()
-            .and_then(|assertion| assertion.expected_edits.as_ref())
-            .is_some_and(Vec::is_empty)
-        {
-            return Err("explicit empty expected_edits must remain exact mode".into());
-        }
-
-        let typo = omitted.replace(
-            "\"new_name\": \"sum_values\"",
-            "\"new_name\": \"sum_values\",\n                \"expected_editz\": []",
-        );
-        write_fixture_file(&sidecar, &typo)?;
-        let error = match validate_named_sidecar(&sidecar, "fixture") {
-            Ok(()) => return Err("unknown rename assertion field was accepted".into()),
-            Err(error) => error,
+        let envelope = |assertion: &str| {
+            format!(r#"{{"version":1,"fixture":"fixture","assertions":[{assertion}]}}"#)
         };
-        if !error.to_string().contains("expected_editz") {
-            return Err(contract_error(format!("unexpected validation error: {error}")).into());
-        }
 
-        let nested_typo = omitted.replace(
-            "\"new_name\": \"sum_values\"",
-            "\"new_name\": \"sum_values\",\n                \"expected_edits\": [{\n                    \"line\": 4,\n                    \"character\": 4,\n                    \"end_line\": 4,\n                    \"end_character\": 19,\n                    \"new_text\": \"sum_values\",\n                    \"new_te xt\": \"sum_values\"\n                }]",
+        let omitted = envelope(
+            r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values"}"#,
         );
-        write_fixture_file(&sidecar, &nested_typo)?;
-        let error = match validate_named_sidecar(&sidecar, "fixture") {
-            Ok(()) => return Err("unknown nested expected edit field was accepted".into()),
-            Err(error) => error,
-        };
-        if !error.to_string().contains("new_te xt") {
-            return Err(contract_error(format!("unexpected validation error: {error}")).into());
-        }
+        write_fixture_file(&sidecar, &omitted)?;
+        validate_named_sidecar(&sidecar, "fixture")?;
 
-        for kind in ["rename_succeeds", "rename_null"] {
-            let mismatched = format!(
-                r#"{{"version":1,"fixture":"fixture","assertions":[{{"kind":"{kind}","line":4,"character":4,"new_name":"sum_values","min":1}}]}}"#
-            );
-            write_fixture_file(&sidecar, &mismatched)?;
+        for invalid in [
+            envelope(r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":null}"#),
+            envelope(r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#),
+            envelope(r#"{"kind":"rename_null","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#),
+            envelope(r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","min":1}"#),
+            envelope(r#"{"kind":"rename_edit_count_at_least","min":0,"line":4,"character":4,"new_name":"sum_values"}"#),
+            envelope(r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_editz":[]}"#),
+            envelope(r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":[{"line":4,"character":4,"end_line":4,"end_character":19,"new_text":"sum_values","new_texxt":"sum_values"}]}"#),
+        ] {
+            write_fixture_file(&sidecar, &invalid)?;
             if validate_named_sidecar(&sidecar, "fixture").is_ok() {
-                return Err(format!("min was accepted for {kind}").into());
+                return Err(contract_error(format!("invalid rename assertion was accepted: {invalid}")).into());
             }
         }
 
-        let rename_null_with_edits = r#"{
-            "version": 1,
-            "fixture": "fixture",
-            "assertions": [{
-                "kind": "rename_null",
-                "line": 4,
-                "character": 4,
-                "new_name": "sum_values",
-                "expected_edits": []
-            }]
-        }"#;
-        write_fixture_file(&sidecar, rename_null_with_edits)?;
-        if validate_named_sidecar(&sidecar, "fixture").is_ok() {
-            return Err("expected_edits was accepted for rename_null".into());
-        }
-
-        let count = r#"{
-            "version": 1,
-            "fixture": "fixture",
-            "assertions": [{
-                "kind": "rename_edit_count_at_least",
-                "min": 1,
-                "line": 4,
-                "character": 4,
-                "new_name": "sum_values"
-            }]
-        }"#;
-        write_fixture_file(&sidecar, count)?;
+        let count = envelope(
+            r#"{"kind":"rename_edit_count_at_least","min":1,"line":4,"character":4,"new_name":"sum_values"}"#,
+        );
+        write_fixture_file(&sidecar, &count)?;
         validate_named_sidecar(&sidecar, "fixture")?;
 
         Ok(())
@@ -839,16 +694,14 @@ mod tests {
         )?;
         fs::create_dir(fixture.join("unclaimed"))?;
 
-        let error = match validate_fixture_members(&fixture) {
-            Ok(()) => return Err(contract_error("unclaimed fixture member was accepted").into()),
-            Err(error) => error,
-        };
-        if !error.to_string().contains("unexpected fixture asset") {
+        let error = validation_error(validate_fixture_members(&fixture))?;
+        if !error.contains("unexpected fixture asset") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
     fn rejects_symlinked_fixture_members() -> Result<(), Box<dyn Error>> {
         let root = tempdir()?;
@@ -856,59 +709,10 @@ mod tests {
         fs::create_dir(&fixture)?;
         let target = root.path().join("target.pl");
         fs::write(&target, "my $value = 1;\n")?;
-        let link = fixture.join("linked.pl");
-        if !create_file_symlink(&target, &link)? {
-            return Ok(());
-        }
+        std::os::unix::fs::symlink(&target, fixture.join("linked.pl"))?;
 
-        let error = match validate_fixture_members(&fixture) {
-            Ok(()) => return Err(contract_error("fixture symlink was accepted").into()),
-            Err(error) => error,
-        };
-        if !error.to_string().contains("symbolic link") {
-            return Err(contract_error(format!("unexpected validation error: {error}")).into());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_dangling_symlinked_fixture_members() -> Result<(), Box<dyn Error>> {
-        let root = tempdir()?;
-        let fixture = root.path().join("fixture");
-        fs::create_dir(&fixture)?;
-        let link = fixture.join("dangling.pl");
-        if !create_file_symlink(&root.path().join("missing.pl"), &link)? {
-            return Ok(());
-        }
-
-        let error = match validate_fixture_members(&fixture) {
-            Ok(()) => return Err(contract_error("dangling fixture symlink was accepted").into()),
-            Err(error) => error,
-        };
-        if !error.to_string().contains("symbolic link") {
-            return Err(contract_error(format!("unexpected validation error: {error}")).into());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_nested_module_payload_symlinks() -> Result<(), Box<dyn Error>> {
-        let root = tempdir()?;
-        let fixture = root.path().join("fixture");
-        let nested = fixture.join("lib").join("nested");
-        fs::create_dir_all(&nested)?;
-        let target = root.path().join("Target.pm");
-        fs::write(&target, "package Target;\n1;\n")?;
-        let link = nested.join("Target.pm");
-        if !create_file_symlink(&target, &link)? {
-            return Ok(());
-        }
-
-        let error = match validate_fixture_members(&fixture) {
-            Ok(()) => return Err(contract_error("nested module symlink was accepted").into()),
-            Err(error) => error,
-        };
-        if !error.to_string().contains("symbolic link") {
+        let error = validation_error(validate_fixture_members(&fixture))?;
+        if !error.contains("symbolic link") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
         Ok(())
@@ -921,17 +725,15 @@ mod tests {
         let target = root.path().join("real_fixture");
         fs::create_dir(&target)?;
         let link = root.path().join("linked_fixture");
-        if !create_directory_symlink(&target, &link)? {
+        if perl_tdd_support::symlink_test_decision().skip_visibly() {
+            return Ok(());
+        }
+        if perl_tdd_support::try_create_dir_symlink(&target, &link)?.is_none() {
             return Ok(());
         }
 
-        let error = match fixture_directories(root.path()) {
-            Ok(_) => {
-                return Err(contract_error("Windows reparse fixture directory was accepted").into());
-            }
-            Err(error) => error,
-        };
-        if !error.to_string().contains("symbolic link") {
+        let error = validation_error(fixture_directories(root.path()))?;
+        if !error.contains("symbolic link") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
         Ok(())

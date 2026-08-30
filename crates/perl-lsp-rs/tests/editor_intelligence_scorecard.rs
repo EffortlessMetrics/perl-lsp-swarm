@@ -539,8 +539,16 @@ fn rename_total_edit_count(resp: &Value) -> usize {
         .map_or(0, |changes| changes.values().map(|v| v.as_array().map_or(0, |e| e.len())).sum())
 }
 
+fn rename_has_structured_error(resp: &Value) -> bool {
+    let Some(error) = resp.get("error").and_then(Value::as_object) else {
+        return false;
+    };
+    error.get("code").and_then(Value::as_i64).is_some()
+        && error.get("message").and_then(Value::as_str).is_some()
+}
+
 fn rename_is_null(resp: &Value) -> bool {
-    resp["result"].is_null() || resp.get("error").is_some()
+    matches!(resp.get("result"), Some(Value::Null)) || rename_has_structured_error(resp)
 }
 
 /// Extract the JSON-RPC error message from a rename response, if any, for
@@ -628,13 +636,38 @@ fn rename_edit_count_at_least_passes(
     min: usize,
     expected: Option<&[RenameExpectedEdit]>,
 ) -> bool {
-    // A successful rename must produce a real edit.  `min` is a lower bound
-    // on that edit set, not a way to turn a successful-rename assertion into
-    // a response-shape check: min=0 still rejects an empty WorkspaceEdit.
-    !rename_is_null(resp)
+    // The schema requires min >= 1. Keep the helper defensive so a direct
+    // caller cannot turn a successful-rename assertion into a shape-only
+    // zero-edit check.
+    min > 0
+        && !rename_is_null(resp)
         && observed_rename_edits(resp).is_some()
-        && rename_total_edit_count(resp) >= min.max(1)
+        && rename_total_edit_count(resp) >= min
         && rename_expected_edits_match(resp, expected_uri, expected)
+}
+
+fn rename_assertion_passes(assertion: &RenameAssertion, resp: &Value, uri: &str) -> bool {
+    let expected_edits_ok =
+        rename_expected_edits_match(resp, uri, assertion.expected_edits.as_deref());
+    let response_edits_are_well_formed = rename_is_null(resp) || observed_rename_edits(resp).is_some();
+
+    match &assertion.kind {
+        RenameAssertionKind::RenameSucceeds => {
+            !rename_is_null(resp)
+                && rename_total_edit_count(resp) >= 1
+                && response_edits_are_well_formed
+                && expected_edits_ok
+        }
+        RenameAssertionKind::RenameNull => {
+            rename_is_null(resp) && assertion.expected_edits.is_none()
+        }
+        RenameAssertionKind::RenameEditCountAtLeast { min } => rename_edit_count_at_least_passes(
+            resp,
+            uri,
+            *min,
+            assertion.expected_edits.as_deref(),
+        ),
+    }
 }
 
 /// Run all rename gold fixtures and assert every assertion passes.
@@ -668,29 +701,7 @@ fn test_rename_gold_corpus() -> TestResult {
             let resp =
                 server.get_rename(&uri, assertion.line, assertion.character, &assertion.new_name);
 
-            let expected_edits_ok =
-                rename_expected_edits_match(&resp, &uri, assertion.expected_edits.as_deref());
-            let response_edits_are_well_formed =
-                rename_is_null(&resp) || observed_rename_edits(&resp).is_some();
-            let ok = match &assertion.kind {
-                RenameAssertionKind::RenameSucceeds => {
-                    !rename_is_null(&resp)
-                        && rename_total_edit_count(&resp) >= 1
-                        && response_edits_are_well_formed
-                        && expected_edits_ok
-                }
-                RenameAssertionKind::RenameNull => {
-                    rename_is_null(&resp) && assertion.expected_edits.is_none()
-                }
-                RenameAssertionKind::RenameEditCountAtLeast { min } => {
-                    rename_edit_count_at_least_passes(
-                        &resp,
-                        &uri,
-                        *min,
-                        assertion.expected_edits.as_deref(),
-                    )
-                }
-            };
+            let ok = rename_assertion_passes(assertion, &resp, &uri);
 
             if ok {
                 passed += 1;
@@ -809,6 +820,17 @@ mod rename_oracle_tests {
                 }
             }
         })
+    }
+
+    fn rename_null_assertion() -> RenameAssertion {
+        RenameAssertion {
+            kind: RenameAssertionKind::RenameNull,
+            line: 0,
+            character: 0,
+            new_name: "unused".to_string(),
+            expected_edits: None,
+            rationale: String::new(),
+        }
     }
 
     #[test]
@@ -995,6 +1017,36 @@ mod rename_oracle_tests {
             return Err(
                 "empty successful WorkspaceEdit passed a zero-minimum rename assertion".into()
             );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rename_null_requires_explicit_null_or_structured_error() -> TestResult {
+        let assertion = rename_null_assertion();
+        let uri = "file:///gold/rename_subroutine.pl";
+
+        for passing in [
+            json!({"result": null}),
+            json!({"error": {"code": -32602, "message": "not renamable"}}),
+        ] {
+            if !rename_assertion_passes(&assertion, &passing, uri) {
+                return Err(format!("valid rename-null outcome was rejected: {passing}").into());
+            }
+        }
+
+        for malformed in [
+            json!({}),
+            json!({"id": 1}),
+            json!({"error": null}),
+            json!({"error": {}}),
+            json!({"error": {"code": -32602}}),
+            json!({"error": {"message": "not renamable"}}),
+        ] {
+            if rename_assertion_passes(&assertion, &malformed, uri) {
+                return Err(format!("malformed rename response passed RenameNull: {malformed}").into());
+            }
         }
 
         Ok(())

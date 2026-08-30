@@ -30,15 +30,16 @@ Editor and module sidecars use this common envelope:
 }
 ```
 
-`fixture` must exactly match the containing directory name. Named sidecars are
-closed-world contracts: their envelope and typed assertion members reject unknown
-fields. LSP `line` and `character` values are zero-based.
+`fixture` must exactly match the containing directory name. Recognized sidecars
+are closed-world contracts: their envelope and typed assertion members reject
+unknown fields. LSP `line` and `character` values are zero-based.
 
 Rename assertions use `expected_edits` as follows:
 
-- Omit `expected_edits` for the legacy count-only contract; the scorecard still requires a well-formed response.
-- Provide an array to require the exact edited ranges and replacement text. An empty array therefore requires no edits.
-- `null` is invalid and rejected by the corpus parser. It never downgrades an assertion to count-only mode.
+- Omit `expected_edits` for the legacy count-only contract; the scorecard still requires a well-formed, non-empty successful edit.
+- Provide a non-empty array to require the exact edited ranges and replacement text.
+- `null` and an empty array are invalid. They cannot weaken or contradict a successful-rename assertion.
+- `rename_edit_count_at_least.min` must be at least `1`.
 
 ## Recognized sidecars
 
@@ -47,12 +48,12 @@ Rename assertions use `expected_edits` as follows:
 | `expected.json` | Diagnostics | 28 |
 | `expected_hover.json` | Hover | 8 |
 | `expected_goto.json` | Goto definition | 3 |
-| `expected_completion.json` | Completion | 4 |
+| `expected_completion.json` | Completion | 6 |
 | `expected_symbols.json` | Document symbols | 2 |
 | `expected_rename.json` | Rename | 2 |
 | `expected_module.json` | Contract metadata for `@INC` and module-resolution cases | 5 |
 
-The corpus currently contains at least 34 fixture directories. Sidecar counts overlap because one fixture may exercise several surfaces.
+The corpus currently contains at least 36 fixture directories. Sidecar counts overlap because one fixture may exercise several surfaces.
 
 ## Diagnostics assertions
 
@@ -74,7 +75,7 @@ The corpus currently contains at least 34 fixture directories. Sidecar counts ov
 |---|---|---|
 | `no_diagnostics` | — | No diagnostic may be emitted. |
 | `no_diagnostic` | `code` | The named diagnostic code must be absent. |
-| `diagnostic_present` | `code`, optional `message_contains`, optional `byte_offset` | A diagnostic with the code must be present; the message substring is matched when supplied. Declared byte offsets must be within the UTF-8 source length. |
+| `diagnostic_present` | `code`, optional `message_contains`, optional `byte_offset` | A diagnostic with the code must be present; the message substring is matched when supplied. Declared byte offsets may identify a source byte or the valid end-of-file position, but may not exceed the UTF-8 source length. |
 | `diagnostic_count` | `code`, `count` | Exactly `count` diagnostics with the code must be emitted. |
 
 `byte_offset` is retained as source-location metadata and is bounds-checked by the repository contract. The current editor-intelligence diagnostics runner selects diagnostics by code and optional message; it does not yet use the offset to disambiguate equal-coded diagnostics.

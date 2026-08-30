@@ -39,7 +39,7 @@ Fixtures live under `test_corpus/gold/`. Every fixture directory contains
 - `expected_module.json` — contract metadata for `@INC` and module-resolution cases;
   production conformance is separately exercised by `ux_scenario_14_inc_conformance`
 
-The corpus currently contains at least 34 fixture directories spanning hover,
+The corpus currently contains at least 36 fixture directories spanning hover,
 goto definition, completion, document symbols, rename, diagnostics, `@INC`/`use
 lib` resolution, and parse-error recovery. The repository contract pins the
 current fixture and sidecar population floors and validates sidecar identity,
@@ -49,9 +49,9 @@ version, and assertion non-vacuity:
 cargo test -p perl-corpus --test gold_repository_contract
 ```
 
-Named sidecars are closed-world contracts: unknown envelope and typed assertion
-fields are rejected. The module sidecars are validated here but are not the input
-to the hard-coded Scenario 14 production harness.
+Recognized sidecars are closed-world contracts: unknown envelope and typed
+assertion fields are rejected. The module sidecars are validated here but are
+not the input to the hard-coded Scenario 14 production harness.
 
 This is separate from `editor_ux.md`'s "N of 22 declared" scenario count,
 which measures `crates/perl-lsp-ux-tests` scenarios against

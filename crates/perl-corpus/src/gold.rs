@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// Assertion type for gold corpus diagnostics expectations
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "assertion")]
+#[serde(tag = "assertion", deny_unknown_fields)]
 pub enum GoldAssertion {
     /// No diagnostics should be emitted for this fixture
     #[serde(rename = "no_diagnostics")]
@@ -32,6 +32,7 @@ pub enum GoldAssertion {
 
 /// Expected diagnostics for a gold corpus fixture
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GoldExpected {
     pub diagnostics: Vec<GoldAssertion>,
 }
@@ -495,10 +496,9 @@ pub struct RenameAssertion {
     pub character: u32,
     pub new_name: String,
     /// Exact edits expected when this assertion exercises a concrete rename.
-    /// Omission preserves the count-only contract of older fixtures; an explicit
-    /// empty list remains an exact expectation of no edits. `null` is rejected
-    /// so it cannot silently weaken an assertion to count-only mode. Omission
-    /// serializes as omission so the legacy mode round-trips.
+    /// Omission preserves the count-only contract of older fixtures. A present
+    /// array must contain at least one exact edit. `null` and empty arrays are
+    /// rejected so they cannot silently weaken or contradict success modes.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -546,6 +546,16 @@ impl<'de> Deserialize<'de> for RenameAssertion {
         {
             return Err(de::Error::custom(
                 "min is only supported for rename_edit_count_at_least assertions",
+            ));
+        }
+        if matches!(&unchecked.kind, RenameAssertionKind::RenameEditCountAtLeast { min: 0 }) {
+            return Err(de::Error::custom(
+                "rename_edit_count_at_least requires min to be at least 1",
+            ));
+        }
+        if unchecked.expected_edits.as_ref().is_some_and(Vec::is_empty) {
+            return Err(de::Error::custom(
+                "expected_edits must be omitted or contain at least one edit",
             ));
         }
         if matches!(&unchecked.kind, RenameAssertionKind::RenameNull)
@@ -691,6 +701,23 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_schema_rejects_unknown_envelope_and_assertion_fields() {
+        let unknown_envelope =
+            r#"{"diagnostics":[{"assertion":"no_diagnostics"}],"diagnotics":[]}"#;
+        assert!(
+            serde_json::from_str::<GoldExpected>(unknown_envelope).is_err(),
+            "unknown diagnostics envelope fields must fail closed"
+        );
+
+        let unknown_assertion =
+            r#"{"diagnostics":[{"assertion":"no_diagnostic","code":"PL100","codde":"PL100"}]}"#;
+        assert!(
+            serde_json::from_str::<GoldExpected>(unknown_assertion).is_err(),
+            "unknown diagnostics assertion fields must fail closed"
+        );
+    }
+
+    #[test]
     fn test_malformed_json_returns_error() {
         // Malformed expected.json must produce a serde error, not panic
         let bad_json = r#"{"diagnostics": [{"assertion": "unknown_variant"}]}"#;
@@ -730,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn rename_expected_edits_round_trips_omission_and_rejects_null()
+    fn rename_expected_edits_round_trips_omission_and_rejects_invalid_states()
     -> Result<(), Box<dyn std::error::Error>> {
         let omitted: RenameAssertion = serde_json::from_str(
             r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values"}"#,
@@ -754,9 +781,23 @@ mod tests {
             return Err("explicit null expected_edits must fail closed".into());
         }
 
+        let explicit_empty = serde_json::from_str::<RenameAssertion>(
+            r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#,
+        );
+        if explicit_empty.is_ok() {
+            return Err("explicit empty expected_edits must fail closed".into());
+        }
+
         let rename_null_with_edits = r#"{"kind":"rename_null","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#;
         if serde_json::from_str::<RenameAssertion>(rename_null_with_edits).is_ok() {
             return Err("expected_edits for rename_null must fail closed".into());
+        }
+
+        let zero_minimum = serde_json::from_str::<RenameAssertion>(
+            r#"{"kind":"rename_edit_count_at_least","min":0,"line":4,"character":4,"new_name":"sum_values"}"#,
+        );
+        if zero_minimum.is_ok() {
+            return Err("rename_edit_count_at_least min=0 must fail closed".into());
         }
 
         Ok(())
