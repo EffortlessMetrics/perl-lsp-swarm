@@ -28,6 +28,14 @@ CFG_TEST_MODULE_PATTERN = re.compile(
     r"#\[cfg\(test\)\]\s*(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{"
 )
 
+# `#[cfg(feature = "x")] pub mod y;` — the module only exists when the feature is on,
+# so gates inside it do not establish unconditional production source.
+CONDITIONAL_MODULE_PATTERN = re.compile(
+    r"#\[cfg\([^\]]*feature\s*=\s*\"[^\"]+\"[^\]]*\)\]\s*"
+    r"(?:///[^\n]*\n\s*|//[^\n]*\n\s*)*"
+    r"(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
+
 
 @dataclass(frozen=True)
 class CargoTarget:
@@ -231,16 +239,50 @@ def strip_cfg_test_modules(source: str) -> str:
         index = cursor
 
 
+def conditional_module_roots(crate_root: Path) -> set[Path]:
+    """Directories and files whose module is itself declared behind a feature.
+
+    A gate inside such a module is conditional on that module existing, so it
+    cannot establish that its feature gates unconditional production source. The
+    declaring `#[cfg(feature = ...)] mod x;` line is itself an unconditional gate
+    and is still counted where it appears.
+    """
+    roots: set[Path] = set()
+    pending = [crate_root / "src" / "lib.rs"]
+    seen: set[Path] = set()
+    while pending:
+        declaring = pending.pop()
+        if declaring in seen or not declaring.is_file():
+            continue
+        seen.add(declaring)
+        parent = declaring.parent
+        source = declaring.read_text(encoding="utf-8", errors="replace")
+        for name in CONDITIONAL_MODULE_PATTERN.findall(source):
+            roots.add(parent / name)
+            roots.add(parent / f"{name}.rs")
+        for name in public_module_names(source):
+            nested = parent / name / "mod.rs"
+            if nested.is_file():
+                pending.append(nested)
+    return roots
+
+
 def feature_source_gates(
-    crate_root: Path, directories: Iterable[str], skip_test_modules: bool = False
+    crate_root: Path,
+    directories: Iterable[str],
+    skip_test_modules: bool = False,
+    skip_conditional_modules: bool = False,
 ) -> set[str]:
     """Collect every feature name reached by a `feature = "..."` cfg predicate."""
+    excluded = conditional_module_roots(crate_root) if skip_conditional_modules else set()
     gates: set[str] = set()
     for directory in directories:
         base = crate_root / directory
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.rs")):
+            if any(path == root or root in path.parents for root in excluded):
+                continue
             source = path.read_text(encoding="utf-8", errors="replace")
             if skip_test_modules:
                 source = strip_cfg_test_modules(source)
@@ -292,12 +334,19 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
     # when a dependency is renamed, so both forms must resolve.
     packages = set(dependency_universe(manifest)) | dependency_aliases(manifest)
     gated = feature_source_gates(
-        crate_root, FEATURE_PRODUCTION_DIRECTORIES, skip_test_modules=True
+        crate_root,
+        FEATURE_PRODUCTION_DIRECTORIES,
+        skip_test_modules=True,
+        skip_conditional_modules=True,
+    )
+    # Gates inside a `#[cfg(test)]` module of a reachable module are test profiles.
+    # Gates inside a conditionally-compiled module are neither production nor test:
+    # they are conditional on that module existing, so they establish nothing here.
+    reachable_including_tests = feature_source_gates(
+        crate_root, FEATURE_PRODUCTION_DIRECTORIES, skip_conditional_modules=True
     )
     test_gated = feature_source_gates(crate_root, FEATURE_TEST_DIRECTORIES)
-    test_gated |= feature_source_gates(
-        crate_root, FEATURE_PRODUCTION_DIRECTORIES
-    ) - gated
+    test_gated |= reachable_including_tests - gated
     target_gated = target_required_features(manifest, PRODUCTION_TARGET_KINDS)
     test_gated |= target_required_features(
         manifest, {target.kind for target in cargo_targets(manifest)} - PRODUCTION_TARGET_KINDS
@@ -360,7 +409,7 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
 
 def cargo_targets(manifest: dict[str, Any]) -> set[CargoTarget]:
     result: set[CargoTarget] = set()
-    for key in ("bin", "bench", "example"):
+    for key in ("bin", "bench", "example", "test"):
         values = manifest.get(key, [])
         if not isinstance(values, list):
             raise ValueError(f"perl-parser [[{key}]] entries are invalid")
