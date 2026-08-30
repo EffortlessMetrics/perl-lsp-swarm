@@ -120,6 +120,12 @@ jobs:
             echo "- $test_name"
           done
 
+          selected_test_count="${#selected_tests[@]}"
+          if [[ "$selected_test_count" -ne 10 ]]; then
+            echo "expected exactly 10 selected topology tests" >&2
+            exit 1
+          fi
+
           for test_name in "${selected_tests[@]}"; do
             test_output="$(mktemp)"
             if ! cargo test --locked -p perl-corpus --lib "$test_name" \

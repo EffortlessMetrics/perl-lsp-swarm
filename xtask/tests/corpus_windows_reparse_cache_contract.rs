@@ -30,6 +30,7 @@ const TOPOLOGY_EXECUTION_SOURCE_ANCHOR: &str = "          for test_name in \"${s
 const TOPOLOGY_EXECUTION_COMMAND_SOURCE_ANCHOR: &str =
     "            if ! cargo test --locked -p perl-corpus --lib \"$test_name\" \\\n";
 const TOPOLOGY_SHELL_SOURCE_ANCHOR: &str = "        shell: bash\n        run: |\n          set -euo pipefail\n\n          selected_tests=(";
+const TOPOLOGY_CARDINALITY_GUARD: &str = "          selected_test_count=\"${#selected_tests[@]}\"\n          if [[ \"$selected_test_count\" -ne 10 ]]; then\n            echo \"expected exactly 10 selected topology tests\" >&2\n            exit 1\n          fi\n\n";
 
 const EXPECTED_TOPOLOGY_TESTS: [&str; 10] = [
     "api::topology::tests::binding_rejects_intermediate_runtime_root_symlink",
@@ -464,6 +465,11 @@ fn validate_workflow(source: &str) -> Result<()> {
         .map(|(index, _)| index)
         .ok_or_else(|| anyhow!("topology proof must retain its execution loop"))?;
     let execution_loop = &topology_raw[execution_loop_start..];
+    let execution_prefix = &topology_raw[..execution_loop_start];
+    ensure!(
+        normalized(execution_prefix).contains(&normalized(TOPOLOGY_CARDINALITY_GUARD)),
+        "topology proof must assert selected-test cardinality before execution"
+    );
     ensure!(
         execution_loop.contains(TOPOLOGY_EXECUTION_ANCHOR),
         "topology proof must execute the real selected-test command"
@@ -669,6 +675,11 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         (
             "          )\n\n          test_list=\"$(mktemp)\"",
             "          )\n          IFS= read -ra selected_tests <<< \"\"\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (TOPOLOGY_CARDINALITY_GUARD, ""),
+        (
+            "if [[ \"$selected_test_count\" -ne 10 ]]; then",
+            "if [[ \"$selected_test_count\" -ne 9 ]]; then",
         ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, ""),
     ] {
