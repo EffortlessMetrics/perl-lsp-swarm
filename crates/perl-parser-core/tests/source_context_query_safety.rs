@@ -1,5 +1,5 @@
 use perl_parser_core::syntax::source_context::{
-    OffsetClassification, RangeClassification, SourceRegionIndex, SourceRegionKind,
+    OffsetClassification, SourceRangeClassification, SourceRegionIndex, SourceRegionKind,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -38,23 +38,23 @@ fn empty_ranges_report_both_sides_of_the_boundary() -> TestResult {
     let comment_start = source.find('#').ok_or("fixture must contain a comment")?;
 
     assert_eq!(
-        index.classify_range(0, 0),
-        RangeClassification::EmptyBoundary {
+        index.classify_range_checked(0, 0),
+        SourceRangeClassification::EmptyBoundary {
             left: None,
             right: Some(SourceRegionKind::Code),
         }
     );
     assert_eq!(
-        index.classify_range(comment_start, comment_start),
-        RangeClassification::EmptyBoundary {
+        index.classify_range_checked(comment_start, comment_start),
+        SourceRangeClassification::EmptyBoundary {
             left: Some(SourceRegionKind::Code),
             right: Some(SourceRegionKind::LineComment),
         },
         "a code-to-comment boundary must not silently select one side"
     );
     assert_eq!(
-        index.classify_range(source.len(), source.len()),
-        RangeClassification::EmptyBoundary {
+        index.classify_range_checked(source.len(), source.len()),
+        SourceRangeClassification::EmptyBoundary {
             left: Some(SourceRegionKind::LineComment),
             right: None,
         },
@@ -73,8 +73,8 @@ fn empty_source_has_one_boundary_but_no_classifiable_byte() {
 
     assert_eq!(index.classify_offset(0), OffsetClassification::OutOfBounds);
     assert_eq!(
-        index.classify_range(0, 0),
-        RangeClassification::EmptyBoundary { left: None, right: None }
+        index.classify_range_checked(0, 0),
+        SourceRangeClassification::EmptyBoundary { left: None, right: None }
     );
 }
 
@@ -85,20 +85,20 @@ fn invalid_boundaries_and_interior_regions_remain_non_authoritative() -> TestRes
     let scalar_start = source.find('é').ok_or("fixture must contain a multibyte scalar")?;
 
     assert_eq!(
-        index.classify_range(scalar_start + 1, scalar_start + 1),
-        RangeClassification::InvalidUtf8Boundary
+        index.classify_range_checked(scalar_start + 1, scalar_start + 1),
+        SourceRangeClassification::InvalidUtf8Boundary
     );
     assert_eq!(
-        index.classify_range(source.len() + 1, source.len() + 1),
-        RangeClassification::OutOfBounds
+        index.classify_range_checked(source.len() + 1, source.len() + 1),
+        SourceRangeClassification::OutOfBounds
     );
     assert_eq!(
-        index.classify_range(source.len(), 0),
-        RangeClassification::OutOfBounds
+        index.classify_range_checked(source.len(), 0),
+        SourceRangeClassification::OutOfBounds
     );
     assert_eq!(
-        index.classify_range(0, source.len()),
-        RangeClassification::Ambiguous,
+        index.classify_range_checked(0, source.len()),
+        SourceRangeClassification::Ambiguous,
         "code-shaped endpoints must not hide the string region in the middle"
     );
     Ok(())
