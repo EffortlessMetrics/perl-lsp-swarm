@@ -83,10 +83,25 @@ def validate_workflow_contract(text: str) -> None:
         "github.event.workflow_run.repository.full_name == github.repository",
         "contents: write",
         "pull-requests: write",
+        'title: "chore(badges): refresh public endpoints (#13694)"',
+        'commit-message: "chore(badges): refresh public endpoints"',
+        "Source SHA: `${{ env.SOURCE_SHA }}`",
+        "RIPR producer run: `${{ github.event.workflow_run.id }}`",
+        "Badge payload: `badge-endpoints-${{ github.run_id }}`",
+        "Refs #13694.",
     ]
     for fragment in writer_required:
         if fragment not in open_pr:
             raise ValueError(f"badge PR writer contract is missing {fragment!r}")
+    if "#8820" in open_pr:
+        raise ValueError("badge PR writer retains stale #8820 ownership")
+    for closing in (
+        "Closes #13694", "Close #13694",
+        "Fixes #13694", "Fix #13694",
+        "Resolves #13694", "Resolve #13694",
+    ):
+        if closing.lower() in open_pr.lower():
+            raise ValueError("badge PR writer must not close the recovery umbrella")
     if "github.event_name == 'workflow_dispatch'" in open_pr:
         raise ValueError("manual candidate proof must not admit the write-capable PR job")
 
@@ -116,6 +131,41 @@ class GenerateBadgesTests(unittest.TestCase):
             text.replace(
                 "github.event.workflow_run.conclusion == 'success'",
                 "github.event.workflow_run.conclusion != 'success'",
+                1,
+            ),
+        ]
+        for mutation in mutations:
+            with self.subTest():
+                with self.assertRaises(ValueError):
+                    validate_workflow_contract(mutation)
+
+    def test_ownership_metadata_drifts_are_rejected(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        mutations = [
+            text.replace("Refs #13694.", "Closes #13694.", 1),
+            text.replace(
+                "Source SHA: `${{ env.SOURCE_SHA }}`",
+                "Source SHA: `unknown`",
+                1,
+            ),
+            text.replace(
+                "RIPR producer run: `${{ github.event.workflow_run.id }}`",
+                "RIPR producer run: `hardcoded`",
+                1,
+            ),
+            text.replace(
+                "Badge payload: `badge-endpoints-${{ github.run_id }}`",
+                "Badge payload: `stale-artifact-name`",
+                1,
+            ),
+            text.replace(
+                'title: "chore(badges): refresh public endpoints (#13694)"',
+                'title: "chore(badges): refresh public endpoints (#8820)"',
+                1,
+            ),
+            text.replace(
+                'title: "chore(badges): refresh public endpoints (#13694)"',
+                'title: "chore(badges): refresh public endpoints"',
                 1,
             ),
         ]
