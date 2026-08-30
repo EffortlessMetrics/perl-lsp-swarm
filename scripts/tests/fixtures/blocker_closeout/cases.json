@@ -37,8 +37,8 @@
   },
   {
     "name": "reject_superseded_review_head",
-    "updates": {"review.reviewed_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-    "error": "superseded candidate head"
+    "updates": {"review.reviewed_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "error": "current PR review head does not match modeled candidate head"
   },
   {
     "name": "reject_missing_required_proof",
@@ -83,12 +83,12 @@
   {
     "name": "reject_mechanism_as_product_behavior",
     "updates": {"proof.observations.0.proof_class": "mechanism"},
-    "error": "cannot represent mechanism or fixture evidence as product behavior"
+    "error": "proof_class/claim_scope/evidence kind is not admitted"
   },
   {
     "name": "reject_fixture_as_installed_behavior",
     "updates": {"proof.observations.0.proof_class": "fixture"},
-    "error": "cannot represent mechanism or fixture evidence as product behavior"
+    "error": "proof_class/claim_scope/evidence kind is not admitted"
   },
   {
     "name": "reject_unresolved_material_findings",
@@ -148,7 +148,7 @@
   {
     "name": "reject_pull_without_review_synthesis_identity",
     "updates": {"review.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002"},
-    "error": "review synthesis evidence ref does not match implementation PR authority"
+    "error": "does not match exact grammar for github_review"
   },
   {
     "name": "reject_unmodeled_review_authority",
@@ -167,8 +167,70 @@
   },
   {
     "name": "reject_cross_subject_pass",
-    "updates": {"proof.observations.0.subject_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "updates": {"proof.observations.1.subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
     "error": "passed proof is cross-subject"
+  },
+  {
+    "name": "reject_stale_repository_receipt",
+    "updates": {"proof.observations.0.evidence.ref": "repo:receipts/example-installed.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "error": "repository receipt subject SHA does not match proof observation subject_sha"
+  },
+  {
+    "name": "reject_product_proof_from_issue_prose",
+    "updates": {
+      "proof.observations.1.evidence.kind": "github_issue_comment",
+      "proof.observations.1.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90001#issuecomment-9"
+    },
+    "error": "proof_class/claim_scope/evidence kind is not admitted"
+  },
+  {
+    "name": "reject_installed_proof_from_review_prose",
+    "updates": {
+      "proof.observations.0.evidence.kind": "github_review",
+      "proof.observations.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002#pullrequestreview-9"
+    },
+    "error": "proof_class/claim_scope/evidence kind is not admitted"
+  },
+  {
+    "name": "reject_false_squash_review_relabeling",
+    "updates": {"review.reviewed_head": "0d70248e3ec1ef90c6059f864b9a26fecad07db4"},
+    "error": "current PR review head does not match modeled candidate head"
+  },
+  {
+    "name": "reject_contradictory_integration_candidate",
+    "updates": {"landed_integrations.0.candidate_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "error": "landed integration candidate head contradicts implementation contribution"
+  },
+  {
+    "name": "reject_squash_that_relabels_landed_sha_as_candidate",
+    "updates": {
+      "implementation_contributions.0.candidate_head_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+      "landed_integrations.0.candidate_head_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4"
+    },
+    "error": "squash integration must distinguish candidate head from landed SHA"
+  },
+  {
+    "name": "reject_bare_issue_for_issue_comment_kind",
+    "updates": {"semantic_controller.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90001"},
+    "error": "does not match exact grammar for github_issue_comment"
+  },
+  {
+    "name": "reject_issue_comment_for_bare_issue_kind",
+    "updates": {
+      "semantic_controller.evidence.kind": "github_issue",
+      "semantic_controller.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/90001#issuecomment-1"
+    },
+    "error": "does not match exact grammar for github_issue"
+  },
+  {
+    "name": "reject_review_anchor_for_bare_pull_kind",
+    "updates": {"implementation_contributions.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002#pullrequestreview-1"},
+    "error": "does not match exact grammar for github_pull"
+  },
+  {
+    "name": "reject_bare_workflow_run_for_check_kind",
+    "updates": {"proof.observations.1.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90003"},
+    "error": "does not match exact grammar for github_check"
   },
   {
     "name": "reject_double_counted_implementation",
