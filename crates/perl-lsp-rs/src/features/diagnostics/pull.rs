@@ -543,6 +543,7 @@ impl PullDiagnosticsProvider {
             ),
             &mut core_diagnostics,
             &mut critic_rows,
+            diagnostic_analysis.as_deref(),
         );
 
         core_diagnostics
@@ -666,6 +667,13 @@ impl PullDiagnosticsProvider {
     /// emitter declared a reviewed critic overlap observation: those ordinary
     /// rows are replaced by the normalized logical rows appended to
     /// `critic_rows`, merged with their native aliases (#11918).
+    // Nine parameters: this threads the generation-owned document analysis
+    // through to the native critic registry (#7286) alongside the eight the
+    // critic composition step already needed. Grouping them into a struct
+    // would create a one-use parameter object for a private helper whose
+    // arguments have no other shared lifetime or meaning, so the local
+    // convention (67 other sites in this workspace) is preferred here.
+    #[allow(clippy::too_many_arguments)]
     fn add_policy_critic_diagnostics(
         &self,
         uri: &Uri,
@@ -675,6 +683,7 @@ impl PullDiagnosticsProvider {
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         core_diagnostics: &mut Vec<InternalDiagnostic>,
         critic_rows: &mut Vec<LspDiagnostic>,
+        analysis: Option<&perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>,
     ) {
         match context.critic_engine {
             CriticEngine::Legacy => {
@@ -689,6 +698,7 @@ impl PullDiagnosticsProvider {
                     source_identity,
                     core_diagnostics,
                     critic_rows,
+                    analysis,
                 );
             }
         }
@@ -736,6 +746,13 @@ impl PullDiagnosticsProvider {
     }
 
     /// Add native critic policy diagnostics.
+    // Nine parameters: this threads the generation-owned document analysis
+    // through to the native critic registry (#7286) alongside the eight the
+    // critic composition step already needed. Grouping them into a struct
+    // would create a one-use parameter object for a private helper whose
+    // arguments have no other shared lifetime or meaning, so the local
+    // convention (67 other sites in this workspace) is preferred here.
+    #[allow(clippy::too_many_arguments)]
     fn add_native_critic_diagnostics(
         &self,
         uri: &Uri,
@@ -745,6 +762,7 @@ impl PullDiagnosticsProvider {
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         core_diagnostics: &mut Vec<InternalDiagnostic>,
         critic_rows: &mut Vec<LspDiagnostic>,
+        analysis: Option<&perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>,
     ) {
         use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
         use perl_lsp_rs_core::tooling::perl_critic::{
@@ -761,7 +779,21 @@ impl PullDiagnosticsProvider {
             exclude: context.native_critic_exclude.clone(),
             ..CriticConfig::default()
         };
-        let critic_context = CriticContext::new(content, ast.as_ref(), &critic_config);
+        // Reuse this generation's already-built pragma map and scope issues
+        // instead of letting the registry rebuild both (#7286); see the push
+        // path's counterpart for why the native engine matters here. Same
+        // fail-safe: prebuilt facts are used only when the analysis provably
+        // describes this exact tree and text.
+        let critic_context = match analysis.filter(|a| a.matches(ast, content)) {
+            Some(a) => CriticContext::with_scope(
+                content,
+                ast.as_ref(),
+                &critic_config,
+                a.scope_issues(),
+                a.pragma_map(),
+            ),
+            None => CriticContext::new(content, ast.as_ref(), &critic_config),
+        };
         let profile = NativeCriticProfile::parse_legacy(&context.native_critic_profile)
             .unwrap_or(NativeCriticProfile::Strict);
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
@@ -966,6 +998,7 @@ impl PullDiagnosticsProvider {
                 ),
                 &mut core_diagnostics,
                 &mut critic_rows,
+                diagnostic_analysis.as_deref(),
             );
             let mut diagnostics: Vec<LspDiagnostic> = core_diagnostics
                 .into_iter()

@@ -23,7 +23,10 @@ pub use native_contract::{
     CriticCategory, CriticContext, CriticFinding, CriticFix, CriticRelatedInformation, CriticRule,
     CriticTextEdit, FixSafety,
 };
-pub use native_registry::{NativeCriticProfile, NativeCriticRegistry};
+pub use native_registry::{
+    NativeCriticProfile, NativeCriticRegistry, native_critic_scope_rebuild_count,
+    reset_native_critic_scope_rebuild_count,
+};
 pub use native_suppressions::{CriticSuppression, CriticSuppressionMap, CriticSuppressionScope};
 
 /// Resolve scope analysis issues for a rule, using pre-computed results from

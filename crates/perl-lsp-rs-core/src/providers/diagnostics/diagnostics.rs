@@ -191,10 +191,11 @@ impl DiagnosticsProvider {
     /// instead of rebuilding the pragma/scope/symbol passes inline (#7286).
     ///
     /// Pass `analysis: Some(a)` when the caller already owns a
-    /// `DocumentDiagnosticAnalysis` for this exact `source` (e.g. from
-    /// `ParsedSnapshot::diagnostic_analysis`). When `a.matches_source(source)`
-    /// is false, or `analysis` is `None`, this falls back to building a local
-    /// analysis from `ast`/`source` exactly as
+    /// `DocumentDiagnosticAnalysis` for this exact `ast` and `source` (e.g.
+    /// from `ParsedSnapshot::diagnostic_analysis`). When
+    /// `a.matches(ast, source)` is false — a different tree, a different
+    /// source, or both — or `analysis` is `None`, this falls back to building
+    /// a local analysis from `ast`/`source` exactly as
     /// [`Self::get_diagnostics_with_path`] does today — a stale or mismatched
     /// prebuilt analysis is never trusted and never changes the result.
     #[allow(clippy::too_many_arguments)]
@@ -505,7 +506,7 @@ impl DiagnosticsProvider {
             // the returned diagnostics.
             let built_analysis;
             let analysis: &DocumentDiagnosticAnalysis = match analysis {
-                Some(a) if a.matches_source(source) => a,
+                Some(a) if a.matches(ast, source) => a,
                 _ => {
                     built_analysis = DocumentDiagnosticAnalysis::build(ast, source);
                     &built_analysis

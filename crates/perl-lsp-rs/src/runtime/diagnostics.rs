@@ -857,6 +857,7 @@ impl LspServer {
                 uri,
                 critic_source_identity,
                 &mut diagnostics,
+                diagnostic_analysis.as_deref(),
             );
 
             // Add external perlcritic diagnostics (opt-in)
@@ -1867,6 +1868,11 @@ impl LspServer {
             let Some(parsed) = doc.current_parsed() else { continue };
             if let Some(ast) = parsed.ast() {
                 let parse_errors = parsed.parse_errors();
+                // `workspace/diagnostic` is a third production evaluation route
+                // over the same accepted generation, so it consumes the same
+                // generation-owned analysis as push and `textDocument/diagnostic`
+                // rather than rebuilding the passes for itself (#7286).
+                let diagnostic_analysis = parsed.diagnostic_analysis();
                 let provider = DiagnosticsProvider::new();
                 // Position-aware resolver: each `use` statement is checked against only
                 // the @INC roots that are lexically active at its offset, so `no lib`
@@ -1910,7 +1916,7 @@ impl LspServer {
                                 workspace_index.with_semantic_queries_for_uri(
                                     uri_str,
                                     |file_id, queries| {
-                                        provider.get_diagnostics_with_search_context_and_semantics(
+                                        provider.get_diagnostics_with_search_context_and_semantics_with_analysis(
                                             ast,
                                             parse_errors,
                                             &doc.text,
@@ -1919,6 +1925,7 @@ impl LspServer {
                                             source_path.as_deref(),
                                             file_id,
                                             &queries,
+                                            diagnostic_analysis.as_deref(),
                                         )
                                     },
                                 )
@@ -1929,7 +1936,7 @@ impl LspServer {
                                     uri_str,
                                     &scoped_graph,
                                     |file_id, queries| {
-                                        provider.get_diagnostics_with_search_context_and_semantics(
+                                        provider.get_diagnostics_with_search_context_and_semantics_with_analysis(
                                             ast,
                                             parse_errors,
                                             &doc.text,
@@ -1938,30 +1945,33 @@ impl LspServer {
                                             source_path.as_deref(),
                                             file_id,
                                             &queries,
+                                            diagnostic_analysis.as_deref(),
                                         )
                                     },
                                 )
                             }
                         });
                     semantic_diags.unwrap_or_else(|| {
-                        provider.get_diagnostics_with_search_context(
+                        provider.get_diagnostics_with_search_context_with_analysis(
                             ast,
                             parse_errors,
                             &doc.text,
                             Some(&resolver),
                             &search_context,
                             source_path.as_deref(),
+                            diagnostic_analysis.as_deref(),
                         )
                     })
                 };
                 #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                let mut diagnostics = provider.get_diagnostics_with_search_context(
+                let mut diagnostics = provider.get_diagnostics_with_search_context_with_analysis(
                     ast,
                     parse_errors,
                     &doc.text,
                     Some(&resolver),
                     &search_context,
                     source_path.as_deref(),
+                    diagnostic_analysis.as_deref(),
                 );
 
                 // Add native critic diagnostics when explicitly selected.
@@ -1972,6 +1982,7 @@ impl LspServer {
                     uri_str,
                     critic_source_identity,
                     &mut diagnostics,
+                    diagnostic_analysis.as_deref(),
                 );
 
                 // Add external perlcritic diagnostics (opt-in)
@@ -2285,6 +2296,7 @@ impl LspServer {
         subject: &str,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
+        analysis: Option<&perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>,
     ) {
         let critic_engine = { self.config.lock().critic_engine };
         match critic_engine {
@@ -2300,6 +2312,7 @@ impl LspServer {
                     subject,
                     source_identity,
                     diagnostics,
+                    analysis,
                 );
             }
         }
@@ -2312,6 +2325,7 @@ impl LspServer {
         subject: &str,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
         diagnostics: &mut Vec<InternalDiagnostic>,
+        analysis: Option<&perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>,
     ) {
         use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
         use perl_lsp_rs_core::tooling::perl_critic::{
@@ -2342,8 +2356,28 @@ impl LspServer {
             exclude: native_exclude.clone(),
             ..crate::perl_critic::CriticConfig::default()
         };
-        let critic_context =
-            crate::perl_critic::CriticContext::new(doc_text, ast.as_ref(), &critic_config);
+        // Hand the native critic registry this generation's already-built
+        // pragma map and scope issues instead of letting it rebuild both
+        // (#7286). `NativeCriticRegistry::check_unfiltered` recomputes
+        // `PragmaTracker::build` + `ScopeAnalyzer::analyze` for itself unless
+        // the context already carries them, and the native engine is the
+        // default -- so without this, the shared analysis would be bypassed on
+        // essentially every real evaluation and the one-construction contract
+        // would hold only for the core provider's own passes.
+        //
+        // Same fail-safe as the provider: the prebuilt facts are used only
+        // when the analysis provably describes this exact tree and text;
+        // otherwise the registry rebuilds them exactly as before.
+        let critic_context = match analysis.filter(|a| a.matches(ast, doc_text)) {
+            Some(a) => crate::perl_critic::CriticContext::with_scope(
+                doc_text,
+                ast.as_ref(),
+                &critic_config,
+                a.scope_issues(),
+                a.pragma_map(),
+            ),
+            None => crate::perl_critic::CriticContext::new(doc_text, ast.as_ref(), &critic_config),
+        };
         let profile = crate::perl_critic::NativeCriticProfile::parse_legacy(&native_profile)
             .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
         let registry = crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
@@ -3144,6 +3178,96 @@ mod tests {
              shared cell -- proving the pull route consumes the generation-owned analysis \
              rather than reparsing and building its own; got {after_cold_pull}"
         );
+
+        Ok(())
+    }
+
+    /// #7286 whole-evaluation contract: the native critic composition step is a
+    /// *separate* evaluation stage from the core provider, and
+    /// `NativeCriticRegistry::check_unfiltered` rebuilds both
+    /// `PragmaTracker::build` and `ScopeAnalyzer::analyze` for itself whenever
+    /// its caller does not supply them. Native is the default engine, so a
+    /// version of this change that
+    /// migrated only the core provider would leave the shared analysis bypassed
+    /// on essentially every real evaluation while
+    /// `diagnostic_analysis_build_count` still read 1 — the cell counter cannot
+    /// see this stage at all.
+    ///
+    /// This asserts the thing that counter cannot: across a push and a pull over
+    /// one accepted generation, the critic registry rebuilds the scope/pragma
+    /// passes *zero* times, because both routes hand it the generation-owned
+    /// analysis.
+    ///
+    /// The counter is thread-local (a process-global one is unusable under the
+    /// package's contracted `--test-threads=2` form — a concurrent test's own
+    /// diagnostic evaluation would increment it between this test's reset and
+    /// its read). That makes a bare zero insufficient on its own: a zero would
+    /// also be what you'd see if the instrument were dead, or if critic
+    /// composition had moved off this thread. So this test additionally proves
+    /// the counter is live on its own thread by driving a rebuild deliberately
+    /// and requiring it to register.
+    #[test]
+    fn native_critic_reuses_generation_analysis_across_push_and_pull()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            native_critic_scope_rebuild_count, reset_native_critic_scope_rebuild_count,
+        };
+
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///critic_analysis_reuse.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "sub f { my $unused = 1; print $undeclared; }\n"
+            }
+        })))?;
+        std::thread::sleep(Duration::from_millis(50));
+        buf.lock().clear();
+
+        // Reset only after didOpen's own publish has settled, so the counter
+        // measures exactly the push and pull below.
+        reset_native_critic_scope_rebuild_count();
+
+        server.publish_diagnostics(uri);
+        std::thread::sleep(Duration::from_millis(50));
+        server.test_handle_document_diagnostic(Some(json!({
+            "textDocument": {"uri": uri}
+        })))?;
+
+        let rebuilds = native_critic_scope_rebuild_count();
+        assert_eq!(
+            rebuilds, 0,
+            "native critic composition must consume the generation-owned document analysis on \
+             both the push and pull routes; a non-zero count means it re-walked the AST to \
+             rebuild pragma/scope facts this generation already owns (got {rebuilds})"
+        );
+
+        // Liveness guard: prove the zero above is a real measurement on this
+        // thread and not a dead instrument. Running the registry with a context
+        // that carries no pre-computed facts must take the rebuild branch, on
+        // this thread, and register. Without this, deleting the counter's
+        // increment would leave the assertion above green.
+        {
+            use perl_lsp_rs_core::tooling::perl_critic::{
+                CriticConfig, CriticContext, NativeCriticProfile, NativeCriticRegistry,
+            };
+            let source = "sub g { my $x = 1; }\n";
+            let mut parser = perl_parser::Parser::new(source);
+            let ast = parser.parse().map_err(|e| format!("liveness fixture must parse: {e:?}"))?;
+            let config = CriticConfig::default();
+            let registry =
+                NativeCriticRegistry::for_profile_with_config(NativeCriticProfile::Strict, &config);
+            let _ = registry.check_unfiltered(&CriticContext::new(source, &ast, &config));
+            let after = native_critic_scope_rebuild_count();
+            assert_eq!(
+                after, 1,
+                "instrument liveness: a critic run with no pre-computed facts must register a \
+                 rebuild on this thread, otherwise the zero asserted above proves nothing \
+                 (got {after})"
+            );
+        }
 
         Ok(())
     }

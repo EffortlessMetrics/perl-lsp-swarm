@@ -17,6 +17,7 @@
 //! of the caller's transport.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use perl_parser_core::Node;
 use perl_parser_core::error::ParseError;
@@ -38,6 +39,11 @@ use crate::hashing::fnv1a64;
 /// one `DocumentDiagnosticAnalysis` construction.
 #[derive(Debug)]
 pub struct DocumentDiagnosticAnalysis {
+    /// The exact tree these facts were derived from, retained so
+    /// [`Self::matches`] can prove tree identity by pointer and so that
+    /// pointer can never be recycled by an unrelated later allocation while
+    /// this analysis is alive.
+    ast: Arc<Node>,
     /// Non-cryptographic freshness fingerprint of the source this analysis
     /// was built from. See [`Self::matches_source`].
     source_fingerprint: u64,
@@ -57,15 +63,16 @@ impl DocumentDiagnosticAnalysis {
     /// `!has_blocking_parse_error` block, in the same order and with the same
     /// inputs, so the facts this produces are identical to what that inline
     /// code produced. Callers must pass the exact source text `ast` was
-    /// parsed from -- see [`Self::matches_source`] for how a consumer can
-    /// verify that before trusting a prebuilt analysis.
+    /// parsed from -- see [`Self::matches`] for how a consumer verifies both
+    /// the tree and the source before trusting a prebuilt analysis.
     #[must_use]
-    pub fn build(ast: &Node, source: &str) -> Self {
+    pub fn build(ast: &Arc<Node>, source: &str) -> Self {
         let pragma_map = PragmaTracker::build(ast);
         let scope_analyzer = ScopeAnalyzer::new();
         let scope_issues = scope_analyzer.analyze(ast, source, &pragma_map);
         let symbol_table = SymbolExtractor::new_with_source(source).extract(ast);
         Self {
+            ast: Arc::clone(ast),
             source_fingerprint: fnv1a64(source.as_bytes()),
             source_len: source.len(),
             pragma_map,
@@ -74,7 +81,27 @@ impl DocumentDiagnosticAnalysis {
         }
     }
 
+    /// Whether this analysis describes exactly this `ast` **and** this
+    /// `source`.
+    ///
+    /// This is the check a consumer must use before trusting a prebuilt
+    /// analysis. [`Self::matches_source`] alone binds only the source bytes,
+    /// which is not sufficient: the public `*_with_analysis` entry points take
+    /// the tree and the analysis as independent arguments, so a caller could
+    /// pair an analysis with a *different* tree that happens to have been
+    /// parsed from identical text. Tree identity is compared by
+    /// [`Arc::ptr_eq`], and this analysis holds its own strong reference to
+    /// that tree, so the pointer cannot be recycled by a later allocation
+    /// while the comparison is meaningful.
+    #[must_use]
+    pub fn matches(&self, ast: &Arc<Node>, source: &str) -> bool {
+        Arc::ptr_eq(&self.ast, ast) && self.matches_source(source)
+    }
+
     /// Whether this analysis was built from exactly `source`.
+    ///
+    /// Binds the source bytes only. Prefer [`Self::matches`], which also binds
+    /// the tree; use this when the caller genuinely has no tree to compare.
     ///
     /// This is a freshness guard, not a cryptographic identity check: it
     /// compares an FNV-1a fingerprint of the bytes *and* the byte length, so
@@ -139,6 +166,28 @@ mod tests {
         Arc::new(perl_tdd_support::must(parser.parse()))
     }
 
+    /// Comparable projection of a [`ScopeIssue`].
+    ///
+    /// `ScopeIssue` is not `PartialEq`, and comparing only `.len()` is a weak
+    /// oracle: it passes against an implementation that returns the right
+    /// *number* of wrong issues. Project the identifying fields instead so the
+    /// comparison is on content.
+    fn issue_keys(issues: &[ScopeIssue]) -> Vec<(String, usize, (usize, usize), String)> {
+        issues
+            .iter()
+            .map(|i| (i.variable_name.clone(), i.line, i.range, i.description.clone()))
+            .collect()
+    }
+
+    /// Comparable projection of a [`SymbolTable`]: every symbol name paired
+    /// with how many definitions it carries, sorted for stable comparison.
+    fn symbol_keys(table: &SymbolTable) -> Vec<(String, usize)> {
+        let mut keys: Vec<(String, usize)> =
+            table.symbols.iter().map(|(name, defs)| (name.clone(), defs.len())).collect();
+        keys.sort();
+        keys
+    }
+
     #[test]
     fn build_matches_inline_passes_on_clean_code() {
         let source = "use strict;\nmy $x = 1;\nprint $x;\n";
@@ -152,8 +201,12 @@ mod tests {
         let expected_symbol_table = SymbolExtractor::new_with_source(source).extract(&ast);
 
         assert_eq!(analysis.pragma_map(), expected_pragma_map.as_slice());
-        assert_eq!(analysis.scope_issues().len(), expected_scope_issues.len());
-        assert_eq!(analysis.symbol_table().symbols.len(), expected_symbol_table.symbols.len());
+        assert_eq!(issue_keys(analysis.scope_issues()), issue_keys(&expected_scope_issues));
+        assert_eq!(symbol_keys(analysis.symbol_table()), symbol_keys(&expected_symbol_table));
+        assert!(
+            !analysis.symbol_table().symbols.is_empty(),
+            "fixture must extract at least one symbol, or the symbol comparison is vacuous"
+        );
     }
 
     #[test]
@@ -166,8 +219,11 @@ mod tests {
         let expected_scope_issues =
             ScopeAnalyzer::new().analyze(&ast, source, &expected_pragma_map);
 
-        assert_eq!(analysis.scope_issues().len(), expected_scope_issues.len());
-        assert!(!analysis.scope_issues().is_empty());
+        assert_eq!(issue_keys(analysis.scope_issues()), issue_keys(&expected_scope_issues));
+        assert!(
+            !analysis.scope_issues().is_empty(),
+            "fixture must produce at least one scope issue, or the comparison is vacuous"
+        );
     }
 
     #[test]
@@ -196,6 +252,43 @@ mod tests {
         let same_length_other = "my $yyyyy = 2;\n";
         assert_eq!(source.len(), same_length_other.len());
         assert!(!analysis.matches_source(same_length_other));
+    }
+
+    #[test]
+    fn matches_rejects_a_different_tree_parsed_from_identical_source() {
+        // Two independent parses of the same text produce two distinct trees.
+        // `matches_source` cannot tell them apart -- only the tree binding in
+        // `matches` can. This is the control for the "cached facts can describe
+        // another tree" gap: the public `*_with_analysis` entry points take the
+        // tree and the analysis as independent arguments, so nothing but this
+        // check prevents pairing them across trees.
+        let source = "sub f { my $unused = 1; }\n";
+        let tree_a = parse(source);
+        let tree_b = parse(source);
+        assert!(
+            !Arc::ptr_eq(&tree_a, &tree_b),
+            "fixture invariant: the two parses must be distinct allocations"
+        );
+
+        let analysis = DocumentDiagnosticAnalysis::build(&tree_a, source);
+
+        assert!(analysis.matches(&tree_a, source), "must accept its own tree and source");
+        assert!(
+            !analysis.matches(&tree_b, source),
+            "must reject a different tree even when the source bytes are identical"
+        );
+        assert!(
+            analysis.matches_source(source),
+            "source-only check still passes -- which is exactly why `matches` binds the tree too"
+        );
+    }
+
+    #[test]
+    fn matches_rejects_its_own_tree_with_different_source() {
+        let source = "my $x = 1;\n";
+        let ast = parse(source);
+        let analysis = DocumentDiagnosticAnalysis::build(&ast, source);
+        assert!(!analysis.matches(&ast, "my $y = 2;\n"));
     }
 
     #[test]

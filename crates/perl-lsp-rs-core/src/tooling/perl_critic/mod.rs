@@ -30,6 +30,7 @@ pub use native::{
     ParameterShadowsGlobalRule, PrintfFormatArityRule, RequirePodSectionsRule,
     RequireUseStrictRule, RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule,
     UndefComparisonRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
+    native_critic_scope_rebuild_count, reset_native_critic_scope_rebuild_count,
 };
 pub use normalized::{
     CriticFindingCandidate, CriticFindingContributor, CriticSourceIdentity,
