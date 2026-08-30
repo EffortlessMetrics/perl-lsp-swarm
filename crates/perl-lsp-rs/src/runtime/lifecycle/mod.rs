@@ -53,6 +53,7 @@ mod effective_surface_parity_tests;
 mod final_surface_census;
 pub(crate) mod inc_context;
 pub mod module_resolution;
+pub(crate) mod root_input;
 mod tools;
 mod watchers;
 mod workspace;

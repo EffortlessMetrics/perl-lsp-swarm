@@ -1588,7 +1588,20 @@ fn project_server_capabilities(
     }
 
     // Workspace surface (folders, textDocumentContent, file operations).
-    let workspace_folders_supported = client.workspace_folders.is_supported();
+    //
+    // #8161: `workspaceFolders.supported` describes whether this server
+    // IMPLEMENTS workspace-folder semantics — a server-owned fact — not the
+    // client's advertised `workspace.workspaceFolders` bit and not the active
+    // folder count. The workspace-folder registry and the
+    // `workspace/didChangeWorkspaceFolders` dispatch route are compiled in
+    // for every current profile and no canonical feature id suppresses them,
+    // so the implementation truth here is unconditionally `true`. The
+    // client's own `workspace_folders` fact remains a separate normalized
+    // observation for behavior that needs the client to participate; it must
+    // never feed this bit. If a profile ever owns a suppression, flip this
+    // from the canonical feature policy together with the runtime const
+    // `SERVER_WORKSPACE_FOLDER_SUPPORT` and keep the parity tests green.
+    let workspace_folders_supported = true;
     let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
     let filters: Vec<serde_json::Value> =
         perl_globs.iter().map(|glob| serde_json::json!({ "pattern": { "glob": glob } })).collect();

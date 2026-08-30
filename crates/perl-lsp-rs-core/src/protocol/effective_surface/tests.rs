@@ -811,13 +811,25 @@ fn file_operation_intersection_follows_normalized_facts() {
         Some(&serde_json::json!(true)),
     );
 
-    // Without folder support the server-side flag flips off.
-    let mut no_folders = inputs;
+    // #8161: the server's `supported` describes server implementation truth,
+    // so the client's own workspaceFolders fact must not flip it — any client
+    // disposition keeps the server bit at `true`.
+    let mut no_folders = inputs.clone();
     no_folders.client.workspace_folders = ClientFact::DeclaredFalse;
-    let flipped = build_ok(&no_folders);
+    let declared_false = build_ok(&no_folders);
     assert_eq!(
-        flipped.server_capabilities.pointer("/workspace/workspaceFolders/supported"),
-        Some(&serde_json::json!(false)),
+        declared_false.server_capabilities.pointer("/workspace/workspaceFolders/supported"),
+        Some(&serde_json::json!(true)),
+        "client DeclaredFalse must not un-implement server workspace folders"
+    );
+
+    let mut absent_folders = inputs;
+    absent_folders.client.workspace_folders = ClientFact::Absent;
+    let absent = build_ok(&absent_folders);
+    assert_eq!(
+        absent.server_capabilities.pointer("/workspace/workspaceFolders/supported"),
+        Some(&serde_json::json!(true)),
+        "client Absent must not un-implement server workspace folders"
     );
 }
 

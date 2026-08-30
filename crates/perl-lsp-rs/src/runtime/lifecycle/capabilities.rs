@@ -3,8 +3,26 @@
 //! Handles client capability parsing and server capabilities construction.
 
 use super::super::{JsonRpcError, LspServer, Ordering};
+use super::root_input::{InitialRootInput, classify_initial_root_input};
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
+
+/// Whether this exact build implements workspace-folder semantics (#8161).
+///
+/// `workspace.workspaceFolders.supported` describes this implementation fact.
+/// It is `true` because the workspace-folder registry and the
+/// `workspace/didChangeWorkspaceFolders` dispatch route are compiled in
+/// unconditionally and no canonical feature id suppresses them. Flip this
+/// only through the canonical feature policy if a profile ever owns a
+/// suppression — never from the client's advertised bit or the active folder
+/// count. The client's own support stays a separate normalized observation on
+/// `ClientCapabilities.workspace_folders_support`.
+pub(crate) const SERVER_WORKSPACE_FOLDER_SUPPORT: bool = true;
+
+/// Whether the `workspace/didChangeWorkspaceFolders` dispatch route is
+/// available in this exact build (#8161). The advertised
+/// `changeNotifications` capability must agree with this route.
+pub(crate) const WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE: bool = true;
 
 /// Typed TextDocumentSyncOptions for ServerCapabilities construction (#4995).
 ///
@@ -93,8 +111,12 @@ impl FileOperationSupport {
 
 /// Build workspace capabilities, intersecting file operations with the exact
 /// operations the client declared during initialize.
+///
+/// `server_workspace_folder_support` is the server's implementation truth
+/// (`SERVER_WORKSPACE_FOLDER_SUPPORT`, #8161) — never the client's bit and
+/// never a function of the active folder count.
 fn workspace_capabilities(
-    workspace_folders_support: bool,
+    server_workspace_folder_support: bool,
     file_operations: FileOperationSupport,
 ) -> Value {
     let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
@@ -105,8 +127,12 @@ fn workspace_capabilities(
 
     let mut workspace = json!({
         "workspaceFolders": {
-            "supported": workspace_folders_support,
-            "changeNotifications": true
+            "supported": server_workspace_folder_support,
+            // Advertised only because WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE
+            // holds in this exact build: the dispatch route is compiled in
+            // unconditionally (#8161). Keep the advertisement and the route
+            // in agreement.
+            "changeNotifications": WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE
         },
         "textDocumentContent": {
             "schemes": ["perldoc"]
@@ -596,113 +622,87 @@ impl LspServer {
                 );
             }
 
-            // Initialize workspace folders
-            if let Some(workspace_folders) =
-                params.get("workspaceFolders").and_then(|f| f.as_array())
-            {
-                let uris = extract_workspace_folder_uris(workspace_folders);
-                if let Some(first_uri) = uris.first() {
-                    self.set_root_uri(first_uri);
-                }
+            // Initialize workspace roots from one typed root-input
+            // classification (#8161). A present non-empty `workspaceFolders`
+            // array is authoritative. A present empty/null (or malformed)
+            // field is explicit no-active-folder input and never falls
+            // through to legacy root authority or the process CWD. #8945 owns
+            // what a rootless session does after initialization; #8995 owns
+            // later folder-change transactions.
+            let root_input = classify_initial_root_input(params);
+            tracing::debug!(disposition = root_input.as_str(), "Classified initialize root input");
+            *self.initial_root_input.lock() = Some(root_input.clone());
+            match root_input {
+                InitialRootInput::ExplicitWorkspaceFolders => {
+                    if let Some(workspace_folders) =
+                        params.get("workspaceFolders").and_then(|f| f.as_array())
+                    {
+                        let uris = extract_workspace_folder_uris(workspace_folders);
+                        if let Some(first_uri) = uris.first() {
+                            self.set_root_uri(first_uri);
+                        }
 
-                let mut folders = self.workspace_folders.lock();
-                for uri in uris {
-                    tracing::debug!(uri, "Initialized with workspace folder");
-                    let mut folder =
-                        super::super::workspace_folder::WorkspaceFolderState::new(uri.clone());
-                    if let Some(path) = super::super::source_path_from_uri(&uri) {
-                        folder = folder.with_path(path);
+                        let mut folders = self.workspace_folders.lock();
+                        for uri in uris {
+                            tracing::debug!(uri, "Initialized with workspace folder");
+                            let mut folder =
+                                super::super::workspace_folder::WorkspaceFolderState::new(
+                                    uri.clone(),
+                                );
+                            if let Some(path) = super::super::source_path_from_uri(&uri) {
+                                folder = folder.with_path(path);
+                            }
+                            folders.push(folder);
+                        }
                     }
-                    folders.push(folder);
                 }
-            } else if let Some(root_uri) = params.get("rootUri").and_then(|u| u.as_str()) {
-                // Fallback to rootUri if workspaceFolders is not provided
-                let mut folders = self.workspace_folders.lock();
-                tracing::debug!(root_uri, "Initialized with root URI");
-                let mut folder =
-                    super::super::workspace_folder::WorkspaceFolderState::new(root_uri.to_string());
-                if let Some(path) = super::super::source_path_from_uri(root_uri) {
-                    folder = folder.with_path(path);
+                rootless @ (InitialRootInput::ExplicitEmptyWorkspaceFolders
+                | InitialRootInput::ExplicitNullWorkspaceFolders
+                | InitialRootInput::MalformedWorkspaceFoldersShape) => {
+                    // Explicit no-active-folder input (#8161): stay rootless
+                    // here. #8945 owns rootless-session behavior; do not mine
+                    // a legacy root or process CWD behind the client's back.
+                    tracing::debug!(
+                        disposition = rootless.as_str(),
+                        explicit_rootless = rootless.is_explicit_rootless(),
+                        "Initialized without workspace roots"
+                    );
                 }
-                folders.push(folder);
-                // Also set the root path for module resolution
-                self.set_root_uri(root_uri);
-            } else if let Some(root_path) = params.get("rootPath").and_then(|p| p.as_str()) {
-                // Legacy fallback: rootPath is deprecated since LSP 3.0 but still sent by some clients
-                // (including older JetBrains LSP clients).
-                tracing::debug!(root_path, "Initialized with legacy rootPath");
-                let root_uri = root_path_to_file_uri(root_path);
-                let mut folder =
-                    super::super::workspace_folder::WorkspaceFolderState::new(root_uri.clone());
-                // Preserve filesystem path metadata so project-config loading and other
-                // path-based workflows behave the same as rootUri/workspaceFolders initialization.
-                folder = folder.with_path(std::path::PathBuf::from(root_path));
-                let mut folders = self.workspace_folders.lock();
-                folders.push(folder);
-                self.set_root_uri(&root_uri);
-            } else if let Some(init_options) = params.get("initializationOptions") {
-                // Compatibility fallback for clients that place workspace roots in
-                // initializationOptions instead of top-level initialize params.
-                if let Some(workspace_folders) =
-                    init_options.get("workspaceFolders").and_then(|f| f.as_array())
-                {
-                    let uris = extract_workspace_folder_uris(workspace_folders);
-                    // Mirror top-level workspaceFolders: set root URI from first folder.
-                    if let Some(first_uri) = uris.first() {
-                        self.set_root_uri(first_uri);
-                    }
-                    let mut folders = self.workspace_folders.lock();
-                    for uri in uris {
-                        tracing::debug!(
-                            uri,
-                            "Initialized with workspace folder from initializationOptions"
+                InitialRootInput::LegacyRootUri => {
+                    if let Some(root_uri) = params.get("rootUri").and_then(|u| u.as_str()) {
+                        let mut folders = self.workspace_folders.lock();
+                        tracing::debug!(root_uri, "Initialized with root URI");
+                        let mut folder = super::super::workspace_folder::WorkspaceFolderState::new(
+                            root_uri.to_string(),
                         );
-                        let mut folder =
-                            super::super::workspace_folder::WorkspaceFolderState::new(uri.clone());
-                        if let Some(path) = super::super::source_path_from_uri(&uri) {
+                        if let Some(path) = super::super::source_path_from_uri(root_uri) {
                             folder = folder.with_path(path);
                         }
                         folders.push(folder);
+                        // Also set the root path for module resolution
+                        self.set_root_uri(root_uri);
                     }
-                } else if let Some(root_uri) = init_options.get("rootUri").and_then(|u| u.as_str())
-                {
-                    let mut folders = self.workspace_folders.lock();
-                    tracing::debug!(
-                        root_uri,
-                        "Initialized with root URI from initializationOptions"
-                    );
-                    let mut folder = super::super::workspace_folder::WorkspaceFolderState::new(
-                        root_uri.to_string(),
-                    );
-                    if let Some(path) = super::super::source_path_from_uri(root_uri) {
-                        folder = folder.with_path(path);
-                    }
-                    folders.push(folder);
-                    self.set_root_uri(root_uri);
-                } else if let Some(root_path) =
-                    init_options.get("rootPath").and_then(|p| p.as_str())
-                {
-                    tracing::debug!(
-                        root_path,
-                        "Initialized with legacy rootPath from initializationOptions"
-                    );
-                    let root_uri = root_path_to_file_uri(root_path);
-                    let mut folders = self.workspace_folders.lock();
-                    folders.push(super::super::workspace_folder::WorkspaceFolderState::new(
-                        root_uri.clone(),
-                    ));
-                    self.set_root_uri(&root_uri);
                 }
-            } else if let Ok(cwd) = std::env::current_dir() {
-                // Compatibility fallback for lightweight clients (for example Aider)
-                // that initialize without workspaceFolders/rootUri/rootPath.
-                let cwd_uri = root_path_to_file_uri(&cwd.to_string_lossy());
-                let mut folders = self.workspace_folders.lock();
-                folders.push(super::super::workspace_folder::WorkspaceFolderState::new(
-                    cwd_uri.clone(),
-                ));
-                self.set_root_uri(&cwd_uri);
-                tracing::debug!(cwd_uri, "Initialized with process current directory fallback");
+                InitialRootInput::LegacyRootPath => {
+                    if let Some(root_path) = params.get("rootPath").and_then(|p| p.as_str()) {
+                        // Legacy fallback: rootPath is deprecated since LSP 3.0 but still sent by some clients
+                        // (including older JetBrains LSP clients).
+                        tracing::debug!(root_path, "Initialized with legacy rootPath");
+                        let root_uri = root_path_to_file_uri(root_path);
+                        let mut folder = super::super::workspace_folder::WorkspaceFolderState::new(
+                            root_uri.clone(),
+                        );
+                        // Preserve filesystem path metadata so project-config loading and other
+                        // path-based workflows behave the same as rootUri/workspaceFolders initialization.
+                        folder = folder.with_path(std::path::PathBuf::from(root_path));
+                        let mut folders = self.workspace_folders.lock();
+                        folders.push(folder);
+                        self.set_root_uri(&root_uri);
+                    }
+                }
+                InitialRootInput::NoWorkspaceRoot => {
+                    self.initialize_rootless_compat_fallback(params);
+                }
             }
         }
 
@@ -859,10 +859,16 @@ impl LspServer {
 
         // Workspace capabilities: intersect client-dependent file-operation
         // participation with the exact initialize declaration (#7682).
-        let workspace_folders_support = self.client_capabilities.lock().workspace_folders_support;
+        //
+        // #8161: `workspaceFolders.supported` describes whether THIS server
+        // implements workspace-folder semantics. It must never be derived
+        // from the client's advertised `workspace.workspaceFolders` bit or
+        // from the active folder count — a rootless or client-limited session
+        // does not un-implement the server. The client's bit stays a separate
+        // normalized observation on `ClientCapabilities`.
         let file_operations = FileOperationSupport::from_initialize_params(params.as_ref());
         capabilities["workspace"] =
-            workspace_capabilities(workspace_folders_support, file_operations);
+            workspace_capabilities(SERVER_WORKSPACE_FOLDER_SUPPORT, file_operations);
 
         // Advertise experimental custom requests only to clients that declared
         // the corresponding standard inline-completion capability.
@@ -886,6 +892,93 @@ impl LspServer {
         // is the final envelope wrapping the dynamically-built capabilities
         // object — a typed InitializeResult struct would need to own the
         // capabilities Value, adding indirection without type safety benefit.
+    }
+
+    /// Compatibility fallbacks for sessions whose initialize request carried
+    /// no client-declared root input (`NoWorkspaceRoot`, #8161).
+    ///
+    /// These runtime conveniences never change the recorded disposition: the
+    /// receipt stays `no_workspace_root` because the client declared nothing.
+    /// Rootless-session policy (including whether these fallbacks should keep
+    /// existing at all) is #8945's decision.
+    fn initialize_rootless_compat_fallback(&self, params: &Value) {
+        if let Some(init_options) = params.get("initializationOptions") {
+            // Compatibility fallback for clients that place workspace roots in
+            // initializationOptions instead of top-level initialize params.
+            if let Some(workspace_folders) =
+                init_options.get("workspaceFolders").and_then(|f| f.as_array())
+            {
+                let uris = extract_workspace_folder_uris(workspace_folders);
+                // Mirror top-level workspaceFolders: set root URI from first folder.
+                if let Some(first_uri) = uris.first() {
+                    self.set_root_uri(first_uri);
+                }
+                let mut folders = self.workspace_folders.lock();
+                for uri in uris {
+                    tracing::debug!(
+                        uri,
+                        "Initialized with workspace folder from initializationOptions"
+                    );
+                    let mut folder =
+                        super::super::workspace_folder::WorkspaceFolderState::new(uri.clone());
+                    if let Some(path) = super::super::source_path_from_uri(&uri) {
+                        folder = folder.with_path(path);
+                    }
+                    folders.push(folder);
+                }
+                return;
+            }
+            if let Some(root_uri) = init_options.get("rootUri").and_then(|u| u.as_str()) {
+                let mut folders = self.workspace_folders.lock();
+                tracing::debug!(root_uri, "Initialized with root URI from initializationOptions");
+                let mut folder =
+                    super::super::workspace_folder::WorkspaceFolderState::new(root_uri.to_string());
+                if let Some(path) = super::super::source_path_from_uri(root_uri) {
+                    folder = folder.with_path(path);
+                }
+                folders.push(folder);
+                self.set_root_uri(root_uri);
+                return;
+            }
+            if let Some(root_path) = init_options.get("rootPath").and_then(|p| p.as_str()) {
+                tracing::debug!(
+                    root_path,
+                    "Initialized with legacy rootPath from initializationOptions"
+                );
+                let root_uri = root_path_to_file_uri(root_path);
+                let mut folders = self.workspace_folders.lock();
+                folders.push(super::super::workspace_folder::WorkspaceFolderState::new(
+                    root_uri.clone(),
+                ));
+                self.set_root_uri(&root_uri);
+                return;
+            }
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            // Compatibility fallback for lightweight clients (for example Aider)
+            // that initialize without workspaceFolders/rootUri/rootPath.
+            let cwd_uri = root_path_to_file_uri(&cwd.to_string_lossy());
+            let mut folders = self.workspace_folders.lock();
+            folders
+                .push(super::super::workspace_folder::WorkspaceFolderState::new(cwd_uri.clone()));
+            self.set_root_uri(&cwd_uri);
+            tracing::debug!(cwd_uri, "Initialized with process current directory fallback");
+        }
+    }
+
+    /// Recorded root-input classification of the most recent initialize
+    /// request (#8161). `None` before the first initialize. This receipt is
+    /// the test-visible provenance surface: it distinguishes what the client
+    /// declared from any compat fallback the runtime applied afterwards.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) fn initial_root_input(&self) -> Option<InitialRootInput> {
+        self.initial_root_input.lock().clone()
+    }
+
+    /// How many workspace folders are currently registered (#8161 receipt).
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) fn active_workspace_folder_count(&self) -> usize {
+        self.workspace_folders.lock().len()
     }
 }
 
@@ -979,7 +1072,10 @@ mod tests {
         clippy::unwrap_used,
         reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
     )]
-    use super::{apply_disabled_feature_id, is_jetbrains_client, is_opencode_client};
+    use super::{
+        WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE, apply_disabled_feature_id, is_jetbrains_client,
+        is_opencode_client,
+    };
     use crate::LspServer;
     use crate::protocol::capabilities::BuildFlags;
     use perl_workspace::folder::root_path_to_file_uri;
@@ -1251,8 +1347,12 @@ mod tests {
     }
 
     #[test]
-    fn initialize_disables_workspace_folder_server_capability_when_client_lacks_support()
+    fn initialize_keeps_server_workspace_folder_support_when_client_lacks_support()
     -> Result<(), Box<dyn std::error::Error>> {
+        // #8161 negative control: the server's `supported` describes the
+        // server's implementation, not the client's advertised bit. A client
+        // that cannot send folder changes is a client limitation; it does not
+        // un-implement the server.
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1268,17 +1368,54 @@ mod tests {
         let workspace_folders = response
             .pointer("/capabilities/workspace/workspaceFolders/supported")
             .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+            .unwrap_or(false);
         let change_notifications = response
             .pointer("/capabilities/workspace/workspaceFolders/changeNotifications")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        assert!(!workspace_folders, "server must not advertise unsupported workspace folders");
+        assert!(
+            workspace_folders,
+            "server implements workspace-folder semantics regardless of the client bit"
+        );
+        assert!(
+            !server.client_capabilities.lock().workspace_folders_support,
+            "the client's own bit stays a separate normalized observation"
+        );
         assert!(
             change_notifications,
             "server must always advertise workspace folder change notifications (per LSP spec)"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_server_workspace_folder_support_is_independent_of_active_folder_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #8161 negative control: zero active folders (explicit rootless
+        // input) must not flip the server support bit off.
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": { "workspace": { "workspaceFolders": true } },
+            "workspaceFolders": []
+        });
+
+        let response =
+            server.handle_initialize(Some(params))?.ok_or("initialize should return payload")?;
+
+        let workspace_folders = response
+            .pointer("/capabilities/workspace/workspaceFolders/supported")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(
+            workspace_folders,
+            "rootless initialization does not imply server workspace-folder support is absent"
+        );
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("explicit_empty_workspace_folders".to_string()),
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
         Ok(())
     }
 
@@ -1305,6 +1442,195 @@ mod tests {
         assert!(
             change_notifications,
             "server must always advertise workspace folder change notifications (per LSP spec)"
+        );
+        assert_eq!(
+            change_notifications, WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE,
+            "the advertisement must agree with the compiled-in dispatch route (#8161)"
+        );
+        Ok(())
+    }
+
+    // --- #8161 exact-process root-input matrix ---
+
+    #[test]
+    fn initialize_records_explicit_workspace_folders_disposition_with_separate_receipts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": { "workspace": { "workspaceFolders": true } },
+            "workspaceFolders": [
+                { "uri": "file:///workspace-a", "name": "a" },
+                { "uri": "file:///workspace-b", "name": "b" }
+            ]
+        });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("explicit_workspace_folders".to_string()),
+        );
+        assert_eq!(server.active_workspace_folder_count(), 2);
+        let caps = server.client_capabilities.lock();
+        assert!(caps.workspace_folders_support, "client bit stays independently observable");
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_client_lacking_support_keeps_client_bit_separate_from_server_capability()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [{ "uri": "file:///workspace-a", "name": "a" }]
+        });
+
+        let response = server.handle_initialize(Some(params))?.ok_or("initialize payload")?;
+
+        let workspace_folders = response
+            .pointer("/capabilities/workspace/workspaceFolders/supported")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(workspace_folders, "folders supplied anyway do not rewrite server truth");
+        assert!(!server.client_capabilities.lock().workspace_folders_support);
+        assert_eq!(server.active_workspace_folder_count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_explicit_empty_workspace_folders_never_adopts_root_uri()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "workspaceFolders": [],
+            "rootUri": "file:///legacy"
+        });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("explicit_empty_workspace_folders".to_string()),
+            "an explicit empty folder list must not be reclassified as LegacyRootUri"
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
+        assert!(server.root_path.lock().is_none(), "no legacy root may be adopted");
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_explicit_null_workspace_folders_never_adopts_root_uri()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "workspaceFolders": null,
+            "rootUri": "file:///legacy"
+        });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("explicit_null_workspace_folders".to_string()),
+            "an explicit null folder field must not fall through to rootUri"
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
+        assert!(server.root_path.lock().is_none(), "no legacy root may be manufactured");
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_malformed_workspace_folders_shape_is_rootless_not_legacy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "workspaceFolders": "file:///not-an-array",
+            "rootUri": "file:///legacy"
+        });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("malformed_workspace_folders_shape".to_string()),
+            "a declared-but-malformed field must not convert into a legacy fallback"
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
+        assert!(server.root_path.lock().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_rejects_malformed_folder_entries_without_falling_through()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "workspaceFolders": [{ "name": "no-uri-here" }, 42],
+            "rootUri": "file:///legacy"
+        });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("explicit_workspace_folders".to_string()),
+            "entry rejection stays inside the canonical folder disposition"
+        );
+        assert_eq!(
+            server.active_workspace_folder_count(),
+            0,
+            "malformed entries are rejected by the URI policy, not skipped into another mode"
+        );
+        assert!(server.root_path.lock().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_omitted_workspace_folders_uses_reviewed_root_uri_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({ "rootUri": "file:///legacy" });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("legacy_root_uri".to_string()),
+        );
+        assert_eq!(server.active_workspace_folder_count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_omitted_workspace_folders_uses_reviewed_root_path_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({ "rootUri": null, "rootPath": "/legacy/path" });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("legacy_root_path".to_string()),
+            "a null rootUri before rootPath preserves the reviewed fallback order"
+        );
+        assert_eq!(server.active_workspace_folder_count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_without_any_root_input_records_no_workspace_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({ "capabilities": {} });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("no_workspace_root".to_string()),
+            "the receipt must record that the client declared no root, whatever runtime \
+             compatibility fallbacks (#8945's domain) apply afterwards"
         );
         Ok(())
     }
