@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12406 |
-| Rust-family files | 3814 |
-| Non-Rust files | 8592 |
-| Allowlisted | 6357 |
+| Total tracked files | 12408 |
+| Rust-family files | 3815 |
+| Non-Rust files | 8593 |
+| Allowlisted | 6358 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
+| config | 491 |
 | documentation | 2804 |
 | generated | 2 |
 | production | 348 |
@@ -6394,6 +6394,7 @@
 | `schemas/perl_compiler_concept_proof.v1.schema.json` | config | `non-rust-compiler-concept-proof-schema` | compiler |
 | `schemas/perl_compiler_concepts.v1.schema.json` | config | `non-rust-compiler-concepts-schema` | compiler |
 | `schemas/perl_compiler_proof_policy.v1.schema.json` | config | `non-rust-compiler-proof-policy-schema` | compiler |
+| `schemas/perl_core_harness.result_axes.v2.schema.json` | config | `non-rust-core-harness-result-axes-v2-schema` | compiler |
 | `schemas/perl_core_harness_runner_parity.v1.schema.json` | config | `non-rust-core-harness-runner-parity-schema` | compiler |
 | `schemas/perl_core_harness_runner_plan.v1.schema.json` | config | `non-rust-core-harness-runner-plan-schema` | compiler |
 | `schemas/perl_core_harness_runner_plan.v2.schema.json` | config | `non-rust-core-harness-runner-plan-v2-schema` | compiler |

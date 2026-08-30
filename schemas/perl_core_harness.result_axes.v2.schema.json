@@ -69,10 +69,25 @@
     "current_versus_accepted": {"$ref": "#/$defs/current_versus_accepted"},
     "files": {"type": "array", "items": {"$ref": "#/$defs/file_mode_result"}},
     "invocations": {"type": "array", "items": {"$ref": "#/$defs/invocation_result"}},
-    "claim_boundary": {"type": "string", "minLength": 1},
-    "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}}
+    "claim_boundary": {"$ref": "#/$defs/non_blank_string"},
+    "limitations": {"type": "array", "items": {"$ref": "#/$defs/non_blank_string"}}
   },
+  "allOf": [
+    {
+      "$comment": "Valid aggregate evidence requires a measurement that actually finished; an unfinished run cannot be published as valid evidence.",
+      "if": {
+        "properties": {"axes": {"properties": {"evidence": {"const": "valid"}}}},
+        "required": ["axes"]
+      },
+      "then": {"properties": {"completion": {"const": "complete"}}}
+    }
+  ],
   "$defs": {
+    "non_blank_string": {
+      "type": "string",
+      "pattern": "\\S",
+      "$comment": "At least one non-whitespace character. minLength alone would accept \"   \", which the Rust validator rejects as blank."
+    },
     "evidence": {"enum": ["valid", "not_proven", "invalid", "stale", "cancelled"]},
     "observation": {
       "enum": ["clean", "failures_observed", "process_or_protocol_failed", "not_assessed"]
@@ -125,11 +140,12 @@
           "then": {"properties": {"evidence": {"not": {"const": "valid"}}}}
         },
         {
-          "$comment": "A positive support claim needs valid evidence, an admission that can carry it, and a real mechanism.",
+          "$comment": "A positive support claim needs valid evidence, an observed product outcome, an admission that can carry it, and a real mechanism. A subject recorded as not observed cannot also be reported as supported.",
           "if": {"properties": {"support": {"enum": ["general", "partial"]}}},
           "then": {
             "properties": {
               "evidence": {"const": "valid"},
+              "observation": {"enum": ["clean", "failures_observed"]},
               "admission": {"not": {"enum": ["unsupported", "not_assessed"]}},
               "mechanism": {"not": {"const": "none"}}
             }
@@ -158,10 +174,10 @@
         "denominator"
       ],
       "properties": {
-        "series_id": {"type": "string", "minLength": 1},
-        "subject_identity": {"type": "string", "minLength": 1},
-        "evidence_bundle_id": {"type": "string", "minLength": 1},
-        "measurement_sha": {"type": "string", "minLength": 1},
+        "series_id": {"$ref": "#/$defs/non_blank_string"},
+        "subject_identity": {"$ref": "#/$defs/non_blank_string"},
+        "evidence_bundle_id": {"$ref": "#/$defs/non_blank_string"},
+        "measurement_sha": {"$ref": "#/$defs/non_blank_string"},
         "denominator": {
           "type": "integer",
           "minimum": 1,
@@ -183,32 +199,41 @@
       "properties": {
         "mechanism": {"$ref": "#/$defs/mechanism"},
         "availability": {"$ref": "#/$defs/rail_availability"},
-        "reason": {"type": "string", "minLength": 1},
-        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "reason": {"$ref": "#/$defs/non_blank_string"},
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/non_blank_string"}},
         "files_total": {"type": ["integer", "null"], "minimum": 0},
         "files_passed": {"type": ["integer", "null"], "minimum": 0}
       },
       "allOf": [
         {
-          "$comment": "A rail that never ran stays unavailable rather than reporting zero of zero.",
-          "if": {"properties": {"mechanism": {"const": "none"}}},
+          "$comment": "Availability decides whether the rail ran. A rail that did not run claims nothing at all: no mechanism, no evidence, no counts. Keying this off the mechanism instead would let 'not_available' coexist with a full set of passing counts.",
+          "if": {"properties": {"availability": {"const": "not_available"}}, "required": ["availability"]},
           "then": {
             "properties": {
-              "availability": {"not": {"const": "available"}},
+              "mechanism": {"const": "none"},
+              "evidence_refs": {"maxItems": 0},
               "files_total": {"const": null},
               "files_passed": {"const": null}
             }
           }
         },
         {
-          "$comment": "An available rail names a mechanism and cites evidence.",
-          "if": {"properties": {"availability": {"const": "available"}}},
+          "$comment": "A rail that ran names the mechanism it used and cites evidence.",
+          "if": {
+            "properties": {"availability": {"enum": ["available", "partial", "stale"]}},
+            "required": ["availability"]
+          },
           "then": {
             "properties": {
               "mechanism": {"not": {"const": "none"}},
               "evidence_refs": {"minItems": 1}
             }
           }
+        },
+        {
+          "$comment": "An available rail reports what it covered.",
+          "if": {"properties": {"availability": {"const": "available"}}, "required": ["availability"]},
+          "then": {"properties": {"files_total": {"type": "integer"}}}
         }
       ]
     },
@@ -219,8 +244,8 @@
       "properties": {
         "transition": {"$ref": "#/$defs/transition"},
         "requires_acceptance": {"type": "boolean"},
-        "accepted_baseline_digest": {"type": ["string", "null"], "minLength": 1},
-        "reason": {"type": "string", "minLength": 1}
+        "accepted_baseline_digest": {"oneOf": [{"$ref": "#/$defs/non_blank_string"}, {"type": "null"}]},
+        "reason": {"$ref": "#/$defs/non_blank_string"}
       },
       "allOf": [
         {
@@ -253,10 +278,10 @@
       "additionalProperties": false,
       "required": ["path", "mode", "axes", "bucket"],
       "properties": {
-        "path": {"type": "string", "minLength": 1},
+        "path": {"$ref": "#/$defs/non_blank_string"},
         "mode": {"enum": ["parse", "compile", "execute"]},
         "axes": {"$ref": "#/$defs/result_axes"},
-        "bucket": {"type": ["string", "null"], "minLength": 1}
+        "bucket": {"oneOf": [{"$ref": "#/$defs/non_blank_string"}, {"type": "null"}]}
       }
     },
     "invocation_result": {
@@ -264,9 +289,9 @@
       "additionalProperties": false,
       "required": ["invocation_identity", "axes", "limitations"],
       "properties": {
-        "invocation_identity": {"type": "string", "minLength": 1},
+        "invocation_identity": {"$ref": "#/$defs/non_blank_string"},
         "axes": {"$ref": "#/$defs/result_axes"},
-        "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        "limitations": {"type": "array", "items": {"$ref": "#/$defs/non_blank_string"}}
       }
     }
   }
