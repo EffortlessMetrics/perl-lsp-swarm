@@ -2,10 +2,14 @@
 //!
 //! `inferred_line_ending` was previously duplicated byte-for-byte in
 //! `perl-lsp-perltidy`'s native formatter and `perl-lsp-rs-core`'s LSP
-//! whitespace projection. These properties pin the rule itself so the single
-//! remaining copy cannot drift, and so a future re-derivation (for example the
+//! whitespace projection. These properties pin the rule itself so those two
+//! call sites cannot drift, and so a future re-derivation (for example the
 //! #10239 convergence with `source_convention`) has to argue with a stated
 //! contract rather than with a second copy of the same code.
+//!
+//! They do not speak for `next_edit::insertion_line_ending`, which still
+//! decides the same question by a different rule — see the owner module's
+//! documentation.
 
 use perl_lsp_perltidy::native::inferred_line_ending;
 use proptest::prelude::*;
@@ -44,20 +48,57 @@ fn discriminating_source() -> impl Strategy<Value = String> {
     .prop_map(|parts| parts.concat())
 }
 
+/// Arbitrary text interleaved with explicit line terminators.
+///
+/// `(?s).{0,4}` supplies unrestricted content (including CR and LF); the
+/// literal terminators guarantee the CRLF-vs-LF branch is actually exercised
+/// rather than left to chance.
+fn terminator_rich_text() -> impl Strategy<Value = String> {
+    proptest::collection::vec(
+        prop_oneof![
+            2 => "(?s).{0,4}",
+            1 => Just("\n".to_string()),
+            1 => Just("\r\n".to_string()),
+            1 => Just("\r".to_string()),
+        ],
+        0..10,
+    )
+    .prop_map(|parts| parts.concat())
+}
+
 proptest! {
     #[test]
     fn matches_the_independently_stated_rule(source in discriminating_source()) {
         prop_assert_eq!(inferred_line_ending(&source), oracle(&source), "source: {:?}", source);
     }
 
+    /// Unrestricted content, but with terminators injected often enough to
+    /// reach the decision.
+    ///
+    /// A plain `".*"` cannot discriminate here for two compounding reasons:
+    /// proptest compiles the pattern with `regex-syntax` defaults, where `.`
+    /// matches CR but *not* LF, so every sample takes the no-LF fallback; and
+    /// even with `(?s)` set, randomly drawing a CR immediately followed by an
+    /// LF at the deciding position is rare enough that the CRLF branch is
+    /// effectively unreachable. Either way an implementation returning `"\n"`
+    /// unconditionally would pass. Interleaving arbitrary chunks with explicit
+    /// terminators keeps the content unrestricted while making both branches
+    /// live — this property fails against that mutation, `discriminating_source`
+    /// is not carrying it alone.
     #[test]
-    fn matches_the_independently_stated_rule_on_arbitrary_text(source in ".*") {
+    fn matches_the_independently_stated_rule_on_terminator_rich_text(
+        source in terminator_rich_text(),
+    ) {
         prop_assert_eq!(inferred_line_ending(&source), oracle(&source), "source: {:?}", source);
     }
 
     /// The result is always a terminator this crate is willing to generate.
     /// Bare CR is a supported *source* sequence (see `source_convention`) but
     /// is never synthesized here.
+    ///
+    /// This is a tautology over the current two return literals rather than a
+    /// discriminating check; it is kept to pin the contract against a future
+    /// edit that widens the return set.
     #[test]
     fn only_ever_generates_lf_or_crlf(source in discriminating_source()) {
         let ending = inferred_line_ending(&source);

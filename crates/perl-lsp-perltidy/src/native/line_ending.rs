@@ -5,6 +5,18 @@
 //! terminator for a line the source left unterminated. That decision is one
 //! rule, so it lives here once rather than being copied per call site.
 //!
+//! Known third site, deliberately not folded in yet:
+//! `perl-lsp-rs-core`'s `providers::inline_completion::next_edit::
+//! insertion_line_ending` answers the same "what terminator do we synthesize
+//! into this document" question with `document_text.contains("\r\n")`. The two
+//! rules disagree on mixed-ending sources — for `"use strict;\r\nuse
+//! warnings;\n"` this module says LF and that one says CRLF. Folding it in
+//! would change next-edit output, so it is a separate claim with its own proof
+//! rather than a silent rider on the #13792 extraction.
+//!
+//! `perl-position-tracking::detect_line_ending` is *not* a copy: it reports the
+//! predominant style for position mapping, which is a different question.
+//!
 //! Authority boundary: this is deliberately **not**
 //! [`crate::native::source_convention`]. That function belongs to the #8048
 //! shift-left seam, has no production caller until #10239, and answers a
