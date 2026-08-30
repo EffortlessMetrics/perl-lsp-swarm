@@ -306,6 +306,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-platform-scope-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Classify platform overrides
         id: scope
         shell: bash
@@ -427,6 +428,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-contract-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Run Repository Contract
         env:
           SUBJECT_BASE_SHA: ${{ inputs.base_sha || '' }}
@@ -580,6 +582,7 @@ jobs:
         with:
           key: public-api-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-public-api
         if: needs.draft-pr-check.outputs.api_scope == 'true'
@@ -642,6 +645,7 @@ jobs:
         with:
           key: semver-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-semver-checks
         if: needs.draft-pr-check.outputs.api_scope == 'true'
