@@ -11,9 +11,51 @@ use crate::runtime::language::misc::{
     ExternalCompletionOutcome, evaluate_external_candidates, external_completion_permitted,
     inline_completion_trigger_kind, selected_inline_completion_info,
 };
-use crate::runtime::stream_session::SessionKey;
-use perl_lsp_rs_core::providers::inline_completion::BackendError;
+use crate::runtime::stream_session::{SessionKey, StreamTerminalOutcome};
+use perl_lsp_rs_core::providers::inline_completion::{BackendError, InlineCompletionItem};
 use std::time::{Duration, Instant};
+
+/// Build one `$/progress` payload for the streaming inline-completion feature.
+///
+/// Items without an explicit replacement range collapse to a zero-length range
+/// at the request cursor, matching the wire contract clients already consume.
+fn stream_progress_payload(
+    token: &str,
+    session_id: &str,
+    sequence: u64,
+    is_final: bool,
+    items: Vec<InlineCompletionItem>,
+    line: u32,
+    character: u32,
+) -> Value {
+    let items = items
+        .into_iter()
+        .map(|item| {
+            let range = item.range.unwrap_or(lsp_types::Range {
+                start: lsp_types::Position { line, character },
+                end: lsp_types::Position { line, character },
+            });
+            json!({
+                "insertText": item.insert_text,
+                "range": {
+                    "start": { "line": range.start.line, "character": range.start.character },
+                    "end": { "line": range.end.line, "character": range.end.character }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "token": token,
+        "value": {
+            "kind": "perlInlineCompletionStream",
+            "sessionId": session_id,
+            "sequence": sequence,
+            "isFinal": is_final,
+            "items": items
+        }
+    })
+}
 
 impl LspServer {
     /// Handle `textDocument/perlInlineCompletionStream` custom request.
@@ -104,14 +146,24 @@ impl LspServer {
             return self.handle_inline_completion(Some(params));
         }
 
-        // Start session (cancels any previous for same position)
+        // Start session. This supersedes every older stream for the same
+        // document, whatever cursor it was started at.
         let session_key = SessionKey {
             uri: uri.to_string(),
             document_version,
             line: u64::from(line),
             character: u64::from(character),
         };
-        let session = self.stream_sessions().start_session(session_key);
+        let session = self.stream_sessions().start_session(session_key.clone());
+        let session_id = session.session_id.clone();
+
+        // Every path below this point owns a manager entry and must release it
+        // exactly once. `finish_if_current` settles the session and evicts the
+        // entry only while it is still the exact session this request started,
+        // so a stale task cannot remove its replacement.
+        let release = |outcome: StreamTerminalOutcome| {
+            self.stream_sessions().finish_if_current(&session_key, &session_id, outcome);
+        };
 
         // Prepare context. Invoked AI preparation fails closed here: a stale
         // request version or a hard-reject cursor makes zero backend calls,
@@ -128,7 +180,13 @@ impl LspServer {
             perl_lsp_rs_core::providers::inline_completion::PreparedInvocationContext::Ready(
                 ctx,
             ) => *ctx,
-            _ => return Ok(Some(json!(null))),
+            _ => {
+                // A stale request version or a hard-reject cursor ends the
+                // stream before any backend work. No progress value is emitted,
+                // so the client settles fail-closed on the null response.
+                release(StreamTerminalOutcome::ProtocolEndedWithoutFinal);
+                return Ok(Some(json!(null)));
+            }
         };
 
         // Build request
@@ -138,7 +196,6 @@ impl LspServer {
             timeout_ms: ai_timeout_ms,
         };
 
-        let session_id = session.session_id.clone();
         let token_clone = token.clone();
 
         // Get the AI backend; fall back to one-shot if unavailable
@@ -146,26 +203,30 @@ impl LspServer {
             Some(b) => b,
             None => {
                 if ai_fallback {
+                    // The buffered route answers directly; this stream never
+                    // reaches a progress value.
+                    release(StreamTerminalOutcome::ProtocolEndedWithoutFinal);
                     return self.handle_inline_completion(Some(params));
                 }
-                // No backend and no fallback -- emit empty final and return
-                let progress = json!({
-                    "token": token_clone,
-                    "value": {
-                        "kind": "perlInlineCompletionStream",
-                        "sessionId": session_id,
-                        "sequence": session.next_sequence(),
-                        "isFinal": true,
-                        "items": []
-                    }
-                });
-                if let Err(e) = self.notify("$/progress", progress) {
-                    tracing::debug!(
-                        "streaming inline completion: failed to send empty final: {}",
-                        e
+                // No backend and no fallback -- emit the one empty final.
+                if session.settle(StreamTerminalOutcome::CompletedEmptyOrFiltered) {
+                    let progress = stream_progress_payload(
+                        &token_clone,
+                        &session_id,
+                        session.next_sequence(),
+                        true,
+                        Vec::new(),
+                        line,
+                        character,
                     );
+                    if let Err(e) = self.notify("$/progress", progress) {
+                        tracing::debug!(
+                            "streaming inline completion: failed to send empty final: {}",
+                            e
+                        );
+                    }
                 }
-                self.stream_sessions().cleanup();
+                release(StreamTerminalOutcome::CompletedEmptyOrFiltered);
                 return Ok(Some(json!(null)));
             }
         };
@@ -174,21 +235,18 @@ impl LspServer {
         // No document locks are held at this point -- notify() only
         // touches the outbound channel, so it is safe to call during
         // the (potentially slow) network streaming call.
-        // Track whether we sent any chunk so we know if a final is needed
+        // Track whether the one terminal frame has been emitted from inside the
+        // stream, so the tail below knows whether it still owns the terminal.
         let mut sent_final = false;
         let debounce = Duration::from_millis(streaming_debounce_ms);
         let mut last_emitted_at: Option<Instant> = None;
-        // The typed final decision for the stream's last candidate, retained
-        // for #10005's terminal owner: filtered output is a decision, never an
-        // implicit empty list.
-        let mut final_outcome: Option<ExternalCompletionOutcome> = None;
 
         // Stream from the backend -- each chunk carries cumulative text
         let stream_result = backend.stream(
             &req,
             &mut |chunk: perl_lsp_rs_core::providers::inline_completion::StreamChunk| {
-                // Check cancellation before emitting
-                if session.is_cancelled() {
+                // A cancelled or already-settled stream emits nothing further.
+                if session.is_cancelled() || session.is_settled() {
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop;
                 }
 
@@ -198,9 +256,6 @@ impl LspServer {
                 }
 
                 let is_final = chunk.is_final;
-                if is_final {
-                    sent_final = true;
-                }
 
                 // One external candidate per cumulative chunk, evaluated
                 // through the same shared finalization seam the buffered route
@@ -208,14 +263,12 @@ impl LspServer {
                 // constraint, and trigger policy — never a stream-local verdict.
                 let outcome = evaluate_external_candidates(
                     &provider,
-                    vec![
-                        perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
-                            insert_text: chunk.text,
-                            filter_text: None,
-                            range: None,
-                            command: None,
-                        },
-                    ],
+                    vec![perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
+                        insert_text: chunk.text,
+                        filter_text: None,
+                        range: None,
+                        command: None,
+                    }],
                     &text,
                     &context,
                     selected_completion.as_ref(),
@@ -224,37 +277,46 @@ impl LspServer {
                     character,
                     ai_fallback,
                 );
-                let safe_items = match outcome {
-                    ExternalCompletionOutcome::Accepted(list) => list.items,
+                let (safe_items, terminal) = match outcome {
+                    ExternalCompletionOutcome::Accepted(list) => {
+                        (list.items, StreamTerminalOutcome::CompletedWithCandidate)
+                    }
                     ExternalCompletionOutcome::FallbackRequired if is_final => {
                         // A filtered final with fallback configured hands the
                         // final content to the deterministic route.
-                        final_outcome = Some(ExternalCompletionOutcome::FallbackRequired);
-                        self.deterministic_inline_items(
-                            &provider,
-                            uri,
-                            &text,
-                            line,
-                            character,
-                            selected_completion.as_ref(),
-                            trigger_kind,
+                        (
+                            self.deterministic_inline_items(
+                                &provider,
+                                uri,
+                                &text,
+                                line,
+                                character,
+                                selected_completion.as_ref(),
+                                trigger_kind,
+                            ),
+                            StreamTerminalOutcome::CompletedWithDeterministicFallback,
                         )
                     }
-                    filtered @ (ExternalCompletionOutcome::FallbackRequired
-                    | ExternalCompletionOutcome::FinalEmpty) => {
-                        if is_final {
-                            final_outcome = Some(filtered);
-                        }
-                        Vec::new()
+                    ExternalCompletionOutcome::FallbackRequired
+                    | ExternalCompletionOutcome::FinalEmpty => {
+                        (Vec::new(), StreamTerminalOutcome::CompletedEmptyOrFiltered)
                     }
                 };
                 if safe_items.is_empty() && !is_final {
                     // Unsafe or filtered intermediate cumulative text is
-                    // skipped without ending the backend stream.
+                    // skipped without ending the backend stream, and consumes
+                    // no sequence number.
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue;
                 }
 
-                let seq = session.next_sequence();
+                if is_final {
+                    // Claim the one terminal transition. Losing it means another
+                    // owner already settled this stream; emit nothing further.
+                    if !session.settle(terminal) {
+                        return perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop;
+                    }
+                    sent_final = true;
+                }
 
                 // Keep the first update responsive, then suppress intermediate
                 // chunks until the configured interval has elapsed. A final
@@ -263,37 +325,23 @@ impl LspServer {
                 let should_emit = is_final
                     || last_emitted_at.map(|last| last.elapsed() >= debounce).unwrap_or(true);
                 if !should_emit {
+                    // A coalesced frame is never observed by the client, so it
+                    // must not consume a sequence value: the sequence stream the
+                    // client sees stays contiguous.
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Continue;
                 }
 
-                let progress = json!({
-                    "token": token_clone,
-                    "value": {
-                        "kind": "perlInlineCompletionStream",
-                        "sessionId": session_id,
-                        "sequence": seq,
-                        "isFinal": is_final,
-                        "items": safe_items.into_iter().map(|item| {
-                            let range = item.range.unwrap_or(lsp_types::Range {
-                                start: lsp_types::Position {
-                                    line,
-                                    character,
-                                },
-                                end: lsp_types::Position {
-                                    line,
-                                    character,
-                                },
-                            });
-                            json!({
-                                "insertText": item.insert_text,
-                                "range": {
-                                    "start": { "line": range.start.line, "character": range.start.character },
-                                    "end": { "line": range.end.line, "character": range.end.character }
-                                }
-                            })
-                        }).collect::<Vec<_>>()
-                    }
-                });
+                // Allocated only now, immediately before the frame is sent.
+                let seq = session.next_sequence();
+                let progress = stream_progress_payload(
+                    &token_clone,
+                    &session_id,
+                    seq,
+                    is_final,
+                    safe_items,
+                    line,
+                    character,
+                );
 
                 if let Err(e) = self.notify("$/progress", progress) {
                     tracing::debug!("streaming inline completion: failed to send progress: {}", e);
@@ -309,41 +357,31 @@ impl LspServer {
             },
         );
 
-        // If the stream ended without sending a final chunk, send one now
+        // Backend errors are not propagated to the JSON-RPC result -- the
+        // protocol contract carries the outcome in the terminal progress value.
+        let backend_failed = match stream_result {
+            Ok(()) => false,
+            Err(e) => {
+                if matches!(e, BackendError::Auth(_)) {
+                    self.notify_ai_auth_failure();
+                }
+                tracing::debug!("streaming inline completion backend error: {}", e);
+                true
+            }
+        };
+
+        // The stream did not settle itself. This scope is the remaining
+        // terminal owner: it selects one outcome, emits at most one final
+        // progress value, and releases the session.
         if !sent_final && !session.is_cancelled() {
-            let cumulative_text =
-                session.current_text.lock().map(|t| t.clone()).unwrap_or_default();
-
-            // Evaluate the terminal cumulative text through the same shared
-            // seam. A filtered final is a typed decision: with fallback
-            // configured, the deterministic route owns the final content;
-            // without it, the final list is empty.
-            let outcome = if cumulative_text.is_empty() {
-                None
-            } else {
-                Some(evaluate_external_candidates(
-                    &provider,
-                    vec![perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
-                        insert_text: cumulative_text,
-                        filter_text: None,
-                        range: None,
-                        command: None,
-                    }],
-                    &text,
-                    &context,
-                    selected_completion.as_ref(),
-                    trigger_kind,
-                    line,
-                    character,
-                    ai_fallback,
-                ))
-            };
-            let final_decision = outcome.or(final_outcome.take());
-
-            let final_items = match final_decision {
-                Some(ExternalCompletionOutcome::Accepted(list)) => list.items,
-                Some(ExternalCompletionOutcome::FallbackRequired) => self
-                    .deterministic_inline_items(
+            let (terminal, final_items) = if backend_failed {
+                // A backend failure must never present its partial cumulative
+                // text as a successful completion. The candidate is discarded
+                // and the configured fallback policy -- the same one the
+                // buffered route applies to a failed AI call -- owns the final
+                // content.
+                let items = if ai_fallback {
+                    self.deterministic_inline_items(
                         &provider,
                         uri,
                         &text,
@@ -351,57 +389,85 @@ impl LspServer {
                         character,
                         selected_completion.as_ref(),
                         trigger_kind,
+                    )
+                } else {
+                    Vec::new()
+                };
+                (StreamTerminalOutcome::BackendFailed, items)
+            } else {
+                // A clean end-of-stream without an explicit final chunk:
+                // evaluate the terminal cumulative text through the same shared
+                // seam. A filtered final is a typed decision, never an implicit
+                // empty list.
+                let cumulative_text =
+                    session.current_text.lock().map(|t| t.clone()).unwrap_or_default();
+                let outcome = if cumulative_text.is_empty() {
+                    None
+                } else {
+                    Some(evaluate_external_candidates(
+                        &provider,
+                        vec![InlineCompletionItem {
+                            insert_text: cumulative_text,
+                            filter_text: None,
+                            range: None,
+                            command: None,
+                        }],
+                        &text,
+                        &context,
+                        selected_completion.as_ref(),
+                        trigger_kind,
+                        line,
+                        character,
+                        ai_fallback,
+                    ))
+                };
+
+                match outcome {
+                    Some(ExternalCompletionOutcome::Accepted(list)) => {
+                        (StreamTerminalOutcome::CompletedWithCandidate, list.items)
+                    }
+                    Some(ExternalCompletionOutcome::FallbackRequired) => (
+                        StreamTerminalOutcome::CompletedWithDeterministicFallback,
+                        self.deterministic_inline_items(
+                            &provider,
+                            uri,
+                            &text,
+                            line,
+                            character,
+                            selected_completion.as_ref(),
+                            trigger_kind,
+                        ),
                     ),
-                Some(ExternalCompletionOutcome::FinalEmpty) | None => Vec::new(),
+                    Some(ExternalCompletionOutcome::FinalEmpty) | None => {
+                        (StreamTerminalOutcome::CompletedEmptyOrFiltered, Vec::new())
+                    }
+                }
             };
 
-            let items = json!(final_items
-                .into_iter()
-                .map(|item| {
-                    let range = item.range.unwrap_or(lsp_types::Range {
-                        start: lsp_types::Position { line, character },
-                        end: lsp_types::Position { line, character },
-                    });
-                    json!({
-                        "insertText": item.insert_text,
-                        "range": {
-                            "start": { "line": range.start.line, "character": range.start.character },
-                            "end": { "line": range.end.line, "character": range.end.character }
-                        }
-                    })
-                })
-                .collect::<Vec<_>>());
-
-            let progress = json!({
-                "token": token_clone,
-                "value": {
-                    "kind": "perlInlineCompletionStream",
-                    "sessionId": session_id,
-                    "sequence": session.next_sequence(),
-                    "isFinal": true,
-                    "items": items
-                }
-            });
-
-            if let Err(e) = self.notify("$/progress", progress) {
-                tracing::debug!(
-                    "streaming inline completion: failed to send final progress: {}",
-                    e
+            if session.settle(terminal) {
+                let progress = stream_progress_payload(
+                    &token_clone,
+                    &session_id,
+                    session.next_sequence(),
+                    true,
+                    final_items,
+                    line,
+                    character,
                 );
+                if let Err(e) = self.notify("$/progress", progress) {
+                    tracing::debug!(
+                        "streaming inline completion: failed to send final progress: {}",
+                        e
+                    );
+                }
             }
         }
 
-        // Log backend errors but don't propagate -- the protocol contract
-        // only needs the final isFinal:true notification to be sent.
-        if let Err(e) = stream_result {
-            if matches!(e, BackendError::Auth(_)) {
-                self.notify_ai_auth_failure();
-            }
-            tracing::debug!("streaming inline completion backend error: {}", e);
-        }
-
-        // Cleanup completed/cancelled sessions
-        self.stream_sessions().cleanup();
+        // Release the manager entry on every terminal path, including a
+        // cancelled one. `finish_if_current` preserves an outcome already
+        // recorded above and refuses to evict a newer session that reused this
+        // display key.
+        release(StreamTerminalOutcome::ProtocolEndedWithoutFinal);
 
         // Final response is null -- all data was sent via $/progress
         Ok(Some(json!(null)))

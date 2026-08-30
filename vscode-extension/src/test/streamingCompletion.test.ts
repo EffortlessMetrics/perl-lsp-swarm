@@ -509,6 +509,233 @@ describe('StreamingCompletionController — request identity and cache correctne
     expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(2);
   });
 
+  /** Builds a terminal progress value carrying no candidate. */
+  function makeEmptyFinal(sessionId: string, sequence: number): unknown {
+    return {
+      kind: 'perlInlineCompletionStream',
+      sessionId,
+      sequence,
+      isFinal: true,
+      items: [],
+    };
+  }
+
+  /** Drives one stream to the point where ghost text is cached and servable. */
+  function showGhostText(
+    provider: ReturnType<typeof getStreamAdapter>,
+    doc: vscode.TextDocument,
+    pos: vscode.Position,
+  ): (value: unknown) => void {
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    const handler = getLastProgressHandler();
+    handler(makeProgress('sess-terminal', 0, 'my $partial = 1'));
+    expect(
+      provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      ),
+    ).toHaveLength(1);
+    return handler;
+  }
+
+  test('an empty terminal value revokes ghost text it previously showed', () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    const handler = showGhostText(provider, doc, pos);
+
+    // The server decided the stream produces nothing after all. Before this
+    // fix the handler returned early on `items: []` and the stale suggestion
+    // stayed servable.
+    handler(makeEmptyFinal('sess-terminal', 1));
+
+    // The first re-query is the one the revocation itself triggers.
+    expect(
+      provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      ),
+    ).toBeUndefined();
+  });
+
+  test('revoking ghost text does not start another backend generation', () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    const handler = showGhostText(provider, doc, pos);
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+
+    handler(makeEmptyFinal('sess-terminal', 1));
+
+    // Revocation must retrigger the widget so the stale text disappears, and
+    // that retrigger re-enters the provider at the same cursor. Dispatching a
+    // fresh stream here would revoke again and loop.
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+  });
+
+  test('an explicit re-invocation after a revocation can still retry', () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    const handler = showGhostText(provider, doc, pos);
+
+    handler(makeEmptyFinal('sess-terminal', 1));
+
+    // Absorb the revocation's own re-query...
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    // ...after which the suppression is spent and the user can ask again.
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(2);
+  });
+
+  test('a non-empty terminal value keeps its candidate servable', () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    const handler = showGhostText(provider, doc, pos);
+
+    handler({
+      kind: 'perlInlineCompletionStream',
+      sessionId: 'sess-terminal',
+      sequence: 1,
+      isFinal: true,
+      items: [{ insertText: 'my $complete = 1;' }],
+    });
+
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(items).toHaveLength(1);
+    expect(items?.[0]?.insertText).toBe('my $complete = 1;');
+  });
+
+  test('the request resolving after a successful final does not revoke it', async () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    const handler = showGhostText(provider, doc, pos);
+
+    handler({
+      kind: 'perlInlineCompletionStream',
+      sessionId: 'sess-terminal',
+      sequence: 1,
+      isFinal: true,
+      items: [{ insertText: 'my $complete = 1;' }],
+    });
+
+    // The custom request answers `null` once the stream has finished. That
+    // acknowledgement must not be mistaken for "resolved without a terminal
+    // value" and revoke the candidate the stream just installed.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(items).toHaveLength(1);
+    expect(items?.[0]?.insertText).toBe('my $complete = 1;');
+  });
+
+  test('a frame arriving after the terminal value cannot reopen the stream', () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    const handler = showGhostText(provider, doc, pos);
+
+    handler(makeEmptyFinal('sess-terminal', 1));
+    // A late, higher-sequence frame from the same session must not resurrect
+    // a stream the server already terminated.
+    handler(makeProgress('sess-terminal', 2, 'my $late = 1'));
+
+    expect(
+      provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      ),
+    ).toBeUndefined();
+  });
+
+  test('a request resolving without a terminal value revokes its partial text', async () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    showGhostText(provider, doc, pos);
+
+    // `sendRequest` resolves with `{}` — no terminal progress value ever
+    // arrived, so the partial text on screen is unconfirmed.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      ),
+    ).toBeUndefined();
+  });
+
+  test('a backend failure after partial text revokes it', async () => {
+    (mockClient.sendRequest as jest.Mock).mockReturnValue(
+      Promise.reject(new Error('backend exploded')),
+    );
+
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+    showGhostText(provider, doc, pos);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A failed stream's partial cumulative text must not stay on screen
+    // indistinguishable from a completed suggestion.
+    expect(
+      provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      ),
+    ).toBeUndefined();
+  });
+
   test('a late completion from a superseded stream cannot settle its successor', async () => {
     let resolveFirst: (value: unknown) => void = () => {};
     const firstRequest = new Promise((resolve) => {

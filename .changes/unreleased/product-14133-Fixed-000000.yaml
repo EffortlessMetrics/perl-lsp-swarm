@@ -1,0 +1,9 @@
+project: product
+component: Inline completion
+kind: Fixed
+body: Streamed AI ghost text now has one terminal outcome per request. A stream that ends empty, is filtered, or fails revokes the suggestion it was showing instead of leaving stale text on screen, and a backend failure no longer promotes the partial text it collected into an apparently completed suggestion. Each document exposes one active stream, every finished stream releases its session instead of being retained until a later edit, and the sequence numbers a client observes are contiguous because a suggestion suppressed by update pacing no longer consumes one.
+time: 2026-08-30T00:00:00Z
+custom:
+  PR: 14129
+  Slug: inline-stream-terminal-lifecycle
+  Breaking: "no"

@@ -270,35 +270,107 @@ upstream-proposed method).
   directly (`streaming.rs`).
 - Emits `$/progress` notifications with payload
   `{ token, value: { kind: "perlInlineCompletionStream", sessionId, sequence,
-  isFinal, items } }` (`streaming.rs:99`, `:150`, `:197`). Each chunk carries
-  **cumulative** text (not a delta).
-- Session replacement is **scoped to the session key**. `StreamSessionManager::`
-  `start_session` (`crates/perl-lsp-rs/src/runtime/stream_session.rs:83`) cancels
-  the prior session only for the **same `SessionKey`** = (`uri`, `document_version`,
-  `line`, `character`) (`stream_session.rs:15`, `:91`). A second request at the
-  **same** cursor/version replaces and cancels the first (test
-  `streaming_completion_second_request_cancels_first_session`). A request at a
-  **different** position/version does **not** cancel an earlier in-flight stream
-  via `start_session`; that earlier stream is reclaimed on the next document edit
-  by `cancel_for_uri` (didChange/didClose, `stream_session.rs:104`) or
-  `cancel_for_uri_version` (older version, `stream_session.rs:118`). Cancellation
-  is honored mid-stream (`session.is_cancelled()`).
+  isFinal, items } }`. Each chunk carries **cumulative** text (not a delta).
+- Session replacement is **scoped to the document**. `StreamSessionManager::`
+  `start_session` (`crates/perl-lsp-rs/src/runtime/stream_session.rs`) cancels and
+  evicts every prior session for the same `uri`, whatever cursor or document
+  version it was started at, settling each as `SupersededByNewRequest`. One
+  document therefore exposes exactly **one** active ghost-text stream; other
+  documents are independent. Streams are also reclaimed by `cancel_for_uri`
+  (didChange/didClose) and `cancel_for_uri_version` (older version), which settle
+  as `DocumentChangedOrClosed`. Cancellation is honored mid-stream
+  (`session.is_cancelled()`).
 - While streaming, the request result is JSON `null`; the items arrive via
   progress.
 
+#### Terminal contract
+
+Every stream reaches **exactly one** terminal disposition, recorded as a
+`StreamTerminalOutcome` (`stream_session.rs`) by a single compare-and-set
+`StreamSession::settle`. The first caller to settle wins; every later caller
+observes `false`. Both the emission of the one `isFinal: true` value and the
+eviction of the manager entry are gated on that transition.
+
+**Invariants.**
+
+- **Exactly one final.** At most one `isFinal: true` progress value is emitted
+  per stream, on every path: accepted candidate, filtered/empty, deterministic
+  fallback, clean EOF without an explicit final chunk, and backend failure.
+- **No retained sessions.** Every terminal path evicts its entry through
+  `finish_if_current(key, session_id, outcome)`. A completed stream is not left
+  in the manager to be swept by a later unrelated edit. There is no housekeeping
+  `cleanup()` sweep.
+- **Session identity is load-bearing.** `finish_if_current` removes an entry only
+  while it is still the exact session that request started, so a stale task
+  finishing late cannot evict the replacement that reused its display key.
+- **Contiguous observed sequences.** A sequence value is allocated only
+  immediately before a frame is actually sent. A frame suppressed by
+  `updateDebounceMs` pacing, or skipped because its cumulative text was filtered,
+  consumes no sequence — so the sequence stream the client observes has no gaps.
+- **A failure is never a completion.** When the backend returns an error, the
+  partial cumulative text it produced is discarded rather than re-evaluated and
+  emitted as the terminal candidate. The configured `fallback` policy owns the
+  final content: deterministic items when `fallback` is true, an empty final
+  otherwise — the same decision the buffered route applies to a failed AI call.
+
+**Client side.** `vscode-extension/src/streamingCompletion.ts` treats an empty
+terminal value as an authoritative **revocation**, not an ignorable frame: it
+clears the cached candidate for that request identity, releases the progress
+registration and cancellation resources, and retriggers the suggest widget so
+visible ghost text disappears. A request that resolves without a terminal value,
+and a backend failure after partial text, revoke the same way. Because the
+revocation retrigger re-enters the provider at the cursor the server just
+answered "nothing" for, that one re-query is absorbed and the suppression is
+then spent, so an explicit re-invocation can still retry.
+
+Terminal outcomes owned elsewhere: the document-lifecycle transitions of #8657 /
+#8666 / #10254 are not yet consumed here; stream revocation still follows raw
+didChange/didClose. See #10005 for the residual boundary.
+
 ### Proof tests
 
+Route and wire shape —
 `crates/perl-lsp-rs/tests/lsp_streaming_completion_tests.rs`:
-`streaming_completion_returns_null_and_emits_progress`,
-`streaming_completion_progress_has_valid_session_and_sequence`,
 `streaming_completion_without_ai_falls_back_to_one_shot`,
 `streaming_completion_with_streaming_disabled_falls_back`,
 `streaming_completion_without_partial_result_token_falls_back`,
-`streaming_completion_second_request_cancels_first_session`,
 `streaming_completion_on_closed_doc_returns_null`,
 `streaming_completion_missing_params_returns_error`,
 `streaming_completion_capability_advertised`,
-`streaming_completion_progress_schema_validation`.
+`streaming_completion_progress_schema_validation_armed`,
+`streaming_completion_mock_backend_cumulative_chunks`.
+
+Terminal contract — same file:
+`a_stream_emits_exactly_one_final_value`,
+`every_terminal_path_leaves_zero_retained_sessions`,
+`completion_stream_storm_retains_no_completed_sessions`,
+`a_new_cursor_supersedes_the_prior_document_stream`,
+`coalesced_frames_consume_no_sequence_value`,
+`streaming_completion_sequence_starts_at_zero_after_filtered_prefix`,
+`streaming_completion_mock_backend_error_sends_final_progress`,
+`backend_error_without_fallback_terminates_empty`,
+`streaming_completion_mock_backend_cancel_previous_isolation`,
+`streaming_completion_cancel_rotates_session_identity`.
+
+Session identity and eviction —
+`crates/perl-lsp-rs/src/runtime/stream_session.rs` unit tests:
+`start_session_supersedes_other_cursors_in_the_same_document`,
+`start_session_leaves_other_documents_independent`,
+`repeated_requests_never_accumulate_sessions`,
+`finish_if_current_removes_the_exact_session`,
+`a_stale_session_cannot_finish_its_replacement`,
+`settle_records_exactly_one_outcome`,
+`cancel_with_preserves_an_already_recorded_outcome`.
+
+Client revocation —
+`vscode-extension/src/test/streamingCompletion.test.ts`:
+`an empty terminal value revokes ghost text it previously showed`,
+`revoking ghost text does not start another backend generation`,
+`an explicit re-invocation after a revocation can still retry`,
+`a non-empty terminal value keeps its candidate servable`,
+`a frame arriving after the terminal value cannot reopen the stream`,
+`a request resolving without a terminal value revokes its partial text`,
+`a backend failure after partial text revokes it`.
 
 ### Invariant
 

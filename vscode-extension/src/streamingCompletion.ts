@@ -98,6 +98,21 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
   /** Editor cancellation subscription for the in-flight generation. */
   private activeCancellationSubscription: vscode.Disposable | null = null;
   private disposables: vscode.Disposable[] = [];
+  /**
+   * The request identity a stream terminated on with no candidate.
+   *
+   * Revoking visible ghost text has to retrigger the suggest widget, or the
+   * stale suggestion stays on screen. That retrigger re-enters the provider at
+   * the very cursor the server just answered "nothing" for, which would start
+   * another backend generation and revoke again — a loop. This marker absorbs
+   * exactly that one re-query and is then consumed, so a later explicit
+   * invocation at the same cursor can still retry.
+   *
+   * Set only when a revocation actually cleared a visible candidate: a stream
+   * that ended empty without having shown anything triggers no re-query and
+   * must not suppress the next invocation.
+   */
+  private terminallyEmptyIdentity: RequestIdentity | null = null;
   /** Backend stream generations actually started. Bounded count, no text. */
   private streamGenerationsStarted = 0;
   /** Display re-queries that reused an in-flight generation instead of restarting it. */
@@ -183,32 +198,66 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
       return;
     }
 
-    if (value.items.length === 0) {
-      return;
-    }
-
-    const item = value.items[0];
-    if (!item || typeof item.insertText !== 'string') {
-      return;
-    }
-
-    // Update cached candidate if it's newer (within the same session)
-    if (
-      this.cachedCandidate &&
+    const item = value.items.length > 0 ? value.items[0] : undefined;
+    const hasCandidate = !!item && typeof item.insertText === 'string';
+    // A higher-sequence candidate for this session is already cached, so this
+    // frame is out of order.
+    const isStale =
+      !!this.cachedCandidate &&
       this.cachedCandidate.sessionId === value.sessionId &&
-      value.sequence <= this.cachedCandidate.sequence
-    ) {
-      return; // Stale update — a higher-sequence candidate is already cached
+      value.sequence <= this.cachedCandidate.sequence;
+
+    if (!value.isFinal) {
+      // An intermediate frame can only install a candidate. An empty one is a
+      // chunk the server skipped as unsafe, not a decision about the stream.
+      if (!hasCandidate || isStale) {
+        return;
+      }
+      this.cachedCandidate = this.buildCandidate(capturedIdentity, value, item);
+      void vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+      return;
     }
 
-    // Populate the candidate from the request identity, not from item.range.
-    // The server-supplied replacement range is stored separately and used when
-    // building the returned InlineCompletionItem, but it is never the cache key.
+    // A terminal frame is the server's authoritative decision for this
+    // request. An empty one revokes: it is not an ignorable progress frame.
+    let shouldRetrigger: boolean;
+    if (hasCandidate) {
+      if (!isStale) {
+        this.cachedCandidate = this.buildCandidate(capturedIdentity, value, item);
+      }
+      shouldRetrigger = !isStale;
+    } else {
+      shouldRetrigger = this.revokeCandidateFor(capturedIdentity);
+    }
+
+    // Settling first releases the in-flight marker and nulls the active
+    // identity, so any later frame from this session fails the identity guard
+    // above and cannot reopen the stream.
+    this.settleActiveStream(capturedIdentity);
+
+    // Retrigger in both directions: to show an accepted final, and to clear
+    // ghost text the revocation just invalidated.
+    if (shouldRetrigger) {
+      void vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+    }
+  }
+
+  /**
+   * Build a cached candidate from the request identity, never from `item.range`.
+   *
+   * The server-supplied replacement range is stored separately and used when
+   * building the returned `InlineCompletionItem`, but it is never the cache key.
+   */
+  private buildCandidate(
+    identity: RequestIdentity,
+    value: StreamProgressValue,
+    item: StreamCandidateItem,
+  ): CachedCandidate {
     const candidate: CachedCandidate = {
-      uri: capturedIdentity.uri,
-      version: capturedIdentity.version,
-      line: capturedIdentity.line,
-      character: capturedIdentity.character,
+      uri: identity.uri,
+      version: identity.version,
+      line: identity.line,
+      character: identity.character,
       text: item.insertText,
       sessionId: value.sessionId,
       sequence: value.sequence,
@@ -217,10 +266,37 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
     if (this.isStreamReplacementRange(item.range)) {
       candidate.serverRange = item.range;
     }
-    this.cachedCandidate = candidate;
+    return candidate;
+  }
 
-    // Trigger re-evaluation of inline completions
-    void vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+  /**
+   * Discard any ghost text this request produced and mark the identity as
+   * terminally answered with nothing.
+   *
+   * Used for an empty terminal progress value, a request that completed
+   * without one, and a backend failure — including one that arrives after
+   * partial cumulative text has already been shown. Partial text from a failed
+   * stream must never stay on screen looking like a completed suggestion.
+   */
+  private revokeCandidateFor(identity: RequestIdentity): boolean {
+    const cached = this.cachedCandidate;
+    const hadVisibleCandidate =
+      !!cached &&
+      cached.uri === identity.uri &&
+      cached.version === identity.version &&
+      cached.line === identity.line &&
+      cached.character === identity.character;
+
+    if (!hadVisibleCandidate) {
+      // Nothing was on screen for this identity, so there is nothing to clear
+      // and no retrigger to absorb. Leaving the marker unset keeps a later
+      // invocation at this cursor free to start a fresh stream.
+      return false;
+    }
+
+    this.cachedCandidate = null;
+    this.terminallyEmptyIdentity = identity;
+    return true;
   }
 
   /**
@@ -324,6 +400,22 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
           )
         : new vscode.Range(requestPos, requestPos);
       return [new vscode.InlineCompletionItem(this.cachedCandidate.text, range)];
+    }
+
+    // Absorb the single re-query caused by revoking this identity's ghost
+    // text. Consuming the marker here keeps the suppression to exactly that
+    // one re-entry, so an explicit re-invocation at the same cursor can still
+    // start a fresh stream.
+    const terminallyEmpty = this.terminallyEmptyIdentity;
+    if (
+      terminallyEmpty &&
+      terminallyEmpty.uri === docUri &&
+      terminallyEmpty.version === docVersion &&
+      terminallyEmpty.line === position.line &&
+      terminallyEmpty.character === position.character
+    ) {
+      this.terminallyEmptyIdentity = null;
+      return undefined;
     }
 
     // A display re-query for a generation that is already in flight must not
@@ -451,6 +543,12 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
 
     this.client.sendRequest('textDocument/perlInlineCompletionStream', params, requestToken).then(
       (response: unknown) => {
+        // A terminal progress value already settled this generation (or it was
+        // superseded). The stream owns its own outcome; the response is only
+        // the acknowledgement.
+        if (this.activeRequestIdentity !== requestIdentity) {
+          return;
+        }
         // The server answers this custom request with a one-shot inline
         // completion result whenever it declines to stream — its own AI config
         // is off (`streaming.rs:102-104`), or no backend is available and
@@ -459,19 +557,33 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
         // outright, because the owner routes an invocation to exactly one route
         // and never calls the standard path afterwards.
         const served = this.cacheOneShotResponse(response, requestIdentity);
+        // The request resolved with neither a terminal progress value nor a
+        // one-shot result. Fail closed: anything this stream showed so far is
+        // unconfirmed and must not survive as if it had completed.
+        const shouldRetrigger = served || this.revokeCandidateFor(requestIdentity);
         this.settleActiveStream(requestIdentity);
-        if (served) {
+        if (shouldRetrigger) {
           void vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
         }
       },
       (err: unknown) => {
+        // A cancelled or superseded generation has already been cleaned up by
+        // `cancelActiveStream`, which also discarded its candidate.
+        if (this.activeRequestIdentity !== requestIdentity) {
+          return;
+        }
+        // A backend failure after partial cumulative text must not leave that
+        // text on screen looking like a completed suggestion.
+        const revoked = this.revokeCandidateFor(requestIdentity);
         this.settleActiveStream(requestIdentity);
-        // Silently ignore cancellation errors (expected on cursor movement)
         if (err instanceof Error && err.message.includes('cancelled')) {
           return;
         }
-        // Non-cancellation errors are suppressed — the stream will be
-        // retried on the next inline completion trigger.
+        // Non-cancellation errors stay quiet beyond the revocation — the stream
+        // is retried on the next inline completion trigger.
+        if (revoked) {
+          void vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+        }
       },
     );
   }
@@ -575,6 +687,10 @@ export class StreamingCompletionController implements vscode.Disposable, InlineS
     // that fire after this point see a mismatched identity and bail out.
     this.activeRequestIdentity = null;
     this.cachedCandidate = null;
+    // The cursor moved, the document changed, or the adapter is going away:
+    // whatever a previous stream terminally answered no longer describes what
+    // the user is looking at.
+    this.terminallyEmptyIdentity = null;
     if (this.activeCancellationSubscription) {
       this.activeCancellationSubscription.dispose();
       this.activeCancellationSubscription = null;
