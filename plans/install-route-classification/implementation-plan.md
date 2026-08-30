@@ -545,9 +545,12 @@ def require_catalog_projection(catalog_rows, route_id, projection_context):
         raise ValueError("route is incompatible with its catalog context")
     return route
 
-def require_route_family_bindings(catalog_rows):
+def require_route_family_bindings(
+    catalog_rows,
+    route_family_children=ROUTE_FAMILY_CHILDREN,
+):
     catalog_route_ids = {row["route_id"] for row in catalog_rows}
-    for parent_route_id, child_route_ids in ROUTE_FAMILY_CHILDREN.items():
+    for parent_route_id, child_route_ids in route_family_children.items():
         family_route_ids = (parent_route_id, *child_route_ids)
         if len(set(family_route_ids)) != len(family_route_ids):
             raise ValueError("route family parent and children must be distinct")
@@ -729,6 +732,13 @@ def assert_closure_rejected(catalog_rows):
         return True
     raise AssertionError("unreferenced catalog row was accepted")
 
+def assert_route_family_rejected(catalog_rows, route_family_children):
+    try:
+        require_route_family_bindings(catalog_rows, route_family_children)
+    except ValueError:
+        return True
+    raise AssertionError("invalid route family declaration was accepted")
+
 def assert_inventory_rejected(inventory_rows):
     try:
         validate_closure(inventory_rows, fixture_ledger(), FIXTURE_CATALOG)
@@ -776,6 +786,34 @@ MISSING_FAMILY_PARENT_CATALOG = tuple(
 require_true(
     assert_closure_rejected(MISSING_FAMILY_PARENT_CATALOG),
     "route family with a missing parent was accepted",
+)
+MISSING_FAMILY_CHILD_DECLARATION = {
+    "fixture-route-VS_Code_extension": (
+        "fixture-route-C1202-absent",
+        "fixture-route-C1202-open-vsx",
+        "r_4f8c2a",
+    ),
+}
+require_true(
+    assert_route_family_rejected(
+        FIXTURE_CATALOG,
+        MISSING_FAMILY_CHILD_DECLARATION,
+    ),
+    "missing route family child declaration was accepted",
+)
+NON_DISTINCT_FAMILY_DECLARATION = {
+    "fixture-route-VS_Code_extension": (
+        "fixture-route-VS_Code_extension",
+        "fixture-route-C1202-open-vsx",
+        "r_4f8c2a",
+    ),
+}
+require_true(
+    assert_route_family_rejected(
+        FIXTURE_CATALOG,
+        NON_DISTINCT_FAMILY_DECLARATION,
+    ),
+    "non-distinct route family declaration was accepted",
 )
 require_true(assert_rejected(
     WRONG_REGISTRY_CATALOG,
@@ -1214,20 +1252,13 @@ assuming the former prose-row denominator.
    of applicable projections; this order is deterministic serialization/source order
    only, and does not define route-selection precedence or a preferred route while
    H1–H7 remain human-pending.
-9. **Managed-client registry-family isolation.** A VS Code managed-client
-   request that supplies `target_registry` must return exactly the matching
-   registry-specific route and never the registry-unspecified family row. The
-   same request with `target_registry` unspecified must return the family row,
-   with the registry-specific rows present only as diagnostics. A result that
-   returns both a family row and one of its registry-specific rows, or that
-   treats the family row as registry-specific, fails.
-10. **Determinism.** The eventual catalog-owner regeneration check must produce
+9. **Determinism.** The eventual catalog-owner regeneration check must produce
    byte-identical classification output across repeated runs and supported
    environments. The output contains no timestamps or other ambient state, and
    catalog ordering is normalized rather than observed; any run-to-run diff
    fails. The concrete command and owning package remain deferred until the
    validated catalog contract selects them.
-11. **Denominator and inventory closure.** Every exact route row and projection
+10. **Denominator and inventory closure.** Every exact route row and projection
    context in the validated catalog is classified exactly once, and every one of
    the literal claim IDs C101, C102, C103, C104, C105, C106, C107, C108, C201,
    C202, C203, C204, C205, C206, C207, C208, C209, C210, C211, C212, C213,
@@ -1245,43 +1276,43 @@ assuming the former prose-row denominator.
    derivation under §0's OPEN-UNRESOLVED dependency state, not an accepted
    v2 input contract; it is re-derived at the §0 wake event and rebound to
    the validated catalog rows before any implementation lane starts.
-12. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
+11. **Cross-channel inference block (C201/C703).** A claim's receipt on channel
    X must never satisfy another route's receipt requirement (e.g., GitHub
    Releases v0.17.0 receipt must not make `homebrew-tap` `proven_current`).
    An implementation with a global "release exists" fact fails.
-13. **Independent checksum/provenance binding.** A route with matching
+12. **Independent checksum/provenance binding.** A route with matching
     `SHA256SUMS` text but no independently bound artifact and release identity
     must remain `unproven`; a checksum string copied from a different channel
     must not satisfy the integrity/provenance axis.
-14. **Candidate versus installed state.** A candidate artifact that has been
+13. **Candidate versus installed state.** A candidate artifact that has been
     built or uploaded but has no installed, verified product-unit observation
     must not satisfy installation or first-use cells. Conversely, an installed
     local build must not be emitted as a public publication receipt.
-15. **PATH/session/execution isolation.** A route that resolves only through
+14. **PATH/session/execution isolation.** A route that resolves only through
     the current shell's PATH, an inherited session, or an ambient working
     directory must remain unproven for a fresh-process route. A fresh lookup,
     transport, cleanup, and settled process must each be present; one cannot
     stand in for the others.
-16. **Lifecycle closure.** A route with install and first-use evidence but no
+15. **Lifecycle closure.** A route with install and first-use evidence but no
     repair, upgrade, rollback, or removal cell remains incomplete. A lifecycle
     cell from another product unit or channel must not close this route.
-17. **Publication and verification separation.** A private/candidate upload or
+16. **Publication and verification separation.** A private/candidate upload or
     an unverified public listing must not become `proven_current`; publication,
     checksum/provenance verification, and currentness are separate predicates.
-18. **No-route and ambiguity closure.** If every route fails a hard dimension,
+17. **No-route and ambiguity closure.** If every route fails a hard dimension,
     output must be an explicit no-route result with reasons. If two exact rows
     or contexts are ambiguous, selection must refuse rather than choose by
     input order, prose frequency, or a fallback command.
-19. **Context and fallback isolation.** An editor route must not satisfy a CI,
+18. **Context and fallback isolation.** An editor route must not satisfy a CI,
     server-only, or manual context without an explicit catalog projection.
     Missing preferred policy or a failed hard filter must not silently fall back
     to `latest`, an unpinned command, or another context's route.
-20. **Composite simultaneous failures.** A fixture with integrity contradiction
+19. **Composite simultaneous failures.** A fixture with integrity contradiction
     and incomplete lifecycle must retain both dimension verdicts in the fixed
     vector and produce the same `overall=contradicted` summary regardless of
     catalog or claim input order. A scalar-only result, or a result that drops
     the lifecycle failure, fails.
-21. **Selection-context and risk isolation.** Identical requests differing only
+20. **Selection-context and risk isolation.** Identical requests differing only
     in editor family, target registry, target/libc, observed Windows emulation
     capability, or `strict` versus `permissive` must produce the corresponding
     observable result: strict selects only one proven-current projection (or
@@ -1293,6 +1324,13 @@ assuming the former prose-row denominator.
     `selection=deferred_human_order` with `selected_count=0`. A route that ignores
     any supplied field fails; permissive must not turn a contradiction, unproven
     route, or H7 verify-first diagnostic into a selection.
+21. **Managed-client registry-family isolation.** A VS Code managed-client
+   request that supplies `target_registry` must return exactly the matching
+   registry-specific route and never the registry-unspecified family row. The
+   same request with `target_registry` unspecified must return the family row,
+   with the registry-specific rows present only as diagnostics. A result that
+   returns both a family row and one of its registry-specific rows, or that
+   treats the family row as registry-specific, fails.
 
 ---
 
