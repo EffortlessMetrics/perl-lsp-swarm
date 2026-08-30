@@ -26,29 +26,6 @@ if [ "$GIT_USER_NAME" = "Codex Release Validation" ] || \
     exit 1
 fi
 
-# Format the staged Rust diff before the gate inspects it.
-#
-# `rustfmt_staged` in the commit gate below blocks a commit whose staged Rust
-# would be reformatted. Formatting the diff first turns that block into a
-# self-heal: the common case (a few unformatted lines in the files you are
-# already committing) is fixed and re-staged instead of bouncing you out to
-# run a workspace-wide `cargo xtask fmt` by hand.
-#
-# Only fully staged files are rewritten. A file that is staged *and*
-# separately modified in the worktree is reported and left alone, so this can
-# never sweep unstaged work into the commit.
-#
-# Non-fatal on its own: if rustfmt is unavailable the gate below still blocks,
-# so a missing formatter cannot turn into a silently unformatted commit.
-#
-# A failed run leaves nothing half-done. Files are formatted in memory first,
-# and any write or re-stage failure restores the original bytes, so the
-# worktree and the index stay in step and the gate below judges the same tree
-# you started with. The one exception — a rollback that itself fails — is
-# reported by name in the command's own output above this warning.
-echo "Formatting staged Rust diff: cargo xtask fmt --staged"
-cargo xtask fmt --staged || echo "⚠️  staged formatting did not run; the commit gate below still applies"
-
 # Refresh the committed inventory in the same commit as any staged tracked-file
 # additions, removals, or renames. The snapshot includes aggregate counts for
 # Rust-family files too, so filtering to non-Rust extensions would leave the
@@ -56,26 +33,31 @@ cargo xtask fmt --staged || echo "⚠️  staged formatting did not run; the com
 # preserving the exact tree that the commit gate will inspect. Refuse to
 # overwrite a separately edited snapshot; the contributor can stage or discard
 # that edit explicitly before retrying.
-STAGED_INVENTORY_PATHS=""
-while IFS= read -r staged_path; do
-    [ -z "$staged_path" ] && continue
+STAGED_INVENTORY_CHANGE=0
+STAGED_INVENTORY_PATHS=()
+while IFS= read -r -d '' staged_path; do
+    STAGED_INVENTORY_CHANGE=1
     case "$staged_path" in
         docs/policy/NON_RUST_INVENTORY.md)
             ;;
         *)
-            STAGED_INVENTORY_PATHS="${STAGED_INVENTORY_PATHS}${staged_path}\n"
+            STAGED_INVENTORY_PATHS+=("$staged_path")
             ;;
     esac
-done < <(git diff --cached --name-only --diff-filter=ADR)
+done < <(git diff --cached --name-only -z --diff-filter=ADR)
 
-if [ -n "$STAGED_INVENTORY_PATHS" ]; then
+if [ "$STAGED_INVENTORY_CHANGE" -eq 1 ]; then
     if ! git diff --quiet -- docs/policy/NON_RUST_INVENTORY.md; then
         echo "❌ Cannot refresh non-Rust inventory: docs/policy/NON_RUST_INVENTORY.md has unstaged edits"
         echo "   Stage or discard those edits, then retry the commit."
         exit 1
     fi
     echo "Refreshing staged tracked-file inventory for:"
-    printf '   %b' "$STAGED_INVENTORY_PATHS"
+    if [ "${#STAGED_INVENTORY_PATHS[@]}" -eq 0 ]; then
+        printf '   %q\n' docs/policy/NON_RUST_INVENTORY.md
+    else
+        printf '   %q\n' "${STAGED_INVENTORY_PATHS[@]}"
+    fi
     cargo xtask non-rust inventory --write
     git add -- docs/policy/NON_RUST_INVENTORY.md
 fi
@@ -88,7 +70,7 @@ cargo xtask precommit
         println!("✅ Installed pre-commit and pre-push hooks");
         println!(
             "   The pre-commit hook blocks placeholder identities, formats the staged Rust diff \
-             ('cargo xtask fmt --staged'), then runs 'cargo xtask precommit'"
+            (inventory refresh), then runs 'cargo xtask precommit'"
         );
         println!("   The pre-push hook runs 'nix develop -c just pr-fast' before each push");
         println!("   Skip with: git commit --no-verify / git push --no-verify");
@@ -530,10 +512,6 @@ mod tests {
             .find("cargo xtask precommit")
             .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
         assert!(guard < gate);
-        // Note this asserts the absence of a bare workspace-wide `cargo fmt`.
-        // The staged formatter is `cargo xtask fmt --staged`, which does not
-        // match — see `pre_commit_formats_staged_diff_before_the_gate`.
-        assert!(!hook.contains("cargo fmt"));
         assert!(!hook.contains("cargo clippy"));
         assert!(!hook.contains("cargo test"));
         assert!(!hook.contains("ripr"));
@@ -541,32 +519,10 @@ mod tests {
     }
 
     #[test]
-    fn pre_commit_formats_staged_diff_before_the_gate() -> Result<()> {
-        // Ordering is the hook's contract: format the staged diff, then let the
-        // gate judge the result. Reversed, the gate would reject an index the
-        // very next step was about to fix. Nothing else asserted that the
-        // formatting step is present at all, so a reorder or a deletion would
-        // have gone unnoticed.
-        let hook = pre_commit_hook_script();
-        let guard = hook
-            .find("Refusing commit with placeholder git identity")
-            .ok_or_else(|| color_eyre::eyre::eyre!("placeholder identity guard missing"))?;
-        let format = hook
-            .find("cargo xtask fmt --staged")
-            .ok_or_else(|| color_eyre::eyre::eyre!("staged formatting step missing"))?;
-        let gate = hook
-            .find("cargo xtask precommit")
-            .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
-        assert!(guard < format, "identity guard must run before staged formatting");
-        assert!(format < gate, "staged formatting must run before the commit gate");
-        Ok(())
-    }
-
-    #[test]
     fn pre_commit_refreshes_inventory_after_staged_tracked_changes() -> Result<()> {
         let hook = pre_commit_hook_script();
         let refresh = hook
-            .find("git diff --cached --name-only --diff-filter=ADR")
+            .find("git diff --cached --name-only -z --diff-filter=ADR")
             .ok_or_else(|| color_eyre::eyre::eyre!("staged inventory change scan missing"))?;
         let write = hook
             .find("cargo xtask non-rust inventory --write")
@@ -581,6 +537,8 @@ mod tests {
         assert!(write < stage);
         assert!(stage < gate);
         assert!(hook.contains("has unstaged edits"));
+        assert!(hook.contains("read -r -d ''"));
+        assert!(hook.contains("printf '   %q\\n'"));
         Ok(())
     }
 
@@ -619,7 +577,10 @@ mod tests {
         run_git(&repo, &["config", "user.email", "test@example.com"])?;
         run_git(&repo, &["config", "user.name", "hook test"])?;
         fs::write(repo.join("README.md"), "baseline\n")?;
+        fs::create_dir_all(repo.join("docs/policy"))?;
+        fs::write(repo.join("docs/policy/NON_RUST_INVENTORY.md"), "# baseline inventory\n")?;
         run_git(&repo, &["add", "README.md"])?;
+        run_git(&repo, &["add", "docs/policy/NON_RUST_INVENTORY.md"])?;
         run_git(&repo, &["commit", "-qm", "baseline"])?;
 
         let bin = repo.join("fake-bin");
@@ -642,8 +603,9 @@ mod tests {
         fs::write(&hook, pre_commit_hook_script())?;
         #[cfg(unix)]
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
-        fs::write(repo.join("fixture.json"), "{}\n")?;
-        run_git(&repo, &["add", "fixture.json"])?;
+        run_git(&repo, &["rm", "-q", "docs/policy/NON_RUST_INVENTORY.md"])?;
+        fs::write(repo.join("unusual name;touch pwned.json"), "{}\n")?;
+        run_git(&repo, &["add", "--", "unusual name;touch pwned.json"])?;
 
         let bash = [
             PathBuf::from("bash"),
@@ -671,6 +633,9 @@ mod tests {
             "staged inventory hook failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("unusual"));
+        assert!(!repo.join("pwned.json").exists());
         let calls = fs::read_to_string(&log)?;
         assert!(calls.contains("xtask non-rust inventory --write"));
         assert_eq!(
