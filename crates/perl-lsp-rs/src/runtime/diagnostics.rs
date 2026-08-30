@@ -3107,6 +3107,13 @@ mod tests {
         server.publish_diagnostics(uri);
         std::thread::sleep(Duration::from_millis(50));
 
+        // `after_push == 1` below does not on its own prove this push ran:
+        // `didOpen` publishes too, so the cell is already warm at 1 before
+        // `publish_diagnostics` is called, and a write-once cell reads 1 either
+        // way. Require the publish itself, which the buffer clear above makes
+        // attributable to this push alone.
+        assert_push_published(&buf.lock().clone(), uri)?;
+
         let after_push = build_count(&server)?;
         assert_eq!(
             after_push, 1,
