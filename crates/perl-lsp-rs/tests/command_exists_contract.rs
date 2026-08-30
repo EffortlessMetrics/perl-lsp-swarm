@@ -128,10 +128,9 @@ fn command_exists_contract_child() -> TestResult {
         "true" => true,
         "false" => false,
         other => {
-            return Err(io::Error::other(format!(
-                "invalid {CHILD_EXPECTED_ENV} value: {other:?}"
-            ))
-            .into());
+            return Err(
+                io::Error::other(format!("invalid {CHILD_EXPECTED_ENV} value: {other:?}")).into(),
+            );
         }
     };
     let actual = command_exists(&command);
@@ -155,13 +154,7 @@ fn public_command_exists_rejects_absent_candidate_and_missing_path() -> TestResu
     let command = "perl_lsp_missing_command_subject";
     let path = joined_path(&[root.path()])?;
 
-    run_child_probe(
-        command,
-        Some(path.as_os_str()),
-        platform_path_ext(),
-        root.path(),
-        false,
-    )?;
+    run_child_probe(command, Some(path.as_os_str()), platform_path_ext(), root.path(), false)?;
     run_child_probe(command, None, platform_path_ext(), root.path(), false)
 }
 
@@ -172,13 +165,7 @@ fn public_command_exists_rejects_directory_candidate() -> TestResult {
     fs::create_dir(root.path().join(command_candidate_name(command)))?;
     let path = joined_path(&[root.path()])?;
 
-    run_child_probe(
-        command,
-        Some(path.as_os_str()),
-        platform_path_ext(),
-        root.path(),
-        false,
-    )
+    run_child_probe(command, Some(path.as_os_str()), platform_path_ext(), root.path(), false)
 }
 
 #[test]
@@ -194,22 +181,10 @@ fn public_command_exists_continues_to_later_valid_path_candidate() -> TestResult
     let later_candidate = write_valid_candidate(&second, command)?;
     let path = joined_path(&[first.as_path(), second.as_path()])?;
 
-    run_child_probe(
-        command,
-        Some(path.as_os_str()),
-        platform_path_ext(),
-        root.path(),
-        true,
-    )?;
+    run_child_probe(command, Some(path.as_os_str()), platform_path_ext(), root.path(), true)?;
 
     fs::remove_file(later_candidate)?;
-    run_child_probe(
-        command,
-        Some(path.as_os_str()),
-        platform_path_ext(),
-        root.path(),
-        false,
-    )
+    run_child_probe(command, Some(path.as_os_str()), platform_path_ext(), root.path(), false)
 }
 
 #[test]
@@ -222,13 +197,7 @@ fn public_command_exists_handles_path_entries_with_spaces() -> TestResult {
     write_valid_candidate(&path_entry, command)?;
     let path = joined_path(&[path_entry.as_path()])?;
 
-    run_child_probe(
-        command,
-        Some(path.as_os_str()),
-        platform_path_ext(),
-        root.path(),
-        true,
-    )
+    run_child_probe(command, Some(path.as_os_str()), platform_path_ext(), root.path(), true)
 }
 
 #[cfg(unix)]
@@ -277,18 +246,6 @@ fn public_command_exists_honors_windows_pathext() -> TestResult {
     write_valid_candidate(root.path(), command)?;
     let path = joined_path(&[root.path()])?;
 
-    run_child_probe(
-        command,
-        Some(path.as_os_str()),
-        Some(OsStr::new(".CMD")),
-        root.path(),
-        true,
-    )?;
-    run_child_probe(
-        command,
-        Some(path.as_os_str()),
-        Some(OsStr::new(".EXE")),
-        root.path(),
-        false,
-    )
+    run_child_probe(command, Some(path.as_os_str()), Some(OsStr::new(".CMD")), root.path(), true)?;
+    run_child_probe(command, Some(path.as_os_str()), Some(OsStr::new(".EXE")), root.path(), false)
 }
