@@ -61,6 +61,11 @@ pub fn inferred_line_ending(source: &str) -> &'static str {
 /// that document-level fallback.
 #[must_use]
 pub fn inferred_line_ending_at(source: &str, offset: usize) -> &'static str {
+    let bytes = source.as_bytes();
+    if offset > 0 && offset < bytes.len() && bytes[offset - 1] == b'\r' && bytes[offset] == b'\n' {
+        return "\r\n";
+    }
+
     let Some(prefix) = source.get(..offset) else {
         return inferred_line_ending(source);
     };
@@ -149,5 +154,6 @@ mod tests {
     #[test]
     fn an_offset_between_crlf_bytes_keeps_the_pair_together() {
         assert_eq!(inferred_line_ending_at("a\r\n", 2), "\r\n");
+        assert_eq!(inferred_line_ending_at("a\nb\r\n", 4), "\r\n");
     }
 }
