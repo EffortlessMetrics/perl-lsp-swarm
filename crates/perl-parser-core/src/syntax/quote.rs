@@ -192,7 +192,7 @@ pub fn extract_substitution_parts_strict(
 fn skip_paired_replacement_gap(mut text: &str) -> &str {
     let mut comment_eligible = false;
     loop {
-        let trimmed = text.trim_start_matches(char::is_whitespace);
+        let trimmed = text.trim_start_matches(|ch: char| ch.is_ascii_whitespace());
         let saw_whitespace = trimmed.len() != text.len();
         text = trimmed;
         comment_eligible |= saw_whitespace;

@@ -94,3 +94,20 @@ fn immediate_hash_remains_a_transliteration_delimiter() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn unicode_whitespace_does_not_create_a_comment_gap() -> TestResult {
+    for whitespace in ['\u{a0}', '\u{2003}'] {
+        for operator in ["tr", "y"] {
+            let source = format!("{operator}{whitespace}# comment\n {{a}} {{b}}; after");
+            let mut lexer = PerlLexer::new(&source);
+            let token = next_non_trivia(&mut lexer).ok_or("expected token")?;
+            assert!(
+                matches!(token.token_type, TokenType::Error(_)),
+                "Unicode whitespace must not admit a comment gap: {source:?}"
+            );
+        }
+    }
+
+    Ok(())
+}

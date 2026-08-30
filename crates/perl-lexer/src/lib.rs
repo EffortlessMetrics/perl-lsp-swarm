@@ -3283,7 +3283,7 @@ impl<'a> PerlLexer<'a> {
     }
 
     fn skip_quote_operator_delimiter_gap(&mut self) {
-        if self.current_char().is_some_and(char::is_whitespace) {
+        if self.current_char().is_some_and(|ch| ch.is_ascii_whitespace()) {
             self.skip_comment_gap_after_whitespace();
         }
     }
@@ -3292,7 +3292,7 @@ impl<'a> PerlLexer<'a> {
         let mut comment_eligible = false;
         loop {
             let mut saw_whitespace = false;
-            while self.current_char().is_some_and(char::is_whitespace) {
+            while self.current_char().is_some_and(|ch| ch.is_ascii_whitespace()) {
                 self.advance();
                 saw_whitespace = true;
             }
@@ -3315,7 +3315,7 @@ impl<'a> PerlLexer<'a> {
 
     fn peek_quote_operator_gap_and_following(&self) -> (Option<char>, Option<char>, bool) {
         let (candidate, following) = self.peek_nonspace_and_following();
-        let saw_gap = self.current_char().is_some_and(char::is_whitespace);
+        let saw_gap = self.current_char().is_some_and(|ch| ch.is_ascii_whitespace());
         (candidate, following, saw_gap)
     }
 
