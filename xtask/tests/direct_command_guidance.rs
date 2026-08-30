@@ -94,13 +94,24 @@ fn cache_writer_contract_path(root: &Path) -> Result<PathBuf, Box<dyn std::error
     Ok(path)
 }
 
+fn run_cache_writer_contract(
+    script: &Path,
+    governed_root: &Path,
+) -> Result<std::process::ExitStatus, Box<dyn std::error::Error>> {
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    Ok(Command::new(python)
+        .arg(script)
+        .current_dir(governed_root)
+        .env("A3_REPO_ROOT", governed_root)
+        .status()?)
+}
+
 #[test]
 fn required_harness_runs_cache_writer_authority_contract() -> Result<(), Box<dyn std::error::Error>>
 {
     let root = repository_root()?;
     let script = cache_writer_contract_path(&root)?;
-    let python = if cfg!(windows) { "python" } else { "python3" };
-    let status = Command::new(python).arg(script).current_dir(&root).status()?;
+    let status = run_cache_writer_contract(&script, &root)?;
     assert!(status.success(), "cache-writer authority contract failed");
     Ok(())
 }
@@ -109,4 +120,18 @@ fn required_harness_runs_cache_writer_authority_contract() -> Result<(), Box<dyn
 fn missing_cache_writer_authority_contract_fails_discovery() {
     let missing_root = Path::new("definitely-missing-cache-writer-contract-root");
     assert!(cache_writer_contract_path(missing_root).is_err());
+}
+
+#[test]
+fn cache_writer_contract_rejects_governed_root_without_workflow()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = repository_root()?;
+    let script = cache_writer_contract_path(&root)?;
+    let root_without_workflow = root.join("xtask");
+    let status = run_cache_writer_contract(&script, &root_without_workflow)?;
+    assert!(
+        !status.success(),
+        "cache-writer authority contract must fail when the governed workflow is absent"
+    );
+    Ok(())
 }

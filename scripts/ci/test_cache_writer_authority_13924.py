@@ -64,6 +64,13 @@ EXPECTED_STEP_IF = {
 }
 
 
+def workflow_lines(path: Path = WORKFLOW) -> list[str]:
+    """Load the governed workflow, failing when the authority surface is absent."""
+    if not path.is_file():
+        raise FileNotFoundError(f"ci.yml not present in governed checkout: {path}")
+    return path.read_text(encoding="utf-8").splitlines()
+
+
 def indented_block(lines: list[str], marker: str, indent: int) -> list[str]:
     """Return one YAML mapping entry without depending on its next sibling's name."""
     prefix = " " * indent + marker + ":"
@@ -166,9 +173,7 @@ def cache_step(
 class CacheWriterAuthorityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        if not WORKFLOW.is_file():
-            raise unittest.SkipTest("ci.yml not present in this checkout")
-        cls.lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+        cls.lines = workflow_lines()
 
     def test_exact_cache_steps_preserve_identity_restore_options_and_save_guard(
         self,
@@ -218,6 +223,11 @@ class CacheWriterAuthorityTests(unittest.TestCase):
         for ref, expected in cases.items():
             with self.subTest(ref=ref):
                 self.assertEqual(expected, ref in allowed_refs)
+
+    def test_missing_workflow_fails_closed(self) -> None:
+        missing = REPO_ROOT / "definitely-missing-ci-workflow.yml"
+        with self.assertRaises(FileNotFoundError):
+            workflow_lines(missing)
 
 
 if __name__ == "__main__":
