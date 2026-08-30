@@ -10,6 +10,10 @@ on:
         description: 'Release tag (e.g., v<0.x.y>)'
         required: true
         type: string
+      expected_sha:
+        description: 'Exact validated 40-hex release subject from orchestration'
+        required: true
+        type: string
       prerelease:
         description: 'Mark this as a prerelease'
         required: false
@@ -58,12 +62,21 @@ jobs:
         id: meta
         env:
           TAG_INPUT: ${{ github.event.inputs.tag }}
+          EXPECTED_SHA: ${{ github.event.inputs.expected_sha }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PRERELEASE_INPUT: ${{ github.event.inputs.prerelease }}
         run: |
           set -euo pipefail
+          if ! [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            printf '::error::Expected release source SHA is malformed\n'
+            exit 1
+          fi
+          if [ "$GITHUB_SHA" != "$EXPECTED_SHA" ]; then
+            printf '::error::Child workflow resolved another source SHA: expected %s, got %s\n' "$EXPECTED_SHA" "$GITHUB_SHA"
+            exit 1
+          fi
           if [ "$REF_TYPE" != "branch" ] || [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
             printf '::error::Release candidate must start at the exact default-branch ref, got %s/%s\n' "$REF_TYPE" "$REF_NAME"
             exit 1
@@ -289,6 +302,23 @@ jobs:
           printf 'ASSET=%s%s\n' "$PKG_NAME" "$EXT" >> "$GITHUB_ENV"
           printf 'PKG_NAME=%s\n' "$PKG_NAME" >> "$GITHUB_ENV"
 
+      - name: Bind post-strip package members to validated build evidence
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_package_evidence.py \
+            --receipt target/release-identity/release-build-receipt.json \
+            --package-dir "$PKG_NAME" \
+            --archive "$ASSET" \
+            --source-sha "$SOURCE_SHA" \
+            --version "$VERSION" \
+            --target "$TARGET" \
+            --output target/release-identity/release-package-evidence.json
+
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -304,6 +334,7 @@ jobs:
             target/release-identity/release-topology.json
             target/release-identity/release-build-identity.json
             target/release-identity/release-build-receipt.json
+            target/release-identity/release-package-evidence.json
           if-no-files-found: error
           retention-days: 90
 
@@ -415,13 +446,6 @@ jobs:
           set -euo pipefail
           cargo sbom --output-format spdx_json_2_3 > candidate/dist/sbom-spdx.json
           test -s candidate/dist/sbom-spdx.json
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          value = json.loads(Path("candidate/dist/sbom-spdx.json").read_text(encoding="utf-8"))
-          if value.get("spdxVersion") != "SPDX-2.3" or not value.get("packages"):
-              raise SystemExit("SBOM is not nonempty SPDX-2.3 evidence")
-          PY
 
       - name: Build terminal artifact manifest
         env:
@@ -434,13 +458,16 @@ jobs:
             --candidate candidate \
             --source-sha "$SOURCE_SHA" \
             --tag "$TAG"
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG" \
+            --check
 
       - name: Attest exact terminal candidate subjects
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.0
         with:
-          subject-path: |
-            candidate/dist/*
-            candidate/evidence/**/*
+          subject-checksums: candidate/attestation-subjects.sha256
 
       - name: Upload terminal candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -460,6 +487,12 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout exact release subject validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.expected_sha }}
+          persist-credentials: false
+
       - name: Download terminal candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -472,66 +505,25 @@ jobs:
           TAG: ${{ needs.release-metadata.outputs.tag }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG" \
+            --check
 
-          root = Path("candidate").resolve(strict=True)
-          manifest_path = root / "dist" / "release-terminal-manifest.json"
-          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-          if manifest.get("schema_version") != "perl_lsp.release_terminal_manifest.v1":
-              raise SystemExit("unsupported terminal manifest")
-          if manifest.get("status") != "eligible":
-              raise SystemExit("terminal manifest is not eligible")
-          if manifest.get("source_sha") != os.environ["SOURCE_SHA"]:
-              raise SystemExit("terminal manifest names another source")
-          if manifest.get("tag") != os.environ["TAG"]:
-              raise SystemExit("terminal manifest names another tag")
-
-          def verify(row):
-              relative = row.get("path")
-              expected = row.get("sha256")
-              if not isinstance(relative, str) or not isinstance(expected, str):
-                  raise SystemExit("terminal subject row is malformed")
-              path = (root / relative).resolve(strict=True)
-              path.relative_to(root)
-              observed = hashlib.sha256(path.read_bytes()).hexdigest()
-              if observed != expected:
-                  raise SystemExit(f"terminal subject digest mismatch: {relative}")
-
-          archives = manifest.get("archives")
-          evidence = manifest.get("build_evidence", {}).get("subjects")
-          if not isinstance(archives, list) or not archives:
-              raise SystemExit("terminal manifest has no archives")
-          if not isinstance(evidence, list) or not evidence:
-              raise SystemExit("terminal manifest has no build evidence")
-          for archive in archives:
-              verify(archive)
-          verify(manifest["checksums"])
-          verify(manifest["sbom"])
-          for evidence_row in evidence:
-              verify(evidence_row)
-          PY
-
-      - name: Revalidate unused tag at publication boundary
+      - name: Atomically create exact release tag
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release-metadata.outputs.tag }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          set +e
-          RESPONSE=$(gh api --include "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" 2>&1)
-          STATUS=$?
-          set -e
-          if [ "$STATUS" -eq 0 ]; then
-            printf '::error::Release tag became occupied before publication: %s\n' "$TAG"
-            exit 1
-          fi
-          if ! grep -Eq 'HTTP/[0-9.]+ 404|HTTP 404' <<< "$RESPONSE"; then
-            printf '::error::Could not prove release tag is unused: %s\n' "$TAG"
-            printf '%s\n' "$RESPONSE"
+          gh api -X POST "/repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${TAG}" \
+            -f sha="$SOURCE_SHA" >/dev/null
+          OBSERVED_SHA=$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha')
+          if [ "$OBSERVED_SHA" != "$SOURCE_SHA" ]; then
+            printf '::error::Atomic release tag does not name exact source: expected %s, got %s\n' "$SOURCE_SHA" "$OBSERVED_SHA"
             exit 1
           fi
 
@@ -548,6 +540,19 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify exact release tag currentness
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          OBSERVED_SHA=$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha')
+          if [ "$OBSERVED_SHA" != "$SOURCE_SHA" ]; then
+            printf '::error::Release tag currentness changed: expected %s, got %s\n' "$SOURCE_SHA" "$OBSERVED_SHA"
+            exit 1
+          fi
 
   dispatch-publishers:
     name: Dispatch admitted downstream publishers

@@ -4,8 +4,6 @@ name: Publish to crates.io
 # Uses cargo metadata for correct dependency-order publishing
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       version:
@@ -211,16 +209,10 @@ jobs:
       - name: Resolve and validate target version
         id: release-version
         env:
-          EVENT_NAME: ${{ github.event_name }}
           DISPATCH_VERSION: ${{ github.event.inputs.version }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            VERSION="$DISPATCH_VERSION"
-          else
-            VERSION="${RELEASE_TAG#v}"
-          fi
+          VERSION="$DISPATCH_VERSION"
 
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
             printf '::error::Invalid release version: %s\n' "$VERSION"

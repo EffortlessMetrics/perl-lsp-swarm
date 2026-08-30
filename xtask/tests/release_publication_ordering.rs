@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_yaml_ng::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 const PUBLISH_ENDPOINTS: [&str; 3] = [
@@ -70,6 +71,7 @@ fn validate_release_graph(document: &Value) -> Result<()> {
         "release_terminal_manifest.py",
         "actions/attest@",
         "release-terminal-candidate",
+        "subject-checksums",
     ] {
         ensure!(
             candidate_text.contains(required),
@@ -91,17 +93,25 @@ fn validate_release_graph(document: &Value) -> Result<()> {
         "publication does not consume terminal candidate"
     );
     ensure!(
-        publication_text.contains("terminal manifest names another source"),
+        publication_text.contains("release_terminal_manifest.py")
+            && publication_text.contains("SOURCE_SHA")
+            && publication_text.contains("--check"),
         "publication does not bind the terminal manifest to its exact source"
     );
     ensure!(
-        publication_text.contains("terminal manifest names another tag"),
+        publication_text.contains("TAG"),
         "publication does not bind the terminal manifest to its exact tag"
     );
     ensure!(
         publication_text.contains("action-gh-release"),
         "publication job has no GitHub Release boundary"
     );
+    for required in ["git/refs", "refs/tags/", "object.sha", "SOURCE_SHA"] {
+        ensure!(
+            publication_text.contains(required),
+            "publication does not atomically bind the tag: `{required}`"
+        );
+    }
 
     let publisher_text = rendered(publishers)?;
     for endpoint in PUBLISH_ENDPOINTS {
@@ -116,6 +126,65 @@ fn validate_release_graph(document: &Value) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn permission_is_write(job: &Value) -> bool {
+    job.get("permissions").and_then(Value::as_mapping).is_some_and(|permissions| {
+        permissions.values().any(|value| value.as_str() == Some("write"))
+    })
+}
+
+fn rehearse_failed_candidate(document: &Value) -> Result<(usize, usize, usize)> {
+    let jobs =
+        document.get("jobs").and_then(Value::as_mapping).context("jobs must be a mapping")?;
+    let mut status = BTreeMap::from([
+        ("release-metadata".to_string(), "success"),
+        ("build".to_string(), "success"),
+        ("candidate".to_string(), "failure"),
+    ]);
+    let mut entered = BTreeSet::new();
+    loop {
+        let mut changed = false;
+        for (name, value) in jobs {
+            let name = name.as_str().context("job name must be a string")?;
+            if status.contains_key(name) {
+                continue;
+            }
+            let dependencies = needs(value)?;
+            if dependencies.iter().all(|dependency| status.contains_key(*dependency)) {
+                let outcome = if dependencies
+                    .iter()
+                    .all(|dependency| status.get(*dependency) == Some(&"success"))
+                {
+                    entered.insert(name.to_string());
+                    "success"
+                } else {
+                    "skipped"
+                };
+                status.insert(name.to_string(), outcome);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut dispatches = 0;
+    let mut credential_entries = 0;
+    let mut public_mutations = 0;
+    for name in entered {
+        let value = job(document, &name)?;
+        let text = rendered(value)?;
+        if permission_is_write(value) {
+            credential_entries += 1;
+        }
+        dispatches += PUBLISH_ENDPOINTS.iter().filter(|endpoint| text.contains(**endpoint)).count();
+        if text.contains("action-gh-release") || text.contains("/git/refs") {
+            public_mutations += 1;
+        }
+    }
+    Ok((dispatches, credential_entries, public_mutations))
 }
 
 #[test]
@@ -142,6 +211,43 @@ fn failed_predecessor_has_zero_publisher_dispatch_surface() -> Result<()> {
     ensure!(
         text.matches("release.yml/dispatches").count() == 1,
         "orchestration must dispatch exactly one transaction"
+    );
+    Ok(())
+}
+
+#[test]
+fn failed_candidate_rehearsal_enters_no_publisher_authority_or_mutation() -> Result<()> {
+    let observed = rehearse_failed_candidate(&workflow("release.yml")?)?;
+    ensure!(
+        observed == (0, 0, 0),
+        "failed candidate reached dispatch/credential/public mutation surfaces: {observed:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn parent_sha_is_bound_to_child_dispatch_and_child_subject() -> Result<()> {
+    let parent = rendered(&workflow("release-orchestration.yml")?)?;
+    let child = rendered(&workflow("release.yml")?)?;
+    for required in ["subject_sha", "inputs[expected_sha]"] {
+        ensure!(parent.contains(required), "parent omits exact-SHA binding `{required}`");
+    }
+    for required in ["expected_sha", "github.sha", "another source SHA"] {
+        ensure!(child.contains(required), "child omits exact-SHA rejection `{required}`");
+    }
+    Ok(())
+}
+
+#[test]
+fn crates_publisher_has_no_release_published_bypass() -> Result<()> {
+    let crates = rendered(&workflow("publish-crates.yml")?)?;
+    ensure!(
+        !crates.contains("types:\n- published"),
+        "release.published can bypass the ordered graph"
+    );
+    ensure!(
+        !crates.contains("event.release"),
+        "crates publisher still consumes release event authority"
     );
     Ok(())
 }

@@ -53,6 +53,7 @@ jobs:
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
+      subject_sha: ${{ steps.resolve.outputs.subject_sha }}
 
     steps:
       - name: Checkout
@@ -92,6 +93,7 @@ jobs:
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "subject_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           echo "✅ Version validated: ${VERSION}"
 
       - name: Check default branch and CI status
@@ -230,6 +232,7 @@ jobs:
           INPUT_SKIP_CRATES: ${{ github.event.inputs.skip_crates }}
           INPUT_SKIP_EXTENSION: ${{ github.event.inputs.skip_extension }}
           INPUT_SKIP_DOCKER: ${{ github.event.inputs.skip_docker }}
+          EXPECTED_SHA: ${{ needs.validate.outputs.subject_sha }}
         run: |
           TAG="${{ needs.validate.outputs.tag }}"
           REF="${{ github.event.repository.default_branch }}"
@@ -241,6 +244,7 @@ jobs:
             /repos/${{ github.repository }}/actions/workflows/release.yml/dispatches \
             -f ref="${REF}" \
             -F inputs[tag]="${TAG}" \
+            -F inputs[expected_sha]="$EXPECTED_SHA" \
             -F inputs[prerelease]="${PRERELEASE}" \
             -F inputs[skip_crates]="$INPUT_SKIP_CRATES" \
             -F inputs[skip_extension]="$INPUT_SKIP_EXTENSION" \
