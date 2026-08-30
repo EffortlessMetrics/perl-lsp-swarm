@@ -20,6 +20,12 @@ fn has_recovery_node(node: &Node) -> bool {
     node.children().into_iter().any(has_recovery_node)
 }
 
+fn has_unrecovered_blocking_diagnostic(diagnostics: &[ParseError]) -> bool {
+    diagnostics
+        .iter()
+        .any(|error| error.blocks_clean_parse() && !matches!(error, ParseError::Recovered { .. }))
+}
+
 fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
     if matches!(&node.kind, NodeKind::Assignment { op, .. } if op == expected_op) {
         return Some(node);
@@ -39,6 +45,15 @@ fn contains_word_operator_with_goto(node: &Node, expected_op: &str) -> bool {
         }
     }
     node.children().into_iter().any(|child| contains_word_operator_with_goto(child, expected_op))
+}
+
+fn word_operator_rhs_is_goto(node: &Node, expected_op: &str) -> bool {
+    if let NodeKind::Binary { op, right, .. } = &node.kind {
+        if op == expected_op && matches!(&right.kind, NodeKind::Goto { .. }) {
+            return true;
+        }
+    }
+    node.children().into_iter().any(|child| word_operator_rhs_is_goto(child, expected_op))
 }
 
 fn is_postfix_goto(node: &Node) -> bool {
@@ -268,7 +283,7 @@ fn bare_and_unary_word_goto_forms_match_perl_boundaries() -> Result<(), String> 
             return Err(format!("real Perl rejected valid bare goto form: {source:?}"));
         }
         let output = Parser::new(source).parse_with_recovery();
-        if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+        if has_unrecovered_blocking_diagnostic(&output.diagnostics) {
             return Err(format!(
                 "bare goto form became blocking: source={source:?}, diagnostics={:?}",
                 output.diagnostics
@@ -307,6 +322,28 @@ fn bare_and_unary_word_goto_forms_match_perl_boundaries() -> Result<(), String> 
         {
             return Err(format!(
                 "unary-minus goto must remain one clean word-operator control-flow expression:\nsource={source:?}\ndiagnostics={:?}\nast={}",
+                output.diagnostics,
+                output.ast.to_sexp()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn bare_word_goto_forms_preserve_control_flow_rhs() -> Result<(), String> {
+    for (source, operator) in
+        [("foo or goto;", "or"), ("foo and goto;", "and"), ("foo xor goto;", "xor")]
+    {
+        if !perl_compile_accepts(source)? {
+            return Err(format!("real Perl rejected valid bare goto form: {source:?}"));
+        }
+        let output = Parser::new(source).parse_with_recovery();
+        if has_unrecovered_blocking_diagnostic(&output.diagnostics)
+            || !word_operator_rhs_is_goto(&output.ast, operator)
+        {
+            return Err(format!(
+                "bare {operator} goto must preserve a NodeKind::Goto RHS:\nsource={source:?}\ndiagnostics={:?}\nast={}",
                 output.diagnostics,
                 output.ast.to_sexp()
             ));

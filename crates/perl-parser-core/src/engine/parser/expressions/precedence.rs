@@ -104,7 +104,6 @@ impl<'a> Parser<'a> {
                         token.kind(),
                         TokenKind::FatArrow
                             | TokenKind::Arrow
-                            | TokenKind::Semicolon
                             | TokenKind::Comma
                             | TokenKind::RightParen
                             | TokenKind::RightBrace
