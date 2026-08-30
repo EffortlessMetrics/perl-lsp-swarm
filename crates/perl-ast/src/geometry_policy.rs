@@ -18,10 +18,20 @@
 //!
 //! A variant-level payload policy cannot say whether
 //! `Subroutine { name_span, .. }` must be remapped when the tree moves, nor
-//! that `Error { found, .. }` holds a token whose byte width is fixed by its
-//! own text and therefore may not be rescaled like an ordinary range. Without
-//! that, a field can silently remain in an old source generation while an API
-//! still reports success.
+//! that `Error { found, .. }` holds a token whose byte width was established
+//! against its text at construction and therefore may not be rescaled like an
+//! ordinary range. Without that, a field can silently remain in an old source
+//! generation while an API still reports success.
+//!
+//! # Token width is a carried invariant, not an immutable fact
+//!
+//! `Token::new_checked` enforces `text.len() == end - start` when the token is
+//! built, but `Token::text` is a public field: later code holding `&mut Token`
+//! can replace the text without the span following it. So a mapping consumer
+//! must **preserve the recorded width** when moving a token's start, and must
+//! never recompute the width from `text` — recomputing would silently adopt a
+//! drifted length as truth. [`AstGeometryMapping::MapStartPreserveWidth`] is
+//! named for that obligation.
 //!
 //! # Drift resistance
 //!
@@ -55,10 +65,11 @@ pub enum AstGeometryShape {
     /// Spans reached through a nested record inside a collection, e.g.
     /// `Try { catch_blocks: Vec<(Option<(String, SourceLocation)>, _)> }`.
     Nested,
-    /// A recovery token whose span is bound to immutable text.
+    /// A recovery token whose span width is established by its text at construction.
     ///
-    /// A token is not a freely resizable range: its byte width is fixed by the
-    /// text it carries, so only its start may move.
+    /// A token is not a freely resizable range: its byte width was validated
+    /// against its text when constructed, so only its start may move and the
+    /// recorded width must be carried across rather than recomputed.
     Token,
 }
 
@@ -84,7 +95,7 @@ pub enum AstGeometryMapping {
     /// Map the start and preserve the validated byte width.
     ///
     /// Required for [`AstGeometryShape::Token`], whose width is fixed by its
-    /// own immutable text.
+    /// own text at construction time.
     MapStartPreserveWidth,
     /// The boundary is owned by the caller's policy, not by the AST.
     ///
@@ -274,8 +285,10 @@ pub enum AstGeometryDrift {
     },
     /// A token row does not preserve its validated byte width.
     ///
-    /// A token's width is fixed by its immutable text, so treating it as a
-    /// freely resizable range would let a remap invent bytes.
+    /// `Token::new_checked` establishes `text.len() == end - start` at
+    /// construction, so the recorded width is the authority a remap must carry
+    /// across. Treating the token as a freely resizable range would let a remap
+    /// invent bytes.
     TokenIsNotResizable {
         /// Owning `NodeKind`.
         kind_name: String,
@@ -350,7 +363,7 @@ impl std::fmt::Display for AstGeometryDrift {
             Self::TokenIsNotResizable { kind_name, field, mapping } => write!(
                 f,
                 "{kind_name}.{field} is a token but registers mapping {}; a token's byte width is \
-                 fixed by its immutable text and must use {}",
+                 established at construction and must use {}",
                 mapping.token(),
                 AstGeometryMapping::MapStartPreserveWidth.token()
             ),

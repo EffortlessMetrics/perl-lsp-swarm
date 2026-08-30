@@ -1,7 +1,7 @@
 project: product
 component: Parser and AST
 kind: Added
-body: The AST now carries a field-level registry of every payload field that holds its own byte offsets, recording each field's shape, the rule a coordinate remap must apply to it, and whether it anchors exact source, a source boundary, or recovery material. Recovery tokens are separated from ordinary ranges, since a token's byte width is fixed by its own immutable text and only its start may move. A geometry-bearing field added to an existing node variant now fails to build until it is classified, so it cannot silently remain in an old source generation while an operation reports success.
+body: The AST now carries a field-level registry of every payload field that holds its own byte offsets, recording each field's shape, the rule a coordinate remap must apply to it, and whether it anchors exact source, a source boundary, or recovery material. Recovery tokens are separated from ordinary ranges, since a token's byte width is validated against its text when the token is built and only its start may move; a remap must carry that recorded width across rather than recompute it. A geometry-bearing field added to an existing node variant now fails to build until it is classified, so it cannot silently remain in an old source generation while an operation reports success.
 time: 2026-08-30T00:00:00Z
 custom:
   PR: 13985

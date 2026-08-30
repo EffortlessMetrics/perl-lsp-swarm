@@ -166,7 +166,8 @@ fn recovery_token_geometry_is_registered_as_recovery() -> Result<(), Box<dyn std
     assert_eq!(
         found.mapping,
         AstGeometryMapping::MapStartPreserveWidth,
-        "a recovery token's byte width is fixed by its immutable text"
+        "a recovery token's width is established at construction; a remap moves the start and \
+         carries the width across rather than recomputing it"
     );
     assert_eq!(found.disposition, AstGeometryDisposition::Recovery);
 
@@ -322,9 +323,28 @@ fn declared_geometry_fields() -> DeclaredFields {
 /// mutating the production AST, which is expensive enough that it would not be
 /// done routinely.
 fn scan_declared_fields(ast_source: &str) -> DeclaredFields {
-    let source = ast_source;
+    // Strip comments and attributes *before* balancing braces, not after.
+    //
+    // Raised in review: the enum body used to be located by brace balance over
+    // the raw source, and doc prose in this enum is full of braces —
+    // `Variable { sigil: "@", .. }`, `@hash{qw(a b c)}`, `Block: { ... }`. They
+    // happen to balance today (measured: net zero), so the scan was correct by
+    // luck rather than by construction. One doc comment mentioning `${` or a
+    // lone `}` would truncate the body early or run it past the enum's end,
+    // silently changing what the load-bearing guard measures.
+    //
+    // Stripping first makes the brace balance see only code. The `>= 9` floor
+    // below is the backstop for truncation, but it cannot catch over-extension,
+    // which is why ordering matters rather than just the floor.
+    let source: String = ast_source
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(line).trim())
+        .filter(|line| !line.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let source = source.as_str();
 
-    // Isolate `pub enum NodeKind { .. }` by brace balance.
+    // Isolate `pub enum NodeKind { .. }` by brace balance over comment-free code.
     let start = source.find("pub enum NodeKind {").unwrap_or(0);
     let body_start = source[start..].find('{').map_or(start, |i| start + i + 1);
     let mut depth = 1usize;
@@ -342,15 +362,7 @@ fn scan_declared_fields(ast_source: &str) -> DeclaredFields {
             _ => {}
         }
     }
-    let body = &source[body_start..end];
-
-    // Strip comments and attributes so doc prose cannot be read as a field.
-    let cleaned: String = body
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or(line).trim())
-        .filter(|line| !line.starts_with('#'))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let cleaned = &source[body_start..end];
 
     let mut declared = Vec::new();
     let mut unknown = Vec::new();
@@ -518,6 +530,51 @@ fn compare_declared_against_registry(
          for: {miscounted:?} (as (variant, field), declared members, registered rows)\nA nested \
          field that gains a second span needs a second dotted row; without one it reaches a \
          coordinate remap unregistered while the outer field still looks covered."
+    );
+}
+
+/// An unbalanced brace in doc prose must not move the enum boundary.
+///
+/// Raised in review: the scan balanced braces over raw source and stripped
+/// comments afterwards, so documentation braces counted. The prose in this enum
+/// carries 26 brace-bearing comment lines and happens to net to zero today, which
+/// made the guard correct by luck. A lone `${` or `}` in a doc comment could
+/// truncate the scan (caught by the `>= 9` floor) or extend it past the enum's
+/// end (not caught by anything).
+#[test]
+fn doc_comment_braces_do_not_move_the_enum_boundary() {
+    // Every brace here is unbalanced and lives only in prose.
+    let synthetic = r#"
+        pub enum NodeKind {
+            /// Interpolation looks like ${ and closes elsewhere }
+            /// A stray close brace: }
+            Package {
+                /// Deref syntax: @{
+                name: String,
+                name_span: SourceLocation,
+            },
+            /// Trailing prose with an opener {
+            Number {
+                value: String,
+            },
+        }
+
+        pub struct NotPartOfTheEnum {
+            decoy_span: SourceLocation,
+        }
+    "#;
+
+    let scan = scan_declared_fields(synthetic);
+    assert!(scan.unknown.is_empty(), "synthetic source must classify cleanly: {:?}", scan.unknown);
+
+    // Truncation would lose Package.name_span; over-extension would pull in
+    // `decoy_span` from the struct that follows the enum.
+    let found: BTreeSet<(String, String)> =
+        scan.geometry.iter().map(|(v, f, _)| (v.clone(), f.clone())).collect();
+    assert_eq!(
+        found,
+        [("Package".to_string(), "name_span".to_string())].into_iter().collect::<BTreeSet<_>>(),
+        "doc-comment braces must neither truncate the enum body nor extend it past its end"
     );
 }
 
@@ -825,7 +882,7 @@ fn a_shape_mismatch_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Classifying a token as a freely resizable range would let a remap invent
-/// bytes that the token's immutable text does not have.
+/// bytes that the token's recorded width does not have.
 #[test]
 fn a_token_registered_as_a_resizable_range_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let mutated = [AstGeometryField {
