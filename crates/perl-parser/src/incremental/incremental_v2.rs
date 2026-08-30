@@ -22,6 +22,14 @@
 //! - **Whitespace and comment edits**: Non-structural changes
 //! - **Multiple edits**: Batch processing with cumulative position tracking
 //!
+//! An admitted edit must produce exactly the tree a fresh parse would, in
+//! spans and payloads alike. Value-leaf patches are only accepted after the
+//! mapped replacement text is proven to still lex as a single token of the
+//! admitted kind; anything else — a replacement that splits or retypes the
+//! token — declines the incremental path and falls back to a full parse.
+//! The tree rebuilds are single-pass (one structural clone plus in-place
+//! updates), so cost stays linear in the number of nodes regardless of depth.
+//!
 //! ## Usage Example
 //!
 //! ```rust,ignore
@@ -62,6 +70,7 @@ fn isize_to_usize_clamped(v: isize) -> usize {
 use super::incremental_advanced_reuse::{
     AdvancedReuseAnalyzer, ReuseAnalysisResult, ReuseConfig, ReuseStrategy, ReuseType,
 };
+use perl_lexer::{PerlLexer, TokenType};
 use perl_parser_core::{
     ast::{Node, NodeKind, SourceLocation},
     edit::{Edit, EditSet},
@@ -70,6 +79,29 @@ use perl_parser_core::{
     position::Range,
 };
 use std::collections::HashMap;
+
+/// The byte is a variable sigil, so the text it starts cannot be a bare
+/// identifier token.
+fn is_variable_sigil_byte(byte: u8) -> bool {
+    matches!(byte, b'$' | b'@' | b'%' | b'&' | b'*')
+}
+
+/// Shift `node`'s span and every descendant span by `shift` in place.
+fn shift_positions_in_place(node: &mut Node, shift: isize) {
+    let location = if shift >= 0 {
+        SourceLocation {
+            start: node.location.start.saturating_add(shift as usize),
+            end: node.location.end.saturating_add(shift as usize),
+        }
+    } else {
+        SourceLocation {
+            start: node.location.start.saturating_sub((-shift) as usize),
+            end: node.location.end.saturating_sub((-shift) as usize),
+        }
+    };
+    node.location = location;
+    node.for_each_child_mut(|child| shift_positions_in_place(child, shift));
+}
 
 /// Comprehensive performance metrics for incremental parsing analysis
 ///
@@ -619,8 +651,6 @@ impl IncrementalParserV2 {
     /// Uses lexical analysis to determine if the edited range contains only
     /// non-structural content (whitespace, comments) that doesn't affect AST structure.
     fn is_in_non_structural_content(&self, text: &str, start: usize, end: usize) -> bool {
-        use perl_lexer::{PerlLexer, TokenType};
-
         if start >= end || end > text.len() {
             return false;
         }
@@ -658,22 +688,79 @@ impl IncrementalParserV2 {
     }
 
     /// Parse with whitespace/comment optimizations
+    ///
+    /// Trivia edits never change structure, so the previous tree is reused
+    /// wholesale and every position is remapped through the pending edits by
+    /// [`Self::remap_trivia_positions`]. The rebuild is one structural clone
+    /// plus one in-place pass, so it stays linear in the number of nodes
+    /// regardless of tree depth.
     fn incremental_parse_whitespace(
         &mut self,
         _source: &str,
         last_tree: &IncrementalTree,
     ) -> Option<Node> {
-        // For whitespace-only changes, we can often reuse the entire tree
-        // with just position adjustments
-        let shift = self.calculate_total_shift();
+        let mut remapped = last_tree.root.clone();
+        self.remap_trivia_positions(&mut remapped);
         self.reused_nodes = self.count_nodes(&last_tree.root);
         self.reparsed_nodes = 0;
-        Some(self.clone_with_shifted_positions(&last_tree.root, shift))
+        Some(remapped)
     }
 
-    /// Calculate the total byte shift from all edits
-    fn calculate_total_shift(&self) -> isize {
-        self.pending_edits.edits().iter().map(|edit| edit.byte_shift()).sum()
+    /// Remap every position of `root` for trivia-only edits.
+    ///
+    /// Trivia never merges into a token, so the two edit boundaries behave
+    /// uniformly for every non-root node: the start counts edits ending at or
+    /// before it (whitespace inserted just before a statement shifts that
+    /// statement), and the end counts only edits ending strictly before it
+    /// (trivia inserted after a token stays outside that token's span).
+    ///
+    /// The root is the exception: a program span hugs its statements rather
+    /// than the surrounding trivia, so its start and end are derived from the
+    /// mapped first and last child plus the unchanged leading and trailing
+    /// offsets instead of the byte arithmetic.
+    fn remap_trivia_positions(&self, root: &mut Node) {
+        let old_root_location = root.location;
+        let old_first_child_start = root.children().first().map(|child| child.location.start);
+        let old_last_child_end = root.children().last().map(|child| child.location.end);
+        root.for_each_child_mut(|child| self.remap_trivia_subtree(child));
+
+        root.location.start = match old_first_child_start {
+            Some(old_start) => {
+                let leading_offset = old_root_location.start.saturating_sub(old_start);
+                let new_first_start = root
+                    .children()
+                    .first()
+                    .map_or(old_root_location.start, |child| child.location.start);
+                new_first_start + leading_offset
+            }
+            None => old_root_location.start,
+        };
+        root.location.end = match old_last_child_end {
+            Some(old_end) => {
+                let trailing_offset = old_root_location.end.saturating_sub(old_end);
+                let new_last_end = root
+                    .children()
+                    .last()
+                    .map_or(old_root_location.end, |child| child.location.end);
+                new_last_end + trailing_offset
+            }
+            // A childless program owns no statement, so trailing trivia stays
+            // outside its span just as it does for every other node.
+            None => isize_to_usize_clamped(
+                old_root_location.end as isize
+                    + self.calculate_shift_exclusive(old_root_location.end),
+            ),
+        };
+    }
+
+    fn remap_trivia_subtree(&self, node: &mut Node) {
+        node.for_each_child_mut(|child| self.remap_trivia_subtree(child));
+        let start = node.location.start;
+        let end = node.location.end;
+        node.location = SourceLocation {
+            start: isize_to_usize_clamped(start as isize + self.calculate_shift_at(start)),
+            end: isize_to_usize_clamped(end as isize + self.calculate_shift_exclusive(end)),
+        };
     }
 
     fn incremental_parse_simple(
@@ -686,8 +773,11 @@ impl IncrementalParserV2 {
             return None;
         }
 
-        // Reuse the previous tree by cloning nodes and applying the edits.
-        let new_root = self.clone_and_update_node(&last_tree.root, source, &last_tree.source);
+        // Reuse the previous tree by cloning it once and applying the edits
+        // in place. A declined edit (a replacement whose text no longer forms
+        // one token of the admitted kind) aborts the attempt; the caller then
+        // falls back to a full parse rather than accept a divergent tree.
+        let new_root = self.clone_and_update_tree(&last_tree.root, source, &last_tree.source)?;
 
         // Validate that the new tree makes sense
         if !self.validate_incremental_result(&new_root, source) {
@@ -826,123 +916,198 @@ impl IncrementalParserV2 {
         true
     }
 
-    fn clone_and_update_node(&self, node: &Node, new_source: &str, old_source: &str) -> Node {
-        // Calculate position shift for this node
-        let shift = self.calculate_shift_at(node.location.start);
+    /// Rebuild `root` with the admitted simple edits applied in one pass.
+    ///
+    /// The tree is cloned exactly once and then updated in place, so the work
+    /// is linear in the number of nodes regardless of depth. `None` declines
+    /// the incremental result — an affected value leaf's replacement no longer
+    /// forms a single token of the admitted kind — and the caller falls back
+    /// to a full parse instead of accepting a divergent tree.
+    fn clone_and_update_tree(
+        &self,
+        root: &Node,
+        new_source: &str,
+        old_source: &str,
+    ) -> Option<Node> {
+        let mut updated = root.clone();
+        self.update_subtree_in_place(&mut updated, new_source, old_source).then_some(updated)
+    }
 
-        // Check if this node is affected by any edit
-        let affected = self.is_node_affected(node);
-
-        // Handle container nodes that need recursive processing
-        match &node.kind {
-            NodeKind::Program { statements } => {
-                // Recursively update child nodes
-                let new_statements: Vec<Node> = statements
-                    .iter()
-                    .map(|stmt| self.clone_and_update_node(stmt, new_source, old_source))
-                    .collect();
-
-                let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
-                let new_end = (node.location.end as isize
-                    + shift
-                    + self.calculate_content_delta(node)) as usize;
-
-                return Node::new(
-                    NodeKind::Program { statements: new_statements },
-                    SourceLocation { start: new_start, end: new_end },
-                );
-            }
-            NodeKind::VariableDeclaration { declarator, variable, initializer, attributes } => {
-                // Recursively update child nodes
-                let new_variable = self.clone_and_update_node(variable, new_source, old_source);
-                let new_initializer = initializer
-                    .as_ref()
-                    .map(|init| self.clone_and_update_node(init, new_source, old_source));
-
-                let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
-                let new_end = (node.location.end as isize
-                    + shift
-                    + self.calculate_content_delta(node)) as usize;
-
-                return Node::new(
-                    NodeKind::VariableDeclaration {
-                        declarator: declarator.clone(),
-                        variable: Box::new(new_variable),
-                        initializer: new_initializer.map(Box::new),
-                        attributes: attributes.clone(),
-                    },
-                    SourceLocation { start: new_start, end: new_end },
-                );
-            }
-            _ => {}
+    /// Update one node and its subtree in place for the pending edits.
+    ///
+    /// Returns `false` when the node is an affected value leaf whose mapped
+    /// replacement text fails token validation; the partially updated tree is
+    /// then discarded by the caller.
+    fn update_subtree_in_place(&self, node: &mut Node, new_source: &str, old_source: &str) -> bool {
+        // Original geometry drives every mapping. Children are disjoint from
+        // this node's own `location` field, so updating them first cannot
+        // skew the coordinates read here.
+        let original_start = node.location.start;
+        let original_end = node.location.end;
+        let mut valid = true;
+        node.for_each_child_mut(|child| {
+            valid &= self.update_subtree_in_place(child, new_source, old_source);
+        });
+        if !valid {
+            return false;
         }
 
-        if affected {
-            // This node is affected - handle based on node type
-            match &node.kind {
-                // Direct value nodes - extract new value from source
-                NodeKind::Number { .. } => {
-                    // Extract the new value from source
-                    let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
-                    let new_end =
-                        (node.location.end as isize + shift + self.calculate_content_delta(node))
-                            as usize;
-
-                    if new_start < new_source.len() && new_end <= new_source.len() {
-                        let new_value = &new_source[new_start..new_end];
-
-                        return Node::new(
-                            NodeKind::Number { value: new_value.to_string() },
-                            SourceLocation { start: new_start, end: new_end },
-                        );
-                    }
-                }
-                NodeKind::String { interpolated, .. } => {
-                    let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
-                    let new_end =
-                        (node.location.end as isize + shift + self.calculate_content_delta(node))
-                            as usize;
-
-                    if new_start < new_source.len() && new_end <= new_source.len() {
-                        let new_value = &new_source[new_start..new_end];
-
-                        return Node::new(
-                            NodeKind::String {
-                                value: new_value.to_string(),
-                                interpolated: *interpolated,
-                            },
-                            SourceLocation { start: new_start, end: new_end },
-                        );
-                    }
-                }
-                _ => {
-                    // No value-patch arm for this kind: rebuild generically
-                    // instead of discarding in-subtree updates. The previous
-                    // fall-through cloned the whole subtree with the shift at
-                    // this node's start, which dropped the value patch and the
-                    // per-node shifts of every descendant after the edit (for
-                    // example a subroutine body following an edited literal).
-                    // Children are updated through this same recursion — each
-                    // computes its own shift and patch — and this node's span
-                    // shifts by the edits before it and extends by the byte
-                    // delta of the edits inside it, matching the Program and
-                    // VariableDeclaration arms above.
-                    let mut updated = node.clone();
-                    updated.for_each_child_mut(|child| {
-                        *child = self.clone_and_update_node(child, new_source, old_source);
-                    });
-                    let new_start = isize_to_usize_clamped(node.location.start as isize + shift);
-                    let new_end = isize_to_usize_clamped(
-                        node.location.end as isize + shift + self.calculate_content_delta(node),
-                    );
-                    updated.location = SourceLocation { start: new_start, end: new_end };
-                    return updated;
-                }
+        // Affected value leaves re-read their payload from the new source.
+        // Every other node keeps its payload and only remaps its span.
+        let patched_span = if self.is_node_affected(node)
+            && matches!(
+                node.kind,
+                NodeKind::Number { .. }
+                    | NodeKind::String { .. }
+                    | NodeKind::Variable { .. }
+                    | NodeKind::Identifier { .. }
+            ) {
+            match self.patch_leaf_payload(
+                &mut node.kind,
+                new_source,
+                old_source,
+                original_start,
+                original_end,
+            ) {
+                Some(span) => span,
+                None => return false,
             }
+        } else {
+            let new_start = isize_to_usize_clamped(
+                original_start as isize + self.calculate_shift_exclusive(original_start),
+            );
+            let new_end = isize_to_usize_clamped(
+                original_end as isize + self.calculate_shift_at(original_end),
+            );
+            (new_start, new_end)
+        };
+
+        node.location = SourceLocation { start: patched_span.0, end: patched_span.1 };
+        true
+    }
+
+    /// Map an admitted value leaf's old span to its span in the new source and
+    /// patch its payload from that text, or decline the edit.
+    ///
+    /// The span arithmetic decides which side of the leaf absorbs a zero-width
+    /// boundary insertion: text typed exactly at the leaf's start or end
+    /// becomes part of the literal, so the start counts only edits ending
+    /// strictly before it ([`Self::calculate_shift_exclusive`]) while the end
+    /// counts edits ending at or before it ([`Self::calculate_shift_at`]).
+    /// Counting one boundary twice — the previous behavior — produced spans
+    /// that no fresh parse could reproduce.
+    ///
+    /// The payload is only patched after the mapped text is proven to still
+    /// lex as one token of the admitted kind; renames must keep the sigil and
+    /// string edits must keep the quote. Anything else returns `None` so the
+    /// whole incremental build is abandoned in favor of a full parse.
+    fn patch_leaf_payload(
+        &self,
+        kind: &mut NodeKind,
+        new_source: &str,
+        old_source: &str,
+        old_start: usize,
+        old_end: usize,
+    ) -> Option<(usize, usize)> {
+        let new_start =
+            isize_to_usize_clamped(old_start as isize + self.calculate_shift_exclusive(old_start));
+        let new_end = isize_to_usize_clamped(old_end as isize + self.calculate_shift_at(old_end));
+        if new_start > new_end
+            || new_end > new_source.len()
+            || !new_source.is_char_boundary(new_start)
+            || !new_source.is_char_boundary(new_end)
+        {
+            return None;
+        }
+        let text = &new_source[new_start..new_end];
+
+        match kind {
+            NodeKind::Number { value } => {
+                if !self.lexes_as_single_token(text, &|token| matches!(token, TokenType::Number(_)))
+                {
+                    return None;
+                }
+                *value = text.to_string();
+            }
+            NodeKind::String { value, interpolated: _ } => {
+                // Keeping the first byte (the quote or quote-like prefix)
+                // keeps the parsed string shape — and with it the stored
+                // interpolation flag — honest.
+                if old_source.as_bytes().get(old_start).copied() != text.as_bytes().first().copied()
+                {
+                    return None;
+                }
+                if !self.lexes_as_single_token(text, &|token| {
+                    matches!(
+                        token,
+                        TokenType::StringLiteral
+                            | TokenType::InterpolatedString(_)
+                            | TokenType::QuoteSingle
+                            | TokenType::QuoteDouble
+                    )
+                }) {
+                    return None;
+                }
+                *value = text.to_string();
+            }
+            NodeKind::Variable { sigil, name } => {
+                // A rename must stay one sigil-prefixed identifier token with
+                // a non-empty name; sigil or token-structure changes fall
+                // back to parsing.
+                if !text.starts_with(sigil.as_str()) || text.len() <= sigil.len() {
+                    return None;
+                }
+                if !self
+                    .lexes_as_single_token(text, &|token| matches!(token, TokenType::Identifier(_)))
+                {
+                    return None;
+                }
+                *name = text[sigil.len()..].to_string();
+            }
+            NodeKind::Identifier { name } => {
+                // A sigil-leading replacement would parse as a `Variable`
+                // node, not an `Identifier`, so it must not be patched.
+                if text.as_bytes().first().is_some_and(|&byte| is_variable_sigil_byte(byte)) {
+                    return None;
+                }
+                if !self
+                    .lexes_as_single_token(text, &|token| matches!(token, TokenType::Identifier(_)))
+                {
+                    return None;
+                }
+                *name = text.to_string();
+            }
+            _ => return None,
         }
 
-        // Node is not affected or cannot be updated - clone with shifted positions
-        self.clone_with_shifted_positions(node, shift)
+        Some((new_start, new_end))
+    }
+
+    /// Require `text` to lex as exactly one trivia-free token of an accepted
+    /// class whose span covers the whole text.
+    fn lexes_as_single_token(&self, text: &str, accepted: &dyn Fn(&TokenType) -> bool) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let mut lexer = PerlLexer::new(text);
+        let mut seen_token = false;
+        loop {
+            let Some(token) = lexer.next_token() else {
+                break;
+            };
+            if token.token_type == TokenType::EOF {
+                break;
+            }
+            if token.token_type.is_trivia()
+                || token.start != 0
+                || token.end != text.len()
+                || !accepted(&token.token_type)
+            {
+                return false;
+            }
+            seen_token = true;
+        }
+        seen_token
     }
 
     /// Calculate cumulative byte shift at position with Unicode-safe handling
@@ -955,6 +1120,32 @@ impl IncrementalParserV2 {
             let original_old_end = isize_to_usize_clamped(edit.old_end_byte as isize - shift);
 
             if original_old_end <= position {
+                let edit_shift = edit.byte_shift();
+                shift += edit_shift;
+            } else {
+                break;
+            }
+        }
+
+        shift
+    }
+
+    /// Calculate the cumulative byte shift of edits ending strictly before
+    /// `position` (in original source coordinates).
+    ///
+    /// [`Self::calculate_shift_at`] counts an edit whose old end equals
+    /// `position`; this helper deliberately does not. The distinction keeps
+    /// zero-width boundary insertions from being counted twice: text inserted
+    /// exactly at a leaf's start or end merges into that leaf, so the leaf's
+    /// start uses this exclusive count while its end uses the inclusive one —
+    /// and an ancestor's start must not move for an insertion that merged
+    /// into a leaf anchored at the same byte.
+    fn calculate_shift_exclusive(&self, position: usize) -> isize {
+        let mut shift = 0;
+        for edit in self.pending_edits.edits() {
+            let original_old_end = isize_to_usize_clamped(edit.old_end_byte as isize - shift);
+
+            if original_old_end < position {
                 let edit_shift = edit.byte_shift();
                 shift += edit_shift;
             } else {
@@ -1069,22 +1260,6 @@ impl IncrementalParserV2 {
         }
     }
 
-    fn calculate_content_delta(&self, node: &Node) -> isize {
-        // Calculate how much the content of this node changed by examining
-        // edits that fall within the node's original range.
-        let mut delta = 0;
-        let mut shift = 0;
-        for edit in self.pending_edits.edits() {
-            let start = isize_to_usize_clamped(edit.start_byte as isize - shift);
-            let end = isize_to_usize_clamped(edit.old_end_byte as isize - shift);
-            if start >= node.location.start && end <= node.location.end {
-                delta += edit.byte_shift();
-            }
-            shift += edit.byte_shift();
-        }
-        delta
-    }
-
     fn is_node_affected(&self, node: &Node) -> bool {
         let node_range = Range::from(node.location);
         if self.pending_edits.affects_range(&node_range) {
@@ -1095,8 +1270,8 @@ impl IncrementalParserV2 {
         // (`start < old_end_byte && end > start_byte`). A pure insertion has an
         // empty old range, so an insertion landing exactly on a node boundary
         // reports no overlap even though the inserted text becomes part of that
-        // node's source text. Without this window a boundary insertion leaves the
-        // node's cached content stale (for example typing a digit at the end of a
+        // node's source text. Without this window a boundary insertion leaves
+        // the node's cached content stale (for example typing a digit at the end of a
         // numeric literal), so the incremental tree diverges from a fresh parse.
         // `EditSet::affected_ranges` already widens pure insertions for the same
         // reason; this keeps the two invalidation paths consistent.
@@ -1107,31 +1282,16 @@ impl IncrementalParserV2 {
         })
     }
 
+    /// Clone `node` with every position shifted by `shift`, in one pass.
+    ///
+    /// The single structural clone plus an in-place span walk keeps this
+    /// linear in the subtree size; the previous recursive form re-cloned the
+    /// entire remaining subtree at every depth. The uniform shift is the
+    /// intended semantics here: the result is compared against a freshly
+    /// parsed node and any mismatch simply skips the reuse candidate.
     fn clone_with_shifted_positions(&self, node: &Node, shift: isize) -> Node {
-        // Use Unicode-safe position calculation for multibyte character support
-        let new_start = if shift >= 0 {
-            node.location.start.saturating_add(shift as usize)
-        } else {
-            node.location.start.saturating_sub((-shift) as usize)
-        };
-
-        let new_end = if shift >= 0 {
-            node.location.end.saturating_add(shift as usize)
-        } else {
-            node.location.end.saturating_sub((-shift) as usize)
-        };
-
-        let new_location = SourceLocation { start: new_start, end: new_end };
-
-        // Clone the payload wholesale and shift every canonical child slot.
-        // The previous hand-written match only descended into seven
-        // structural families and left every other container's child
-        // positions stale after an earlier edit; the canonical walker (#8424)
-        // covers all children exactly once.
-        let mut shifted = Node::new(node.kind.clone(), new_location);
-        shifted.for_each_child_mut(|child| {
-            *child = self.clone_with_shifted_positions(child, shift);
-        });
+        let mut shifted = node.clone();
+        shift_positions_in_place(&mut shifted, shift);
         shifted
     }
 
@@ -1305,16 +1465,15 @@ mod tests {
     }
 
     #[test]
-    fn clone_with_shifted_positions_preserves_if_keyword_metadata()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let parser = IncrementalParserV2::new();
+    fn trivia_remap_preserves_if_keyword_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let mut parser = IncrementalParserV2::new();
         let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
         let number =
             |start| Node::new(NodeKind::Number { value: "1".to_string() }, loc(start, start + 1));
         let block = |start, end| {
             Node::new(NodeKind::Block { statements: vec![number(start + 1)] }, loc(start, end))
         };
-        let node = Node::new(
+        let if_node = Node::new(
             NodeKind::If {
                 condition: Box::new(number(1)),
                 then_branch: Box::new(block(4, 10)),
@@ -1324,19 +1483,34 @@ mod tests {
             },
             loc(0, 29),
         );
+        let mut root = Node::new(NodeKind::Program { statements: vec![if_node] }, loc(0, 29));
 
-        let shifted = parser.clone_with_shifted_positions(&node, 3);
+        // One newline inserted before the program: trivia never merges into a
+        // token, so every statement-side span shifts by one while the program
+        // span keeps hugging its statement (derived start and end).
+        parser.edit(Edit::new(
+            0,
+            0,
+            1,
+            Position::new(0, 1, 1),
+            Position::new(0, 1, 1),
+            Position::new(1, 1, 2),
+        ));
+        parser.remap_trivia_positions(&mut root);
 
-        assert_eq!(shifted.location.start, 3);
-        match shifted.into_parts() {
-            (NodeKind::If { keyword, else_branch, .. }, _) => {
-                assert_eq!(keyword.as_deref(), Some("unless"));
-                assert!(else_branch.is_some());
-            }
-            (other, _) => {
-                return Err(format!("expected If node, got {}", other.kind_name()).into());
-            }
-        }
+        assert_eq!(root.location, loc(1, 30));
+        let (kind, _) = root.into_parts();
+        let NodeKind::Program { statements } = kind else {
+            return Err("expected Program root".into());
+        };
+        let (if_kind, if_location) =
+            statements.into_iter().next().ok_or("expected one statement")?.into_parts();
+        assert_eq!(if_location, loc(1, 30));
+        let NodeKind::If { keyword, else_branch, .. } = if_kind else {
+            return Err("expected If statement".into());
+        };
+        assert_eq!(keyword.as_deref(), Some("unless"));
+        assert!(else_branch.is_some());
         Ok(())
     }
 
@@ -2331,5 +2505,239 @@ if ($condition) {
         parser.parse(source2)?;
         assert!(parser.reused_nodes > 0);
         Ok(())
+    }
+
+    /// A parser whose advanced reuse is guaranteed to decline, so the simple
+    /// and trivia fallback paths execute deterministically.
+    fn strict_fallback_parser() -> IncrementalParserV2 {
+        IncrementalParserV2::with_reuse_config(ReuseConfig {
+            min_confidence: 1.0,
+            ..Default::default()
+        })
+    }
+
+    /// A variable rename admitted to the simple path must patch the Variable
+    /// payload, not just its span: the accepted AST must name `y`, exactly
+    /// like a fresh parse. The previous generic rebuild branch cloned the old
+    /// `Variable { name: "x" }` payload unchanged.
+    #[test]
+    fn variable_rename_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("$x = 1;")?;
+        parser.edit(Edit::new(
+            1,
+            2,
+            2, // "x" -> "y"
+            Position::new(1, 1, 2),
+            Position::new(2, 1, 3),
+            Position::new(2, 1, 3),
+        ));
+        let source2 = "$y = 1;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "a rename inside an admitted Variable leaf must stay incremental"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "renamed variable payload must match a fresh parse");
+        Ok(())
+    }
+
+    /// A bareword rename admitted through an Identifier leaf must patch the
+    /// identifier payload the same way.
+    #[test]
+    fn identifier_rename_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my $x = foo;")?;
+        parser.edit(Edit::new(
+            8,
+            11,
+            11, // "foo" -> "bar"
+            Position::new(8, 1, 9),
+            Position::new(11, 1, 12),
+            Position::new(11, 1, 12),
+        ));
+        let source2 = "my $x = bar;";
+        let incremental = parser.parse(source2)?;
+        assert!(parser.used_incremental_path(), "bareword rename must stay incremental");
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "renamed identifier payload must match a fresh parse");
+        Ok(())
+    }
+
+    /// A zero-width insertion at a literal's start extends that literal: the
+    /// accepted Number must span [5..7] with value "21". The previous mapping
+    /// counted the boundary insertion in both the node shift and the content
+    /// delta, accepting `Number [6..8] "1;"`, which no fresh parse produces.
+    #[test]
+    fn leading_literal_insertion_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("$x = 1;")?;
+        parser.edit(Edit::new(
+            5,
+            5,
+            6, // insert "2" at byte 5
+            Position::new(5, 1, 6),
+            Position::new(5, 1, 6),
+            Position::new(6, 1, 7),
+        ));
+        let source2 = "$x = 21;";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "a boundary insertion into an admitted Number leaf must stay incremental"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "extended literal must match a fresh parse");
+        Ok(())
+    }
+
+    /// Replacing `"k"` with `"j", 42` splits the token: the simple path must
+    /// decline and fall back to a full parse instead of accepting one String
+    /// spanning both arguments.
+    #[test]
+    fn token_splitting_string_replacement_falls_back_to_full_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("$u->get(\"k\");")?;
+        parser.edit(Edit::new(
+            8,
+            11,
+            15, // "\"k\"" -> "\"j\", 42"
+            Position::new(8, 1, 9),
+            Position::new(11, 1, 12),
+            Position::new(15, 1, 16),
+        ));
+        let source2 = "$u->get(\"j\", 42);";
+        let incremental = parser.parse(source2)?;
+        assert!(
+            !parser.used_incremental_path(),
+            "a replacement that splits the token must decline the incremental path"
+        );
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "the fallback tree must match a fresh parse");
+        Ok(())
+    }
+
+    /// Trailing trivia must not move any node. The previous trivia path
+    /// shifted every span by the edit's byte delta, accepting a tree where
+    /// every node was displaced by five bytes relative to a fresh parse.
+    #[test]
+    fn trailing_trivia_insertion_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my $x = 42;")?;
+        parser.edit(Edit::new(
+            11,
+            11,
+            16, // insert five trailing spaces
+            Position::new(11, 1, 12),
+            Position::new(11, 1, 12),
+            Position::new(16, 1, 17),
+        ));
+        let source2 = "my $x = 42;     ";
+        let incremental = parser.parse(source2)?;
+        assert!(parser.used_incremental_path(), "trailing trivia must take the trivia remap path");
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "trivia remap must match a fresh parse");
+        Ok(())
+    }
+
+    /// Trivia inserted before the first statement shifts that statement while
+    /// the program span stays anchored at byte zero and tracks its last child.
+    #[test]
+    fn leading_trivia_insertion_matches_a_fresh_parse() -> ParseResult<()> {
+        let mut parser = strict_fallback_parser();
+        parser.parse("my $x = 42;")?;
+        parser.edit(Edit::new(
+            0,
+            0,
+            1, // insert one leading space
+            Position::new(0, 1, 1),
+            Position::new(0, 1, 1),
+            Position::new(1, 1, 2),
+        ));
+        let source2 = " my $x = 42;";
+        let incremental = parser.parse(source2)?;
+        assert!(parser.used_incremental_path(), "leading trivia must take the trivia remap path");
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(incremental, fresh, "leading trivia remap must match a fresh parse");
+        Ok(())
+    }
+
+    /// Every fixture node spans `[start..total_end]`; the chain descends one
+    /// start byte per level down to the number literal.
+    fn assert_chain_spans(node: &Node, start: usize, total_end: usize, visited: &mut usize) {
+        assert_eq!(node.location, SourceLocation { start, end: total_end }, "node span moved");
+        *visited += 1;
+        match &node.kind {
+            NodeKind::Program { statements } => {
+                assert_eq!(statements.len(), 1);
+                assert_chain_spans(&statements[0], start, total_end, visited);
+            }
+            NodeKind::Unary { operand, .. } => {
+                assert_chain_spans(operand, start + 1, total_end, visited);
+            }
+            NodeKind::Number { value } => {
+                assert_eq!(value, "1");
+                assert_eq!(start, total_end - 1);
+            }
+            other => panic!("unexpected fixture node {}", other.kind_name()),
+        }
+    }
+
+    /// The rebuilds must stay linear in tree depth: one structural clone plus
+    /// in-place updates per node. A depth-20,000 chain completes in
+    /// milliseconds; the previous recursive rebuild re-cloned the entire
+    /// remaining subtree at every level — quadratic work — and cannot finish
+    /// within this budget.
+    #[test]
+    fn trivia_remap_is_linear_in_tree_depth() {
+        const DEPTH: usize = 20_000;
+        let total_end = DEPTH + 1;
+        let loc = |start: usize, end: usize| SourceLocation { start, end };
+        let mut chain =
+            Node::new(NodeKind::Number { value: "1".to_string() }, loc(DEPTH, total_end));
+        for start in (0..DEPTH).rev() {
+            chain = Node::new(
+                NodeKind::Unary { op: "!".to_string(), operand: Box::new(chain) },
+                loc(start, total_end),
+            );
+        }
+        let mut root = Node::new(NodeKind::Program { statements: vec![chain] }, loc(0, total_end));
+
+        let mut parser = IncrementalParserV2::new();
+        parser.edit(Edit::new(
+            total_end,
+            total_end,
+            total_end + 1, // trailing newline
+            Position::new(total_end, 1, 1),
+            Position::new(total_end, 1, 1),
+            Position::new(total_end + 1, 1, 1),
+        ));
+
+        // Production trees are bounded by the parser's own recursion depth,
+        // but the remap must stay stack-safe and linear on adversarially deep
+        // chains, so the fixture runs on a deliberately large stack.
+        let work = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let start = Instant::now();
+                parser.remap_trivia_positions(&mut root);
+                let elapsed = start.elapsed();
+
+                let budget = adaptive_perf_budget_micros(2_000_000);
+                assert!(
+                    elapsed.as_micros() < budget,
+                    "trivia remap must stay linear in depth: {}µs (budget {}µs)",
+                    elapsed.as_micros(),
+                    budget
+                );
+
+                // Trailing trivia moves nothing.
+                let mut visited = 0usize;
+                assert_chain_spans(&root, 0, total_end, &mut visited);
+                assert_eq!(visited, DEPTH + 2, "every fixture node must be checked");
+            })
+            .expect("test worker thread");
+        work.join().expect("linear remap worker panicked");
     }
 }
