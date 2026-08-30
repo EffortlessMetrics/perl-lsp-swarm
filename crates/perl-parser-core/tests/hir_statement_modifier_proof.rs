@@ -4,24 +4,41 @@
 //! representations. It deliberately stops before PIR: postfix branch/loop edge
 //! semantics remain spec-gated and are not implied by these assertions.
 
-use std::error::Error;
+use std::{error::Error, fmt};
 
-use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    AccessMode, AssignMode, HIR_BODY_MODEL_VERSION, HirBody, HirExpr, HirExprId, HirFile, HirKind,
-    HirStmt, RecoveryConfidence, Sigil, StatementModifierKind, VariableKind, lower_ast,
+    lower_ast, AccessMode, AssignMode, HirBody, HirExpr, HirExprId, HirFile, HirKind, HirStmt,
+    RecoveryConfidence, Sigil, StatementModifierKind, VariableKind, HIR_BODY_MODEL_VERSION,
 };
+use perl_parser_core::{ParseError, ParseOutput, Parser};
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+#[derive(Debug)]
+struct ProofAdmissionError {
+    diagnostics: Vec<ParseError>,
+}
+
+impl fmt::Display for ProofAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "proof input contains parser diagnostics: {:?}", self.diagnostics)
+    }
+}
+
+impl Error for ProofAdmissionError {}
 
 #[derive(Debug)]
 struct ModifierCase {
     flat_source: &'static str,
     body_source: &'static str,
     modifier: StatementModifierKind,
+    flat_span: &'static str,
+    body_postfix_span: &'static str,
+    body_statement_span: &'static str,
     condition: &'static str,
     condition_name: &'static str,
     condition_sigil: Sigil,
+    rhs_name: &'static str,
     flat_label: Option<&'static str>,
 }
 
@@ -30,69 +47,96 @@ const CASES: &[ModifierCase] = &[
         flat_source: "BRANCH: $result = $value if $enabled;\n",
         body_source: "$result = $value if $enabled;\n",
         modifier: StatementModifierKind::If,
+        flat_span: "$result = $value if $enabled",
+        body_postfix_span: "$result = $value if $enabled",
+        body_statement_span: "$result = $value",
         condition: "$enabled",
         condition_name: "enabled",
         condition_sigil: Sigil::Scalar,
+        rhs_name: "value",
         flat_label: None,
     },
     ModifierCase {
         flat_source: "GUARD: $result = $value unless $disabled;\n",
         body_source: "$result = $value unless $disabled;\n",
         modifier: StatementModifierKind::Unless,
+        flat_span: "$result = $value unless $disabled",
+        body_postfix_span: "$result = $value unless $disabled",
+        body_statement_span: "$result = $value",
         condition: "$disabled",
         condition_name: "disabled",
         condition_sigil: Sigil::Scalar,
+        rhs_name: "value",
         flat_label: None,
     },
     ModifierCase {
         flat_source: "LOOP: $result = $value while $ready;\n",
         body_source: "$result = $value while $ready;\n",
         modifier: StatementModifierKind::While,
+        flat_span: "$result = $value while $ready",
+        body_postfix_span: "$result = $value while $ready",
+        body_statement_span: "$result = $value",
         condition: "$ready",
         condition_name: "ready",
         condition_sigil: Sigil::Scalar,
+        rhs_name: "value",
         flat_label: Some("LOOP"),
     },
     ModifierCase {
         flat_source: "UNTIL: $result = $value until $done;\n",
         body_source: "$result = $value until $done;\n",
         modifier: StatementModifierKind::Until,
+        flat_span: "$result = $value until $done",
+        body_postfix_span: "$result = $value until $done",
+        body_statement_span: "$result = $value",
         condition: "$done",
         condition_name: "done",
         condition_sigil: Sigil::Scalar,
+        rhs_name: "value",
         flat_label: Some("UNTIL"),
     },
     ModifierCase {
         flat_source: "EACH: $result = $value for @items;\n",
-        body_source: "$result = $value for @items;\n",
+        body_source: "$result = $_ for @items;\n",
         modifier: StatementModifierKind::Foreach,
+        flat_span: "$result = $value for @items",
+        body_postfix_span: "$result = $_ for @items",
+        body_statement_span: "$result = $_",
         condition: "@items",
         condition_name: "items",
         condition_sigil: Sigil::Array,
+        rhs_name: "_",
         flat_label: Some("EACH"),
     },
     ModifierCase {
         flat_source: "EVERY: $result = $value foreach @items;\n",
-        body_source: "$result = $value foreach @items;\n",
+        body_source: "$result = $_ foreach @items;\n",
         modifier: StatementModifierKind::Foreach,
+        flat_span: "$result = $value foreach @items",
+        body_postfix_span: "$result = $_ foreach @items",
+        body_statement_span: "$result = $_",
         condition: "@items",
         condition_name: "items",
         condition_sigil: Sigil::Array,
+        rhs_name: "_",
         flat_label: Some("EVERY"),
     },
 ];
 
-fn lower(source: &str) -> Result<HirFile, Box<dyn Error>> {
-    let mut parser = Parser::new(source);
-    let output = parser.parse_with_recovery();
-    if !parser.errors().is_empty() {
-        return Err(format!(
-            "fixture must parse without recovery: {source:?}: {:?}",
-            parser.errors()
-        )
-        .into());
+fn lower_output(output: ParseOutput) -> Result<HirFile, ProofAdmissionError> {
+    if !output.diagnostics.is_empty() {
+        return Err(ProofAdmissionError { diagnostics: output.diagnostics });
     }
     Ok(lower_ast(&output.ast))
+}
+
+fn lower(source: &str) -> Result<HirFile, ProofAdmissionError> {
+    lower_output(parse_recovery(source))
+}
+
+fn parse_recovery(source: &str) -> ParseOutput {
+    let mut parser = Parser::new(source);
+    parser.parse_with_recovery()
 }
 
 fn source_slice<'a>(
@@ -139,6 +183,16 @@ fn postfix_modifiers_preserve_exact_flat_hir_condition_and_label() -> TestResult
         let (item, shell) = modifiers.first().copied().ok_or_else(|| {
             format!("postfix modifier shell is missing for {:?}", case.flat_source)
         })?;
+        assert_eq!(
+            source_slice(
+                case.flat_source,
+                item.range.start,
+                item.range.end,
+                "flat-HIR postfix item",
+            )?,
+            case.flat_span,
+            "flat HIR item must span the complete postfix statement, not only its condition or label"
+        );
         assert_eq!(shell.modifier, case.modifier, "wrong modifier for {:?}", case.flat_source);
         assert_eq!(
             shell.label.as_deref(),
@@ -204,6 +258,20 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
             .first()
             .copied()
             .ok_or_else(|| format!("root statement is missing for {:?}", case.body_source))?;
+        let root_stmt_range = body
+            .source_map
+            .stmt_range(root_stmt_id)
+            .ok_or_else(|| format!("root statement range is missing for {:?}", case.body_source))?;
+        assert_eq!(
+            source_slice(
+                case.body_source,
+                root_stmt_range.start,
+                root_stmt_range.end,
+                "body-HIR root postfix statement",
+            )?,
+            case.body_postfix_span,
+            "body HIR root statement must span the complete postfix statement"
+        );
         let root_stmt = body
             .stmt(root_stmt_id)
             .ok_or_else(|| format!("root statement is missing for {:?}", case.body_source))?;
@@ -219,6 +287,19 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
         let nested_stmt = body
             .stmt(*statement)
             .ok_or_else(|| format!("wrapped statement is missing for {:?}", case.body_source))?;
+        let nested_stmt_range = body.source_map.stmt_range(*statement).ok_or_else(|| {
+            format!("wrapped statement range is missing for {:?}", case.body_source)
+        })?;
+        assert_eq!(
+            source_slice(
+                case.body_source,
+                nested_stmt_range.start,
+                nested_stmt_range.end,
+                "body-HIR wrapped statement",
+            )?,
+            case.body_statement_span,
+            "body HIR wrapped statement must remain linked to the source prefix"
+        );
         let HirStmt::Expr(assign_id) = nested_stmt else {
             return Err(format!(
                 "wrapped statement must remain an expression for {:?}, got {nested_stmt:?}",
@@ -246,9 +327,34 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
 
         let rhs_variable = variable(body, *rhs, "assignment rhs")?;
         assert_eq!(rhs_variable.sigil, Sigil::Scalar);
-        assert_eq!(rhs_variable.name, "value");
+        assert_eq!(rhs_variable.name, case.rhs_name);
         assert_eq!(rhs_variable.kind, VariableKind::Package);
         assert_eq!(rhs_variable.access, AccessMode::Read);
+
+        if case.modifier == StatementModifierKind::Foreach {
+            assert_eq!(
+                source_slice(
+                    case.body_source,
+                    body.source_map
+                        .expr_range(*rhs)
+                        .ok_or_else(|| format!(
+                            "topic-variable range is missing for {:?}",
+                            case.body_source
+                        ))?
+                        .start,
+                    body.source_map
+                        .expr_range(*rhs)
+                        .ok_or_else(|| format!(
+                            "topic-variable range is missing for {:?}",
+                            case.body_source
+                        ))?
+                        .end,
+                    "postfix foreach topic variable",
+                )?,
+                "$_",
+                "postfix for/foreach must preserve the implicit per-iteration topic variable"
+            );
+        }
 
         let condition_variable = variable(body, *condition, "postfix condition")?;
         assert_eq!(
@@ -275,7 +381,7 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
                 assignment_range.end,
                 "body-HIR assignment",
             )?,
-            "$result = $value",
+            case.body_statement_span,
             "wrapped statement geometry drifted for {:?}",
             case.body_source
         );
@@ -332,12 +438,32 @@ fn prefix_control_flow_does_not_mint_postfix_modifier_proof() -> TestResult {
 }
 
 #[test]
-fn malformed_and_chained_modifiers_are_rejected_before_hir_proof_admission() {
+fn malformed_and_chained_modifiers_are_rejected_before_hir_proof_admission() -> TestResult {
     for (source, subject) in [
         ("$result = $value if;\n", "missing modifier condition"),
         ("$result = $value if $enabled while $ready;\n", "chained statement modifiers"),
     ] {
-        let result = lower(source);
-        assert!(result.is_err(), "{subject} must not enter HIR proof admission: {source:?}");
+        let output = parse_recovery(source);
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic,
+                ParseError::UnexpectedToken { .. }
+                    | ParseError::SyntaxError { .. }
+                    | ParseError::Recovered { .. }
+                    | ParseError::UnexpectedEof
+            )),
+            "{subject} must produce a typed syntax/recovery diagnostic: {source:?}; diagnostics: {:?}",
+            output.diagnostics
+        );
+        let rejection = match lower_output(output) {
+            Ok(_) => return Err(format!("{subject} was admitted as HIR: {source:?}").into()),
+            Err(error) => error,
+        };
+        assert!(
+            !rejection.diagnostics.is_empty(),
+            "{subject} rejection must retain typed parser diagnostics: {source:?}"
+        );
     }
+
+    Ok(())
 }
