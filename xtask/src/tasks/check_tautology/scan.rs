@@ -68,10 +68,10 @@ impl AssertionVisitor<'_> {
             }
             return;
         }
-        if ASSERT_EQ_MACROS.iter().any(|candidate| name == *candidate) {
-            if let Some((left, right)) = parse_assert_eq_args(mac.tokens.clone()) {
-                self.push(classify_assert_eq(&left, &right), mac);
-            }
+        if ASSERT_EQ_MACROS.iter().any(|candidate| name == *candidate)
+            && let Some((left, right)) = parse_assert_eq_args(mac.tokens.clone())
+        {
+            self.push(classify_assert_eq(&left, &right), mac);
         }
     }
 
