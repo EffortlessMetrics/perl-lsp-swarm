@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: The references provider-decision receipt now derives its `freshness` field from the tier that actually answered the request and the observed workspace index state, instead of always reporting `fresh`. An empty "no references" result computed over a stale or absent index now reports `unknown`, while answers read from live compiler facts or the live open buffer continue to report `fresh`. Receipt/observability field only; no change to references results.
+time: 2026-08-30T04:15:00Z
+custom:
+  PR: "14163"
+  Slug: references-receipt-freshness-derived-from-answering-tier
+  Breaking: "no"
