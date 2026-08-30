@@ -1,0 +1,53 @@
+name: Investigate magic constant repetition diagnostics 13933
+
+on:
+  push:
+    branches:
+      - investigate/13933-magic-repetition-diagnostics
+    paths:
+      - .github/workflows/investigate-13933.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+      - name: Print exact diagnostics and ASTs
+        shell: bash
+        run: |
+          cat > crates/perl-parser-core/tests/magic_constant_repetition_inventory.rs <<'RS'
+          use perl_parser_core::Parser;
+
+          #[test]
+          fn print_magic_constant_repetition_inventory() {
+              let cases = [
+                  ("line_repetition", r#"my $value = "x" x __LINE__;"#),
+                  ("file_repetition", r#"my $value = "x" x __FILE__;"#),
+                  ("package_repetition", r#"my $value = "x" x __PACKAGE__;"#),
+                  ("line_plain", r#"my $value = __LINE__;"#),
+                  ("file_plain", r#"my $value = __FILE__;"#),
+                  ("package_plain", r#"my $value = __PACKAGE__;"#),
+                  ("unknown_dunder", r#"my $value = __NOT_MAGIC__;"#),
+              ];
+              for (label, source) in cases {
+                  let output = Parser::new(source).parse_with_recovery();
+                  println!("CASE {label}\nSOURCE {source}\nAST {}\nDIAGNOSTICS {:#?}\n", output.ast.to_sexp(), output.diagnostics);
+              }
+          }
+          RS
+          cargo test --locked -p perl-parser-core --test magic_constant_repetition_inventory -- --nocapture
