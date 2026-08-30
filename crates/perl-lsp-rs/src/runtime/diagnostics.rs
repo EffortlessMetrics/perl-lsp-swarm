@@ -18,6 +18,8 @@ use super::{
 use crate::features::diagnostics::report_identity::{
     DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
 };
+use perl_lsp_rs_core::config::AcceptedCriticSnapshot;
+
 use crate::features::diagnostics::{
     AcceptedStateCurrentness as PullAcceptedStateCurrentness, Diagnostic as InternalDiagnostic,
     DiagnosticTag as InternalDiagnosticTag, PullDiagnosticsContext,
@@ -537,17 +539,19 @@ impl LspServer {
                 source_path.as_deref(),
             );
 
-            // Add configured policy critic diagnostics.
+            // Evaluate the native critic over one accepted subject, committing
+            // nothing yet: policy can still move before this report reaches the
+            // sink, so the contribution stays pending until the boundary below.
             let critic_source_identity = critic_source_identity_for(uri, gen_at_snapshot);
-            accepted_critic_policy = self
-                .collect_policy_critic_diagnostics(
-                    ast,
-                    &text,
-                    uri,
-                    critic_source_identity,
-                    &mut diagnostics,
-                )
-                .published_policy();
+            let accepted_critic = self.capture_accepted_critic(uri);
+            let pending_critic = self.evaluate_native_critic(
+                ast,
+                &text,
+                uri,
+                critic_source_identity,
+                accepted_critic.clone(),
+                &diagnostics,
+            );
 
             // Add dead code diagnostics from workspace-wide symbol analysis.
             // Re-check freshness immediately before reading the index: readiness
@@ -608,6 +612,16 @@ impl LspServer {
             // fire on the same range with the same severity but different codes.
             // Collapse them, preferring built-in PL* codes over native-critic codes.
             // (#5088)
+            // Publication boundary: commit or withhold the pending Critic
+            // contribution against its own accepted subject. Only a still-current
+            // subject may bind a policy into the irreversible sink identity.
+            if self.finalize_pending_critic(&mut diagnostics, pending_critic) {
+                accepted_critic_policy = Some(AcceptedCriticPolicy {
+                    owning_root: accepted_critic.owning_root().map(ToOwned::to_owned),
+                    fingerprint: accepted_critic.fingerprint(),
+                });
+            }
+
             dedup_overlapping_diagnostics(&mut diagnostics);
 
             // Convert to LSP diagnostics
@@ -1560,14 +1574,20 @@ impl LspServer {
                     source_path.as_deref(),
                 );
 
-                // Add native critic diagnostics when explicitly selected.
+                // One accepted Critic subject per document, captured once and
+                // then used for evaluation, finalization and result identity
+                // alike. Nothing Critic-policy-bearing is hoisted outside this
+                // loop any more: hoisting is what let identity describe an older
+                // policy than the rows.
                 let critic_source_identity = critic_source_identity_for(uri_str, *gen_at_snapshot);
-                let critic_contribution = self.collect_native_critic_diagnostics(
+                let accepted_critic = self.capture_accepted_critic(uri_str);
+                let pending_critic = self.evaluate_native_critic(
                     ast,
                     &doc.text,
                     uri_str,
                     critic_source_identity,
-                    &mut diagnostics,
+                    accepted_critic.clone(),
+                    &diagnostics,
                 );
 
                 // Add dead code diagnostics from workspace-wide symbol analysis
@@ -1636,10 +1656,12 @@ impl LspServer {
                 // report incomplete for that policy, and a policy that has since
                 // moved makes the identity describe a dead subject - neither may
                 // be handed back as reusable (#13304).
+                // Publication boundary for this document: commit or withhold
+                // the pending contribution against its own subject, and let the
+                // same answer decide Critic result-ID reuse.
                 let critic_subject_current =
-                    critic_contribution.permits_reusable_result_id(|root| {
-                        self.config.lock().effective_critic_state(root).fingerprint()
-                    });
+                    self.finalize_pending_critic(&mut diagnostics, pending_critic);
+
                 let result_id = compose_report_identity(
                     uri_str,
                     &doc.text,
@@ -1880,110 +1902,103 @@ impl LspServer {
         Ok(Some(json!({ "items": items })))
     }
 
-    /// Collect configured policy critic diagnostics (#13304).
+    /// Capture the accepted Critic subject for one document (#12067 review).
     ///
-    /// See [`NativeCriticContribution`]: the caller needs to tell a run that
-    /// deliberately contributed nothing apart from a run that could not publish,
-    /// because only the latter makes the resulting report uncacheable.
-    fn collect_policy_critic_diagnostics(
-        &self,
-        ast: &std::sync::Arc<perl_parser::ast::Node>,
-        doc_text: &str,
-        subject: &str,
-        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-        diagnostics: &mut Vec<InternalDiagnostic>,
-    ) -> NativeCriticContribution {
-        // #9062: routing authority is the accepted state (#8253), never the raw
-        // engine setting. `EffectiveCriticState` is `Disabled | Native`, so a
-        // deprecated `legacy`/`external`/`perlcritic` value is a migration
-        // observation that cannot construct runtime state and cannot select a
-        // second evaluator here. The service owns the disabled contribution too.
-        self.collect_native_critic_diagnostics(ast, doc_text, subject, source_identity, diagnostics)
-    }
-
-    fn collect_native_critic_diagnostics(
-        &self,
-        ast: &std::sync::Arc<perl_parser::ast::Node>,
-        doc_text: &str,
-        subject: &str,
-        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-        diagnostics: &mut Vec<InternalDiagnostic>,
-    ) -> NativeCriticContribution {
-        use perl_lsp_rs_core::providers::diagnostics::{
-            critic_overlap_observations, take_critic_overlap_observations,
-        };
-        use perl_lsp_rs_core::tooling::perl_critic::{
-            NativeCriticService, NativeCriticSubject, RunGate,
-        };
-
-        // One immutable accepted-subject snapshot (#9062): derive the complete
-        // accepted critic state through the #8253 authority in a single lock
-        // scope and release the lock before any rule evaluation. No consumer
-        // copies mutable configuration piecemeal anymore.
-        //
-        // The subject's owning folder (#9062) binds the accepted state to the
-        // same root identity the pull path uses, so one document cannot carry
-        // different critic policy across transports in a multi-root workspace.
+    /// Owning root and accepted state are resolved together, once. Every
+    /// downstream use -- evaluation, final publication currentness, and the
+    /// Critic portion of report identity -- consumes this same value, so a
+    /// transport cannot evaluate under one policy while composing identity from
+    /// another.
+    fn capture_accepted_critic(&self, subject: &str) -> AcceptedCriticSnapshot {
         let root_key = self
             .folder_for_doc_uri(subject)
             .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
             .or_else(|| self.root_path.lock().clone())
             .map(|path| path.to_string_lossy().into_owned());
-        let accepted_state = { self.config.lock().effective_critic_state(root_key.as_deref()) };
-        let expected_fingerprint = accepted_state.fingerprint();
-        let config = std::sync::Arc::clone(&self.config);
-        let gate_root_key = root_key.clone();
-        let gate_fingerprint = expected_fingerprint.clone();
-        let config_is_current = move || {
-            config.lock().effective_critic_state(gate_root_key.as_deref()).fingerprint()
-                == gate_fingerprint
+        let config = self.config.lock();
+        AcceptedCriticSnapshot::capture(&config, root_key.as_deref())
+    }
+
+    /// Evaluate native critic rules over one accepted subject, committing
+    /// nothing.
+    ///
+    /// Deliberately pure with respect to configuration and to the diagnostic
+    /// set: it does not lock config, derive a root, take a fresh accepted state,
+    /// mutate `diagnostics`, or surrender overlap carriers. That is what makes
+    /// the workspace "identity old / evaluation new" race unrepresentable --
+    /// there is no second sampling point left inside evaluation.
+    fn evaluate_native_critic(
+        &self,
+        ast: &std::sync::Arc<perl_parser::ast::Node>,
+        doc_text: &str,
+        subject: &str,
+        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
+        snapshot: AcceptedCriticSnapshot,
+        diagnostics: &[InternalDiagnostic],
+    ) -> PendingCriticContribution {
+        use perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations;
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            NativeCriticService, NativeCriticSubject, RunGate,
         };
 
-        // Core lint emitters that declared a reviewed critic overlap
-        // observation surrender their ordinary diagnostic here (#11918); the
-        // logical row comes out of the same normalization inside the service,
-        // merged with the native alias and carrying both contributor
-        // identities. The set is read non-destructively first: an
-        // unpublishable outcome (stale/cancelled) must retain every
-        // independent core row, so carriers are surrendered only after a
-        // publishable normalized replacement exists.
+        // Read the producer-declared overlap observations non-destructively: an
+        // unpublishable or superseded outcome must leave every independent core
+        // row intact, so carriers are surrendered only at finalization.
         let overlap_observations = critic_overlap_observations(diagnostics);
+
+        let config = std::sync::Arc::clone(&self.config);
+        let gate_snapshot = snapshot.clone();
+        let snapshot_is_current = move || gate_snapshot.is_current(&config.lock());
 
         let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
             subject,
             source_identity,
             ast,
             doc_text,
-            accepted_state,
+            snapshot.state().clone(),
             overlap_observations,
             RunGate::open(),
-            RunGate::new(&config_is_current),
+            RunGate::new(&snapshot_is_current),
         ));
 
-        // A superseded run cannot populate current result storage (#9062):
-        // configuration moved underneath the analysis, so its rows are dropped
-        // and the untouched core diagnostics stay intact for this publication.
-        if !run.is_publishable() {
-            return NativeCriticContribution::Withheld;
+        PendingCriticContribution { snapshot, run }
+    }
+
+    /// Commit or withhold a pending Critic contribution at the publication
+    /// boundary (#12067 review).
+    ///
+    /// This is the only path that may append normalized native rows or drain
+    /// overlap carriers, and it always consults final accepted-subject
+    /// currentness first. Service settlement is not the irreversible boundary:
+    /// policy can move between settlement and the report leaving the server.
+    ///
+    /// Returns whether the Critic subject behind this report is still current,
+    /// which is what decides Critic result-ID reuse.
+    fn finalize_pending_critic(
+        &self,
+        diagnostics: &mut Vec<InternalDiagnostic>,
+        pending: PendingCriticContribution,
+    ) -> bool {
+        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
+
+        let PendingCriticContribution { snapshot, run } = pending;
+        if !snapshot.is_current(&self.config.lock()) {
+            // The subject moved after evaluation. Core rows stay exactly as
+            // their emitters produced them, no native row enters the report,
+            // and the report cannot be cached as current for this policy.
+            return false;
         }
-        // Surrender the carriers only when the run actually normalized the
-        // observations. A `Disabled` accepted state is publishable but
-        // evaluates nothing, so draining here would delete ordinary core rows
-        // (for example the PL603 shell-injection warning) merely because the
-        // critic was switched off (#13304).
+        if !run.is_publishable() {
+            return false;
+        }
+        // A `Disabled` run is publishable and current, but evaluates nothing and
+        // consumes no observation, so it supersedes no carrier. Draining here
+        // would delete independently owned core rows -- the PL603 case.
         if run.superseded_overlap_carriers() {
             take_critic_overlap_observations(diagnostics);
         }
         diagnostics.extend(run.findings().iter().map(normalized_critic_finding_to_diagnostic));
-
-        // The rows above are only meaningful under this exact accepted policy.
-        // Hand it to the sink so the irreversible enqueue can re-check it
-        // against live configuration in its own critical section (#13304):
-        // this gate closed before the publication boundary, not at it.
-        NativeCriticContribution::Published(AcceptedCriticPolicy {
-            owning_root: root_key,
-            fingerprint: expected_fingerprint,
-        })
+        true
     }
 }
 
@@ -2096,49 +2111,19 @@ fn push_diagnostic_source(code: Option<&str>) -> &'static str {
 /// rows; producer spellings never reach this projection directly (#7475).
 /// The contributing ordinary producer's user-visible remediation rides along
 /// so the merged row renders exactly what its retired twin rendered (#12004).
-/// What one native critic collection contributed to a report (#13304).
+/// One evaluated-but-uncommitted native Critic contribution (#12067 review).
 ///
-/// Publication and result-ID reuse need to distinguish three outcomes that a
-/// bare `Option` collapses. A run that deliberately contributed nothing leaves
-/// the report fully current; a run that could not publish leaves the report
-/// incomplete for its own snapshotted policy, so it must never be cached as the
-/// current answer.
-enum NativeCriticContribution {
-    /// Rows were published under exactly this accepted policy.
-    Published(AcceptedCriticPolicy),
-    /// The run finished but could not publish - the policy moved underneath it,
-    /// or it was cancelled. The report is missing rows it would otherwise carry.
-    Withheld,
-}
-
-impl NativeCriticContribution {
-    /// The accepted policy to bind into an irreversible publication, if any.
-    fn published_policy(&self) -> Option<AcceptedCriticPolicy> {
-        match self {
-            Self::Published(policy) => Some(policy.clone()),
-            Self::Withheld => None,
-        }
-    }
-
-    /// Whether a report carrying this contribution may hand back a reusable
-    /// result ID (#13304).
-    ///
-    /// `live_fingerprint` reads the current accepted state for one owning root;
-    /// it is injected so the decision is provable without racing a live server.
-    /// A withheld run leaves the report incomplete for its own snapshotted
-    /// policy, and a published run whose policy has since moved describes a dead
-    /// subject: neither may be cached as the current answer.
-    fn permits_reusable_result_id(
-        &self,
-        live_fingerprint: impl FnOnce(Option<&str>) -> String,
-    ) -> bool {
-        match self {
-            Self::Withheld => false,
-            Self::Published(policy) => {
-                live_fingerprint(policy.owning_root.as_deref()) == policy.fingerprint
-            }
-        }
-    }
+/// Holds the exact accepted subject the run was evaluated under together with
+/// the run itself, so finalization can re-check that same subject rather than
+/// re-deriving one. Deliberately runtime-private: `AcceptedCriticSnapshot` is
+/// the cross-layer domain seam, while this is transport orchestration.
+///
+/// No `Published`/`Withheld` discriminant: `NativeCriticRun` already carries the
+/// richer truth (completeness, carrier supersession, work receipt), and the
+/// snapshot carries the identity, so a second encoding could only disagree.
+struct PendingCriticContribution {
+    snapshot: AcceptedCriticSnapshot,
+    run: perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun,
 }
 
 fn normalized_critic_finding_to_diagnostic(
@@ -3902,56 +3887,6 @@ print \"unreachable\\n\";\n";
             "report items must be empty for an unopened file; got: {value:?}"
         );
         Ok(())
-    }
-
-    /// #13304: the workspace transport composes its own report identity, so the
-    /// critic subject behind it must gate result-ID reuse exactly as the pull
-    /// provider's does. A hardcoded `ready: true` (the state this repaired)
-    /// hands back a cacheable ID for a report that silently lost its critic rows.
-    #[test]
-    fn critic_contribution_gates_workspace_result_id_reuse() {
-        use super::{AcceptedCriticPolicy, NativeCriticContribution};
-
-        let policy = |root: Option<&str>, fingerprint: &str| AcceptedCriticPolicy {
-            owning_root: root.map(str::to_string),
-            fingerprint: fingerprint.to_string(),
-        };
-
-        // A run that could not publish leaves the report incomplete for its own
-        // snapshotted policy, whatever configuration currently says.
-        assert!(
-            !NativeCriticContribution::Withheld.permits_reusable_result_id(|_| "live".to_string()),
-            "a withheld run must never yield a reusable result ID"
-        );
-
-        // Published under a policy that is still live.
-        assert!(
-            NativeCriticContribution::Published(policy(Some("/root"), "fp-a"))
-                .permits_reusable_result_id(|root| {
-                    assert_eq!(root, Some("/root"), "the owning root must be carried through");
-                    "fp-a".to_string()
-                }),
-            "rows published under the live policy stay cacheable"
-        );
-
-        // Published under a policy that has since moved.
-        assert!(
-            !NativeCriticContribution::Published(policy(Some("/root"), "fp-a"))
-                .permits_reusable_result_id(|_| "fp-b".to_string()),
-            "rows published under a policy that has since moved must not be cacheable"
-        );
-
-        // The root is part of the question: a multi-root workspace must not
-        // compare one root's snapshot against another root's live policy.
-        assert!(
-            !NativeCriticContribution::Published(policy(None, "fp-a")).permits_reusable_result_id(
-                |root| {
-                    assert_eq!(root, None, "an absent owning root must stay absent");
-                    "fp-b".to_string()
-                }
-            ),
-            "an unrooted snapshot is compared against the unrooted live policy"
-        );
     }
 
     /// #13304: switching the critic off must not delete ordinary core rows on

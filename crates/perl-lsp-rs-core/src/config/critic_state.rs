@@ -592,6 +592,67 @@ mod tests {
         );
     }
 
+    /// `is_current` compares accepted states directly, so every behaviour-bearing
+    /// axis of the effective state must invalidate a captured subject. Pinned
+    /// here so typed equality cannot silently stop covering an axis.
+    #[test]
+    fn every_accepted_state_axis_invalidates_a_captured_subject() {
+        let base = ServerConfig {
+            perlcritic_enabled: true,
+            perlcritic_severity: 3,
+            native_critic_profile: "recommended".to_string(),
+            native_critic_include: Vec::new(),
+            native_critic_exclude: Vec::new(),
+            ..ServerConfig::default()
+        };
+        let snapshot = AcceptedCriticSnapshot::capture(&base, Some("/root"));
+        assert!(snapshot.is_current(&base), "the capturing config must accept its own subject");
+
+        let moved: [(&str, ServerConfig); 5] = [
+            ("severity", ServerConfig { perlcritic_severity: 5, ..base.clone() }),
+            (
+                "profile",
+                ServerConfig { native_critic_profile: "strict".to_string(), ..base.clone() },
+            ),
+            (
+                "include",
+                ServerConfig {
+                    native_critic_include: vec!["native.testing.require_use_strict".to_string()],
+                    ..base.clone()
+                },
+            ),
+            (
+                "exclude",
+                ServerConfig {
+                    native_critic_exclude: vec!["native.testing.require_use_strict".to_string()],
+                    ..base.clone()
+                },
+            ),
+            ("enabled", ServerConfig { perlcritic_enabled: false, ..base.clone() }),
+        ];
+        for (axis, config) in moved {
+            assert!(
+                !snapshot.is_current(&config),
+                "moving the {axis} axis must invalidate the captured accepted subject"
+            );
+        }
+
+        // An identical config rebuilt from scratch still accepts the subject:
+        // currentness is about the accepted value, not object identity.
+        let rebuilt = ServerConfig {
+            perlcritic_enabled: true,
+            perlcritic_severity: 3,
+            native_critic_profile: "recommended".to_string(),
+            native_critic_include: Vec::new(),
+            native_critic_exclude: Vec::new(),
+            ..ServerConfig::default()
+        };
+        assert!(
+            snapshot.is_current(&rebuilt),
+            "an equal effective configuration must still accept the subject"
+        );
+    }
+
     /// Disabling the critic is a deliberate accepted subject, not an absence of
     /// one: it still has an identity and can still be current.
     #[test]
