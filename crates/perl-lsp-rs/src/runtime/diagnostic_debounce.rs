@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,10 @@ pub(crate) struct DiagnosticDebouncer {
     #[allow(dead_code)]
     worker: Option<JoinHandle<()>>,
     operational: bool,
+    /// Set by the worker thread only when its loop returns normally. A panic
+    /// inside `publish_fn` unwinds past that store, so `false` alongside a
+    /// finished handle means the worker DIED rather than stopped (#10024).
+    clean_exit: Arc<AtomicBool>,
 }
 
 impl DiagnosticDebouncer {
@@ -38,14 +42,21 @@ impl DiagnosticDebouncer {
         let (tx, rx) = std::sync::mpsc::channel();
         let pending_count = Arc::new(AtomicUsize::new(0));
         let worker_pending_count = Arc::clone(&pending_count);
-        let spawn_result = thread::Builder::new()
-            .name("diag-debounce".into())
-            .spawn(move || worker_loop(rx, interval, publish_fn, worker_pending_count));
+        let clean_exit = Arc::new(AtomicBool::new(false));
+        let worker_clean_exit = Arc::clone(&clean_exit);
+        let spawn_result = thread::Builder::new().name("diag-debounce".into()).spawn(move || {
+            worker_loop(rx, interval, publish_fn, worker_pending_count);
+            // Only reached on an orderly return. A panic inside `publish_fn`
+            // unwinds past this, leaving the flag false, which is how
+            // settlement tells a requested stop from a worker that died
+            // (#10024).
+            worker_clean_exit.store(true, Ordering::SeqCst);
+        });
         let operational = spawn_result.is_ok();
         if let Err(ref e) = spawn_result {
             tracing::error!(error = %e, "diagnostic debounce thread spawn failed");
         }
-        Self { tx, pending_count, worker: spawn_result.ok(), operational }
+        Self { tx, pending_count, worker: spawn_result.ok(), operational, clean_exit }
     }
 
     /// Whether the debounce worker thread spawned. `false` means every
@@ -65,6 +76,14 @@ impl DiagnosticDebouncer {
     /// ever spawned -- there is nothing left running either way.
     pub(crate) fn has_exited(&self) -> bool {
         self.worker.as_ref().is_none_or(std::thread::JoinHandle::is_finished)
+    }
+
+    /// Whether the worker loop returned normally rather than unwinding.
+    /// Only meaningful once [`Self::has_exited`] is true: `false` there means
+    /// the thread died, typically because `publish_fn` panicked, which
+    /// settlement must record as a failure rather than an orderly stop.
+    pub(crate) fn exited_cleanly(&self) -> bool {
+        self.clean_exit.load(Ordering::SeqCst)
     }
 
     /// Ask the worker loop to stop, the same way [`Drop`] does. Idempotent:
@@ -183,7 +202,7 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
     fn earliest_timeout_reports_none_for_empty_pending_set() {

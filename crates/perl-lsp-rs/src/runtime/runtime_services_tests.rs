@@ -384,6 +384,52 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_that_died_settles_as_failed_not_as_an_orderly_stop() {
+        // Exit is not the same as orderly exit. A debouncer whose callback
+        // panicked has also "exited", and treating that as `Cancelled` would
+        // let a dead worker report `Complete` -- false-clean settlement in a
+        // new guise.
+        let services = RuntimeServices::new();
+        services.install_file_watcher_debouncer(FileWatcherDebouncer::with_interval(
+            Duration::from_millis(1),
+            |_uris: Vec<String>| panic!("sink panics on first delivery"),
+        ));
+
+        assert!(services.schedule_file_watcher_uri("file:///panics.pl"));
+
+        // Wait for the sink panic to be recorded by the debouncer itself.
+        let died = (0..500).any(|_| {
+            if services.file_watcher_is_operational() == Some(false) {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(died, "the panicking sink should mark the debouncer non-operational");
+
+        let outcome = services.begin_application_shutdown(
+            ShutdownReason::ClientShutdownRequest,
+            Instant::now() + Duration::from_secs(5),
+        );
+
+        assert_eq!(
+            outcome,
+            ApplicationShutdown::Failed,
+            "a worker that died must not be laundered into a clean shutdown"
+        );
+        assert!(
+            services
+                .settlement_snapshot()
+                .settled
+                .iter()
+                .any(|(class, terminal)| *class == ApplicationTaskClass::FileWatcherDebounce
+                    && matches!(terminal, TaskTerminal::Failed { .. })),
+            "the retained terminal must be Failed, not Cancelled"
+        );
+    }
+
+    #[test]
     fn shutdown_honors_its_deadline_while_a_watcher_callback_is_blocked() {
         // The falsifier for the bounded-settlement claim. Cancelling through
         // `FileWatcherDebouncer::shutdown_now` JOINS the dispatcher, and a

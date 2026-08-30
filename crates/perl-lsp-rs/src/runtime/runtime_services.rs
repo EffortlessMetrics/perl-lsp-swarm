@@ -344,21 +344,60 @@ impl RuntimeServices {
     /// An empty slot reports `false`: nothing was ever installed, so nothing
     /// can be observed to have settled, and a shutdown waiting on that class
     /// must time out rather than read absence as success.
-    fn worker_has_exited(&self, class: ApplicationTaskClass) -> bool {
+    /// The terminal to retain for `class` once its worker is observed to have
+    /// stopped, or `None` while it is still running or was never installed.
+    ///
+    /// An exit is not automatically an orderly one. A debouncer whose callback
+    /// panicked has also "exited", and recording that as
+    /// [`TaskTerminal::Cancelled`] would let a dead worker report a clean
+    /// shutdown -- the same false-clean settlement this component exists to
+    /// prevent. Each worker's own failure signal decides which terminal
+    /// applies:
+    ///
+    /// - the file watcher folds a panicked sink into `is_operational`;
+    /// - the diagnostic debouncer reports whether its loop returned normally
+    ///   via `exited_cleanly`;
+    /// - the parse worker recovers job panics inside `catch_unwind` and keeps
+    ///   its threads alive, so its pool exiting really is the cooperative stop
+    ///   it was asked for.
+    fn observed_exit(
+        &self,
+        class: ApplicationTaskClass,
+        reason: ShutdownReason,
+    ) -> Option<TaskTerminal> {
+        let cancelled = || TaskTerminal::Cancelled { reason };
         match class {
             ApplicationTaskClass::ParseWorker => {
-                self.parse_worker_handle.lock().as_ref().is_some_and(|w| !w.is_operational())
+                let worker = self.parse_worker_handle.lock().clone()?;
+                (!worker.is_operational()).then(cancelled)
             }
-            ApplicationTaskClass::DiagnosticDebounce => self
-                .diagnostic_debouncer
-                .lock()
-                .as_ref()
-                .is_some_and(DiagnosticDebouncer::has_exited),
-            ApplicationTaskClass::FileWatcherDebounce => self
-                .file_watcher_debouncer
-                .lock()
-                .as_ref()
-                .is_some_and(|debouncer| debouncer.has_exited()),
+            ApplicationTaskClass::DiagnosticDebounce => {
+                let guard = self.diagnostic_debouncer.lock();
+                let debouncer = guard.as_ref()?;
+                if !debouncer.has_exited() {
+                    return None;
+                }
+                Some(if debouncer.exited_cleanly() {
+                    cancelled()
+                } else {
+                    TaskTerminal::Failed {
+                        reason: "diagnostic debounce worker exited abnormally".to_string(),
+                    }
+                })
+            }
+            ApplicationTaskClass::FileWatcherDebounce => {
+                let debouncer = self.file_watcher_debouncer.lock().clone()?;
+                if !debouncer.has_exited() {
+                    return None;
+                }
+                Some(if debouncer.is_operational() {
+                    cancelled()
+                } else {
+                    TaskTerminal::Failed {
+                        reason: "file watcher debounce worker exited abnormally".to_string(),
+                    }
+                })
+            }
         }
     }
 
@@ -426,8 +465,8 @@ impl RuntimeServices {
             // exited. A stop request alone never settles a class.
             let snapshot = self.settlement_snapshot();
             for class in &snapshot.pending {
-                if self.worker_has_exited(*class) {
-                    let _ = self.record_terminal(*class, TaskTerminal::Cancelled { reason });
+                if let Some(terminal) = self.observed_exit(*class, reason) {
+                    let _ = self.record_terminal(*class, terminal);
                 }
             }
 
@@ -559,6 +598,13 @@ impl RuntimeServices {
         &self,
     ) -> Option<super::file_watcher_debounce::WatcherPressureSnapshot> {
         self.file_watcher_debouncer.lock().as_ref().map(|debouncer| debouncer.pressure())
+    }
+
+    /// Test observation of the watcher's own health signal, which folds in a
+    /// panicked sink. `None` when no debouncer is installed.
+    #[cfg(test)]
+    pub(crate) fn file_watcher_is_operational(&self) -> Option<bool> {
+        self.file_watcher_debouncer.lock().as_ref().map(|d| d.is_operational())
     }
 
     #[cfg(test)]
