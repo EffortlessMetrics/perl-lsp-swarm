@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12416 |
+| Total tracked files | 12417 |
 | Rust-family files | 3821 |
-| Non-Rust files | 8595 |
-| Allowlisted | 6360 |
+| Non-Rust files | 8596 |
+| Allowlisted | 6361 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
@@ -19,7 +19,7 @@
 | config | 490 |
 | documentation | 2803 |
 | generated | 2 |
-| production | 348 |
+| production | 349 |
 | test | 2055 |
 | tooling | 662 |
 | unclassified | 2235 |
@@ -8458,6 +8458,7 @@
 | `vscode-extension/src/test/documentCommands.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/documentFeatureGroup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/downloader.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/downloaderPartialCleanup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionComposition.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionUx.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionWorkspaceEvents.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
