@@ -30,7 +30,8 @@ const WARM_JOB: &str = "corpus-warm-full";
 const RATCHET_JOB: &str = "corpus-ratchet-full";
 const BOUNDED_JOB: &str = "corpus-ratchet-bounded";
 const PR_WRITER_JOB: &str = "open-ratchet-pr";
-const GOVERNED_JOBS: [&str; 4] = [BOUNDED_JOB, WARM_JOB, RATCHET_JOB, PR_WRITER_JOB];
+const GOVERNED_JOBS: [&str; 4] =
+    [BOUNDED_JOB, WARM_JOB, RATCHET_JOB, PR_WRITER_JOB];
 const INSTALL_STEP: &str = "Install CPAN corpus checkpoint";
 const CANONICAL_SAVE_STEP: &str = "Save CPAN corpus cache (canonical)";
 const CHECKPOINT_SAVE_STEP: &str = "Save CPAN corpus checkpoint (partial progress)";
@@ -704,7 +705,10 @@ fn bounded_control_rejects_ref_only_rust_cache_writer_guard() -> Result<()> {
     let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
         .err()
         .ok_or_else(|| anyhow!("ref-only bounded Rust cache guard must fail"))?;
-    ensure!(error.to_string().contains("inputs drifted"), "unexpected refusal: {error}");
+    ensure!(
+        error.to_string().contains("inputs drifted"),
+        "unexpected refusal: {error}"
+    );
     Ok(())
 }
 
@@ -747,7 +751,9 @@ github.event.inputs.mode == 'bounded'"#
 
     let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
         .err()
-        .ok_or_else(|| anyhow!("feature-branch bounded dispatch must not authorize a CPAN cache save"))?;
+        .ok_or_else(|| {
+            anyhow!("feature-branch bounded dispatch must not authorize a CPAN cache save")
+        })?;
     ensure!(
         error.to_string().contains("authority widened or drifted"),
         "unexpected refusal: {error}"
