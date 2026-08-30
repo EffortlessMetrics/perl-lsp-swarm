@@ -65,16 +65,23 @@ can actually keep. The receipt's own destination and staging file are excluded
 from the signal, so writing the artifact cannot flip the tree to dirty and make
 the command reject the receipt it just wrote.
 
-The subject is re-bound before the receipt is published. The steps run for many
-minutes; if the candidate or working tree moves underneath them, the completed
-steps did not all prove one subject, and the lane fails without emitting a
-receipt rather than certifying a subject its later steps did not use.
+The subject is re-bound before any receipt is published, on both the success
+and failure paths. The steps run for many minutes; if the candidate or working
+tree moves underneath them, the run spanned more than one subject and no
+receipt can honestly name it, so none is written. A failing lane still reports
+its failure through the exit code and error; only the receipt is withheld.
+
+Receipt exclusions resolve against the Git repository root rather than the
+process working directory, because `git status` reports root-relative paths —
+otherwise a run started from a subdirectory would see its own receipt as
+ordinary drift and discard an otherwise good proof.
 
 `--verify-receipt <path>` re-reads a receipt against the current checkout and
 runs no proof steps, so it is the cheap consumer seam for asking whether an
 artifact actually certifies this candidate. It exits nonzero on:
 
-- a malformed or stale schema version;
+- a malformed or stale schema version, or any field this version does not
+  emit (the shape is strict: `deny_unknown_fields`);
 - a missing, extra, renamed, or reordered step, or argv that is not the pinned
   lane argv;
 - a success claimed over a non-`ok` step, or over a zero/absent census;

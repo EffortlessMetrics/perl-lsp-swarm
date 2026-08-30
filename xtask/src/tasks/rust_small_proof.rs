@@ -184,6 +184,7 @@ pub enum ProofResult {
 
 /// One selected step, recorded with the exact argv that ran.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StepRecord {
     pub name: String,
     /// Full argv including the program, e.g. `["cargo", "fetch", "--locked"]`.
@@ -198,6 +199,7 @@ pub struct StepRecord {
 /// the pinned argv itself — never from a duplicated literal that could drift
 /// away from what the steps really used.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProofSubject {
     pub git_sha: String,
     /// Whether the working tree differed from `HEAD` when the proof ran.
@@ -226,6 +228,7 @@ pub struct ProofSubject {
 /// One versioned receipt binding candidate/toolchain/profile identity to every
 /// selected step (#8407 acceptance).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RustSmallProofReceipt {
     pub schema_version: String,
     pub subject: ProofSubject,
@@ -554,14 +557,13 @@ fn capture_subject(receipt_path: &Path) -> Result<ProofSubject> {
     })
 }
 
-/// Digest the working tree's difference from `HEAD`, or `None` when clean.
+/// Whether the working tree differs from `HEAD`, ignoring the receipt itself.
 ///
-/// `git status --porcelain` covers staged, unstaged, and untracked *paths*;
-/// `git diff HEAD` pins the exact tracked *content*. Hashing both means two
-/// different edits to the same file produce different subjects. A clean CI
-/// checkout digests to `None`, so hosted lanes are unaffected.
+/// Reports *whether* the tree differed, never *how*: see [`ProofSubject`] for
+/// why identifying the tree is deliberately out of scope. A clean CI checkout
+/// is never dirty, so hosted lanes are unaffected.
 fn capture_worktree_dirty(receipt_path: &Path) -> Result<bool> {
-    let ignored = receipt_exclusions(receipt_path);
+    let ignored = receipt_exclusions(receipt_path)?;
 
     // `-z` gives NUL-delimited, *unquoted* paths. The default porcelain
     // format C-quotes anything unusual (`?? "weird\tname.txt"`), which a
@@ -585,18 +587,23 @@ fn capture_worktree_dirty(receipt_path: &Path) -> Result<bool> {
 /// input to the proof. Without this, a `--receipt` destination inside the
 /// repository and not gitignored would change the tree after subject capture,
 /// and the command's own verifier would reject the receipt it just wrote.
-fn receipt_exclusions(receipt_path: &Path) -> Vec<String> {
+fn receipt_exclusions(receipt_path: &Path) -> Result<Vec<String>> {
+    // `--receipt` is caller-relative, but `git status` reports
+    // repository-root-relative paths. Resolving the exclusion against the
+    // process cwd matches only when the command runs from the root; from a
+    // subdirectory the receipt would look like ordinary drift and discard an
+    // otherwise successful proof.
+    let cwd = std::env::current_dir().wrap_err("resolving the working directory")?;
+    let root = PathBuf::from(capture_stdout("git", &["rev-parse", "--show-toplevel"])?);
+
     let mut paths = Vec::new();
-    let Ok(root) = std::env::current_dir() else {
-        return paths;
-    };
     for candidate in [receipt_path.to_path_buf(), staging_path(receipt_path)] {
-        let absolute = if candidate.is_absolute() { candidate } else { root.join(&candidate) };
+        let absolute = if candidate.is_absolute() { candidate } else { cwd.join(&candidate) };
         if let Ok(relative) = absolute.strip_prefix(&root) {
             paths.push(relative.to_string_lossy().replace('\\', "/"));
         }
     }
-    paths
+    Ok(paths)
 }
 
 /// Staging sibling for the write-then-rename publish. The process id keeps
@@ -923,8 +930,27 @@ fn fail_closed(
         scorecard_census: census,
         result,
     };
-    if let Err(write_error) = write_receipt(receipt_path, &receipt) {
-        eprintln!("[rust-small-proof] receipt emission also failed: {write_error:#}");
+
+    // The failure path owes the same subject-stability boundary as the success
+    // path: this receipt names the subject captured at the start, so if the
+    // checkout moved before the failure it would describe a run spanning two
+    // subjects — and restoring that checkout would make it verify. Withhold it
+    // instead. The lane still reports the failure through its exit and error;
+    // only the receipt, which could not honestly describe the run, is lost.
+    match capture_subject(receipt_path) {
+        Ok(current) if current == *subject => {
+            if let Err(write_error) = write_receipt(receipt_path, &receipt) {
+                eprintln!("[rust-small-proof] receipt emission also failed: {write_error:#}");
+            }
+        }
+        Ok(_) => eprintln!(
+            "[rust-small-proof] the subject changed while the lane ran; withholding a receipt \
+             that would misdescribe which subject failed"
+        ),
+        Err(capture_error) => eprintln!(
+            "[rust-small-proof] could not re-bind the subject; withholding the receipt: \
+             {capture_error:#}"
+        ),
     }
     Err(error)
 }
@@ -1679,8 +1705,26 @@ tests::gamma: test
         // The receipt is this command's output, not an input to the proof, so
         // writing it must not flip the tree to dirty and make the command's
         // own verifier reject what it just wrote.
-        let excluded = receipt_exclusions(Path::new("evidence/rust-small.json"));
-        assert!(excluded.iter().any(|path| path == "evidence/rust-small.json"), "{excluded:?}");
+        //
+        // This test runs with the process cwd at `xtask/` — a subdirectory —
+        // which is exactly the case that used to break: `git status` reports
+        // repository-root-relative paths, so a cwd-relative exclusion never
+        // matched and the receipt looked like ordinary drift.
+        let Ok(excluded) = receipt_exclusions(Path::new("evidence/rust-small.json")) else {
+            panic!("exclusions must resolve inside a git checkout");
+        };
+        assert!(
+            excluded.iter().any(|path| path.ends_with("evidence/rust-small.json")),
+            "the receipt path must be excluded: {excluded:?}"
+        );
+        assert!(
+            excluded.iter().all(|path| !path.starts_with('/')),
+            "exclusions must be repository-root-relative, not absolute: {excluded:?}"
+        );
+        assert!(
+            excluded.iter().any(|path| path.ends_with(".partial")),
+            "the staging sibling must be excluded too: {excluded:?}"
+        );
     }
 
     #[test]
@@ -1838,9 +1882,12 @@ tests::gamma: test
             Some(101),
         );
 
+        // fail_closed re-binds the subject before publishing, so this must be
+        // the live one; a fabricated subject is covered by the sibling test.
+        let Ok(live) = capture_subject(&path) else { panic!("subject capture") };
         let emitted = fail_closed(
             &path,
-            &sample_subject(),
+            &live,
             recorder,
             None,
             ProofResult::ProductFailure,
@@ -1871,8 +1918,51 @@ tests::gamma: test
             "the unreached remainder must be recorded as not_run"
         );
         assert!(
-            verify_receipt(&receipt, Some(&sample_subject())).is_ok(),
+            verify_receipt(&receipt, Some(&live)).is_ok(),
             "the receipt this command emits must pass its own verifier"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failure_receipt_is_withheld_when_the_subject_moved() {
+        // A receipt naming the start-of-run subject after the checkout moved
+        // would describe a run spanning two subjects, and restoring that
+        // checkout would make it verify. The failure still propagates; only
+        // the receipt, which could not honestly describe the run, is withheld.
+        let dir = scratch_dir("moved-subject");
+        let path = dir.join("emitted.json");
+
+        let mut recorder = Recorder::new();
+        recorder.record(
+            "fetch locked inputs",
+            argv("cargo", &["fetch", "--locked"]),
+            StepOutcome::ProductFailure,
+            Some(101),
+        );
+
+        // `sample_subject()` is deliberately not this checkout: it stands in
+        // for a subject that no longer matches when publication is reached.
+        let emitted = fail_closed(
+            &path,
+            &sample_subject(),
+            recorder,
+            None,
+            ProofResult::ProductFailure,
+            eyre!("step 'fetch locked inputs' failed: product/test failure (exit code 101)"),
+        );
+
+        let Err(error) = emitted else {
+            panic!("the lane must still fail");
+        };
+        assert!(
+            format!("{error:#}").contains("product/test failure (exit code 101)"),
+            "the original failure must still propagate: {error:#}"
+        );
+        assert!(
+            !path.exists(),
+            "no receipt may certify a run whose subject moved before publication"
         );
 
         let _ = fs::remove_dir_all(&dir);
