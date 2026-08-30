@@ -2,162 +2,208 @@
 
 Status: accepted
 Date: 2026-05-26
+Amended: 2026-08-29
 Owner: perl-lsp maintainers
+Implementation order: delegated to [#7384](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7384)
 Linked proposal: n/a
 Linked specs:
 - [PLSP-SPEC-0028](../specs/PLSP-SPEC-0028-lsp-stack-extraction.md)
-Linked plan: [lsp-stack extraction implementation plan](../../plans/lsp-stack-extraction/implementation-plan.md)
+Canonical implementation controller: [#7384](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7384)
+Historical plan: [lsp-stack extraction implementation plan](../../plans/lsp-stack-extraction/implementation-plan.md)
+
+## Status Ruling
+
+The boundary decision in this ADR remains accepted. Its former implementation-
+sequence obligation is superseded.
+
+[#7384](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7384) is the
+single implementation controller for extracting, proving, packaging, dogfooding,
+and—only under separately authorized leaves—externalizing the reusable LSP
+runtime. PLSP-SPEC-0028 remains the zero-Perl/product-boundary contract. The
+linked implementation plan is retained as historical routing evidence and a
+current pointer to #7384; it does not own a competing PR sequence.
+
+A concrete implementation PR must therefore be owned by one leaf from #7384's
+current train. This ADR alone does not authorize a crate, move, scaffold,
+rewrite, package, external repository, publication, or release.
 
 ## Context
 
-`perl-lsp` now has the current-app protocol and runtime hardening required
-before any reusable LSP stack extraction:
+`perl-lsp` established current-app protocol and runtime proof sufficient to
+define a reusable boundary:
 
 - inline completion selects one registration mode for static and dynamic
-  clients
-- LSP 3.18 inline-completion parameter handling has runtime proof
-- runtime watcher registration honors lean and e2e tuning
-- semantic-token capabilities advertise full-only behavior until delta support
-  has real result-id state
-- raw RPC and lean editor receipt paths exist for the current app
-- editor docs and release notes describe the current integration behavior
+  clients;
+- LSP 3.18 inline-completion parameter handling has runtime proof;
+- runtime watcher registration honors lean and e2e tuning;
+- semantic-token delta is advertised only with result-id state and parity
+  proof;
+- raw-RPC and lean-editor receipt paths exist for the current app;
+- editor docs distinguish current standard and custom integration behavior.
 
-Those changes make the current product surface coherent enough to define a
-future extraction boundary. They do not by themselves create a reusable stack,
-prove release readiness, or authorize code movement.
+Those facts define a regression baseline. They do not create a reusable runtime,
+prove independent package use, establish release readiness, or authorize code
+movement.
+
+The later #7384 programme broadened the implementation object from a narrow
+crate-first move to a state-coherent runtime contract covering messages, codec,
+application ports, scheduling/currentness, request terminality, delivery,
+lifecycle, deterministic testkit, package proof, non-Perl dogfood, Perl product
+cutover, and authorization-gated externalization. That programme supersedes the
+former numbered sequence without weakening this ADR's boundary.
 
 ## Decision
 
-Future `lsp-stack` work must start from a written boundary, not from moving
-files.
+Reusable runtime work must start from owned behavior and dependency direction,
+not from moving files or renaming current crates.
 
-The reusable stack seam is the language-neutral LSP infrastructure that can be
-shared without knowing Perl. The seam may eventually include:
+The reusable seam is language-neutral LSP infrastructure that can be shared
+without knowing Perl. It may eventually include:
 
-- JSON-RPC message and request-id discipline
-- LSP message framing and transport helpers
-- server-originated request helpers
-- capability-shape and dynamic-registration primitives
-- lifecycle and runtime-tuning primitives that are not tied to Perl providers
-- cancellation and scheduling primitives that do not encode Perl semantics
-- test harness utilities for protocol contracts
+- strict JSON-RPC request, notification, response, error, and request-ID
+  contracts;
+- bounded LSP framing, codec, and connection helpers;
+- server-originated request and response-correlation primitives;
+- language-neutral application, route, admission, scheduling, cancellation,
+  currentness, terminality, lifecycle, and delivery contracts;
+- capability-shape or dynamic-registration helpers that do not encode Perl
+  feature/provider policy;
+- bounded observations and deterministic protocol/runtime testkit utilities.
 
-Perl-specific behavior stays in the current app unless a later spec proves a
-safe boundary. That includes parser, lexer, semantic analysis, workspace index,
-provider behavior, feature catalog, inline-completion behavior, editor
-receipts, DAP, packaging, and release automation.
+Perl-specific behavior stays in the Perl application unless a later accepted
+authority proves a different owner. That includes parser, lexer, semantic and
+source facts, project/workspace state, provider behavior, feature catalog,
+capability and trust policy, application workers, inline-completion behavior,
+editor receipts, DAP, CLI/product composition, packaging, and release
+automation.
+
+Current directories and omnibus crates are not move units. A file or module
+that contains one neutral type beside parser/provider/product policy is mixed
+until the owning leaf separates and proves the boundary.
 
 ## Preconditions
 
-Extraction may begin only after current protocol, runtime, and editor-doc
-hardening is complete and proven in the app that ships today.
+An affected implementation leaf must preserve the current-app contracts whose
+semantic subjects it changes. Depending on scope, that includes:
 
-The first extraction implementation PR must confirm that these current-app
-contracts remain true before moving code:
+- static inline-completion clients receive only the static provider;
+- dynamic inline-completion clients receive only dynamic registration;
+- disabled inline completion disables both registration paths;
+- lean/e2e runtime modes do not register file watchers;
+- file-watcher tuning does not suppress inline-completion registration;
+- semantic-token delta is not advertised without result-ID-backed support;
+- raw-RPC and lean-editor receipts remain current;
+- docs distinguish standard inline completion from the custom
+  `perlInlineCompletionStream` extension.
 
-- static inline-completion clients receive only the static provider
-- dynamic inline-completion clients receive only dynamic registration
-- disabled inline completion disables both static and dynamic registration
-- e2e and lean runtime modes do not register file watchers
-- file-watcher tuning does not suppress inline-completion registration
-- semantic tokens do not advertise delta without result-id-backed delta support
-- raw RPC and lean editor receipts continue to pass for the current app
-- docs still describe standard inline completion and the custom
-  `perlInlineCompletionStream` extension accurately
+Use current unaffected evidence when its semantic subject remains unchanged.
+Missing, stale, partial, or unavailable evidence is `NOT_PROVEN`, not pass.
 
 ## Dependency Boundary
 
-A future `lsp-stack` crate must not depend on Perl crates, Perl providers, Perl
-runtime tooling, or Perl release surfaces.
+Generic runtime code must not depend on Perl crates, Perl providers, Perl
+runtime tooling, Perl application state, or Perl product/release surfaces.
 
-Explicitly forbidden dependencies for a future `lsp-stack` include:
+Forbidden dependencies include:
 
-- `perl-lsp-rs`
-- `perl-lsp-rs-core`
-- `perl-parser`
-- `perl-lexer`
-- `perl-semantic-analyzer`
-- `perl-workspace-index`
-- `perl-module-*`
-- `perl-lsp-*` feature or provider crates
-- `perl-dap-*`
-- `perl-subprocess-runtime`
-- `perl-lsp-perltidy`
-- any crate whose public contract requires Perl source, Perl workspace state,
-  Perl provider facts, Perl debugger state, or Perl release artifacts
+- `perl-lsp-rs`;
+- `perl-lsp-rs-core`;
+- `perllsp`;
+- parser, lexer, semantic, workspace, project, module-resolution, provider,
+  perltidy, subprocess-runtime, or feature-catalog crates whose public contract
+  requires Perl;
+- DAP/debugger crates;
+- editor, installer, package-release, signing, marketplace, or product-identity
+  metadata.
 
-Allowed dependencies must be language-neutral infrastructure dependencies. Any
-new dependency for `lsp-stack` requires a separate dependency-boundary review.
+Allowed dependencies must be language-neutral protocol, serialization, error,
+runtime, or test infrastructure. Any new dependency requires review by the
+owning concrete leaf. Compilation of the current omnibus crate does not prove a
+selected candidate is Perl-free; package and downstream claims require their
+own exact proof.
 
 ## Non-goals
 
 This ADR does not authorize:
 
-- creating `crates/lsp-stack`
-- moving protocol, transport, router, lifecycle, scheduler, or provider files
-- rewriting the router
-- introducing generic handler traits
-- extracting inline-completion types or provider logic
-- extracting capability descriptors from the Perl feature catalog
-- extracting DAP
-- implementing semantic-token delta
-- implementing true incremental parsing
-- changing release, publish, signing, marketplace, or package metadata
-- claiming release readiness
+- implementing #7384 or another controller directly;
+- creating a generic runtime crate before real neutral ownership is ready;
+- moving whole protocol, transport, router, lifecycle, scheduler, provider, or
+  omnibus directories by name;
+- rewriting routing, scheduling, lifecycle, currentness, cancellation, or
+  delivery outside their owning leaf;
+- introducing generic handler/provider traits merely to make a move compile;
+- extracting inline-completion/provider policy, Perl capabilities, DAP, editor,
+  CLI, package, or release behavior;
+- creating an external repository or publishing/tagging/releasing without the
+  explicit authorization required by [#7397](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7397)'s externalization train;
+- claiming general reuse, stability, publication, or release readiness from an
+  empty crate, one primitive, a workspace compile, or a compatibility re-export.
 
 ## Consequences
 
 Positive consequences:
 
-- agents have a durable map before extraction starts
-- current-app behavior remains the regression baseline
-- future stack code must stay language-neutral
-- Perl-specific product behavior remains reviewable in the app until a proven
-  seam exists
+- one current controller owns implementation order;
+- the zero-Perl/product boundary remains durable across train changes;
+- current-app behavior remains the regression baseline;
+- package/downstream and non-Perl dogfood proof stay distinct from mechanical
+  movement;
+- tempting duplicate audit, scaffold, and first-primitive trains fail closed.
 
 Tradeoffs:
 
-- extraction starts later than a direct file move
-- some infrastructure remains in `perl-lsp-rs-core` until the boundary is
-  proven by tests
-- generic handler abstractions remain out of scope until a separate design
-  proves they reduce real complexity
+- extraction follows dependency-ordered causal leaves rather than a short
+  numbered move list;
+- some neutral-looking infrastructure remains embedded until its state,
+  terminality, delivery, or policy ownership is proven;
+- implementation names and package shape remain provisional until the
+  corresponding #7384 decision and proof leaves land.
 
 ## Alternatives Considered
 
-### Create `crates/lsp-stack` immediately
+### Keep the former numbered implementation plan as a second route
 
-Rejected. The current need is a boundary and proof map. Creating the crate
-before the current-app contracts are documented would invite broad file
-movement before the regression baseline is clear.
+Rejected. It produced competing audit and first-source candidates and omitted
+parts of the state-coherent runtime, package, dogfood, and externalization proof
+owned by #7384.
+
+### Create a generic crate immediately
+
+Rejected. An empty shell or one isolated helper does not prove useful ownership,
+state coherence, package correctness, or external reuse.
 
 ### Extract all protocol and runtime modules at once
 
-Rejected. The protocol/runtime surface mixes language-neutral infrastructure
-with Perl-specific feature wiring and current editor receipts. A bulk move
-would obscure which behavior is reusable and which behavior is product-specific.
+Rejected. Current modules mix neutral mechanisms with Perl error taxonomy,
+capability/provider policy, `LspServer` state, application workers, currentness,
+editor receipts, and compatibility behavior.
 
 ### Extract through generic handler traits first
 
-Rejected for this tranche. Handler traits may or may not be useful after the
-language-neutral seam is identified. They are not a prerequisite for documenting
-the extraction boundary.
+Rejected as a default. Traits are permitted only when one concrete leaf proves
+they remove a real dependency or authority rather than adding scaffolding.
 
 ## Follow-up Obligations
 
 - Keep [PLSP-SPEC-0028](../specs/PLSP-SPEC-0028-lsp-stack-extraction.md) as the
-  acceptance contract for extraction PRs.
-- Keep the implementation plan under
-  [plans/lsp-stack-extraction](../../plans/lsp-stack-extraction/implementation-plan.md)
-  as the PR sequence map.
-- Require future extraction PRs to state whether they move code, change runtime
-  behavior, change capability behavior, add dependencies, or alter release
-  surfaces.
-- Keep release readiness claims out of extraction PRs unless a separate release
-  lane proves them.
+  zero-Perl/product-boundary acceptance contract.
+- Keep [#7384](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7384)
+  as the implementation controller until an accepted successor explicitly
+  replaces it.
+- If #7384 is replaced, update the ADR, spec, and historical-plan pointer to the
+  successor; do not restore the former numbered crate-first sequence.
+- Require each implementation PR to name one concrete leaf, the authority moved,
+  dependency direction, affected current-app proof, compatibility exit,
+  rollback, and any package/reuse claim boundary.
+- Keep release, publication, external-repository, and stability claims outside
+  ordinary extraction PRs unless their separately authorized leaves prove them.
 
 ## Status Links
 
+- [Canonical runtime controller #7384](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7384)
+- [PLSP-SPEC-0028](../specs/PLSP-SPEC-0028-lsp-stack-extraction.md)
+- [Historical implementation plan](../../plans/lsp-stack-extraction/implementation-plan.md)
 - [LSP interactive latency rollout](../development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md)
 - [Editor setup](../how-to/EDITOR_SETUP.md)
 - [IntelliJ IDEA setup](../EDITORS/INTELLIJ_IDEA_SETUP.md)
@@ -166,6 +212,6 @@ the extraction boundary.
 
 ## Why ADR-worthy
 
-This is an architecture boundary decision. It defines when extraction may start,
-what future reusable stack code may know, what must remain in `perl-lsp`, and
-which tempting implementation shortcuts are intentionally out of scope.
+This decision defines the durable knowledge and dependency boundary for a
+reusable runtime while allowing the implementation train, package shape, and
+externalization path to evolve under one current controller.
