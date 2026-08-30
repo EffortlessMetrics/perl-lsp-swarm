@@ -252,9 +252,13 @@ impl ProjectModel {
         // structural read-failure limitations; other unread paths remain
         // bounded by the same limitation.
         if self.unread_discovered.remove(relative_path.as_str()) {
+            let legacy_suffix = format!(":{relative_path}");
             self.limitations.retain_mut(|limitation| {
-                if limitation.kind != "read_failure" || limitation.paths.is_empty() {
+                if limitation.kind != "read_failure" {
                     return true;
+                }
+                if limitation.paths.is_empty() {
+                    return !limitation.id.ends_with(&legacy_suffix);
                 }
                 limitation.paths.retain(|path| path != &relative_path);
                 !limitation.paths.is_empty()
