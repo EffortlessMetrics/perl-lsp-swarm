@@ -859,6 +859,16 @@ fn a_brace_inside_a_string_literal_does_not_move_the_enum_boundary() {
                 name: String,
                 name_span: SourceLocation,
             },
+            // An escaped quote must not terminate the literal early. If it did,
+            // the `}` after it would leave the string and reach the balancer.
+            #[cfg_attr(
+                feature = "z",
+                doc = "an escaped quote \" then a brace }"
+            )]
+            Method {
+                name: String,
+                name_span: SourceLocation,
+            },
         }
     "####;
 
@@ -870,6 +880,7 @@ fn a_brace_inside_a_string_literal_does_not_move_the_enum_boundary() {
     let expected: BTreeSet<(String, String)> = [
         ("Package".to_string(), "name_span".to_string()),
         ("Class".to_string(), "name_span".to_string()),
+        ("Method".to_string(), "name_span".to_string()),
     ]
     .into_iter()
     .collect();
