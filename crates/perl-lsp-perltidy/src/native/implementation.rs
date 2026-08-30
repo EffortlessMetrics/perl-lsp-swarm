@@ -160,14 +160,21 @@ impl NativeFormatter {
         (formatted, edits)
     }
 
-    fn apply_final_newline(source: &str, config: &FormatConfig) -> String {
+    /// Apply the configured final-newline policy.
+    ///
+    /// `formatted` is the output of [`Self::format_safe_subset`], not the
+    /// caller's original document, so the terminator inferred here comes from
+    /// the text *after* formatting. That is correct for the layouts this
+    /// formatter produces, which preserve each line's existing terminator, but
+    /// it is the reason the parameter is not called `source`.
+    fn apply_final_newline(formatted: &str, config: &FormatConfig) -> String {
         match config.final_newline {
-            FinalNewline::Preserve => source.to_string(),
+            FinalNewline::Preserve => formatted.to_string(),
             FinalNewline::Insert => {
-                let trimmed = source.trim_end_matches(['\n', '\r']);
-                format!("{trimmed}{}", generated_line_ending(source))
+                let trimmed = formatted.trim_end_matches(['\n', '\r']);
+                format!("{trimmed}{}", generated_line_ending(formatted))
             }
-            FinalNewline::Trim => source.trim_end_matches(['\n', '\r']).to_string(),
+            FinalNewline::Trim => formatted.trim_end_matches(['\n', '\r']).to_string(),
         }
     }
 }

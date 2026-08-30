@@ -159,6 +159,7 @@ mod tests {
             }
             source.push_str(&unterminated_tail);
 
+            // The strategy's 1..6 size bound is the only reason this cannot fire.
             let expected = lines.last().map(|(_, ending)| *ending).expect("1..6 is non-empty");
             prop_assert_eq!(generated_line_ending(&source), expected);
         }
