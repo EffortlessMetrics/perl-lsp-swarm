@@ -462,7 +462,7 @@ fn tracked_files(root: &Path) -> Result<Vec<String>> {
 /// entire job is to fail closed.
 fn code_lines(source: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut in_block_comment = false;
+    let mut block_comment_depth: usize = 0;
     let mut in_string = false;
     let mut raw_hashes: Option<usize> = None;
 
@@ -474,9 +474,16 @@ fn code_lines(source: &str) -> Vec<String> {
         while i < chars.len() {
             let c = chars[i];
 
-            if in_block_comment {
-                if c == '*' && chars.get(i + 1) == Some(&'/') {
-                    in_block_comment = false;
+            if block_comment_depth > 0 {
+                // Rust block comments nest, so only the terminator that returns
+                // the depth to zero ends sanitization. Treating the inner `*/`
+                // as the end would expose the rest of the outer comment as
+                // code — braces and all.
+                if c == '/' && chars.get(i + 1) == Some(&'*') {
+                    block_comment_depth += 1;
+                    i += 2;
+                } else if c == '*' && chars.get(i + 1) == Some(&'/') {
+                    block_comment_depth -= 1;
                     i += 2;
                 } else {
                     i += 1;
@@ -509,7 +516,7 @@ fn code_lines(source: &str) -> Vec<String> {
                 break;
             }
             if c == '/' && chars.get(i + 1) == Some(&'*') {
-                in_block_comment = true;
+                block_comment_depth = 1;
                 i += 2;
                 continue;
             }
@@ -1998,6 +2005,29 @@ pub fn pascal_to_snake(name: &str) -> String {
             parse_public_items(source),
             vec![("declared_after_the_test_module".to_string(), SymbolKind::Function)],
             "an item after an unbalanced literal brace must still be discovered"
+        );
+        Ok(())
+    }
+
+    /// Rust block comments nest. Ending sanitization at the inner `*/` would
+    /// expose the rest of the outer comment as code, so a brace in that tail
+    /// would shift depth and hide every later item — the same failure mode as
+    /// the unbalanced literal brace, reached a different way.
+    #[test]
+    fn a_nested_block_comment_does_not_hide_later_items() -> TestResult {
+        let source = concat!(
+            "/* outer\n",
+            "   /* inner */\n",
+            "   still commented { and an unbalanced brace\n",
+            "*/\n",
+            "pub fn declared_after_the_comment() -> u32 {\n",
+            "    7\n",
+            "}\n",
+        );
+        assert_eq!(
+            parse_public_items(source),
+            vec![("declared_after_the_comment".to_string(), SymbolKind::Function)],
+            "an item after a nested block comment must still be discovered"
         );
         Ok(())
     }
