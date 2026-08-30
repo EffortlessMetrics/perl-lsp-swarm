@@ -46,6 +46,13 @@ pub const UX_CASE_INVENTORY_SCHEMA: &str = "ux_case_inventory.v1";
 /// Producer identifier emitted in every inventory document.
 pub const UX_CASE_INVENTORY_PRODUCER: &str = "perl-lsp-ux-tests::case_inventory";
 
+/// Schema identifier for the tombstone that replaces a stale inventory while
+/// a refresh is in flight or after one has failed.
+///
+/// A consumer that reads the canonical path must treat any document whose
+/// `schema` is not [`UX_CASE_INVENTORY_SCHEMA`] as "no current inventory".
+pub const UX_CASE_INVENTORY_INVALID_SCHEMA: &str = "ux_case_inventory_invalid.v1";
+
 /// The only Cargo package whose test executables may enter the denominator.
 pub const UX_INVENTORY_PACKAGE: &str = "perl-lsp-ux-tests";
 
@@ -188,14 +195,30 @@ pub enum UxDiscoveryFailure {
         /// Target identity whose list output had no summary.
         target: String,
     },
-    /// The libtest summary count disagrees with the parsed case count.
+    /// The libtest summary counts disagree with the parsed listing, per kind.
     ListCountMismatch {
         /// Target identity whose counts disagree.
         target: String,
-        /// Count libtest declared in its summary.
-        declared: usize,
-        /// Count actually parsed from the listing.
-        parsed: usize,
+        /// Test count libtest declared in its summary.
+        declared_tests: usize,
+        /// Test count actually parsed from the listing.
+        parsed_tests: usize,
+        /// Benchmark count libtest declared in its summary.
+        declared_benchmarks: usize,
+        /// Benchmark count actually parsed from the listing.
+        parsed_benchmarks: usize,
+    },
+    /// The executable changed on disk between being digested and being listed.
+    ///
+    /// A concurrent build can replace a test binary mid-discovery, which would
+    /// otherwise record executable B's cases under executable A's digest.
+    ExecutableChangedDuringDiscovery {
+        /// Target identity whose executable moved.
+        target: String,
+        /// Digest observed before listing.
+        before: String,
+        /// Digest observed after listing.
+        after: String,
     },
     /// Two executable cases normalized to one case identity.
     DuplicateCaseId {
@@ -236,6 +259,7 @@ impl UxDiscoveryFailure {
             Self::MalformedListOutput { .. } => "malformed_list_output",
             Self::MissingListSummary { .. } => "missing_list_summary",
             Self::ListCountMismatch { .. } => "list_count_mismatch",
+            Self::ExecutableChangedDuringDiscovery { .. } => "executable_changed_during_discovery",
             Self::DuplicateCaseId { .. } => "duplicate_case_id",
             Self::DigestUnavailable { .. } => "digest_unavailable",
             Self::InstrumentFailure { .. } => "instrument_failure",
@@ -284,9 +308,19 @@ impl fmt::Display for UxDiscoveryFailure {
                 f,
                 "libtest list output for `{target}` has no `N tests, M benchmarks` summary"
             ),
-            Self::ListCountMismatch { target, declared, parsed } => write!(
+            Self::ListCountMismatch {
+                target,
+                declared_tests,
+                parsed_tests,
+                declared_benchmarks,
+                parsed_benchmarks,
+            } => write!(
                 f,
-                "libtest declared {declared} cases for `{target}` but {parsed} were parsed"
+                "libtest declared {declared_tests} tests and {declared_benchmarks} benchmarks for `{target}` but {parsed_tests} tests and {parsed_benchmarks} benchmarks were parsed"
+            ),
+            Self::ExecutableChangedDuringDiscovery { target, before, after } => write!(
+                f,
+                "the executable for `{target}` changed during discovery: {before} before listing, {after} after"
             ),
             Self::DuplicateCaseId { case_id, first_target, second_target } => write!(
                 f,
@@ -671,13 +705,33 @@ pub fn parse_cargo_test_artifacts(
                 Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned())
             });
 
-        let mut features: Vec<String> = value
-            .get("features")
-            .and_then(serde_json::Value::as_array)
-            .map(|items| {
-                items.iter().filter_map(serde_json::Value::as_str).map(str::to_string).collect()
-            })
-            .unwrap_or_default();
+        // An unknown feature population must never normalize into an apparently
+        // exact one. A missing key, a non-array value, or a non-string element
+        // would otherwise become the empty list, which the `pr` profile accepts
+        // as its own exact selection.
+        let raw_features =
+            value.get("features").ok_or_else(|| UxDiscoveryFailure::MalformedCargoMessage {
+                line_number,
+                reason: format!("compiler-artifact target `{target_name}` has no features array"),
+            })?;
+        let feature_items =
+            raw_features.as_array().ok_or_else(|| UxDiscoveryFailure::MalformedCargoMessage {
+                line_number,
+                reason: format!(
+                    "compiler-artifact target `{target_name}` has a non-array features value"
+                ),
+            })?;
+        let mut features: Vec<String> = Vec::with_capacity(feature_items.len());
+        for item in feature_items {
+            let feature =
+                item.as_str().ok_or_else(|| UxDiscoveryFailure::MalformedCargoMessage {
+                    line_number,
+                    reason: format!(
+                        "compiler-artifact target `{target_name}` has a non-string feature entry"
+                    ),
+                })?;
+            features.push(feature.to_string());
+        }
         features.sort();
         features.dedup();
 
@@ -806,12 +860,19 @@ pub fn parse_libtest_list(
     let Some((declared_tests, declared_benchmarks)) = summary else {
         return Err(UxDiscoveryFailure::MissingListSummary { target: target.to_string() });
     };
-    let declared = declared_tests + declared_benchmarks;
-    if declared != cases.len() {
+    // Compared per kind, not as one total: `foo: benchmark` under a
+    // `1 test, 0 benchmarks` summary is contradictory evidence about the runner
+    // shape, and a combined comparison would accept it and record the wrong
+    // kind.
+    let parsed_tests = cases.iter().filter(|case| case.kind == UxCaseKind::Test).count();
+    let parsed_benchmarks = cases.len() - parsed_tests;
+    if declared_tests != parsed_tests || declared_benchmarks != parsed_benchmarks {
         return Err(UxDiscoveryFailure::ListCountMismatch {
             target: target.to_string(),
-            declared,
-            parsed: cases.len(),
+            declared_tests,
+            parsed_tests,
+            declared_benchmarks,
+            parsed_benchmarks,
         });
     }
 
@@ -852,9 +913,19 @@ pub enum UxExecutableRole {
     WorkspaceTarget,
     /// Inside the workspace but not under the target directory.
     WorkspaceOther,
-    /// Outside the workspace root entirely.
+    /// Outside the workspace, but under the declared Cargo target directory.
+    ///
+    /// This is the ordinary shape when `CARGO_TARGET_DIR` points outside the
+    /// checkout, which `.cargo/config.local.toml.example` supports. The replay
+    /// stays runnable because the path is recorded relative to
+    /// `$CARGO_TARGET_DIR` rather than to the checkout.
+    CargoTargetDir,
+    /// Outside both the workspace root and the declared target directory.
     OutsideWorkspace,
 }
+
+/// Placeholder the replay argv uses for a Cargo-target-dir-relative executable.
+pub const CARGO_TARGET_DIR_PLACEHOLDER: &str = "${CARGO_TARGET_DIR}";
 
 /// A limitation that the inventory cannot resolve and must not hide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -875,6 +946,12 @@ pub enum UxInventoryLimitation {
     RepositoryShaUnknown,
     /// The subject's working-tree cleanliness could not be established.
     RepositoryDirtyStateUnknown,
+    /// At least one executable lives outside both the workspace and the
+    /// declared Cargo target directory.
+    ///
+    /// Its durable replay names the executable by file name only and therefore
+    /// cannot locate it without the machine-local section.
+    ReplayNotSelfContained,
 }
 
 /// Durable identity of one discovered test executable.
@@ -886,6 +963,10 @@ pub struct UxExecutableIdentity {
     /// Slash-normalized workspace-relative path, when the executable is inside.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_relative_path: Option<String>,
+    /// Slash-normalized `$CARGO_TARGET_DIR`-relative path, when the executable
+    /// lives in an external target directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_dir_relative_path: Option<String>,
     /// Executable file name.
     pub file_name: String,
     /// `sha256:` content digest of the executable.
@@ -1020,6 +1101,9 @@ pub struct UxLocalExecution {
     pub package_id: Option<String>,
     /// Absolute workspace root at discovery time.
     pub workspace_root: String,
+    /// Absolute Cargo target directory at discovery time, when established.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cargo_target_root: Option<String>,
     /// Absolute executable path per target identity.
     pub target_executables: BTreeMap<String, String>,
 }
@@ -1109,6 +1193,66 @@ impl UxCaseInventory {
     }
 }
 
+/// Why the canonical inventory path currently holds no usable inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UxInventoryInvalidState {
+    /// A refresh is in flight; the previous inventory is no longer current.
+    DiscoveryInProgress,
+    /// A refresh ran and failed; there is no inventory for this subject.
+    DiscoveryFailed,
+}
+
+/// Tombstone written over the canonical inventory path so that a failed refresh
+/// cannot leave a previous run's inventory readable as this run's result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct UxCaseInventoryInvalid {
+    /// Schema identifier — never [`UX_CASE_INVENTORY_SCHEMA`].
+    pub schema: String,
+    /// Producer identifier.
+    pub producer: String,
+    /// Operational profile the failed or in-flight refresh targeted.
+    pub operational_profile: String,
+    /// Why there is no usable inventory here.
+    pub state: UxInventoryInvalidState,
+    /// Stable discriminator of the discovery failure, when one occurred.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
+    /// Human-readable failure detail, when one occurred.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl UxCaseInventoryInvalid {
+    /// Tombstone for a refresh that is about to start.
+    #[must_use]
+    pub fn in_progress(tier: UxCiTier) -> Self {
+        Self {
+            schema: UX_CASE_INVENTORY_INVALID_SCHEMA.to_string(),
+            producer: UX_CASE_INVENTORY_PRODUCER.to_string(),
+            operational_profile: profile_name(tier).to_string(),
+            state: UxInventoryInvalidState::DiscoveryInProgress,
+            failure_kind: None,
+            detail: None,
+        }
+    }
+
+    /// Tombstone for a refresh that failed.
+    #[must_use]
+    pub fn failed(tier: UxCiTier, failure: &UxDiscoveryFailure) -> Self {
+        Self {
+            schema: UX_CASE_INVENTORY_INVALID_SCHEMA.to_string(),
+            producer: UX_CASE_INVENTORY_PRODUCER.to_string(),
+            operational_profile: profile_name(tier).to_string(),
+            state: UxInventoryInvalidState::DiscoveryFailed,
+            failure_kind: Some(failure.kind().to_string()),
+            detail: Some(failure.to_string()),
+        }
+    }
+}
+
 /// `sha256:`-prefixed hex digest of a byte slice.
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -1184,6 +1328,11 @@ pub struct UxDiscoveryRequest {
     pub cargo_profile: String,
     /// Absolute workspace root, used to normalize executable path roles.
     pub workspace_root: PathBuf,
+    /// Absolute Cargo target directory, when the caller could establish one.
+    ///
+    /// Lets an executable under an external `CARGO_TARGET_DIR` keep a runnable
+    /// durable replay instead of degrading to a bare file name.
+    pub cargo_target_root: Option<PathBuf>,
     /// Wall-clock reading recorded in the machine-local section only.
     pub generated_at: Option<String>,
     /// Whether to emit the machine-local section at all.
@@ -1204,6 +1353,7 @@ impl UxDiscoveryRequest {
             host_target: "unknown".to_string(),
             cargo_profile: "test".to_string(),
             workspace_root,
+            cargo_target_root: None,
             generated_at: None,
             include_local_execution: false,
         }
@@ -1276,6 +1426,7 @@ pub fn discover_cases(
     let mut local_executables: BTreeMap<String, String> = BTreeMap::new();
     let mut package_id: Option<String> = None;
     let mut package_identity: Option<CargoPackageIdentity> = None;
+    let mut replay_not_self_contained = false;
 
     for artifact in artifacts {
         let identity = artifact.target_identity();
@@ -1294,8 +1445,20 @@ pub fn discover_cases(
             });
         }
 
+        // The digest and the listing are two observations of a file a concurrent
+        // build can replace between them. Bracketing the listing binds the cases
+        // to the exact executable they came from instead of to whichever binary
+        // happened to be on disk first.
         let digest = commands.executable_digest(&identity, &artifact.executable)?;
         let listing = commands.list_cases(&identity, &artifact.executable, &list_suffix)?;
+        let digest_after = commands.executable_digest(&identity, &artifact.executable)?;
+        if digest != digest_after {
+            return Err(UxDiscoveryFailure::ExecutableChangedDuringDiscovery {
+                target: identity,
+                before: digest,
+                after: digest_after,
+            });
+        }
         let listed = parse_libtest_list(&identity, &listing)?;
 
         let scenario_prefix = scenario_prefix(&artifact.target_name);
@@ -1337,15 +1500,18 @@ pub fn discover_cases(
         local_executables
             .insert(identity.clone(), artifact.executable.to_string_lossy().into_owned());
 
-        let executable = executable_identity(&request.workspace_root, &artifact.executable, digest);
+        let executable = executable_identity(
+            &request.workspace_root,
+            request.cargo_target_root.as_deref(),
+            &artifact.executable,
+            digest,
+        );
+        if executable.role == UxExecutableRole::OutsideWorkspace {
+            replay_not_self_contained = true;
+        }
         // The replay argv names the executable by its durable role, never by the
         // absolute path of whichever checkout happened to run discovery.
-        let mut list_argv = vec![
-            executable
-                .workspace_relative_path
-                .clone()
-                .unwrap_or_else(|| executable.file_name.clone()),
-        ];
+        let mut list_argv = vec![executable.replay_argv0()];
         list_argv.extend(list_suffix.iter().cloned());
 
         targets.push(UxTargetInventory {
@@ -1373,6 +1539,9 @@ pub fn discover_cases(
     if request.repository_dirty_state == UxDirtyState::Unknown {
         limitations.insert(UxInventoryLimitation::RepositoryDirtyStateUnknown);
     }
+    if replay_not_self_contained {
+        limitations.insert(UxInventoryLimitation::ReplayNotSelfContained);
+    }
 
     let cases_per_target: BTreeMap<String, usize> =
         targets.iter().map(|target| (target.target_identity.clone(), target.case_count)).collect();
@@ -1399,6 +1568,7 @@ pub fn discover_cases(
             generated_at: request.generated_at.clone(),
             package_id,
             workspace_root: normalize_path(&request.workspace_root),
+            cargo_target_root: request.cargo_target_root.as_deref().map(normalize_path),
             target_executables: local_executables,
         }),
     };
@@ -1456,33 +1626,68 @@ fn normalize_path(path: &Path) -> String {
 
 fn executable_identity(
     workspace_root: &Path,
+    cargo_target_root: Option<&Path>,
     executable: &Path,
     digest: String,
 ) -> UxExecutableIdentity {
     let file_name = executable
         .file_name()
         .map_or_else(|| normalize_path(executable), |name| name.to_string_lossy().into_owned());
-    match executable.strip_prefix(workspace_root) {
-        Ok(relative) => {
-            let relative = normalize_path(relative);
-            let role = if relative.starts_with("target/") {
-                UxExecutableRole::WorkspaceTarget
-            } else {
-                UxExecutableRole::WorkspaceOther
-            };
-            UxExecutableIdentity {
-                role,
-                workspace_relative_path: Some(relative),
-                file_name,
-                digest,
-            }
-        }
-        Err(_) => UxExecutableIdentity {
-            role: UxExecutableRole::OutsideWorkspace,
-            workspace_relative_path: None,
+
+    if let Ok(relative) = executable.strip_prefix(workspace_root) {
+        let relative = normalize_path(relative);
+        let role = if relative.starts_with("target/") {
+            UxExecutableRole::WorkspaceTarget
+        } else {
+            UxExecutableRole::WorkspaceOther
+        };
+        return UxExecutableIdentity {
+            role,
+            workspace_relative_path: Some(relative),
+            target_dir_relative_path: None,
             file_name,
             digest,
-        },
+        };
+    }
+
+    // `CARGO_TARGET_DIR` outside the checkout is a supported layout; recording
+    // the path relative to that root keeps the replay runnable without leaking
+    // an absolute path.
+    if let Some(relative) = cargo_target_root.and_then(|root| executable.strip_prefix(root).ok()) {
+        return UxExecutableIdentity {
+            role: UxExecutableRole::CargoTargetDir,
+            workspace_relative_path: None,
+            target_dir_relative_path: Some(normalize_path(relative)),
+            file_name,
+            digest,
+        };
+    }
+
+    UxExecutableIdentity {
+        role: UxExecutableRole::OutsideWorkspace,
+        workspace_relative_path: None,
+        target_dir_relative_path: None,
+        file_name,
+        digest,
+    }
+}
+
+impl UxExecutableIdentity {
+    /// How the replay argv names this executable.
+    ///
+    /// Workspace-relative where possible, `$CARGO_TARGET_DIR`-relative for an
+    /// external target directory, and the bare file name only when the
+    /// executable is under neither root — which is the case
+    /// [`UxInventoryLimitation::ReplayNotSelfContained`] declares.
+    #[must_use]
+    pub fn replay_argv0(&self) -> String {
+        if let Some(path) = &self.workspace_relative_path {
+            return path.clone();
+        }
+        if let Some(path) = &self.target_dir_relative_path {
+            return format!("{CARGO_TARGET_DIR_PLACEHOLDER}/{path}");
+        }
+        self.file_name.clone()
     }
 }
 

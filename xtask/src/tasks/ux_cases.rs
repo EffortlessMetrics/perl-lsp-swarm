@@ -14,8 +14,8 @@
 
 use color_eyre::eyre::{Result, eyre};
 use perl_lsp_ux_tests::case_inventory::{
-    self, UxCaseInventory, UxDirtyState, UxDiscoveryCommands, UxDiscoveryFailure,
-    UxDiscoveryRequest, sha256_hex,
+    self, UxCaseInventory, UxCaseInventoryInvalid, UxDirtyState, UxDiscoveryCommands,
+    UxDiscoveryFailure, UxDiscoveryRequest, sha256_hex,
 };
 use perl_lsp_ux_tests::taxonomy::UxCiTier;
 use sha2::{Digest, Sha256};
@@ -142,8 +142,21 @@ fn rustc_field(verbose: &str, key: &str) -> Option<String> {
     })
 }
 
+/// Absolute Cargo target directory, from `cargo metadata`.
+///
+/// Establishes the second normalization root so an external `CARGO_TARGET_DIR`
+/// still yields a runnable durable replay.
+fn cargo_target_root(root: &Path) -> Option<PathBuf> {
+    let metadata = utils::run_cargo_metadata(true).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&metadata).ok()?;
+    let directory = value.get("target_directory")?.as_str()?;
+    let directory = PathBuf::from(directory);
+    if directory.is_absolute() { Some(directory) } else { Some(root.join(directory)) }
+}
+
 fn build_request(root: &Path, tier: UxCiTier, include_local_execution: bool) -> UxDiscoveryRequest {
     let mut request = UxDiscoveryRequest::new(tier, root.to_path_buf());
+    request.cargo_target_root = cargo_target_root(root);
 
     request.repository_sha = probe(root, "git", &["rev-parse", "HEAD"])
         .map(|sha| sha.trim().to_string())
@@ -175,12 +188,68 @@ fn render(inventory: &UxCaseInventory) -> Result<String> {
     Ok(format!("{}\n", serde_json::to_string_pretty(inventory)?))
 }
 
-fn write_inventory(path: &Path, body: &str) -> Result<()> {
+/// Replace `path` with `body` atomically, so a reader never sees a torn file.
+fn write_atomic(path: &Path, body: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, body)?;
+    // Same directory, so the rename stays on one filesystem and is atomic.
+    let staging = path.with_extension("json.tmp");
+    fs::write(&staging, body)?;
+    fs::rename(&staging, path)?;
     Ok(())
+}
+
+fn write_tombstone(path: &Path, tombstone: &UxCaseInventoryInvalid) -> Result<()> {
+    write_atomic(path, &format!("{}\n", serde_json::to_string_pretty(tombstone)?))
+}
+
+/// Discover into `out`, invalidating the previous document first.
+///
+/// The canonical path is overwritten with a tombstone **before** the first
+/// fallible step, and replaced with a failure tombstone if discovery fails. A
+/// previous run's inventory can therefore never be read as this run's result
+/// after a failed refresh — a Cargo failure, a malformed listing, a
+/// wrong-profile artifact, a digest failure, or a rendering failure all leave a
+/// document whose `schema` is not `ux_case_inventory.v1`.
+///
+/// # Errors
+///
+/// Returns the discovery or rendering failure after the tombstone is in place.
+pub fn discover_to_path(
+    commands: &dyn UxDiscoveryCommands,
+    request: &UxDiscoveryRequest,
+    tier: UxCiTier,
+    out: &Path,
+) -> Result<UxCaseInventory> {
+    write_tombstone(out, &UxCaseInventoryInvalid::in_progress(tier))?;
+
+    let inventory = match case_inventory::discover_cases(commands, request)
+        .and_then(|inventory| inventory.verify_digest().map(|()| inventory))
+    {
+        Ok(inventory) => inventory,
+        Err(failure) => {
+            write_tombstone(out, &UxCaseInventoryInvalid::failed(tier, &failure))?;
+            return Err(eyre!("{failure}"));
+        }
+    };
+
+    match render(&inventory) {
+        Ok(body) => {
+            write_atomic(out, &body)?;
+            Ok(inventory)
+        }
+        Err(error) => {
+            write_tombstone(
+                out,
+                &UxCaseInventoryInvalid::failed(
+                    tier,
+                    &UxDiscoveryFailure::InstrumentFailure { reason: error.to_string() },
+                ),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 /// Run `ux cases discover`.
@@ -201,16 +270,11 @@ pub fn run_discover(
 
     let commands = SystemDiscoveryCommands { workspace_root: root.clone() };
     let request = build_request(&root, tier, local_execution);
-    let inventory = case_inventory::discover_cases(&commands, &request)
-        .map_err(|failure| eyre!("{failure}"))?;
-    inventory.verify_digest().map_err(|failure| eyre!("{failure}"))?;
-
-    let body = render(&inventory)?;
     let out = out.unwrap_or_else(|| root.join(DEFAULT_OUT));
-    write_inventory(&out, &body)?;
+    let inventory = discover_to_path(&commands, &request, tier, &out)?;
 
     if stdout_json {
-        print!("{body}");
+        print!("{}", render(&inventory)?);
     } else {
         println!(
             "ux_case_inventory.v1 profile={} targets={} cases={} zero-case-targets={}",
@@ -229,8 +293,93 @@ pub fn run_discover(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_lsp_ux_tests::case_inventory::{
+        UX_CASE_INVENTORY_INVALID_SCHEMA, UX_CASE_INVENTORY_SCHEMA, UxInventoryInvalidState,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Command source that always fails the Cargo step.
+    struct FailingCommands;
+
+    impl UxDiscoveryCommands for FailingCommands {
+        fn compile_test_targets(&self, argv: &[String]) -> Result<String, UxDiscoveryFailure> {
+            Err(UxDiscoveryFailure::CargoInvocationFailed {
+                argv: argv.to_vec(),
+                status: Some(101),
+                detail: "forced failure".to_string(),
+            })
+        }
+
+        fn list_cases(
+            &self,
+            _target: &str,
+            _executable: &Path,
+            _argv: &[String],
+        ) -> Result<String, UxDiscoveryFailure> {
+            unreachable!("compilation fails first")
+        }
+
+        fn executable_digest(
+            &self,
+            _target: &str,
+            _executable: &Path,
+        ) -> Result<String, UxDiscoveryFailure> {
+            unreachable!("compilation fails first")
+        }
+
+        fn executable_exists(&self, _executable: &Path) -> bool {
+            unreachable!("compilation fails first")
+        }
+    }
+
+    #[test]
+    fn a_failed_refresh_cannot_leave_a_stale_inventory_readable() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("ux-case-inventory.json");
+
+        // Pre-seed the canonical path with a previous run's valid inventory.
+        let stale = format!(
+            r#"{{"schema":"{UX_CASE_INVENTORY_SCHEMA}","producer":"stale","totals":{{"case_count":349}}}}"#
+        );
+        fs::write(&out, &stale)?;
+        assert!(fs::read_to_string(&out)?.contains(UX_CASE_INVENTORY_SCHEMA));
+
+        let request = UxDiscoveryRequest::new(UxCiTier::Pr, dir.path().to_path_buf());
+        let error = discover_to_path(&FailingCommands, &request, UxCiTier::Pr, &out)
+            .expect_err("a forced Cargo failure must surface");
+        assert!(error.to_string().contains("cargo invocation failed"), "{error}");
+
+        // The stale inventory must no longer be consumable as this run's result.
+        let after = fs::read_to_string(&out)?;
+        let parsed: serde_json::Value = serde_json::from_str(&after)?;
+        assert_eq!(parsed["schema"], UX_CASE_INVENTORY_INVALID_SCHEMA);
+        assert_ne!(parsed["schema"], UX_CASE_INVENTORY_SCHEMA);
+        assert_eq!(parsed["failure_kind"], "cargo_invocation_failed");
+        assert!(!after.contains("349"), "no count from the stale document may survive");
+
+        let tombstone: UxCaseInventoryInvalid = serde_json::from_str(&after)?;
+        assert_eq!(tombstone.state, UxInventoryInvalidState::DiscoveryFailed);
+        assert_eq!(tombstone.operational_profile, "pr");
+        Ok(())
+    }
+
+    #[test]
+    fn no_staging_file_is_left_behind_after_a_failed_refresh() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("ux-case-inventory.json");
+        let request = UxDiscoveryRequest::new(UxCiTier::Nightly, dir.path().to_path_buf());
+        discover_to_path(&FailingCommands, &request, UxCiTier::Nightly, &out)
+            .expect_err("a forced Cargo failure must surface");
+
+        let leftovers: Vec<String> = fs::read_dir(dir.path())?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging files left behind: {leftovers:?}");
+        Ok(())
+    }
 
     #[test]
     fn rustc_fields_parse_from_verbose_output() -> TestResult {

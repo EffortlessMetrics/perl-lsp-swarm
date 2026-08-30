@@ -5,6 +5,7 @@
 //! mirror the ten wrong implementations named by `#9890` one-for-one.
 
 use super::*;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -21,6 +22,10 @@ struct FixtureCommands {
     missing: BTreeSet<String>,
     failing_lists: BTreeSet<String>,
     failing_digests: BTreeSet<String>,
+    /// Executables whose digest changes on every read, modelling a concurrent
+    /// build replacing the binary mid-discovery.
+    mutating_digests: BTreeSet<String>,
+    digest_reads: RefCell<BTreeMap<String, usize>>,
 }
 
 impl FixtureCommands {
@@ -46,6 +51,11 @@ impl FixtureCommands {
 
     fn failing_digest(mut self, executable: &str) -> Self {
         self.failing_digests.insert(executable.to_string());
+        self
+    }
+
+    fn mutating_digest(mut self, executable: &str) -> Self {
+        self.mutating_digests.insert(executable.to_string());
         self
     }
 }
@@ -86,6 +96,12 @@ impl UxDiscoveryCommands for FixtureCommands {
                 target: target_identity.to_string(),
                 reason: "fixture digest failure".to_string(),
             });
+        }
+        if self.mutating_digests.contains(&key) {
+            let mut reads = self.digest_reads.borrow_mut();
+            let count = reads.entry(key.clone()).or_insert(0);
+            *count += 1;
+            return Ok(sha256_hex(format!("{key}#{count}").as_bytes()));
         }
         self.digests.get(&key).cloned().ok_or_else(|| UxDiscoveryFailure::InstrumentFailure {
             reason: format!("fixture has no digest for `{key}`"),
@@ -839,5 +855,115 @@ fn the_inventory_survives_a_json_round_trip() -> TestResult {
     let decoded: UxCaseInventory = serde_json::from_str(&encoded)?;
     assert_eq!(decoded, inventory);
     decoded.verify_digest()?;
+    Ok(())
+}
+
+// ── Guards added after review of #13878 ──────────────────────────────────
+
+#[test]
+fn a_malformed_feature_population_cannot_become_an_exact_empty_one() -> TestResult {
+    let executable = exe("ux_scenario_01_simple_file-1001");
+    // The `pr` profile selects the empty feature set, so an artifact whose
+    // features are unknown would otherwise be accepted as an exact match.
+    let missing = format!(
+        r#"{{"reason":"compiler-artifact","package_id":"path+file:///x/crates/perl-lsp-ux-tests#0.1.0","target":{{"kind":["test"],"name":"ux_scenario_01_simple_file","src_path":"/x/tests/a.rs"}},"profile":{{"test":true}},"executable":"{executable}"}}"#
+    );
+    let failure = parse_cargo_test_artifacts(&missing, UX_INVENTORY_PACKAGE)
+        .expect_err("a missing features array must fail closed");
+    assert_eq!(failure.kind(), "malformed_cargo_message");
+
+    let non_array = missing.replace(r#""executable""#, r#""features":{},"executable""#);
+    let failure = parse_cargo_test_artifacts(&non_array, UX_INVENTORY_PACKAGE)
+        .expect_err("a non-array features value must fail closed");
+    assert_eq!(failure.kind(), "malformed_cargo_message");
+
+    let non_string = missing.replace(r#""executable""#, r#""features":["ok",7],"executable""#);
+    let failure = parse_cargo_test_artifacts(&non_string, UX_INVENTORY_PACKAGE)
+        .expect_err("a non-string feature entry must fail closed");
+    assert_eq!(failure.kind(), "malformed_cargo_message");
+    Ok(())
+}
+
+#[test]
+fn a_summary_that_contradicts_the_case_kinds_fails_closed() -> TestResult {
+    // Combined totals agree (1 == 1); only a per-kind comparison catches this.
+    let failure = parse_libtest_list("t", "foo: benchmark\n\n1 test, 0 benchmarks\n")
+        .expect_err("a contradictory kind count must fail closed");
+    assert_eq!(failure.kind(), "list_count_mismatch");
+
+    let failure = parse_libtest_list("t", "foo: test\n\n0 tests, 1 benchmark\n")
+        .expect_err("the opposite contradiction must also fail closed");
+    assert_eq!(failure.kind(), "list_count_mismatch");
+
+    // The honest pairing still parses.
+    let listed = parse_libtest_list("t", "foo: benchmark\n\n0 tests, 1 benchmark\n")?;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].kind, UxCaseKind::Benchmark);
+    Ok(())
+}
+
+#[test]
+fn an_executable_replaced_between_digest_and_listing_fails_closed() -> TestResult {
+    let executable = exe("ux_scenario_01_simple_file-1002");
+    let stdout =
+        artifact_line("perl-lsp-ux-tests", "test", "ux_scenario_01_simple_file", &executable, &[]);
+    let commands = FixtureCommands::new(stdout)
+        .listing(&executable, terse(&["opens_a_file"]))
+        .mutating_digest(&executable);
+
+    let failure = discover_cases(&commands, &request(UxCiTier::Pr))
+        .expect_err("a binary swapped mid-discovery must fail closed");
+    assert_eq!(failure.kind(), "executable_changed_during_discovery");
+    Ok(())
+}
+
+#[test]
+fn an_external_cargo_target_dir_keeps_a_runnable_replay() -> TestResult {
+    // `.cargo/config.local.toml.example` supports a target dir outside the
+    // checkout; the durable replay must still locate the executable.
+    let target_root = "/var/cache/cargo-target";
+    let executable = format!("{target_root}/debug/deps/ux_scenario_01_simple_file-1003.exe");
+    let stdout =
+        artifact_line("perl-lsp-ux-tests", "test", "ux_scenario_01_simple_file", &executable, &[]);
+    let commands = FixtureCommands::new(stdout).listing(&executable, terse(&["opens_a_file"]));
+
+    let mut req = request(UxCiTier::Pr);
+    req.cargo_target_root = Some(PathBuf::from(target_root));
+    let inventory = discover_cases(&commands, &req)?;
+
+    let target = inventory.targets.first().ok_or("one target")?;
+    assert_eq!(target.executable.role, UxExecutableRole::CargoTargetDir);
+    assert_eq!(
+        target.executable.target_dir_relative_path.as_deref(),
+        Some("debug/deps/ux_scenario_01_simple_file-1003.exe")
+    );
+    assert_eq!(
+        target.list_argv.first().map(String::as_str),
+        Some("${CARGO_TARGET_DIR}/debug/deps/ux_scenario_01_simple_file-1003.exe"),
+        "the replay must remain runnable via $CARGO_TARGET_DIR"
+    );
+    assert!(
+        !inventory.limitations.contains(&UxInventoryLimitation::ReplayNotSelfContained),
+        "a target-dir-relative replay is self-contained"
+    );
+    let serialized = serde_json::to_string(&inventory.durable_projection()?)?;
+    assert!(!serialized.contains(target_root), "no absolute target root in the projection");
+    Ok(())
+}
+
+#[test]
+fn an_executable_under_neither_root_declares_an_unrunnable_replay() -> TestResult {
+    let executable = "/somewhere/else/ux_scenario_01_simple_file-1004.exe".to_string();
+    let stdout =
+        artifact_line("perl-lsp-ux-tests", "test", "ux_scenario_01_simple_file", &executable, &[]);
+    let commands = FixtureCommands::new(stdout).listing(&executable, terse(&["opens_a_file"]));
+
+    let inventory = discover_cases(&commands, &request(UxCiTier::Pr))?;
+    let target = inventory.targets.first().ok_or("one target")?;
+    assert_eq!(target.executable.role, UxExecutableRole::OutsideWorkspace);
+    assert!(
+        inventory.limitations.contains(&UxInventoryLimitation::ReplayNotSelfContained),
+        "an unlocatable executable must declare that its replay is not self-contained"
+    );
     Ok(())
 }
