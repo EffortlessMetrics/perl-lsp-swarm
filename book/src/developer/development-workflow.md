@@ -1,254 +1,177 @@
 # Development Guide
 
-> **Pure Rust Perl Parser Development Guide**
+> Working in the perl-lsp development repository.
 
-This document provides guidelines and instructions for contributors working on the Pure Rust Perl Parser built with Pest.
+This page orients contributors in the development repository and routes to the current
+authorities rather than restating them. The canonical contributor path — environment
+setup, claim selection, proof expectations, and the pull-request flow — is
+[CONTRIBUTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md). Read that first; this page covers what is
+specific to working inside the development repository itself.
 
 ---
 
-## 🚀 Quick Start
+## Which repository this is
 
-### Prerequisites
-- **Rust**: 1.95+ (stable)
-- **Cargo**: Latest stable
+Development happens in
+[`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
+on `main`. Clone this repository, open development issues here, and target pull requests
+here.
 
-### Development Setup
+[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on `master`
+owns public release lineage and published artifacts. A merge to `perl-lsp-swarm/main` is
+development state; it does not establish that a change reached a release, package
+registry, editor marketplace, or any other public channel. The relationship is defined by
+[product identity](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/product-identity.md).
+
+Installing perl-lsp as a user is a different route from developing it. User installation
+lives in
+[Getting Started](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/GETTING_STARTED.md);
+nothing on this page is installation guidance.
+
+---
+
+## Quick start
+
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd tree-sitter-perl
+git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
+cd perl-lsp-swarm
 
-# Build the Pure Rust parser (default)
-cargo build
+# Reproducible environment (recommended)
+nix develop
 
-# Run tests
-cargo test --features pure-rust
+# Verify tooling and repository health
+just devex
+just doctor
 
-# Run benchmarks
-cargo bench --features pure-rust
+# Fast local proof
+just pr-fast
 ```
+
+Without Nix, install the pinned toolchain through [rustup](https://rustup.rs/) and
+`cargo install just`. The repository pins Rust channel `1.95.0` in `rust-toolchain.toml`
+and currently requires MSRV 1.95.
 
 ---
 
-## 📁 Project Structure
+## Where the authorities are
 
-```
-tree-sitter-perl/
-├── crates/tree-sitter-perl-rs/   # Pure Rust Perl Parser
-│   ├── src/
-│   │   ├── grammar.pest          # Pest PEG grammar for Perl 5
-│   │   ├── pure_rust_parser.rs   # Main parser implementation
-│   │   ├── edge_case_handler.rs  # Edge case handling system
-│   │   ├── tree_sitter_adapter.rs # S-expression output
-│   │   └── lib.rs                # Public API
-│   └── tests/                    # Integration tests
-├── benchmarks/                   # Performance benchmarks
-├── xtask/                        # Development automation
-├── docs/                         # Architecture documentation
-└── tree-sitter-perl/             # Legacy C implementation (reference only)
-```
+This guide deliberately does not duplicate these. Follow the link for the current answer.
+
+| Question | Current authority |
+| --- | --- |
+| Contributor workflow, claim shape, PR expectations | [CONTRIBUTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md) |
+| Command inventory | [COMMANDS_REFERENCE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md), or `just --list` |
+| Ownership seams and dependency direction | [ARCHITECTURE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md) |
+| Exact workspace membership | [Cargo.toml](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/Cargo.toml) |
+| Capability claims | [features.toml](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/features.toml) |
+| Current subsystem status | [Current status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md) |
+| Project orientation | [Project orientation](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ORIENTATION.md) |
+| LSP feature implementation | [LSP Development Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/LSP_DEVELOPMENT_GUIDE.md) |
+| Agent and route contracts | [AGENTS.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/AGENTS.md), [CLAUDE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CLAUDE.md) |
 
 ---
 
-## 🔧 Common Development Tasks
+## The inner loop
 
-### Running the Parser
+Run the cheapest command that can falsify the change, then widen only as the changed
+surface requires:
+
 ```bash
-# Parse a Perl file and output S-expression
-cargo run --features pure-rust --bin parse-rust -- script.pl
-
-# Parse from stdin
-echo 'print "Hello"' | cargo run --features pure-rust --bin parse-rust -- -
+cargo fmt -p <package> -- --check
+cargo clippy -p <package> --all-targets --locked -- -D warnings
+cargo test -p <package> --all-targets --locked
+just pr-fast
 ```
 
-### Testing
+`just ci-gate` — or `nix develop -c just ci-gate` — is the fuller local merge gate. Do not
+run workspace-wide clippy or tests after every edit; escalate when the dependency graph,
+risk, changed public surface, or the selected merge gate calls for it.
+[CONTRIBUTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md) carries the situation-to-command table for
+generated status, docs, release, and publish surfaces.
+
+Production code must not introduce `unwrap`, `expect`, `panic!`, `todo!`,
+`unimplemented!`, `abort`, or `dbg!` outside a documented narrow exception.
+
+---
+
+## Where changes go
+
+Read the nearest package-local `CLAUDE.md` or `AGENTS.md` before modifying an owning
+crate. [ARCHITECTURE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md) owns the full seam map; the
+entrypoints contributors reach for most often are:
+
+| Change | Crate |
+| --- | --- |
+| Lexing and tokens | `crates/perl-lexer/`, `crates/perl-token/` |
+| Parsing, positions, trivia, recovery boundaries | `crates/perl-parser-core/` |
+| Public parser facade | `crates/perl-parser/` |
+| AST node types | `crates/perl-ast/` |
+| Semantic analysis and compiler facts | `crates/perl-semantic-analyzer/`, `crates/perl-semantic-facts/` |
+| LSP protocol, runtime, providers | `crates/perl-lsp-rs-core/` |
+| Server integration facade | `crates/perl-lsp-rs/` |
+| Published language-server binary | `crates/perllsp/` |
+| Debug Adapter Protocol | `crates/perl-dap/` |
+| Gates, generators, policy, proof routing | `xtask/`, `scripts/`, `.ci/` |
+| Installed editor experience | `vscode-extension/` |
+
+---
+
+## Parser corpus work
+
+Parser accuracy is measured against a real-Perl corpus and locked behind committed
+baselines:
+
 ```bash
-# Run all tests
-cargo xtask test
-
-# Run corpus tests
-cargo xtask corpus
-
-# Run edge case tests
-cargo xtask test-edge-cases
-
-# Run specific test
-cargo test test_heredoc_parsing
+just corpus-sweep          # measure against the system Perl corpus
+just common-corpus-check   # strict pinned-module check
+just corpus-sweep-update   # lock a new .ci/parser-corpus-baseline.json
 ```
 
-### Benchmarking
-```bash
-# Run benchmarks
-cargo bench --features pure-rust
-
-# Compare with legacy implementation
-cargo xtask compare
-```
+The baselines are ratchets. Re-measure and lock a new baseline after a parser improvement
+lands — never widen a baseline to turn a red sweep green.
 
 ---
 
-## 🛠 Development Workflow
+## Agent-driven development
 
-### 1. Grammar Changes
-To modify the Perl grammar:
-1. Edit `crates/tree-sitter-perl-rs/src/grammar.pest`
-2. Update corresponding AST nodes in `pure_rust_parser.rs`
-3. Update the `build_node()` method
-4. Add tests for new constructs
+Much of this repository is developed by agents working one coherent claim at a time. The
+current contracts are the repository-root
+[AGENTS.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/AGENTS.md) and
+[CLAUDE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CLAUDE.md), with
+provider-native procedures under `.claude/skills/`. Agentic contributors should also read
+the
+[agent contributing guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/AGENT_CONTRIBUTING.md).
 
-### 2. Adding Features
-```rust
-// 1. Add new rule to grammar.pest
-new_feature = { "keyword" ~ expression }
+Two invariants matter regardless of provider:
 
-// 2. Add AST node
-#[derive(Debug, Clone)]
-pub struct NewFeature {
-    pub keyword: String,
-    pub expr: Box<AstNode>,
-}
-
-// 3. Update build_node() in pure_rust_parser.rs
-Rule::new_feature => {
-    // Build AST node
-}
-
-// 4. Add tests
-#[test]
-fn test_new_feature() {
-    let parser = PureRustPerlParser::new();
-    let ast = parser.parse("keyword expression").unwrap();
-    // Assert expectations
-}
-```
-
-### 3. Edge Case Handling
-For complex Perl edge cases:
-1. Add detection in `edge_case_handler.rs`
-2. Implement recovery strategy
-3. Add diagnostic information
-4. Update documentation in `docs/reference/EDGE_CASES.md`
+- one candidate branch or worktree has one mutation owner at a time — see
+  [WORKTREE_PROTOCOL.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/WORKTREE_PROTOCOL.md);
+- GitHub owns durable transaction state. Runtime topology, task order, liveness, and
+  temporary plans are not repository state and are not written to tracked files.
 
 ---
 
-## 📝 Code Style
+## Historical note
 
-### Rust Guidelines
-- Use `rustfmt` for formatting: `cargo fmt`
-- Run `clippy` for lints: `cargo clippy`
-- Write doc comments for public APIs
-- Use descriptive variable names
-- Prefer `Result<T, E>` for error handling
+Earlier revisions of this guide presented a "pure Rust" parser generated from a
+`grammar.pest` under `crates/tree-sitter-perl-rs/src/` as the production parser, and told
+contributors to build and run it through a `pure-rust` cargo feature and a `parse-rust`
+binary. Those instructions no longer work: neither that feature nor that binary target
+exists in the workspace today, and `crates/tree-sitter-perl-rs/` is now a published
+tree-sitter-compatible facade rather than a Pest parser.
 
-### Grammar Guidelines
-- Keep grammar rules simple and composable
-- Use meaningful rule names
-- Add comments for complex patterns
-- Test each rule independently
+Where that content actually went:
 
----
-
-## 🧪 Testing Strategy
-
-### Unit Tests
-Test individual parser components:
-```rust
-#[test]
-fn test_variable_parsing() {
-    let result = parse_variable("$foo");
-    assert_eq!(result.name, "foo");
-}
-```
-
-### Integration Tests
-Test complete parsing scenarios:
-```rust
-#[test]
-fn test_complex_script() {
-    let script = include_str!("../test/complex.pl");
-    let ast = parser.parse(script).unwrap();
-    verify_ast_structure(&ast);
-}
-```
-
-### Edge Case Tests
-Test Perl's tricky syntax:
-```rust
-#[test]
-fn test_heredoc_in_eval() {
-    let code = r#"eval "print <<EOF\nHello\nEOF\n""#;
-    let result = parser.parse(code);
-    assert!(result.is_ok());
-}
-```
+- the production parser is the native parser in `crates/perl-parser-core/`, behind the
+  `crates/perl-parser/` facade;
+- the Pest grammar and its parser survive as `crates/perl-parser-pest`, kept deliberately
+  as a comparison instrument, compatibility reference, and benchmark baseline — it is not
+  the production parser, an LSP fallback, or gate authority;
+- the retired edge-case handler and the pre-split parser crate are under `archive/`, which
+  is excluded from the workspace;
+- the legacy C grammar under `tree-sitter-perl/` is also excluded from the workspace and
+  is reference material only.
 
 ---
 
-## 🐛 Debugging
-
-### Parser Debugging
-```bash
-# Enable debug output
-RUST_LOG=debug cargo run --features pure-rust --bin parse-rust -- script.pl
-
-# Use AST output for debugging
-cargo run --features pure-rust --bin parse-rust -- --ast script.pl
-```
-
-### Common Issues
-1. **Stack overflow**: Use iterative parser for deeply nested code
-2. **Performance**: Check for backtracking in grammar rules
-3. **Edge cases**: Use edge case handler for diagnostics
-
----
-
-## 📚 Resources
-
-### Documentation
-- [Pest Documentation](https://pest.rs/book/)
-- [Perl Language Reference](https://perldoc.perl.org/perlsyn)
-- [Tree-sitter Docs](https://tree-sitter.github.io/)
-
-### Architecture
-- `ARCHITECTURE.md`: System design
-- `docs/reference/EDGE_CASES.md`: Edge case handling
-- `CLAUDE.md`: AI assistant guidance
-
----
-
-## 🤝 Contributing
-
-### Pull Request Process
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Run `cargo test` and `cargo fmt`
-6. Submit PR with clear description
-
-### Code Review Checklist
-- [ ] Tests pass
-- [ ] Code is formatted
-- [ ] Documentation updated
-- [ ] No performance regressions
-- [ ] Edge cases handled
-
----
-
-## 🚀 Advanced Topics
-
-### Performance Optimization
-- Use `cargo bench` to measure impact
-- Profile with `perf` or `flamegraph`
-- Minimize allocations in hot paths
-- Consider caching for repeated patterns
-
-### Grammar Optimization
-- Avoid left recursion
-- Use atomic rules for common patterns
-- Order alternatives by frequency
-- Minimize backtracking
-
----
-
-*For questions or discussions, please open an issue on GitHub.*
+*Questions and corrections belong in a repository issue.*
