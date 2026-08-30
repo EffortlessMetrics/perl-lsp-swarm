@@ -31,6 +31,8 @@ mod dedup;
 mod diagnostics;
 /// Diagnostics shadow compare and cutover paths for undefined-symbol diagnostics.
 pub mod diagnostics_shadow;
+/// Generation-owned, transport-neutral document diagnostic analysis (#7286).
+pub mod document_analysis;
 /// Dynamic boundary acceptance test fixtures (Req 23.1–23.8).
 #[cfg(test)]
 mod dynamic_boundary_acceptance;
@@ -53,6 +55,7 @@ pub mod scope;
 mod walker;
 
 pub use diagnostics::{DiagnosticsProvider, build_parse_error_hint};
+pub use document_analysis::{DocumentDiagnosticAnalysis, suppresses_document_analysis};
 pub use heredoc_antipatterns::detect_heredoc_antipatterns;
 pub use internal_types::{
     Diagnostic, DiagnosticTag, RelatedInformation, take_critic_overlap_observations,

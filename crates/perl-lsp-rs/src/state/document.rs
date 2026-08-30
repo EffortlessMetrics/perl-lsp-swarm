@@ -188,6 +188,15 @@ pub struct ParsedSnapshot {
     /// Lazily-built, generation-owned source region index for non-code
     /// classification evidence (comments, literals, POD, data sections).
     source_region_index: OnceLock<Arc<perl_parser_core::SourceRegionIndex>>,
+    /// Lazily-built, generation-owned document diagnostic analysis (pragma
+    /// map, scope issues, symbol table) shared by production push and pull
+    /// diagnostics for this snapshot's generation (#7286). Empty until first
+    /// requested via [`Self::diagnostic_analysis`]; never populated for a
+    /// `Minimal` (AST-less) snapshot or a snapshot whose parse errors
+    /// suppress the document-analysis / lint stack (see
+    /// `perl_lsp_rs_core::providers::diagnostics::suppresses_document_analysis`).
+    diagnostic_analysis:
+        OnceLock<Arc<perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>>,
     /// Test-only: counts how many times the [`Self::semantic_analyzer`]
     /// construction closure has actually executed. Proves construction
     /// happens at most once per snapshot -- an `Arc::ptr_eq` identity check
@@ -207,6 +216,10 @@ pub struct ParsedSnapshot {
     /// [`Self::source_region_index`].
     #[cfg(test)]
     source_region_index_build_count: std::cell::Cell<usize>,
+    /// Test-only counterpart to `semantic_analyzer_build_count` for
+    /// [`Self::diagnostic_analysis`].
+    #[cfg(test)]
+    diagnostic_analysis_build_count: std::cell::Cell<usize>,
 }
 
 impl std::fmt::Debug for ParsedSnapshot {
@@ -223,6 +236,7 @@ impl std::fmt::Debug for ParsedSnapshot {
             .field("semantic_analyzer", &cell_state(self.semantic_analyzer.get().is_some()))
             .field("type_environment", &cell_state(self.type_environment.get().is_some()))
             .field("source_region_index", &cell_state(self.source_region_index.get().is_some()))
+            .field("diagnostic_analysis", &cell_state(self.diagnostic_analysis.get().is_some()))
             .finish()
     }
 }
@@ -273,12 +287,15 @@ impl ParsedSnapshot {
             semantic_analyzer: OnceLock::new(),
             type_environment: OnceLock::new(),
             source_region_index: OnceLock::new(),
+            diagnostic_analysis: OnceLock::new(),
             #[cfg(test)]
             semantic_analyzer_build_count: std::cell::Cell::new(0),
             #[cfg(test)]
             type_environment_build_count: std::cell::Cell::new(0),
             #[cfg(test)]
             source_region_index_build_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            diagnostic_analysis_build_count: std::cell::Cell::new(0),
         }
     }
 
@@ -392,6 +409,58 @@ impl ParsedSnapshot {
                 self.content_hash,
             ))
         }))
+    }
+
+    /// The generation-owned [`perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis`]
+    /// for this snapshot, built lazily and exactly once on first request and
+    /// shared (by `Arc`) thereafter (#7286).
+    ///
+    /// Same generation-ownership, laziness, and exactly-once concurrency
+    /// contract as [`Self::semantic_analyzer`]: the analysis is derived from
+    /// this snapshot's own [`Self::ast`] and [`Self::source`], never a later
+    /// generation's, and construction happens at most once whether zero, one,
+    /// or many diagnostic evaluations of this generation request it.
+    ///
+    /// Returns `None` when there is nothing useful to build: a [`DegradationTier::Minimal`]
+    /// snapshot has no AST, and a snapshot whose parse errors suppress the
+    /// document-analysis / lint stack (see
+    /// `perl_lsp_rs_core::providers::diagnostics::suppresses_document_analysis`)
+    /// would have its analysis discarded unused by every current caller
+    /// anyway -- production diagnostics skip the entire pragma/scope/symbol
+    /// block under that same condition today, so building it here would be
+    /// wasted work that never happens on any other path.
+    pub fn diagnostic_analysis(
+        &self,
+    ) -> Option<Arc<perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis>> {
+        let ast = self.ast.as_ref()?;
+        if perl_lsp_rs_core::providers::diagnostics::suppresses_document_analysis(
+            &self.parse_errors,
+        ) {
+            return None;
+        }
+        Some(Arc::clone(self.diagnostic_analysis.get_or_init(|| {
+            #[cfg(test)]
+            self.diagnostic_analysis_build_count
+                .set(self.diagnostic_analysis_build_count.get() + 1);
+            Arc::new(perl_lsp_rs_core::providers::diagnostics::DocumentDiagnosticAnalysis::build(
+                ast,
+                &self.source,
+            ))
+        })))
+    }
+
+    /// Whether the [`Self::diagnostic_analysis`] cell has been materialized.
+    /// Test-only counterpart to [`Self::semantic_analyzer_initialized`].
+    #[cfg(test)]
+    pub(crate) fn diagnostic_analysis_initialized(&self) -> bool {
+        self.diagnostic_analysis.get().is_some()
+    }
+
+    /// Test-only counterpart to [`Self::semantic_analyzer_build_count`] for
+    /// [`Self::diagnostic_analysis`].
+    #[cfg(test)]
+    pub(crate) fn diagnostic_analysis_build_count(&self) -> usize {
+        self.diagnostic_analysis_build_count.get()
     }
 
     /// Whether the [`Self::semantic_analyzer`] cell has been materialized.
@@ -846,6 +915,34 @@ mod tests {
             generation,
             "",
             None,
+            vec![perl_parser::error::ParseError::UnexpectedEof],
+        )
+    }
+
+    /// Directly construct a `Partial`-tier snapshot (AST present, but a
+    /// blocking parse error) at `generation`, bypassing the real parser.
+    ///
+    /// Used to exercise the `suppresses_document_analysis` fail-safe on
+    /// [`ParsedSnapshot::diagnostic_analysis`] without depending on the v3
+    /// parser's error-recovery behavior to reliably pair a blocking error
+    /// with a real AST -- same rationale as `minimal_snapshot_for`.
+    fn blocking_error_snapshot_for(source: &str, generation: u32) -> ParsedSnapshot {
+        let mut parser = perl_parser::Parser::new(source);
+        let ast = match parser.parse() {
+            Ok(ast) => Arc::new(ast),
+            Err(_) => {
+                // Fall back to parsing an empty, always-clean source so the
+                // AST is present regardless of `source`'s own parseability --
+                // this helper's contract is about the (ast: Some, blocking
+                // error) pairing, not about `source`'s real parse errors.
+                let mut clean = perl_parser::Parser::new("");
+                Arc::new(must(clean.parse()))
+            }
+        };
+        ParsedSnapshot::from_parse_result(
+            generation,
+            source,
+            Some(ast),
             vec![perl_parser::error::ParseError::UnexpectedEof],
         )
     }
@@ -1411,6 +1508,137 @@ mod tests {
         assert!(
             results.iter().all(|r| Arc::ptr_eq(r, &first)),
             "all racing readers must observe the same initialized value"
+        );
+    }
+
+    // ── diagnostic_analysis (#7286) ──
+
+    /// Repeated requests against a single snapshot reuse ONE
+    /// `DocumentDiagnosticAnalysis` instance -- the `OnceLock` materializes
+    /// exactly once, and the construction closure itself runs exactly once
+    /// (not merely "returns an `Arc::ptr_eq`-identical result" -- see
+    /// `analyzer_and_type_env_construction_happens_exactly_once` for why the
+    /// build-count counter is the load-bearing assertion here).
+    #[test]
+    fn diagnostic_analysis_construction_happens_exactly_once() {
+        let snapshot = snapshot_for("sub foo { my $x = 1; print $undeclared; }", 0);
+
+        let mut instances = Vec::new();
+        for _ in 0..5 {
+            instances.push(must_some(snapshot.diagnostic_analysis()));
+        }
+
+        let first = must_some(instances.first().cloned());
+        assert!(
+            instances.iter().all(|a| Arc::ptr_eq(a, &first)),
+            "repeated diagnostic_analysis requests must reuse one instance"
+        );
+        assert_eq!(
+            snapshot.diagnostic_analysis_build_count(),
+            1,
+            "diagnostic_analysis's construction closure must run exactly once across repeated calls"
+        );
+    }
+
+    /// A new generation gets a fresh `diagnostic_analysis` cell: distinct
+    /// `Arc` allocation, its own independent build count, and facts rebuilt
+    /// from the new generation's own source -- no cross-generation bleed.
+    #[test]
+    fn diagnostic_analysis_is_generation_bound() {
+        let snap0 = snapshot_for("my $x = 1;", 0);
+        let snap1 = snapshot_for("my $y = 2; print $undeclared;", 1);
+
+        let a0 = must_some(snap0.diagnostic_analysis());
+        let a1 = must_some(snap1.diagnostic_analysis());
+
+        assert!(
+            !Arc::ptr_eq(&a0, &a1),
+            "distinct generations must not share one diagnostic-analysis allocation"
+        );
+        assert_eq!(snap0.diagnostic_analysis_build_count(), 1);
+        assert_eq!(
+            snap1.diagnostic_analysis_build_count(),
+            1,
+            "the new generation's build count starts fresh, independent of an earlier generation's"
+        );
+        assert!(
+            a1.matches_source("my $y = 2; print $undeclared;"),
+            "the new generation's analysis must describe its own source"
+        );
+        assert!(
+            !a1.matches_source("my $x = 1;"),
+            "the new generation's analysis must not describe the prior generation's source"
+        );
+    }
+
+    /// A superseded snapshot on which `diagnostic_analysis` was never
+    /// requested performs zero construction: laziness holds even across a
+    /// generation boundary.
+    #[test]
+    fn superseded_snapshot_without_diagnostic_analysis_request_stays_lazy() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let gen0 = doc.current_generation();
+        let snapshot0 = Arc::new(snapshot_for("my $x = 1;", gen0));
+        assert!(doc.publish_parsed_if_current(gen0, Arc::clone(&snapshot0)));
+
+        doc.apply_change(0, 8, 0, 9, "2", 2);
+        let gen1 = doc.current_generation();
+        let snapshot1 = Arc::new(snapshot_for("my $x = 2;", gen1));
+        assert!(doc.publish_parsed_if_current(gen1, snapshot1));
+
+        assert!(
+            !snapshot0.diagnostic_analysis_initialized(),
+            "a superseded, never-requested snapshot must not build a diagnostic analysis"
+        );
+        assert_eq!(
+            snapshot0.diagnostic_analysis_build_count(),
+            0,
+            "a superseded, never-requested snapshot's build count must stay at zero"
+        );
+    }
+
+    /// A `Minimal` (AST-less) snapshot exposes no diagnostic analysis and
+    /// never materializes the cell -- there is nothing to analyze.
+    #[test]
+    fn minimal_snapshot_has_no_diagnostic_analysis() {
+        let snapshot = minimal_snapshot_for(0);
+        assert_eq!(snapshot.degradation_tier(), DegradationTier::Minimal);
+        assert!(snapshot.ast().is_none(), "a Minimal snapshot must have no AST");
+        assert!(
+            snapshot.diagnostic_analysis().is_none(),
+            "a Minimal (AST-less) snapshot must expose no diagnostic analysis"
+        );
+        assert!(
+            !snapshot.diagnostic_analysis_initialized(),
+            "a Minimal snapshot must not materialize the diagnostic-analysis cell"
+        );
+    }
+
+    /// A snapshot whose parse errors suppress the document-analysis / lint
+    /// stack (the `has_blocking_parse_error` rule) exposes no diagnostic
+    /// analysis and never materializes the cell, even though it has a real
+    /// AST -- building it would be wasted work that production diagnostics
+    /// never uses, since they skip the entire pragma/scope/symbol block
+    /// under this exact condition today.
+    #[test]
+    fn blocking_parse_error_snapshot_has_no_diagnostic_analysis() {
+        let snapshot = blocking_error_snapshot_for("my $x = 1;", 0);
+        assert!(
+            snapshot.ast().is_some(),
+            "the fixture snapshot must have a real AST despite the blocking error"
+        );
+        assert!(
+            snapshot.diagnostic_analysis().is_none(),
+            "a blocking-parse-error snapshot must expose no diagnostic analysis"
+        );
+        assert!(
+            !snapshot.diagnostic_analysis_initialized(),
+            "a blocking-parse-error snapshot must not materialize the diagnostic-analysis cell"
+        );
+        assert_eq!(
+            snapshot.diagnostic_analysis_build_count(),
+            0,
+            "a blocking-parse-error snapshot must never invoke the construction closure"
         );
     }
 }

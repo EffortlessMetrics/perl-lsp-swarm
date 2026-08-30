@@ -690,6 +690,7 @@ impl LspServer {
                     doc.line_starts.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
+                    Arc::clone(&parsed),
                 ))
             })
             // lock is released here
@@ -704,10 +705,20 @@ impl LspServer {
             line_starts,
             generation,
             gen_at_snapshot,
+            parsed,
         )) = snapshot
         else {
             return;
         };
+
+        // Materialize the generation-owned document analysis *after* the
+        // documents lock is released (#7286). The snapshot Arc is carried out
+        // of the closure rather than the analysis itself precisely so this
+        // first-request build -- an AST-wide pragma/scope/symbol pass -- never
+        // lengthens the critical section that every other document operation
+        // contends on. On every subsequent evaluation of this generation the
+        // cell is already populated and this is an `Arc` clone.
+        let diagnostic_analysis = parsed.diagnostic_analysis();
 
         #[cfg(test)]
         if let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref() {
@@ -780,7 +791,7 @@ impl LspServer {
                             workspace_index.with_semantic_queries_for_uri(
                                 uri,
                                 |file_id, queries| {
-                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                    provider.get_diagnostics_with_search_context_and_semantics_with_analysis(
                                         ast,
                                         &parse_errors,
                                         &text,
@@ -789,6 +800,7 @@ impl LspServer {
                                         source_path.as_deref(),
                                         file_id,
                                         &queries,
+                                        diagnostic_analysis.as_deref(),
                                     )
                                 },
                             )
@@ -799,7 +811,7 @@ impl LspServer {
                                 uri,
                                 &scoped_graph,
                                 |file_id, queries| {
-                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                    provider.get_diagnostics_with_search_context_and_semantics_with_analysis(
                                         ast,
                                         &parse_errors,
                                         &text,
@@ -808,30 +820,33 @@ impl LspServer {
                                         source_path.as_deref(),
                                         file_id,
                                         &queries,
+                                        diagnostic_analysis.as_deref(),
                                     )
                                 },
                             )
                         }
                     });
                 semantic_diags.unwrap_or_else(|| {
-                    provider.get_diagnostics_with_search_context(
+                    provider.get_diagnostics_with_search_context_with_analysis(
                         ast,
                         &parse_errors,
                         &text,
                         Some(&resolver),
                         &search_context,
                         source_path.as_deref(),
+                        diagnostic_analysis.as_deref(),
                     )
                 })
             };
             #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-            let mut diagnostics = provider.get_diagnostics_with_search_context(
+            let mut diagnostics = provider.get_diagnostics_with_search_context_with_analysis(
                 ast,
                 &parse_errors,
                 &text,
                 Some(&resolver),
                 &search_context,
                 source_path.as_deref(),
+                diagnostic_analysis.as_deref(),
             );
 
             // Add configured policy critic diagnostics.
@@ -3022,6 +3037,190 @@ mod tests {
             text.contains("publishDiagnostics"),
             "stable generation must produce a publishDiagnostics notification; got: {text:?}"
         );
+    }
+
+    /// #7286 hard contract: one accepted document generation has AT MOST ONE
+    /// `DocumentDiagnosticAnalysis` construction, however many final
+    /// diagnostic evaluations run against it. A push publish followed by a
+    /// pull request for the same (unchanged) generation must build the
+    /// analysis exactly once -- proven directly via the snapshot's own
+    /// build-count counter, not merely by comparing output.
+    #[test]
+    fn push_then_pull_builds_diagnostic_analysis_exactly_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///push_pull_analysis_once.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "sub f { my $unused = 1; print $undeclared; }\n"
+            }
+        })))?;
+        std::thread::sleep(Duration::from_millis(50));
+        buf.lock().clear();
+
+        let build_count = |server: &LspServer| -> Result<usize, Box<dyn std::error::Error>> {
+            let documents = server.documents.lock();
+            let doc = documents.get(uri).ok_or("missing open document")?;
+            let snapshot =
+                doc.current_parsed().ok_or("document must have a current parse snapshot")?;
+            Ok(snapshot.diagnostic_analysis_build_count())
+        };
+
+        // Push cycle: production's server-initiated publish.
+        server.publish_diagnostics(uri);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let after_push = build_count(&server)?;
+        assert_eq!(
+            after_push, 1,
+            "the push route must build this generation's analysis through the snapshot's \
+             shared cell exactly once; got {after_push}"
+        );
+
+        // Pull request for the SAME accepted generation, no edit in between.
+        server.test_handle_document_diagnostic(Some(json!({
+            "textDocument": {"uri": uri}
+        })))?;
+
+        let after_pull = build_count(&server)?;
+        assert_eq!(
+            after_pull, 1,
+            "one accepted generation must have at most one DocumentDiagnosticAnalysis \
+             construction, however many diagnostic evaluations (here: push then pull) ran \
+             against it; got {after_pull}"
+        );
+
+        // Discrimination guard: `after_pull == 1` on its own is also what a pull
+        // that bypassed the snapshot entirely would produce -- it would parse its
+        // own AST, build a throwaway analysis inside the provider, and leave this
+        // counter at the 1 the push already put there. Ordering the pull second
+        // and asserting the cell was *already* materialized before it ran does
+        // not close that gap either. So additionally require that a pull on a
+        // generation whose cell is still cold materializes it: that can only
+        // happen through the snapshot-reuse path. Without this, disabling the
+        // reuse gate in `collect_diagnostics_for_text_with_context` leaves this
+        // test green (verified by mutation).
+        //
+        // A pull-only client is the realistic way to get a cold cell: `didOpen`
+        // otherwise publishes, which warms it before any pull runs.
+        server.client_supports_pull_diags.store(true, Ordering::Relaxed);
+        let uri_pull_first = "file:///pull_first_analysis_once.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri_pull_first,
+                "languageId": "perl",
+                "version": 1,
+                "text": "sub g { my $other_unused = 1; print $other_undeclared; }\n"
+            }
+        })))?;
+        std::thread::sleep(Duration::from_millis(50));
+
+        let cold = {
+            let documents = server.documents.lock();
+            let doc = documents.get(uri_pull_first).ok_or("missing pull-first document")?;
+            let snapshot =
+                doc.current_parsed().ok_or("pull-first document must have a snapshot")?;
+            snapshot.diagnostic_analysis_build_count()
+        };
+        assert_eq!(cold, 0, "fixture invariant: the cell must be cold before the pull; got {cold}");
+
+        server.test_handle_document_diagnostic(Some(json!({
+            "textDocument": {"uri": uri_pull_first}
+        })))?;
+
+        let after_cold_pull = {
+            let documents = server.documents.lock();
+            let doc = documents.get(uri_pull_first).ok_or("missing pull-first document")?;
+            let snapshot =
+                doc.current_parsed().ok_or("pull-first document must have a snapshot")?;
+            snapshot.diagnostic_analysis_build_count()
+        };
+        assert_eq!(
+            after_cold_pull, 1,
+            "a pull on a cold generation must build the analysis through the snapshot's \
+             shared cell -- proving the pull route consumes the generation-owned analysis \
+             rather than reparsing and building its own; got {after_cold_pull}"
+        );
+
+        Ok(())
+    }
+
+    /// #7286 negative control: push and pull must agree on the same
+    /// document-local diagnostic facts for one exact input. Sharing the
+    /// analysis between the two transports must not change *which*
+    /// diagnostics are reported -- only how many times the underlying
+    /// pragma/scope/symbol passes run.
+    ///
+    /// Compares only `PL`-prefixed codes -- the ones `DiagnosticsProvider`
+    /// itself produces from the shared analysis and its `check_*` lints.
+    /// Codes from layers composed on *top* of the provider call (native
+    /// critic findings, workspace-wide dead-code detection) are deliberately
+    /// excluded: they are separate, independently-configured subsystems
+    /// outside #7286's document-analysis-sharing claim, and — for dead-code
+    /// specifically — are timing-dependent on background indexing even
+    /// within a single transport, which would make a raw full-set comparison
+    /// flaky regardless of this issue.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn push_and_pull_agree_on_core_diagnostic_codes_for_identical_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///push_pull_parity.pl";
+        let source = "use strict;\nsub f { my $unused = 1; print $undeclared; }\n";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": source
+            }
+        })))?;
+        std::thread::sleep(Duration::from_millis(50));
+        buf.lock().clear();
+
+        server.publish_diagnostics(uri);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let push_message = {
+            let bytes = buf.lock().clone();
+            let text = String::from_utf8(bytes)?;
+            let frame = latest_published_diagnostics(&text, uri)
+                .ok_or("expected a publishDiagnostics notification in the captured output")?;
+            serde_json::from_str::<Value>(frame)?
+        };
+        let core_codes = |diags: &Value| -> Option<Vec<String>> {
+            let mut codes: Vec<String> = diags
+                .as_array()?
+                .iter()
+                .filter_map(|d| d.get("code").and_then(Value::as_str))
+                .filter(|code| code.starts_with("PL"))
+                .map(str::to_string)
+                .collect();
+            codes.sort();
+            Some(codes)
+        };
+        let push_codes = core_codes(&push_message["params"]["diagnostics"])
+            .ok_or("push notification must carry a diagnostics array")?;
+
+        let pull_report = server
+            .test_handle_document_diagnostic(Some(json!({"textDocument": {"uri": uri}})))?
+            .ok_or("pull request must return a report")?;
+        let pull_codes =
+            core_codes(&pull_report["items"]).ok_or("pull report must carry an items array")?;
+
+        assert!(
+            !push_codes.is_empty(),
+            "fixture must produce at least one core diagnostic on the push route; got {push_message:?}"
+        );
+        assert_eq!(
+            push_codes, pull_codes,
+            "push and pull must agree on the same core document-local diagnostic codes for identical source"
+        );
+
+        Ok(())
     }
 
     /// #1773: push diagnostics must include enrichment fields (codeDescription,
