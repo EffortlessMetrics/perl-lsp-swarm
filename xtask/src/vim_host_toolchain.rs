@@ -32,11 +32,14 @@
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use walkdir::WalkDir;
 
 // The shared host-runner substrate is included exactly once per crate (in
 // `vim_host_run`, #10944); this module consumes that single instance rather
@@ -239,6 +242,7 @@ pub struct PlatformFields {
 pub struct VimToolchainIdentity {
     pub acquisition: VimAcquisitionIdentity,
     pub executable_sha256: String,
+    pub runtime_tree_sha256: String,
     pub version_summary: String,
     pub version_text_sha256: String,
     pub required_features: Vec<String>,
@@ -538,6 +542,79 @@ fn extract_runtime_subtree(archive_path: &Path, subtree: &str, dest: &Path) -> R
     }
     anyhow::ensure!(extracted > 0, "archive carried no entries under {subtree}");
     Ok(extracted)
+}
+
+/// Hash the complete extracted runtime deterministically. The relative path,
+/// entry kind, and file bytes are length-prefixed so path boundaries and
+/// empty directories cannot collide. WalkDir does not promise ordering, so
+/// entries are sorted before the canonical stream is hashed.
+///
+/// The runtime root itself is rejected when it is a symlink: WalkDir yields
+/// the root entry before its descendants and this walk skips that entry by
+/// path, so a replaced root would otherwise be walked as ordinary storage
+/// (external mutable bytes presented as the cached runtime) without ever
+/// tripping the per-entry symlink rejection below.
+fn runtime_tree_sha256(runtime_root: &Path) -> Result<String> {
+    let root_metadata = fs::symlink_metadata(runtime_root)
+        .with_context(|| format!("statting the runtime root {}", runtime_root.display()))?;
+    anyhow::ensure!(
+        !root_metadata.file_type().is_symlink(),
+        "runtime root {} is a symlink",
+        runtime_root.display()
+    );
+    let mut entries = Vec::new();
+    for entry in WalkDir::new(runtime_root).follow_links(false) {
+        let entry = entry.context("walking the extracted Vim runtime")?;
+        if entry.path() == runtime_root {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(runtime_root)
+            .context("computing an extracted runtime relative path")?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let kind = entry.file_type();
+        anyhow::ensure!(!kind.is_symlink(), "extracted runtime contains a symlink: {relative}");
+        anyhow::ensure!(
+            kind.is_dir() || kind.is_file(),
+            "extracted runtime contains unsupported entry: {relative}"
+        );
+        entries.push((relative, kind.is_dir(), entry.into_path()));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut hasher = Sha256::new();
+    for (relative, is_dir, path) in entries {
+        hasher.update([if is_dir { b'd' } else { b'f' }]);
+        hasher.update((relative.len() as u64).to_le_bytes());
+        hasher.update(relative.as_bytes());
+        if !is_dir {
+            let length = fs::metadata(&path)
+                .with_context(|| format!("statting extracted runtime file {}", path.display()))?
+                .len();
+            hasher.update(length.to_le_bytes());
+            let mut file = fs::File::open(&path)
+                .with_context(|| format!("opening extracted runtime file {}", path.display()))?;
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let read = file.read(&mut buffer).with_context(|| {
+                    format!("reading extracted runtime file {}", path.display())
+                })?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+        }
+    }
+    let digest = hasher.finalize();
+    let mut identity = String::with_capacity("sha256:".len() + 64);
+    identity.push_str("sha256:");
+    for byte in digest {
+        write!(&mut identity, "{byte:02x}")?;
+    }
+    Ok(identity)
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,6 +1078,17 @@ fn verify_manifest_core(
             manifest.vim.executable_sha256
         )));
     }
+    let runtime_root = vim_executable
+        .parent()
+        .ok_or_else(|| mismatch("cached Vim executable has no runtime parent".to_string()))?;
+    let actual_runtime = runtime_tree_sha256(runtime_root)
+        .map_err(|error| mismatch(format!("hashing the cached Vim runtime: {error:#}")))?;
+    if actual_runtime != manifest.vim.runtime_tree_sha256 {
+        return Err(mismatch(format!(
+            "cached Vim runtime digest {actual_runtime} does not match the recorded {}",
+            manifest.vim.runtime_tree_sha256
+        )));
+    }
     let version_text = probe(&vim_executable)
         .map_err(|error| mismatch(format!("cached Vim identity probe failed: {error:#}")))?;
     let actual_text =
@@ -1054,6 +1142,81 @@ fn verify_manifest_core(
             )
         },
     )
+}
+
+/// Upgrade a pre-runtime-digest manifest without reacquiring an already
+/// verified vim-lsp checkout. The schema version intentionally remains v1, so
+/// caches written before this field existed need a local, fully verified
+/// migration rather than being treated as a network-required rebuild.
+///
+/// Identity sourcing law: the migrated digest comes from the digest-verified
+/// pinned archive extracted into a process-private staging directory, while
+/// the live runtime tree is never cleared or rewritten by migration. A legacy
+/// tree that does not already match the archive-derived digest, including a
+/// symlinked runtime root, declines to the ordinary rebuild path, which
+/// publishes through staging and rename. The retained vim-lsp checkout is left
+/// in place so migration stays offline, and the migrated manifest is published
+/// by atomic rename.
+fn migrate_legacy_manifest(
+    manifest_path: &Path,
+    manifest_bytes: &[u8],
+    key: &str,
+    entry_root: &Path,
+    probe: &dyn Fn(&Path) -> Result<String>,
+) -> Option<ProvisionOutcome> {
+    let mut value = serde_json::from_slice::<serde_json::Value>(manifest_bytes).ok()?;
+    let vim = value.get_mut("vim")?.as_object_mut()?;
+    if vim.contains_key("runtime_tree_sha256") {
+        return None;
+    }
+    let expected_archive_sha256 =
+        vim.get("acquisition")?.as_object()?.get("archive_sha256")?.as_str()?;
+    let archive_path = entry_root.join("downloads").join(format!("gvim_{VIM_RELEASE_TAG}.zip"));
+    if file_sha256(&archive_path).ok()?.as_str() != expected_archive_sha256 {
+        return None;
+    }
+    let entry_name = match entry_root.file_name() {
+        Some(name) => name.to_string_lossy(),
+        None => return None,
+    };
+    let staging_root =
+        entry_root.with_file_name(format!("{entry_name}.migrate.{}", std::process::id()));
+    let _ = fs::remove_dir_all(&staging_root);
+    let staged: Result<String> = (|| {
+        let runtime_root = staging_root.join("vim92");
+        extract_runtime_subtree(&archive_path, VIM_ARCHIVE_RUNTIME_SUBTREE, &runtime_root)?;
+        runtime_tree_sha256(&runtime_root)
+    })();
+    let _ = fs::remove_dir_all(&staging_root);
+    let digest = staged.ok()?;
+    let runtime_root = entry_root.join("vim").join("vim92");
+    if runtime_tree_sha256(&runtime_root).ok()?.as_str() != digest {
+        return None;
+    }
+    vim.insert("runtime_tree_sha256".to_string(), serde_json::Value::String(digest));
+    // Publish through the same canonical serializer as a fresh build so the
+    // manifest bytes (and therefore manifest_sha256) depend only on identity,
+    // not on migration history.
+    let manifest: ToolchainManifest = serde_json::from_value(value).ok()?;
+    let migrated_bytes = serialize_manifest(&manifest).ok()?;
+    let manifest = serde_json::from_slice::<ToolchainManifest>(&migrated_bytes).ok()?;
+    if manifest.cache_key != key
+        || verify_manifest_core(&manifest, &migrated_bytes, entry_root, probe).is_err()
+    {
+        return None;
+    }
+    let migrated_manifest_tmp =
+        manifest_path.with_file_name(format!("{MANIFEST_FILE_NAME}.tmp.{}", std::process::id()));
+    fs::write(&migrated_manifest_tmp, &migrated_bytes).ok()?;
+    fs::rename(&migrated_manifest_tmp, manifest_path).ok()?;
+    Some(ProvisionOutcome {
+        manifest_sha256: bytes_sha256(&migrated_bytes).ok()?,
+        manifest_path: manifest_path.to_path_buf(),
+        manifest,
+        cache_hit: true,
+        vim_executable_role: entry_root.join("vim").join("vim92").join("vim.exe"),
+        vim_lsp_runtimepath_role: entry_root.join("vim-lsp"),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,24 +1273,30 @@ pub fn provision(
     if manifest_path.exists() {
         let cached = fs::read(&manifest_path)
             .map_err(|error| mismatch(format!("reading the cached manifest: {error}")));
-        if let Ok(manifest_bytes) = cached
-            && let Ok(manifest) = serde_json::from_slice::<ToolchainManifest>(&manifest_bytes)
-            // The requested key is the governed identity of THIS run: a
-            // foreign manifest dropped into this directory still reproduces
-            // its own key, so only agreement with the currently requested
-            // identity may admit a cache hit (never the directory alone).
-            && manifest.cache_key == key
-            && verify_manifest_core(&manifest, &manifest_bytes, &entry_root, probe).is_ok()
-        {
-            return Ok(ProvisionOutcome {
-                manifest_sha256: file_sha256(&manifest_path)
-                    .map_err(|error| mismatch(format!("{error:#}")))?,
-                manifest_path,
-                manifest,
-                cache_hit: true,
-                vim_executable_role: entry_root.join("vim").join("vim92").join("vim.exe"),
-                vim_lsp_runtimepath_role: entry_root.join("vim-lsp"),
-            });
+        if let Ok(manifest_bytes) = cached {
+            if let Ok(manifest) = serde_json::from_slice::<ToolchainManifest>(&manifest_bytes)
+                // The requested key is the governed identity of THIS run: a
+                // foreign manifest dropped into this directory still reproduces
+                // its own key, so only agreement with the currently requested
+                // identity may admit a cache hit (never the directory alone).
+                && manifest.cache_key == key
+                && verify_manifest_core(&manifest, &manifest_bytes, &entry_root, probe).is_ok()
+            {
+                return Ok(ProvisionOutcome {
+                    manifest_sha256: file_sha256(&manifest_path)
+                        .map_err(|error| mismatch(format!("{error:#}")))?,
+                    manifest_path,
+                    manifest,
+                    cache_hit: true,
+                    vim_executable_role: entry_root.join("vim").join("vim92").join("vim.exe"),
+                    vim_lsp_runtimepath_role: entry_root.join("vim-lsp"),
+                });
+            }
+            if let Some(migrated) =
+                migrate_legacy_manifest(&manifest_path, &manifest_bytes, &key, &entry_root, probe)
+            {
+                return Ok(migrated);
+            }
         }
     }
 
@@ -1288,6 +1457,10 @@ fn build_fresh_entry(
 
     let executable_digest = file_sha256(&vim_executable)
         .map_err(|error| unresolved(format!("hashing the pinned executable: {error:#}")))?;
+    let runtime_tree_digest = runtime_tree_sha256(vim_executable.parent().ok_or_else(|| {
+        unresolved("provisioned Vim executable has no runtime parent".to_string())
+    })?)
+    .map_err(|error| unresolved(format!("hashing the provisioned Vim runtime: {error:#}")))?;
     let version_summary = version_text.lines().next().unwrap_or_default().trim().to_string();
     let manifest = ToolchainManifest {
         schema_version: SCHEMA_VERSION.to_string(),
@@ -1298,6 +1471,7 @@ fn build_fresh_entry(
         vim: VimToolchainIdentity {
             acquisition: pins.acquisition.clone(),
             executable_sha256: executable_digest,
+            runtime_tree_sha256: runtime_tree_digest,
             version_summary,
             version_text_sha256: bytes_sha256(version_text.as_bytes())
                 .map_err(|error| unresolved(format!("{error:#}")))?,
@@ -1373,6 +1547,8 @@ pub fn render_handoff(outcome: &ProvisionOutcome) -> String {
 mod tests {
     use super::*;
     use anyhow::Result;
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
 
     const FULL_FEATURE_TEXT: &str = "VIM - Vi IMproved 9.2 (fixture build)\n+channel +job +timers \
                                      huge version with every required transport feature\n";
@@ -1784,6 +1960,257 @@ mod tests {
     }
 
     #[test]
+    fn legacy_manifest_migrates_without_vim_lsp_reacquisition() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (mut inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let entry_root = first
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+        let fresh_bytes = legacyize_entry(&entry_root, &first.manifest_path, &archive)?;
+
+        // With no local vim-lsp source, any rebuild would need network access.
+        // Successful migration therefore proves the existing checkout was
+        // retained and reverified locally.
+        inputs.vim_lsp_source = None;
+        let migrated = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(migrated.cache_hit);
+        assert!(migrated.manifest.vim.runtime_tree_sha256.starts_with("sha256:"));
+        verify_layout(&migrated.manifest_path, &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        // Canonical manifest-byte contract: a migrated entry and a freshly
+        // provisioned entry with the same identity expose identical bytes,
+        // so manifest_sha256 depends on identity, not on migration history.
+        assert_eq!(fs::read(&migrated.manifest_path)?, fresh_bytes);
+        assert_eq!(migrated.manifest_sha256, bytes_sha256(&fresh_bytes)?);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_runtime_corruption_declines_migration_and_rebuild_heals() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let entry_root = first
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+        let support_file = first
+            .vim_executable_role
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("provisioned Vim executable has no parent"))?
+            .join("runtime/feature.txt");
+        let original = fs::read(&support_file)?;
+        let fresh_digest = first.manifest.vim.runtime_tree_sha256.clone();
+        legacyize_entry(&entry_root, &first.manifest_path, &archive)?;
+
+        // Mutate the legacy runtime AFTER legacyizing: these bytes were never
+        // bound by the old manifest. A migration hashing the on-disk tree
+        // would return cache_hit: true carrying a digest of corrupted bytes
+        // (self-attestation).
+        fs::write(&support_file, [original.as_slice(), b"corruption".as_slice()].concat())?;
+
+        let rebuilt = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(!rebuilt.cache_hit);
+        assert_eq!(rebuilt.manifest.vim.runtime_tree_sha256, fresh_digest);
+        assert_eq!(fs::read(&support_file)?, original);
+        verify_layout(&rebuilt.manifest_path, &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_corruption_without_verified_archive_cannot_cache_hit() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let entry_root = first
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+        let support_file = first
+            .vim_executable_role
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("provisioned Vim executable has no parent"))?
+            .join("runtime/feature.txt");
+        let original = fs::read(&support_file)?;
+        let fresh_digest = first.manifest.vim.runtime_tree_sha256.clone();
+        legacyize_entry(&entry_root, &first.manifest_path, &archive)?;
+
+        // Corrupt the legacy runtime AND remove the retained archive, so the
+        // migration has no digest-verified identity source and must decline
+        // rather than bless the mutated tree; the ordinary rebuild path (kept
+        // offline here through the injected vim-lsp source) heals the entry.
+        fs::write(&support_file, [original.as_slice(), b"corruption".as_slice()].concat())?;
+        fs::remove_file(entry_root.join("downloads").join(format!("gvim_{VIM_RELEASE_TAG}.zip")))?;
+
+        let rebuilt = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(!rebuilt.cache_hit);
+        assert_eq!(rebuilt.manifest.vim.runtime_tree_sha256, fresh_digest);
+        verify_layout(&rebuilt.manifest_path, &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(())
+    }
+
+    fn create_dir_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(target, link)
+        }
+    }
+
+    #[test]
+    fn runtime_tree_sha256_rejects_symlinked_root() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let real = scratch.path().join("real");
+        fs::create_dir_all(real.join("runtime"))?;
+        fs::write(real.join("runtime").join("feature.txt"), b"payload")?;
+        let link = scratch.path().join("link");
+        // Symlink creation requires platform privileges; an environment that
+        // refuses it cannot exercise this invariant here and skips, while the
+        // ordinary-root control below still runs everywhere.
+        if create_dir_symlink(&real, &link).is_err() {
+            return Ok(());
+        }
+        let error =
+            runtime_tree_sha256(&link).expect_err("symlinked runtime root must be rejected");
+        assert!(format!("{error:#}").contains("is a symlink"), "{error}");
+        let real_digest = runtime_tree_sha256(&real)?;
+        assert!(real_digest.starts_with("sha256:"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_symlinked_runtime_root_declines_migration_without_touching_target() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let entry_root = first
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+        let runtime_root = entry_root.join("vim").join("vim92");
+        let target = scratch.path().join("legacy-runtime-target");
+        let support_file = target.join("runtime/feature.txt");
+        let original = fs::read(runtime_root.join("runtime/feature.txt"))?;
+        legacyize_entry(&entry_root, &first.manifest_path, &archive)?;
+        fs::rename(&runtime_root, &target)?;
+        // Symlink creation requires platform privileges; an environment that
+        // refuses it cannot exercise this invariant here and skips.
+        if create_dir_symlink(&target, &runtime_root).is_err() {
+            return Ok(());
+        }
+
+        let rebuilt = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(!rebuilt.cache_hit);
+        assert!(target.is_dir());
+        assert_eq!(fs::read(&support_file)?, original);
+        verify_layout(&rebuilt.manifest_path, &probe)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_migration_does_not_rewrite_live_runtime_or_leave_staging() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (mut inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let entry_root = first
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory"))?
+            .to_path_buf();
+        let runtime_root = entry_root.join("vim").join("vim92");
+        let mut snapshots = Vec::new();
+        for entry in WalkDir::new(&runtime_root).follow_links(false) {
+            let entry = entry?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let metadata = fs::metadata(entry.path())?;
+            #[cfg(unix)]
+            let inode = Some(metadata.ino());
+            #[cfg(not(unix))]
+            let inode = None;
+            snapshots.push((entry.path().to_path_buf(), metadata.modified()?, inode));
+        }
+        legacyize_entry(&entry_root, &first.manifest_path, &archive)?;
+
+        inputs.vim_lsp_source = None;
+        let migrated = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(migrated.cache_hit);
+        for (path, modified, inode) in snapshots {
+            let metadata = fs::metadata(path)?;
+            assert_eq!(metadata.modified()?, modified);
+            #[cfg(unix)]
+            let current_inode = Some(metadata.ino());
+            #[cfg(not(unix))]
+            let current_inode = None;
+            assert_eq!(current_inode, inode, "runtime file identity changed during migration");
+        }
+        let parent = entry_root
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("entry path has no parent directory"))?;
+        for sibling in fs::read_dir(parent)? {
+            let sibling = sibling?;
+            let name = sibling.file_name().to_string_lossy().into_owned();
+            assert!(
+                !name.contains(".migrate."),
+                "migration staging residue remained: {}",
+                sibling.path().display()
+            );
+        }
+        Ok(())
+    }
+
+    /// Re-create a production-shaped legacy entry: the pinned archive stays
+    /// under the entry's downloads directory (every acquired entry has one)
+    /// and the manifest predates the runtime-digest field. Returns the fresh
+    /// manifest bytes for canonical-byte comparisons.
+    fn legacyize_entry(
+        entry_root: &Path,
+        manifest_path: &Path,
+        archive: &ArchiveFixture,
+    ) -> Result<Vec<u8>> {
+        let downloads = entry_root.join("downloads");
+        fs::create_dir_all(&downloads)?;
+        fs::copy(&archive.archive_path, downloads.join(format!("gvim_{VIM_RELEASE_TAG}.zip")))?;
+        let fresh_bytes = fs::read(manifest_path)?;
+        let mut legacy = serde_json::from_slice::<serde_json::Value>(&fresh_bytes)?;
+        legacy
+            .get_mut("vim")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|vim| vim.remove("runtime_tree_sha256"))
+            .ok_or_else(|| anyhow::anyhow!("fresh manifest did not contain runtime digest"))?;
+        fs::write(manifest_path, serde_json::to_vec_pretty(&legacy)?)?;
+        Ok(fresh_bytes)
+    }
+
+    #[test]
     fn corrupt_cached_byte_fails_verification_then_rebuild_heals() -> Result<()> {
         let scratch = tempfile::tempdir()?;
         let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
@@ -1810,6 +2237,30 @@ mod tests {
         let healed = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
         assert!(!healed.cache_hit);
         verify_layout(&healed.manifest_path, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn corrupt_cached_runtime_support_file_is_rejected() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let fixture = build_vimlsp_fixture(scratch.path(), "source")?;
+        let archive = install_fixture_archive(scratch.path())?;
+        let output = scratch.path().join("out");
+        let (inputs, probe) = provision_inputs(&output, &fixture, &archive, FULL_FEATURE_TEXT);
+        let first = provision(&inputs, &probe).map_err(|error| anyhow::anyhow!("{error}"))?;
+
+        let support_file = first
+            .vim_executable_role
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("provisioned Vim executable has no parent"))?
+            .join("runtime/feature.txt");
+        let mut bytes = fs::read(&support_file)?;
+        bytes.push(b'\n');
+        fs::write(&support_file, bytes)?;
+
+        let error = verify_layout(&first.manifest_path, &probe).unwrap_err();
+        assert_class(&error, InstrumentFailureClass::IdentityMismatch);
+        assert!(error.detail.contains("runtime digest"), "{error}");
         Ok(())
     }
 
