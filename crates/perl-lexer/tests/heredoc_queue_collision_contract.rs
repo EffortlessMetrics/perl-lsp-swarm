@@ -82,6 +82,10 @@ fn assert_queue_case(
     require_eq(&bodies.len(), &expected_bodies.len(), "queued body count")?;
     let mut body_slices = Vec::with_capacity(bodies.len());
     for body in &bodies {
+        require(
+            source.is_char_boundary(body.start) && source.is_char_boundary(body.end),
+            "heredoc body range is not on UTF-8 boundaries",
+        )?;
         let body_slice = source
             .get(body.start..body.end)
             .ok_or_else(|| missing("heredoc body token has invalid source geometry"))?;
