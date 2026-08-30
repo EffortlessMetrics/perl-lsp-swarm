@@ -336,17 +336,28 @@ class ContractBindingTests(unittest.TestCase):
         )
 
     def test_blocking_statuses_match_gates_rs(self) -> None:
+        """Bind to the statuses the function names, not to how it is written.
+
+        This reads Rust from Python, so it must fail only on a real vocabulary
+        change. Matching the exact `matches!(status, …)` shape would also fail
+        on a parameter rename, a rewrite as a `match` expression, or a plain
+        rustfmt re-split — false reds charged to unrelated Rust work. Taking the
+        function body and collecting its string literals tolerates all three
+        while still catching a changed status set, which is the only thing this
+        guard is for.
+        """
         source = GATES_SOURCE.read_text(encoding="utf-8")
         match = re.search(
-            r"fn is_blocking_gate_status\(status: &str\) -> bool \{\s*"
-            r"matches!\(status,([^)]*)\)",
+            r"fn is_blocking_gate_status\s*\([^)]*\)\s*->\s*bool\s*\{(.*?)\n\}",
             source,
+            re.DOTALL,
         )
         self.assertIsNotNone(
             match, "could not locate is_blocking_gate_status in gates.rs"
         )
         assert match is not None
-        declared = sorted(re.findall(r'"([a-z]+)"', match.group(1)))
+        body = re.sub(r"//[^\n]*", "", match.group(1))
+        declared = sorted(set(re.findall(r'"([a-z_]+)"', body)))
         self.assertEqual(
             sorted(render_summary.BLOCKING_STATUSES),
             declared,
