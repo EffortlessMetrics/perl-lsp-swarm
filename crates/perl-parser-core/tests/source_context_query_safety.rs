@@ -24,10 +24,7 @@ fn typed_offset_classification_never_turns_invalid_input_into_code() -> TestResu
         OffsetClassification::OutOfBounds,
         "EOF is a position boundary, not a source byte"
     );
-    assert_eq!(
-        index.classify_offset(source.len() + 1),
-        OffsetClassification::OutOfBounds
-    );
+    assert_eq!(index.classify_offset(source.len() + 1), OffsetClassification::OutOfBounds);
     Ok(())
 }
 
