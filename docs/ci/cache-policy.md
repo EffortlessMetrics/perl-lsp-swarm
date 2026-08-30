@@ -1,19 +1,24 @@
 # CI Cache Policy
 
-Cache **save** is restricted to master pushes; cache **restore** runs on every PR. This
-prevents PR cache write churn from displacing genuinely useful cache entries within
-GitHub's 10 GB per-repo limit.
+Shared CI caches are performance infrastructure. A hit, miss, denied save, corrupt
+entry, or eviction may change execution cost, but it must not change the product or
+test verdict for the same exact source subject.
+
+Candidate runs may restore reusable state. They may not publish shared state. Cache
+**save** authority is restricted to an explicitly trusted repository event/ref context
+that is statically unreachable from `pull_request` and `merge_group` candidates.
 
 > Companion: [cost-and-verification-policy.md](cost-and-verification-policy.md).
 
 ---
 
-## Rule
+## Writer-authority rule
 
-For every `Swatinem/rust-cache` invocation in a PR-capable workflow:
+For every `Swatinem/rust-cache` invocation in a candidate-capable workflow job, keep
+restore available and declare save authority explicitly:
 
 ```yaml
-- uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+- uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
   with:
     cache-on-failure: true
     cache-all-crates: true
@@ -21,45 +26,101 @@ For every `Swatinem/rust-cache` invocation in a PR-capable workflow:
     save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 ```
 
+For the canonical pattern above:
+
+- **Pull requests:** restore, run, do not save (`github.ref` is a pull-request ref).
+- **Merge groups:** restore, run, do not save (the integration ref is not `main` or
+  `master`).
+- **Canonical branch contexts:** an intentional push, schedule, or dispatch whose ref
+  is `main` or `master` may save when that workflow/job is designed to seed the cache.
+- **Feature branches and tags:** may restore but do not satisfy the save condition.
+
+A workflow or job name is not authority. In particular, a workflow called `nightly`
+remains in scope when it also subscribes to candidate events. Conversely, a job that is
+statically unreachable from `pull_request` and `merge_group` does not need a textual
+candidate guard merely for uniformity.
+
 The example uses a stable `shared-key` without `${{ hashFiles('Cargo.lock') }}` because
 `Swatinem/rust-cache` already incorporates the lockfile hash into its internal keying;
-adding it to `shared-key` prevents restore-fallback when `Cargo.lock` changes (the action
+adding it to `shared-key` prevents restore fallback when `Cargo.lock` changes (the action
 uses `shared-key` as a restore prefix). Existing workflows that include the hash for
-historical reasons are not changed by this rollout.
+historical reasons are not changed by this writer-authority rollout.
 
-Effects:
+---
 
-- **PR runs:** restore cache, run, **do not save**.
-- **Master pushes:** restore cache, run, save canonical cache for the next PR's restore.
-- **Matrix jobs:** keyed by matrix variant via `shared-key`; saving still gated on master.
+## Direct cache-save actions
+
+An explicit writer such as `actions/cache/save` must carry its own trusted event/ref
+guard. Content readiness is necessary but is not writer authority by itself:
+
+```yaml
+- name: Save generated cache state
+  if: |
+    steps.prepare.outcome == 'success' &&
+    github.event_name == 'workflow_dispatch' &&
+    github.ref_name == github.event.repository.default_branch
+  uses: actions/cache/save@<reviewed-commit>
+  with:
+    path: <cache-path>
+    key: <cache-key>
+```
+
+The accepted condition depends on the reviewed lane. A scheduled default-branch writer,
+for example, may use a different explicit event guard. The invariant is that a candidate
+PR, merge group, feature branch, tag, label, candidate-provided input, or candidate step
+output cannot become the fact that authorizes publication.
+
+A successful install, build, test, or corpus sweep may prove that bytes are eligible to
+be cached. It does not prove that the current run is trusted to publish them.
 
 ---
 
 ## What this does not change
 
-- Concurrency (`concurrency.cancel-in-progress`) for PR workflows is preserved.
-- Release/deploy workflows are not modified by this policy — they are infrequent and
-  need their own cache lifecycle.
-- Nightly workflows that already have their own scheduling are unaffected.
+- Candidate cache restore remains available.
+- Cache absence or rejection falls back to the ordinary cold execution path.
+- Concurrency and cancellation policy are preserved.
+- Keys, restore prefixes, payload identity, and useful-work measurement are separate
+  design questions.
+- Release and deployment cache lifecycles remain separately reviewed because they are
+  infrequent and may carry different trust and retention requirements.
 
 ---
 
-## Scope
+## Scope and reachability
 
-This policy applies to every `Swatinem/rust-cache` invocation in any workflow that runs
-on `pull_request`. The exhaustive list is not maintained here to avoid drift; verify by
-grepping `Swatinem/rust-cache` against `pull_request`-triggered workflows under
-`.github/workflows/`.
+This policy applies to every active cache consumer that can write from a workflow/job
+reachable on `pull_request` or `merge_group`, including hybrid schedule/dispatch/PR
+workflows. Reachability is determined from the workflow trigger and the containing
+job/step conditions, not from the file name or intended cadence.
+
+The exhaustive active denominator is owned by the cache inventory rather than copied
+into this document. Dormant composite actions and templates are not active behavior.
 
 ---
 
 ## Verification
 
-After this policy lands, the first master push saves the canonical cache. PRs from then
-on restore-only. Expected impact:
+The repository-owned workflow policy and active-cache inventory must reject:
 
-- PR run wall time: ≈ unchanged (restore time is comparable).
-- Cache write traffic: drops to one save per master push instead of one per PR push.
-- Cache eviction churn: substantially reduced.
+- a candidate-reachable `Swatinem/rust-cache` step without an explicit `save-if`;
+- a direct cache-save step guarded only by content success;
+- a save condition that accepts pull-request refs, merge-group refs, feature branches,
+  tags, labels, or candidate-controlled values;
+- an inventory row whose action, key, output path, reachability, or writer disposition
+  has drifted from workflow source.
+
+The same proof must accept intentional schedule/manual/default-branch writers and jobs
+that are statically excluded from candidate events. No separate required status context
+is needed; the rule belongs in the existing workflow-policy/result plane.
+
+Expected effect after the active writer repairs land:
+
+- candidate wall time remains approximately unchanged because restore still runs;
+- cache write traffic is concentrated in reviewed trusted contexts;
+- merge-ref and feature-ref cache churn no longer competes with canonical reusable
+  entries;
+- cache receipts can report restore/save facts without treating an action-level hit as
+  proof of compilation or setup work avoided.
 
 LEM impact appears in `target/ci/ci-actuals.json` once the CI actuals receipt is wired up.
