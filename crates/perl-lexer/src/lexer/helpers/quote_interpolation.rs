@@ -86,7 +86,7 @@ impl PerlLexer<'_> {
 
             if (ch == '$' || ch == '@') && self.config.interpolation_enabled() {
                 Self::flush_literal(&mut literal, &mut parts);
-                self.scan_interpolation_island(ch, terminator, &mut parts, &mut literal);
+                self.scan_interpolation_island(ch, Some(terminator), &mut parts, &mut literal);
                 continue;
             }
 
@@ -121,7 +121,7 @@ impl PerlLexer<'_> {
     pub(crate) fn scan_interpolation_island(
         &mut self,
         sigil: char,
-        terminator: char,
+        terminator: Option<char>,
         parts: &mut Vec<StringPart>,
         literal: &mut String,
     ) {
@@ -139,13 +139,14 @@ impl PerlLexer<'_> {
     fn scan_at_island_tail(
         &mut self,
         part_start: usize,
-        terminator: char,
+        terminator: Option<char>,
         parts: &mut Vec<StringPart>,
         literal: &mut String,
     ) {
         match self.current_char() {
             Some('{') => {
-                let _ = self.consume_balanced_segment_in_string('{', '}', terminator);
+                let _ =
+                    self.consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
                 parts.push(StringPart::Expression(Arc::from(
                     &self.input[part_start..self.position],
                 )));
@@ -181,13 +182,14 @@ impl PerlLexer<'_> {
     fn scan_dollar_island_tail(
         &mut self,
         part_start: usize,
-        terminator: char,
+        terminator: Option<char>,
         parts: &mut Vec<StringPart>,
         literal: &mut String,
     ) {
         match self.current_char() {
             Some('{') => {
-                let _ = self.consume_balanced_segment_in_string('{', '}', terminator);
+                let _ =
+                    self.consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
                 parts.push(StringPart::Expression(Arc::from(
                     &self.input[part_start..self.position],
                 )));
@@ -212,7 +214,8 @@ impl PerlLexer<'_> {
             Some('#') => {
                 self.advance();
                 if self.current_char() == Some('{') {
-                    let _ = self.consume_balanced_segment_in_string('{', '}', terminator);
+                    let _ = self
+                        .consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
                 } else {
                     while self.current_char() == Some('$') {
                         self.advance();
@@ -231,7 +234,8 @@ impl PerlLexer<'_> {
                     for _ in 0..dollar_run {
                         self.advance();
                     }
-                    let _ = self.consume_balanced_segment_in_string('{', '}', terminator);
+                    let _ = self
+                        .consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
                     parts.push(StringPart::Expression(Arc::from(
                         &self.input[part_start..self.position],
                     )));
@@ -250,22 +254,30 @@ impl PerlLexer<'_> {
                         self.advance();
                         self.advance();
                         if self.current_char() == Some('[') {
-                            let _ = self.consume_balanced_segment_in_string('[', ']', terminator);
+                            let _ = self.consume_balanced_segment_in_string_with_terminator(
+                                '[', ']', terminator,
+                            );
                         } else {
-                            let _ = self.consume_balanced_segment_in_string('{', '}', terminator);
+                            let _ = self.consume_balanced_segment_in_string_with_terminator(
+                                '{', '}', terminator,
+                            );
                         }
                         parts.push(StringPart::MethodCall(Arc::from(
                             &self.input[tail_start..self.position],
                         )));
                     } else if self.current_char() == Some('[') {
                         let tail_start = self.position;
-                        let _ = self.consume_balanced_segment_in_string('[', ']', terminator);
+                        let _ = self.consume_balanced_segment_in_string_with_terminator(
+                            '[', ']', terminator,
+                        );
                         parts.push(StringPart::ArraySlice(Arc::from(
                             &self.input[tail_start..self.position],
                         )));
                     } else if self.current_char() == Some('{') {
                         let tail_start = self.position;
-                        let _ = self.consume_balanced_segment_in_string('{', '}', terminator);
+                        let _ = self.consume_balanced_segment_in_string_with_terminator(
+                            '{', '}', terminator,
+                        );
                         parts.push(StringPart::Expression(Arc::from(
                             &self.input[tail_start..self.position],
                         )));
@@ -310,7 +322,7 @@ impl PerlLexer<'_> {
     fn scan_variable_with_tails(
         &mut self,
         part_start: usize,
-        terminator: char,
+        terminator: Option<char>,
         parts: &mut Vec<StringPart>,
         literal: &mut String,
     ) {
@@ -350,19 +362,22 @@ impl PerlLexer<'_> {
 
             match self.current_char() {
                 Some('[') => {
-                    let _ = self.consume_balanced_segment_in_string('[', ']', terminator);
+                    let _ = self
+                        .consume_balanced_segment_in_string_with_terminator('[', ']', terminator);
                     parts.push(StringPart::MethodCall(Arc::from(
                         &self.input[tail_start..self.position],
                     )));
                 }
                 Some('{') => {
-                    let _ = self.consume_balanced_segment_in_string('{', '}', terminator);
+                    let _ = self
+                        .consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
                     parts.push(StringPart::MethodCall(Arc::from(
                         &self.input[tail_start..self.position],
                     )));
                 }
                 Some('(') => {
-                    let _ = self.consume_balanced_segment_in_string('(', ')', terminator);
+                    let _ = self
+                        .consume_balanced_segment_in_string_with_terminator('(', ')', terminator);
                     parts.push(StringPart::MethodCall(Arc::from(
                         &self.input[tail_start..self.position],
                     )));
@@ -404,11 +419,11 @@ impl PerlLexer<'_> {
             }
         } else if self.current_char() == Some('[') {
             let tail_start = self.position;
-            let _ = self.consume_balanced_segment_in_string('[', ']', terminator);
+            let _ = self.consume_balanced_segment_in_string_with_terminator('[', ']', terminator);
             parts.push(StringPart::ArraySlice(Arc::from(&self.input[tail_start..self.position])));
         } else if self.current_char() == Some('{') {
             let tail_start = self.position;
-            let _ = self.consume_balanced_segment_in_string('{', '}', terminator);
+            let _ = self.consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
             parts.push(StringPart::Expression(Arc::from(&self.input[tail_start..self.position])));
         }
     }
@@ -417,20 +432,18 @@ impl PerlLexer<'_> {
     /// in place (#8779): position is moved over the body, islands are
     /// classified by the same scanner as `qq`, and the position is restored.
     /// The terminator is a newline: heredoc bodies have no closing delimiter.
-    /// A single trailing line break (`\n` or `\r\n`) is the body's line
-    /// terminator, not content, and is excluded from the last part.
+    /// The body range includes its final line break before the terminator line;
+    /// that newline is content and remains in the last literal part.
     pub(crate) fn segment_heredoc_body(
         &mut self,
         body_start: usize,
         body_end: usize,
     ) -> Vec<StringPart> {
         let saved_position = self.position;
-        let mut body_end = body_end.min(self.input.len());
-        if body_end > body_start && self.input_bytes[body_end - 1] == b'\n' {
-            body_end -= 1;
-            if body_end > body_start && self.input_bytes[body_end - 1] == b'\r' {
-                body_end -= 1;
-            }
+        let body_end = body_end.min(self.input.len());
+        if !self.config.interpolation_enabled() {
+            self.position = saved_position;
+            return vec![StringPart::Literal(Arc::from(&self.input[body_start..body_end]))];
         }
         self.position = body_start;
         let mut parts: Vec<StringPart> = Vec::new();
@@ -439,7 +452,6 @@ impl PerlLexer<'_> {
         while self.position < body_end {
             let Some(ch) = self.current_char() else { break };
             if ch == '\\' {
-                Self::flush_literal(&mut literal, &mut parts);
                 literal.push(ch);
                 self.advance();
                 if self.position < body_end
@@ -452,7 +464,7 @@ impl PerlLexer<'_> {
             }
             if (ch == '$' || ch == '@') && self.config.interpolation_enabled() {
                 Self::flush_literal(&mut literal, &mut parts);
-                self.scan_interpolation_island(ch, '\n', &mut parts, &mut literal);
+                self.scan_interpolation_island(ch, None, &mut parts, &mut literal);
                 continue;
             }
             literal.push(ch);

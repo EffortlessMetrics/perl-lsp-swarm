@@ -3,7 +3,7 @@
 //! disposition, while non-interpolating forms stay invariant controls and
 //! `qx`/backtick bodies stay an intentional opaque boundary.
 
-use perl_lexer::{LexerConfig, PerlLexer, StringPart, Token, TokenType};
+use perl_lexer::{Checkpointable, LexerConfig, PerlLexer, StringPart, Token, TokenType};
 
 fn config(interpolation: bool) -> LexerConfig {
     LexerConfig { parse_interpolation: interpolation, ..LexerConfig::default() }
@@ -190,6 +190,22 @@ fn unclosed_qq_still_recovers_into_the_error_token() {
     }
 }
 
+#[test]
+fn paired_qq_delimiters_are_not_consumed_as_interpolation_tail_boundaries() {
+    assert_eq!(
+        quote_double_parts("qq{${foo}}", true),
+        vec![StringPart::Expression("${foo}".into())],
+    );
+    assert_eq!(
+        quote_double_parts("qq[$a[0]]", true),
+        vec![StringPart::Variable("$a".into()), StringPart::ArraySlice("[0]".into())],
+    );
+    assert_eq!(
+        quote_double_parts("qq($obj->())", true),
+        vec![StringPart::Variable("$obj".into()), StringPart::MethodCall("->()".into())],
+    );
+}
+
 // --- Heredoc dispositions --------------------------------------------------
 
 fn heredoc_source(body: &str) -> String {
@@ -222,7 +238,7 @@ fn interpolating_heredoc_enabled_segments_the_body() {
             vec![
                 StringPart::Literal("value ".into()),
                 StringPart::Variable("$name".into()),
-                StringPart::Literal("!".into()),
+                StringPart::Literal("!\n".into()),
             ]
         ),
         other => panic!("expected interpolated heredoc body, got {other:?}"),
@@ -235,7 +251,7 @@ fn interpolating_heredoc_disabled_is_uniformly_opaque() {
     match heredoc_body_kind(&source, false) {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
-            vec![StringPart::Literal("value $name!".into())],
+            vec![StringPart::Literal("value $name!\n".into())],
             "disabled interpolating heredocs keep one opaque Literal part"
         ),
         other => panic!("expected interpolated heredoc body, got {other:?}"),
@@ -243,10 +259,23 @@ fn interpolating_heredoc_disabled_is_uniformly_opaque() {
 }
 
 #[test]
+fn disabled_interpolating_heredocs_keep_one_complete_literal_for_empty_and_escaped_bodies() {
+    for (body, expected) in [("", "\n"), (r"a\$name", "a\\$name\n")] {
+        let source = heredoc_source(body);
+        match heredoc_body_kind(&source, false) {
+            TokenType::InterpolatedHeredocBody(parts) => {
+                assert_eq!(parts, vec![StringPart::Literal(expected.into())], "{body:?}");
+            }
+            other => panic!("expected interpolated heredoc body, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn interpolating_heredoc_body_matches_the_ordinary_scanner_per_line() {
     let body = "head $v tail";
     let source = heredoc_source(body);
-    let ordinary = interpolated_string_parts(&format!("\"{body}\""));
+    let ordinary = interpolated_string_parts(&format!("\"{body}\n\""));
     match heredoc_body_kind(&source, true) {
         TokenType::InterpolatedHeredocBody(parts) => {
             assert_eq!(parts, ordinary, "island policy must be one policy");
@@ -264,7 +293,23 @@ fn interpolating_heredoc_segments_across_multiple_body_lines() {
             vec![
                 StringPart::Literal("line1 ".into()),
                 StringPart::Variable("$v".into()),
-                StringPart::Literal("\nline2".into()),
+                StringPart::Literal("\nline2\n".into()),
+            ]
+        ),
+        other => panic!("expected interpolated heredoc body, got {other:?}"),
+    }
+}
+
+#[test]
+fn interpolating_heredoc_allows_multiline_interpolation_islands() {
+    let source = heredoc_source("before ${\n  $name\n} after");
+    match heredoc_body_kind(&source, true) {
+        TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
+            parts,
+            vec![
+                StringPart::Literal("before ".into()),
+                StringPart::Expression("${\n  $name\n}".into()),
+                StringPart::Literal(" after\n".into()),
             ]
         ),
         other => panic!("expected interpolated heredoc body, got {other:?}"),
@@ -277,7 +322,11 @@ fn indented_interpolating_heredoc_segments_too() {
     match heredoc_body_kind(&source, true) {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
-            vec![StringPart::Literal("    value ".into()), StringPart::Variable("$v".into()),]
+            vec![
+                StringPart::Literal("    value ".into()),
+                StringPart::Variable("$v".into()),
+                StringPart::Literal("\n".into())
+            ]
         ),
         other => panic!("expected interpolated heredoc body, got {other:?}"),
     }
@@ -321,4 +370,20 @@ fn heredoc_identity_and_geometry_are_stable_across_settings() {
     assert_eq!(a.start, b.start, "body geometry must not move");
     assert_eq!(a.end, b.end, "body geometry must not move");
     assert_eq!(a.text, b.text, "body token text stays geometry-only");
+}
+
+#[test]
+fn checkpoint_rejects_a_different_interpolation_policy_for_pending_heredocs() {
+    let source = heredoc_source("value $name");
+    let mut enabled = PerlLexer::with_config_and_body_tokens(&source, config(true));
+    while enabled.checkpoint().pending_heredocs.is_empty() {
+        assert!(enabled.next_token().is_some(), "heredoc opener should be reached");
+    }
+    let checkpoint = enabled.checkpoint();
+
+    let disabled = PerlLexer::with_config_and_body_tokens(&source, config(false));
+    assert!(!disabled.can_restore(&checkpoint));
+
+    let same_policy = PerlLexer::with_config_and_body_tokens(&source, config(true));
+    assert!(same_policy.can_restore(&checkpoint));
 }

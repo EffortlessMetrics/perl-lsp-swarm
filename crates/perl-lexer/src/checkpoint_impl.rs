@@ -29,6 +29,7 @@ impl Checkpointable for PerlLexer<'_> {
 
         LexerCheckpoint {
             position: self.position,
+            parse_interpolation: self.config.interpolation_enabled(),
             mode: self.mode,
             delimiter_stack: self.delimiter_stack.clone(),
             in_prototype: self.in_prototype,
@@ -64,6 +65,9 @@ impl Checkpointable for PerlLexer<'_> {
     }
 
     fn restore(&mut self, checkpoint: &LexerCheckpoint) {
+        if checkpoint.parse_interpolation != self.config.interpolation_enabled() {
+            return;
+        }
         self.position = checkpoint.position;
         self.mode = checkpoint.mode;
         self.delimiter_stack.clone_from(&checkpoint.delimiter_stack);
@@ -104,7 +108,8 @@ impl Checkpointable for PerlLexer<'_> {
     }
 
     fn can_restore(&self, checkpoint: &LexerCheckpoint) -> bool {
-        checkpoint.is_valid_for(self.input)
+        checkpoint.parse_interpolation == self.config.interpolation_enabled()
+            && checkpoint.is_valid_for(self.input)
     }
 }
 
