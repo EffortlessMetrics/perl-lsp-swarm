@@ -1,0 +1,131 @@
+name: Temporary #13915 branch repair
+
+on:
+  push:
+    branches:
+      - fix/13915-tr-y-comment-gaps
+    paths:
+      - .github/workflows/temporary-13915-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact branch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: fix/13915-tr-y-comment-gaps
+          persist-credentials: true
+
+      - name: Install the governed Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.95.0
+
+      - name: Apply, prove, commit, and remove this workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+
+          cleanup_on_error() {
+            status=$?
+            trap - ERR
+            git reset --hard HEAD
+            git rm -f .github/workflows/temporary-13915-apply.yml
+            git commit -m "chore: remove failed temporary #13915 workflow"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+            exit "$status"
+          }
+          trap cleanup_on_error ERR
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one replacement, found {count}")
+              file.write_text(text.replace(old, new, 1))
+
+          lib = "crates/perl-lexer/src/lib.rs"
+          replace_once(
+              lib,
+              "        if pattern_is_paired {\n            self.skip_paired_substitution_replacement_gap();\n",
+              "        if pattern_is_paired {\n            self.skip_two_body_quote_like_gap();\n",
+          )
+          replace_once(
+              lib,
+              "    fn skip_paired_substitution_replacement_gap(&mut self) {\n",
+              "    fn skip_two_body_quote_like_gap(&mut self) {\n",
+          )
+          replace_once(
+              lib,
+              "    fn parse_transliteration(&mut self, start: usize) -> Option<Token> {\n        // We've already consumed 'tr' or 'y'\n        while self.current_char().is_some_and(char::is_whitespace) {\n            self.advance();\n        }\n\n        let delimiter = self.current_char()?;\n",
+              "    fn parse_transliteration(&mut self, start: usize) -> Option<Token> {\n        // We've already consumed 'tr' or 'y'\n        self.skip_quote_operator_delimiter_gap();\n\n        let delimiter = self.current_char()?;\n",
+          )
+          replace_once(
+              lib,
+              "        let search_is_paired = quote_handler::paired_close(delimiter).is_some();\n        if search_is_paired {\n            while self.current_char().is_some_and(char::is_whitespace) {\n                self.advance();\n            }\n\n            if let Some(repl_delim) = self.current_char()\n",
+              "        let search_is_paired = quote_handler::paired_close(delimiter).is_some();\n        if search_is_paired {\n            self.skip_two_body_quote_like_gap();\n\n            if let Some(repl_delim) = self.current_char()\n",
+          )
+
+          tests = "crates/perl-lexer/src/tests.rs"
+          replace_once(
+              tests,
+              "fn paired_substitution_replacement_gap_skips_consecutive_comments() -> TestResult {\n",
+              "fn two_body_quote_like_gap_skips_consecutive_comments() -> TestResult {\n",
+          )
+          replace_once(
+              tests,
+              "    lexer.skip_paired_substitution_replacement_gap();\n",
+              "    lexer.skip_two_body_quote_like_gap();\n",
+          )
+
+          rows = "crates/perl-lexer/tests/quote_like_matrix/rows.rs"
+          replacements = [
+              (
+                  "        &[spec(ExpectedKind::Error, \"tr # comment\\n {a} {b}; after\"), spec(ExpectedKind::Eof, \"\")],\n        NextOrdinary::EatenByError,\n        TerminalStateClass::ExpectOperator,\n        Disposition::Rejected,\n        OracleExpectation::CompileAccept,\n        Some(\n            \"current-main over-consumes comment-gap tr; Perl compiles this form. Production repair is #7279.\",\n        ),\n        &[Axis::CommentGapBeforePaired, Axis::MalformedFollower],\n",
+                  "        &[\n            spec(ExpectedKind::Transliteration, \"tr # comment\\n {a} {b}\"),\n            spec(ExpectedKind::Semicolon, \";\"),\n            spec(ExpectedKind::Identifier, \"after\"),\n            spec(ExpectedKind::Eof, \"\"),\n        ],\n        AFTER,\n        TerminalStateClass::ExpectOperator,\n        Disposition::Clean,\n        OracleExpectation::CompileAccept,\n        None,\n        &[Axis::CommentGapBeforePaired],\n",
+              ),
+              (
+                  "        &[spec(ExpectedKind::Error, \"y # comment\\n {a} {b}; after\"), spec(ExpectedKind::Eof, \"\")],\n        NextOrdinary::EatenByError,\n        TerminalStateClass::ExpectOperator,\n        Disposition::Rejected,\n        OracleExpectation::CompileAccept,\n        Some(\n            \"current-main over-consumes comment-gap y; Perl compiles this form. Production repair is #7279.\",\n        ),\n        &[Axis::CommentGapBeforePaired, Axis::MalformedFollower],\n",
+                  "        &[\n            spec(ExpectedKind::Transliteration, \"y # comment\\n {a} {b}\"),\n            spec(ExpectedKind::Semicolon, \";\"),\n            spec(ExpectedKind::Identifier, \"after\"),\n            spec(ExpectedKind::Eof, \"\"),\n        ],\n        AFTER,\n        TerminalStateClass::ExpectOperator,\n        Disposition::Clean,\n        OracleExpectation::CompileAccept,\n        None,\n        &[Axis::CommentGapBeforePaired],\n",
+              ),
+              (
+                  "        &[spec(ExpectedKind::Error, \"tr{a} # comment\\n {b}; after\"), spec(ExpectedKind::Eof, \"\")],\n        NextOrdinary::EatenByError,\n        TerminalStateClass::ExpectOperator,\n        Disposition::Rejected,\n        OracleExpectation::CompileAccept,\n        Some(\n            \"current-main over-consumes comment-between tr bodies; Perl compiles this form. Production repair is #7279.\",\n        ),\n        &[Axis::CommentBetweenBodies],\n",
+                  "        &[\n            spec(ExpectedKind::Transliteration, \"tr{a} # comment\\n {b}\"),\n            spec(ExpectedKind::Semicolon, \";\"),\n            spec(ExpectedKind::Identifier, \"after\"),\n            spec(ExpectedKind::Eof, \"\"),\n        ],\n        AFTER,\n        TerminalStateClass::ExpectOperator,\n        Disposition::Clean,\n        OracleExpectation::CompileAccept,\n        None,\n        &[Axis::CommentBetweenBodies],\n",
+              ),
+              (
+                  "        &[spec(ExpectedKind::Error, \"y{a} # comment\\n {b}; after\"), spec(ExpectedKind::Eof, \"\")],\n        NextOrdinary::EatenByError,\n        TerminalStateClass::ExpectOperator,\n        Disposition::Rejected,\n        OracleExpectation::CompileAccept,\n        Some(\n            \"current-main over-consumes comment-between y bodies; Perl compiles this form. Production repair is #7279.\",\n        ),\n        &[Axis::CommentBetweenBodies],\n",
+                  "        &[\n            spec(ExpectedKind::Transliteration, \"y{a} # comment\\n {b}\"),\n            spec(ExpectedKind::Semicolon, \";\"),\n            spec(ExpectedKind::Identifier, \"after\"),\n            spec(ExpectedKind::Eof, \"\"),\n        ],\n        AFTER,\n        TerminalStateClass::ExpectOperator,\n        Disposition::Clean,\n        OracleExpectation::CompileAccept,\n        None,\n        &[Axis::CommentBetweenBodies],\n",
+              ),
+          ]
+          for old, new in replacements:
+              replace_once(rows, old, new)
+          PY
+
+          cargo fmt -p perl-lexer
+          cargo fmt -p perl-lexer -- --check
+          cargo clippy -p perl-lexer --all-targets --locked -- -D warnings
+          cargo test -p perl-lexer --test transliteration_comment_gap_regression --locked
+          cargo test -p perl-lexer --test quote_like_lexical_matrix --locked
+          git diff --check
+
+          git rm .github/workflows/temporary-13915-apply.yml
+          git add crates/perl-lexer/src/lib.rs \
+                  crates/perl-lexer/src/tests.rs \
+                  crates/perl-lexer/tests/quote_like_matrix/rows.rs \
+                  crates/perl-lexer/tests/transliteration_comment_gap_regression.rs
+          git commit -m "fix(lexer): accept tr/y comment gaps (#13915)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          trap - ERR
