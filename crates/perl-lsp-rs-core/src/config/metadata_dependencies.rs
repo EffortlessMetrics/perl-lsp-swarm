@@ -1424,7 +1424,7 @@ mod tests {
         assert_eq!(value, "Module::Name");
         assert_eq!(consumed, r#"'Module\::Name'"#.len());
         assert!(parse_quoted_string("'unterminated", 0).is_none());
-        assert!(parse_quoted_string("'line\nbreak'", 0).is_none());
+        assert!(parse_quoted_string("'line\nbreak'", 0).is_some());
 
         let stripped = strip_comments_preserving_strings(
             r##"'Escaped\'#Tag' # drop
