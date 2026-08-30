@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12432 |
-| Rust-family files | 3828 |
-| Non-Rust files | 8604 |
-| Allowlisted | 6367 |
+| Total tracked files | 12440 |
+| Rust-family files | 3832 |
+| Non-Rust files | 8608 |
+| Allowlisted | 6371 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 491 |
-| documentation | 2804 |
+| config | 492 |
+| documentation | 2805 |
 | generated | 2 |
 | production | 348 |
 | test | 2057 |
-| tooling | 665 |
+| tooling | 667 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -4491,6 +4491,7 @@
 | `docs/agents/workflow-outcome.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/perl-oracle-subprocess-contract.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/perl-subprocess-seams.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/architecture/repository-topology.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/archive/DAP_0_9_SHIM_DESIGN.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/articles/AGGREGATOR_ABSORPTION_PATTERN.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/articles/AI_NATIVE_OPERATIONS.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6374,6 +6375,7 @@
 | `policy/release-channel-actuals.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/release-container-actuals.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/release-tag-provenance.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/repository-topology.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6706,6 +6708,7 @@
 | `scripts/llvm.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/lsp-smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/maintenance/rebuild_11983_current_main.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/maintenance/verify_11983_reject_identities.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/marketing/check-demo-assets.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/marketing/render-walkthrough-gif.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/migrate-legacy-authority-banners.py` | tooling | `non-rust-legacy-authority-banner-migrator` | release/ci |
@@ -6834,6 +6837,7 @@
 | `scripts/tests/test-publish-receipts-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-publish-topo.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-quick-receipts-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-rebuild-11983-reject-identities.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-review-lease.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-review-threads-inline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-run-gates-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
