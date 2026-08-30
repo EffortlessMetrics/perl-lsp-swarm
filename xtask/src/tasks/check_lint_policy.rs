@@ -28,8 +28,12 @@ pub fn run() -> Result<()> {
     let debt_ledger: DebtLedger = read::read_toml_as(root.join(DEBT_LEDGER))?;
     let today = Utc::now().date_naive();
 
-    validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, today)?;
+    let configured_selector_count =
+        validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, today)?;
 
-    print!("{}", summary::render_policy_summary(&lint_ledger, &debt_ledger));
+    print!(
+        "{}",
+        summary::render_policy_summary(&lint_ledger, &debt_ledger, configured_selector_count)
+    );
     Ok(())
 }
