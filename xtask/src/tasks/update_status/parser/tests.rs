@@ -167,6 +167,13 @@ fn test_parser_nodekind_row_renders() -> Result<()> {
 /// NodeKind population and makes denominator substitution cheap. A wrong
 /// implementation this test rejects is one that renames the row but leaves the
 /// numerator unbounded, or that bounds it while dropping the gap detail (#13742).
+///
+/// The counts below are synthetic renderer input chosen to exercise the format
+/// contract, not the values any audit committed. They are deliberately unequal
+/// to whatever `docs/project/status/parser.md` currently carries: this test
+/// pins `{covered}/{total} ({pct:.1}%)` and the surrounding wording, while the
+/// committed row's numbers stay owned by `corpus_audit` and the post-merge
+/// regeneration. Reading a committed value out of this fixture would be wrong.
 #[test]
 fn test_parser_nodekind_row_is_named_and_bounded_as_broad_corpus_reachability() -> Result<()> {
     let summary = super::super::super::corpus_audit::StatusSummary {
@@ -223,9 +230,24 @@ fn test_parser_nodekind_row_is_named_and_bounded_as_broad_corpus_reachability() 
         "note must exclude occurrence-count meaning, got: {row}"
     );
 
-    // The rename is presentation-only: value, gap classification, and source
-    // must survive it unchanged.
-    assert!(row.contains("65/69 (94.2%)"), "row must preserve the audit value, got: {row}");
+    // The row is an unversioned static projection regenerated after merge, so
+    // any committed instance ages. A freshness adjective would assert exactly
+    // the unearned evidence this note exists to prevent, so the note must not
+    // reintroduce one. Binding a receipt timestamp is #11588's claim.
+    for adjective in ["current", "latest", "up-to-date", "fresh"] {
+        assert!(
+            !row.contains(adjective),
+            "note must not assert freshness the static row cannot earn; found {adjective:?} in: {row}"
+        );
+    }
+
+    // The rename is presentation-only: the renderer's value format, the gap
+    // classification, and the source column must survive it unchanged. The
+    // numbers here are this test's synthetic input, not a committed audit value.
+    assert!(
+        row.contains("65/69 (94.2%)"),
+        "row must render {{covered}}/{{total}} ({{pct:.1}}%) unchanged, got: {row}"
+    );
     assert!(
         row.contains("2 actionable never-seen; 1 recovery-only allowlisted; 3 total never-seen"),
         "row must preserve the existing gap detail, got: {row}"

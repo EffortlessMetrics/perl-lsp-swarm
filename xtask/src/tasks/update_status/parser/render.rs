@@ -84,20 +84,12 @@ pub(super) fn generate_parser_status(metrics: &ParserMetrics, original: &str) ->
             )
         },
         |summary| {
-            let pct = if summary.nodekind_total == 0 {
-                0.0
-            } else {
-                100.0 * summary.nodekind_covered as f64 / summary.nodekind_total as f64
-            };
+            let covered = summary.nodekind_covered;
+            let total = summary.nodekind_total;
+            let pct = if total == 0 { 0.0 } else { 100.0 * covered as f64 / total as f64 };
             let gap_note = format_nodekind_gap_note(summary);
             format!(
-                "| **{}** | {}/{} ({:.1}%) | {}; {} | `corpus_audit` |",
-                NODEKIND_ROW_LABEL,
-                summary.nodekind_covered,
-                summary.nodekind_total,
-                pct,
-                NODEKIND_SCOPE_NOTE,
-                gap_note,
+                "| **{NODEKIND_ROW_LABEL}** | {covered}/{total} ({pct:.1}%) | {NODEKIND_SCOPE_NOTE}; {gap_note} | `corpus_audit` |"
             )
         },
     );
