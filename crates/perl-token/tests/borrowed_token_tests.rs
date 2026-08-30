@@ -66,6 +66,20 @@ fn externally_mutated_token_ref_equal_width_payload_stays_geometry_only() -> Tes
 }
 
 #[test]
+fn payload_bearing_unknown_rest_round_trips_through_token_ref() -> TestResult {
+    let payload = "remainder";
+    let borrowed = TokenRef::new_checked(TokenKind::UnknownRest, payload, 40, 49)?;
+
+    let owned = borrowed.to_owned_token();
+
+    assert_eq!(owned.kind(), TokenKind::UnknownRest);
+    assert_eq!(owned.span(), ordered_span(40, 49));
+    assert_eq!(&*owned.text, payload);
+    assert!(!owned.is_geometry_only());
+    Ok(())
+}
+
+#[test]
 fn token_from_token_ref_matches_constructor() -> TestResult {
     let borrowed = TokenRef::new_checked(TokenKind::Number, "42", 20, 22)?;
     let from_impl: Token = borrowed.into();

@@ -12,7 +12,9 @@ use crate::{TokenKind, TokenSpan, TokenSpanError};
 /// replacing it cannot create reversed geometry, and [`TokenRef::to_owned_token`]
 /// validates the replacement before creating an owned token. A replacement with
 /// the wrong width is canonicalized to a safe recovery token instead of being
-/// allowed to create an invalid [`Token`]. `kind` is a read accessor: assignment
+/// allowed to create an invalid [`Token`]. The private provenance bit preserves
+/// the distinction between a constructor-created payload-free `UnknownRest` and
+/// a valid payload-bearing one across `Copy`; `kind` is a read accessor: assignment
 /// on an empty EOF would otherwise bypass empty-span policy. Use
 /// [`TokenRef::new_checked`] / [`TokenRef::with_kind`] to change kind.
 ///
@@ -50,6 +52,7 @@ pub struct TokenRef<'src> {
     pub text: &'src str,
     start: usize,
     end: usize,
+    geometry_only: bool,
 }
 
 impl<'src> TokenRef<'src> {
@@ -73,7 +76,13 @@ impl<'src> TokenRef<'src> {
         if !(kind == TokenKind::UnknownRest && text.is_empty() && !span.is_empty()) {
             validate_text_span_width(text.len(), span)?;
         }
-        Ok(Self { kind, text, start: span.start(), end: span.end() })
+        Ok(Self {
+            kind,
+            text,
+            start: span.start(),
+            end: span.end(),
+            geometry_only: kind == TokenKind::UnknownRest && text.is_empty() && !span.is_empty(),
+        })
     }
 
     /// Create a borrowed token view with checked span invariants.
@@ -127,16 +136,22 @@ impl<'src> TokenRef<'src> {
     ///
     /// The public `text` field can be changed after construction, so this
     /// conversion preserves the payload for normal tokens only after revalidating
-    /// its width. Every `UnknownRest` becomes payload-free; a malformed
-    /// non-empty span becomes geometry-only `UnknownRest`, and a malformed empty
-    /// span becomes EOF. This preserves the infallible, compatibility-oriented
-    /// API without allowing a malformed `Token` to escape.
+    /// its width. A constructor-created geometry-only `UnknownRest` remains
+    /// payload-free even if its public `text` is later replaced with an equal- or
+    /// wrong-width slice. A valid payload-bearing `UnknownRest` round-trips when
+    /// its replacement remains width-valid; malformed replacements become
+    /// geometry-only `UnknownRest` (or EOF for an empty span). This preserves the
+    /// infallible, compatibility-oriented API without allowing a malformed
+    /// `Token` to escape.
     pub fn to_owned_token(self) -> Token {
         if self.kind == TokenKind::UnknownRest {
-            return match Token::unknown_rest_at(self.start, self.end) {
-                Ok(token) => token,
-                Err(_) => Token::eof_at(self.start),
-            };
+            if self.geometry_only || self.text.len() != self.len() {
+                return match Token::unknown_rest_at(self.start, self.end) {
+                    Ok(token) => token,
+                    Err(_) => Token::eof_at(self.start),
+                };
+            }
+            return Token::from_valid_parts(self.kind, Arc::from(self.text), self.start, self.end);
         }
 
         if self.text.len() == self.len() {
@@ -163,7 +178,11 @@ impl<'src> TokenRef<'src> {
 
     /// Clone this view with a new token kind, enforcing empty-span policy.
     pub fn with_kind(self, kind: TokenKind) -> Result<Self, TokenSpanError> {
-        Self::new_checked(kind, self.text, self.start, self.end)
+        let mut token = Self::new_checked(kind, self.text, self.start, self.end)?;
+        if self.geometry_only && kind == TokenKind::UnknownRest {
+            token.geometry_only = true;
+        }
+        Ok(token)
     }
 }
 
@@ -425,7 +444,13 @@ impl Token {
 
     /// Return a borrowed token view over this token.
     pub fn as_ref_token(&self) -> TokenRef<'_> {
-        TokenRef { kind: self.kind, text: self.text.as_ref(), start: self.start, end: self.end }
+        TokenRef {
+            kind: self.kind,
+            text: self.text.as_ref(),
+            start: self.start,
+            end: self.end,
+            geometry_only: self.is_geometry_only(),
+        }
     }
 }
 
