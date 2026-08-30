@@ -49,6 +49,37 @@ fi
 echo "Formatting staged Rust diff: cargo xtask fmt --staged"
 cargo xtask fmt --staged || echo "⚠️  staged formatting did not run; the commit gate below still applies"
 
+# Refresh the committed inventory in the same commit as any staged tracked-file
+# additions, removals, or renames. The snapshot includes aggregate counts for
+# Rust-family files too, so filtering to non-Rust extensions would leave the
+# same drift path open. The generator reads the index through `git ls-files`,
+# preserving the exact tree that the commit gate will inspect. Refuse to
+# overwrite a separately edited snapshot; the contributor can stage or discard
+# that edit explicitly before retrying.
+STAGED_INVENTORY_PATHS=""
+while IFS= read -r staged_path; do
+    [ -z "$staged_path" ] && continue
+    case "$staged_path" in
+        docs/policy/NON_RUST_INVENTORY.md)
+            ;;
+        *)
+            STAGED_INVENTORY_PATHS="${STAGED_INVENTORY_PATHS}${staged_path}\n"
+            ;;
+    esac
+done < <(git diff --cached --name-only --diff-filter=ADR)
+
+if [ -n "$STAGED_INVENTORY_PATHS" ]; then
+    if ! git diff --quiet -- docs/policy/NON_RUST_INVENTORY.md; then
+        echo "❌ Cannot refresh non-Rust inventory: docs/policy/NON_RUST_INVENTORY.md has unstaged edits"
+        echo "   Stage or discard those edits, then retry the commit."
+        exit 1
+    fi
+    echo "Refreshing staged tracked-file inventory for:"
+    printf '   %b' "$STAGED_INVENTORY_PATHS"
+    cargo xtask non-rust inventory --write
+    git add -- docs/policy/NON_RUST_INVENTORY.md
+fi
+
 echo "Running exact staged commit gate: cargo xtask precommit"
 cargo xtask precommit
 "#;
@@ -476,6 +507,19 @@ mod tests {
         Ok(path)
     }
 
+    fn run_git(repo: &Path, args: &[&str]) -> Result<()> {
+        let output = Command::new("git").current_dir(repo).args(args).output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(color_eyre::eyre::eyre!(
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
+    }
+
     #[test]
     fn pre_commit_guard_precedes_exact_staged_gate() -> Result<()> {
         let hook = pre_commit_hook_script();
@@ -519,6 +563,28 @@ mod tests {
     }
 
     #[test]
+    fn pre_commit_refreshes_inventory_after_staged_tracked_changes() -> Result<()> {
+        let hook = pre_commit_hook_script();
+        let refresh = hook
+            .find("git diff --cached --name-only --diff-filter=ADR")
+            .ok_or_else(|| color_eyre::eyre::eyre!("staged inventory change scan missing"))?;
+        let write = hook
+            .find("cargo xtask non-rust inventory --write")
+            .ok_or_else(|| color_eyre::eyre::eyre!("inventory refresh missing"))?;
+        let stage = hook
+            .find("git add -- docs/policy/NON_RUST_INVENTORY.md")
+            .ok_or_else(|| color_eyre::eyre::eyre!("refreshed inventory is not staged"))?;
+        let gate = hook
+            .find("cargo xtask precommit")
+            .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
+        assert!(refresh < write);
+        assert!(write < stage);
+        assert!(stage < gate);
+        assert!(hook.contains("has unstaged edits"));
+        Ok(())
+    }
+
+    #[test]
     fn installed_hook_check_detects_current_and_stale_versions() -> Result<()> {
         let repo = temp_repo()?;
         cmd_install_githooks(&repo)?;
@@ -542,6 +608,89 @@ mod tests {
         fs::set_permissions(hooks_dir.join("pre-commit"), fs::Permissions::from_mode(0o644))?;
         assert_eq!(check_githooks(&repo)?, 1);
         fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    #[test]
+    fn pre_commit_executes_inventory_refresh_for_staged_tracked_paths() -> Result<()> {
+        use color_eyre::eyre::ensure;
+
+        let repo = temp_repo()?;
+        run_git(&repo, &["config", "user.email", "test@example.com"])?;
+        run_git(&repo, &["config", "user.name", "hook test"])?;
+        fs::write(repo.join("README.md"), "baseline\n")?;
+        run_git(&repo, &["add", "README.md"])?;
+        run_git(&repo, &["commit", "-qm", "baseline"])?;
+
+        let bin = repo.join("fake-bin");
+        fs::create_dir_all(&bin)?;
+        let log = repo.join("cargo.log");
+        let fake_cargo = bin.join("cargo");
+        fs::write(
+            &fake_cargo,
+            "#!/usr/bin/env bash\n\
+             printf '%s\\n' \"$*\" >> \"$FAKE_CARGO_LOG\"\n\
+             if [ \"$2\" = non-rust ]; then\n\
+               mkdir -p docs/policy\n\
+               printf '# refreshed\\n' > docs/policy/NON_RUST_INVENTORY.md\n\
+             fi\n",
+        )?;
+        #[cfg(unix)]
+        fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755))?;
+
+        let hook = repo.join("pre-commit");
+        fs::write(&hook, pre_commit_hook_script())?;
+        #[cfg(unix)]
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
+        fs::write(repo.join("fixture.json"), "{}\n")?;
+        run_git(&repo, &["add", "fixture.json"])?;
+
+        let bash = [
+            PathBuf::from("bash"),
+            PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+            PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        ]
+        .into_iter()
+        .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("bash is required for staged hook semantics test")
+        })?;
+        let path_var = if cfg!(windows) {
+            format!("{};{}", bin.display(), std::env::var("PATH")?)
+        } else {
+            format!("{}:{}", bin.display(), std::env::var("PATH")?)
+        };
+        let output = Command::new(bash)
+            .arg(&hook)
+            .current_dir(&repo)
+            .env("PATH", path_var)
+            .env("FAKE_CARGO_LOG", &log)
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "staged inventory hook failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let calls = fs::read_to_string(&log)?;
+        assert!(calls.contains("xtask non-rust inventory --write"));
+        assert_eq!(
+            String::from_utf8(
+                Command::new("git")
+                    .current_dir(&repo)
+                    .args([
+                        "diff",
+                        "--cached",
+                        "--name-only",
+                        "--",
+                        "docs/policy/NON_RUST_INVENTORY.md",
+                    ])
+                    .output()?
+                    .stdout,
+            )?
+            .trim(),
+            "docs/policy/NON_RUST_INVENTORY.md"
+        );
+
         Ok(())
     }
 }

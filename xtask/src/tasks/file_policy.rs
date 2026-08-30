@@ -536,9 +536,10 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
         );
     }
     if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
+        let path_delta = inventory_path_delta(&actual, &expected);
         bail!(
-            "non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory --write` to regenerate it",
-            docs_path.display()
+            "non-Rust inventory documentation is stale at {}; {path_delta}; run `cargo xtask non-rust inventory --write` to regenerate it",
+            docs_path.display(),
         );
     }
     println!("Non-Rust inventory scan completed: {}", docs_path.display());
@@ -593,6 +594,35 @@ fn added_paths_since(root: &Path, baseline: &str) -> Result<Vec<String>> {
 
 fn normalize_line_endings(value: &str) -> String {
     value.replace("\r\n", "\n")
+}
+
+fn inventory_row_paths(markdown: &str) -> std::collections::BTreeSet<String> {
+    markdown
+        .lines()
+        .filter_map(|line| {
+            let cell = line.trim().strip_prefix("| ")?.split('|').next()?.trim();
+            Some(cell.strip_prefix('`')?.strip_suffix('`')?.to_string())
+        })
+        .collect()
+}
+
+fn inventory_path_delta(actual: &str, expected: &str) -> String {
+    let actual = inventory_row_paths(actual);
+    let expected = inventory_row_paths(expected);
+    let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
+    let unexpected = actual.difference(&expected).cloned().collect::<Vec<_>>();
+    let mut details = Vec::new();
+    if !missing.is_empty() {
+        details.push(format!("missing generated paths: {}", missing.join(", ")));
+    }
+    if !unexpected.is_empty() {
+        details.push(format!("paths no longer generated: {}", unexpected.join(", ")));
+    }
+    if details.is_empty() {
+        "the row paths match but summary or metadata changed".to_string()
+    } else {
+        details.join("; ")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2568,6 +2598,15 @@ mod tests {
             "unexpected stale-inventory error: {error}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn inventory_path_delta_reports_exact_added_and_removed_rows() {
+        let actual = "| `docs/old.md` | documentation | `old` | owner |\n";
+        let expected = "| `docs/new.md` | documentation | `new` | owner |\n";
+        let delta = inventory_path_delta(actual, expected);
+        assert!(delta.contains("missing generated paths: docs/new.md"));
+        assert!(delta.contains("paths no longer generated: docs/old.md"));
     }
 
     #[test]
