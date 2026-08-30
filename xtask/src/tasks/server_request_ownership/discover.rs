@@ -3,18 +3,31 @@
 //! Discovery is source-derived rather than hand-listed so a newly added request
 //! shows up here without anyone remembering to extend a list. The direction
 //! registry stays the classification authority; this module only reads it.
+//!
+//! Every reader here is written to fail closed. A call it cannot parse, a
+//! forwarding site it cannot attribute to a declared forwarding signature, and
+//! a catalog it cannot deserialize are all findings — never silent skips.
 
 use super::model::{Discovered, RegistryKind, Violation};
 use color_eyre::eyre::{Result, WrapErr};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Call shapes that emit a server-initiated request.
 const REQUEST_TRIGGERS: &[&str] = &[".send_request(", ".send_request_internal("];
 
+/// A function whose signature takes the method from its caller is the only
+/// admitted forwarding shape. Anything else that fails to resolve is a finding.
+const FORWARDED_METHOD_PARAM: &str = "method: &str";
+
 /// Return the top-level, comma-separated arguments that follow an already
 /// consumed `(`, stopping at its matching `)`.
-fn top_level_args(after_open_paren: &str) -> Vec<&str> {
+///
+/// Returns `None` when the matching `)` is not found. A truncated argument list
+/// must never be mistaken for a complete one: that is how a wrapped call
+/// silently leaves the denominator.
+fn top_level_args(after_open_paren: &str) -> Option<Vec<&str>> {
     let mut args = Vec::new();
     let mut depth = 0i32;
     let mut start = 0usize;
@@ -37,7 +50,7 @@ fn top_level_args(after_open_paren: &str) -> Vec<&str> {
             '(' | '[' | '{' => depth += 1,
             ')' if depth == 0 => {
                 args.push(&after_open_paren[start..index]);
-                return args;
+                return Some(args);
             }
             ')' | ']' | '}' => depth -= 1,
             ',' if depth == 0 => {
@@ -47,7 +60,7 @@ fn top_level_args(after_open_paren: &str) -> Vec<&str> {
             _ => {}
         }
     }
-    args
+    None
 }
 
 /// Extract the string literal an argument consists of, if it is one.
@@ -80,7 +93,6 @@ fn strip_test_modules(source: &str) -> String {
         out.push_str(&rest[..offset]);
         let tail = &rest[offset..];
         let Some(brace) = tail.find('{') else {
-            // No block follows; keep nothing further from this point.
             return out;
         };
         let mut depth = 0i32;
@@ -107,6 +119,65 @@ fn strip_test_modules(source: &str) -> String {
     out
 }
 
+/// Blank out whole-line comments, preserving byte offsets so call positions
+/// stay valid. This keeps a doc comment that mentions a send helper from
+/// registering as an emission site.
+fn blank_line_comments(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("//") {
+                " ".repeat(line.len())
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One `fn` declaration: where it starts, its name, and whether it takes the
+/// method from its caller.
+struct FnDecl {
+    offset: usize,
+    name: String,
+    forwards_method: bool,
+}
+
+/// Collect every `fn` declaration with its signature disposition.
+fn fn_declarations(source: &str) -> Vec<FnDecl> {
+    let mut decls = Vec::new();
+    let mut from = 0usize;
+
+    while let Some(found) = source[from..].find("fn ") {
+        let start = from + found;
+        let preceding = source[..start].chars().next_back();
+        // Skip a match inside a longer identifier (e.g. `into_fn `).
+        if preceding.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            from = start + 3;
+            continue;
+        }
+        let after = &source[start + 3..];
+        let name: String =
+            after.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        let forwards_method = after
+            .find('(')
+            .and_then(|open| top_level_args(&after[open + 1..]))
+            .is_some_and(|args| args.iter().any(|arg| arg.contains(FORWARDED_METHOD_PARAM)));
+
+        if !name.is_empty() {
+            decls.push(FnDecl { offset: start, name, forwards_method });
+        }
+        from = start + 3;
+    }
+    decls
+}
+
+/// The declaration a byte offset sits inside: the last one declared before it.
+fn enclosing_fn(decls: &[FnDecl], offset: usize) -> Option<&FnDecl> {
+    decls.iter().rev().find(|decl| decl.offset < offset)
+}
+
 /// Parse `pub const NAME: &str = "value";` declarations into a lookup table.
 fn method_constants(source: &str) -> BTreeMap<String, String> {
     let mut constants = BTreeMap::new();
@@ -124,27 +195,42 @@ fn method_constants(source: &str) -> BTreeMap<String, String> {
 ///
 /// Entries are `c2s(..)`, `s2c(..)`, or `ext(..)` constructor calls; `s2c` is
 /// server-to-client by construction and `ext` names its direction explicitly.
+/// Parsing stops at the table's closing `];` so a later test fixture in the
+/// same file cannot inject phantom rows.
 pub(super) fn parse_direction_registry(source: &str) -> BTreeMap<String, RegistryKind> {
     let mut out = BTreeMap::new();
     let Some(start) = source.find("REGISTRY: &[MethodDescriptor] = &[") else {
         return out;
     };
-    let body = &source[start..];
+    let open = start + "REGISTRY: &[MethodDescriptor] = &[".len();
+    // Bound the scan to the table literal itself.
+    let mut depth = 0i32;
+    let mut end = source.len();
+    for (index, ch) in source[open..].char_indices() {
+        match ch {
+            '[' | '(' => depth += 1,
+            ')' => depth -= 1,
+            ']' if depth == 0 => {
+                end = open + index;
+                break;
+            }
+            ']' => depth -= 1,
+            _ => {}
+        }
+    }
+    let body = &source[open..end];
 
-    // `s2c` is server-to-client by construction, `c2s` client-to-server, and
-    // `ext` names its direction in an argument.
     for (name, implied) in [("s2c(", Some(false)), ("c2s(", Some(true)), ("ext(", None)] {
         let mut from = 0usize;
         while let Some(offset) = body[from..].find(name) {
-            let open = from + offset + name.len();
-            // Reject a match that is part of a longer identifier.
+            let call_open = from + offset + name.len();
             let preceding = body[..from + offset].chars().next_back();
             if preceding.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
-                from = open;
+                from = call_open;
                 continue;
             }
-            let args = top_level_args(&body[open..]);
-            from = open;
+            from = call_open;
+            let Some(args) = top_level_args(&body[call_open..]) else { continue };
             let Some(method) = args.first().and_then(|arg| string_literal(arg)) else { continue };
 
             let notification = args.iter().any(|arg| arg.contains("EnvelopeKind::Notification"));
@@ -168,9 +254,10 @@ pub(super) fn parse_direction_registry(source: &str) -> BTreeMap<String, Registr
 
 /// Scan production runtime sources for server-request emission call sites.
 ///
-/// Returns the discovered method -> emitting paths map plus any call site whose
-/// method argument could not be resolved. An unresolved site is a finding, not
-/// a silent skip: an unreadable emission surface must not read as "no emitter".
+/// Each discovered site is attributed to the function that contains it, so the
+/// matrix can be required to cite the exact emitting symbol. A call whose
+/// arguments cannot be parsed to their matching `)`, or whose method cannot be
+/// resolved outside a declared forwarding signature, is a finding.
 pub(super) fn scan_emission(
     repo_root: &Path,
     scan_root: &str,
@@ -201,90 +288,106 @@ pub(super) fn scan_emission(
             .map_or_else(|_| path.display().to_string(), |p| p.display().to_string());
         let source = std::fs::read_to_string(&path)
             .wrap_err_with(|| format!("reading emission source {relative}"))?;
-        let stripped = strip_test_modules(&source);
-        let lines: Vec<&str> = stripped.lines().collect();
+        let stripped = blank_line_comments(&strip_test_modules(&source));
+        let decls = fn_declarations(&stripped);
 
-        for (index, line) in lines.iter().enumerate() {
-            // A call may wrap; join the next two lines so its arguments are visible.
-            let mut window = String::from(*line);
-            for follow in lines.iter().skip(index + 1).take(2) {
-                window.push(' ');
-                window.push_str(follow);
-            }
+        for trigger in REQUEST_TRIGGERS {
+            let mut from = 0usize;
+            while let Some(offset) = stripped[from..].find(trigger) {
+                let open = from + offset + trigger.len();
+                from = open;
 
-            for trigger in REQUEST_TRIGGERS {
-                let mut from = 0usize;
-                while let Some(offset) = line[from..].find(trigger) {
-                    let open = from + offset + trigger.len();
-                    from = open;
-                    let args = top_level_args(&window[open.min(window.len())..]);
-                    if args.is_empty() {
-                        continue;
-                    }
+                // Parse to the matching `)` over the whole remaining source, so
+                // a call spread across any number of lines is still complete.
+                let Some(args) = top_level_args(&stripped[open..]) else {
+                    violations.push(Violation::new(
+                        "emission-unresolved",
+                        relative.clone(),
+                        "a server-request send site's argument list has no matching `)`; \
+                         emission discovery is incomplete and cannot be read as complete",
+                    ));
+                    continue;
+                };
 
-                    // The method is the first argument that is a literal or a
-                    // resolvable protocol constant; ids and params may precede it.
-                    let resolved = args.iter().find_map(|arg| {
-                        string_literal(arg).or_else(|| {
-                            plain_identifier(arg)
-                                .filter(|ident| {
-                                    ident.len() > 3
-                                        && ident.chars().all(|c| c.is_ascii_uppercase() || c == '_')
-                                })
-                                .and_then(|ident| constants.get(ident).cloned())
-                        })
-                    });
+                // The method is the first argument that is a literal or a
+                // resolvable protocol constant; ids and params may precede it.
+                let resolved = args.iter().find_map(|arg| {
+                    string_literal(arg).or_else(|| {
+                        plain_identifier(arg)
+                            .filter(|ident| {
+                                ident.len() > 3
+                                    && ident.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+                            })
+                            .and_then(|ident| constants.get(ident).cloned())
+                    })
+                });
 
-                    match resolved {
-                        Some(method) => {
-                            let entry = emitted.entry(method).or_default();
-                            if !entry.contains(&relative) {
-                                entry.push(relative.clone());
-                            }
+                let symbol = enclosing_fn(&decls, open);
+                match resolved {
+                    Some(method) => {
+                        let owner = symbol.map_or("<unknown>", |decl| decl.name.as_str());
+                        let reference = format!("{relative}#{owner}");
+                        let entry = emitted.entry(method).or_default();
+                        if !entry.contains(&reference) {
+                            entry.push(reference);
                         }
-                        None if args.iter().all(|arg| plain_identifier(arg).is_some()) => {
-                            // Pure forwarding plumbing (`send_request(method, params)`).
-                        }
-                        None => violations.push(Violation::new(
-                            "emission-unresolved",
-                            relative.clone(),
-                            "a server-request send site's method argument could not be resolved; \
-                             emission discovery is incomplete and cannot be read as complete",
-                        )),
                     }
+                    // The only admitted unresolved shape is a function that
+                    // declares the method as its own caller-supplied parameter.
+                    None if symbol.is_some_and(|decl| decl.forwards_method) => {}
+                    None => violations.push(Violation::new(
+                        "emission-unresolved",
+                        relative.clone(),
+                        format!(
+                            "a server-request send site in `{}` names no resolvable method and \
+                             is not a declared `{FORWARDED_METHOD_PARAM}` forwarder",
+                            symbol.map_or("<unknown>", |decl| decl.name.as_str())
+                        ),
+                    )),
                 }
             }
         }
     }
 
+    for paths in emitted.values_mut() {
+        paths.sort();
+        paths.dedup();
+    }
     Ok((emitted, violations))
+}
+
+/// Minimal typed view of `features.toml`. Unknown fields are ignored; the
+/// catalog carries many columns this join does not consume.
+#[derive(Debug, Deserialize)]
+struct FeatureCatalog {
+    #[serde(default)]
+    feature: Vec<FeatureRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FeatureRow {
+    id: String,
+    #[serde(default)]
+    spec: String,
+    #[serde(default)]
+    direction: String,
 }
 
 /// Collect `features.toml` rows declaring `direction = "server_to_client"`,
 /// mapped to their declared `spec`.
-pub(super) fn parse_feature_catalog(source: &str) -> BTreeMap<String, String> {
-    let mut rows = BTreeMap::new();
-    for block in source.split("[[feature]]") {
-        if !block.contains("direction = \"server_to_client\"") {
-            continue;
-        }
-        let mut id = None;
-        let mut spec = String::new();
-        for line in block.lines() {
-            let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix("id = \"") {
-                id = rest.strip_suffix('"').map(str::to_string);
-            } else if let Some(rest) = trimmed.strip_prefix("spec = \"") {
-                if let Some(value) = rest.strip_suffix('"') {
-                    spec = value.to_string();
-                }
-            }
-        }
-        if let Some(id) = id {
-            rows.insert(id, spec);
-        }
-    }
-    rows
+///
+/// Parsed as real TOML: a substring scan would classify a row whose prose
+/// merely quotes the direction key, and would drop a real row whose spelling or
+/// spacing differs.
+pub(super) fn parse_feature_catalog(source: &str) -> Result<BTreeMap<String, String>> {
+    let catalog: FeatureCatalog =
+        toml::from_str(source).wrap_err("parsing the feature catalog as TOML")?;
+    Ok(catalog
+        .feature
+        .into_iter()
+        .filter(|row| row.direction == "server_to_client")
+        .map(|row| (row.id, row.spec))
+        .collect())
 }
 
 /// Join all three surfaces.
@@ -309,7 +412,7 @@ pub(super) fn discover(
         Discovered {
             registry: parse_direction_registry(&registry_source),
             emitted,
-            catalog_rows: parse_feature_catalog(&catalog_source),
+            catalog_rows: parse_feature_catalog(&catalog_source)?,
         },
         violations,
     ))

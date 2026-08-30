@@ -72,7 +72,10 @@ fn agreeing_discovery() -> Discovered {
     let mut emitted = BTreeMap::new();
     emitted.insert(
         "workspace/codeLens/refresh".to_string(),
-        vec!["crates/perl-lsp-rs/src/runtime/client_requests.rs".to_string()],
+        vec![
+            "crates/perl-lsp-rs/src/runtime/client_requests.rs#request_code_lens_refresh"
+                .to_string(),
+        ],
     );
     let mut catalog_rows = BTreeMap::new();
     catalog_rows.insert("lsp.code_lens_refresh".to_string(), "LSP 3.16".to_string());
@@ -258,6 +261,33 @@ fn a_stale_emitter_symbol_fails() {
     assert!(rules(vec![row], &agreeing_discovery()).contains(&"emitter-symbol-stale"));
 }
 
+/// Citing a symbol that really exists in the file but emits a different method
+/// must not satisfy the row. Path-level presence is not ownership.
+#[test]
+fn a_real_but_wrong_emitter_symbol_fails() {
+    let mut row = passing_row();
+    row.emitters = vec![
+        "crates/perl-lsp-rs/src/runtime/client_requests.rs#request_inlay_hint_refresh".to_string(),
+    ];
+    let found = rules(vec![row], &agreeing_discovery());
+    assert!(
+        found.contains(&"emitter-not-discovered"),
+        "a real symbol emitting another method must not satisfy this row: {found:?}"
+    );
+}
+
+/// A second path that emits the method must be cited; omitting it silently
+/// leaves the row's ownership claim incomplete.
+#[test]
+fn an_uncited_second_emitter_fails() {
+    let mut discovered = agreeing_discovery();
+    if let Some(paths) = discovered.emitted.get_mut("workspace/codeLens/refresh") {
+        paths.push("crates/perl-lsp-rs/src/runtime/window.rs#another_emitter".to_string());
+    }
+    let found = rules(vec![passing_row()], &discovered);
+    assert!(found.contains(&"emitter-uncited"), "an uncited emitting path must fail: {found:?}");
+}
+
 // ── Negative controls: credit and proof ─────────────────────────────────
 
 #[test]
@@ -293,7 +323,10 @@ fn a_selected_318_surface_may_not_claim_stable_317() {
     discovered.catalog_rows.insert("lsp.folding_range_refresh".to_string(), "LSP 3.18".to_string());
     discovered.emitted.insert(
         "workspace/foldingRange/refresh".to_string(),
-        vec!["crates/perl-lsp-rs/src/runtime/client_requests.rs".to_string()],
+        vec![
+            "crates/perl-lsp-rs/src/runtime/client_requests.rs#request_folding_range_refresh"
+                .to_string(),
+        ],
     );
 
     let mut row = passing_row();
@@ -310,6 +343,57 @@ fn a_selected_318_surface_may_not_claim_stable_317() {
         rules(vec![row], &discovered).contains(&"baseline-understated"),
         "3.18-selected evidence must not be silently counted as stable 3.17"
     );
+}
+
+/// Editing only the matrix side must not demote a 3.18 surface. The catalog's
+/// spec is authoritative, so changing `spec` AND `protocol_baseline` together
+/// still fails — this is the evasion an existence-only catalog join allowed.
+#[test]
+fn demoting_a_318_surface_on_the_matrix_side_alone_fails() {
+    let mut discovered = agreeing_discovery();
+    discovered
+        .registry
+        .insert("workspace/foldingRange/refresh".to_string(), RegistryKind::ServerToClientRequest);
+    discovered.catalog_rows.insert("lsp.folding_range_refresh".to_string(), "LSP 3.18".to_string());
+    discovered.emitted.insert(
+        "workspace/foldingRange/refresh".to_string(),
+        vec![
+            "crates/perl-lsp-rs/src/runtime/client_requests.rs#request_folding_range_refresh"
+                .to_string(),
+        ],
+    );
+
+    let mut row = passing_row();
+    row.method = "workspace/foldingRange/refresh".to_string();
+    // Both matrix-side fields say 3.17 while the catalog still says 3.18.
+    row.spec = "LSP 3.17".to_string();
+    row.protocol_baseline = "stable_3_17".to_string();
+    row.feature_catalog_row = "lsp.folding_range_refresh".to_string();
+    row.emitters = vec![
+        "crates/perl-lsp-rs/src/runtime/client_requests.rs#request_folding_range_refresh"
+            .to_string(),
+    ];
+
+    let found = rules(vec![row], &discovered);
+    assert!(
+        found.contains(&"catalog-spec-mismatch"),
+        "the catalog's spec must be consumed, not just its key: {found:?}"
+    );
+    assert!(
+        found.contains(&"baseline-understated"),
+        "the 3.18 boundary must derive from the catalog spec: {found:?}"
+    );
+}
+
+/// Pointing a row at an unrelated but existing server-to-client catalog row
+/// must fail on the spec it actually records.
+#[test]
+fn citing_an_unrelated_catalog_row_fails() {
+    let mut discovered = agreeing_discovery();
+    discovered.catalog_rows.insert("lsp.inlay_hint_refresh".to_string(), "LSP 3.17".to_string());
+    let mut row = passing_row();
+    row.feature_catalog_row = "lsp.inlay_hint_refresh".to_string();
+    assert!(rules(vec![row], &discovered).contains(&"catalog-spec-mismatch"));
 }
 
 #[test]
@@ -428,14 +512,135 @@ fn emission_discovery_resolves_constants_and_ignores_test_modules()
     Ok(())
 }
 
+/// Write a synthetic runtime tree and scan it.
+fn scan_synthetic(
+    source: &str,
+) -> Result<(BTreeMap<String, Vec<String>>, Vec<String>), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(&runtime)?;
+    std::fs::write(runtime.join("synthetic.rs"), source)?;
+
+    let mut constants = BTreeMap::new();
+    constants.insert("WORKSPACE_APPLY_EDIT".to_string(), "workspace/applyEdit".to_string());
+
+    let (emitted, findings) = scan_emission(dir.path(), "src/runtime", &constants)?;
+    Ok((emitted, findings.into_iter().map(|finding| finding.rule.to_string()).collect()))
+}
+
+/// The scanner parses to the matching `)`, not to a line budget. A normally
+/// formatted call whose method argument sits on the fourth line must still be
+/// discovered — the bounded-window version silently dropped it, because the
+/// visible arguments were all plain identifiers and read as forwarding.
+#[test]
+fn a_call_wrapped_beyond_three_lines_is_still_discovered() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (emitted, findings) = scan_synthetic(
+        r"
+impl Server {
+    pub fn emit_wrapped(&self) {
+        self.send_request_internal(
+            id,
+            params,
+            WORKSPACE_APPLY_EDIT,
+        );
+    }
+}
+",
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/applyEdit").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#emit_wrapped".to_string()].as_slice()),
+        "a call whose method sits past the third line must still be attributed"
+    );
+    assert!(findings.is_empty(), "a resolvable wrapped call is not a finding: {findings:?}");
+    Ok(())
+}
+
+/// A send whose method cannot be resolved fails closed unless the enclosing
+/// function declares the method as its own caller-supplied parameter.
+#[test]
+fn an_unresolvable_send_outside_a_declared_forwarder_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r"
+impl Server {
+    pub fn emit_dynamic(&self) {
+        let chosen = pick();
+        self.send_request(chosen, params);
+    }
+}
+",
+    )?;
+
+    assert!(emitted.is_empty());
+    assert!(
+        findings.contains(&"emission-unresolved".to_string()),
+        "an unattributable send must be a finding, not a silent skip: {findings:?}"
+    );
+    Ok(())
+}
+
+/// The forwarding exemption is closed: it applies only to a function whose own
+/// signature takes `method: &str`, not to any call passing bare identifiers.
+#[test]
+fn a_declared_forwarder_is_exempt() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r"
+impl Server {
+    fn send_request_internal(&self, method: &str, params: Value) -> io::Result<()> {
+        self.send_request(method, params).map(|_| ())
+    }
+}
+",
+    )?;
+
+    assert!(emitted.is_empty());
+    assert!(findings.is_empty(), "a declared forwarder is not a finding: {findings:?}");
+    Ok(())
+}
+
 #[test]
 fn the_feature_catalog_parser_selects_only_server_rows() -> Result<(), Box<dyn std::error::Error>> {
     let source = std::fs::read_to_string(repo_root().join("features.toml"))?;
-    let rows = parse_feature_catalog(&source);
+    let rows = parse_feature_catalog(&source)?;
     assert!(rows.contains_key("lsp.code_lens_refresh"));
+    assert_eq!(rows.get("lsp.code_lens_refresh").map(String::as_str), Some("LSP 3.16"));
     assert!(
         !rows.contains_key("lsp.hover"),
         "client-to-server rows must not enter the server-request catalog view"
+    );
+    Ok(())
+}
+
+/// The catalog is parsed as TOML, not scanned for a substring. A row whose
+/// prose quotes the direction key must not be classified as a server row, and
+/// a real row whose formatting differs must still be found.
+#[test]
+fn the_catalog_parser_reads_the_direction_key_not_prose() -> Result<(), Box<dyn std::error::Error>>
+{
+    let source = r#"
+[[feature]]
+id = "lsp.prose_only"
+spec = "LSP 3.0"
+direction = "client_to_server"
+description = "uses direction = \"server_to_client\" semantics internally"
+
+[[feature]]
+id = "lsp.oddly_spaced"
+spec   =    "LSP 3.17"
+direction="server_to_client"
+"#;
+    let rows = parse_feature_catalog(source)?;
+    assert!(
+        !rows.contains_key("lsp.prose_only"),
+        "a description quoting the direction key must not create a server row"
+    );
+    assert_eq!(
+        rows.get("lsp.oddly_spaced").map(String::as_str),
+        Some("LSP 3.17"),
+        "a real server row must survive different spacing and quoting"
     );
     Ok(())
 }

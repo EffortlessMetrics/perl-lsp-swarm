@@ -262,43 +262,80 @@ fn check_row(
                 format!("`{path}` no longer defines `{symbol}`"),
             ));
         }
-        if discovered_paths.is_some_and(|paths| !paths.iter().any(|p| p == path)) {
+    }
+
+    // The cited emitter set must equal the discovered one. Citing a real symbol
+    // that does not emit this method, or leaving a second emitting path
+    // uncited, both leave the row's ownership claim untrue.
+    let discovered_refs: Vec<&String> =
+        discovered_paths.map(Vec::as_slice).unwrap_or(&[]).iter().collect();
+    for cited in &row.emitters {
+        if !discovered_refs.iter().any(|found| *found == cited) {
             violations.push(Violation::new(
                 "emitter-not-discovered",
                 &row.id,
                 format!(
-                    "`{path}` is cited as an emitter of `{}` but the emission scan found no such \
-                     call site there",
+                    "`{cited}` is cited as an emitter of `{}` but the emission scan attributes no \
+                     such call site to that symbol",
                     row.method
                 ),
             ));
         }
     }
+    for found in &discovered_refs {
+        if !row.emitters.iter().any(|cited| &cited == found) {
+            violations.push(Violation::new(
+                "emitter-uncited",
+                &row.id,
+                format!("`{found}` emits `{}` but the row does not cite it", row.method),
+            ));
+        }
+    }
 
     // ── Feature catalog join ─────────────────────────────────────────────
-    if row.feature_catalog_row != "none"
-        && !discovered.catalog_rows.contains_key(&row.feature_catalog_row)
-    {
-        violations.push(Violation::new(
-            "catalog-row-unknown",
-            &row.id,
-            format!(
-                "`{}` is not a server-to-client row in `{}`",
-                row.feature_catalog_row, meta.feature_catalog
-            ),
-        ));
+    // The catalog's own spec is consumed, not merely its key: a row may not
+    // restate a version the catalog contradicts.
+    let catalog_spec = discovered.catalog_rows.get(&row.feature_catalog_row);
+    if row.feature_catalog_row != "none" {
+        match catalog_spec {
+            None => violations.push(Violation::new(
+                "catalog-row-unknown",
+                &row.id,
+                format!(
+                    "`{}` is not a server-to-client row in `{}`",
+                    row.feature_catalog_row, meta.feature_catalog
+                ),
+            )),
+            Some(spec) if !spec.is_empty() && spec != &row.spec => {
+                violations.push(Violation::new(
+                    "catalog-spec-mismatch",
+                    &row.id,
+                    format!(
+                        "the row claims spec `{}` but `{}` records `{spec}` for `{}`",
+                        row.spec, meta.feature_catalog, row.feature_catalog_row
+                    ),
+                ));
+            }
+            Some(_) => {}
+        }
     }
 
     // ── Protocol baseline ────────────────────────────────────────────────
-    // A selected 3.18 surface may never inherit stable-3.17 status.
-    let spec_is_318 = row.spec.contains("3.18") || row.spec.contains("@proposed");
+    // A selected 3.18 surface may never inherit stable-3.17 status. The
+    // catalog's spec is authoritative where it exists, so editing only the
+    // matrix side cannot demote a 3.18 surface.
+    let authoritative_spec =
+        catalog_spec.filter(|spec| !spec.is_empty()).unwrap_or(&row.spec).clone();
+    let spec_is_318 =
+        authoritative_spec.contains("3.18") || authoritative_spec.contains("@proposed");
     if spec_is_318 && row.protocol_baseline != "selected_3_18" {
         violations.push(Violation::new(
             "baseline-understated",
             &row.id,
             format!(
-                "spec `{}` is a selected 3.18 surface but the row claims baseline `{}`",
-                row.spec, row.protocol_baseline
+                "spec `{authoritative_spec}` is a selected 3.18 surface but the row claims \
+                 baseline `{}`",
+                row.protocol_baseline
             ),
         ));
     }
