@@ -123,6 +123,60 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Consume one assignment operator, including Perl's identifier-shaped `x=`.
+    ///
+    /// The lexer intentionally keeps `x` contextual, so contiguous `x=` arrives as
+    /// an `Identifier("x")` followed by `Assign`. Exact source adjacency is required:
+    /// Perl accepts `$value x= 3` but not `$value x = 3`.
+    fn consume_assignment_operator(&mut self) -> ParseResult<Option<(&'static str, usize)>> {
+        if let Some(kind) = self.peek_kind() {
+            let op = match kind {
+                TokenKind::Assign => Some("="),
+                TokenKind::PlusAssign => Some("+="),
+                TokenKind::MinusAssign => Some("-="),
+                TokenKind::StarAssign => Some("*="),
+                TokenKind::SlashAssign => Some("/="),
+                TokenKind::PercentAssign => Some("%="),
+                TokenKind::DotAssign => Some(".="),
+                TokenKind::AndAssign => Some("&="),
+                TokenKind::OrAssign => Some("|="),
+                TokenKind::XorAssign => Some("^="),
+                TokenKind::PowerAssign => Some("**="),
+                TokenKind::LeftShiftAssign => Some("<<="),
+                TokenKind::RightShiftAssign => Some(">>="),
+                TokenKind::LogicalAndAssign => Some("&&="),
+                TokenKind::LogicalOrAssign => Some("||="),
+                TokenKind::DefinedOrAssign => Some("//="),
+                _ => None,
+            };
+
+            if let Some(op) = op {
+                let token = self.tokens.next()?;
+                return Ok(Some((op, token.start())));
+            }
+        }
+
+        if self.peek_kind() == Some(TokenKind::Identifier) {
+            let (is_repetition, start, end) = {
+                let token = self.tokens.peek()?;
+                (token.text.as_ref() == "x", token.start(), token.end())
+            };
+            let adjacent_assign = is_repetition
+                && self
+                    .tokens
+                    .peek_second()
+                    .is_ok_and(|token| token.kind() == TokenKind::Assign && token.start() == end);
+
+            if adjacent_assign {
+                self.tokens.next()?; // consume x
+                self.tokens.next()?; // consume =
+                return Ok(Some(("x=", start)));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Parse assignment expression
     fn parse_assignment(&mut self) -> ParseResult<Node> {
         if let Some(kind) = self.peek_kind() {
@@ -153,50 +207,26 @@ impl<'a> Parser<'a> {
 
         let mut expr = self.parse_ternary()?;
 
-        // Check for assignment operators
-        if let Some(kind) = self.peek_kind() {
-            let op = match kind {
-                TokenKind::Assign => Some("="),
-                TokenKind::PlusAssign => Some("+="),
-                TokenKind::MinusAssign => Some("-="),
-                TokenKind::StarAssign => Some("*="),
-                TokenKind::SlashAssign => Some("/="),
-                TokenKind::PercentAssign => Some("%="),
-                TokenKind::DotAssign => Some(".="),
-                TokenKind::AndAssign => Some("&="),
-                TokenKind::OrAssign => Some("|="),
-                TokenKind::XorAssign => Some("^="),
-                TokenKind::PowerAssign => Some("**="),
-                TokenKind::LeftShiftAssign => Some("<<="),
-                TokenKind::RightShiftAssign => Some(">>="),
-                TokenKind::LogicalAndAssign => Some("&&="),
-                TokenKind::LogicalOrAssign => Some("||="),
-                TokenKind::DefinedOrAssign => Some("//="),
-                _ => None,
+        if let Some((op, op_start)) = self.consume_assignment_operator()? {
+            // The RHS can be a 'not' expression, or missing (recovery)
+            let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
+                missing
+            } else if self.peek_kind() == Some(TokenKind::WordNot) {
+                self.parse_word_not_expr()?
+            } else {
+                self.parse_assignment()?
             };
+            let start = expr.location.start;
+            let end = rhs.location.end;
 
-            if let Some(op) = op {
-                let op_token = self.tokens.next()?; // consume operator
-                // The RHS can be a 'not' expression, or missing (recovery)
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
-                    missing
-                } else if self.peek_kind() == Some(TokenKind::WordNot) {
-                    self.parse_word_not_expr()?
-                } else {
-                    self.parse_assignment()?
-                };
-                let start = expr.location.start;
-                let end = rhs.location.end;
-
-                expr = Node::new(
-                    NodeKind::Assignment {
-                        lhs: Box::new(expr),
-                        rhs: Box::new(rhs),
-                        op: op.to_string(),
-                    },
-                    SourceLocation { start, end },
-                );
-            }
+            expr = Node::new(
+                NodeKind::Assignment {
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                    op: op.to_string(),
+                },
+                SourceLocation { start, end },
+            );
         }
 
         Ok(expr)

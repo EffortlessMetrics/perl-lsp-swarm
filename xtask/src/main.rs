@@ -55,12 +55,12 @@ use tasks::{
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
     queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
-    release_notes, release_turnkey, repo_hygiene, ripr_evidence, rust_small_proof, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
-    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    release_notes, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
@@ -288,6 +288,14 @@ enum Commands {
     #[command(name = "generate-lsp-318-matrix")]
     GenerateLsp318Matrix {
         /// Check that the checked-in matrix matches generated content.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Validate `policy/repository-topology.toml` and project it to a human table.
+    #[command(name = "repo-topology")]
+    RepoTopology {
+        /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
     },
@@ -3834,6 +3842,9 @@ enum MetricsCommand {
         /// Directory containing ux_scenario_run receipt JSON files.
         #[arg(long)]
         receipt_dir: Option<PathBuf>,
+        /// Output path for --json (defaults to .ci/metrics/editor_ux.json).
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// [stub] Workspace index memory and timing statistics.
     WorkspaceStats,
@@ -5102,6 +5113,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
         Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
+        Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)
         }
@@ -6227,8 +6239,12 @@ fn run_cli(cli: Cli) -> Result<()> {
             MetricsCommand::HirCoverage { json, output, write_status, check } => {
                 metrics::hir_coverage::run(json, output, write_status, check)
             }
-            MetricsCommand::LspStats { json, receipt_dir } => {
-                metrics::lsp_stats::run_with_receipt_dir(json, receipt_dir.as_deref())
+            MetricsCommand::LspStats { json, receipt_dir, output } => {
+                metrics::lsp_stats::run_with_receipt_dir(
+                    json,
+                    receipt_dir.as_deref(),
+                    output.as_deref(),
+                )
             }
             MetricsCommand::WorkspaceStats => metrics::workspace_stats::run(),
             MetricsCommand::DiagnosticsStats => metrics::diagnostics_stats::run(),
