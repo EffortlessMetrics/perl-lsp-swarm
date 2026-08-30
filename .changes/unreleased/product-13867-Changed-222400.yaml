@@ -1,7 +1,7 @@
 project: product
 component: Diagnostics
 kind: Changed
-body: Made DiagnosticCode iteration and serde use the stable PL### registry identity, and kept default PL001 metadata canonical.
+body: Made DiagnosticCode iteration and serde use the stable PL### registry identity, added public FromStr parsing with ParseDiagnosticCodeError, and kept default PL001 metadata canonical.
 time: 2026-08-29T22:24:00Z
 custom:
   PR: "13867"

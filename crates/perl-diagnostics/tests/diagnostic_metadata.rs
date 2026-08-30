@@ -20,11 +20,19 @@ fn diagnostic_code_registry_is_complete_unique_and_ordered()
     let unique_codes = code_strings.iter().copied().collect::<BTreeSet<_>>();
 
     assert_eq!(unique_codes.len(), code_strings.len());
-    assert!(code_strings.windows(2).all(|pair| pair[0] < pair[1]));
-    assert!(DiagnosticCode::ALL.contains(&DiagnosticCode::UnresolvedQualifiedCall));
-    assert!(DiagnosticCode::ALL.contains(&DiagnosticCode::SecuritySqlInjection));
-    assert!(DiagnosticCode::ALL.contains(&DiagnosticCode::SecuritySubstitutionEval));
-    assert!(DiagnosticCode::ALL.contains(&DiagnosticCode::SecurityEmbeddedRegexCode));
+    for pair in code_strings.windows(2) {
+        let previous = pair[0].strip_prefix("PL").ok_or("missing PL prefix")?.parse::<u16>()?;
+        let current = pair[1].strip_prefix("PL").ok_or("missing PL prefix")?.parse::<u16>()?;
+        assert!(previous < current, "{} must sort before {}", pair[0], pair[1]);
+    }
+
+    // Recurrence identities: these codes were previously omitted from copied
+    // inventories (#3014, #5035, #9818). The macro guarantees membership; these
+    // assertions preserve their assigned public identities.
+    assert_eq!(DiagnosticCode::UnresolvedQualifiedCall.as_str(), "PL305");
+    assert_eq!(DiagnosticCode::SecuritySqlInjection.as_str(), "PL607");
+    assert_eq!(DiagnosticCode::SecuritySubstitutionEval.as_str(), "PL608");
+    assert_eq!(DiagnosticCode::SecurityEmbeddedRegexCode.as_str(), "PL609");
 
     Ok(())
 }
@@ -105,6 +113,9 @@ fn unknown_formatted_code_strings_do_not_parse() -> Result<(), Box<dyn std::erro
     }
 
     assert!("ParseError".parse::<DiagnosticCode>().is_err());
+    assert!("pl001".parse::<DiagnosticCode>().is_err());
+    assert!(" PL001".parse::<DiagnosticCode>().is_err());
+    assert!("PL001 ".parse::<DiagnosticCode>().is_err());
 
     Ok(())
 }
@@ -123,6 +134,8 @@ fn serde_uses_stable_public_code_identity() -> Result<(), Box<dyn std::error::Er
     let rust_variant_name = serde_json::to_string("ParseError")?;
     assert!(serde_json::from_str::<DiagnosticCode>(&rust_variant_name).is_err());
     assert!(serde_json::from_str::<DiagnosticCode>("\"PL999\"").is_err());
+    assert!(serde_json::from_str::<DiagnosticCode>("1").is_err());
+    assert!(serde_json::from_str::<DiagnosticCode>("null").is_err());
 
     Ok(())
 }

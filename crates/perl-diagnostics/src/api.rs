@@ -8,8 +8,7 @@ pub use crate::anchor::{AnchorResolution, BatchFreshnessChecker, SourceDigest, S
 
 // Re-export from codes module.
 pub use crate::codes::{
-    DiagnosticCategory, DiagnosticCode, DiagnosticSeverity, DiagnosticTag,
-    ParseDiagnosticCodeError,
+    DiagnosticCategory, DiagnosticCode, DiagnosticSeverity, DiagnosticTag, ParseDiagnosticCodeError,
 };
 
 // Re-export from types module.
