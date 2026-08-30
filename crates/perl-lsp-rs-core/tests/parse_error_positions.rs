@@ -75,6 +75,27 @@ fn recovered_missing_operand_reports_its_stored_location() -> Result<(), Box<dyn
 }
 
 #[test]
+fn same_line_residue_maps_to_the_residual_token_range() -> Result<(), Box<dyn std::error::Error>>
+{
+    let source = "my $x = 1 print \"hi\";\n";
+    let location = source.find("print").ok_or("missing residual token")?;
+    let error = ParseError::Recovered {
+        site: RecoverySite::Statement,
+        kind: RecoveryKind::UnexpectedSameLineResidue,
+        location,
+    };
+    let diagnostics = diagnostics_for(source, std::slice::from_ref(&error));
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.range.0 == location)
+        .ok_or("same-line residual diagnostic was not emitted")?;
+
+    assert_eq!(diagnostic.range, (location, location + "print".len()));
+    assert_eq!(diagnostic.message, "Unexpected same-line residue after the statement");
+    Ok(())
+}
+
+#[test]
 fn unexpected_token_still_reports_its_location() -> Result<(), Box<dyn std::error::Error>> {
     let error = ParseError::unexpected("semicolon", "}", 25);
     assert_eq!(parse_diagnostic_start(SOURCE, error), Some(25));

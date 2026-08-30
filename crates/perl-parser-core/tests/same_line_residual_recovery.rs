@@ -24,6 +24,19 @@ fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
         .find_map(|child| find_assignment(child, expected_op))
 }
 
+fn contains_goto(node: &Node) -> bool {
+    matches!(node.kind, NodeKind::Goto { .. }) || node.children().into_iter().any(contains_goto)
+}
+
+fn contains_word_or_with_goto(node: &Node) -> bool {
+    if let NodeKind::Binary { op, left, right } = &node.kind {
+        if op == "or" && (contains_goto(left) || contains_goto(right)) {
+            return true;
+        }
+    }
+    node.children().into_iter().any(contains_word_or_with_goto)
+}
+
 fn assert_non_clean(source: &str) -> Result<(), String> {
     let output = Parser::new(source).parse_with_recovery();
     if output.diagnostics.is_empty() && !has_recovery_node(&output.ast) {
@@ -111,6 +124,31 @@ fn valid_same_line_statement_boundaries_remain_clean() -> Result<(), String> {
         "foo($x, $y); bar($z);",
     ] {
         assert_clean_parse(source);
+    }
+    Ok(())
+}
+
+#[test]
+fn cross_line_or_goto_stays_one_control_flow_expression() -> Result<(), String> {
+    let source = "copy($from, $to)\n    or goto fail_inner;\nprint \"ok\";\n";
+    let output = Parser::new(source).parse_with_recovery();
+    let statements = match &output.ast.kind {
+        NodeKind::Program { statements } => statements,
+        kind => return Err(format!("expected a program, got {}", kind.kind_name())),
+    };
+
+    if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+        return Err(format!(
+            "valid continuation became blocking: {:?}\nast={}",
+            output.diagnostics,
+            output.ast.to_sexp()
+        ));
+    }
+    if statements.len() != 2 || !contains_word_or_with_goto(&statements[0]) {
+        return Err(format!(
+            "or/goto must remain one binary control-flow expression with a later print statement:\n{}",
+            output.ast.to_sexp()
+        ));
     }
     Ok(())
 }

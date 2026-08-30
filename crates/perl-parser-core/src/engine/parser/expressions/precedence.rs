@@ -25,7 +25,13 @@ impl<'a> Parser<'a> {
                     // '\ or \ = 1, 0' parses as '\ or ((\ = 1), 0)'.
                     // After parsing the first assignment, collect trailing comma / fat-arrow
                     // elements before building the word-operator node.
-                    let mut right = self.parse_assignment()?;
+                    // `goto LABEL` is a control-flow expression in this position, not
+                    // a bare identifier followed by a separate statement.
+                    let mut right = if self.peek_kind() == Some(TokenKind::Goto) {
+                        self.parse_goto()?
+                    } else {
+                        self.parse_assignment()?
+                    };
                     // Apply any 'and' operators to the right side
                     right = self.parse_word_and_expr_with(right)?;
                     right = self.collect_comma_fat_arrow_continuation(right)?;
@@ -63,7 +69,11 @@ impl<'a> Parser<'a> {
             // `$a and $x = 1, last` parses as `$a and ($x = 1, last)`.
             // After parsing the first assignment, collect trailing comma / fat-arrow
             // elements before building the word-operator node.
-            let mut right = self.parse_word_not_expr()?;
+            let mut right = if self.peek_kind() == Some(TokenKind::Goto) {
+                self.parse_goto()?
+            } else {
+                self.parse_word_not_expr()?
+            };
             right = self.collect_comma_fat_arrow_continuation(right)?;
 
             let start = expr.location.start;
