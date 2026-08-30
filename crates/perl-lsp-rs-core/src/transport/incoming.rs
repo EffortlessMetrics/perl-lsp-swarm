@@ -314,6 +314,9 @@ fn decode_current_message_shape(
     if value.is_array() {
         return Err(IncomingMessageError::UnsupportedBatch { payload_bytes });
     }
+    if !value.is_object() {
+        return reject_current_message_shape(value, payload_bytes);
+    }
 
     let Some(jsonrpc) = value.get("jsonrpc").and_then(Value::as_str) else {
         return Err(IncomingMessageError::InvalidJsonRpcVersion { payload_bytes });
