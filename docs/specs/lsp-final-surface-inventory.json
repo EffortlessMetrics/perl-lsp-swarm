@@ -2628,7 +2628,7 @@
       ],
       "disposition": "dynamic",
       "runtime_route_owner": "initialized notification -> perl-lsp-rs/src/runtime/dispatch/lifecycle.rs",
-      "evidence_owner": "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; RelativePattern fallback string globs (**/*.pl,*.pm,*.t,*.psgi)",
+      "evidence_owner": "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; catch-all string glob (**/*) with handler-side Perl classification (#13308)",
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": null,

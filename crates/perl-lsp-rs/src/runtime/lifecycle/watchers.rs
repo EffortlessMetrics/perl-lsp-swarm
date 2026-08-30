@@ -9,7 +9,18 @@ use lsp_types::{
     notification::{DidChangeWatchedFiles, Notification},
 };
 
-const PERL_WATCH_PATTERNS: &[&str] = &["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
+/// Advertised watcher and file-operation patterns for Perl sources (#13308).
+///
+/// A single catch-all glob is advertised on purpose. Extensionless shebang
+/// scripts (#13185) have no extension glob, so clients honoring only the
+/// extension patterns never deliver their create/change/rename/delete events
+/// and the shebang-aware handlers cannot run for them. The classification
+/// authority stays handler-side: every watcher and file-operation seam
+/// reclassifies from the actual disk bytes before any indexing, so non-Perl
+/// events delivered because of the catch-all stay inert. Do not narrow this
+/// back to extension globs without re-opening the extensionless discovery
+/// contract (#13185/#13308).
+pub(super) const PERL_WATCH_PATTERNS: &[&str] = &["**/*"];
 
 fn perl_watch_kind() -> WatchKind {
     WatchKind::Create | WatchKind::Change | WatchKind::Delete

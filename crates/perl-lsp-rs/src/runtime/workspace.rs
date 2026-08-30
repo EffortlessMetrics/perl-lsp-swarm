@@ -154,6 +154,29 @@ fn read_perl_source_file(path: &Path) -> std::io::Result<Option<String>> {
     Ok(Some(decode_text_bytes(&bytes)))
 }
 
+/// Final-seam admission decision for the startup scan (#13308).
+///
+/// Recognized Perl extensions short-circuit through `is_perl_source_bytes`;
+/// extensionless candidates are classified from the bytes actually read, so
+/// content swapped in after discovery cannot be indexed as Perl. Configured
+/// `discovery_extra_extensions` keep the discovery admission they are given
+/// by contract.
+#[cfg(feature = "workspace")]
+fn indexing_seam_admits_perl_source(
+    path: &Path,
+    bytes: &[u8],
+    extra_extensions: &HashSet<String>,
+) -> bool {
+    if is_perl_source_bytes(path, bytes) {
+        return true;
+    }
+    let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    let normalized = extension.trim_start_matches('.').to_ascii_lowercase();
+    extra_extensions.contains(&normalized)
+}
+
 /// RAII guard that clears the `indexing_in_progress` flag on drop.
 ///
 /// Ensures the flag is always cleared, even if the indexing thread panics.
@@ -187,6 +210,9 @@ struct IndexingResources {
     indexing_in_progress: Arc<AtomicBool>,
     indexing_rescan_pending: Arc<AtomicBool>,
     indexing_transition_lock: Arc<Mutex<()>>,
+    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+    indexing_commit_gate:
+        Arc<std::sync::Mutex<Option<super::readiness::WorkspaceIndexingStartGate>>>,
     invocation_count: Arc<std::sync::atomic::AtomicUsize>,
     outbound: outbound::OutboundSender,
     work_done_progress: bool,
@@ -2220,6 +2246,8 @@ impl LspServer {
             indexing_in_progress: Arc::clone(&self.indexing_in_progress),
             indexing_rescan_pending: Arc::clone(&self.indexing_rescan_pending),
             indexing_transition_lock: Arc::clone(&self.indexing_transition_lock),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::clone(&self.indexing_commit_gate),
             invocation_count: Arc::clone(&self.workspace_indexing_invocation_count),
             outbound: self.outbound.clone(),
             work_done_progress: self.client_capabilities.lock().work_done_progress_support,
@@ -2309,6 +2337,8 @@ impl LspServer {
         }
         let permission_denied_shown = resources.permission_denied_shown;
         let readiness_receipt = resources.readiness_receipt;
+        #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+        let indexing_commit_gate = resources.indexing_commit_gate;
         #[cfg(any(test, feature = "expose_lsp_test_api"))]
         let readiness_start_gate = resources.readiness_start_gate;
         #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -2337,6 +2367,16 @@ impl LspServer {
                 send_progress_create(&outbound, progress_create_id);
                 send_progress_begin(&outbound);
             }
+
+            // Configured extra extensions keep their discovery admission at the
+            // final seam (#13308): byte-level shebang classification must not
+            // reject a file the workspace contract explicitly admits.
+            let scan_extra_extensions: HashSet<String> = workspace_folders
+                .iter()
+                .flat_map(|folder| {
+                    folder.effective_workspace_config.discovery_extra_extensions.iter().cloned()
+                })
+                .collect();
 
             let mut files: Vec<std::path::PathBuf> = Vec::new();
             let mut early_exit: Option<(EarlyExitReason, u64, usize, usize)> = None;
@@ -2438,8 +2478,13 @@ impl LspServer {
                 }
 
                 let read_started = Instant::now();
-                let content = match read_text_file_with_encoding(&path) {
-                    Ok(c) => c,
+                // #13308: read the raw bytes once and classify from the same
+                // object that will be indexed. Discovery classified paths
+                // earlier; an extensionless path rewritten or a symlink
+                // retargeted between discovery and this final read must not
+                // have its new non-Perl content indexed as Perl.
+                let source_bytes = match std::fs::read(&path) {
+                    Ok(bytes) => bytes,
                     Err(e) => {
                         indexing_receipt.record_phase(IndexingPhase::Read, read_started.elapsed());
                         indexing_receipt.record_read_error();
@@ -2500,6 +2545,15 @@ impl LspServer {
                     }
                 };
                 indexing_receipt.record_phase(IndexingPhase::Read, read_started.elapsed());
+                if !indexing_seam_admits_perl_source(&path, &source_bytes, &scan_extra_extensions) {
+                    tracing::debug!(
+                        path = %path.display(),
+                        "Startup scan skipped non-Perl content reclassified at the \
+                         final indexing seam"
+                    );
+                    continue;
+                }
+                let content = crate::util::decode_source_bytes(&source_bytes).into_text();
                 let Ok(url) = Url::from_file_path(&path) else {
                     indexing_receipt.record_index_error();
                     continue;
@@ -2509,6 +2563,8 @@ impl LspServer {
                 let indexed_uri = url.to_string();
                 let index_result = {
                     let _transition = indexing_transition_lock.lock();
+                    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+                    crate::runtime::readiness::notify_indexing_commit_gate(&indexing_commit_gate);
                     let current_folders = current_workspace_folders.lock();
                     if path_is_in_current_workspace(&path, &current_folders) {
                         Some(coordinator.index().index_file(url, content))
@@ -4263,6 +4319,284 @@ mod tests {
         ) {
             return Err("follow-up scan could not claim the released slot".into());
         }
+        Ok(())
+    }
+
+    /// Shared harness: server + coordinator bound to a temp workspace folder.
+    #[cfg(feature = "workspace")]
+    fn gated_scan_server(dir: &tempfile::TempDir) -> Result<LspServer, Box<dyn std::error::Error>> {
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+        let mut server = LspServer::new();
+        server.index_coordinator = Some(Arc::new(IndexCoordinator::with_limits_and_caps(
+            IndexResourceLimits::default(),
+            IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+        )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf()),
+        );
+        Ok(server)
+    }
+
+    /// Shared harness: block until the background scan releases the indexing
+    /// slot.
+    #[cfg(feature = "workspace")]
+    fn wait_for_indexing_completion(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+            if std::time::Instant::now() >= deadline {
+                return Err("indexing thread did not finish before timeout".into());
+            }
+            std::thread::yield_now();
+        }
+        Ok(())
+    }
+
+    /// #13308 regression: an extensionless path that discovery classified as
+    /// Perl must be reclassified from the bytes actually read at the final
+    /// indexing seam. The first (lexically) file's commit fires the commit
+    /// gate, the test rewrites the not-yet-read second file to non-Perl
+    /// content, and the scan must skip it instead of indexing it as Perl.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn startup_scan_reclassifies_swapped_content_at_final_seam()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let gate_path = dir.path().join("aaa_gate.pl");
+        let swapped_path = dir.path().join("zzz_swapped_script");
+        std::fs::write(&gate_path, "package Gate;\nsub gate_holder { 1 }\n1;\n")?;
+        std::fs::write(
+            &swapped_path,
+            "#!/usr/bin/env perl\npackage Swapped;\nsub swapped_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.start_workspace_indexing();
+        // The scan is now paused holding `indexing_transition_lock` at the
+        // first file's commit seam, before `zzz_swapped_script` is read.
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        // The replacement keeps the symbol text but loses the Perl shebang:
+        // unfixed code indexes it (shell content as Perl), fixed code must
+        // reject it at the seam, so the assertion discriminates both ways.
+        std::fs::write(
+            &swapped_path,
+            "#!/bin/sh\npackage Swapped;\nsub swapped_symbol { 1 }\n1;\n",
+        )?;
+        release_tx.send(())?;
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Gate::gate_holder").is_none() {
+            return Err("startup scan lost the control file's symbols".into());
+        }
+        if coordinator.index().find_definition("Swapped::swapped_symbol").is_some() {
+            return Err("startup scan indexed non-Perl content swapped in after discovery".into());
+        }
+        Ok(())
+    }
+
+    /// #13308 companion control: without the swap, extensionless shebang
+    /// scripts are still indexed by the startup scan, proving the seam
+    /// reclassification does not over-reject.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn startup_scan_still_indexes_extensionless_perl_scripts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let plain_path = dir.path().join("Plain.pl");
+        let script_path = dir.path().join("deploy_hook");
+        std::fs::write(&plain_path, "package Plain;\nsub plain_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            &script_path,
+            "#!/usr/bin/env perl\npackage Hook;\nsub hook_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Plain::plain_symbol").is_none() {
+            return Err("startup scan lost extension file symbols".into());
+        }
+        if coordinator.index().find_definition("Hook::hook_symbol").is_none() {
+            return Err("startup scan no longer indexes extensionless shebang scripts".into());
+        }
+        Ok(())
+    }
+
+    /// Shared harness for the transition-lock insertion-wait proof: pause the
+    /// real scan at its commit seam, then run `didOpen` on a thread and prove
+    /// the handler cannot complete (and therefore cannot insert the document)
+    /// while the scan holds `indexing_transition_lock`.
+    #[cfg(feature = "workspace")]
+    fn assert_did_open_waits_for_indexing_transition(
+        server: Arc<LspServer>,
+        uri: String,
+        params: Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.start_workspace_indexing();
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "scan never reached its commit gate")?;
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let did_open_server = Arc::clone(&server);
+        let handle = std::thread::spawn(move || {
+            let result = did_open_server.test_handle_did_open(Some(params));
+            let _ = done_tx.send(());
+            result
+        });
+
+        // The insertion-side lock must make didOpen wait: while the scan
+        // holds the transition lock, the handler must neither complete nor
+        // insert its document. A server whose didOpen insertion-side lock
+        // was removed surfaces either as an early handler completion or as
+        // the document appearing in `documents` during the hold (the parsed
+        // branch would only later block in its background commit task).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1_500);
+        let outcome = loop {
+            if done_rx.try_recv().is_ok() {
+                break Some("didOpen completed while the scan held the indexing transition lock");
+            }
+            if server.document_is_open(&uri) {
+                break Some(
+                    "didOpen inserted its document while the scan held the indexing transition lock",
+                );
+            }
+            if std::time::Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        if let Some(violation) = outcome {
+            release_tx.send(()).ok();
+            let _ = handle.join();
+            return Err(violation.into());
+        }
+        release_tx.send(())?;
+        let result = handle.join().map_err(|_| "didOpen thread panicked")?;
+        result.map_err(|err| {
+            std::io::Error::other(format!("didOpen failed after the gate released: {err}")).into()
+        })
+    }
+
+    /// #13308 regression (parsed branch): didOpen's document insertion waits
+    /// for the background scan's commit critical section, and the live index
+    /// ends up reflecting the open buffer rather than the disk content.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_open_parsed_insertion_waits_for_indexing_transition_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let script_path = dir.path().join("script.pl");
+        std::fs::write(&script_path, "package Disk;\nsub disk_symbol { 1 }\n1;\n")?;
+        let script_uri =
+            url::Url::from_file_path(&script_path).map_err(|_| "invalid script URI")?.to_string();
+        let server = Arc::new(gated_scan_server(&dir)?);
+        let params = json!({
+            "textDocument": {
+                "uri": script_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Disk;\nsub buffer_symbol { 1 }\n1;\n",
+            }
+        });
+        assert_did_open_waits_for_indexing_transition(
+            Arc::clone(&server),
+            script_uri.clone(),
+            params,
+        )?;
+
+        // In unit tests (no tokio runtime) the background live-index commit
+        // runs synchronously inside didOpen, so the index is settled now.
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Disk::buffer_symbol").is_none() {
+            return Err("final live index does not reflect the opened buffer".into());
+        }
+        if coordinator.index().find_definition("Disk::disk_symbol").is_some() {
+            return Err("final live index kept stale disk symbols over the open buffer".into());
+        }
+        Ok(())
+    }
+
+    /// #13308 regression (template guard branch): the guarded no-parse
+    /// insertion takes the same transition lock.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_open_template_insertion_waits_for_indexing_transition_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("gate.pl"), "package Gate;\n1;\n")?;
+        let server = Arc::new(gated_scan_server(&dir)?);
+        let template_uri = url::Url::from_file_path(dir.path().join("layout.ep"))
+            .map_err(|_| "invalid template URI")?
+            .to_string();
+        let params = json!({
+            "textDocument": {
+                "uri": template_uri,
+                "languageId": "html",
+                "version": 1,
+                "text": "%= content\n",
+            }
+        });
+        assert_did_open_waits_for_indexing_transition(Arc::clone(&server), template_uri, params)?;
+        Ok(())
+    }
+
+    /// #13308 regression (oversized guard branch): the size-limit insertion
+    /// takes the same transition lock.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_open_oversized_insertion_waits_for_indexing_transition_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("gate.pl"), "package Gate;\n1;\n")?;
+        let server = Arc::new(gated_scan_server(&dir)?);
+        let big_uri = url::Url::from_file_path(dir.path().join("big.pl"))
+            .map_err(|_| "invalid big-file URI")?
+            .to_string();
+        let oversized_text = "# padding line\n".repeat(90_000);
+        let params = json!({
+            "textDocument": {
+                "uri": big_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": oversized_text,
+            }
+        });
+        assert_did_open_waits_for_indexing_transition(Arc::clone(&server), big_uri, params)?;
+        Ok(())
+    }
+
+    /// #13308 regression (binary guard branch): the binary-content insertion
+    /// takes the same transition lock.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_open_binary_insertion_waits_for_indexing_transition_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("gate.pl"), "package Gate;\n1;\n")?;
+        let server = Arc::new(gated_scan_server(&dir)?);
+        let binary_uri = url::Url::from_file_path(dir.path().join("blob.pl"))
+            .map_err(|_| "invalid binary URI")?
+            .to_string();
+        let params = json!({
+            "textDocument": {
+                "uri": binary_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Bin;\nmy $payload = \"a\u{0}b\";\n1;\n",
+            }
+        });
+        assert_did_open_waits_for_indexing_transition(Arc::clone(&server), binary_uri, params)?;
         Ok(())
     }
 

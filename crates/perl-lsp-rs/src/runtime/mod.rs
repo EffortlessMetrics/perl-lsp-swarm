@@ -361,6 +361,12 @@ pub struct LspServer {
     /// Serializes the active/pending indexing handoff at scan completion.
     #[cfg(feature = "workspace")]
     indexing_transition_lock: Arc<Mutex<()>>,
+    /// Test-only gate fired inside the startup scan's per-file commit
+    /// critical section, after `indexing_transition_lock` is acquired
+    /// (#13308).
+    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+    indexing_commit_gate:
+        Arc<std::sync::Mutex<Option<crate::runtime::readiness::WorkspaceIndexingStartGate>>>,
     /// One-time guard for the `window/showMessage` permission-denied warning.
     ///
     /// Set to `true` after the first permission-denied file is encountered during
