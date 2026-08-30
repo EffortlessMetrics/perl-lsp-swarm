@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12429 |
-| Rust-family files | 3824 |
-| Non-Rust files | 8605 |
-| Allowlisted | 6368 |
+| Total tracked files | 12438 |
+| Rust-family files | 3829 |
+| Non-Rust files | 8609 |
+| Allowlisted | 6372 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 491 |
-| documentation | 2804 |
+| config | 492 |
+| documentation | 2805 |
 | generated | 2 |
 | production | 348 |
 | test | 2058 |
-| tooling | 665 |
+| tooling | 667 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -2941,6 +2941,7 @@
 | `.github/workflows/publish-crates.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/publish-dry-run.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/publish-extension.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/release-artifact-size-shadow.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/release-orchestration.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/release-settings-closeout.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/release.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -4722,6 +4723,7 @@
 | `docs/ci/pr-plan.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/queue-health-modes.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/receipt-contract.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/ci/release-artifact-size-shadow.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/release-evidence.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/review-gates.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/ci/review-receipts.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6591,6 +6593,8 @@
 | `scripts/ci/pr_smoke_disk_guard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/receipts-to-junit.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/reconcile_github_enforcement_snapshot.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/release_artifact_size_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/release_artifact_size_stage.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ripr_summary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/route-codecov-packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/run_gate_shard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
