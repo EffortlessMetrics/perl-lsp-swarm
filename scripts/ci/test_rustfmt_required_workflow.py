@@ -347,10 +347,39 @@ def replace_pull_request_trigger(workflow_text: str, replacement: str) -> str:
     The real block carries comment lines and a `types:` key, so replacing only
     its first line would leave them dangling and produce invalid YAML rather
     than the equivalent workflow the mutation is meant to express.
+
+    The block ends at the next sibling key at the same indent, found by scan
+    rather than by naming whichever trigger happens to follow. Hardcoding
+    `merge_group:` as the delimiter meant that reordering `on:` moved the
+    boundary silently past `push:`, so the mutation expressed more than it
+    said. Fails closed with a named error, like every other helper here.
     """
-    start = workflow_text.index("  pull_request:\n")
-    end = workflow_text.index("  merge_group:", start)
-    return workflow_text[:start] + replacement + workflow_text[end:]
+    lines = workflow_text.splitlines(keepends=True)
+    start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.rstrip("\n") == "  pull_request:"
+        ),
+        None,
+    )
+    if start is None:
+        raise AssertionError("`on.pull_request` block is not present in workflow source")
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].strip()
+            and lines[index].startswith("  ")
+            and not lines[index].startswith("   ")
+        ),
+        None,
+    )
+    if end is None:
+        raise AssertionError(
+            "`on.pull_request` block has no following sibling key to bound it"
+        )
+    return "".join(lines[:start] + [replacement] + lines[end:])
 
 
 def drop_governed_job(workflow_text: str) -> str:
@@ -488,6 +517,31 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
         # not escape as a raw parser exception.
         with self.assertRaisesRegex(AssertionError, "not valid YAML"):
             load_triggers(self.workflow_text + "\n  : : :\n\t- bad\n")
+
+    def test_trigger_replacement_stops_at_the_next_sibling_key(self) -> None:
+        # Regression: the boundary was found by hardcoding `merge_group:`, so
+        # reordering `on:` moved it silently past `push:` and the mutation
+        # expressed more than it said — the failure mode this suite exists to
+        # catch, in the suite's own helper.
+        reordered = self.workflow_text.replace("  merge_group: {}\n", "", 1).replace(
+            "  workflow_dispatch:\n", "  merge_group: {}\n  workflow_dispatch:\n", 1
+        )
+        self.assertNotEqual(reordered, self.workflow_text)
+        swapped = replace_pull_request_trigger(
+            reordered, "  pull_request: { branches: [ main, master ] }\n"
+        )
+        self.assertIn("push", load_triggers(swapped))
+        self.assertIn("merge_group", load_triggers(swapped))
+
+    def test_trigger_replacement_helper_fails_closed(self) -> None:
+        # The helper carries the same fail-closed duty as the rest: a named
+        # error, never a raw ValueError and never a silent wrong region.
+        with self.assertRaisesRegex(AssertionError, "not present in workflow source"):
+            replace_pull_request_trigger("on:\n  push: {}\n", "  pull_request: {}\n")
+        with self.assertRaisesRegex(AssertionError, "no following sibling key"):
+            replace_pull_request_trigger(
+                "on:\n  pull_request:\n    branches: [ main ]\n", "x\n"
+            )
 
     def test_quoted_on_key_is_read_the_same_as_the_bare_key(self) -> None:
         # YAML 1.1 resolves a bare `on` to boolean True; the quoted spelling
