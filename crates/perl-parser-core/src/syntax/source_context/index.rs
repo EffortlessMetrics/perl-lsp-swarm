@@ -21,8 +21,8 @@ pub enum OffsetClassification {
     /// The offset does not name a source byte.
     ///
     /// An offset equal to `source.len()` is a valid position boundary, but it is
-    /// not a byte. Use [`SourceRegionIndex::classify_range`] with an empty range
-    /// to classify that boundary.
+    /// not a byte. Use [`SourceRegionIndex::classify_range_checked`] with an
+    /// empty range to classify that boundary.
     OutOfBounds,
 }
 
@@ -37,9 +37,26 @@ impl OffsetClassification {
     }
 }
 
-/// Result of classifying a byte range against stored regions.
+/// Historical result of classifying a byte range against stored regions.
+///
+/// Use [`SourceRegionIndex::classify_range_checked`] when invalid UTF-8
+/// boundaries and empty source positions must remain explicit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeClassification {
+    /// The entire range resolves to one compatibility region kind.
+    Proven {
+        /// The covering region kind.
+        kind: SourceRegionKind,
+    },
+    /// The range straddles multiple kinds or lies on a boundary mismatch.
+    Ambiguous,
+    /// Range endpoints are out of bounds or not on char boundaries.
+    OutOfBounds,
+}
+
+/// Checked result of classifying a source byte range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceRangeClassification {
     /// The entire non-empty range resolves to one compatibility region kind.
     ///
     /// `Code` is still complement-derived in the current index. It becomes
@@ -162,14 +179,32 @@ impl SourceRegionIndex {
         self.classify_offset(offset).proven_kind().unwrap_or(SourceRegionKind::Code)
     }
 
-    /// Classify `[start, end)` against stored regions.
+    /// Classify `[start, end)` through the historical compatibility result.
+    ///
+    /// Invalid UTF-8 boundaries collapse into [`RangeClassification::OutOfBounds`],
+    /// and empty ranges retain the prior right-side/`Code` fallback. Use
+    /// [`classify_range_checked`](Self::classify_range_checked) for proof.
     #[must_use]
     pub fn classify_range(&self, start: usize, end: usize) -> RangeClassification {
+        match self.classify_range_checked(start, end) {
+            SourceRangeClassification::Proven { kind } => RangeClassification::Proven { kind },
+            SourceRangeClassification::EmptyBoundary { right, .. } => {
+                RangeClassification::Proven { kind: right.unwrap_or(SourceRegionKind::Code) }
+            }
+            SourceRangeClassification::Ambiguous => RangeClassification::Ambiguous,
+            SourceRangeClassification::InvalidUtf8Boundary
+            | SourceRangeClassification::OutOfBounds => RangeClassification::OutOfBounds,
+        }
+    }
+
+    /// Classify `[start, end)` without hiding empty or invalid-boundary input.
+    #[must_use]
+    pub fn classify_range_checked(&self, start: usize, end: usize) -> SourceRangeClassification {
         if start > end || end > self.source.len() {
-            return RangeClassification::OutOfBounds;
+            return SourceRangeClassification::OutOfBounds;
         }
         if !self.source.is_char_boundary(start) || !self.source.is_char_boundary(end) {
-            return RangeClassification::InvalidUtf8Boundary;
+            return SourceRangeClassification::InvalidUtf8Boundary;
         }
         if start == end {
             let left = if start == 0 {
@@ -182,7 +217,7 @@ impl SourceRegionIndex {
             } else {
                 Some(self.kind_at_valid_offset(start))
             };
-            return RangeClassification::EmptyBoundary { left, right };
+            return SourceRangeClassification::EmptyBoundary { left, right };
         }
 
         // Probe the start of the last *character* in the range: `end - 1` lands
@@ -193,14 +228,14 @@ impl SourceRegionIndex {
         let last_inclusive = last_char_start(&self.source, end);
         let end_kind = self.kind_at_valid_offset(last_inclusive);
         if start_kind != end_kind {
-            return RangeClassification::Ambiguous;
+            return SourceRangeClassification::Ambiguous;
         }
         for region in &self.regions {
             if region.start < end && start < region.end && !region.contains_range(start, end) {
-                return RangeClassification::Ambiguous;
+                return SourceRangeClassification::Ambiguous;
             }
         }
-        RangeClassification::Proven { kind: start_kind }
+        SourceRangeClassification::Proven { kind: start_kind }
     }
 
     /// Whether a non-empty `[start, end)` range lies entirely inside one of `allowed` kinds.
@@ -211,12 +246,12 @@ impl SourceRegionIndex {
         end: usize,
         allowed: &[SourceRegionKind],
     ) -> bool {
-        match self.classify_range(start, end) {
-            RangeClassification::Proven { kind } => allowed.contains(&kind),
-            RangeClassification::EmptyBoundary { .. }
-            | RangeClassification::Ambiguous
-            | RangeClassification::InvalidUtf8Boundary
-            | RangeClassification::OutOfBounds => false,
+        match self.classify_range_checked(start, end) {
+            SourceRangeClassification::Proven { kind } => allowed.contains(&kind),
+            SourceRangeClassification::EmptyBoundary { .. }
+            | SourceRangeClassification::Ambiguous
+            | SourceRangeClassification::InvalidUtf8Boundary
+            | SourceRangeClassification::OutOfBounds => false,
         }
     }
 
