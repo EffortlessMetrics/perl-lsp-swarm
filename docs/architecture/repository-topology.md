@@ -40,8 +40,8 @@ The current monorepo and the product/integration repository after every split. R
 
 | Package | Future owner | Publish | Integration mode | Owner issue |
 | --- | --- | --- | --- | --- |
-| `perl-ast` | _pending_ | published | `workspace_path` | #7400 |
-| `perl-ast-v2` | _pending_ | published | `workspace_path` | #7400 |
+| `perl-ast` | perl-parser | published | `workspace_path` | #7398 |
+| `perl-ast-v2` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-ci-hygiene` | swarm-product | private | `workspace_path` | #7369 |
 | `perl-core-harness` | _pending_ | private | `workspace_path` | #7400 |
 | `perl-core-harness-types` | _pending_ | private | `workspace_path` | #7400 |
@@ -51,8 +51,8 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-diagnostics` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-incremental-parsing` | _pending_ | private | `workspace_path` | #7400 |
 | `perl-kwalitee` | swarm-product | private | `workspace_path` | #7369 |
-| `perl-lexer` | _pending_ | published | `workspace_path` | #7400 |
-| `perl-line-index` | _pending_ | published | `workspace_path` | #7400 |
+| `perl-lexer` | perl-parser | published | `workspace_path` | #7398 |
+| `perl-line-index` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-lsp-perltidy` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-lsp-rs` | swarm-product | published | `workspace_path` | #7384 |
 | `perl-lsp-rs-core` | swarm-product | published | `workspace_path` | #7384 |
@@ -63,10 +63,10 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-parser-comparison` | _pending_ | private | `workspace_path` | #7400 |
 | `perl-parser-core` | _pending_ | published | `workspace_path` | #7400 |
 | `perl-parser-pest` | perl-parser-pest | published | `workspace_path` | #7372 |
-| `perl-pod` | _pending_ | published | `workspace_path` | #7400 |
-| `perl-position-tracking` | _pending_ | published | `workspace_path` | #7400 |
-| `perl-pragma` | _pending_ | published | `workspace_path` | #7400 |
-| `perl-regex` | _pending_ | published | `workspace_path` | #7400 |
+| `perl-pod` | perl-parser | published | `workspace_path` | #7398 |
+| `perl-position-tracking` | perl-parser | published | `workspace_path` | #7398 |
+| `perl-pragma` | perl-parser | published | `workspace_path` | #7398 |
+| `perl-regex` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-ripr-facts` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-semantic-analyzer` | _pending_ | published | `workspace_path` | #7400 |
 | `perl-semantic-facts` | _pending_ | published | `workspace_path` | #7400 |
@@ -77,7 +77,7 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-test-facts` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-test-generators` | _pending_ | published | `workspace_path` | #7400 |
 | `perl-test-must` | swarm-product | published | `workspace_path` | #7369 |
-| `perl-token` | _pending_ | published | `workspace_path` | #7400 |
+| `perl-token` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-tree-sitter-compat` | _pending_ | private | `workspace_path` | #7400 |
 | `perl-uri` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-workspace` | swarm-product | published | `workspace_path` | #7369 |
@@ -107,7 +107,7 @@ _No package currently lives here._
 
 ### `perl-parser`
 
-Future native parser/compiler-front-end workspace. Preparation only: the physical split waits on the facade, incremental, position, and fact-authority gates. Package membership is frozen by #7400, so parser-side packages below remain placement-pending.
+Future native parser/compiler-front-end workspace. Preparation only: the physical split waits on the facade, incremental, position, and fact-authority gates. Package membership is frozen by #7400. Its first slice (#14259) accepted the nine front-end packages whose normal in-workspace dependency closure is already free of product-owned crates; the remaining parser-side rows stay placement-pending behind the exits in authority_refs.
 
 _No package currently lives here._
 
@@ -125,35 +125,26 @@ _No package currently lives here._
 
 ## Unresolved placement
 
-25 package(s) have no accepted future owner. Each names the issue that owns the
+16 package(s) have no accepted future owner. Each names the issue that owns the
 decision and the exact question, so unresolved placement stays visible instead of
 becoming a false final answer.
 
 | Package | Owner issue | Open question |
 | --- | --- | --- |
-| `perl-ast` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
-| `perl-ast-v2` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-core-harness` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-core-harness-types` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-core-test-runner` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-incremental-parsing` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
-| `perl-lexer` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
-| `perl-line-index` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-module` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-parser` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-parser-bench` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-parser-comparison` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-parser-core` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
-| `perl-pod` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
-| `perl-position-tracking` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
-| `perl-pragma` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
-| `perl-regex` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-semantic-analyzer` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-semantic-facts` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-source-identity` | #7663 | Repository destination for the canonical lower source-identity owner is unresolved; #7663 owns the standalone package proof. |
 | `perl-symbol` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-test-generators` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
-| `perl-token` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `perl-tree-sitter-compat` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 | `tree-sitter-perl-rs` | #7400 | Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification. |
 
