@@ -99,9 +99,7 @@ fn valid_receipt_reaches_public_aggregation_and_writes_json() -> TestResult {
     assert_eq!(generated["subsystem"], "editor_ux");
     let workflow = generated["workflows"]
         .as_array()
-        .and_then(|workflows| {
-            workflows.iter().find(|workflow| workflow["id"] == "simple_file_smoke")
-        })
+        .and_then(|workflows| workflows.iter().find(|workflow| workflow["id"] == "simple_file_smoke"))
         .ok_or("supplied workflow was not emitted")?;
     assert_eq!(workflow["pass_rate"]["state"], "measured");
     assert_eq!(workflow["pass_rate"]["value"], 1.0);
