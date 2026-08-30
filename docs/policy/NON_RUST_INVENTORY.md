@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12417 |
-| Rust-family files | 3821 |
-| Non-Rust files | 8596 |
-| Allowlisted | 6361 |
-| Unclassified | 2235 |
+| Total tracked files | 12425 |
+| Rust-family files | 3824 |
+| Non-Rust files | 8601 |
+| Allowlisted | 6364 |
+| Unclassified | 2237 |
 
 ## Non-Rust files by category
 
@@ -20,9 +20,9 @@
 | documentation | 2804 |
 | generated | 2 |
 | production | 348 |
-| test | 2055 |
-| tooling | 662 |
-| unclassified | 2235 |
+| test | 2057 |
+| tooling | 663 |
+| unclassified | 2237 |
 
 ## Unclassified files
 
@@ -1951,6 +1951,8 @@
 | `test_corpus/gold/completion_method_arrow/expected_completion.json` | `json` |
 | `test_corpus/gold/completion_package_colon/expected.json` | `json` |
 | `test_corpus/gold/completion_package_colon/expected_completion.json` | `json` |
+| `test_corpus/gold/completion_scope_ranking/expected_completion.json` | `json` |
+| `test_corpus/gold/completion_scope_sibling/expected_completion.json` | `json` |
 | `test_corpus/gold/eval_string_pragma/expected.json` | `json` |
 | `test_corpus/gold/goto_inherited_method/expected.json` | `json` |
 | `test_corpus/gold/goto_inherited_method/expected_goto.json` | `json` |
@@ -3137,6 +3139,7 @@
 | `.spec/10918-emacs-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11036-lsp-runtime-train-schema/lsp_runtime_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11079-pl700-removal-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6968,6 +6971,8 @@
 | `test_corpus/gold/completion_lexical_var/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/completion_method_arrow/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/completion_package_colon/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/gold/completion_scope_ranking/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/gold/completion_scope_sibling/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/eval_string_pragma/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/goto_inherited_method/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/goto_local_sub/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
