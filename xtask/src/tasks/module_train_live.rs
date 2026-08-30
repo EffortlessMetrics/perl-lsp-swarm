@@ -2120,24 +2120,30 @@ pub fn classify(facts: &NodeFacts) -> ClassifiedNode {
             // recommendation records that limitation honestly.
             if candidate.has_reviews {
                 match candidate.review_on_head {
-                    Some(true) => reasons.insert("review_on_current_head".to_string()),
+                    Some(true) => {
+                        reasons.insert("review_on_current_head".to_string());
+                    }
                     Some(false) => {
                         flags.insert("head_moved_after_review".to_string());
-                        reasons.insert("review_not_on_current_head".to_string())
+                        reasons.insert("review_not_on_current_head".to_string());
                     }
                     None => {
                         limitations.insert("review_head_currency_not_observable".to_string());
-                        reasons.insert("review_head_currency_not_proven".to_string())
+                        reasons.insert("review_head_currency_not_proven".to_string());
                     }
-                };
+                }
                 match candidate.threads_resolved {
-                    Some(false) => reasons.insert("review_threads_unresolved".to_string()),
+                    // Resolved threads add no finding: the absence of a
+                    // thread reason is what "nothing unresolved" looks like.
+                    Some(true) => {}
+                    Some(false) => {
+                        reasons.insert("review_threads_unresolved".to_string());
+                    }
                     None => {
                         limitations.insert("review_threads_not_observable".to_string());
-                        reasons.insert("review_threads_not_proven".to_string())
+                        reasons.insert("review_threads_not_proven".to_string());
                     }
-                    Some(true) => false,
-                };
+                }
             } else {
                 reasons.insert("review_pending".to_string());
             }
