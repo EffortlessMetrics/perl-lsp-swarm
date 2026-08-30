@@ -305,11 +305,17 @@ fn unary_goto_postfix_arrow_forms_match_perl_boundaries() -> Result<(), String> 
             return Err(format!("real Perl rejected valid postfix-arrow form: {source:?}"));
         }
         let output = Parser::new(source).parse_with_recovery();
-        if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+        if !output.diagnostics.is_empty() {
             return Err(format!(
-                "postfix-arrow goto form became blocking: source={source:?}, diagnostics={:?}\nast={}",
+                "postfix-arrow goto form must remain diagnostic-free: source={source:?}, diagnostics={:?}\nast={}",
                 output.diagnostics,
                 output.ast.to_sexp()
+            ));
+        }
+        let sexp = output.ast.to_sexp();
+        if !sexp.contains("method_call") || contains_goto(&output.ast) {
+            return Err(format!(
+                "postfix-arrow goto form must remain a bareword postfix expression rather than control flow:\nsource={source:?}\nast={sexp}"
             ));
         }
     }
