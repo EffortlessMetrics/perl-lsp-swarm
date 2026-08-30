@@ -25,6 +25,7 @@ serde = { workspace = true }
 criterion = { workspace = true }
 perl-lsp-rs-core = { workspace = true }
 perl-tdd-support = { workspace = true }
+proptest = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 

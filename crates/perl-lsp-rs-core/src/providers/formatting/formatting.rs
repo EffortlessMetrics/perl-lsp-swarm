@@ -18,7 +18,8 @@ pub use crate::providers::formatting_types::{
 use crate::tooling::perltidy::native::{
     FormatChangeSummary, FormatContext, FormatDisposition, FormatEngine, FormatEvidenceState,
     FormatIdentity, FormatLineEndingDisposition, FormatOutcome, FormatReasonCode,
-    FormatRequestTarget, FormatSafetyEvidence, NativePipelineCounters, TypedFormatResult,
+    FormatRequestTarget, FormatSafetyEvidence, TypedFormatResult, inferred_line_ending,
+    NativePipelineCounters,
 };
 use crate::tooling::perltidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
@@ -170,10 +171,11 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         self.document_decision_with_counters(content, options, context, None)
     }
 
-    /// Format the entire document and record deterministic native-pipeline
-    /// work counters through the exact same decision path. The counters ride
-    /// the production typed entry, so one LSP request must always observe
-    /// exactly one pipeline invocation (#10302 NPC-003).
+    /// Format the entire document through the same native decision path as the
+    /// ordinary request entry while collecting opt-in work counters. Ordinary
+    /// LSP handlers pass no collector and therefore record nothing; the counted
+    /// entry is exercised by the nightly benchmark, where one counted call
+    /// observes exactly one pipeline invocation (#10302 NPC-003).
     pub fn format_document_decision_with_counters(
         &self,
         content: &str,
@@ -240,8 +242,11 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         self.range_decision_with_counters(content, range, options, context, None)
     }
 
-    /// Format a range and record deterministic native-pipeline work counters
-    /// through the exact same decision path (#10302 NPC-003).
+    /// Format a range through the same native decision path as the ordinary
+    /// request entry while collecting opt-in work counters. Ordinary LSP
+    /// handlers pass no collector and therefore record nothing; the counted
+    /// entry is exercised by the nightly benchmark, where one counted call
+    /// observes exactly one pipeline invocation (#10302 NPC-003).
     pub fn format_range_decision_with_counters(
         &self,
         content: &str,
@@ -851,15 +856,6 @@ fn apply_lsp_whitespace_options_with_eof(
     }
 
     output
-}
-
-fn inferred_line_ending(content: &str) -> &'static str {
-    let bytes = content.as_bytes();
-    let Some(last_lf) = bytes.iter().rposition(|byte| *byte == b'\n') else {
-        return "\n";
-    };
-
-    if last_lf > 0 && bytes[last_lf - 1] == b'\r' { "\r\n" } else { "\n" }
 }
 
 /// Whether the document tail is already line-terminated after projection.
