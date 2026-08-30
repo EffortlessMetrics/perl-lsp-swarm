@@ -170,6 +170,10 @@ where
 {
     match kind {
         NodeKind::Heredoc { body_span, .. } => map_optional_location(body_span, map),
+        NodeKind::DataSection { marker_span, body_span, .. } => {
+            map_optional_location(marker_span, map);
+            map_optional_location(body_span, map);
+        }
         NodeKind::Try { catch_blocks, .. } => {
             for (catch_variable, _) in catch_blocks {
                 if let Some((_, location)) = catch_variable {
@@ -251,7 +255,6 @@ where
         | NodeKind::Transliteration { .. }
         | NodeKind::Use { .. }
         | NodeKind::No { .. }
-        | NodeKind::DataSection { .. }
         | NodeKind::Identifier { .. }
         | NodeKind::MissingExpression
         | NodeKind::MissingStatement
@@ -561,6 +564,35 @@ mod tests {
         assert!(
             matches!(phase, NodeKind::PhaseBlock { phase_span: Some(span), .. } if span == loc(10, 15))
         );
+
+        // A data section's marker and payload spans must shift with the node.
+        // Leaving them behind would make the exact ranges the HIR shell
+        // publishes point at unrelated bytes after any remap.
+        let mut data_section = NodeKind::DataSection {
+            marker: "__DATA__".to_string(),
+            marker_span: Some(loc(0, 8)),
+            body: Some("payload\n".to_string()),
+            body_span: Some(loc(9, 17)),
+        };
+        map_payload_locations(&mut data_section, &shift);
+        assert!(matches!(
+            data_section,
+            NodeKind::DataSection { marker_span: Some(m), body_span: Some(b), .. }
+                if m == loc(10, 18) && b == loc(19, 27)
+        ));
+
+        // A marker with no payload keeps an absent payload span absent.
+        let mut data_section_no_body = NodeKind::DataSection {
+            marker: "__END__".to_string(),
+            marker_span: Some(loc(0, 7)),
+            body: None,
+            body_span: None,
+        };
+        map_payload_locations(&mut data_section_no_body, &shift);
+        assert!(matches!(
+            data_section_no_body,
+            NodeKind::DataSection { marker_span: Some(m), body_span: None, .. } if m == loc(10, 17)
+        ));
 
         let mut class = NodeKind::Class {
             name: "Thing".to_string(),

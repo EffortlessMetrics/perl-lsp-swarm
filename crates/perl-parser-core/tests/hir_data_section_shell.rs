@@ -88,6 +88,31 @@ fn marker_range_is_exactly_the_marker_bytes_and_smaller_than_the_whole_node() {
     );
 }
 
+/// The lexer's `DataMarker` token consumes the rest of the marker line,
+/// including trailing spaces and the newline, before switching modes.  The
+/// marker range must still cover only the marker word itself, so that trailing
+/// layout never leaks into the range the HIR shell publishes.
+#[test]
+fn marker_range_excludes_trailing_whitespace_and_the_line_terminator() {
+    for source in ["1;\n__DATA__   \npayload\n", "1;\n__DATA__\t\npayload\n", "1;\n__END__  \n"] {
+        let file = lower(source);
+        let decl = data_section_decl(&file);
+        let expected_marker = if source.contains("__DATA__") { "__DATA__" } else { "__END__" };
+        let expected_start = source.find(expected_marker).expect("marker text present in source");
+        assert_eq!(
+            decl.marker_range,
+            SourceLocation { start: expected_start, end: expected_start + expected_marker.len() },
+            "marker_range must cover only {expected_marker:?} in {source:?}, \
+             not the trailing whitespace or newline the marker token consumes"
+        );
+        assert_eq!(
+            &source[decl.marker_range.start..decl.marker_range.end],
+            expected_marker,
+            "marker_range must slice back to exactly the marker word"
+        );
+    }
+}
+
 #[test]
 fn payload_range_covers_exactly_the_payload_and_excludes_the_marker() {
     let source = "1;\n__DATA__\nfoo\n";
