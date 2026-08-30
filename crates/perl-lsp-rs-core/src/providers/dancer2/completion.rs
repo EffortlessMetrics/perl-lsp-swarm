@@ -21,6 +21,7 @@ use super::facts::CanonicalDancer2FileFacts;
 use perl_semantic_facts::framework_adapters::dancer2::{
     DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
 };
+use perl_semantic_facts::route::{HandlerContextKind, RouteHandlerContextFact};
 
 /// Sort penalty applied to Dancer2 keyword completion items so ordinary
 /// lexical/workspace results rank ahead of framework keywords.
@@ -70,7 +71,19 @@ pub fn keyword_completion_candidates(
     };
     // One canonical context query: route handlers and admitted hook handlers
     // both establish request context, and nothing else does (#13604).
-    let inside_request_context = facts.inside_request_context(offset);
+    let request_context = facts.request_context_at(offset);
+    let inside_request_context =
+        request_context.is_some_and(RouteHandlerContextFact::establishes_request_context);
+    // The rendered scope names where the keyword is available *here*. Saying
+    // "route handler only" inside an admitted hook handler would contradict
+    // the very position that just offered it.
+    let request_scope_detail = match request_context {
+        Some(context) if context.establishes_request_context() => match context.handler_kind {
+            HandlerContextKind::Hook => "request-scoped, in this hook handler",
+            _ => "request-scoped, in this route handler",
+        },
+        _ => "request-scoped (route or admitted hook handler)",
+    };
     let mut candidates = Vec::new();
     for keyword in &activation.facts.keywords {
         if keyword.state != Dancer2KeywordState::Imported {
@@ -94,7 +107,7 @@ pub fn keyword_completion_candidates(
                 &version,
                 match keyword.scope {
                     DslKeywordScope::Global => "global",
-                    DslKeywordScope::RouteHandlerOnly => "route handler only",
+                    DslKeywordScope::RouteHandlerOnly => request_scope_detail,
                     _ => "unknown",
                 },
                 DANCER2_DSL_CONTRACT_VERSION
@@ -118,7 +131,6 @@ mod tests {
     use crate::providers::dancer2::activation::file_activations;
     use crate::providers::dancer2::facts::canonical_file_facts;
     use perl_semantic_analyzer::Parser;
-    use perl_semantic_facts::route::HandlerContextKind;
     use perl_semantic_facts::{FileId, SourceGeneration};
 
     fn setup(source: &'static str) -> (Dancer2FileActivations, CanonicalDancer2FileFacts) {
@@ -191,6 +203,40 @@ mod tests {
                 "`{expected}` must be offered inside an admitted hook handler: {labels:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_offered_scope_detail_names_the_position_that_offered_it() {
+        // The detail must not contradict the location: a keyword offered
+        // inside a hook handler cannot describe itself as route-handler-only.
+        let hook_source = "use Dancer2;\nhook before => sub { my $r = request; };\n";
+        let (activations, facts) = setup(hook_source);
+        let inside = hook_source.find("request").expect("hook body offset");
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
+        let request = candidates
+            .iter()
+            .find(|candidate| candidate.label == "request")
+            .expect("request offered inside an admitted hook handler");
+        assert!(request.detail.contains("hook handler"), "{}", request.detail);
+        assert!(
+            !request.detail.contains("route handler only"),
+            "stale scope wording: {}",
+            request.detail
+        );
+
+        // A route handler still says route, so the wording tracks the owning
+        // context rather than being blanket-renamed.
+        let route_source = "use Dancer2;\nget '/x' => sub { my $p = params; };\n";
+        let (activations, facts) = setup(route_source);
+        let inside = route_source.find("params").expect("route body offset");
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
+        let params = candidates
+            .iter()
+            .find(|candidate| candidate.label == "params")
+            .expect("params offered inside a route handler");
+        assert!(params.detail.contains("route handler"), "{}", params.detail);
     }
 
     #[test]
