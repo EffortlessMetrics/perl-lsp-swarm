@@ -528,6 +528,14 @@ pub fn reconcile_geometry_rows(
 /// Consumers should call this once before trusting the registry rather than
 /// relying on a test to have run.
 ///
+/// # Cost
+///
+/// This is **not** a cheap preflight. It materializes the entire fixture bank
+/// via [`crate::node_kind_fixtures`] — one fully populated [`Node`] for every
+/// `NodeKind`, each with boxed children and owned `String` payloads — and
+/// reconciles all of them. Call it once at startup or from a test, never per
+/// node, per remap, or inside any loop.
+///
 /// # Errors
 ///
 /// Returns the first [`AstGeometryDrift`] found.

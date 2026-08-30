@@ -217,6 +217,80 @@ const GEOMETRY_TYPES: &[&str] = &["SourceLocation", "Token"];
 const NEUTRAL_TYPES: &[&str] =
     &["Box", "GotoTargetForm", "Node", "Option", "String", "TokenKind", "Vec", "bool"];
 
+/// Classify every type identifier in one field's declared type.
+///
+/// Returns whether the type carries source offsets, plus any identifier that is
+/// on neither list. Classification is by allowlist, not by looking for known
+/// geometry names: a denylist silently accepts what it does not recognise, so a
+/// `type Span = SourceLocation` alias would read as neutral and its field would
+/// escape the registry. An unrecognised identifier fails closed instead.
+///
+/// Lifetimes are stripped before tokenizing. `&'a SourceLocation` would
+/// otherwise yield the word `a`, which is neither a geometry nor a neutral type
+/// and would be reported as an unclassified *type* — misleading guidance for
+/// something that is not a type at all. Stripping is deliberately narrow: it
+/// removes `'name`, so a genuine one-letter type or generic parameter is still
+/// reported.
+fn classify_type_words(ty: &str) -> (bool, Vec<String>) {
+    // Remove `'lifetime` sequences: an apostrophe followed by an identifier.
+    let mut without_lifetimes = String::with_capacity(ty.len());
+    let mut chars = ty.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\'' {
+            while chars.peek().is_some_and(|c| c.is_alphanumeric() || *c == '_') {
+                chars.next();
+            }
+            // Keep a separator so `&'a SourceLocation` does not fuse words.
+            without_lifetimes.push(' ');
+            continue;
+        }
+        without_lifetimes.push(ch);
+    }
+
+    let mut carries_span = false;
+    let mut unclassified = Vec::new();
+    for word in without_lifetimes.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        if word.is_empty() {
+            continue;
+        }
+        if GEOMETRY_TYPES.contains(&word) {
+            carries_span = true;
+        } else if !NEUTRAL_TYPES.contains(&word) {
+            unclassified.push(word.to_string());
+        }
+    }
+    (carries_span, unclassified)
+}
+
+/// The lifetime carve-out must not weaken the allowlist.
+#[test]
+fn type_word_classification_ignores_lifetimes_but_not_types() {
+    // A lifetime is not a type and must not be reported as an unclassified one.
+    let (carries, unknown) = classify_type_words("&'a SourceLocation");
+    assert!(carries, "a reference to a span still carries geometry");
+    assert!(unknown.is_empty(), "a lifetime must not be reported as a type: {unknown:?}");
+
+    let (_, unknown) = classify_type_words("Option<&'static Token>");
+    assert!(unknown.is_empty(), "'static must not be reported as a type: {unknown:?}");
+
+    // Stripping lifetimes must not start accepting unknown types.
+    let (_, unknown) = classify_type_words("&'a Span");
+    assert_eq!(unknown, vec!["Span".to_string()], "an unknown type must still fail closed");
+
+    // A one-letter generic is a type, not a lifetime, and stays reported.
+    let (_, unknown) = classify_type_words("Vec<T>");
+    assert_eq!(unknown, vec!["T".to_string()], "a bare generic parameter must be classified");
+
+    // The ordinary case is unaffected.
+    let (carries, unknown) = classify_type_words("Option<SourceLocation>");
+    assert!(carries);
+    assert!(unknown.is_empty());
+
+    let (carries, unknown) = classify_type_words("Vec<TokenKind>");
+    assert!(!carries, "TokenKind is a bare discriminant, not geometry");
+    assert!(unknown.is_empty());
+}
+
 /// What the enum scan found: geometry fields, and any type it could not classify.
 struct DeclaredFields {
     geometry: Vec<(String, String)>,
@@ -320,22 +394,9 @@ fn declared_geometry_fields() -> DeclaredFields {
                 continue;
             }
 
-            // Classify by allowlist, not by looking for known geometry names.
-            // A denylist silently accepts anything it does not recognise — a
-            // `type Span = SourceLocation` alias would read as neutral and the
-            // field would escape. Requiring every type identifier to be known
-            // inverts that: an unrecognised name fails closed and forces a
-            // deliberate classification.
-            let mut carries_span = false;
-            for word in ty.split(|c: char| !c.is_alphanumeric() && c != '_') {
-                if word.is_empty() {
-                    continue;
-                }
-                if GEOMETRY_TYPES.contains(&word) {
-                    carries_span = true;
-                } else if !NEUTRAL_TYPES.contains(&word) {
-                    unknown.push((name.clone(), field.to_string(), word.to_string()));
-                }
+            let (carries_span, unclassified) = classify_type_words(ty);
+            for word in unclassified {
+                unknown.push((name.clone(), field.to_string(), word));
             }
             if carries_span {
                 declared.push((name.clone(), field.to_string()));
