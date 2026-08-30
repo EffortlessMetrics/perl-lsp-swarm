@@ -2,11 +2,11 @@ use perl_parser_core::error::{ParseError, ParseOutput};
 use perl_source_identity::ContentDigest;
 use thiserror::Error;
 
+#[cfg(test)]
+use super::geometry_attachment::SourceGeometryAttachmentState;
 use super::geometry_attachment::{
     SourceGeometryAttachment, SourceGeometrySubject, SourceGeometryValidationError,
 };
-#[cfg(test)]
-use super::geometry_attachment::SourceGeometryAttachmentState;
 
 /// Monotonic identity for one committed parser generation.
 ///
@@ -291,7 +291,10 @@ mod tests {
             SourceGeometryAttachmentState::Unavailable { .. }
         ));
         assert_eq!(snapshot.source_geometry().subject().generation(), ParseGeneration::INITIAL);
-        assert_eq!(snapshot.source_geometry().subject().content_digest(), snapshot.content_digest());
+        assert_eq!(
+            snapshot.source_geometry().subject().content_digest(),
+            snapshot.content_digest()
+        );
         assert_eq!(snapshot.source_geometry().subject().source_len(), source.len());
     }
 
