@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12413 |
-| Rust-family files | 3819 |
-| Non-Rust files | 8594 |
-| Allowlisted | 6359 |
+| Total tracked files | 12439 |
+| Rust-family files | 3821 |
+| Non-Rust files | 8618 |
+| Allowlisted | 6383 |
 | Unclassified | 2235 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 490 |
-| documentation | 2802 |
+| config | 493 |
+| documentation | 2806 |
 | generated | 2 |
 | production | 348 |
-| test | 2055 |
-| tooling | 662 |
+| test | 2071 |
+| tooling | 663 |
 | unclassified | 2235 |
 
 ## Unclassified files
@@ -3175,6 +3175,9 @@
 | `.spec/11392-native-neovim-train-graph/invalid/unknown_edge_target.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11392-native-neovim-train-graph/shuffled/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11392-native-neovim-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11470-standalone-owned-state-manifest/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11470-standalone-owned-state-manifest/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11470-standalone-owned-state-manifest/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11625-module-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6049,6 +6052,7 @@
 | `docs/specs/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/RELEASE_CANDIDATE_BASELINE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/WORKTREE_FORENSIC_EVIDENCE_V1.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/specs/lsp-318-closure-ownership.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-318-conformance-matrix.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/lsp-final-surface-inventory.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/specs/protocol-type-substrate-matrix.json` | documentation | `non-rust-docs-tree` | docs |
@@ -6185,6 +6189,22 @@
 | `fixtures/agent_review_packet/shuffled/challenger_service_marker_shuffled.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/experience/install_owned_state/manifest_canonical_full_install.json` | test | `non-rust-install-owned-state-canonical-full-install-manifest` | distribution |
+| `fixtures/experience/install_owned_state/manifest_instrument_failed.json` | test | `non-rust-install-owned-state-instrument-failed-manifest` | distribution |
+| `fixtures/experience/install_owned_state/manifest_invalid_ambiguous_running.json` | test | `non-rust-install-owned-state-invalid-ambiguous-running-manifest` | distribution |
+| `fixtures/experience/install_owned_state/manifest_invalid_traversing_root.json` | test | `non-rust-install-owned-state-invalid-traversing-root-manifest` | distribution |
+| `fixtures/experience/install_owned_state/manifest_invalid_unbounded_identity.json` | test | `non-rust-install-owned-state-invalid-unbounded-identity-manifest` | distribution |
+| `fixtures/experience/install_owned_state/manifest_invalid_unknown_role.json` | test | `non-rust-install-owned-state-invalid-unknown-role-manifest` | distribution |
+| `fixtures/experience/install_owned_state/manifest_partial_deletion_retry.json` | test | `non-rust-install-owned-state-partial-deletion-retry-manifest` | distribution |
+| `fixtures/experience/install_owned_state/manifest_running_current.json` | test | `non-rust-install-owned-state-running-current-manifest` | distribution |
+| `fixtures/experience/install_owned_state/manifest_symlink_substitution.json` | test | `non-rust-install-owned-state-symlink-substitution-manifest` | distribution |
+| `fixtures/experience/install_owned_state/manifest_user_edited_path.json` | test | `non-rust-install-owned-state-user-edited-path-manifest` | distribution |
+| `fixtures/experience/install_owned_state/plan_blocked_running_all_preserve.json` | test | `non-rust-install-owned-state-blocked-running-plan` | distribution |
+| `fixtures/experience/install_owned_state/plan_full_removal.json` | test | `non-rust-install-owned-state-full-removal-plan` | distribution |
+| `fixtures/experience/install_owned_state/plan_invalid_stale_binding.json` | test | `non-rust-install-owned-state-stale-binding-plan-negative-control` | distribution |
+| `fixtures/experience/install_owned_state/plan_rollback_retained.json` | test | `non-rust-install-owned-state-rollback-retained-plan` | distribution |
+| `fixtures/experience/install_owned_state/result_already_absent_complete_evidence.json` | test | `non-rust-install-owned-state-already-absent-result` | distribution |
+| `fixtures/experience/install_owned_state/result_partial_failure_retryable.json` | test | `non-rust-install-owned-state-partial-failure-result` | distribution |
 | `fixtures/experience/standalone_candidate_selection/01_complete_archive_pair.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/02_historical_server_only.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/03_exact_source_server_only.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
@@ -6410,6 +6430,9 @@
 | `schemas/standalone_candidate.v1.schema.json` | config | `non-rust-standalone-candidate-schema` | release/ci |
 | `schemas/standalone_current_selection.v1.schema.json` | config | `non-rust-standalone-current-selection-schema` | release/ci |
 | `schemas/standalone_install_transition.v1.schema.json` | config | `non-rust-standalone-install-transition-schema` | release/ci |
+| `schemas/standalone_owned_state.v1.schema.json` | config | `non-rust-standalone-owned-state-schema` | distribution |
+| `schemas/standalone_removal_plan.v1.schema.json` | config | `non-rust-standalone-removal-plan-schema` | distribution |
+| `schemas/standalone_uninstall_result.v1.schema.json` | config | `non-rust-standalone-uninstall-result-schema` | distribution |
 | `schemas/train_edge_contract.v1.schema.json` | config | `non-rust-train-edge-contract-schema` | tooling/train-graph |
 | `schemas/vsix_candidate_payload.v1.schema.json` | config | `non-rust-vsix-candidate-payload-schema` | release/ci |
 | `scripts/.ignored-baseline` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6623,6 +6646,7 @@
 | `scripts/ci/test_rustfmt_check.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rustfmt_required_workflow.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_scope_cache_key.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_standalone_contract_schemas.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |

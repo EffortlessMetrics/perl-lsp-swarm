@@ -1,0 +1,227 @@
+{
+  "schema_version": "standalone_owned_state.v1",
+  "claim_boundary": "Classifies one observed standalone installation for uninstall planning (#11470). Records ownership; deletes nothing, mutates no PATH/profile/registry state, and activates no lifecycle claim.",
+  "install_root": {
+    "absolute_path": "/home/alice/.local/share/perllsp",
+    "identity_digest_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "link_policy": "resolved_physical"
+  },
+  "installer": {
+    "kind": "posix_installer",
+    "schema_version": "posix_installer.v1"
+  },
+  "current_selection": {
+    "candidate_id": "v0.18.0-x86_64-unknown-linux-gnu",
+    "version": "0.18.0",
+    "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "selection_receipt_path": "receipts/current.json",
+    "retained_for_rollback": false
+  },
+  "previous_candidates": [
+    {
+      "candidate_id": "v0.17.2-x86_64-unknown-linux-gnu",
+      "version": "0.17.2",
+      "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "selection_receipt_path": "receipts/previous-v0.17.2.json",
+      "retained_for_rollback": true
+    }
+  ],
+  "other_roots_observed": [
+    {
+      "absolute_path": "/home/alice/.cargo/perllsp-alt-root",
+      "classification": "package_manager_or_other_route"
+    }
+  ],
+  "entries": [
+    {
+      "role": "immutable_candidate_dir",
+      "relative_path": "candidates/v0.18.0-x86_64-unknown-linux-gnu",
+      "observed": "present",
+      "ownership_class": "owned_required",
+      "identity": {
+        "kind": "directory_tree_digest",
+        "sha256": "d0a1000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "retain_required"
+    },
+    {
+      "role": "candidate_manifest",
+      "relative_path": "candidates/v0.18.0-x86_64-unknown-linux-gnu/manifest.json",
+      "observed": "present",
+      "ownership_class": "owned_required",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0a2000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "retain_required"
+    },
+    {
+      "role": "immutable_candidate_dir",
+      "relative_path": "candidates/v0.17.2-x86_64-unknown-linux-gnu",
+      "observed": "present",
+      "ownership_class": "owned_retained_for_rollback",
+      "identity": {
+        "kind": "directory_tree_digest",
+        "sha256": "d0a3000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "retain_for_rollback"
+    },
+    {
+      "role": "selection_marker",
+      "relative_path": "current",
+      "observed": "present",
+      "ownership_class": "owned_required",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0a4000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "retain_required"
+    },
+    {
+      "role": "installation_receipt",
+      "relative_path": "receipts/current.json",
+      "observed": "present",
+      "ownership_class": "owned_required",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0a5000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "retain_required"
+    },
+    {
+      "role": "installation_receipt",
+      "relative_path": "receipts/previous-v0.17.2.json",
+      "observed": "present",
+      "ownership_class": "owned_retained_for_rollback",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0a6000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "retain_for_rollback"
+    },
+    {
+      "role": "attempt_record",
+      "relative_path": "attempts/attempt-2026-08-20T10-00-00Z.json",
+      "observed": "present",
+      "ownership_class": "owned_removable",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0a7000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "removable"
+    },
+    {
+      "role": "transaction_log",
+      "relative_path": "transactions/log.jsonl",
+      "observed": "present",
+      "ownership_class": "owned_required",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0a8000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "retain_required"
+    },
+    {
+      "role": "path_marker",
+      "relative_path": "**/*",
+      "observed": "present",
+      "ownership_class": "owned_removable",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0a9000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "removable"
+    },
+    {
+      "role": "profile_marker",
+      "relative_path": "../../escape",
+      "observed": "present",
+      "ownership_class": "owned_removable",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0aa000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "removable"
+    },
+    {
+      "role": "registry_marker",
+      "relative_path": "registry/perllsp-uninstall.marker",
+      "observed": "present",
+      "ownership_class": "owned_removable",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0ab000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "removable"
+    },
+    {
+      "role": "unowned_file_observed",
+      "relative_path": "notes.txt",
+      "observed": "present",
+      "ownership_class": "foreign_or_user_owned",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0ac000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": true,
+      "retention": "foreign_preserve"
+    },
+    {
+      "role": "external_route_state",
+      "relative_path": ".cargo-binstall/perllsp-meta.json",
+      "observed": "present",
+      "ownership_class": "package_manager_or_other_route",
+      "identity": {
+        "kind": "sha256_content",
+        "sha256": "d0ad000000000000000000000000000000000000000000000000000000000000"
+      },
+      "process_refs": [],
+      "user_modified": false,
+      "retention": "external_route_preserve"
+    }
+  ],
+  "transactions": [
+    {
+      "attempt_id": "install-2026-08-20T09-58-00Z",
+      "operation": "install",
+      "outcome": "completed",
+      "record_relative_path": "attempts/attempt-2026-08-20T10-00-00Z.json"
+    },
+    {
+      "attempt_id": "upgrade-2026-08-21T12-30-00Z",
+      "operation": "upgrade",
+      "outcome": "completed"
+    }
+  ],
+  "enumeration": {
+    "complete": true,
+    "instrument": "standalone-scan.v1 complete walk of the physical root"
+  },
+  "redaction": {
+    "policy": "none",
+    "redacted_fields": []
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": "standalone_uninstall_result.v1",
+  "result": "already_absent_owned_state",
+  "claim_boundary": "Reports one uninstall attempt against one plan (#11470). Every manifest row and named residue was already absent before this run; a complete enumeration proved the absence instead of assuming it from a missing manifest. Nothing was removed, preserved, or failed in this attempt.",
+  "plan_id": "plan-full-removal-canonical",
+  "bound_manifest_sha256": "4cd21c03b8bcf7b2ad65d7ecda67695e419dfceb0dfa3197429bfce56b013da4",
+  "removed_entries": [],
+  "preserved_entries": [],
+  "failed_entries": [],
+  "complete_evidence": true,
+  "activation_state": "conditional_activation_not_selected",
+  "retryable": false,
+  "limitations": []
+}
