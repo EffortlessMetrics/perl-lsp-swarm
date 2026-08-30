@@ -220,10 +220,12 @@ impl LineIndex {
 
     /// Convert byte offset to position (0-based line and UTF-16 column)
     pub fn offset_to_position(&self, offset: usize) -> (u32, u32) {
-        let offset = self.normalize_offset(offset);
+        let mut offset = self.normalize_offset(offset);
         let line = self.line_starts.binary_search(&offset).unwrap_or_else(|i| i.saturating_sub(1));
 
         let line_start = self.line_starts[line];
+        let separator_end = self.line_starts.get(line + 1).copied().unwrap_or(self.text.len());
+        offset = offset.min(line_content_end(&self.text, line_start, separator_end));
         let column = self.utf16_column(line, offset - line_start);
 
         (line as u32, column as u32)
@@ -481,9 +483,11 @@ mod newline_policy_tests {
         let rope = Rope::from_str(text);
         let cache = LineStartsCache::new(text);
         let rope_cache = LineStartsCache::new_rope(&rope);
+        let owning_index = LineIndex::new(text.to_owned());
 
         assert_eq!(cache.offset_to_position(text, 3), (0, 2));
         assert_eq!(rope_cache.offset_to_position_rope(&rope, 3), (0, 2));
+        assert_eq!(owning_index.offset_to_position(3), (0, 2));
     }
 
     #[test]

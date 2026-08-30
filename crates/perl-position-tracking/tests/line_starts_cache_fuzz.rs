@@ -1,5 +1,5 @@
 #![deny(clippy::map_err_ignore)] // Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
-use perl_position_tracking::LineStartsCache;
+use perl_position_tracking::{LineIndex, LineStartsCache};
 use proptest::prelude::*;
 use ropey::Rope;
 
@@ -53,12 +53,15 @@ proptest! {
         let rope = Rope::from_str(&content);
         let cache_text = LineStartsCache::new(&content);
         let cache_rope = LineStartsCache::new_rope(&rope);
+        let owning_index = LineIndex::new(content.clone());
 
         let bounded = offset.min(content.len());
         let text_pos = cache_text.offset_to_position(&content, bounded);
         let rope_pos = cache_rope.offset_to_position_rope(&rope, bounded);
+        let owning_pos = owning_index.offset_to_position(bounded);
 
         prop_assert_eq!(text_pos, rope_pos, "offset-to-position mismatch at {}", bounded);
+        prop_assert_eq!(text_pos, owning_pos, "owning-index mismatch at {}", bounded);
     }
 
     #[test]
