@@ -70,7 +70,8 @@ pub fn run_census() -> Result<()> {
 
     println!("indexed functions: {}", census.len());
     println!(
-        "names with more than one definition: {} (resolved per call site, not          automatically dropped)",
+        "names with more than one definition: {} (resolved per call site, not automatically \
+         dropped)",
         census.colliding_names().len()
     );
 
