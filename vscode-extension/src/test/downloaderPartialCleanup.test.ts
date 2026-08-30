@@ -76,6 +76,18 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     return response;
   }
 
+  function managedCleanupArtifacts(): string[] {
+    return fs
+      .readdirSync(tmpDir)
+      .filter(
+        (entry) => entry.startsWith('.partial-download-') || entry.startsWith('.partial-cleanup-'),
+      );
+  }
+
+  async function flushManagedCleanup(): Promise<void> {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
   test.each([
     ['non-2xx response', 404, {}],
     ['declared oversize response', 200, { 'content-length': '11' }],
@@ -391,7 +403,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
       file.write('data');
       return file;
     });
-    jest.spyOn(downloader, 'removePartialFile').mockImplementation(() => {});
+    const removePartialFile = jest.spyOn(downloader, 'removePartialFile');
     jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
       process.nextTick(() => {
         const response = new EventEmitter() as EventEmitter & {
@@ -412,9 +424,11 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     await expect(
       downloader.downloadFile('http://localhost/archive', destination, 1000),
     ).rejects.toBe(requestError);
+    await flushManagedCleanup();
+    expect(removePartialFile).toHaveBeenCalledTimes(1);
     expect(fs.readFileSync(destination, 'utf8')).toBe('partial');
     expect(stagingDestination).not.toBe('');
-    expect(fs.existsSync(stagingDestination)).toBe(false);
+    expect(managedCleanupArtifacts()).toEqual([]);
   });
 
   test('settles immediately when a stream double closes synchronously', async () => {
@@ -446,7 +460,7 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
       fs.writeFileSync(stagingPath, 'partial');
       return file as unknown as fs.WriteStream;
     });
-    jest.spyOn(downloader, 'removePartialFile').mockImplementation(() => {});
+    const removePartialFile = jest.spyOn(downloader, 'removePartialFile');
     jest.spyOn(downloader, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
       process.nextTick(() => {
         const response = new EventEmitter() as EventEmitter & {
@@ -471,9 +485,11 @@ describe('BinaryDownloader partial-file cleanup ordering', () => {
     await expect(
       downloader.downloadFile('http://localhost/archive', destination, 1000),
     ).rejects.toBe(requestError);
+    await flushManagedCleanup();
+    expect(removePartialFile).toHaveBeenCalledTimes(1);
     expect(file.destroy).toHaveBeenCalledTimes(1);
     expect(fs.readFileSync(destination, 'utf8')).toBe('partial');
     expect(stagingDestination).not.toBe('');
-    expect(fs.existsSync(stagingDestination)).toBe(false);
+    expect(managedCleanupArtifacts()).toEqual([]);
   });
 });
