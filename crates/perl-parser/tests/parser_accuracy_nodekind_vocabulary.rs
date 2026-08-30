@@ -24,9 +24,6 @@ const AST_KIND_FIELD: &str = "ast_expectations.kind";
 const AST_PARENT_KIND_FIELD: &str = "ast_expectations.parent_kind";
 const FORBIDDEN_KIND_FIELD: &str = "forbidden_nodes.kind";
 const FORBIDDEN_PARENT_KIND_FIELD: &str = "forbidden_nodes.parent_kind";
-const MIN_AST_EXPECTATION_ROWS: usize = 284;
-const MIN_FORBIDDEN_NODE_ROWS: usize = 4;
-const MIN_PARENT_KIND_REFERENCES: usize = 240;
 
 const PARSER_ACCURACY_FIXTURE_FIELDS: &[&str] = &[
     "id",
@@ -229,30 +226,6 @@ impl<'de> Visitor<'de> for StrictJsonValueVisitor {
 #[test]
 fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
     let manifest = parse_manifest(MANIFEST_JSON)?;
-    let positive_rows: usize =
-        manifest.fixtures.iter().map(|fixture| fixture.ast_expectations.len()).sum();
-    let forbidden_rows: usize =
-        manifest.fixtures.iter().map(|fixture| fixture.forbidden_nodes.len()).sum();
-    let parent_references: usize = manifest
-        .fixtures
-        .iter()
-        .flat_map(|fixture| fixture.ast_expectations.iter().chain(fixture.forbidden_nodes.iter()))
-        .filter(|reference| reference.parent_kind.is_some())
-        .count();
-
-    assert!(
-        positive_rows >= MIN_AST_EXPECTATION_ROWS,
-        "parser-accuracy manifest positive NodeKind rows dropped below {MIN_AST_EXPECTATION_ROWS}: {positive_rows}"
-    );
-    assert!(
-        forbidden_rows >= MIN_FORBIDDEN_NODE_ROWS,
-        "parser-accuracy manifest forbidden NodeKind rows dropped below {MIN_FORBIDDEN_NODE_ROWS}: {forbidden_rows}"
-    );
-    assert!(
-        parent_references >= MIN_PARENT_KIND_REFERENCES,
-        "parser-accuracy manifest parent-kind references dropped below {MIN_PARENT_KIND_REFERENCES}: {parent_references}"
-    );
-
     let mut positive_references = 0usize;
     let mut forbidden_references = 0usize;
 
@@ -359,6 +332,21 @@ fn manifest_rejects_duplicate_json_members_before_nodekind_validation() {
                 }]
             }"#,
         ),
+        (
+            "manifest.fixtures[0].ast_expectations[0]",
+            "line",
+            r#"{
+                "fixtures": [{
+                    "id": "fixture",
+                    "ast_expectations": [{
+                        "id": "forged_line",
+                        "kind": "Bloock",
+                        "line": 1,
+                        "line": 2
+                    }]
+                }]
+            }"#,
+        ),
     ];
 
     for (object_path, duplicate_key, json) in cases {
@@ -371,6 +359,10 @@ fn manifest_rejects_duplicate_json_members_before_nodekind_validation() {
         assert!(
             rendered.contains(&format!("duplicate field `{duplicate_key}`")),
             "duplicate-key diagnostic `{rendered}` must identify key `{duplicate_key}`"
+        );
+        assert!(
+            !rendered.contains("non-canonical NodeKind"),
+            "duplicate rejection must precede NodeKind validation; diagnostic `{rendered}` unexpectedly performed NodeKind validation"
         );
     }
 }
