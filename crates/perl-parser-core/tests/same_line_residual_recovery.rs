@@ -276,6 +276,23 @@ fn bare_and_unary_word_goto_forms_match_perl_boundaries() -> Result<(), String> 
             ));
         }
     }
+
+    for operator in ["or", "and", "xor"] {
+        let source = format!("foo {operator} -goto fail; print \"ok\";");
+        if !perl_compile_accepts(&source)? {
+            return Err(format!("real Perl rejected valid unary-minus goto form: {source:?}"));
+        }
+        let output = Parser::new(&source).parse_with_recovery();
+        if output.diagnostics.iter().any(ParseError::blocks_clean_parse)
+            || !contains_word_operator_with_goto(&output.ast, operator)
+        {
+            return Err(format!(
+                "unary-minus goto must remain one clean word-operator control-flow expression:\nsource={source:?}\ndiagnostics={:?}\nast={}",
+                output.diagnostics,
+                output.ast.to_sexp()
+            ));
+        }
+    }
     Ok(())
 }
 
