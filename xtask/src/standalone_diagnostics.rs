@@ -1613,6 +1613,21 @@ pub fn project_packet(manifest: &Value, packet: &Value) -> Res<Value> {
 
 /// Project one selector combination. `route_mode` is rendering context only and
 /// never participates in reason selection.
+///
+/// # Admission boundary
+///
+/// `manifest` must already have passed [`validate_manifest_file`]. This
+/// function defaults missing reason fields rather than rejecting them, because
+/// totality and reachability are the validator's job and re-deriving them per
+/// projection would cost the whole cross-product on every call. The `check`,
+/// `explain`, and `project` subcommands all validate first; a library caller
+/// that skips that step gets a projection shaped by a registry nothing has
+/// admitted, which is the one way to obtain diagnostics this module's
+/// guarantees do not cover.
+///
+/// The typed *combination* is checked here regardless: every selector field and
+/// `route_mode` must lie in its closed domain, so a caller cannot smuggle an
+/// untyped outcome past reason selection.
 pub fn project_combination(
     manifest: &Value,
     combination: &Combination,
