@@ -477,11 +477,12 @@ fn the_canonical_registry_validates() -> Result<(), Box<dyn std::error::Error>> 
 ///
 /// **What this is not.** This is a scan over source text, not a compile-time
 /// check and not a lint. It cannot see the parse tree, so it recognises a rest
-/// pattern only by shape: a `..` whose next non-whitespace character is `}`.
-/// That deliberately excludes ordinary `..` uses — `0..n`, `&chunks[0..]`,
-/// `a..=b`, `Foo { ..base }` — which an earlier version of this test would have
-/// failed on for the wrong reason. It follows that a sufficiently unusual
-/// formatting of a real rest pattern could still slip past it.
+/// pattern only by shape: a `..` whose next non-whitespace character is `}`,
+/// searched across the whole body so a pattern split over several lines is
+/// still caught. That deliberately excludes ordinary `..` uses — `0..n`,
+/// `&chunks[0..]`, `a..=b`, `Foo { ..base }` — which an earlier version of this
+/// test would have failed on for the wrong reason. It remains a shape match, so
+/// a sufficiently unusual spelling could still slip past it.
 ///
 /// So do not read a green result here as proof that the observer is exhaustive.
 /// The load-bearing guard is
@@ -503,22 +504,37 @@ fn the_observer_never_uses_a_rest_pattern() -> Result<(), Box<dyn std::error::Er
         after_signature.lines().take_while(|line| !line.starts_with('}')).collect();
     assert!(!body.is_empty(), "the observer body must be scannable");
 
-    for (offset, line) in body.iter().enumerate() {
-        let code = line.split("//").next().unwrap_or(line);
+    // Join the comment-stripped body and scan it whole rather than line by line.
+    // A rest pattern may be split across lines by formatting:
+    //
+    //     NodeKind::Identifier {
+    //         ..
+    //     } => NONE,
+    //
+    // which a per-line scan never sees, because the `..` line has no `}` on it.
+    let code: String = body
+        .iter()
+        .map(|line| line.split("//").next().unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
 
-        // A rest pattern closes its struct pattern: `{ name: _, .. }`. A range
-        // or slice never has `}` as its next non-whitespace character.
-        let is_rest_pattern =
-            code.match_indices("..").any(|(at, _)| code[at + 2..].trim_start().starts_with('}'));
-
-        assert!(
-            !is_rest_pattern,
-            "observe_geometry_fields must destructure every field explicitly, but line {} uses a \
-             rest pattern: {}\nA `..` here would let a new geometry-bearing field compile without \
-             being classified.",
-            offset + 1,
-            line.trim()
-        );
+    // A rest pattern closes its struct pattern: `{ name: _, .. }`. A range or
+    // slice never has `}` as its next non-whitespace character, across lines or
+    // otherwise.
+    if let Some((at, _)) =
+        code.match_indices("..").find(|(at, _)| code[at + 2..].trim_start().starts_with('}'))
+    {
+        let line_number = code[..at].matches('\n').count() + 1;
+        // Report the whole line holding the `..`, not just the text before it.
+        let line_start = code[..at].rfind('\n').map_or(0, |index| index + 1);
+        let line_end = code[at..].find('\n').map_or(code.len(), |index| at + index);
+        return Err(format!(
+            "observe_geometry_fields must destructure every field explicitly, but line \
+             {line_number} uses a rest pattern: {}\nA `..` here would let a new geometry-bearing \
+             field compile without being classified.",
+            code[line_start..line_end].trim()
+        )
+        .into());
     }
     Ok(())
 }
