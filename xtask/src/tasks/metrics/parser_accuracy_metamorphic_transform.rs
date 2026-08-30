@@ -306,13 +306,14 @@ impl CoordinateMap {
         }
 
         for segment in &self.segments {
-            if let CoordinateSegment::Edit { removed_base, inserted_transformed, .. } = segment {
-                if removed_base.start < offset && offset < removed_base.end {
-                    return PositionRelation::RemovedOnly {
-                        base_offset: offset,
-                        transformed: *inserted_transformed,
-                    };
-                }
+            if let CoordinateSegment::Edit { removed_base, inserted_transformed, .. } = segment
+                && removed_base.start < offset
+                && offset < removed_base.end
+            {
+                return PositionRelation::RemovedOnly {
+                    base_offset: offset,
+                    transformed: *inserted_transformed,
+                };
             }
         }
 
@@ -351,13 +352,14 @@ impl CoordinateMap {
         }
 
         for segment in &self.segments {
-            if let CoordinateSegment::Edit { removed_base, inserted_transformed, .. } = segment {
-                if inserted_transformed.start < offset && offset < inserted_transformed.end {
-                    return PositionRelation::InsertedOnly {
-                        transformed_offset: offset,
-                        base: *removed_base,
-                    };
-                }
+            if let CoordinateSegment::Edit { removed_base, inserted_transformed, .. } = segment
+                && inserted_transformed.start < offset
+                && offset < inserted_transformed.end
+            {
+                return PositionRelation::InsertedOnly {
+                    transformed_offset: offset,
+                    base: *removed_base,
+                };
             }
         }
 
