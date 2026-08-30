@@ -139,11 +139,21 @@ fn assert_analysis_contract(pattern: &str, analysis: &RegexAnalysis) -> TestCase
     for fact in &analysis.facts.embedded_code {
         assert_body_range(pattern, fact.range, "embedded-code fact")?;
         prop_assert!(
-            analysis.facts.dynamic_regions.iter().any(|region| region.range == fact.range),
-            "embedded-code fact lacks a matching dynamic region: {:?} in {pattern:?}",
+            analysis
+                .facts
+                .dynamic_regions
+                .iter()
+                .filter(|region| region.range == fact.range)
+                .count()
+                == 1,
+            "embedded-code fact does not have exactly one matching dynamic region: {:?} in {pattern:?}",
             fact.range
         );
     }
+    prop_assert!(
+        analysis.facts.dynamic_regions.len() >= analysis.facts.embedded_code.len(),
+        "fewer dynamic regions than embedded-code facts in {pattern:?}"
+    );
     for region in &analysis.facts.dynamic_regions {
         assert_body_range(pattern, region.range, "dynamic region")?;
     }
@@ -297,6 +307,20 @@ proptest! {
                 .first()
                 .map(|fact| start.saturating_add(fact.range.start))
         );
+        if let Some(first_fact) = first.facts.embedded_code.first() {
+            let first_embedded_diagnostic = first.diagnostics.iter().find(|diagnostic| {
+                diagnostic.code == RegexDiagnosticCode::EmbeddedCodeImmediate
+                    || diagnostic.code == RegexDiagnosticCode::EmbeddedCodeDeferred
+            });
+            prop_assert!(
+                first_embedded_diagnostic.is_some(),
+                "embedded-code facts exist without an embedded-code diagnostic in {pattern:?}"
+            );
+            prop_assert_eq!(
+                first_embedded_diagnostic.map(|diagnostic| diagnostic.range.start),
+                Some(first_fact.range.start)
+            );
+        }
         prop_assert_eq!(
             validator.find_nested_quantifier(&pattern, start).map(|finding| finding.offset),
             first

@@ -89,6 +89,14 @@ fn supported_embedded_code_forms_have_exact_construct_and_opener_spans()
             false,
         ),
         (
+            "pre(?{ x中})post",
+            "(?{ x中})",
+            RegexDynamicRegionKind::EmbeddedCodeImmediate,
+            RegexDiagnosticCode::EmbeddedCodeImmediate,
+            "(?{",
+            false,
+        ),
+        (
             "pre(?{ missing paren }tail",
             "(?{ missing paren }",
             RegexDynamicRegionKind::EmbeddedCodeImmediate,
