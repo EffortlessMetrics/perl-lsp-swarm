@@ -16,8 +16,8 @@ content; a branch-looking ref is not sufficient by itself.
 ## Writer-authority rule
 
 For every `Swatinem/rust-cache` invocation in a candidate-capable workflow job, keep
-restore available and declare save authority explicitly. In workflows whose only
-candidate events are `pull_request` and `merge_group`, the current canonical pattern is:
+restore available and declare save authority explicitly. The preferred pattern names
+both the trusted event classes and canonical branch refs:
 
 ```yaml
 - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -25,24 +25,29 @@ candidate events are `pull_request` and `merge_group`, the current canonical pat
     cache-on-failure: true
     cache-all-crates: true
     shared-key: <stable-key>
-    save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+    save-if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 ```
 
-For that event set:
+Under this guard:
 
-- **Pull requests:** restore, run, do not save (`github.ref` is a pull-request ref).
-- **Merge groups:** restore, run, do not save (the integration ref is not `main` or
-  `master`).
+- **Pull requests:** restore, run, do not save.
+- **Merge groups:** restore, run, do not save.
 - **Canonical branch contexts:** an intentional push, schedule, or dispatch whose ref
   is `main` or `master` may save when that workflow/job is designed to seed the cache.
 - **Feature branches and tags:** may restore but do not satisfy the save condition.
 
-`pull_request_target` is different: its ref names the base branch, so the expression
-above can evaluate true for a PR-originated run. A workflow reachable through
-`pull_request_target` must either exclude that event explicitly from save authority or
-carry a dedicated reviewed proof that no candidate checkout, payload field, fetched
-artifact, generated key, or candidate-influenced output can enter the cached path.
-Never infer safety there from `github.ref` alone.
+A shorter ref-only guard can remain acceptable for an existing workflow only when an
+executable contract pins its complete trigger set and proves that every candidate event
+uses a candidate or integration ref. That is a reviewed exception to the preferred
+shape, not a portable pattern: adding another trigger can invalidate the proof without
+changing the cache step itself.
+
+`pull_request_target` is different: its ref names the base branch, so a ref-only
+`main`/`master` expression can evaluate true for a PR-originated run. A workflow
+reachable through `pull_request_target` must either exclude that event explicitly from
+save authority or carry a dedicated reviewed proof that no candidate checkout, payload
+field, fetched artifact, generated key, or candidate-influenced output can enter the
+cached path. Never infer safety there from `github.ref` alone.
 
 The same caution applies to any indirect event whose ref identifies trusted repository
 state while its inputs or downloaded artifacts may still be candidate-controlled.
@@ -136,6 +141,11 @@ The same proof must accept intentional schedule/manual/default-branch writers, r
 base-only `pull_request_target` jobs whose cached bytes cannot be candidate-influenced,
 and jobs statically excluded from candidate events. No separate required status context
 is needed; the rule belongs in the existing workflow-policy/result plane.
+
+This section is the executable acceptance contract for #13927, not a claim that the
+current `check-candidate-writers` scanner already inspects cache actions, keys, paths, or
+artifact provenance. Until #13927 lands, focused leaf contracts enforce individual
+writer repairs; the existing candidate-writer scanner remains a separate control.
 
 Expected effect after the active writer repairs land:
 
