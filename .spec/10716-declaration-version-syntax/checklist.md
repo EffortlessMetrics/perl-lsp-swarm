@@ -40,14 +40,20 @@
 - [x] Malformed/recovered can never report exact
 - [x] Checked construction returns `Result`; no constructor panics or indexes
 - [x] Public enums are `#[non_exhaustive]`, matching crate convention
+- [x] An exact form admits exactly the spellings Perl admits; recovery is the
+      only escape
+- [x] The one-line `Display` contract holds for recovered text containing
+      control characters
 - [x] No normalized value, ordering, comparison, or activation semantics
 - [x] No second raw/normalized or compatibility-string authority
 - [x] Equality, `Debug`, and the `Display` projection are deterministic
 
 ## Verification
 
-- [x] `cargo test -p perl-ast --test declaration_version_syntax --locked` (13 rows)
-- [x] Six mutation controls applied, caught, and reverted (see `acceptance.md`)
+- [x] `cargo test -p perl-ast --test declaration_version_syntax --locked` (15 rows)
+- [x] Eleven mutation controls applied, caught, and reverted (see `acceptance.md`)
+- [x] Grammar differentialled against Perl 5.38.2 over 36 spellings: 36 agree,
+      0 disagreements
 - [x] `cargo xtask non-rust inventory --check`
 - [x] `cargo test -p perl-ast --all-targets --locked`
 - [x] `cargo clippy -p perl-ast --all-targets --locked -- -D warnings`

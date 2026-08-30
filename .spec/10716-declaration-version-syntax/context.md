@@ -81,6 +81,22 @@ consumers this type exists for; rewiring them is #11089's claim, not this one.
   producer does no searching, matching, or re-lexing.
 - **Disposition is derived from the form**, not stored beside it. An "exact
   recovered" value is unrepresentable rather than merely rejected.
+- **An exact form admits exactly what Perl admits.** The constructor validates
+  a closed spelling grammar per form, calibrated against Perl 5.38.2 rather
+  than against intuition:
+  - *decimal* — one integer part with no leading zero (`0`, `1`, `10`, but not
+    `00`/`01`), then at most one fractional part which must have a digit if the
+    dot is present. No underscores. `1.`, `.5`, `1_2`, `1.23_45` and `1.2.3`
+    are all rejected by Perl and are rejected here.
+  - *v-string* — a leading `v` and at least **three** dot-separated
+    components. Perl rejects both `v5` (too few parts) and a bare `1.2.3` (no
+    `v`), so both are rejected here. The no-leading-zero rule applies to the
+    first component only: `v01.2.3` is rejected, `v1.02.3` is accepted.
+
+  `RecoveredOrUnknown` is the only escape and admits anything. Without this
+  check the exact/recovered distinction would be a caller's assertion rather
+  than a property of the value. See `acceptance.md` for the oracle table and
+  the 36-spelling differential against the interpreter.
 - **Absence is owner-level `Option::None`.** A version that was present but
   unreadable is `Some(RecoveredOrUnknown)` and keeps whatever text and
   geometry the parser observed. Unknown is not absent.
@@ -92,7 +108,10 @@ consumers this type exists for; rewiring them is #11089's claim, not this one.
   form. Rejection is a typed `Result`; no constructor panics or indexes.
 - `Display` is one deterministic form-tagged projection
   (`<form>:<raw>@<start>..<end>`). It is a diagnostic/receipt rendering, not
-  machine identity, and never renders a normalized interpretation.
+  machine identity, and never renders a normalized interpretation. Because a
+  recovered reading may cover arbitrary source, control characters and the
+  escape character itself are escaped so the projection is genuinely one line;
+  ordinary version spellings contain none of them and render unchanged.
 - The three public enums are `#[non_exhaustive]`, matching this crate's
   convention for public enums (`GotoTargetForm` at `ast.rs:155`,
   `AstInvariantCode` at `invariants.rs:13`, and 12 further occurrences).

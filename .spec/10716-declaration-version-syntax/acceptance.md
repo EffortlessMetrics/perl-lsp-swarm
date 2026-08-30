@@ -19,6 +19,44 @@ Proof: `crates/perl-ast/tests/declaration_version_syntax.rs`
 | DVS-011 | One value embeds in a package owner and a class owner with no conversion | `one_value_embeds_in_package_and_class_owners_without_conversion` |
 | DVS-012 | Rejection diagnostics name the offending geometry, by full message not digit co-occurrence | `rejection_diagnostics_are_actionable` |
 | DVS-013 | A caller cannot substitute a spelling for the one the range covers | `a_caller_cannot_substitute_a_spelling_for_the_covered_source` |
+| DVS-014 | An exact form admits exactly what Perl admits; recovery is the only escape | `exact_forms_reject_cross_tag_and_malformed_spellings` |
+| DVS-015 | The one-line projection survives control characters in recovered text | `display_projection_escapes_control_characters_in_recovered_text` |
+
+## External oracle — Perl 5.38.2
+
+DVS-014's accept and reject tables are not invented. Every row is the observed
+verdict of the interpreter on the declaration header itself:
+
+```
+$ perl -v          # This is perl 5, version 38, subversion 2 (v5.38.2)
+$ perl -e 'package A <spelling>; 1;'
+```
+
+| Spelling | Perl | Reason Perl gives when it rejects |
+| --- | --- | --- |
+| `0`, `1`, `10`, `0.0`, `1.0`, `1.23`, `0.001`, `5.036`, `10.5` | accept | — |
+| `v1.2.3`, `v1.2.3.4`, `v0.0.0`, `v1.02.3` | accept | — |
+| `00`, `01`, `v01.2.3` | reject | no leading zeros |
+| `1_2`, `1.23_45`, `v1.2.3_4` | reject | no underscores |
+| `v5`, `v1.2`, `v`, `vv1.2.3` | reject | dotted-decimal versions require at least three parts |
+| `1.2.3`, `1.2.3.4`, `1.23.45` | reject | dotted-decimal versions must begin with `v` |
+| `1.` | reject | fractional part required |
+| `.5` | reject | 0 before decimal required |
+
+A throwaway differential compared this crate's `DeclarationVersionForm::accepts`
+against `perl -e 'package A <spelling>; 1;'` over a 36-spelling corpus covering
+every row above plus `1.0.0`, `v10.20.30`, `v1.2.3.4.5`, `007`, and `1.007`:
+**36 compared, 36 agree, 0 disagreements.** The differential harness is not
+checked in — `perl-ast` is a Tier 1 leaf crate and adding a Perl subprocess to
+its test target would introduce a dependency and a CI surface this claim does
+not own. The corpus and verdicts are pinned in DVS-014 instead, and this table
+is the record of where they came from.
+
+Note the two spellings that a reasonable reading of "v-string" gets wrong, and
+which the differential caught: `v5` is **not** a legal declaration version
+(Perl requires at least three parts even with the `v`), and a bare `1.2.3` is
+**not** one either (Perl requires the leading `v`). An earlier revision of this
+contract accepted both as exact.
 
 ## Oracle notes
 
@@ -28,14 +66,17 @@ same offsets the test just passed in. Four different ranges over one source
 yield four different literals, which is what proves the range is load-bearing
 rather than a label carried alongside a string.
 
-DVS-013 exists because an earlier revision of this contract took the spelling
-from the caller and only checked that its *length* matched the range. That
-accepted `raw = "9.99"` against `package Demo 1.23;` at `13..17` — same
-length, wrong content — so the advertised source-fidelity invariant was
-unenforceable, and DVS-003 in that revision was circular. The constructor now
-slices the source itself, and DVS-013 pins the consequence: two different
-sources at the same form and range are different values, so neither the range
-nor a caller string can stand in for the text.
+DVS-013 exists because an earlier revision took the spelling from the caller
+and only checked that its *length* matched the range. That accepted
+`raw = "9.99"` against `package Demo 1.23;` at `13..17` — same length, wrong
+content — so the advertised source-fidelity invariant was unenforceable, and
+DVS-003 in that revision was circular. The constructor now slices the source
+itself, and DVS-013 pins the consequence: two different sources at the same
+form and range are different values.
+
+DVS-014 exists because an earlier revision derived exactness from the enum tag
+alone, so `Decimal` over `v1.2.3` and `VString` over `garbage` were both
+recorded as exact readings.
 
 DVS-001 deliberately pairs `1.002003` (decimal) with `v1.2.3` (v-string) —
 spellings a later semantic layer may well call equal. Their inequality here is
@@ -49,7 +90,7 @@ without a conversion step, which is what "owner-neutral" has to mean for
 ## Mutation controls
 
 Each mutation was applied to the production module, run, and reverted; the
-named rows failed and the suite returned to 13/13 green afterwards.
+named rows failed and the suite returned to 15/15 green afterwards.
 
 | Mutation | Rows that caught it |
 | --- | --- |
@@ -59,14 +100,22 @@ named rows failed and the suite returned to 13/13 green afterwards.
 | spelling normalized on construction (`trim_end_matches('0')`) | DVS-002 |
 | whole source stored instead of the covered slice | DVS-001, DVS-003, DVS-006, DVS-010, DVS-013 |
 | hand-written `PartialEq`/`Hash` comparing form and range but **not** the spelling | DVS-013 |
+| `accepts()` always true | DVS-014 |
+| decimal grammar strips a leading `v` | DVS-014 |
+| leading-zero rule dropped (`is_leading_zero_free_digits` → `is_plain_digits`) | DVS-014 |
+| v-string minimum component count lowered from three to one | DVS-014 |
+| `Display` writes the raw spelling unescaped | DVS-015 |
 
-The last row is the counterexample raised in review against the earlier
-revision: under it, two versions with different spellings at the same range
-compared equal, and every test then in the suite still passed. It is now
-caught.
+Two of these are worth naming because they initially *survived* and forced a
+change rather than confirming one. The `PartialEq`-ignoring-the-spelling mutant
+passed all twelve rows of the first revision — it is the counterexample that
+motivated DVS-013. The decimal-strips-`v` mutant passed until a `Decimal` over
+`v5` fixture was added, because no existing fixture distinguished it.
 
 ## Out of scope
 
 No parser population (#11089), no package/class node layout (#10753 / #10762),
 no version comparison, ordering, normalization, feature activation, import or
-directive semantics, and no provider or support claim.
+directive semantics, and no provider or support claim. The grammar here decides
+spelling *shape* only — whether Perl would accept the header — never what a
+version means or how two of them order.

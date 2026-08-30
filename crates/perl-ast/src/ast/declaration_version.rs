@@ -114,40 +114,71 @@ impl DeclarationVersionForm {
     }
 }
 
-/// One run of version digits, with Perl's `_` numeric separator allowed after
-/// the leading digit (`1`, `036`, `23_45`).
-fn is_digit_run(component: &str) -> bool {
-    component.starts_with(|c: char| c.is_ascii_digit())
-        && component.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+/// Digits with no leading zero: `0`, `5`, `10` — but not `00` or `01`.
+///
+/// Perl rejects `package A 01;` with "no leading zeros".
+fn is_leading_zero_free_digits(component: &str) -> bool {
+    match component.as_bytes() {
+        [] => false,
+        [b'0'] => true,
+        [first, rest @ ..] => {
+            first.is_ascii_digit() && *first != b'0' && rest.iter().all(u8::is_ascii_digit)
+        }
+    }
 }
 
-/// A decimal declaration VERSION: one integer part and at most one fractional
-/// part (`1`, `1.23`, `0.001`, `5.036`, `1.23_45`). A second dot makes it a
-/// v-string, not a decimal.
+/// One or more plain digits, leading zeros allowed.
+fn is_plain_digits(component: &str) -> bool {
+    !component.is_empty() && component.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// A decimal declaration VERSION: `0`, `1`, `10`, `1.23`, `0.001`, `5.036`.
+///
+/// One integer part with no leading zero, then at most one fractional part
+/// which, if the dot is present, must have at least one digit. No underscores
+/// and no second dot — Perl rejects `1_2`, `1.`, `.5`, and `1.2.3` in a
+/// declaration header.
 fn is_decimal_spelling(spelling: &str) -> bool {
     let mut parts = spelling.splitn(2, '.');
     let Some(integer) = parts.next() else {
         return false;
     };
-    if !is_digit_run(integer) {
+    if !is_leading_zero_free_digits(integer) {
         return false;
     }
     match parts.next() {
         None => true,
         // `splitn(2, ..)` leaves any further dots in the remainder, so a
-        // three-part spelling fails the digit-run check here.
-        Some(fraction) => is_digit_run(fraction),
+        // three-part spelling fails the digit check here.
+        Some(fraction) => is_plain_digits(fraction),
     }
 }
 
-/// A v-string declaration VERSION: either `v`-prefixed with one or more
-/// components (`v5`, `v1.2.3`), or the bare three-or-more-component form Perl
-/// also reads as a v-string (`1.2.3`).
+/// A v-string declaration VERSION: `v` plus at least three dot-separated
+/// components (`v1.2.3`, `v1.2.3.4`, `v0.0.0`).
+///
+/// Perl requires the leading `v` and at least three parts, so it rejects both
+/// `v5` and a bare `1.2.3`. The first component carries the no-leading-zero
+/// rule (`v01.2.3` is rejected); later components do not (`v1.02.3` is fine).
 fn is_vstring_spelling(spelling: &str) -> bool {
-    if let Some(rest) = spelling.strip_prefix('v') {
-        return rest.split('.').all(is_digit_run);
+    let Some(rest) = spelling.strip_prefix('v') else {
+        return false;
+    };
+    let mut components = rest.split('.');
+    let Some(first) = components.next() else {
+        return false;
+    };
+    if !is_leading_zero_free_digits(first) {
+        return false;
     }
-    spelling.split('.').count() >= 3 && spelling.split('.').all(is_digit_run)
+    let mut count = 1usize;
+    for component in components {
+        if !is_plain_digits(component) {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 3
 }
 
 /// Whether a recorded declaration VERSION is an exact reading of the source.
@@ -289,9 +320,25 @@ impl DeclarationVersionSyntax {
 /// This is a stable diagnostic and receipt rendering. It never renders a
 /// normalized or numeric interpretation of the spelling, and two spellings
 /// that differ in form or in source text render differently.
+///
+/// A recovered reading may cover arbitrary source, including newlines, so
+/// control characters and the escape character itself are escaped to keep the
+/// projection genuinely one line. Ordinary version spellings contain none of
+/// them and render unchanged.
 impl fmt::Display for DeclarationVersionSyntax {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}@{}..{}", self.form.tag(), self.raw, self.range.start, self.range.end)
+        write!(f, "{}:", self.form.tag())?;
+        for character in self.raw.chars() {
+            match character {
+                '\\' => f.write_str("\\\\")?,
+                '\n' => f.write_str("\\n")?,
+                '\r' => f.write_str("\\r")?,
+                '\t' => f.write_str("\\t")?,
+                other if other.is_control() => write!(f, "\\u{{{:x}}}", other as u32)?,
+                other => write!(f, "{other}")?,
+            }
+        }
+        write!(f, "@{}..{}", self.range.start, self.range.end)
     }
 }
 

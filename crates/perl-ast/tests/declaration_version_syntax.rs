@@ -48,11 +48,11 @@ fn decimal_vstring_and_recovered_readings_never_collapse() {
 
     // Identical spelling and geometry, different form: still distinct, because
     // an exact reading must never compare equal to a recovered one.
-    let source = "package A v5;";
-    let exact = from(DeclarationVersionForm::VString, source, 10, 12);
-    let recovered = from(DeclarationVersionForm::RecoveredOrUnknown, source, 10, 12);
-    assert_eq!(raw_of(&exact), Ok("v5".to_string()));
-    assert_eq!(raw_of(&recovered), Ok("v5".to_string()));
+    let source = "package A v1.2.3;";
+    let exact = from(DeclarationVersionForm::VString, source, 10, 16);
+    let recovered = from(DeclarationVersionForm::RecoveredOrUnknown, source, 10, 16);
+    assert_eq!(raw_of(&exact), Ok("v1.2.3".to_string()));
+    assert_eq!(raw_of(&recovered), Ok("v1.2.3".to_string()));
     assert_ne!(exact, recovered);
 }
 
@@ -241,12 +241,12 @@ fn display_projection_is_deterministic_and_form_tagged() {
     );
 
     // Same spelling, different form: the projection must still discriminate.
-    let source = "package A v5;";
-    let exact_v5 = from(DeclarationVersionForm::VString, source, 10, 12);
-    let recovered_v5 = from(DeclarationVersionForm::RecoveredOrUnknown, source, 10, 12);
+    let source = "package A v1.2.3;";
+    let exact_v = from(DeclarationVersionForm::VString, source, 10, 16);
+    let recovered_v = from(DeclarationVersionForm::RecoveredOrUnknown, source, 10, 16);
     assert_ne!(
-        exact_v5.as_ref().map(ToString::to_string),
-        recovered_v5.as_ref().map(ToString::to_string)
+        exact_v.as_ref().map(ToString::to_string),
+        recovered_v.as_ref().map(ToString::to_string)
     );
 
     // Repeated rendering of one value is stable.
@@ -403,12 +403,110 @@ fn exact_forms_reject_cross_tag_and_malformed_spellings() {
         );
     }
 
-    // The real spellings each form exists for are still accepted.
-    assert!(from(DeclarationVersionForm::Decimal, "package A 1;", 10, 11).is_ok());
-    assert!(from(DeclarationVersionForm::Decimal, "package A 0.001;", 10, 15).is_ok());
-    assert!(from(DeclarationVersionForm::Decimal, "package A 1.23_45;", 10, 17).is_ok());
-    assert!(from(DeclarationVersionForm::VString, "package A v5;", 10, 12).is_ok());
-    assert!(from(DeclarationVersionForm::VString, "package A v1.2.3;", 10, 16).is_ok());
-    // Perl also reads a bare three-component spelling as a v-string.
-    assert!(from(DeclarationVersionForm::VString, "package A 1.2.3;", 10, 15).is_ok());
+    // The real spellings each form exists for are still accepted. Every row in
+    // both tables below is the observed verdict of `perl -e 'package A <v>; 1;'`
+    // on Perl 5.38.2 — see `.spec/10716-declaration-version-syntax/acceptance.md`.
+    for (form, spelling) in [
+        (DeclarationVersionForm::Decimal, "0"),
+        (DeclarationVersionForm::Decimal, "1"),
+        (DeclarationVersionForm::Decimal, "10"),
+        (DeclarationVersionForm::Decimal, "0.0"),
+        (DeclarationVersionForm::Decimal, "1.0"),
+        (DeclarationVersionForm::Decimal, "1.23"),
+        (DeclarationVersionForm::Decimal, "0.001"),
+        (DeclarationVersionForm::Decimal, "5.036"),
+        (DeclarationVersionForm::Decimal, "10.5"),
+        (DeclarationVersionForm::VString, "v1.2.3"),
+        (DeclarationVersionForm::VString, "v1.2.3.4"),
+        (DeclarationVersionForm::VString, "v0.0.0"),
+        // Leading zeros are rejected only in the first component.
+        (DeclarationVersionForm::VString, "v1.02.3"),
+    ] {
+        let source = format!("package A {spelling};");
+        assert!(
+            from(form, &source, 10, 10 + spelling.len()).is_ok(),
+            "perl accepts `package A {spelling};` so {form:?} must record it exactly"
+        );
+    }
+
+    // Spellings Perl rejects in a declaration header are not exact readings,
+    // whichever exact tag is offered.
+    for (form, spelling) in [
+        (DeclarationVersionForm::Decimal, "00"),
+        (DeclarationVersionForm::Decimal, "01"),
+        (DeclarationVersionForm::Decimal, "1_2"),
+        (DeclarationVersionForm::Decimal, "1.23_45"),
+        (DeclarationVersionForm::Decimal, ".5"),
+        (DeclarationVersionForm::Decimal, "1.2.3.4"),
+        // `v5` and `v1.2` have fewer than the three parts Perl requires.
+        (DeclarationVersionForm::VString, "v5"),
+        (DeclarationVersionForm::VString, "v1.2"),
+        (DeclarationVersionForm::VString, "v"),
+        (DeclarationVersionForm::VString, "vv1.2.3"),
+        (DeclarationVersionForm::VString, "v01.2.3"),
+        (DeclarationVersionForm::VString, "v1.2.3_4"),
+        // A dotted-decimal must begin with `v`, so the bare form is not one.
+        (DeclarationVersionForm::VString, "1.2.3"),
+    ] {
+        let source = format!("package A {spelling};");
+        let end = 10 + spelling.len();
+        assert_eq!(
+            from(form, &source, 10, end),
+            Err(DeclarationVersionSyntaxError::SpellingDoesNotMatchForm { form, start: 10, end }),
+            "perl rejects `package A {spelling};` so {form:?} must not record it exactly"
+        );
+        assert!(
+            from(DeclarationVersionForm::RecoveredOrUnknown, &source, 10, end).is_ok(),
+            "`{spelling}` must remain representable as recovered"
+        );
+    }
+}
+
+// DVS-015 — the one-line projection survives recovered text containing
+// newlines, tabs, and other control characters.
+//
+// Review finding on PR #13827: a recovered reading may cover arbitrary source,
+// so an unescaped newline would split one value across two log or receipt
+// records while the doc comment promised one line.
+#[test]
+fn display_projection_escapes_control_characters_in_recovered_text() {
+    // A real newline, tab and carriage return in the covered span.
+    let source = "package A 1\n2\t3\r4;";
+    let value = from(DeclarationVersionForm::RecoveredOrUnknown, source, 10, 17);
+    assert_eq!(raw_of(&value), Ok("1\n2\t3\r4".to_string()));
+
+    let rendered = value.as_ref().map(ToString::to_string);
+    assert_eq!(rendered, Ok("recovered:1\\n2\\t3\\r4@10..17".to_string()));
+    // The whole projection really is one line.
+    assert_eq!(rendered.as_ref().map(|text| text.lines().count()), Ok(1));
+
+    // Other control characters get a deterministic escape too.
+    let nul_source = "package A a\u{0}b;";
+    assert_eq!(
+        from(DeclarationVersionForm::RecoveredOrUnknown, nul_source, 10, 13)
+            .as_ref()
+            .map(ToString::to_string),
+        Ok("recovered:a\\u{0}b@10..13".to_string())
+    );
+
+    // The escape character itself is escaped, so the rendering is unambiguous:
+    // a literal two-character `\n` in source does not render as a newline escape.
+    let literal_source = "package A a\\nb;";
+    assert_eq!(
+        from(DeclarationVersionForm::RecoveredOrUnknown, literal_source, 10, 14)
+            .as_ref()
+            .map(ToString::to_string),
+        Ok("recovered:a\\\\nb@10..14".to_string())
+    );
+
+    // `raw()` keeps the real bytes; only the projection escapes.
+    assert_eq!(value.as_ref().map(|v| v.raw().contains('\n')), Ok(true));
+
+    // Ordinary version spellings are untouched by the escaping.
+    assert_eq!(
+        from(DeclarationVersionForm::Decimal, "package A 1.23;", 10, 14)
+            .as_ref()
+            .map(ToString::to_string),
+        Ok("decimal:1.23@10..14".to_string())
+    );
 }
