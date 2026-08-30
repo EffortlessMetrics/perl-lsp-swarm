@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Mutation-proof boundary tests for the qw-whitespace seam in the semantic
 //! dependency index (`crates/perl-semantic-analyzer/src/analysis/index.rs`, #1203).
 //!

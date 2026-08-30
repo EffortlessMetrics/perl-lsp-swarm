@@ -935,7 +935,7 @@ pub(crate) fn apply_disabled_feature_id(
     }
 }
 
-fn disabled_feature_ids_from_init_options(init_opts: &Value) -> Vec<&str> {
+pub(crate) fn disabled_feature_ids_from_init_options(init_opts: &Value) -> Vec<&str> {
     let top_level = init_opts.get("disabledFeatures").and_then(Value::as_array);
     let namespaced_hyphen =
         init_opts.get("perl-lsp").and_then(|v| v.get("disabledFeatures")).and_then(Value::as_array);

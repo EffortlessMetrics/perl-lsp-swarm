@@ -7,29 +7,31 @@ fn next_u64(state: &mut u64) -> u64 {
     *state
 }
 
-fn gen_ascii(seed: &mut u64) -> char {
-    const ALPHABET: &[u8] =
-        b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/\\' ;()[]{}";
-    ALPHABET[(next_u64(seed) as usize) % ALPHABET.len()] as char
+fn gen_char(seed: &mut u64) -> char {
+    const ALPHABET: &[char] = &[
+        'a', 'Z', '0', '9', '_', ':', '/', '\\', '\'', ' ', ';', '(', ')', '[', ']', '{', '}', 'λ',
+        'Ж', '界', 'é', '🙂',
+    ];
+    ALPHABET[(next_u64(seed) as usize) % ALPHABET.len()]
 }
 
 fn gen_string(seed: &mut u64, max_len: usize) -> String {
     let len = (next_u64(seed) % (max_len as u64 + 1)) as usize;
     let mut out = String::with_capacity(len);
     for _ in 0..len {
-        out.push(gen_ascii(seed));
+        out.push(gen_char(seed));
     }
     out
 }
 
 fn gen_ident_start(seed: &mut u64) -> char {
-    const STARTS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
-    STARTS[(next_u64(seed) as usize) % STARTS.len()] as char
+    const STARTS: &[char] = &['a', 'Z', '_', 'λ', 'Ж', '界', 'é'];
+    STARTS[(next_u64(seed) as usize) % STARTS.len()]
 }
 
 fn gen_ident_continue(seed: &mut u64) -> char {
-    const CONT: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
-    CONT[(next_u64(seed) as usize) % CONT.len()] as char
+    const CONT: &[char] = &['a', 'Z', '0', '9', '_', 'λ', 'Ж', '界', 'é'];
+    CONT[(next_u64(seed) as usize) % CONT.len()]
 }
 
 fn gen_identifier(seed: &mut u64, max_len: usize) -> String {
@@ -54,7 +56,7 @@ fn gen_valid_module_token(seed: &mut u64) -> String {
 }
 
 #[test]
-fn fuzz_token_core_does_not_panic_on_random_inputs() {
+fn fuzz_token_core_does_not_panic_on_random_utf8_inputs() {
     let mut state = 0xF00D_BAAD_BEEF_CAFE_u64;
 
     for _ in 0..5000 {
@@ -65,6 +67,8 @@ fn fuzz_token_core_does_not_panic_on_random_inputs() {
         if let Some(span) = span {
             assert!(span.start <= span.end);
             assert!(span.end <= line.len());
+            assert!(line.is_char_boundary(span.start));
+            assert!(line.is_char_boundary(span.end));
             let token = &line[span.start..span.end];
             assert!(!token.is_empty());
             let _ = has_standalone_module_token_boundaries(&line, span.start, span.end);
@@ -77,7 +81,7 @@ fn fuzz_token_core_does_not_panic_on_random_inputs() {
 }
 
 #[test]
-fn fuzz_valid_module_tokens_are_parsed_to_expected_span() {
+fn fuzz_valid_unicode_module_tokens_are_parsed_to_expected_span() {
     let mut state = 0xBADC_0FFE_EE01_1234_u64;
     const SAFE_CONTEXT: &[char] = &[' ', '\t', ';', ',', '(', ')', '[', ']'];
 
@@ -101,20 +105,30 @@ fn fuzz_valid_module_tokens_are_parsed_to_expected_span() {
 fn fuzz_boundary_detection_for_standalone_vs_embedded_tokens() {
     let mut state = 0xCAFE_F00D_1234_5678_u64;
     const SAFE_CONTEXT: &[char] = &[' ', '\t', ';', ',', '(', ')', '[', ']'];
-    const EMBED_CONTEXT: &[char] = &['a', 'Z', '0', '_', ':'];
+    const EMBED_CONTEXT: &[char] = &['a', 'Z', '0', '_', ':', 'λ', '界'];
 
     for _ in 0..3000 {
         let token = gen_valid_module_token(&mut state);
         let safe_left = SAFE_CONTEXT[(next_u64(&mut state) as usize) % SAFE_CONTEXT.len()];
         let safe_right = SAFE_CONTEXT[(next_u64(&mut state) as usize) % SAFE_CONTEXT.len()];
         let safe_line = format!("{safe_left}{token}{safe_right}");
-        assert!(has_standalone_module_token_boundaries(&safe_line, 1, 1 + token.len()));
+        let safe_start = safe_left.len_utf8();
+        assert!(has_standalone_module_token_boundaries(
+            &safe_line,
+            safe_start,
+            safe_start + token.len()
+        ));
 
         let embed_left = EMBED_CONTEXT[(next_u64(&mut state) as usize) % EMBED_CONTEXT.len()];
         let embed_right = EMBED_CONTEXT[(next_u64(&mut state) as usize) % EMBED_CONTEXT.len()];
 
         let left_embedded = format!("{embed_left}{token} ");
-        assert!(!has_standalone_module_token_boundaries(&left_embedded, 1, 1 + token.len()));
+        let left_start = embed_left.len_utf8();
+        assert!(!has_standalone_module_token_boundaries(
+            &left_embedded,
+            left_start,
+            left_start + token.len()
+        ));
 
         let right_embedded = format!(" {token}{embed_right}");
         assert!(!has_standalone_module_token_boundaries(&right_embedded, 1, 1 + token.len()));

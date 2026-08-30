@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Property-based tests for UTF-8 ↔ UTF-16 position roundtrip.
 //!
 //! Verifies that `offset_to_utf16_line_col` and `utf16_line_col_to_offset`
