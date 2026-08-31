@@ -18,8 +18,10 @@ export interface BoundedFileDownloadOptions {
 function defaultRemovePartialFile(dest: string): void {
   try {
     fs.unlinkSync(dest);
-  } catch {
-    // Cleanup is best effort when the destination is already absent.
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
   }
 }
 
@@ -77,13 +79,29 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
         return;
       }
       failureRejected = true;
+      let cleanupFailure: unknown;
       try {
         removePartialFile(dest);
-      } catch {
-        // Preserve the original download failure.
+      } catch (removeError) {
+        cleanupFailure = removeError;
       }
-      if (fs.existsSync(dest)) {
-        defaultRemovePartialFile(dest);
+      try {
+        if (fs.existsSync(dest)) {
+          defaultRemovePartialFile(dest);
+        }
+      } catch (fallbackError) {
+        cleanupFailure ??= fallbackError;
+      }
+      let destinationRemains = false;
+      try {
+        destinationRemains = fs.existsSync(dest);
+      } catch (existsError) {
+        cleanupFailure ??= existsError;
+      }
+      if (cleanupFailure !== undefined || destinationRemains) {
+        const reason = cleanupFailure instanceof Error ? cleanupFailure.message : 'destination remains';
+        reject(new Error(`${error.message}; partial file cleanup failed: ${reason}`, { cause: error }));
+        return;
       }
       reject(error);
     };
@@ -98,13 +116,16 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
       // file handle is gone. Test/injected streams may expose EventEmitter's
       // `once` without ever emitting `close`, so they must not block failure
       // settlement indefinitely.
-      if (!file || !(file instanceof fs.WriteStream) || file.closed) {
-        file?.destroy();
+      const stream = file;
+      const waitsForClose =
+        stream instanceof fs.WriteStream && stream.closed === false && stream.destroyed !== true;
+      if (!waitsForClose) {
+        stream?.destroy();
         rejectAfterPartialCleanup(error);
         return;
       }
-      file.once('close', () => rejectAfterPartialCleanup(error));
-      file.destroy();
+      stream.once('close', () => rejectAfterPartialCleanup(error));
+      stream.destroy();
     };
 
     const succeed = (): void => {

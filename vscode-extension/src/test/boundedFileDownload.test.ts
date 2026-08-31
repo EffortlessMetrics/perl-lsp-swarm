@@ -153,6 +153,31 @@ describe('downloadBoundedFile', () => {
     expect(fs.existsSync(dest)).toBe(false);
   });
 
+  test('reports cleanup failure when both removal attempts leave the destination', async () => {
+    const dest = destPath();
+    fs.mkdirSync(dest);
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, { 'content-type': 'application/octet-stream' });
+          response.end('payload');
+        },
+        (url) =>
+          downloadBoundedFile({
+            requestFactory: (listener) => http.get(url, listener),
+            dest,
+            timeoutMs: 1000,
+            maxBytes: 64,
+            operationName: 'Archive download',
+            removePartialFile: () => {
+              throw new Error('injected cleanup failure');
+            },
+          }),
+      ),
+    ).rejects.toThrow('partial file cleanup failed:');
+    expect(fs.existsSync(dest)).toBe(true);
+  });
+
   test('deletes a partial dest when cancellation is signalled during transfer', async () => {
     const dest = destPath();
     const token = new TestCancellationToken();
