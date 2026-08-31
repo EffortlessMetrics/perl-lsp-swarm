@@ -1177,7 +1177,7 @@ impl Lowerer {
             | NodeKind::MissingIdentifier
             | NodeKind::MissingBlock
             | NodeKind::UnknownRest => {}
-            NodeKind::DataSection { marker, marker_span, body_span, .. } => {
+            NodeKind::DataSection { marker, marker_span, body, body_span } => {
                 // Map the source-faithful marker text to its typed identity.
                 // Any text other than the two real Perl markers cannot occur
                 // from the parser, but this arm must not panic on it — fall
@@ -1194,6 +1194,20 @@ impl Lowerer {
                 let Some(marker_range) = *marker_span else {
                     return;
                 };
+                // Defensive: the payload text and its source geometry are
+                // joined — the parser only produces them together (both
+                // `Some` when a payload follows the marker, both `None` when
+                // the file ends at the marker). `NodeKind` fields are public,
+                // so a hand-built or recovered AST can carry one without the
+                // other; publishing then would either claim a payload region
+                // for no payload (`body: None, body_span: Some(_)`) or hide
+                // payload text the node knows about (`body: Some(_),
+                // body_span: None`). Withhold on either contradiction, like
+                // the arms above, rather than emitting a decl that misstates
+                // the source.
+                if body.is_some() != body_span.is_some() {
+                    return;
+                }
                 self.push_item(
                     node,
                     *marker_span,

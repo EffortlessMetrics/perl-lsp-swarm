@@ -196,10 +196,12 @@ fn crlf_and_non_ascii_payload_bytes_are_preserved_and_ranges_are_byte_exact() {
 // Fallback paths.
 //
 // The lowering arm refuses to emit an item when the marker text is not one of
-// the two real Perl markers, or when no exact marker span is available.  The
-// parser never produces either shape, so these cases are unreachable through
-// an ordinary parse and are exercised by lowering a hand-built AST instead.
-// Without this, both branches are live production code that nothing covers.
+// the two real Perl markers, when no exact marker span is available, or when
+// the payload text and its source geometry disagree (one present without the
+// other).  The parser never produces any of these shapes, so these cases are
+// unreachable through an ordinary parse and are exercised by lowering a
+// hand-built AST instead.  Without this, each branch is live production code
+// that nothing covers.
 // ---------------------------------------------------------------------------
 
 /// Lower a hand-built program containing exactly one `DataSection` node.
@@ -236,6 +238,40 @@ fn missing_marker_span_emits_no_item_instead_of_fabricating_a_range() {
         !file.items.iter().any(|item| matches!(&item.kind, HirKind::DataSectionDecl(_))),
         "without an exact marker span the shell must be withheld, never emitted with a \
          substituted or whole-node range"
+    );
+}
+
+// Opposite-direction malformed-AST controls: the payload text and its source
+// geometry are joined, so either half without the other is a contradiction the
+// arm must withhold on rather than publish.
+
+#[test]
+fn payload_span_without_body_text_emits_no_item_instead_of_claiming_an_empty_region() {
+    let file = lower_data_section_node(NodeKind::DataSection {
+        marker: "__DATA__".to_string(),
+        marker_span: Some(SourceLocation { start: 0, end: 8 }),
+        body: None,
+        body_span: Some(SourceLocation { start: 9, end: 17 }),
+    });
+    assert!(
+        !file.items.iter().any(|item| matches!(&item.kind, HirKind::DataSectionDecl(_))),
+        "a payload span with no payload text must not lower to a DataSectionDecl that \
+         claims a payload region for no payload"
+    );
+}
+
+#[test]
+fn payload_body_without_span_emits_no_item_instead_of_dropping_known_payload() {
+    let file = lower_data_section_node(NodeKind::DataSection {
+        marker: "__DATA__".to_string(),
+        marker_span: Some(SourceLocation { start: 0, end: 8 }),
+        body: Some("payload\n".to_string()),
+        body_span: None,
+    });
+    assert!(
+        !file.items.iter().any(|item| matches!(&item.kind, HirKind::DataSectionDecl(_))),
+        "payload text with no source geometry must not lower to a DataSectionDecl that \
+         silently reports an absent payload region"
     );
 }
 
