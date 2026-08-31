@@ -31,7 +31,10 @@ fn current_tree_cli_accepts_the_absent_stage() -> Result<(), Box<dyn Error>> {
         "mcp_package=absent",
     ] {
         if !stdout.contains(field) {
-            return Err(format!("current-tree product-topology output omitted {field:?}: {stdout:?}").into());
+            return Err(format!(
+                "current-tree product-topology output omitted {field:?}: {stdout:?}"
+            )
+            .into());
         }
     }
     if !stderr.is_empty() {
