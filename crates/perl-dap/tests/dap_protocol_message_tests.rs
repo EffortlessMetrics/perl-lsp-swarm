@@ -250,27 +250,30 @@ fn test_exception_info_no_session_returns_unknown_exception()
 
 #[test]
 fn test_goto_missing_arguments_fails() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — goto without arguments must fail
+    // AC:2783/#9064 — goto must fail. While standard goto is unadvertised the
+    // fail-closed gate refuses before argument parsing, so the message explains
+    // the unsupported primitive rather than missing/invalid args.
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "goto", None);
     let err = assert_failure_response(msg, "goto")?;
     assert!(
-        err.to_lowercase().contains("missing") || err.to_lowercase().contains("invalid"),
-        "error must describe missing/invalid args: {err}"
+        err.to_lowercase().contains("unsupported"),
+        "error must explain that standard goto is unsupported: {err}"
     );
     Ok(())
 }
 
 #[test]
 fn test_goto_unknown_target_id_fails() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — goto with an unknown targetId must fail with a descriptive message
+    // AC:2783/#9064 — goto with an unknown targetId must fail with a
+    // descriptive message from the fail-closed gate (no target lookup runs).
     let mut adapter = DebugAdapter::new();
     let args = json!({ "threadId": 1, "targetId": 9999 });
     let msg = adapter.handle_request(1, "goto", Some(args));
     let err = assert_failure_response(msg, "goto")?;
     assert!(
-        err.to_lowercase().contains("unknown") || err.to_lowercase().contains("target"),
-        "error must reference the unknown target: {err}"
+        err.to_lowercase().contains("unsupported"),
+        "error must explain that standard goto is unsupported: {err}"
     );
     Ok(())
 }
@@ -292,31 +295,41 @@ fn test_goto_no_session_after_unknown_target_fails() -> Result<(), Box<dyn std::
 
 #[test]
 fn test_goto_targets_missing_arguments_fails() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — gotoTargets without arguments must fail
+    // AC:2783/#9064 — gotoTargets must fail. The fail-closed gate refuses
+    // before argument parsing, so the message explains the unsupported
+    // primitive rather than missing/invalid args.
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "gotoTargets", None);
     let err = assert_failure_response(msg, "gotoTargets")?;
     assert!(
-        err.to_lowercase().contains("missing") || err.to_lowercase().contains("invalid"),
-        "error must describe missing/invalid args: {err}"
+        err.to_lowercase().contains("unsupported"),
+        "error must explain that standard goto is unsupported: {err}"
     );
     Ok(())
 }
 
 #[test]
-fn test_goto_targets_no_source_path_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — source without path returns successful empty target list
+fn test_goto_targets_no_source_path_returns_unsupported() -> Result<(), Box<dyn std::error::Error>>
+{
+    // AC:2783/#9064 — a source without a path still gets the explicit
+    // unsupported response, not a successful empty target list.
     let mut adapter = DebugAdapter::new();
     let args = json!({ "source": {}, "line": 5 });
     let msg = adapter.handle_request(1, "gotoTargets", Some(args));
-    let (success, _) = assert_response(msg, "gotoTargets")?;
-    assert!(success, "missing source.path should produce empty targets, not error");
+    let (success, message) = assert_response(msg, "gotoTargets")?;
+    assert!(!success, "unsupported gotoTargets must fail, not return empty targets");
+    assert!(
+        message.as_ref().is_some_and(|m| m.to_lowercase().contains("unsupported")),
+        "rejection must explain that standard goto is unsupported: {message:?}"
+    );
     Ok(())
 }
 
 #[test]
-fn test_goto_targets_nonexistent_file_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — nonexistent file returns successful empty target list
+fn test_goto_targets_nonexistent_file_returns_unsupported() -> Result<(), Box<dyn std::error::Error>>
+{
+    // AC:2783/#9064 — a nonexistent file gets the unsupported response too:
+    // the gate refuses before any filesystem access.
     let mut adapter = DebugAdapter::new();
     let args = json!({
         "source": { "path": "/nonexistent/script.pl" },
@@ -324,23 +337,23 @@ fn test_goto_targets_nonexistent_file_returns_empty() -> Result<(), Box<dyn std:
     });
     let msg = adapter.handle_request(1, "gotoTargets", Some(args));
     let (success, _) = assert_response(msg, "gotoTargets")?;
-    assert!(success, "nonexistent file should succeed with empty targets");
+    assert!(!success, "nonexistent file must still hit the fail-closed gate");
     Ok(())
 }
 
 #[test]
-fn test_goto_targets_body_has_targets_array() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — response body must contain a "targets" array
+fn test_goto_targets_body_has_no_targets_array() -> Result<(), Box<dyn std::error::Error>> {
+    // AC:2783/#9064 — the unsupported response must not carry a "targets"
+    // body a client could mistake for standard goto targets.
     let mut adapter = DebugAdapter::new();
     let args = json!({ "source": {}, "line": 1 });
     let msg = adapter.handle_request(1, "gotoTargets", Some(args));
     match msg {
         DapMessage::Response { body, success, .. } => {
-            assert!(success);
-            let body = body.ok_or("gotoTargets must have response body")?;
+            assert!(!success);
             assert!(
-                body.get("targets").is_some(),
-                "body must contain 'targets' array, got: {body}"
+                body.is_none(),
+                "unsupported gotoTargets must not publish a body, got: {body:?}"
             );
         }
         other => return Err(format!("expected Response, got {other:?}").into()),

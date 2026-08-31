@@ -424,24 +424,36 @@ fn test_capabilities_set_expression_advertised() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-// AC:17 — supportsGotoTargetsRequest is advertised and gotoTargets returns targets array
-fn test_capabilities_goto_targets_advertised_and_working() -> Result<(), Box<dyn std::error::Error>>
-{
+// AC:17 — supportsGotoTargetsRequest is fail-closed: run-to-line is not standard goto
+fn test_capabilities_goto_targets_not_advertised_and_requests_unsupported()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
     let caps = get_capabilities(&mut adapter)?;
     let advertised =
         caps.get("supportsGotoTargetsRequest").and_then(Value::as_bool).unwrap_or(false);
 
-    assert!(advertised, "supportsGotoTargetsRequest must be advertised");
+    assert!(
+        !advertised,
+        "supportsGotoTargetsRequest must not be advertised while the native backend only \
+         offers run-to-line (#9064)"
+    );
 
+    // gotoTargets must explicitly refuse rather than publish targets a client
+    // cannot use as standard goto.
     let mut adapter2 = new_adapter();
-    let body = assert_ok(
-        adapter2.handle_request(2, "gotoTargets", Some(json!({"source": {}, "line": 1}))),
-        "gotoTargets",
-    )?;
-    let body = body.ok_or("gotoTargets must return a body")?;
-    assert!(body.get("targets").is_some(), "gotoTargets body must contain 'targets'");
-    assert!(body["targets"].is_array(), "gotoTargets 'targets' must be an array");
+    let msg = adapter2.handle_request(2, "gotoTargets", Some(json!({"source": {}, "line": 1})));
+    match msg {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "gotoTargets");
+            assert!(!success, "gotoTargets must fail closed while unadvertised");
+            let err = message.unwrap_or_default();
+            assert!(
+                err.contains("unsupported"),
+                "gotoTargets rejection must explain that standard goto is unsupported: {err}"
+            );
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
     Ok(())
 }
 
@@ -571,16 +583,26 @@ fn test_exception_info_response_has_required_fields() -> Result<(), Box<dyn std:
 }
 
 #[test]
-// AC:17 — gotoTargets response has 'targets' array
-fn test_goto_targets_response_has_targets_array() -> Result<(), Box<dyn std::error::Error>> {
+// AC:17 — unsupported gotoTargets must not publish a targets array body
+fn test_goto_targets_unsupported_publishes_no_targets() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
-    let body = assert_ok(
-        adapter.handle_request(1, "gotoTargets", Some(json!({"source": {}, "line": 1}))),
-        "gotoTargets",
-    )?
-    .ok_or("gotoTargets must return a body")?;
-    assert!(body.get("targets").is_some(), "gotoTargets must include 'targets'");
-    assert!(body["targets"].is_array(), "'targets' must be an array");
+    let msg = adapter.handle_request(1, "gotoTargets", Some(json!({"source": {}, "line": 1})));
+    match msg {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert_eq!(command, "gotoTargets");
+            assert!(!success, "gotoTargets must fail closed while unadvertised (#9064)");
+            assert!(
+                body.is_none(),
+                "unsupported gotoTargets must not publish a targets body a client could \
+                 mistake for standard goto targets"
+            );
+            assert!(
+                message.is_some_and(|m| !m.is_empty()),
+                "unsupported gotoTargets must explain why"
+            );
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
     Ok(())
 }
 
@@ -777,15 +799,16 @@ fn test_request_seq_min_i64_is_valid() -> Result<(), Box<dyn std::error::Error>>
 // AC:17 — cancel flag does not corrupt subsequent command responses on the same adapter
 fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dyn std::error::Error>>
 {
-    // cancel sets an internal cancel_requested flag that gotoTargets and breakpointLocations
-    // read during their inner loops. Verify that a subsequent command on the same adapter
-    // still returns a well-formed Response and doesn't panic or hang.
+    // cancel sets an internal cancel_requested flag that breakpointLocations
+    // reads during its inner loop. Verify that a subsequent command on the same
+    // adapter still returns a well-formed Response and doesn't panic or hang.
     //
-    // Note: gotoTargets with source.path=None returns early before reaching the
-    // cancel_requested check, so cancel_requested remains true after that call.
-    // Using a real source path here ensures the check fires and the flag resets.
-    // The non-existent path causes an early file-read error return, which is also
-    // fine — what matters is that a Response is returned and request_seq is echoed.
+    // Note: gotoTargets is fail-closed (#9064) and returns its unsupported
+    // response before reaching any cancel_requested check, so it can no longer
+    // reset the flag. breakpointLocations with a real source path still
+    // exercises the check and resets it. The non-existent path causes an early
+    // file-read error return, which is also fine — what matters is that a
+    // Response is returned and request_seq is echoed.
     let mut adapter = new_adapter();
 
     // First: cancel sets cancel_requested = true

@@ -5,7 +5,7 @@ use super::{
     DapMessage, DebugAdapter, DebugState, GotoArguments, GotoTarget, GotoTargetsArguments,
     GotoTargetsResponseBody, NextArguments, Ordering, PauseArguments, ResumeMode, StepInArguments,
     StepInTarget, StepInTargetsArguments, StepInTargetsResponseBody, StepOutArguments, Value,
-    Write, json, lock_or_recover,
+    Write, catalog_has_feature, json, lock_or_recover,
 };
 use regex::Regex;
 use std::sync::LazyLock;
@@ -352,6 +352,28 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // Fail closed before any filesystem read, AST discovery, or goto-target
+        // map mutation (#9064).  The native backend only offers run-to-line
+        // (`f <source>` + `c <line>`), which executes intervening statements
+        // instead of relocating the next statement, so standard `gotoTargets`
+        // stays unsupported while the catalog row is unadvertised.  Publishing
+        // targets a client cannot use as standard goto would be a false promise.
+        if !catalog_has_feature("dap.goto_targets") {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "gotoTargets".to_string(),
+                body: None,
+                message: Some(
+                    "gotoTargets is unsupported: the native Perl debugger only provides \
+                     run-to-line (which executes intervening code), not standard DAP goto; \
+                     standard goto requires a proven next-statement relocation primitive (#9064)"
+                        .to_string(),
+                ),
+            };
+        }
+
         let args: GotoTargetsArguments =
             match arguments.and_then(|v| serde_json::from_value(v).ok()) {
                 Some(a) => a,
@@ -463,6 +485,27 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // Fail closed before any target lookup, perl5db write, session state
+        // transition, cache invalidation, or `continued` emission (#9064).  A
+        // rejected goto must not consume a retained target (`goto_map.remove`
+        // below is unreachable while the catalog row is unadvertised) and must
+        // not run the intervening code between the current stop and the target.
+        if !catalog_has_feature("dap.goto") {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "goto".to_string(),
+                body: None,
+                message: Some(
+                    "goto is unsupported: the native Perl debugger only provides run-to-line \
+                     (which executes intervening code), not standard DAP goto; \
+                     standard goto requires a proven next-statement relocation primitive (#9064)"
+                        .to_string(),
+                ),
+            };
+        }
+
         let args: GotoArguments = match arguments.and_then(|v| serde_json::from_value(v).ok()) {
             Some(a) => a,
             None => {

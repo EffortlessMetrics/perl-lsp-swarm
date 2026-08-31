@@ -1,6 +1,5 @@
 ---
 source: crates/perl-lsp-rs/tests/lsp_features_snapshot_test.rs
-assertion_line: 37
 expression: "&snapshot_data"
 ---
 caps:
@@ -43,8 +42,6 @@ catalog:
   - dap.core
   - dap.exceptions.die
   - dap.exceptions.warn
-  - dap.goto
-  - dap.goto_targets
   - dap.inline_values
   - dap.loaded_sources
   - dap.modules
@@ -141,7 +138,6 @@ catalog:
   - lsp.will_delete_files
   - lsp.will_rename_files
   - lsp.will_save
-  - lsp.will_save_wait_until
   - lsp.work_done_progress
   - lsp.work_done_progress_cancel
   - lsp.work_done_progress_create

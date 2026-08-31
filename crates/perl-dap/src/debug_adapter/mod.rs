@@ -1003,7 +1003,12 @@ print "result: $final\n";
                 // advertise (#5045).
                 false,
             ),
-            ("supportsGotoTargetsRequest", crate::feature_catalog::has_feature("dap.core")),
+            (
+                "supportsGotoTargetsRequest",
+                // Run-to-line is not standard goto; fail closed on the catalog
+                // row (#9064).
+                crate::feature_catalog::has_feature("dap.goto_targets"),
+            ),
             (
                 "supportsRestartFrame",
                 // Handler unconditionally returns success: false — do not
@@ -1611,7 +1616,13 @@ print "result: $final\n";
             DapMessage::Response { success, command, message, .. } => {
                 assert!(!success);
                 assert_eq!(command, "goto");
-                assert_eq!(message.as_deref(), Some("Missing or invalid arguments"));
+                // #9064: the fail-closed gate refuses goto before argument
+                // parsing while standard goto is unadvertised.
+                let msg = message.as_deref().unwrap_or("");
+                assert!(
+                    msg.contains("unsupported"),
+                    "goto must be refused by the fail-closed gate, got: {msg}"
+                );
             }
             _ => return Err("Expected response".into()),
         }
@@ -1627,11 +1638,12 @@ print "result: $final\n";
             DapMessage::Response { success, command, message, .. } => {
                 assert!(!success);
                 assert_eq!(command, "goto");
-                // With target mapping, unknown IDs produce "Unknown goto target id"
+                // #9064: no target lookup runs while standard goto is
+                // unadvertised — the gate refuses before the map is touched.
                 let msg = message.as_deref().unwrap_or("");
                 assert!(
-                    msg.contains("Unknown goto target"),
-                    "expected unknown target message, got: {msg}"
+                    msg.contains("unsupported"),
+                    "goto must be refused by the fail-closed gate, got: {msg}"
                 );
             }
             _ => return Err("Expected response".into()),
@@ -1642,7 +1654,7 @@ print "result: $final\n";
     #[test]
     fn test_goto_no_session() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
-        // First store a mapping so goto gets past the lookup
+        // Seed a mapping so an un-gated handler would resolve and try to resume.
         {
             let mut goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
             goto_map.insert(10, ("/test/file.pl".to_string(), 10));
@@ -1653,10 +1665,18 @@ print "result: $final\n";
             DapMessage::Response { success, command, message, .. } => {
                 assert!(!success);
                 assert_eq!(command, "goto");
-                assert_eq!(message.as_deref(), Some("No active debug session"));
+                // #9064: goto fails closed before any session lookup or resume;
+                // the seeded target must remain retained for auditability.
+                let msg = message.as_deref().unwrap_or("");
+                assert!(
+                    msg.contains("unsupported"),
+                    "goto must be refused by the fail-closed gate, got: {msg}"
+                );
             }
             _ => return Err("Expected response".into()),
         }
+        let goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
+        assert!(goto_map.contains_key(&10), "rejected goto must not consume the target");
         Ok(())
     }
 
@@ -1701,10 +1721,13 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_goto_targets_then_goto_flow() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_goto_requests_fail_closed_while_unadvertised() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // #9064: standard goto/gotoTargets are fail-closed while the catalog
+        // rows are unadvertised. The adapter must explicitly refuse both
+        // requests instead of publishing run-to-line as standard goto.
         let mut adapter = DebugAdapter::new();
 
-        // gotoTargets should succeed (even with no file — returns empty targets)
         let gt_response = adapter.handle_request(
             1,
             "gotoTargets",
@@ -1712,28 +1735,27 @@ print "result: $final\n";
         );
         match gt_response {
             DapMessage::Response { success, command, message, .. } => {
-                assert!(success, "gotoTargets should succeed");
+                assert!(!success, "gotoTargets must fail closed while unadvertised");
                 assert_eq!(command, "gotoTargets");
-                // Must NOT say "does not support"
+                let msg = message.as_deref().unwrap_or("");
                 assert!(
-                    !message.as_deref().unwrap_or("").contains("does not support"),
-                    "gotoTargets must not claim lack of support"
+                    msg.contains("unsupported"),
+                    "gotoTargets must explain that standard goto is unsupported, got: {msg}"
                 );
             }
             _ => return Err("Expected response".into()),
         }
 
-        // goto should fail gracefully with unknown target (no stored mapping)
         let goto_response =
             adapter.handle_request(2, "goto", Some(json!({"threadId": 1, "targetId": 999})));
         match goto_response {
             DapMessage::Response { success, command, message, .. } => {
-                assert!(!success, "goto with unknown target should fail");
+                assert!(!success, "goto must fail closed while unadvertised");
                 assert_eq!(command, "goto");
                 let msg = message.as_deref().unwrap_or("");
                 assert!(
-                    msg.contains("Unknown goto target"),
-                    "goto must report unknown target, got: {msg}"
+                    msg.contains("unsupported"),
+                    "goto must explain that standard goto is unsupported, got: {msg}"
                 );
             }
             _ => return Err("Expected response".into()),
@@ -1742,13 +1764,15 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_goto_targets_stores_mapping() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_goto_targets_unsupported_does_not_discover_or_store()
+    -> Result<(), Box<dyn std::error::Error>> {
         use std::io::Write;
 
         let mut adapter = DebugAdapter::new();
         adapter.handle_request(1, "initialize", None);
 
-        // Create a temp file with executable content
+        // A valid Perl source with executable lines: while unsupported, the
+        // adapter must not run AST discovery or publish any target (#9064).
         let dir = tempfile::tempdir()?;
         let file_path = dir.path().join("test_goto.pl");
         {
@@ -1768,67 +1792,56 @@ print "result: $final\n";
             })),
         );
 
-        // Verify the response contains targets with monotonic IDs (not line numbers)
         match response {
-            DapMessage::Response { success, body: Some(body), .. } => {
-                assert!(success, "gotoTargets should succeed");
-                let targets = body
-                    .get("targets")
-                    .and_then(|t| t.as_array())
-                    .ok_or("should have targets array")?;
-                assert!(!targets.is_empty(), "should find executable lines");
-
-                // Verify IDs are monotonic starting from 1, NOT equal to line numbers
-                let first_id = targets[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                assert!(first_id >= 1, "IDs should start at 1 or higher");
-
-                // Verify the mapping was stored internally
-                let goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
-                assert!(!goto_map.is_empty(), "goto_targets map should be populated");
-                // Each stored entry should reference our temp file
-                for (_id, (stored_path, _line)) in goto_map.iter() {
-                    assert_eq!(stored_path, &path_str, "stored path should match source");
-                }
+            DapMessage::Response { success, body, message, .. } => {
+                assert!(!success, "gotoTargets on a valid source must still fail closed");
+                assert!(body.is_none(), "unsupported gotoTargets must not publish a targets body");
+                assert!(message.is_some(), "unsupported gotoTargets must explain why");
             }
-            _ => return Err("Expected successful response".into()),
+            _ => return Err("Expected response".into()),
         }
 
-        let _ = std::fs::remove_file(&file_path);
+        // No target may be retained for a later goto to consume.
+        let goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
+        assert!(goto_map.is_empty(), "unsupported gotoTargets must not store target mappings");
         Ok(())
     }
 
     #[test]
-    fn test_goto_uses_stored_mapping() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_rejected_goto_preserves_retained_target() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         adapter.handle_request(1, "initialize", None);
 
-        // Manually populate the goto_targets map to simulate handle_goto_targets
+        // Seed a retained target as if an earlier negotiation had stored it.
         {
             let mut goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
             goto_map.insert(42, ("/some/file.pl".to_string(), 10));
         }
 
-        // Without a debug session, goto should fail with "No active debug session"
-        // but only after successfully looking up the target
+        // A rejected goto must fail closed WITHOUT consuming the retained
+        // target or touching the session (#9064).
         let response =
             adapter.handle_request(2, "goto", Some(json!({"threadId": 1, "targetId": 42})));
         match response {
             DapMessage::Response { success, command, message, .. } => {
-                assert!(!success, "goto without session should fail");
+                assert!(!success, "goto while unsupported must fail");
                 assert_eq!(command, "goto");
-                // It should NOT say "Unknown goto target" — the mapping was found
                 let msg = message.as_deref().unwrap_or("");
                 assert!(
-                    msg.contains("No active debug session"),
-                    "goto should report no session, got: {msg}"
+                    msg.contains("unsupported"),
+                    "goto must explain that standard goto is unsupported, got: {msg}"
                 );
             }
             _ => return Err("Expected response".into()),
         }
 
-        // Verify the consumed entry was removed from the map
+        // The retained target must still be present: a rejected goto cannot
+        // consume or invalidate it.
         let goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
-        assert!(!goto_map.contains_key(&42), "consumed goto target should be removed from map");
+        assert!(
+            goto_map.contains_key(&42),
+            "rejected goto must not consume the retained goto target"
+        );
         Ok(())
     }
 
@@ -1951,10 +1964,13 @@ print "result: $final\n";
             DapMessage::Response { success, command, message, .. } => {
                 assert!(!success, "gotoTargets with traversal path should fail");
                 assert_eq!(command, "gotoTargets");
+                // #9064: the fail-closed gate refuses gotoTargets before any
+                // path validation or filesystem access, so traversal can never
+                // reach target discovery at all.
                 let msg = message.as_deref().unwrap_or("");
                 assert!(
-                    msg.contains("Path validation failed"),
-                    "should report path validation failure, got: {msg}"
+                    msg.contains("unsupported"),
+                    "should be refused by the fail-closed gate, got: {msg}"
                 );
             }
             _ => return Err("Expected response".into()),
@@ -2219,38 +2235,39 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_handle_goto_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
-        // #964: handle_goto is the 6th resume handler that must clear stack_frames.
-        // It clears inside the `if let Some(session) && stdin` arm, so a seeded session
-        // and a resolvable goto target are both required to exercise the clear path.
+    fn test_rejected_goto_preserves_session_state() -> Result<(), Box<dyn std::error::Error>> {
+        // #9064: goto is fail-closed while unadvertised. A rejected goto must
+        // leave the stopped session untouched — no resume, no cache/frame
+        // invalidation, no `continued` event — even when a retained target id
+        // would otherwise resolve.
         let adapter = DebugAdapter::new();
         adapter.seed_session_for_test()?;
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
-        // Precondition: stale frames are present
+        // Precondition: frames are present
         assert_eq!(
             adapter.stack_frames_snapshot_for_test().len(),
             2,
             "precondition: should have 2 frames before goto"
         );
 
-        // Seed a goto target so handle_goto resolves it (otherwise returns early with
-        // "Unknown goto target" before reaching the clear).
+        // Seed a goto target so an un-gated handler would resolve and resume.
         {
-            let mut goto_map =
-                lock_or_recover(&adapter.goto_targets, "test.handle_goto_clears_stack_frames");
+            let mut goto_map = lock_or_recover(
+                &adapter.goto_targets,
+                "test.rejected_goto_preserves_session_state",
+            );
             goto_map.insert(1, ("/tmp/test_goto.pl".to_string(), 5));
         }
 
-        // Call handle_goto -- writes commands to the noop child's stdin (bytes are
-        // discarded by the no-op process); stack_frames.clear() must still fire.
         let _response = adapter.handle_goto(1, 1, Some(json!({"threadId": 1, "targetId": 1})));
 
-        // Assert: frames cleared (FAILS if handle_goto does not call stack_frames.clear())
+        // A rejected goto must not invalidate the current suspension: the
+        // stale-frame authority (generation) and frames stay coherent.
         assert_eq!(
             adapter.stack_frames_snapshot_for_test().len(),
-            0,
-            "handle_goto must clear stack_frames after resume"
+            2,
+            "rejected goto must not clear or mutate stack_frames"
         );
         Ok(())
     }

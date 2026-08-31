@@ -145,8 +145,9 @@ fn test_goto_unknown_target_id_returns_failure() -> Result<(), Box<dyn std::erro
     let mut adapter = make_adapter();
     let args = json!({ "threadId": 1, "targetId": 9999 });
     let response = adapter.handle_request(1, "goto", Some(args));
-    // targetId 9999 has never been registered via gotoTargets, so the implementation
-    // removes it from the goto_map (returning None) and unconditionally returns failure.
+    // Standard goto is fail-closed while unadvertised (#9064): the handler
+    // refuses before any target lookup, so no retained target can be consumed
+    // and no execution can start.
     match response {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "goto");
@@ -171,17 +172,25 @@ fn test_goto_targets_missing_args_returns_failure() -> Result<(), Box<dyn std::e
 
 #[test]
 // AC:16
-fn test_goto_targets_no_source_path_returns_empty_success() -> Result<(), Box<dyn std::error::Error>>
-{
+fn test_goto_targets_unsupported_regardless_of_source() -> Result<(), Box<dyn std::error::Error>> {
+    // #9064: gotoTargets is fail-closed while unadvertised. Even a
+    // well-formed source with no path gets the explicit unsupported response
+    // instead of a successful empty target list.
     let mut adapter = make_adapter();
     let args = json!({
         "source": {},
         "line": 1
     });
     let response = adapter.handle_request(1, "gotoTargets", Some(args));
-    let body = assert_response(response, "gotoTargets", true)?;
-    let body = body.ok_or("gotoTargets must return a body")?;
-    assert!(body.get("targets").is_some(), "targets array required in response body");
+    match response {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert_eq!(command, "gotoTargets");
+            assert!(!success, "gotoTargets must fail closed while unadvertised");
+            assert!(body.is_none(), "unsupported gotoTargets must not publish targets");
+            assert!(message.is_some_and(|m| !m.is_empty()), "rejection must explain why");
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
     Ok(())
 }
 
@@ -307,6 +316,9 @@ fn test_goto_targets_path_traversal_blocked_when_workspace_set()
     // rejects parent-directory traversal components.  Absolute paths outside the
     // CWD are warned but allowed (no workspace boundary is known).
     // Previously all paths were allowed through with no validation.
+    // #9064: gotoTargets is additionally fail-closed while unadvertised, so the
+    // gate refuses the request before path handling or any filesystem access;
+    // traversal can never reach discovery at all.
     let mut adapter = make_adapter();
     let malicious_paths =
         vec!["../../../etc/passwd", "/etc/passwd", "../../../../../../tmp/sensitive"];
@@ -543,21 +555,26 @@ fn test_unknown_command_returns_structured_error_response() -> Result<(), Box<dy
 // 4. Response Schema Validation
 // ---------------------------------------------------------------------------
 
-// --- gotoTargets response body has targets[] ---
+// --- gotoTargets response body must not publish targets while unsupported ---
 
 #[test]
-// AC:16 (Schema: gotoTargets response includes targets array)
-fn test_goto_targets_response_body_has_targets_array() -> Result<(), Box<dyn std::error::Error>> {
+// AC:16 (Schema: unsupported gotoTargets publishes no targets array)
+fn test_goto_targets_response_body_has_no_targets_while_unsupported()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({
         "source": {},
         "line": 1
     });
     let response = adapter.handle_request(1, "gotoTargets", Some(args));
-    let body = assert_response(response, "gotoTargets", true)?;
-    let body = body.ok_or("gotoTargets body is required")?;
-    let targets = body.get("targets").ok_or("gotoTargets body must have 'targets'")?;
-    assert!(targets.is_array(), "'targets' must be an array");
+    match response {
+        DapMessage::Response { success, command, body, .. } => {
+            assert_eq!(command, "gotoTargets");
+            assert!(!success, "gotoTargets must fail closed while unadvertised (#9064)");
+            assert!(body.is_none(), "unsupported gotoTargets must not publish a targets body");
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
     Ok(())
 }
 

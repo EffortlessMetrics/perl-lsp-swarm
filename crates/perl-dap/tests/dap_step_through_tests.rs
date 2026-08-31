@@ -401,13 +401,16 @@ fn test_scopes_request_after_rejected_next_without_session_is_empty()
 }
 
 // ---------------------------------------------------------------------------
-// 5. gotoTargets with real Perl source file
+// 5. gotoTargets fail-closed on real Perl source (#9064)
 // ---------------------------------------------------------------------------
 
 #[test]
 // AC:3535
-fn test_goto_targets_with_executable_perl_lines() -> Result<(), Box<dyn std::error::Error>> {
-    // Create a Perl file and ask for goto targets near a specific line.
+fn test_goto_targets_unsupported_for_valid_perl_source() -> Result<(), Box<dyn std::error::Error>> {
+    // Negative control (#9064): even for a valid Perl file with executable
+    // lines, unsupported gotoTargets must not discover or publish targets a
+    // client could use as standard goto. Run-to-line would execute the
+    // intervening statements, so no target may be offered.
     let dir = tempfile::tempdir()?;
     let script_path = dir.path().join("goto_test.pl");
     fs::write(
@@ -424,23 +427,12 @@ fn test_goto_targets_with_executable_perl_lines() -> Result<(), Box<dyn std::err
 
     match response {
         DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "gotoTargets should succeed for valid Perl file");
             assert_eq!(command, "gotoTargets");
-            let body = body.ok_or("expected body")?;
-            let targets =
-                body.get("targets").and_then(|v| v.as_array()).ok_or("expected targets array")?;
-            // There should be at least one executable target near line 3
             assert!(
-                !targets.is_empty(),
-                "gotoTargets should find executable lines near line 3 in a valid Perl file"
+                !success,
+                "gotoTargets must fail closed for a valid Perl file while unadvertised"
             );
-            // Each target must have id and label
-            for target in targets {
-                assert!(target.get("id").is_some(), "target must have id");
-                assert!(target.get("label").is_some(), "target must have label");
-                let label = target.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                assert!(label.starts_with("Line "), "label should start with 'Line ': {label}");
-            }
+            assert!(body.is_none(), "unsupported gotoTargets must not publish a targets body");
         }
         _ => return Err("Expected Response for gotoTargets".into()),
     }
@@ -461,18 +453,11 @@ fn test_goto_targets_nonexistent_file_returns_empty_targets()
 
     match response {
         DapMessage::Response { success, command, body, .. } => {
-            // Path validation may reject as traversal or file not found → either empty success or failure
-            let _ = success;
+            // #9064: the fail-closed gate refuses before any filesystem access,
+            // so a nonexistent file gets the explicit unsupported failure.
             assert_eq!(command, "gotoTargets");
-            if success {
-                let body = body.ok_or("gotoTargets response must have a body")?;
-                let targets = body
-                    .get("targets")
-                    .and_then(|v| v.as_array())
-                    .ok_or("gotoTargets body must have a targets array")?;
-                assert!(targets.is_empty(), "nonexistent file must yield empty targets");
-            }
-            // if !success, that is also acceptable (path validation rejected the path)
+            assert!(!success, "gotoTargets must fail closed while unadvertised");
+            assert!(body.is_none(), "unsupported gotoTargets must not publish a body");
         }
         _ => return Err("Expected Response for gotoTargets".into()),
     }
@@ -497,8 +482,8 @@ fn test_goto_unknown_target_id_returns_failure() -> Result<(), Box<dyn std::erro
             assert!(message.is_some(), "failure must include a message");
             let msg = message.ok_or("goto failure response must have a message")?;
             assert!(
-                msg.contains("Unknown goto target") || msg.contains("99999"),
-                "message should indicate unknown target: {msg}"
+                msg.contains("unsupported"),
+                "message should explain standard goto is unsupported (#9064): {msg}"
             );
         }
         _ => return Err("Expected Response for goto".into()),

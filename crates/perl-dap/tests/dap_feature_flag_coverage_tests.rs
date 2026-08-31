@@ -12,6 +12,7 @@
 //! - AC5: dap.exceptions.die
 //! - AC6: dap.inline_values
 //! - AC7: dap.modules
+//! - AC10: dap.goto_targets (fail-closed standard goto, #9064)
 //!
 //! Each feature gets:
 //! 1. Feature gate test: `has_feature("dap.X")` returns true
@@ -1140,6 +1141,66 @@ fn test_functional_dap_watchpoints_data_breakpoint_roundtrip() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
+// AC10: dap.goto_targets — fail-closed standard goto (#9064)
+// ---------------------------------------------------------------------------
+
+/// Feature gate: `dap.goto_targets` is not advertised while the native backend
+/// only offers run-to-line, which is not standard DAP goto.
+#[test]
+fn test_feature_gate_dap_goto_targets_not_advertised() {
+    assert!(
+        !has_feature("dap.goto_targets"),
+        "dap.goto_targets must not be advertised until a backend proves a real \
+         next-statement relocation primitive (#9064)"
+    );
+}
+
+/// Capability test: initialize must not advertise goto targets while the
+/// catalog row is unadvertised.
+#[test]
+fn test_capability_dap_goto_targets_not_advertised_in_initialize() -> TestResult {
+    let body = get_initialize_body()?;
+    let supports_goto =
+        body.get("supportsGotoTargetsRequest").and_then(|v| v.as_bool()).unwrap_or(false);
+    assert_eq!(
+        supports_goto,
+        has_feature("dap.goto_targets"),
+        "supportsGotoTargetsRequest must mirror the dap.goto_targets catalog entry"
+    );
+    assert!(
+        !supports_goto,
+        "supportsGotoTargetsRequest must be false while dap.goto_targets is unadvertised"
+    );
+    Ok(())
+}
+
+/// Functional test: both goto requests are explicitly refused while unsupported.
+#[test]
+fn test_functional_dap_goto_targets_requests_fail_closed() -> TestResult {
+    let mut adapter = initialize_adapter();
+
+    for (command, args) in [
+        ("gotoTargets", json!({ "source": { "path": "script.pl" }, "line": 3 })),
+        ("goto", json!({ "threadId": 1, "targetId": 1 })),
+    ] {
+        let response = adapter.handle_request(2, command, Some(args));
+        match response {
+            DapMessage::Response { success, command: actual, message, .. } => {
+                assert_eq!(actual, command);
+                assert!(!success, "{command} must fail closed while unadvertised (#9064)");
+                let err = message.unwrap_or_default();
+                assert!(
+                    err.to_lowercase().contains("unsupported"),
+                    "{command} rejection must explain that standard goto is unsupported: {err}"
+                );
+            }
+            _ => return Err(format!("Expected {command} response").into()),
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Cross-feature: feature catalog completeness
 // ---------------------------------------------------------------------------
 
@@ -1191,6 +1252,9 @@ fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
         ("dap.completions", "supportsCompletionsRequest"),
         ("dap.modules", "supportsModulesRequest"),
         ("dap.watchpoints", "supportsDataBreakpoints"),
+        // #9064: goto capability mirrors its own catalog row, not broad core
+        // state; while the row is unadvertised the flag must stay false.
+        ("dap.goto_targets", "supportsGotoTargetsRequest"),
     ];
 
     for (feature, capability) in feature_to_cap {

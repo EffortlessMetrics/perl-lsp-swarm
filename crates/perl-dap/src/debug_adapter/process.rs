@@ -76,6 +76,12 @@ impl DebugAdapter {
         let supports_step_in_targets = catalog_has_feature("dap.step_in_targets");
         let supports_restart = catalog_has_feature("dap.restart");
         let supports_loaded_sources = catalog_has_feature("dap.loaded_sources");
+        // `gotoTargets`/`goto` are fail-closed while the native backend only has
+        // a run-to-line primitive (`f <source>` + `c <line>` resumes execution
+        // instead of moving the next statement).  The catalog row is
+        // `not_proven`/unadvertised (#9064), so this flag stays `false` until a
+        // backend proves a real next-statement relocation primitive.
+        let supports_goto_targets = catalog_has_feature("dap.goto_targets");
 
         let mut filters = Vec::new();
         if supports_exceptions {
@@ -108,7 +114,7 @@ impl DebugAdapter {
             "supportsStepBack": false,
             "supportsSetVariable": supports_core,
             "supportsRestartFrame": supports_restart_frame,
-            "supportsGotoTargetsRequest": supports_core,
+            "supportsGotoTargetsRequest": supports_goto_targets,
             "supportsStepInTargetsRequest": supports_step_in_targets,
             "supportsCompletionsRequest": supports_completions,
             "supportsModulesRequest": supports_modules,
