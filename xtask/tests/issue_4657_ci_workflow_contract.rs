@@ -66,6 +66,25 @@ fn step_block<'a>(job: &'a str, step_name: &str) -> Option<&'a str> {
     Some(&rest[..end])
 }
 
+/// Extract the script from a named step's inline or YAML-block `run` field.
+fn step_run_script(step: &str) -> Option<String> {
+    let mut in_block = false;
+    let mut script = Vec::new();
+    for line in step.lines() {
+        let trimmed = line.trim();
+        if in_block {
+            script.push(trimmed);
+        } else if let Some(command) = trimmed.strip_prefix("run: ") {
+            if command == "|" {
+                in_block = true;
+            } else {
+                return Some(command.to_string());
+            }
+        }
+    }
+    in_block.then(|| script.join("\n"))
+}
+
 /// #9594: the bit-rot guard must not pin the pull-request head SHA.
 ///
 /// For a `pull_request` event the workflow definition comes from the base
@@ -255,10 +274,7 @@ fn windows_platform_smoke_compiles_integration_targets_without_running_them()
         !smoke_step.contains("scope_cache_key.py"),
         "Windows portability smoke contract must not inspect the preceding cache-key step"
     );
-    let run = smoke_step
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("run: "))
-        .ok_or("windows platform smoke has no run command")?;
+    let run = step_run_script(smoke_step).ok_or("windows platform smoke has no run command")?;
 
     assert!(
         run.contains("cargo test $WINDOWS_TEST_CRATES --locked --tests --no-run"),
