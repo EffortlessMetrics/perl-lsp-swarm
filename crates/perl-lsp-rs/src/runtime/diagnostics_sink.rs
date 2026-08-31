@@ -187,17 +187,44 @@ impl LspServer {
             return Err(DiagnosticSubjectRejection::SupersededGeneration);
         }
 
+        if let Some(accepted_topology_generation) = accepted_topology_generation {
+            let workspace_folders = self.workspace_folders.lock();
+            if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+                != accepted_topology_generation
+            {
+                return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
+            }
+            if let Some(snapshot) = accepted_critic_snapshot {
+                let root_path = self.root_path.lock();
+                let config = self.config.lock();
+                let live_root =
+                    super::best_workspace_folder_for_doc(&workspace_folders, &normalized_uri)
+                        .and_then(|folder| {
+                            folder.path.clone().or_else(|| source_path_from_uri(&folder.uri))
+                        })
+                        .or_else(|| root_path.clone())
+                        .map(|path| path.to_string_lossy().into_owned());
+                if live_root.as_deref() != snapshot.owning_root() || !snapshot.is_current(&config) {
+                    return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
+                }
+
+                let committed = commit();
+                drop(config);
+                drop(root_path);
+                drop(workspace_folders);
+                drop(documents);
+                return Ok(committed);
+            }
+            let committed = commit();
+            drop(workspace_folders);
+            drop(documents);
+            return Ok(committed);
+        }
+
         if let Some(snapshot) = accepted_critic_snapshot {
             let workspace_folders = self.workspace_folders.lock();
             let root_path = self.root_path.lock();
             let config = self.config.lock();
-            if let Some(accepted_topology_generation) = accepted_topology_generation {
-                if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
-                    != accepted_topology_generation
-                {
-                    return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
-                }
-            }
             let live_root =
                 super::best_workspace_folder_for_doc(&workspace_folders, &normalized_uri)
                     .and_then(|folder| {
