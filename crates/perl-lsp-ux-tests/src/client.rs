@@ -224,8 +224,6 @@ impl UxClient {
             params["initializationOptions"] = config.initialization_options.clone();
         }
 
-        merge_json(&mut params["capabilities"], &config.client_capability_overrides);
-
         let init_resp = self.request("initialize", params, timeout)?;
 
         if let Some(err) = init_resp.get("error") {
@@ -809,6 +807,12 @@ fn invalid_params(message: &Value, method: &str, reason: &str) -> ServerRequestD
 }
 
 fn capability_is_advertised(capabilities: &Value, path: &str) -> bool {
+    if path == "workspace.diagnostics.refreshSupport"
+        && capability_is_advertised(capabilities, "workspace.diagnostic.refreshSupport")
+    {
+        return true;
+    }
+
     let pointer = format!("/{}", path.replace('.', "/"));
     match capabilities.pointer(&pointer) {
         Some(Value::Bool(value)) => *value,
@@ -873,6 +877,7 @@ fn registration_capability_path(method: &str) -> Option<&'static str> {
         "workspace/didChangeWatchedFiles" => "workspace.didChangeWatchedFiles.dynamicRegistration",
         "workspace/executeCommand" => "workspace.executeCommand.dynamicRegistration",
         "textDocument/completion" => "textDocument.completion.dynamicRegistration",
+        "textDocument/inlineCompletion" => "textDocument.inlineCompletion.dynamicRegistration",
         "textDocument/hover" => "textDocument.hover.dynamicRegistration",
         "textDocument/definition" => "textDocument.definition.dynamicRegistration",
         "textDocument/declaration" => "textDocument.declaration.dynamicRegistration",
@@ -1301,6 +1306,52 @@ mod tests {
         let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
 
         assert_eq!(response["id"], "refresh-1");
+        assert_eq!(response["result"], Value::Null);
+        assert!(response.get("error").is_none());
+    }
+
+
+    #[test]
+    fn inline_completion_dynamic_registration_is_admitted() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "inline-registration",
+            "method": "client/registerCapability",
+            "params": {
+                "registrations": [{
+                    "id": "inline-completion",
+                    "method": "textDocument/inlineCompletion"
+                }]
+            }
+        });
+        let capabilities = capabilities_with(json!({
+            "textDocument": {
+                "inlineCompletion": { "dynamicRegistration": true }
+            }
+        }));
+        let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], "inline-registration");
+        assert_eq!(response["result"], Value::Null);
+        assert!(response.get("error").is_none());
+    }
+
+    #[test]
+    fn singular_diagnostic_refresh_capability_is_admitted() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "diagnostic-refresh",
+            "method": "workspace/diagnostic/refresh",
+            "params": {}
+        });
+        let capabilities = capabilities_with(json!({
+            "workspace": {
+                "diagnostic": { "refreshSupport": true }
+            }
+        }));
+        let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], "diagnostic-refresh");
         assert_eq!(response["result"], Value::Null);
         assert!(response.get("error").is_none());
     }
