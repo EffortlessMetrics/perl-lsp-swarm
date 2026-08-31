@@ -49,7 +49,6 @@ required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
-ruleset_integration_id = 15368
 reason = "Shadow exact-tree policy evaluator; advisory until canaries and ruleset promotion complete."
 
 [[checks]]

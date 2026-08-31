@@ -28,6 +28,7 @@ jobs:
       BASE_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
       SUBJECT_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.sha }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
+      PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}
     steps:
       - name: Checkout trusted evaluator
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = "pull_request_target" ]; then
-            git fetch --no-tags origin "+refs/pull/${{ github.event.pull_request.number }}/merge:refs/heads/non-rust-policy-subject"
+            git fetch --no-tags origin "+refs/pull/$PR_NUMBER/merge:refs/heads/non-rust-policy-subject"
           elif [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
             git fetch --no-tags origin "+$GITHUB_REF:refs/heads/non-rust-policy-subject"
           elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
