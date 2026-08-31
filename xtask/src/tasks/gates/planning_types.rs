@@ -2,10 +2,10 @@ use std::collections::HashSet;
 
 use crate::tasks::ci_scope::ScopeOutput;
 use xtask::ci_route_plan::{
-    CompileRoutePlanInput, ExpansionStatus, GateSelectorInput, LifecycleDisposition,
-    LifecycleState, PolicyRole, Resolution, RouteDispositionInput, RouteExecutionIdentity,
-    RouteProfileExpansionInput, RouteQuarantineEvidence, RouteScopeEvidence,
-    RouteSelectionEvidence, ScopedIdentity, SelectorPlacement, SelectorProof, SelectorRole,
+    ExpansionStatus, GateSelectorInput, LifecycleDisposition, LifecycleState, PolicyRole,
+    Resolution, RouteDispositionInput, RouteExecutionIdentity, RouteProfileExpansionInput,
+    RouteQuarantineEvidence, RouteScopeEvidence, RouteSelectionEvidence, ScopedIdentity,
+    SelectorPlacement, SelectorProof, SelectorRole,
 };
 
 use super::disposition::{
@@ -311,7 +311,9 @@ mod route_plan_seam_tests {
     use crate::tasks::gates::{GlobalSettings, TierDefinition};
     use chrono::NaiveDate;
     use std::collections::HashMap;
-    use xtask::ci_route_plan::{Applicability, CiRoutePlanV1, PlannedOutcome, RouteSubjectRef};
+    use xtask::ci_route_plan::{
+        Applicability, CiRoutePlanV1, CompileRoutePlanInput, PlannedOutcome, RouteSubjectRef,
+    };
 
     pub(super) const TODAY: NaiveDate = NaiveDate::from_ymd_opt(2026, 8, 24).unwrap();
     pub(super) const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
