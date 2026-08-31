@@ -55,6 +55,23 @@
 //! Known residual, unchanged by this decision: these patterns treat a left-shift
 //! `<<` as a heredoc marker. That imprecision is pre-existing on single lines
 //! and is a property of the `<<` token test, not of the newline horizon.
+//!
+//! # Heredoc body mask (#14352)
+//!
+//! `RegexCodeBlockHeredoc` counts braces to find the end of a `(?{ ... })`
+//! block, and `mask_non_code_regions` does not blank heredoc bodies. A brace in
+//! heredoc *text* therefore skewed the depth count, so a real diagnostic
+//! vanished from valid code — and, because the scan stops at an unmatched outer
+//! block to stay linear, from every later block in the file too. The detector
+//! now blanks heredoc bodies before counting.
+//!
+//! Blanking is itself the mechanism that hides constructs, so the mask is
+//! deliberately fail-safe: it blanks only bodies whose terminator line was
+//! actually found. A `<<WORD` that is not a heredoc — a left shift such as
+//! `1 << FOO`, or a genuinely unterminated declaration — then costs nothing
+//! instead of blinding the rest of the file. The same property makes the mask
+//! degrade rather than misfire on any delimiter spelling or line ending it
+//! fails to recognise.
 
 mod detectors;
 mod model;

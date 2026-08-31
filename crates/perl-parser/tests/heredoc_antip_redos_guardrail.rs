@@ -155,6 +155,74 @@ fn antip_heredoc_body_does_not_fabricate_a_regex_code_block() {
 }
 
 #[test]
+fn antip_body_mask_never_outruns_a_proven_terminator() {
+    // The mask blanks bodies, and blanking is what hides constructs from the
+    // detector, so a `<<WORD` that is not really a heredoc must cost nothing.
+    // Masking to end-of-file on a declaration whose terminator never appears
+    // would turn one misread token into a file-wide blind spot.
+    for (label, code) in [
+        ("left shift, no terminator", "my $x = 1<<FOO;\nqr/y(?{ print <<'N';\nok\nN\n})/;\n"),
+        (
+            "unterminated heredoc before a block",
+            "print <<'GONE';\nnever closed\nqr/y(?{ print <<'N';\nok\nN\n})/;\n",
+        ),
+        (
+            "stacked pair, only the first terminates",
+            "print <<'A', <<'GONE';\na\nA\nqr/y(?{ print <<'N';\nok\nN\n})/;\n",
+        ),
+    ] {
+        assert!(
+            has_regex_code_block(code),
+            "{label}: an unterminated declaration must not blank the rest of the file; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_body_mask_handles_crlf_terminators() {
+    // A CRLF file ends the terminator line with `\r`. Comparing the raw line
+    // against the delimiter never matches there, so every heredoc read as
+    // unterminated — which, with the fail-safe above, silently degrades to no
+    // masking at all rather than to a wrong answer. Both directions are
+    // asserted: the body must still be masked, and detection must still work.
+    let cascade = "qr/x(?{ print <<'M';\r\n{ unbalanced\r\nM\r\n})/;\r\nqr/y(?{ print <<'N';\r\nok\r\nN\r\n})/;\r\n";
+    assert_eq!(
+        regex_code_block_count(cascade),
+        2,
+        "CRLF bodies must be masked so a brace in one body cannot blind the next block; got {:?}",
+        detect(cascade).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let indented = "qr/x(?{ print <<~'M';\r\n  has { brace\r\n  M\r\n})/;\r\n";
+    assert!(
+        has_regex_code_block(indented),
+        "an indented CRLF heredoc body must be masked too; got {:?}",
+        detect(indented).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn antip_body_mask_covers_every_heredoc_delimiter_spelling() {
+    // Perl spells a heredoc delimiter five ways. A spelling the mask does not
+    // recognise leaves its body live, and a brace in that body suppresses the
+    // very diagnostic the body sits inside.
+    for (label, code) in [
+        ("bare", "qr/x(?{ print <<M;\nhas { brace\nM\n})/;\n"),
+        ("single-quoted", "qr/x(?{ print <<'M';\nhas { brace\nM\n})/;\n"),
+        ("double-quoted", "qr/x(?{ print <<\"M\";\nhas { brace\nM\n})/;\n"),
+        ("backtick", "qr/x(?{ print <<`CMD`;\nhas { brace\nCMD\n})/;\n"),
+        ("backslash-escaped", "qr/x(?{ print <<\\LAB;\nhas { brace\nLAB\n})/;\n"),
+    ] {
+        assert!(
+            has_regex_code_block(code),
+            "{label}: this delimiter spelling must be masked; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
 fn antip_detects_multiline_eval_string_heredoc() {
     // An eval string declaring a heredoc must span newlines to reach the
     // terminator, so `[^\n']*` dropped every real occurrence.

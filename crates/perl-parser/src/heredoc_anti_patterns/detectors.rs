@@ -338,12 +338,15 @@ impl PatternDetector for SourceFilterDetector {
 // Regex heredoc detector
 struct RegexHeredocDetector;
 
-/// A heredoc declaration: `<<EOF`, `<<'EOF'`, `<<"EOF"`, and the `<<~` indented
-/// forms. A bare delimiter must be adjacent to `<<` — whitespace before an
-/// unquoted word makes it a left shift, not a heredoc — while the quoted forms
-/// may be separated.
+/// A heredoc declaration: `<<EOF`, `<<'EOF'`, `<<"EOF"`, ``<<`CMD` ``,
+/// `<<\EOF`, and the `<<~` indented forms. A bare or backslash delimiter must
+/// be adjacent to `<<` — whitespace before an unquoted word makes it a left
+/// shift, not a heredoc — while the quoted forms may be separated. Perl has no
+/// `<<-` heredoc; that spelling is shell and is deliberately not matched.
 static HEREDOC_DECL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    match Regex::new(r#"<<(~?)(?:\s*'([^'\n]*)'|\s*"([^"\n]*)"|([A-Za-z_]\w*))"#) {
+    match Regex::new(
+        r#"<<(~?)(?:\s*'([^'\n]*)'|\s*"([^"\n]*)"|\s*`([^`\n]*)`|\\([A-Za-z_]\w*)|([A-Za-z_]\w*))"#,
+    ) {
         Ok(re) => re,
         Err(_) => unreachable!("HEREDOC_DECL_PATTERN regex failed to compile"),
     }
@@ -364,8 +367,7 @@ fn heredoc_body_ranges(code: &str, scan_code: &str) -> Vec<(usize, usize)> {
                 return None;
             }
             let indented = capture.get(1).is_some_and(|tilde| !tilde.as_str().is_empty());
-            let delimiter =
-                capture.get(2).or_else(|| capture.get(3)).or_else(|| capture.get(4))?.as_str();
+            let delimiter = (2..=6).find_map(|group| capture.get(group))?.as_str();
             (!delimiter.is_empty()).then_some((whole.start(), indented, delimiter))
         })
         .collect();
@@ -403,28 +405,47 @@ fn heredoc_body_ranges(code: &str, scan_code: &str) -> Vec<(usize, usize)> {
 
         let body_start = after;
         let mut cursor = index + 1;
+        // Only bodies whose terminator was actually seen may be blanked. A
+        // declaration that never terminates — an unterminated heredoc, or a
+        // left shift such as `1 << FOO` that only looks like one — must not
+        // blank the remainder of the file, because blanking is what hides
+        // later constructs from the detector. Mis-reading `<<` then costs
+        // nothing rather than blinding every subsequent line.
+        let mut terminated_through = None;
 
         for (_, indented, delimiter) in on_this_line {
+            let mut found = false;
             while cursor < lines.len() {
                 let (body_line_start, body_line_end, _) = lines[cursor];
-                let text = &code[body_line_start..body_line_end];
+                // A CRLF file ends each line with `\r`; the terminator is the
+                // delimiter alone, so compare against the line without it.
+                let text = code[body_line_start..body_line_end].trim_end_matches('\r');
                 let terminated =
                     if *indented { text.trim() == *delimiter } else { text == *delimiter };
                 cursor += 1;
                 if terminated {
+                    found = true;
                     break;
                 }
             }
-        }
-
-        if cursor > index + 1 {
-            let body_end = lines[cursor - 1].2;
-            if body_end > body_start {
-                ranges.push((body_start, body_end));
+            if !found {
+                break;
             }
+            terminated_through = Some(cursor);
         }
 
-        index = cursor.max(index + 1);
+        let resume = match terminated_through {
+            Some(cursor) => {
+                let body_end = lines[cursor - 1].2;
+                if body_end > body_start {
+                    ranges.push((body_start, body_end));
+                }
+                cursor
+            }
+            None => index + 1,
+        };
+
+        index = resume.max(index + 1);
     }
 
     ranges
