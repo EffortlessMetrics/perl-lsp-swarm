@@ -243,11 +243,10 @@ def observe(
     capture = observer.capture_live(
         REPOSITORY, "main", which if which is not None else transport()
     )
+    # Time is a property of the capture, not a build-time override.
+    capture.captured_at = observed_at
     return observer.build_snapshot(
-        capture,
-        source=source,
-        static_receipt=static_receipt(),
-        observed_at=observed_at,
+        capture, source=source, static_receipt=static_receipt()
     )
 
 
@@ -344,7 +343,6 @@ class PartialAccessIsNotProven(unittest.TestCase):
             capture,
             source="operator",
             static_receipt=static_receipt(),
-            observed_at="2026-08-16T00:00:00Z",
         )
         self.assertEqual(
             snapshot["classic_branch_protection"]["instrument_state"], "error"
@@ -431,6 +429,22 @@ class RulesetObservation(unittest.TestCase):
         result = model.reconcile(snapshot, static_receipt(), authority(snapshot))
         self.assertEqual(result["status"], "NOT_PROVEN")
 
+    def test_detail_for_the_wrong_ruleset_is_not_attributed(self) -> None:
+        """A swapped bundle entry must not transfer enforcement identity.
+
+        Without the id check, one ruleset's conditions, enforcement, and
+        bypass actors would be recorded against another ruleset's id.
+        """
+        detail = json.loads(ruleset_detail_response())
+        detail["id"] = RULESET_ID + 1
+        snapshot = observe(transport(detail=(200, body(detail))))
+        self.assertEqual(snapshot["rulesets"]["items"], [])
+        self.assertIn(
+            f"{observer.RULESET_DETAIL_UNREADABLE}:{RULESET_ID}",
+            snapshot["observation"]["limitations"],
+        )
+        self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+
     def test_non_branch_rulesets_are_not_branch_enforcement(self) -> None:
         listing = body(
             [
@@ -490,7 +504,6 @@ class RulesetObservation(unittest.TestCase):
             capture,
             source="operator",
             static_receipt=static_receipt(),
-            observed_at="2026-08-16T00:00:00Z",
         )
         self.assertIn(
             observer.RULESET_LIST_TRUNCATED, snapshot["observation"]["limitations"]
@@ -505,7 +518,6 @@ class RulesetObservation(unittest.TestCase):
             restored,
             source="connector",
             static_receipt=static_receipt(),
-            observed_at="2026-08-16T00:00:00Z",
         )
         self.assertIn(
             observer.RULESET_LIST_TRUNCATED, imported["observation"]["limitations"]
@@ -677,13 +689,11 @@ class CaptureBundle(unittest.TestCase):
             capture,
             source="operator",
             static_receipt=static_receipt(),
-            observed_at="2026-08-16T00:00:00Z",
         )
         imported = observer.build_snapshot(
             restored,
             source="connector",
             static_receipt=static_receipt(),
-            observed_at="2026-08-16T00:00:00Z",
         )
         direct["observation"]["source"] = "connector"
         self.assertEqual(direct, imported)
@@ -747,7 +757,6 @@ class CaptureBundle(unittest.TestCase):
             restored,
             source="connector",
             static_receipt=static_receipt(),
-            observed_at="2026-08-16T00:00:00Z",
         )
         self.assertEqual(snapshot["rulesets"]["items"], [])
         self.assertIn(
@@ -835,6 +844,18 @@ class AcquisitionBinding(unittest.TestCase):
             del bundle[missing]
             with self.assertRaises(observer.ObserverError):
                 observer.Capture.from_bundle(bundle)
+
+    def test_build_snapshot_has_no_acquisition_time_override(self) -> None:
+        """A caller override would reopen the staleness hole it closed.
+
+        The acquisition time is a property of the capture. An argument that
+        could replace it would let any caller present an old capture as fresh.
+        """
+        import inspect
+
+        parameters = inspect.signature(observer.build_snapshot).parameters
+        self.assertNotIn("observed_at", parameters)
+        self.assertNotIn("branch", parameters)
 
     def test_bundle_captured_at_must_be_a_real_timestamp(self) -> None:
         capture = observer.capture_live(REPOSITORY, "main", transport())
@@ -1211,6 +1232,43 @@ class AuthorityIndependence(unittest.TestCase):
                     max_age_seconds=3600,
                     max_future_skew_seconds=300,
                 )
+
+    def test_authority_refuses_values_the_reconciler_would_reject(self) -> None:
+        """Fail at the point the operator supplied the value, not downstream."""
+        base = {
+            "producer": "p",
+            "declared_repository": REPOSITORY,
+            "declared_repository_id": REPOSITORY_ID,
+            "declared_branch": "main",
+            "max_age_seconds": 3600,
+            "max_future_skew_seconds": 300,
+        }
+        for override in (
+            {"producer": ""},
+            {"producer": "   "},
+            {"declared_branch": ""},
+            {"max_age_seconds": 0},
+            {"max_age_seconds": -1},
+            {"max_age_seconds": True},
+            {"max_future_skew_seconds": 0},
+            {"max_future_skew_seconds": False},
+            {"evaluated_at": "not-a-time"},
+            {"evaluated_at": "2026-08-16T00:00:00"},
+        ):
+            with self.assertRaises(observer.ObserverError):
+                observer.build_authority(**{**base, **override})
+
+    def test_authority_normalizes_a_non_utc_evaluation_time(self) -> None:
+        built = observer.build_authority(
+            producer="p",
+            declared_repository=REPOSITORY,
+            declared_repository_id=REPOSITORY_ID,
+            declared_branch="main",
+            max_age_seconds=3600,
+            max_future_skew_seconds=300,
+            evaluated_at="2026-08-16T00:05:00-04:00",
+        )
+        self.assertEqual(built["evaluated_at"], "2026-08-16T04:05:00Z")
 
     def test_cli_refuses_to_write_an_authority_without_declared_id(self) -> None:
         capture = observer.capture_live(REPOSITORY, "main", transport())

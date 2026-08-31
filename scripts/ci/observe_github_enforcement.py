@@ -411,13 +411,13 @@ def build_snapshot(
     *,
     source: str,
     static_receipt: dict[str, Any],
-    observed_at: str | None = None,
 ) -> dict[str, Any]:
     """Assemble github_enforcement_snapshot.v1 from captured evidence.
 
-    The branch and observation time come from the capture itself, never from a
-    caller argument: an imported bundle must not be relabelled onto another
-    branch or presented as freshly observed.
+    The branch and observation time come from the capture itself. There is
+    deliberately no caller override for either: an argument that could replace
+    the acquisition time would let any caller present an old capture as fresh,
+    which is the freshness bound this contract exists to enforce.
     """
     if source not in LIVE_SOURCES:
         raise ObserverError(
@@ -444,7 +444,7 @@ def build_snapshot(
             "repository_id": identity["repository_id"],
             "default_branch": identity["default_branch"],
             "branch_sha": branch_head_sha(capture),
-            "observed_at": observed_at or normalize_timestamp(
+            "observed_at": normalize_timestamp(
                 capture.captured_at, "capture captured_at"
             ),
         },
@@ -700,6 +700,14 @@ def ruleset_item(ruleset_id: int, detail: ApiResult) -> dict[str, Any] | None:
     payload = detail.json(f"ruleset:{ruleset_id}")
     if not isinstance(payload, dict):
         raise ObserverError("ruleset detail response must be an object")
+    # The detail must be for the ruleset the listing named. A swapped entry
+    # would attribute one ruleset's enforcement, conditions, and bypass actors
+    # to another; `ruleset_surface` turns this into an unreadable-detail
+    # limitation rather than accepting the misattribution.
+    if payload.get("id") != ruleset_id:
+        raise ObserverError(
+            f"ruleset detail response is not for ruleset {ruleset_id}"
+        )
     if payload.get("target") != "branch":
         return None
     include, exclude = ref_name_conditions(payload)
@@ -935,16 +943,27 @@ def build_authority(
     compares those declarations against what was actually observed, and a
     disagreement is its to report.
     """
-    if not isinstance(declared_repository_id, int) or isinstance(
-        declared_repository_id, bool
+    # Validated here rather than left to the reconciler: an authority that
+    # fails the contract downstream is a wasted capture, and the operator sees
+    # the reason at the point they supplied the value.
+    for field, value in (
+        ("producer", producer),
+        ("declared branch", declared_branch),
+        ("declared repository", declared_repository),
     ):
-        raise ObserverError("declared repository id must be an integer")
-    if declared_repository_id <= 0:
-        raise ObserverError("declared repository id must be positive")
+        if not isinstance(value, str) or not value.strip():
+            raise ObserverError(f"{field} must be a non-empty string")
     if len(declared_repository.split("/")) != 2 or not all(
         declared_repository.split("/")
     ):
         raise ObserverError("declared repository must be exactly owner/name")
+    for field, value in (
+        ("declared repository id", declared_repository_id),
+        ("max observation age seconds", max_age_seconds),
+        ("max future skew seconds", max_future_skew_seconds),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ObserverError(f"{field} must be a positive integer")
     return {
         "schema_version": 1,
         "producer": producer,
@@ -953,7 +972,9 @@ def build_authority(
             "repository_id": declared_repository_id,
             "default_branch": declared_branch,
         },
-        "evaluated_at": evaluated_at or utc_now(),
+        "evaluated_at": normalize_timestamp(evaluated_at, "evaluated_at")
+        if evaluated_at
+        else utc_now(),
         "max_observation_age_seconds": max_age_seconds,
         "max_future_skew_seconds": max_future_skew_seconds,
     }
