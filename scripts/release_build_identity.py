@@ -380,37 +380,14 @@ def validate_cross_config(path: Path, target: str) -> str:
     return validate_cross_image(load_cross_image(path, target), target)
 
 
-def cross_ambient_prefixes(target: str) -> tuple[str, str]:
-    """Environment prefixes cross reads as configuration for this build.
-
-    Cross resolves every configuration key from the environment BEFORE
-    `Cross.toml` (0.2.5 `src/config.rs::string_from_config` returns the env
-    value and never consults the TOML), under two spellings:
-    `CROSS_TARGET_<TARGET>_<KEY>` and `CROSS_BUILD_<KEY>`.
-
-    Several of those keys change which container actually compiles:
-
-    - `IMAGE` replaces the pinned image outright;
-    - `DOCKERFILE` (with `DOCKERFILE_CONTEXT` / `DOCKERFILE_BUILD_ARGS`)
-      builds a local image in its place;
-    - `PRE_BUILD` derives a new image `FROM` the pin and runs arbitrary
-      script content in it (`src/docker/shared.rs::custom_image_build`).
-
-    Enumerating those names individually loses to the next key cross adds —
-    three separate bypasses were found this way. Reject the whole ambient
-    configuration surface for the built target instead, so an unreviewed key
-    fails closed rather than silently producing a digest that describes a
-    container the build never ran. Nothing in the release workflow sets
-    these; `CROSS_CONFIG`, which this adapter does set, is deliberately not
-    matched by either prefix.
-    """
-    slug = target.upper().replace("-", "_")
-    return (f"CROSS_TARGET_{slug}_", "CROSS_BUILD_")
-
-
-# Named examples of the container-selecting keys, for error messages and as
-# explicit regression subjects. Not the enforcement boundary — the prefixes
-# above are, so this list never needs to stay exhaustive.
+# The one cross variable this adapter sets itself. `prepare` writes it to
+# GITHUB_ENV so the workflow's own build step and the later `verify` see the
+# reviewed config; both overwrite whatever was ambient, so it stays allowed.
+CROSS_AMBIENT_ALLOWED = frozenset({"CROSS_CONFIG"})
+# Cross also reads a few container controls that carry no CROSS_ prefix.
+CROSS_AMBIENT_EXTRA = ("DOCKER_OPTS", "QEMU_STRACE")
+# Named container-selecting config keys, kept as error-message and regression
+# subjects. Not the enforcement boundary, so this never has to stay exhaustive.
 CROSS_CONTAINER_KEYS = (
     "IMAGE",
     "DOCKERFILE",
@@ -423,13 +400,49 @@ CROSS_CONTAINER_KEYS = (
 def cross_ambient_overrides(
     target: str, env: Mapping[str, str] | None = None
 ) -> list[str]:
-    """Return the ambient cross configuration present for one target."""
+    """Return ambient cross configuration that would apply to this build.
+
+    Cross takes configuration from the environment through two mechanisms,
+    and both can change what actually compiles:
+
+    1. the `Config`/`Environment` layer, spelled `CROSS_TARGET_<TARGET>_<KEY>`
+       and `CROSS_BUILD_<KEY>`, which is resolved BEFORE `Cross.toml` (0.2.5
+       `src/config.rs::string_from_config` returns the env value and never
+       consults the TOML). `IMAGE` replaces the pin; `DOCKERFILE` (with
+       `DOCKERFILE_CONTEXT` / `DOCKERFILE_BUILD_ARGS`) builds a local image
+       instead; `PRE_BUILD` derives a new image `FROM` the pin and runs
+       arbitrary script content in it.
+    2. direct `env::var` reads in the docker layer, which no prefix covers —
+       `CROSS_CONTAINER_OPTS` and `DOCKER_OPTS` append raw options to the
+       container invocation, `CROSS_CONTAINER_ENGINE` picks a different
+       engine, `CROSS_REMOTE*` runs the build on another machine's engine,
+       and `CROSS_CONTAINER_UID`/`GID`/`USER_NAMESPACE` change who it runs as.
+
+    Four bypasses were found by enumerating individual names, so the boundary
+    is derived from cross's whole surface instead: every `CROSS_*` variable is
+    refused unless explicitly allowed, plus the non-prefixed container
+    controls. A variable cross adds later is refused by default rather than
+    silently producing a digest that describes a container the build did not
+    run in.
+
+    An override naming a *different* target cannot affect this build and is
+    left alone, so one matrix job does not fail on a sibling's configuration.
+    """
     source = os.environ if env is None else env
-    prefixes = cross_ambient_prefixes(target)
-    # Presence, not truthiness: cross reads an empty value as a selection.
-    return sorted(
-        name for name in source if name.startswith(prefixes)
-    )
+    slug = target.upper().replace("-", "_")
+    mine = f"CROSS_TARGET_{slug}_"
+    present: list[str] = []
+    for name in source:
+        # Presence, not truthiness: cross reads an empty value as a selection.
+        if name in CROSS_AMBIENT_EXTRA:
+            present.append(name)
+            continue
+        if not name.startswith("CROSS_") or name in CROSS_AMBIENT_ALLOWED:
+            continue
+        if name.startswith("CROSS_TARGET_") and not name.startswith(mine):
+            continue  # another matrix target's configuration
+        present.append(name)
+    return sorted(present)
 
 
 def reject_cross_ambient_overrides(

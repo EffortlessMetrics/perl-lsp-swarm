@@ -494,18 +494,60 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
                 )
             self.assertEqual(first, second)
 
-    def test_cross_ambient_prefixes_follow_cross_naming(self) -> None:
-        self.assertEqual(
-            subject.cross_ambient_prefixes(CROSS_TARGET),
-            ("CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_", "CROSS_BUILD_"),
-        )
-        # CROSS_CONFIG is this adapter's own input and must stay usable.
+    def test_cross_config_stays_usable_and_siblings_are_ignored(self) -> None:
+        """The guard must not refuse this adapter's own input.
+
+        `prepare` writes CROSS_CONFIG to GITHUB_ENV, so `verify` and the
+        workflow's build step both see it; refusing it would break them.
+        A sibling matrix target's configuration cannot affect this build.
+        """
+        other = OTHER_CROSS_TARGET.upper().replace("-", "_")
         self.assertEqual(
             subject.cross_ambient_overrides(
-                CROSS_TARGET, {"CROSS_CONFIG": "/x/Cross.toml"}
+                CROSS_TARGET,
+                {
+                    "CROSS_CONFIG": "/x/Cross.toml",
+                    f"CROSS_TARGET_{other}_IMAGE": "ghcr.io/x/y@sha256:z",
+                    "PATH": "/usr/bin",
+                },
             ),
             [],
         )
+
+    def test_every_cross_env_read_is_covered(self) -> None:
+        """Derived from cross 0.2.5's complete `env::var` surface.
+
+        Four bypasses were found by naming variables one at a time. These are
+        every direct read in cross's source that can change the container, or
+        where the build runs, or who it runs as. All must be refused.
+        """
+        container_surface = (
+            "CROSS_CONTAINER_OPTS",
+            "DOCKER_OPTS",
+            "CROSS_BUILD_OPTS",
+            "CROSS_CONTAINER_ENGINE",
+            "CROSS_CONTAINER_IN_CONTAINER",
+            "CROSS_DOCKER_IN_DOCKER",
+            "CROSS_CONTAINER_UID",
+            "CROSS_CONTAINER_GID",
+            "CROSS_CONTAINER_USER_NAMESPACE",
+            "CROSS_ROOTLESS_CONTAINER_ENGINE",
+            "CROSS_REMOTE",
+            "CROSS_REMOTE_COPY_CACHE",
+            "CROSS_REMOTE_COPY_REGISTRY",
+            "CROSS_REMOTE_SKIP_BUILD_ARTIFACTS",
+            "CROSS_CUSTOM_TOOLCHAIN",
+            "CROSS_COMPATIBILITY_VERSION",
+            "QEMU_STRACE",
+        )
+        for name in container_surface:
+            with self.subTest(variable=name):
+                self.assertEqual(
+                    subject.cross_ambient_overrides(
+                        CROSS_TARGET, {name: ""}
+                    ),
+                    [name],
+                )
 
     def test_ambient_container_override_cannot_bypass_the_pin(self) -> None:
         """#7534: an env override selects the container, `Cross.toml` does not.
