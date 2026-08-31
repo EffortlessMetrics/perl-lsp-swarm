@@ -48,9 +48,10 @@ NC='\033[0m'
 say()     { printf '%b\n' "$1"; }
 info()    { say "${GREEN}=>${NC} $1"; }
 warn()    { say "${YELLOW}warning:${NC} $1" >&2; }
-# First-install selector rollback is invoked from err() so injected faults and
-# other exit-1 paths drop newly created PATH names without replacing the caller's
-# EXIT trap (main removes TMPDIR that way).
+# First-install selector rollback is invoked from err() and from INT/TERM/HUP
+# during the selector-to-commit window so injected faults and signals drop
+# newly created PATH names without replacing the caller's EXIT trap (main
+# removes TMPDIR that way).
 rollback_new_path_selectors() {
     if [ -n "${_plsp_rollback_server:-}" ]; then
         rm -f -- "$_plsp_rollback_server"
@@ -60,6 +61,19 @@ rollback_new_path_selectors() {
     fi
     _plsp_rollback_server=""
     _plsp_rollback_dap=""
+}
+# Do not install an EXIT handler here: that would replace main's TMPDIR
+# cleanup. exit after rollback so the caller's EXIT trap still runs.
+rollback_new_path_selectors_on_signal() {
+    rollback_new_path_selectors
+    trap - INT TERM HUP
+    exit 1
+}
+arm_new_path_selector_signal_rollback() {
+    trap rollback_new_path_selectors_on_signal INT TERM HUP
+}
+disarm_new_path_selector_signal_rollback() {
+    trap - INT TERM HUP
 }
 err()     { rollback_new_path_selectors; say "${RED}error:${NC} $1" >&2; exit 1; }
 
@@ -879,6 +893,13 @@ product_store_dir() {
 
 maybe_inject_install_fault() {
     local _barrier="$1"
+    if [ "${PERL_LSP_INSTALL_FAULT:-}" = "signal_${_barrier}" ]; then
+        # Test-only: deliver TERM to this shell so the selector-window
+        # handlers run. BASHPID is the subshell under library-only tests;
+        # $$ is the installer process in ordinary execution.
+        kill -s TERM "${BASHPID:-$$}"
+        return 0
+    fi
     if [ "${PERL_LSP_INSTALL_FAULT:-}" = "$_barrier" ]; then
         err "injected product-unit fault: $_barrier"
     fi
@@ -1197,18 +1218,23 @@ Try one of:
     fi
     # Pair selectors are created before current flips so the commit publishes
     # both PATH names together. If commit fails closed, drop names this attempt
-    # created so a first install does not leave dangling commands. err() runs the
-    # same rollback so injected faults do not replace main's TMPDIR EXIT trap.
+    # created so a first install does not leave dangling commands. err() and
+    # INT/TERM/HUP run the same rollback so injected faults and signals do not
+    # replace main's TMPDIR EXIT trap.
+    arm_new_path_selector_signal_rollback
     if ! ensure_path_visible_selectors 1 "$_incoming_pair" 0; then
         rollback_new_path_selectors
+        disarm_new_path_selector_signal_rollback
         return 1
     fi
     if ! commit_current_selection "$_id"; then
         rollback_new_path_selectors
+        disarm_new_path_selector_signal_rollback
         return 1
     fi
     _plsp_rollback_server=""
     _plsp_rollback_dap=""
+    disarm_new_path_selector_signal_rollback
     ensure_path_visible_selectors || return
 
     if [ -L "${_store}/previous" ]; then

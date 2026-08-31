@@ -116,6 +116,14 @@ else
     pass "install_binaries does not replace the process EXIT trap"
 fi
 
+if grep -Eq 'trap rollback_new_path_selectors_on_signal INT TERM HUP' "$INSTALLER" \
+    && grep -Eq 'trap - INT TERM HUP' "$INSTALLER"; then
+    pass "selector window arms INT/TERM/HUP without touching EXIT"
+else
+    fail_case "selector window arms INT/TERM/HUP without touching EXIT" \
+        "$(grep -nE 'trap[[:space:]]' "$INSTALLER" || true)"
+fi
+
 if grep -Fq 'rm -f "${INSTALL_DIR}/${BIN_NAME}"' "$INSTALLER"; then
     fail_case "PATH selectors do not unlink before replace" "scripts/install.sh still removes PATH-visible perllsp before creating the selector"
 else
@@ -194,6 +202,35 @@ if [ "$LAST_STATUS" -ne 0 ] \
 else
     fail_case "first-install commit fault leaves no broken selectors" \
         "status=$LAST_STATUS output=$LAST_OUTPUT server=$(ls -ld "$(path_server)" 2>&1 || true) dap=$(ls -ld "$(path_dap)" 2>&1 || true)"
+fi
+
+setup_root
+stage_pair "$EXTRACT_DIR" "server-sig" "dap-sig"
+PERL_LSP_INSTALL_FAULT=signal_before_commit
+run_promote release
+unset PERL_LSP_INSTALL_FAULT
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [ ! -e "$(path_server)" ] && [ ! -L "$(path_server)" ] \
+    && [ ! -e "$(path_dap)" ] && [ ! -L "$(path_dap)" ]; then
+    pass "first-install SIGTERM before commit leaves no broken selectors"
+else
+    fail_case "first-install SIGTERM before commit leaves no broken selectors" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT server=$(ls -ld "$(path_server)" 2>&1 || true) dap=$(ls -ld "$(path_dap)" 2>&1 || true)"
+fi
+
+setup_root
+stage_pair "$EXTRACT_DIR" "server-a" "dap-a"
+run_promote release
+stage_pair "$EXTRACT_DIR" "server-b" "dap-b"
+PERL_LSP_INSTALL_FAULT=signal_before_commit
+run_promote release
+unset PERL_LSP_INSTALL_FAULT
+if [ "$LAST_STATUS" -ne 0 ] \
+    && assert_complete_pair "server-a" "dap-a"; then
+    pass "upgrade SIGTERM before commit preserves the old complete pair"
+else
+    fail_case "upgrade SIGTERM before commit preserves the old complete pair" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT current=$(observe_current_product_unit 2>/dev/null || true)"
 fi
 
 setup_root
@@ -512,6 +549,14 @@ if [ "$_trap_status" -eq 0 ] \
 else
     fail_case "successful promotion keeps the caller EXIT trap" \
         "status=$_trap_status trap=$_trap_text"
+fi
+
+_term_text="$(trap -p TERM)$(trap -p INT)$(trap -p HUP)"
+if [ -z "$_term_text" ]; then
+    pass "successful promotion disarms INT/TERM/HUP traps"
+else
+    fail_case "successful promotion disarms INT/TERM/HUP traps" \
+        "traps=$_term_text"
 fi
 
 if [ "$FAIL" -ne 0 ]; then
