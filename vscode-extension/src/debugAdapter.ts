@@ -60,8 +60,9 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
   };
 
   // #9868: this is an ordinary DAP TCP attach. perl-lsp does not create, own,
-  // or verify any SSH tunnel; the endpoint may be directly reachable or exposed
-  // by a port forward the user controls.
+  // or verify any SSH tunnel. Attach validation accepts loopback endpoints —
+  // run a port forward you control for a remote debuggee — and refuses
+  // private/link-local hosts at attach time (#5257).
   const remoteTcpAttach = {
     type: 'perl',
     request: 'attach',
@@ -122,10 +123,12 @@ export function hasLaunchJson(workspaceRoot: string): boolean {
  * The wizard's template choices as pure data (exported so unit tests can pin
  * the user-facing copy, #9868).
  *
- * The remote entry deliberately describes an ordinary DAP TCP attach: the
- * endpoint may be directly reachable or exposed through a port forward the
- * user runs. perl-lsp never creates, owns, or verifies an SSH connection or
- * tunnel, so no choice copy may claim otherwise.
+ * The remote entry deliberately describes an ordinary DAP TCP attach to a
+ * loopback endpoint, typically exposed by a port forward the user runs. The
+ * adapter resolves the configured host and refuses private/link-local
+ * addresses at attach time (#5257), so no choice copy may claim direct
+ * non-loopback reachability. perl-lsp never creates, owns, or verifies an SSH
+ * connection or tunnel, so no choice copy may claim otherwise.
  */
 export interface DebugConfigTemplateChoice {
   label: string;
@@ -151,9 +154,9 @@ export function debugConfigTemplateChoices(): DebugConfigTemplateChoice[] {
     {
       label: '$(remote) Remote TCP Attach',
       description:
-        'Attach to a Perl debugger endpoint over TCP (direct or via a port forward you run)',
+        'Attach to a Perl debugger endpoint over TCP via loopback (run a port forward for a remote debuggee)',
       detail:
-        'Adds a remote TCP attach configuration — edit the host to the reachable debugger endpoint, such as localhost for an existing port forward.',
+        'Adds a remote TCP attach configuration. Attach validation refuses private/link-local hosts (LAN or VPN addresses), so keep the host on loopback — such as localhost for a port forward you run to the debuggee.',
       template: 'remote-tcp-attach',
     },
     {
