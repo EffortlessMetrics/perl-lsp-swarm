@@ -42,6 +42,9 @@ export function isNeutralLspProviderFailure(error: unknown): boolean {
  * `wireValue` is only the smallest editor-compatible projection used when the
  * method cannot propagate the original failure. It is never itself evidence
  * that the provider legitimately returned an empty result or safely refused.
+ * Callers that need the disposition consume this function directly and retain
+ * it before returning `wireValue`; no observer callback is run inside the
+ * compatibility adapter.
  */
 export async function settleLspProviderCallWithDisposition<T>(
   call: () => Promise<T>,
@@ -61,17 +64,17 @@ export async function settleLspProviderCallWithDisposition<T>(
 
 /**
  * Backward-compatible adapter while middleware call sites migrate to the typed
- * settlement. The optional observer lets a caller retain terminal disposition
- * even when VS Code still requires an ordinary fallback return value.
+ * settlement. It deliberately exposes no observer: instrumentation or status
+ * projection must not be able to reject, delay, or replace the provider's wire
+ * result. Migrated call sites consume `settleLspProviderCallWithDisposition`
+ * and handle the typed result explicitly.
  */
 export async function settleLspProviderCall<T>(
   call: () => Promise<T>,
   fallback: T,
   onFailure: (error: unknown) => void,
-  onSettlement?: (settlement: LspProviderCallSettlement<T>) => void,
 ): Promise<T> {
   const settlement = await settleLspProviderCallWithDisposition(call, fallback);
-  onSettlement?.(settlement);
   if (settlement.kind === 'failed') {
     onFailure(settlement.error);
   }
