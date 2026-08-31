@@ -374,10 +374,13 @@ name, or wall-clock timestamp. Runtime and transaction state stays in GitHub.
 
 ## Scope boundary
 
-In scope: exactly `context.md`, `acceptance.md`, and `checklist.md` under
-`.spec/10888-neovim-bdd-journeys/`. `docs/policy/NON_RUST_INVENTORY.md` is
-explicitly out of scope: it is already stale on main under #14203/#14161 and
-its sanctioned owner is the post-merge regeneration job.
+In scope: `context.md`, `acceptance.md`, and `checklist.md` under
+`.spec/10888-neovim-bdd-journeys/`, plus the generated
+`docs/policy/NON_RUST_INVENTORY.md` refresh that tracking three new documents
+requires. That file is generated output produced by
+`cargo xtask non-rust inventory --write` and is never hand-edited; see
+`checklist.md` Step 4 for why its regenerated content also carries one row
+already stale on main under #14203/#14161.
 
 Out of scope: Lua, Rust, or shell host implementation; fixture bytes; host
 automation or provisioning; semantic oracle generation; the #8129 release

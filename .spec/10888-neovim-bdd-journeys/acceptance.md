@@ -253,13 +253,13 @@ if every mutation fails deterministically in that leaf's own negative controls.
 | #10523 DAP sidecar | Exclusion law cited | Reference only |
 | `policy/lsp-client-support.toml` | No change in this PR | Future Neovim rows flow via #10522/#7122 once chains pass |
 | `.spec/11392-native-neovim-train-graph/train.manifest.json` | No node added, renamed, or retired | None; validator does not read `.spec/` trees |
-| `docs/policy/NON_RUST_INVENTORY.md` | Three new tracked docs rows once committed | None here; regeneration is owned by the post-merge `non-rust inventory --write` job, and the committed snapshot is already stale on main under #14203/#14161 |
+| `docs/policy/NON_RUST_INVENTORY.md` | Three new tracked docs rows | Regenerated here by `cargo xtask non-rust inventory --write`, which the `policy` shard's `non_rust_inventory_check` gate requires; the run also carries one unrelated row already stale on main under #14203/#14161 |
 | Generated status/docs surfaces | None exist for this ledger today | Any future generator must derive from these IDs |
 | Product/runtime crates | None | Must-not-touch |
 
 Must-not-touch: `crates/`, `xtask/src/`, `.github/workflows/`, `.ci/`,
-`docs/`, fixture sources, host harnesses, receipts, support registry values,
-and external upstream surfaces.
+hand-edits to any generated file, other `docs/` prose, fixture sources, host
+harnesses, receipts, support registry values, and external upstream surfaces.
 
 ## §Coverage-Map
 
@@ -276,7 +276,9 @@ and external upstream surfaces.
 
 ## Scope, rollback, and proof claims
 
-- **In scope:** exactly the three files of `.spec/10888-neovim-bdd-journeys/`.
+- **In scope:** the three files of `.spec/10888-neovim-bdd-journeys/`, plus the
+  generated `docs/policy/NON_RUST_INVENTORY.md` refresh those tracked files
+  require. The inventory is generated output, never hand-edited.
 - **Rollback:** revert this bundle's commit; issues retain full authority. Any
   downstream artifact already bound to these IDs reverts through its own owner,
   never by editing this bundle silently.
