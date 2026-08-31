@@ -890,12 +890,12 @@ fn registration_capability_path(method: &str) -> Option<&'static str> {
         "workspace/didChangeWorkspaceFolders" => "workspace.workspaceFolders",
         "workspace/executeCommand" => "workspace.executeCommand.dynamicRegistration",
         "workspace/symbol" => "workspace.symbol.dynamicRegistration",
-        "workspace/didCreateFiles" => "workspace.fileOperations.didCreate.dynamicRegistration",
-        "workspace/willCreateFiles" => "workspace.fileOperations.willCreate.dynamicRegistration",
-        "workspace/didRenameFiles" => "workspace.fileOperations.didRename.dynamicRegistration",
-        "workspace/willRenameFiles" => "workspace.fileOperations.willRename.dynamicRegistration",
-        "workspace/didDeleteFiles" => "workspace.fileOperations.didDelete.dynamicRegistration",
-        "workspace/willDeleteFiles" => "workspace.fileOperations.willDelete.dynamicRegistration",
+        "workspace/didCreateFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/willCreateFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/didRenameFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/willRenameFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/didDeleteFiles" => "workspace.fileOperations.dynamicRegistration",
+        "workspace/willDeleteFiles" => "workspace.fileOperations.dynamicRegistration",
         "textDocument/completion" => "textDocument.completion.dynamicRegistration",
         "textDocument/didOpen"
         | "textDocument/didChange"
@@ -1405,7 +1405,8 @@ mod tests {
             "workspace": {
                 "symbol": { "dynamicRegistration": true },
                 "fileOperations": {
-                    "didCreate": { "dynamicRegistration": true }
+                    "dynamicRegistration": true,
+                    "didCreate": true
                 }
             }
         }));
@@ -1414,6 +1415,33 @@ mod tests {
         assert_eq!(response["id"], "standard-registration");
         assert_eq!(response["result"], Value::Null);
         assert!(response.get("error").is_none());
+    }
+
+    #[test]
+    fn file_operation_registration_requires_parent_dynamic_support() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "files-without-parent-support",
+            "method": "client/registerCapability",
+            "params": {
+                "registrations": [{
+                    "id": "files",
+                    "method": "workspace/didCreateFiles"
+                }]
+            }
+        });
+        let capabilities = capabilities_with(json!({
+            "workspace": {
+                "fileOperations": { "didCreate": true }
+            }
+        }));
+        let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], "files-without-parent-support");
+        assert_eq!(response["error"]["code"], -32601);
+        assert!(response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("workspace.fileOperations.dynamicRegistration")));
     }
 
     #[test]
