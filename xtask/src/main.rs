@@ -2897,6 +2897,12 @@ enum NonRustCommand {
         /// Exact-tree JSON receipt path.
         #[arg(long, default_value = "target/policy/non-rust-policy-exact-tree.json")]
         receipt: PathBuf,
+        /// Event name recorded in the receipt.
+        #[arg(long)]
+        event_name: Option<String>,
+        /// Repository recorded in the receipt.
+        #[arg(long)]
+        repository: Option<String>,
     },
     /// Walk `git ls-files`, classify tracked files against the allowlist,
     /// and emit `target/policy/non-rust-inventory.{md,json}`.
@@ -6593,7 +6599,14 @@ fn run_cli(cli: Cli) -> Result<()> {
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
         },
         Commands::NonRust { command } => match command {
-            NonRustCommand::ExactTree { base_sha, subject_sha, pr_head_sha, receipt } => {
+            NonRustCommand::ExactTree {
+                base_sha,
+                subject_sha,
+                pr_head_sha,
+                receipt,
+                event_name,
+                repository,
+            } => {
                 let root = utils::project_root()?;
                 tasks::file_policy::non_rust_exact_tree(
                     &root,
@@ -6601,6 +6614,8 @@ fn run_cli(cli: Cli) -> Result<()> {
                     &subject_sha,
                     pr_head_sha.as_deref(),
                     &receipt,
+                    event_name.as_deref(),
+                    repository.as_deref(),
                 )
             }
             NonRustCommand::Inventory { check, write } => {

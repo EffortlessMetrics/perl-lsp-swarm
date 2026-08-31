@@ -97,19 +97,29 @@ pub struct FileRecord {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExactTreePolicyReceipt {
     pub schema_version: u32,
+    pub event_name: Option<String>,
+    pub repository: Option<String>,
     pub base_sha: String,
-    pub base_tree_sha: String,
+    pub base_tree_sha: Option<String>,
     pub subject_sha: String,
-    pub subject_tree_sha: String,
+    pub subject_tree_sha: Option<String>,
     pub pr_head_sha: Option<String>,
-    pub base_allowlist_blob_sha: String,
-    pub subject_allowlist_blob_sha: String,
+    pub base_allowlist_blob_sha: Option<String>,
+    pub subject_allowlist_blob_sha: Option<String>,
     pub base_unclassified_count: usize,
     pub subject_unclassified_count: usize,
     pub new_unclassified_paths: Vec<String>,
     pub outcome: String,
-    pub evaluator_commit: String,
-    pub inventory_sha256: String,
+    pub failure_stage: Option<String>,
+    pub error: Option<String>,
+    pub evaluator_commit: Option<String>,
+    pub evaluator_tree: Option<String>,
+    pub inventory_markdown_path: Option<String>,
+    pub inventory_markdown_size: Option<u64>,
+    pub inventory_markdown_sha256: Option<String>,
+    pub inventory_json_path: Option<String>,
+    pub inventory_json_size: Option<u64>,
+    pub inventory_json_sha256: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +173,24 @@ fn prepare_allow_entries(entries: &[AllowEntry]) -> Vec<PreparedAllowEntry<'_>> 
         prepared.push(PreparedAllowEntry { entry, glob });
     }
     prepared
+}
+
+fn validate_exact_allow_entries(entries: &[AllowEntry]) -> Result<()> {
+    for entry in entries.iter().filter(|entry| !entry.retired) {
+        match (entry.glob.as_deref(), entry.path.as_deref()) {
+            (Some(_), Some(_)) => bail!("allowlist entry {} sets both glob and path", entry.id),
+            (None, None) => bail!("allowlist entry {} has no glob or path", entry.id),
+            (Some(pattern), None) => {
+                Pattern::new(pattern)
+                    .with_context(|| format!("invalid glob in allowlist entry {}", entry.id))?;
+            }
+            (None, Some(path)) if path.starts_with('/') || path.contains('\\') => {
+                bail!("invalid path in allowlist entry {}", entry.id)
+            }
+            (None, Some(_)) => {}
+        }
+    }
+    Ok(())
 }
 
 fn find_matching_prepared_entry<'a>(
@@ -257,6 +285,7 @@ fn classify_tree(root: &Path, sha: &str) -> Result<(Vec<FileRecord>, String)> {
     let allowlist: Allowlist =
         toml::from_str(std::str::from_utf8(&policy).context("allowlist is not UTF-8")?)
             .with_context(|| format!("parsing policy/non-rust-allowlist.toml from {sha}"))?;
+    validate_exact_allow_entries(&allowlist.allow)?;
     let prepared = prepare_allow_entries(&allowlist.allow);
     let records = tree_paths(root, sha)?
         .iter()
@@ -274,6 +303,67 @@ pub fn non_rust_exact_tree(
     subject_sha: &str,
     pr_head_sha: Option<&str>,
     receipt_path: &Path,
+    event_name: Option<&str>,
+    repository: Option<&str>,
+) -> Result<()> {
+    let result = non_rust_exact_tree_inner(
+        root,
+        base_sha,
+        subject_sha,
+        pr_head_sha,
+        receipt_path,
+        event_name,
+        repository,
+    );
+    if let Err(error) = &result {
+        let receipt = ExactTreePolicyReceipt {
+            schema_version: 2,
+            event_name: event_name.map(str::to_string),
+            repository: repository.map(str::to_string),
+            base_sha: base_sha.to_string(),
+            base_tree_sha: None,
+            subject_sha: subject_sha.to_string(),
+            subject_tree_sha: None,
+            pr_head_sha: pr_head_sha.map(str::to_string),
+            base_allowlist_blob_sha: None,
+            subject_allowlist_blob_sha: None,
+            base_unclassified_count: 0,
+            subject_unclassified_count: 0,
+            new_unclassified_paths: Vec::new(),
+            outcome: "fail".to_string(),
+            failure_stage: Some("evaluation".to_string()),
+            error: Some(error.to_string()),
+            evaluator_commit: git_object(root, &["rev-parse", "HEAD"])
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+                .map(|s| s.trim().to_string()),
+            evaluator_tree: git_object(root, &["rev-parse", "HEAD^{tree}"])
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+                .map(|s| s.trim().to_string()),
+            inventory_markdown_path: None,
+            inventory_markdown_size: None,
+            inventory_markdown_sha256: None,
+            inventory_json_path: None,
+            inventory_json_size: None,
+            inventory_json_sha256: None,
+        };
+        if let Some(parent) = receipt_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
+    }
+    result
+}
+
+fn non_rust_exact_tree_inner(
+    root: &Path,
+    base_sha: &str,
+    subject_sha: &str,
+    pr_head_sha: Option<&str>,
+    receipt_path: &Path,
+    event_name: Option<&str>,
+    repository: Option<&str>,
 ) -> Result<()> {
     let base_ref = format!("{base_sha}^{{commit}}");
     let subject_ref = format!("{subject_sha}^{{commit}}");
@@ -293,6 +383,24 @@ pub fn non_rust_exact_tree(
         if !ancestor.success() {
             bail!("subject {subject_commit} does not contain PR head {pr_head}");
         }
+    }
+    let topology = Command::new("git")
+        .args(["merge-base", "--is-ancestor", &base_commit, &subject_commit])
+        .current_dir(root)
+        .status()
+        .context("checking base ancestry")?;
+    if !topology.success() {
+        bail!("subject {subject_commit} is not based on base {base_commit}");
+    }
+    if pr_head_sha.is_some()
+        && git_object(root, &["rev-parse", &format!("{subject_commit}^1")])?
+            .iter()
+            .map(|b| *b as char)
+            .collect::<String>()
+            .trim()
+            != base_commit
+    {
+        bail!("PR subject first parent is not base {base_commit}");
     }
     let base_tree_ref = format!("{base_commit}^{{tree}}");
     let subject_tree_ref = format!("{subject_commit}^{{tree}}");
@@ -324,25 +432,44 @@ pub fn non_rust_exact_tree(
         serde_json::to_vec_pretty(&subject_records)?,
     )
     .context("writing exact-tree JSON")?;
-    let inventory_sha256 = Sha256::digest(markdown.as_bytes())
+    let markdown_sha256 = Sha256::digest(markdown.as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
+    let json_bytes = serde_json::to_vec_pretty(&subject_records)?;
+    let json_sha256 =
+        Sha256::digest(&json_bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     let receipt = ExactTreePolicyReceipt {
-        schema_version: 1,
+        schema_version: 2,
+        event_name: event_name.map(str::to_string),
+        repository: repository.map(str::to_string),
         base_sha: base_commit,
-        base_tree_sha,
+        base_tree_sha: Some(base_tree_sha),
         subject_sha: subject_commit,
-        subject_tree_sha,
+        subject_tree_sha: Some(subject_tree_sha),
         pr_head_sha: pr_head_sha.map(str::to_string),
-        base_allowlist_blob_sha,
-        subject_allowlist_blob_sha,
+        base_allowlist_blob_sha: Some(base_allowlist_blob_sha),
+        subject_allowlist_blob_sha: Some(subject_allowlist_blob_sha),
         base_unclassified_count: base_unclassified.len(),
         subject_unclassified_count: subject_unclassified.len(),
         outcome: if new_unclassified_paths.is_empty() { "pass" } else { "fail" }.to_string(),
         new_unclassified_paths: new_unclassified_paths.clone(),
-        evaluator_commit: env!("CARGO_PKG_VERSION").to_string(),
-        inventory_sha256,
+        failure_stage: None,
+        error: None,
+        evaluator_commit: git_object(root, &["rev-parse", "HEAD"])
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|s| s.trim().to_string()),
+        evaluator_tree: git_object(root, &["rev-parse", "HEAD^{tree}"])
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|s| s.trim().to_string()),
+        inventory_markdown_path: Some("target/policy/non-rust-inventory.md".to_string()),
+        inventory_markdown_size: Some(markdown.len() as u64),
+        inventory_markdown_sha256: Some(markdown_sha256),
+        inventory_json_path: Some("target/policy/non-rust-inventory.json".to_string()),
+        inventory_json_size: Some(json_bytes.len() as u64),
+        inventory_json_sha256: Some(json_sha256),
     };
     if let Some(parent) = receipt_path.parent() {
         fs::create_dir_all(parent)?;
@@ -3353,7 +3480,7 @@ review_after = "2026-08-13"
         write_fixture(temp.path(), "notes.txt", "new\n")?;
         let subject = commit_fixture(temp.path(), "unclassified")?;
         let receipt = temp.path().join("receipt.json");
-        let error = non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt)
+        let error = non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt, None, None)
             .expect_err("new unclassified path must fail");
         assert!(error.to_string().contains("notes.txt"));
         let receipt: ExactTreePolicyReceipt = serde_json::from_str(&fs::read_to_string(receipt)?)?;
@@ -3373,6 +3500,8 @@ review_after = "2026-08-13"
             &subject,
             None,
             &temp.path().join("rename.json"),
+            None,
+            None,
         )
         .expect_err("rename into an unclassified path must fail");
         assert!(error.to_string().contains("notes.txt"));
@@ -3386,6 +3515,8 @@ review_after = "2026-08-13"
             &subject,
             None,
             &temp.path().join("allowlist.json"),
+            None,
+            None,
         )
         .expect_err("removing allowlist coverage must fail");
         assert!(error.to_string().contains("README.md"));
@@ -3401,6 +3532,8 @@ review_after = "2026-08-13"
             &base,
             None,
             &temp.path().join("bad.json"),
+            None,
+            None,
         )
         .expect_err("malformed base must fail");
         assert!(error.to_string().contains("git rev-parse"));
@@ -3410,6 +3543,8 @@ review_after = "2026-08-13"
             &base,
             Some("deadbeef"),
             &temp.path().join("head.json"),
+            None,
+            None,
         )
         .expect_err("unrelated PR head must fail");
         assert!(error.to_string().contains("does not contain PR head"));

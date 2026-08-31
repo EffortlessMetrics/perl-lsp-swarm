@@ -44,18 +44,22 @@ jobs:
             git fetch --no-tags origin "+refs/pull/${{ github.event.pull_request.number }}/merge:refs/heads/non-rust-policy-subject"
           elif [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
             git fetch --no-tags origin "+$GITHUB_REF:refs/heads/non-rust-policy-subject"
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            git fetch --no-tags origin "$SUBJECT_SHA"
+            git update-ref refs/heads/non-rust-policy-subject "$SUBJECT_SHA"
           else
             git fetch --no-tags origin "+$GITHUB_REF:refs/heads/non-rust-policy-subject"
           fi
           test "$(git rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA"
           test "$(git rev-parse "$SUBJECT_SHA^{commit}")" = "$SUBJECT_SHA"
+          test "$(git rev-parse refs/heads/non-rust-policy-subject^{commit})" = "$SUBJECT_SHA"
           if [ -n "$PR_HEAD_SHA" ]; then
             git merge-base --is-ancestor "$PR_HEAD_SHA" "$SUBJECT_SHA"
             test "$(git rev-parse "$SUBJECT_SHA^1")" = "$BASE_SHA"
           fi
 
       - name: Run trusted exact-tree evaluator
-        run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --receipt target/policy/non-rust-policy-exact-tree.json
+        run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json
 
       - name: Upload exact-tree receipt
         if: always()
