@@ -1,4 +1,4 @@
-# contract-version: 2
+# contract-version: 3
 name: Non-Rust policy
 
 on:
@@ -110,10 +110,22 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          lines = Path(".github/workflows/non-rust-policy.yml").read_text().splitlines()
           forbidden = ("pull_request", "head.sha", "github.event.pull_request.head")
-          for number, line in enumerate(Path(".github/workflows/non-rust-policy.yml").read_text().splitlines(), 1):
-              if "cargo run" in line and "grep -Eq" not in line and any(token in line for token in forbidden):
-                  raise SystemExit(f"candidate-controlled cargo invocation at line {number}")
+          run_blocks = []
+          for index, line in enumerate(lines):
+              if line.startswith("        run: |"):
+                  block = []
+                  for candidate in lines[index + 1:]:
+                      if candidate and not candidate.startswith("          "):
+                          break
+                      block.append(candidate[10:] if candidate.startswith("          ") else "")
+                  run_blocks.append((index + 1, "\n".join(block)))
+          for line_number, block in run_blocks:
+              if "cargo run" in block and any(token in block for token in forbidden):
+                  raise SystemExit(
+                      f"candidate-controlled cargo invocation in run block at line {line_number}"
+                  )
           PY
       - name: Run trusted exact-tree evaluator
         if: steps.bind.outcome == 'success'
