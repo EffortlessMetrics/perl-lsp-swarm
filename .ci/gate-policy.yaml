@@ -1252,7 +1252,11 @@ gates:
     # integration suites are tracked red debt (#11708). The four perl-dap
     # test-helpers targets below are healthy and must be executed explicitly:
     # `cargo test --tests` otherwise skips them silently when the feature is off
-    # (#14333).
+    # (#14333). Recorded per #11694; flipping the broad support-crate portion to
+    # --tests is blocked on the red suites in #11708.
+    # pr_fast residual: unit_routed_full still runs the perl-dap leg without
+    # `--features test-helpers`, so these four targets stay absent from the
+    # pr_fast lane; closing that leg is tracked in #14458.
     #   perl-ci-hygiene               6
     #   perl-dap                    115
     #   perl-tdd-support              4

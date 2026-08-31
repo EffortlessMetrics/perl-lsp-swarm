@@ -456,7 +456,7 @@ fn dap_helper_command_error(command: &str) -> Option<String> {
     if separator_count != 1 {
         return Some("DAP helper command must have exactly one && separator".to_string());
     }
-    if tokens.iter().any(|token| matches!(**token, ";" | "||")) {
+    if tokens.iter().any(|token| matches!(*token, ";" | "||")) {
         return Some("DAP helper command must not swallow failures".to_string());
     }
 
