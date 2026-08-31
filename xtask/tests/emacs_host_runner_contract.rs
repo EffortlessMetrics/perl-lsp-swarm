@@ -1306,7 +1306,11 @@ fn chatty_output_never_persists_raw_private_paths() -> Result<()> {
         "the hermetic run root must be normalized in durable evidence; retained stdout head: {:?}",
         retained.chars().take(400).collect::<String>()
     );
-    for private in ["/home/observer/.netrc", "\\Users\\observer\\secret-token.txt"] {
+    for private in [
+        "/home/observer/.netrc",
+        "C:\\Users\\observer\\secret-token.txt",
+        "\\Users\\observer\\secret-token.txt",
+    ] {
         ensure!(
             !retained.contains(private),
             "raw private-looking values must not survive into durable artifacts: {private}"
