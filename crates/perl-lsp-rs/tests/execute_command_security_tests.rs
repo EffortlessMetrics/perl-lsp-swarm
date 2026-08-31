@@ -258,7 +258,9 @@ fn test_empty_workspace_roots_enforces_cwd_boundary() -> Result<(), Box<dyn Erro
 
 #[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn test_command_exists_does_not_execute_path_hijacked_which() -> Result<(), Box<dyn Error>> {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     use std::os::unix::fs::PermissionsExt;
 
     let temp_dir = TempDir::new()?;
@@ -300,7 +302,9 @@ exit 0
 }
 #[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn test_command_exists_does_not_execute_candidate_binary() -> Result<(), Box<dyn Error>> {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     use std::os::unix::fs::PermissionsExt;
 
     let temp_dir = TempDir::new()?;
@@ -483,8 +487,10 @@ fn config_with_perl5lib(use_perl5lib: bool) -> Option<WorkspaceConfig> {
 /// Regression guard for the #8493-class incident: ambient PERL5LIB must not
 /// reach the subprocess when the workspace config opts out.
 #[test]
+#[serial_test::serial]
 #[allow(unsafe_code)] // set_var / remove_var are unsafe in Rust 2024
 fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Error>> {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let config = match config_with_perl5lib(false) {
         Some(c) => c,
         None => return Ok(()), // no Perl — skip
@@ -502,15 +508,18 @@ fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Erro
         ExecuteCommandProvider::with_workspace_roots(vec![temp_dir.path().to_path_buf()])
             .with_workspace_config(config);
 
-    // Serialize env-var mutation across concurrent tests.
-    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let original_perl5lib = std::env::var_os("PERL5LIB");
     // SAFETY: test-only; ENV_MUTEX serializes these mutations.
     unsafe { std::env::set_var("PERL5LIB", &poison_path) };
     let result = provider
         .execute_command("perl.runFile", vec![Value::String(script.to_string_lossy().to_string())]);
-    unsafe { std::env::remove_var("PERL5LIB") };
-    drop(_guard);
-
+    // SAFETY: test-only; restore the ambient value before releasing ENV_MUTEX.
+    unsafe {
+        match original_perl5lib {
+            Some(value) => std::env::set_var("PERL5LIB", value),
+            None => std::env::remove_var("PERL5LIB"),
+        }
+    }
     let result = result?;
     let output = result["output"].as_str().unwrap_or("");
     assert!(
@@ -527,8 +536,10 @@ fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Erro
 
 /// `run_file` with `use_perl5lib=true` must pass PERL5LIB through to the subprocess.
 #[test]
+#[serial_test::serial]
 #[allow(unsafe_code)]
 fn run_file_passes_perl5lib_when_use_perl5lib_true() -> Result<(), Box<dyn Error>> {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let config = match config_with_perl5lib(true) {
         Some(c) => c,
         None => return Ok(()),
@@ -545,13 +556,17 @@ fn run_file_passes_perl5lib_when_use_perl5lib_true() -> Result<(), Box<dyn Error
         ExecuteCommandProvider::with_workspace_roots(vec![temp_dir.path().to_path_buf()])
             .with_workspace_config(config);
 
-    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let original_perl5lib = std::env::var_os("PERL5LIB");
     unsafe { std::env::set_var("PERL5LIB", &marker_path) };
     let result = provider
         .execute_command("perl.runFile", vec![Value::String(script.to_string_lossy().to_string())]);
-    unsafe { std::env::remove_var("PERL5LIB") };
-    drop(_guard);
-
+    // SAFETY: test-only; restore the ambient value before releasing ENV_MUTEX.
+    unsafe {
+        match original_perl5lib {
+            Some(value) => std::env::set_var("PERL5LIB", value),
+            None => std::env::remove_var("PERL5LIB"),
+        }
+    }
     let result = result?;
     let output = result["output"].as_str().unwrap_or("");
     assert!(
@@ -563,8 +578,10 @@ fn run_file_passes_perl5lib_when_use_perl5lib_true() -> Result<(), Box<dyn Error
 
 /// `run_test_sub` with `use_perl5lib=false` must strip PERL5LIB from the subprocess.
 #[test]
+#[serial_test::serial]
 #[allow(unsafe_code)]
 fn run_test_sub_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Error>> {
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let config = match config_with_perl5lib(false) {
         Some(c) => c,
         None => return Ok(()),
@@ -582,7 +599,7 @@ fn run_test_sub_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn 
         ExecuteCommandProvider::with_workspace_roots(vec![temp_dir.path().to_path_buf()])
             .with_workspace_config(config);
 
-    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let original_perl5lib = std::env::var_os("PERL5LIB");
     unsafe { std::env::set_var("PERL5LIB", &poison_path) };
     let result = provider.execute_command(
         "perl.runTestSub",
@@ -591,9 +608,13 @@ fn run_test_sub_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn 
             Value::String("check_env".to_string()),
         ],
     );
-    unsafe { std::env::remove_var("PERL5LIB") };
-    drop(_guard);
-
+    // SAFETY: test-only; restore the ambient value before releasing ENV_MUTEX.
+    unsafe {
+        match original_perl5lib {
+            Some(value) => std::env::set_var("PERL5LIB", value),
+            None => std::env::remove_var("PERL5LIB"),
+        }
+    }
     let result = result?;
     let output = result["output"].as_str().unwrap_or("");
     assert!(
