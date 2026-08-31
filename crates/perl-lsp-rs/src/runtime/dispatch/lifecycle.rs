@@ -277,6 +277,10 @@ mod tests {
         server
             .handle_initialized_dispatch()
             .map_err(|e| format!("initialized notification should succeed: {e}"))?;
+        assert!(
+            server.position_encoding_session_context().is_some(),
+            "successful initialize must publish active coordinate context"
+        );
 
         // When
         let response = server
