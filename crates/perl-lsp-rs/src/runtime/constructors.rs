@@ -553,6 +553,17 @@ mod tests {
             }
         }
 
+        // Statically observe the causal error path of the controlled sink:
+        // `FailingWriter::write` fails with ConnectionAborted, and the writer
+        // loop turns that exact error into the typed first cause reported in
+        // the settlement record asserted below.
+        let mut probe_sink = FailingWriter;
+        let probe = probe_sink.write(&mut Vec::new());
+        assert!(
+            matches!(&probe, Err(err) if err.kind() == io::ErrorKind::ConnectionAborted),
+            "controlled writer must fail writes with ConnectionAborted, got {probe:?}"
+        );
+
         let server =
             LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(FailingWriter));
         let _ = server.notify("window/logMessage", json!({"type": 4, "message": "settle"}));
