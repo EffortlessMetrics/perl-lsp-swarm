@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12505 |
-| Rust-family files | 3870 |
-| Non-Rust files | 8635 |
-| Allowlisted | 6398 |
+| Total tracked files | 12508 |
+| Rust-family files | 3871 |
+| Non-Rust files | 8637 |
+| Allowlisted | 6400 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 497 |
+| config | 498 |
 | documentation | 2817 |
 | generated | 2 |
 | production | 348 |
 | test | 2067 |
-| tooling | 667 |
+| tooling | 668 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -2602,6 +2602,7 @@
 | `.ci/dap/editor-transport-inventory.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/dap/protocol-authority.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/dead-code-baseline.yaml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/editor-clients/eglot-project-root-matrix.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/debt-ledger.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/emacs-subjects.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/vim-vim-lsp-activation-root.v1.json` | config | `non-rust-ci-config` | release/ci |
@@ -6789,6 +6790,7 @@
 | `scripts/test-capped.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-control-plane-lock.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-e2e-capped.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/test/eglot-project-root-driver.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test-lsp-cancellation.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-bundled-config.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test/emacs-clients/eglot-bundled.el` | tooling | `non-rust-ci-scripts-tree` | release/ci |

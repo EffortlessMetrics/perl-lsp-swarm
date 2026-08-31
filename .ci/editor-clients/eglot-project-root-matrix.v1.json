@@ -1,0 +1,142 @@
+{
+  "schema_version": "emacs_eglot_project_root_observations.v1",
+  "issue": 11747,
+  "conflict_key": "emacs.root_observation.eglot",
+  "result": "not_run",
+  "observed_at": null,
+  "claim_boundary": [
+    "This record carries only what stock Emacs project.el and stock Eglot recognized and selected per fixture case.",
+    "It does not prove module/configuration semantics and introduces no semantic root support cell; no custom project backend, lsp-mode result, or server-root heuristic may appear.",
+    "Promotion of any observed fact into editor_client_compat.v1 happens only through #11360/#11361 producer lanes; this intermediate artifact is never durable compat evidence by itself.",
+    "Subject classes are citable against xtask::emacs_subject_fan_in::SUBJECT_DENOMINATOR (#8755/#12726); this file binds no digest bytes itself."
+  ],
+  "subjects_in_scope": [
+    "bundled_eglot_emacs_29_4",
+    "bundled_eglot_emacs_30_1",
+    "released_eglot_gnu_elpa_1_24"
+  ],
+  "subjects_deferred": [
+    {
+      "subject_id": "source_eglot_emacs_c1ad9d27",
+      "reason": "upstream-source subject materializes but keeps its typed launch refusal until its journey adapter lane lands"
+    }
+  ],
+  "recording_rules": [
+    "Each target file opens without prebinding the expected root: no env/config/fixture authority injects a root into stock selection.",
+    "project-remember-project and known roots are never pre-populated for any row.",
+    "The process working directory is never equated to or used as project root authority.",
+    "An outer Git root disposition is recorded independently; it may not be inferred from fixture expectation metadata.",
+    "Sibling, worktree, and standalone dispositions are each observed separately and are never inferred from one another.",
+    "Missing instrumentation records unsupported-by-instrument refusal, never a pass.",
+    "Stale client/process/session observation must never satisfy a row; generation identity accompanies every observation.",
+    "Negative answers serialize through native false/null sentinels so absent recognition stays a recorded fact."
+  ],
+  "instrument": {
+    "driver": "scripts/test/eglot-project-root-driver.el",
+    "fixtures": "#11366 canonical twelve-case matrix, consumed unchanged",
+    "binding": "PERL_LSP_EGLOT_ROOT_PROBE_FILE/RECEIPT/CASE bind the exact opened file, receipt path, and row id; PERL_LSP_EGLOT_ROOT_PROBE_CANDIDATE supplies the exact candidate when a session can exist"
+  },
+  "cases": {
+    "git_root": {
+      "open_file_contract": "git_root/script/probe.pl",
+      "observations": [],
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "makefile_pl_no_vcs": {
+      "open_file_contract": "makefile_pl_no_vcs/script/probe.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "build_pl_no_vcs": {
+      "open_file_contract": "build_pl_no_vcs/script/probe.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "cpanfile_no_vcs": {
+      "open_file_contract": "cpanfile_no_vcs/script/probe.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "dist_ini_no_vcs": {
+      "open_file_contract": "dist_ini_no_vcs/script/probe.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "perl_lsp_config_root": {
+      "open_file_contract": "perl_lsp_config_root/script/probe.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "nested_makefile_under_git": {
+      "open_file_contract": "nested_makefile_under_git/packages/inner/script/probe.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "nested_cpanfile_under_git": {
+      "open_file_contract": "nested_cpanfile_under_git/services/inner/script/probe.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "outer_config_nested_distribution": {
+      "open_file_contract": "outer_config_nested_distribution/dist/inner/script/probe.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "sibling_distributions": {
+      "open_file_contract": "sibling_distributions/alpha/script/probe.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "git_worktree_shape": {
+      "open_file_contract": "git_worktree_shape/worktree/script/probe.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    },
+    "standalone_file": {
+      "open_file_contract": "standalone_file/standalone.pl",
+      "observed": null,
+      "disposition": "hosted_pending",
+      "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
+    }
+  },
+  "observation_slots": {
+    "definition": "Each observation object carries exactly these slots per case, bound to the run that produced them.",
+    "slots": [
+      "case_id",
+      "subject_id",
+      "emacs_version",
+      "eglot_library",
+      "eglot_sha256",
+      "opened_file_relative",
+      "major_mode",
+      "language_id",
+      "project_recognized",
+      "project_el_root_relative",
+      "project_el_name",
+      "session_established",
+      "initialize_root_uri",
+      "manual_action_required",
+      "refusal_reason",
+      "process_cleanup_live_servers",
+      "cleanup_buffer_closed",
+      "driver_complete",
+      "generation_identity"
+    ]
+  },
+  "limitations": [
+    "Hosted-run observation was unavailable for this cut: no exact pinned Emacs build (29.4/30.1 GNU ELPA-resolved subjects) exists on the authoring host and no hosted runner executes Emacs today, so all twelve rows stay explicitly hosted_pending with unobserved slots instead of manufactured passes.",
+    "The instrument records only after cleanup verification; no row may claim facts from a torn-down-but-alive process generation.",
+    "Fixture-relative identities only: durable rows never carry absolute host paths."
+  ]
+}
