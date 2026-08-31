@@ -538,7 +538,7 @@ fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
     let mut col = 1;
 
     for (byte_index, ch) in source.char_indices() {
-        if byte_index >= position {
+        if byte_index + ch.len_utf8() > position {
             break;
         }
         if ch == '\n' {
