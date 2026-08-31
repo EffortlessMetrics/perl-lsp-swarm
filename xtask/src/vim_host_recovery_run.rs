@@ -541,11 +541,48 @@ fn candidate_needle(candidate: &Path) -> String {
 /// `cargo run ... --candidate <path>` and the `xtask` harness itself carry
 /// the same path in their own command lines, and killing the supervisor
 /// would abort the run instead of stimulating the server.
+fn normalize_process_path(path: &str) -> String {
+    let normalized = path.trim_matches(['"', '\'']).to_lowercase().replace('\\', "/");
+    normalized.strip_suffix(".exe").unwrap_or(&normalized).to_string()
+}
+
+fn shell_words(args: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for character in args.chars() {
+        if escaped {
+            word.push(character);
+            escaped = false;
+            continue;
+        }
+        match (quote, character) {
+            (Some('"'), '\\') => escaped = true,
+            (Some(active), c) if c == active => quote = None,
+            (None, '"' | '\'') => quote = Some(c),
+            (None, c) if c.is_whitespace() => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            (_, c) => word.push(c),
+        }
+    }
+    if escaped {
+        word.push('\\');
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
 pub fn unix_args_match_serving_server(args: &str, normalized_needle: &str) -> bool {
-    let tokens: Vec<&str> = args.split_whitespace().collect();
+    let tokens = shell_words(args);
     match tokens.first() {
-        Some(argv0) if argv0.to_lowercase().replace('\\', "/") == normalized_needle => {
-            tokens.contains(&"--stdio")
+        Some(argv0) if normalize_process_path(argv0) == normalize_process_path(normalized_needle) => {
+            tokens.iter().any(|token| token == "--stdio")
         }
         _ => false,
     }
@@ -559,8 +596,7 @@ pub fn unix_args_match_serving_server(args: &str, normalized_needle: &str) -> bo
 fn find_candidate_pids(needle: &str) -> Result<Vec<u32>> {
     let normalized_needle = needle.to_lowercase().replace('\\', "/");
     if cfg!(windows) {
-        let script = "Get-CimInstance Win32_Process -Filter \"Name='perllsp.exe'\" | \
-             Where-Object { $_.CommandLine -like '*' } | ForEach-Object { \
+        let script = "Get-CimInstance Win32_Process -Filter \"Name='perllsp.exe'\" | ForEach-Object { \
              \"$($_.ProcessId)|$($_.CommandLine)\" }";
         let output = std::process::Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
@@ -692,7 +728,10 @@ fn watcher_cycle(
 /// exact serving candidate process for every marker the driver writes. The
 /// returned state is read after the host run to assemble the stimulus
 /// ledger; a marker with no killed PID is an honest stimulus failure.
-fn spawn_stimulus_watcher(markers_dir: &Path, candidate: &Path) -> Arc<Mutex<StimulusWatchState>> {
+fn spawn_stimulus_watcher(
+    markers_dir: &Path,
+    candidate: &Path,
+) -> (Arc<Mutex<StimulusWatchState>>, std::thread::JoinHandle<()>) {
     let state = Arc::new(Mutex::new(StimulusWatchState::default()));
     let thread_state = Arc::clone(&state);
     let markers_dir = markers_dir.to_path_buf();
@@ -709,19 +748,35 @@ fn spawn_stimulus_watcher(markers_dir: &Path, candidate: &Path) -> Arc<Mutex<Sti
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
     });
-    state
+    let handle = std::thread::spawn(move || {
+        loop {
+            let stop = thread_state.lock().map(|state| state.stop).unwrap_or(true);
+            if stop {
+                break;
+            }
+            if let Ok(mut state) = thread_state.lock() {
+                watcher_cycle(&markers_dir, &needle, &mut state);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+    });
+    (state, handle)
 }
 
-fn stop_stimulus_watcher(state: &Arc<Mutex<StimulusWatchState>>) -> Vec<StimulusRecord> {
-    // The stop flag ends the thread on its next iteration; the records it
-    // landed are the stimulus ledger. A marker without a kill record is an
-    // honest stimulus failure the judgment reports.
-    let mut records = Vec::new();
+fn stop_stimulus_watcher(
+    state: &Arc<Mutex<StimulusWatchState>>,
+    handle: std::thread::JoinHandle<()>,
+) -> Vec<StimulusRecord> {
+    // Set the stop flag, then join before draining records. This preserves a
+    // watcher cycle that is already in progress when the host exits.
     if let Ok(mut state) = state.lock() {
         state.stop = true;
-        records = std::mem::take(&mut state.records);
     }
-    records
+    let _ = handle.join();
+    state
+        .lock()
+        .map(|mut state| std::mem::take(&mut state.records))
+        .unwrap_or_default()
 }
 
 /// Whether every stimulus event marker has a watcher record that actually
@@ -799,11 +854,15 @@ pub fn host_recovery_run(
     // The crash-stimulus watcher starts before the host: a marker the driver
     // writes mid-journey is terminated PID-precisely by this side, while the
     // driver observes only the client's own exit evidence.
-    let watcher = spawn_stimulus_watcher(&stimulus_dir, &plan.paths.candidate_executable);
+    let (watcher, watcher_handle) =
+        spawn_stimulus_watcher(&stimulus_dir, &plan.paths.candidate_executable);
     let mut observation = run_owned_process(&mut command, &plan, &layout)?;
-    let stimulus_records = stop_stimulus_watcher(&watcher);
+    let stimulus_records = stop_stimulus_watcher(&watcher, watcher_handle);
 
-    let client_log_bytes = fs::read(layout.client_log()).unwrap_or_default();
+    let (client_log_bytes, client_log_error) = match fs::read(layout.client_log()) {
+        Ok(bytes) => (bytes, None),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    };
     let wire = vim_host_runner::extract_wire_evidence(&client_log_bytes);
     let recovery_wire = extract_recovery_wire(&client_log_bytes);
     observation
@@ -836,6 +895,11 @@ pub fn host_recovery_run(
 
     let mut limitations =
         recovery_limitations(&observation, &judgment, &recovery_wire, &stimulus_records, variant);
+    if let Some(error) = client_log_error {
+        limitations.push(format!(
+            "client log could not be read: {error}; wire evidence is unavailable, not empty"
+        ));
+    }
     if plan.identity.platform.os == "windows" {
         limitations.push(
             "windows is a local probe platform for this harness; the maintained CI host row is \
@@ -1198,7 +1262,8 @@ pub fn evaluate_recovery_observation(
         event.details.get("generation").map(String::as_str) != Some("g1_defect_current")
     });
     let current_observed = post_replacement_currents;
-    let current_ok = currents.len() == 4
+    let expected_generation_count = restarts.len() + 1;
+    let current_ok = currents.len() == expected_generation_count
         && currents.iter().all(|event| {
             let generation = event.details.get("generation").map(String::as_str).unwrap_or("");
             let Some(expect_errors) = generation_expects_errors(generation) else { return false };
@@ -1211,7 +1276,7 @@ pub fn evaluate_recovery_observation(
                 _ => false,
             }
         })
-        && current_wire_agrees(recovery_wire);
+        && current_wire_agrees(recovery_wire, expected_generation_count);
     cells.insert(CELL_CURRENT_RESULT.to_string(), cell_result(current_observed, current_ok));
 
     // --- old generation rejection cell: after the replacement generation's
@@ -1348,8 +1413,8 @@ fn replay_ok(replays: &[&DriverEvent], recovery_wire: &RecoveryWire, restart_cou
 /// not a state claim) — the settled generation is the last batch before the
 /// document's first didClose inside the window, or the last batch of the
 /// window when no close intervenes.
-fn current_wire_agrees(recovery_wire: &RecoveryWire) -> bool {
-    (1..=4).all(|generation| {
+fn current_wire_agrees(recovery_wire: &RecoveryWire, generation_count: usize) -> bool {
+    (1..=generation_count).all(|generation| {
         let Some(init_line) = recovery_wire.initialize_line_of(generation) else { return false };
         let next_init = recovery_wire.initialize_line_of(generation + 1).unwrap_or(usize::MAX);
         let window_end = recovery_wire
@@ -1363,7 +1428,8 @@ fn current_wire_agrees(recovery_wire: &RecoveryWire) -> bool {
             .filter(|batch| batch.line_index < window_end)
             .collect();
         let Some(last) = batches.last() else { return false };
-        if generation <= 3 {
+        let expect_errors = generation < generation_count;
+        if expect_errors {
             last.error_severity_count >= 1 && last.warning_severity_count == 0
         } else {
             last.error_severity_count == 0 && last.warning_severity_count == 0
