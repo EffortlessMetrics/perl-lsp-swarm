@@ -48,7 +48,9 @@ belong to #10502 and the later host leaves. Profile column: membership in
 Both branch groups are published as stable IDs so the selected branch has an
 owner the moment #8129 rules. Publishing both does **not** claim both: exactly
 one group becomes applicable, the other becomes `not_applicable` by that
-ruling. Neither group is current until #8129 selects it and #10505 observes it.
+ruling. Neither group is current until #8129 selects it **and that branch's own
+owner observes it**: #10505 `nv_deep_atomic_branch` for branch A, #8531
+`nv_release_bounded_process_evidence` for branch B. Neither observes the other.
 
 ### Branch A — `atomic_incremental`
 
@@ -64,7 +66,7 @@ ruling. Neither group is current until #8129 selects it and #10505 observes it.
 
 | Scenario ID | User-visible behavior | Profile / evidence tag | Evidence boundary (owner chain) |
 | --- | --- | --- | --- |
-| `neovim.bdd.sync.06` | The advertised position encoding is UTF-16 and the change-sync kind matches the selected full-document envelope | bounded release (full-document branch); active only while #8129 selects branch B | #8129 ruling → #8531 `nv_release_bounded_process_evidence` → `nv_release_bounded_v0_18_envelope` → `editor_client_compat.v1` cell; #10505 owns the atomic branch and never observes this one |
+| `neovim.bdd.sync.06` | The advertised position encoding is UTF-16 and the change-sync kind matches the selected full-document envelope | bounded release (full-document branch); active only while #8129 selects branch B | #8129 ruling → #8531 `nv_release_bounded_process_evidence` → `editor_client_compat.v1` cell → `nv_release_bounded_v0_18_envelope` composition over already-typed cells, which adds no behavior cell of its own; #10505 owns the atomic branch and never observes this one |
 | `neovim.bdd.sync.07` | Actual full-document change traffic from the built-in client is observed, not merely advertised | bounded release (full-document branch); conditional branch B | same chain |
 | `neovim.bdd.sync.08` | A ranged change notification is refused under the full-document envelope rather than partially applied | bounded release (full-document branch); conditional branch B | same chain |
 | `neovim.bdd.sync.09` | A refused notification leaves no partial mutation of server document state | bounded release (full-document branch); conditional branch B | same chain |
