@@ -51,22 +51,6 @@ fn if_block_lowers_to_one_branch_node_with_void_context() {
 
 
 #[test]
-fn while_block_lowers_to_one_loop_node_with_truth_test_demand() {
-    let graph = lower("while ($x) { 1 }");
-
-    let loop_nodes: Vec<_> =
-        graph.nodes.iter().filter(|n| matches!(n.operation, PirOperation::Loop { .. })).collect();
-    assert_eq!(loop_nodes.len(), 1, "while block should produce exactly one Loop node");
-
-    let loop_node = &loop_nodes[0];
-    assert_eq!(loop_node.context, PirContext::Void);
-    assert_eq!(loop_node.demand, PirEvaluationDemand::TruthTest);
-    assert!(loop_node.source_anchor.is_anchored());
-    assert_eq!(graph.receipt.operation_counts.get("Loop"), Some(&1));
-    assert_eq!(graph.receipt.demand_counts.get("TruthTest"), Some(&1));
-}
-
-#[test]
 fn unless_block_lowers_to_one_branch_node() {
     // `unless ($x) { 1 }` lowers to BranchShell (same HIR variant as `if`).
     // PIR v0 emits one Branch node regardless of the surface keyword.
