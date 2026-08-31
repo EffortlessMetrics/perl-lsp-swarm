@@ -123,9 +123,8 @@ fn validate_mechanism_claims(
     file_results: &[RunFileResult],
     subject: &str,
 ) -> Result<(), EvidenceValidationError> {
-    validate_file_result_mechanisms(mode, file_results).map_err(|(path, violation)| {
-        EvidenceValidationError::new(format!("{subject} file result {path}: {violation}"))
-    })
+    validate_file_result_mechanisms(mode, file_results)
+        .map_err(|violation| EvidenceValidationError::new(format!("{subject} {violation}")))
 }
 
 /// Validate an accepted V2 baseline's structural count and membership invariants.
@@ -501,6 +500,43 @@ mod ripr_inventory_call_observers {
             result.mechanism = Some(ExecutionMechanism::FixtureReplay);
         }
         report
+    }
+
+    #[test]
+    fn validate_run_report_rejects_an_empty_execution_observation() {
+        let mut report = clean_execute_report();
+        report.file_results.clear();
+        report.summary.files_total = 0;
+        report.summary.files_passed = 0;
+        report.summary.tap_assertions_total = 0;
+        report.summary.tap_assertions_passed = 0;
+
+        let err = validate_run_report(&report).expect_err("empty execution observation");
+
+        assert!(
+            err.reason.contains("names no execution mechanism for anything"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn validate_run_report_rejects_an_empty_accepted_execution_baseline() {
+        let mut accepted = clean_v1_accepted(Some(ExecutionMechanism::FixtureReplay));
+        accepted.file_results.clear();
+        accepted.files_total = 0;
+        accepted.files_passed = 0;
+        accepted.tap_assertions_total = 0;
+        accepted.tap_assertions_passed = 0;
+
+        let err = validate_accepted_baseline(&AcceptedBaseline::V1(accepted))
+            .expect_err("empty accepted execution baseline");
+
+        assert!(
+            err.reason.contains("names no execution mechanism for anything"),
+            "unexpected reason: {}",
+            err.reason
+        );
     }
 
     #[test]

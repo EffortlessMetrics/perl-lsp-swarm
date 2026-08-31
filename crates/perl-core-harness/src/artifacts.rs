@@ -1426,10 +1426,8 @@ fn reject_violations(subject: &str, violations: &[BaselineViolation]) -> Result<
 /// Owned here as well as in `crate::read_run_report` because a report can reach
 /// derivation without passing through that reader (#14363).
 fn reject_inadmissible_report_mechanisms(report: &RunReport) -> Result<()> {
-    if let Err((path, violation)) =
-        validate_file_result_mechanisms(report.mode, &report.file_results)
-    {
-        bail!("run report file result {path}: {violation}");
+    if let Err(violation) = validate_file_result_mechanisms(report.mode, &report.file_results) {
+        bail!("run report {violation}");
     }
     Ok(())
 }

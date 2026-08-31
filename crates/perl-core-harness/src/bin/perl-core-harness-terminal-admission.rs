@@ -213,10 +213,8 @@ fn read_report_evidence(path: &Path) -> Result<ReportEvidence> {
     // Admission copies report bytes forward as evidence, so a report whose
     // execution-mechanism claim is inadmissible must not pass through here
     // either (#14363).
-    if let Err((result_path, violation)) =
-        validate_file_result_mechanisms(report.mode, &report.file_results)
-    {
-        bail!("{}: file result {result_path}: {violation}", path.display());
+    if let Err(violation) = validate_file_result_mechanisms(report.mode, &report.file_results) {
+        bail!("{}: {violation}", path.display());
     }
 
     let (terminal_admitted, reason) = match report.harness_status {

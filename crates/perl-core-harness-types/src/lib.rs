@@ -598,6 +598,41 @@ pub fn validate_execution_mechanism(
     }
 }
 
+/// Why a receipt collection's execution-mechanism claims are not admissible.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FileResultMechanismViolation {
+    /// One file result in the collection carries an inadmissible claim.
+    File {
+        /// Test path of the offending file result.
+        path: String,
+        /// Why that file result's claim is inadmissible.
+        violation: ExecutionMechanismViolation,
+    },
+    /// An execution artifact carried no file results at all.
+    ///
+    /// Every other rule here is per-row, so an empty collection would satisfy
+    /// them vacuously and pass as execution evidence that names no rail for
+    /// anything. Non-emptiness is the collection-level half of the same
+    /// contract (#14363).
+    EmptyExecution {
+        /// Harness mode the artifact declared.
+        mode: String,
+    },
+}
+
+impl fmt::Display for FileResultMechanismViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::File { path, violation } => write!(f, "file result {path}: {violation}"),
+            Self::EmptyExecution { mode } => write!(
+                f,
+                "{mode}-mode artifact declares no file results, so it names no execution \
+                 mechanism for anything; an execution artifact with no receipts is not evidence"
+            ),
+        }
+    }
+}
+
 /// Reject a receipt collection whose per-file execution-mechanism claims are
 /// not admissible for the mode that produced them.
 ///
@@ -606,15 +641,26 @@ pub fn validate_execution_mechanism(
 /// against. Validating only the runner-record format would leave the artifact
 /// of record forgeable by editing one field of the report instead (#14363).
 ///
-/// The offending path is returned with the violation so the caller can name the
-/// file rather than the collection.
+/// The returned violation names either the offending file or the collection
+/// itself, so a caller can report it without inventing a path.
 pub fn validate_file_result_mechanisms(
     mode: HarnessMode,
     file_results: &[RunFileResult],
-) -> Result<(), (&str, ExecutionMechanismViolation)> {
+) -> Result<(), FileResultMechanismViolation> {
+    // Scoped to execute: parse and compile artifacts legitimately carry no
+    // mechanism, and whether an empty observation of *any* mode is admissible
+    // evidence is a separate, pre-existing question tracked on #14375.
+    if mode == HarnessMode::Execute && file_results.is_empty() {
+        return Err(FileResultMechanismViolation::EmptyExecution {
+            mode: mode.as_str().to_string(),
+        });
+    }
     for result in file_results {
         if let Err(violation) = validate_execution_mechanism(mode.as_str(), result.mechanism) {
-            return Err((result.path.as_str(), violation));
+            return Err(FileResultMechanismViolation::File {
+                path: result.path.clone(),
+                violation,
+            });
         }
     }
     Ok(())
@@ -1567,6 +1613,46 @@ mod tests {
             "a legacy execute receipt is not current evidence"
         );
         Ok(())
+    }
+
+    #[test]
+    fn an_empty_execution_collection_is_refused() {
+        // Every other rule is per-row, so an empty collection would satisfy
+        // them vacuously and pass as execution evidence naming no rail.
+        let violation = validate_file_result_mechanisms(HarnessMode::Execute, &[]);
+
+        assert_eq!(
+            violation,
+            Err(FileResultMechanismViolation::EmptyExecution { mode: "execute".to_string() }),
+            "an execution artifact with no receipts is not evidence"
+        );
+    }
+
+    #[test]
+    fn empty_parse_and_compile_collections_stay_admissible() {
+        // Opposite-direction control, and a scope boundary: whether an empty
+        // observation of any mode is admissible evidence is a separate
+        // pre-existing question (#14375). This contract only refuses the
+        // execute case, where emptiness means no rail is named.
+        for mode in [HarnessMode::Parse, HarnessMode::Compile] {
+            assert!(
+                validate_file_result_mechanisms(mode, &[]).is_ok(),
+                "{mode} carries no mechanism, so emptiness is not a mechanism defect"
+            );
+        }
+    }
+
+    #[test]
+    fn a_populated_execution_collection_is_still_admissible() {
+        let results = [RunFileResult {
+            path: "base/if.t".to_string(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 2,
+            assertions_total: 2,
+            mechanism: Some(ExecutionMechanism::FixtureReplay),
+        }];
+
+        assert!(validate_file_result_mechanisms(HarnessMode::Execute, &results).is_ok());
     }
 
     #[test]

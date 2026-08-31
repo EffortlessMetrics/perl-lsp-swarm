@@ -4083,7 +4083,7 @@ fn read_run_report(path: &Path) -> Result<RunReport> {
 /// or accepted — not only where a runner-record line is (#14363).
 fn reject_inadmissible_report_mechanisms(report: &RunReport) -> Result<()> {
     validate_file_result_mechanisms(report.mode, &report.file_results)
-        .map_err(|(path, violation)| color_eyre::eyre::eyre!("{path}: {violation}"))
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
 }
 
 /// Refuse a checked-in baseline whose per-file execution-mechanism claims are
@@ -4093,7 +4093,7 @@ fn reject_inadmissible_baseline_mechanisms(
     file_results: &[RunFileResult],
 ) -> Result<()> {
     validate_file_result_mechanisms(mode, file_results)
-        .map_err(|(path, violation)| color_eyre::eyre::eyre!("{path}: {violation}"))
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
 }
 
 fn write_direct_diagnostics_receipt(path: &Path, receipt: &DirectDiagnosticReceipt) -> Result<()> {
@@ -9692,6 +9692,62 @@ mod tests {
         if !text.contains("does not declare an execution mechanism") {
             bail!("unexpected report-read error: {text}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_execute_report_is_refused_at_decode_and_acceptance() -> TestResult {
+        // Every per-row rule passes vacuously on an empty collection, so an
+        // empty execute artifact would otherwise be admitted while naming no
+        // rail for anything (#14363, reported in review on #14364).
+        let temp = tempfile::tempdir()?;
+        let mut empty = sample_execute_report();
+        empty.file_results.clear();
+        empty.summary = RunSummary {
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+        };
+        let path = temp.path().join("empty-execute-report.json");
+        write_run_report(&path, &empty)?;
+
+        let Err(decode_error) = read_run_report(&path) else {
+            bail!("an empty execute report must not decode");
+        };
+        if !format!("{decode_error:?}").contains("names no execution mechanism for anything") {
+            bail!("unexpected decode error: {decode_error:?}");
+        }
+
+        let Err(accept_error) = baseline_from_report(&empty) else {
+            bail!("an empty execute report must not be acceptable as a baseline");
+        };
+        if !format!("{accept_error:?}").contains("names no execution mechanism for anything") {
+            bail!("unexpected acceptance error: {accept_error:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_compile_report_stays_admissible() -> TestResult {
+        // Scope boundary: whether an empty observation of any mode is evidence
+        // is a separate pre-existing question (#14375). This contract refuses
+        // only the execute case, where emptiness means no rail is named.
+        let temp = tempfile::tempdir()?;
+        let mut empty = sample_compile_report();
+        empty.file_results.clear();
+        empty.summary = RunSummary {
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+        };
+        let path = temp.path().join("empty-compile-report.json");
+        write_run_report(&path, &empty)?;
+
+        read_run_report(&path)?;
         Ok(())
     }
 
