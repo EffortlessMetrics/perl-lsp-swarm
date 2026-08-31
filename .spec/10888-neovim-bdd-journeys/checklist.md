@@ -210,8 +210,11 @@ INVARIANT_BLOCKS = {
     # branch and that exactly one group is applicable -- a load-bearing law
     # that lived in prose no digest covered. A row correction left it stating
     # the atomic owner for both branches, and nothing failed.
+    # Spans the whole preamble, not its first paragraph: the block is
+    # multi-paragraph, and a \n\n terminator would bind only the opening and
+    # leave the per-branch ownership statements unprotected.
     "branch_selection_law": ("acceptance",
-                             r"(?ms)^Both branch groups are published.*?(?=\n\n)"),
+                             r"(?ms)^Both branch groups are published.*?(?=^### Branch A)"),
     "profile_membership": ("acceptance",
                            r"(?ms)^## Claim profiles \(ledger membership\).*?(?=^Laws: a stronger profile)"),
 }
@@ -235,7 +238,7 @@ INVARIANT_DIGESTS = {
     "profile_laws": "60e532ff4fcc0274",
     "claim_boundary": "3d6755e631a9c99f",
     "three_subject_law": "e53af321800e90fb",
-    "branch_selection_law": "071dc68e5f3c72b9",
+    "branch_selection_law": "8cc5566b0f27acdb",
     "profile_membership": "f4de26e57133c176",
     "evidence_vocabulary": "d78c020224e6bc3d",
 }

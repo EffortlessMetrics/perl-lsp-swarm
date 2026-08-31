@@ -45,17 +45,24 @@ belong to #10502 and the later host leaves. Profile column: membership in
 
 ## §Behavior — conditional text-sync envelope (`#8129` selects exactly one branch)
 
-Both branch groups are published as stable IDs so the selected branch has an
-owner the moment #8129 rules. Publishing both does **not** claim both: exactly
-one group becomes applicable, the other becomes `not_applicable` by that
-ruling. Branch A has a governed behavior owner, #10505 `nv_deep_atomic_branch`,
-and is current once #8129 selects it and #10505 observes it. Branch B has **no
-governed behavior-observation owner in #11392**: #8531
+Both branch groups are published as stable IDs because the #8129 selection can
+move and its IDs must already exist when it does. Publication is not a claim of
+ownership and not a claim of truth: exactly one group becomes applicable, the
+other becomes `not_applicable` by that ruling, and applicability is a separate
+question from whether any owner can supply the evidence.
+
+Branch A has a governed behavior owner, #10505 `nv_deep_atomic_branch`, and
+becomes current once #8129 selects it and #10505 observes it.
+
+Branch B has **no governed behavior-observation owner in #11392**. #8531
 `nv_release_bounded_process_evidence` assembles process/host evidence and by its
-own ceiling never flips behavior propositions, and
-`nv_release_bounded_v0_18_envelope` composes already-typed cells only. Branch B
-is therefore permanently `not_proven` as behavior until such an owner exists,
-selection notwithstanding. Neither branch's owner observes the other.
+own ceiling never flips behavior propositions;
+`nv_release_bounded_v0_18_envelope` composes already-typed cells only; and no
+other node in the graph observes full-document synchronization. Selecting
+`full_document_utf16` therefore makes branch B *applicable* without making it
+*provable*: all five rows stay `not_proven` as behavior until #11392 adds such
+an owner. Selection confers applicability, never evidence. Neither branch's
+owner observes the other.
 
 ### Branch A — `atomic_incremental`
 
