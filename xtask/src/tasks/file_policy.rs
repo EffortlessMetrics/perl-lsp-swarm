@@ -206,6 +206,65 @@ fn validate_exact_allow_entries(entries: &[AllowEntry]) -> Result<()> {
     Ok(())
 }
 
+fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
+    let value: toml::Value =
+        toml::from_str(std::str::from_utf8(policy).context("allowlist is not UTF-8")?)
+            .context("parsing allowlist policy")?;
+    let entries = value
+        .get("allow")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| eyre!("allowlist must define an allow array"))?;
+    let mut matchers = std::collections::BTreeSet::new();
+    for (index, raw) in entries.iter().enumerate() {
+        let table = raw.as_table().ok_or_else(|| eyre!("allow entry {index} is not a table"))?;
+        for key in table.keys() {
+            if !ALLOWED_ALLOW_FIELDS.contains(&key.as_str()) {
+                bail!("allow entry {index} has unknown field {key}");
+            }
+        }
+        let retired = table.get("retired").and_then(toml::Value::as_bool).unwrap_or(false);
+        if retired {
+            continue;
+        }
+        let id = table
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| eyre!("allow entry {index} missing id"))?;
+        let glob = table.get("glob").and_then(toml::Value::as_str);
+        let path = table.get("path").and_then(toml::Value::as_str);
+        if glob.is_some() == path.is_some() {
+            bail!("allow entry {id} must set exactly one matcher");
+        }
+        let matcher = glob.or(path).unwrap();
+        if !matchers.insert(matcher.to_string()) {
+            bail!("duplicate matcher {matcher}");
+        }
+        if let Some(glob) = glob {
+            Pattern::new(glob).with_context(|| format!("invalid glob in allow entry {id}"))?;
+            if glob.contains("**")
+                && table.get("broad_glob_reason").and_then(toml::Value::as_str).is_none()
+            {
+                bail!("broad glob in allow entry {id} lacks broad_glob_reason");
+            }
+        }
+        let classification =
+            table.get("classification").and_then(toml::Value::as_str).unwrap_or("");
+        if !KNOWN_CLASSIFICATIONS.contains(&classification) {
+            bail!("unknown classification {classification} in allow entry {id}");
+        }
+        for field in ["created", "review_after", "expires"] {
+            if let Some(date) = table.get(field).and_then(toml::Value::as_str)
+                && (date.len() != 10
+                    || date.as_bytes().get(4) != Some(&b'-')
+                    || date.as_bytes().get(7) != Some(&b'-'))
+            {
+                bail!("invalid {field} date in allow entry {id}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn find_matching_prepared_entry<'a>(
     file_path: &str,
     entries: &[PreparedAllowEntry<'a>],
@@ -295,6 +354,7 @@ fn tree_file(root: &Path, sha: &str, path: &str) -> Result<(String, Vec<u8>)> {
 
 fn classify_tree(root: &Path, sha: &str) -> Result<(Vec<FileRecord>, String)> {
     let (blob_sha, policy) = tree_file(root, sha, "policy/non-rust-allowlist.toml")?;
+    validate_exact_policy_bytes(&policy)?;
     let allowlist: Allowlist =
         toml::from_str(std::str::from_utf8(&policy).context("allowlist is not UTF-8")?)
             .with_context(|| format!("parsing policy/non-rust-allowlist.toml from {sha}"))?;
