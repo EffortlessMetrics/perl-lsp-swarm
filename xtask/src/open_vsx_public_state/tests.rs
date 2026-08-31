@@ -111,6 +111,45 @@ fn an_observation_that_left_the_planned_request_set_is_invalid() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn a_refused_observation_cannot_present_its_bytes_as_public_identity() -> Result<()> {
+    // Raised in review: `public_bytes` was derived before structural rejection,
+    // so an off-plan or incompletely measured package still reached the
+    // receipt as exact public identity even though the observation it came
+    // from was refused. Every structural refusal must withhold the bytes.
+    let unmeasured = receipt_with(AVAILABLE_EXACT, |document| {
+        document["cells"]["listing"]["transport"]["response_bytes"] = Value::Null;
+    })?;
+    expect_state(&unmeasured, PublicState::Invalid, "unmeasured success")?;
+    expect_blocker(&unmeasured, "unmeasured_response")?;
+    if unmeasured.public_bytes.is_some() {
+        bail!("an invalid receipt presented bytes from an unmeasured retrieval");
+    }
+
+    let over_budget = receipt_with(AVAILABLE_EXACT, |document| {
+        document["cells"]["listing"]["transport"]["response_bytes"] = json!(999_999_999);
+    })?;
+    expect_state(&over_budget, PublicState::Invalid, "byte budget exceeded")?;
+    expect_blocker(&over_budget, "byte_budget_exceeded")?;
+    if over_budget.public_bytes.is_some() {
+        bail!("an invalid receipt presented bytes from an over-budget retrieval");
+    }
+
+    let off_plan = receipt(UNPLANNED_URL)?;
+    if off_plan.public_bytes.is_some() {
+        bail!("an invalid receipt presented bytes retrieved off-plan");
+    }
+
+    // The withholding is limited to refused observations: an in-plan retrieval
+    // whose only defect is a digest mismatch still records its bytes, because
+    // the mismatch finding is precisely about those recorded bytes.
+    let mismatched = receipt(DIGEST_MISMATCH)?;
+    if mismatched.public_bytes.is_none() {
+        bail!("a digest mismatch still needs its retrieved bytes on record");
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Negative controls: provider failure is never absence
 // ---------------------------------------------------------------------------

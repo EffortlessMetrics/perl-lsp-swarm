@@ -75,13 +75,28 @@ pub(crate) fn classify(observation: Observation) -> Receipt {
     // the scope has to accompany the value wherever the value goes.
     limitations.push(search_scope(&observation));
 
-    let public_bytes = retrievable_public_bytes(&observation);
-    if public_bytes.is_none() {
+    // The bytes are only as trustworthy as the observation they came from:
+    // a structurally refused observation (off-plan address, unmeasured
+    // success, exceeded budgets) cannot have its retrieval trusted, so its
+    // bytes are withheld from the receipt rather than presented as exact
+    // public identity. The blockers carry the refusal; the limitation
+    // records what happened to the bytes.
+    let public_bytes = if structural.is_empty() {
+        let public_bytes = retrievable_public_bytes(&observation);
+        if public_bytes.is_none() {
+            limitations.push(
+                "Exact public package bytes were not retrieved, so public byte identity is                  unproven."
+                    .to_owned(),
+            );
+        }
+        public_bytes
+    } else {
         limitations.push(
-            "Exact public package bytes were not retrieved, so public byte identity is unproven."
+            "The observation was refused as untrustworthy, so its retrieved package bytes are              withheld from the receipt."
                 .to_owned(),
         );
-    }
+        None
+    };
 
     let state = if structural.is_empty() {
         let (state, mut state_blockers) =
