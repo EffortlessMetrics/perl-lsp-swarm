@@ -198,8 +198,12 @@ impl EvaluateContext {
     /// `"repl"` means (#9385).
     ///
     /// Matching is exact and case-sensitive, per the DAP specification's
-    /// lowercase labels. An unrecognized label stays `Other`, which carries no
-    /// side-effect authority.
+    /// lowercase labels. Anything without a named variant becomes `Other`,
+    /// which carries no side-effect authority. That covers two different cases
+    /// deliberately: a label outside the specification entirely, and the
+    /// spec-defined values this enum does not name — `clipboard` and `string`.
+    /// Both are read-oriented, so `Other` is the correct disposition for them
+    /// and giving them variants would not change any trust decision.
     #[must_use]
     pub fn from_dap_label(label: &str) -> Self {
         match label {

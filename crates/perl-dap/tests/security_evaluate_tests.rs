@@ -277,8 +277,14 @@ const SIDE_EFFECTFUL_EXPRESSIONS: [&str; 4] =
     ["system('ls')", "eval('1')", "print 'test'", "$x = 1"];
 
 /// Every evaluate context that must never carry side-effect authority.
-const NON_REPL_CONTEXTS: [&str; 5] =
-    ["watch", "hover", "variables", "clipboard", "totally-unknown"];
+///
+/// Covers all five non-`repl` values the DAP specification defines — `watch`,
+/// `hover`, `variables`, `clipboard`, `string` — plus a label outside the
+/// specification. `clipboard` and `string` have no named `EvaluateContext`
+/// variant and fall to `Other`; they are listed explicitly so that adding a
+/// variant for either later cannot silently drop it from this control.
+const NON_REPL_CONTEXTS: [&str; 6] =
+    ["watch", "hover", "variables", "clipboard", "string", "totally-unknown"];
 
 fn refusal_message(response: DapMessage) -> String {
     match response {
@@ -383,13 +389,19 @@ fn read_oriented_contexts_still_evaluate_safe_expressions() -> TestResult {
             Some(json!({ "expression": "$my_scalar", "context": context })),
         );
 
-        if let DapMessage::Response { message, .. } = response {
-            let message = message.unwrap_or_default();
-            assert!(
-                !message.contains("only honored for the 'repl' evaluation context")
-                    && !message.contains("Safe evaluation mode"),
-                "safe expression in context {context:?} must not be refused, got: {message}"
-            );
+        // `match` rather than `if let`: an unexpected DapMessage variant must
+        // fail this control loudly. Under `if let` it would fall through and
+        // the test would pass without ever checking anything.
+        match response {
+            DapMessage::Response { message, .. } => {
+                let message = message.unwrap_or_default();
+                assert!(
+                    !message.contains("only honored for the 'repl' evaluation context")
+                        && !message.contains("Safe evaluation mode"),
+                    "safe expression in context {context:?} must not be refused, got: {message}"
+                );
+            }
+            other => panic!("expected Response for context {context:?}, got {other:?}"),
         }
     }
 
