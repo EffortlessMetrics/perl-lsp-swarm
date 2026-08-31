@@ -2155,6 +2155,8 @@ mod tests {
             #[cfg(unix)]
             let inode = Some(metadata.ino());
             #[cfg(not(unix))]
+            // `u64` matches `std::os::unix::fs::MetadataExt::ino()` so the
+            // tuple element type is pinned on every platform.
             let inode: Option<u64> = None;
             snapshots.push((entry.path().to_path_buf(), metadata.modified()?, inode));
         }

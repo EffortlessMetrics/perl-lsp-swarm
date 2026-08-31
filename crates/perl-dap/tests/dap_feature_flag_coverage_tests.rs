@@ -90,11 +90,14 @@ fn test_capability_dap_core_initialize_response() -> TestResult {
             "supportsConfigurationDoneRequest must be true when dap.core is enabled"
         );
 
-        let supports_evaluate =
-            body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(false);
+        // #9573: hover is NOT a `dap.core` consequence. The catalog flag cannot
+        // widen it, because the promise hover makes (pure inspection of the
+        // selected frame) is narrower than anything `dap.core` compiles in.
+        let supports_evaluate_for_hovers =
+            body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(true);
         assert!(
-            supports_evaluate,
-            "supportsEvaluateForHovers must be true when dap.core is enabled"
+            !supports_evaluate_for_hovers,
+            "supportsEvaluateForHovers must stay false even when dap.core is enabled (#9573)"
         );
 
         let supports_set_variable =
