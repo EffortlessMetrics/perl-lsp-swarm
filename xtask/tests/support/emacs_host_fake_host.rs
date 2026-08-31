@@ -144,6 +144,7 @@ pub fn supervision_command(
     }
     command.env(FAKE_HOST_MODE_ENV, mode);
     command.env(FAKE_HOST_ENTRY_ENV, entry_test);
+    command.env_remove("RUST_TEST_ARGS");
     Ok(command)
 }
 
@@ -246,10 +247,19 @@ pub fn spawn_preexisting_candidate(
     }
     let mut descendant = Command::new(candidate);
     descendant
-        .args(["--exact", entry_test, "--test-threads=1"])
+        .args(["--exact", entry_test, "--nocapture", "--test-threads=1"])
         .env(FAKE_HOST_MODE_ENV, "descendant_sleep")
         .env(FAKE_HOST_DESCENDANT_READY_ENV, ready_marker)
-        .env(FAKE_HOST_ENTRY_ENV, entry_test);
+        .env(FAKE_HOST_ENTRY_ENV, entry_test)
+        // Isolated `cargo test --exact …` puts the parent filter in
+        // RUST_TEST_ARGS; inheriting it would re-run the parent test instead
+        // of the fake-host entry.
+        .env_remove("RUST_TEST_ARGS");
+    let stderr_log = ready_marker.with_extension("stderr");
+    descendant.stderr(
+        fs::File::create(&stderr_log)
+            .with_context(|| format!("creating descendant stderr log {}", stderr_log.display()))?,
+    );
     let descendant_pid = spawn_surviving_descendant(descendant)?;
     let mut became_ready = ready_marker.is_file();
     for _ in 0..400 {
@@ -260,13 +270,17 @@ pub fn spawn_preexisting_candidate(
         became_ready = ready_marker.is_file();
     }
     if !became_ready {
-        bail!("leak-scenario descendant {descendant_pid} never signaled readiness");
+        let stderr_head = fs::read_to_string(&stderr_log).unwrap_or_default();
+        bail!(
+            "leak-scenario descendant {descendant_pid} never signaled readiness; stderr head: {}",
+            stderr_head.chars().take(400).collect::<String>()
+        );
     }
     Ok(descendant_pid)
 }
 
 fn spawn_surviving_descendant(mut command: Command) -> Result<u32> {
-    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    command.stdin(Stdio::null()).stdout(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
