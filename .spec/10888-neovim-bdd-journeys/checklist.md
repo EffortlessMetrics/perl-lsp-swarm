@@ -675,19 +675,20 @@ def main():
     adds_packet_file = any(
         line.split("\t")[0].startswith("A") and line.split("\t")[-1] in set(FILES)
         for line in statuses)
-    if adds_packet_file:
-        if INVENTORY not in changed:
-            fail(f"packet files are added but {INVENTORY} was not regenerated")
-        # Presence in the changed set is not evidence of content: any edit at
-        # all would satisfy it, including an inventory still missing these
-        # rows. Validate the required generated state itself.
-        try:
-            inventory_text = open(INVENTORY, encoding="utf-8").read()
-        except OSError:
-            fail(f"missing {INVENTORY}")
-        absent = [path for path in FILES if f"| `{path}` |" not in inventory_text]
-        if absent:
-            fail(f"{INVENTORY} does not list the packet's rows: {absent}")
+    if adds_packet_file and INVENTORY not in changed:
+        fail(f"packet files are added but {INVENTORY} was not regenerated")
+    # The committed inventory must continue listing every packet file. Checking
+    # only on additions would let a later packet revision silently remove
+    # these generated rows while the structural check stayed green. Row
+    # presence is cheap and unconditional; only the changed-set requirement
+    # above stays conditioned on an add.
+    try:
+        inventory_text = open(INVENTORY, encoding="utf-8").read()
+    except OSError:
+        fail(f"missing {INVENTORY}")
+    absent = [path for path in FILES if f"| `{path}` |" not in inventory_text]
+    if absent:
+        fail(f"{INVENTORY} does not list the packet's rows: {absent}")
 
     print("SPEC_10888_STRUCTURAL_CHECK=PASS")
     print(f"scenario_ids={len(ids)} falsifiers={len(rows)}")
