@@ -99,8 +99,11 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
         cleanupFailure ??= existsError;
       }
       if (cleanupFailure !== undefined || destinationRemains) {
-        const reason = cleanupFailure instanceof Error ? cleanupFailure.message : 'destination remains';
-        reject(new Error(`${error.message}; partial file cleanup failed: ${reason}`, { cause: error }));
+        const reason =
+          cleanupFailure instanceof Error ? cleanupFailure.message : 'destination remains';
+        reject(
+          new Error(`${error.message}; partial file cleanup failed: ${reason}`, { cause: error }),
+        );
         return;
       }
       reject(error);
