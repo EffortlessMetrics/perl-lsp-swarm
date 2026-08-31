@@ -254,6 +254,16 @@ INVARIANT_BLOCKS = {
                                r"(?ms)^## Evidence boundaries and chain$.*?(?=^## Security boundary)"),
     "context_authority": ("context",
                           r"(?ms)^## Authority and ownership$.*?(?=^## Stable versus mutable information)"),
+    # The journey inventory reads like a table of contents, and that is exactly
+    # why it was first classified narrative. It is not: it states the
+    # applicability law for the conditional sync branches -- that the #8129
+    # selection is not this packet's to make, that the recording authority holds
+    # no current value, that exactly one group becomes applicable by that
+    # authority and never by an assertion here, and that a stale selection fails
+    # closed. That law is the context-side twin of `branch_selection_law`; an
+    # edit here could have reversed it while acceptance.md stayed pinned.
+    "context_journey_inventory": ("context",
+                                  r"(?ms)^## Journey inventory \(baseline = 41 scenarios, optional = 6\)$.*?(?=^## Claim profiles$)"),
     "hazards_table": ("acceptance",
                       r"(?ms)^## §Hazards.*?(?=^## §Contracts)"),
     "contracts_table": ("acceptance",
@@ -283,32 +293,51 @@ EXPECTED_INVARIANTS = {
     "context_security_boundary",
     "context_stable_vs_mutable",
     "context_scope_boundary",
+    "context_journey_inventory",
 }
 
-# Every `## ` section of both normative files, classified. The recurring defect
-# in this packet was never the binding itself -- it was failing to NOTICE that a
-# section is normative. Enumerating by hand got it wrong twice, so the section
-# set is asserted instead: adding, renaming, or removing a section fails the
-# check until it is classified here. NORMATIVE sections must appear in
-# INVARIANT_BLOCKS; NARRATIVE ones state no law and assign no owner.
-CONTEXT_SECTIONS_NARRATIVE = {
-    "Problem",
-    "Why this approach (ledger-format evolution record)",
-    "Stable scenario ID namespace",
-    "Journey inventory (baseline = 41 scenarios, optional = 6)",
-    "Alternatives rejected",
-    "Prior art / duplicates",
-    "Links",
+# Every `## ` heading of BOTH normative files, mapped to the invariant that
+# binds it, or to None for narrative. The recurring defect was never the
+# binding -- it was failing to NOTICE that content is normative, and hand
+# enumeration got that wrong twice. The heading inventory is therefore asserted
+# with cardinality (a duplicate heading fails), across both files, and every
+# section mapped to an invariant must name one that actually exists. Adding,
+# renaming, duplicating, or reclassifying a section fails until this map says so.
+SECTION_BINDING = {
+    ("context", "Problem"): None,
+    ("context", "Why this approach (ledger-format evolution record)"): None,
+    ("context", "Subject substrate (consumed by reference; nothing re-pinned here)"):
+        "context_subject_substrate",
+    ("context", "Stable scenario ID namespace"): None,
+    ("context", "Journey inventory (baseline = 41 scenarios, optional = 6)"):
+        "context_journey_inventory",
+    ("context", "Claim profiles"): "context_claim_profiles",
+    ("context", "Evidence boundaries and chain"): "context_evidence_chain",
+    ("context", "Security boundary"): "context_security_boundary",
+    ("context", "Authority and ownership"): "context_authority",
+    ("context", "Stable versus mutable information"): "context_stable_vs_mutable",
+    ("context", "Alternatives rejected"): None,
+    ("context", "Prior art / duplicates"): None,
+    ("context", "Links"): None,
+    ("context", "Scope boundary"): "context_scope_boundary",
+    ("acceptance", "\u00a7Behavior \u2014 bounded core journey ledger (`native_neovim_core`)"): None,
+    ("acceptance", "\u00a7Behavior \u2014 conditional text-sync envelope (`#8129` selects exactly one branch)"):
+        "branch_selection_law",
+    ("acceptance", "\u00a7Behavior \u2014 deep lifecycle truth (`native_neovim_deep_lifecycle`)"): None,
+    ("acceptance", "\u00a7Behavior \u2014 support claims remain subject- and stage-bound (`native_neovim_first_class`)"): None,
+    ("acceptance", "\u00a7Behavior \u2014 optional and stronger-profile inputs (never baseline blockers)"): None,
+    ("acceptance", "Claim profiles (ledger membership)"): "profile_membership",
+    ("acceptance", "\u00a7Hazards"): "hazards_table",
+    ("acceptance", "\u00a7Contracts"): "contracts_table",
+    ("acceptance", "\u00a7API-Shape"): "evidence_vocabulary",
+    ("acceptance", "\u00a7Test-Grid"): None,
+    ("acceptance", "\u00a7Blast-Radius"): None,
+    ("acceptance", "\u00a7Coverage-Map"): None,
+    ("acceptance", "Scope, rollback, and proof claims"): "claim_boundary",
 }
-CONTEXT_SECTIONS_NORMATIVE = {
-    "Subject substrate (consumed by reference; nothing re-pinned here)",
-    "Claim profiles",
-    "Evidence boundaries and chain",
-    "Security boundary",
-    "Authority and ownership",
-    "Stable versus mutable information",
-    "Scope boundary",
-}
+# The §Behavior ledger sections are covered row-by-row by ROW_DIGESTS and
+# §Test-Grid byte-exactly by the falsifier check, so None here does not mean
+# unprotected -- it means "not protected by a whole-section digest".
 
 INVARIANT_DIGESTS = {
     "subject_law": "a48b4d92cad52534",
@@ -323,6 +352,7 @@ INVARIANT_DIGESTS = {
     "context_claim_profiles": "a45bb5a8c43c857a",
     "context_evidence_chain": "fbcccadeee3d7439",
     "context_authority": "ed488a4d0f3eaa88",
+    "context_journey_inventory": "40dd3a36f668b519",
     "hazards_table": "b23ecc7dc31924ab",
     "contracts_table": "64a91be0447830a9",
     "profile_membership": "f4de26e57133c176",
@@ -523,23 +553,32 @@ def main():
     # asks whether a token appears somewhere, so a sentence could be inverted
     # while a bare token survived elsewhere and the checker still passed.
     # Digest each named invariant block so reversing one fails closed.
-    # Assert the section inventory before checking any digest. Missing a
-    # normative section is the failure this packet kept repeating; a hand
-    # enumeration got it wrong twice. A new or renamed `## ` section now fails
-    # until it is classified, and every section classified NORMATIVE must have
-    # a bound invariant.
-    seen = set(re.findall(r"(?m)^## (.+)$", context))
-    known = CONTEXT_SECTIONS_NARRATIVE | CONTEXT_SECTIONS_NORMATIVE
-    if seen != known:
-        fail("context.md section set changed; classify each as narrative or "
-             f"normative: unclassified={sorted(seen - known)} "
-             f"missing={sorted(known - seen)}")
-    unbound = {s for s in CONTEXT_SECTIONS_NORMATIVE
-               if not any(s.split(" (")[0] in pat
-                          for which, pat in INVARIANT_BLOCKS.values()
-                          if which == "context")}
-    if unbound:
-        fail(f"context.md sections classified normative but not digest-bound: {sorted(unbound)}")
+    # Assert the heading inventory of BOTH files before comparing any digest.
+    # Failing to notice that content is normative is the defect this packet
+    # kept repeating, and a digest cannot catch it: a digest only protects
+    # content someone already decided to protect. Cardinality is preserved, so
+    # a duplicated heading fails rather than collapsing into a set.
+    for which, text in (("context", context), ("acceptance", acceptance)):
+        headings = re.findall(r"(?m)^## (.+)$", text)
+        if len(headings) != len(set(headings)):
+            dupes = sorted({h for h in headings if headings.count(h) > 1})
+            fail(f"{which}.md has duplicate `## ` headings: {dupes}")
+        declared = {s for (f, s) in SECTION_BINDING if f == which}
+        if set(headings) != declared:
+            fail(f"{which}.md section set changed; classify each in "
+                 f"SECTION_BINDING: unclassified={sorted(set(headings) - declared)} "
+                 f"missing={sorted(declared - set(headings))}")
+    # Every section mapped to an invariant must name one that exists. This is an
+    # identity check against INVARIANT_BLOCKS' keys, not a substring search of
+    # its patterns: unrelated regex text must not be able to satisfy it.
+    for (which, section), invariant in SECTION_BINDING.items():
+        if invariant is None:
+            continue
+        if invariant not in INVARIANT_BLOCKS:
+            fail(f"{which}.md section {section!r} is mapped to unknown invariant {invariant!r}")
+        if INVARIANT_BLOCKS[invariant][0] != which:
+            fail(f"{which}.md section {section!r} is mapped to invariant "
+                 f"{invariant!r}, which binds {INVARIANT_BLOCKS[invariant][0]}.md")
 
     sources = {"acceptance": acceptance, "context": context}
     if set(INVARIANT_BLOCKS) != EXPECTED_INVARIANTS or \
