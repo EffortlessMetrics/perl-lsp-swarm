@@ -213,7 +213,7 @@
     },
     {
       "path": "crates/perl-lsp-rs/tests/semantic_hover.rs",
-      "test_function": "hover_on_before_modifier_shows_method_modifier_kind",
+      "test_function": "hover_on_use_statement_honors_absolute_perl5lib_outside_workspace",
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "active"

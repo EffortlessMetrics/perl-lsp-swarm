@@ -53,6 +53,14 @@ fn walk_workspace_rust_files(repo_root: &Path) -> Vec<PathBuf> {
     files.into_iter().collect()
 }
 
+fn is_nested_test_payload(path: &Path) -> bool {
+    let components = path.components().collect::<Vec<_>>();
+    components
+        .iter()
+        .position(|component| component.as_os_str() == "tests")
+        .is_some_and(|tests_index| components.len().saturating_sub(tests_index) > 2)
+}
+
 fn signal_category(function: &str) -> Option<&'static str> {
     match function {
         "set_var" => Some("env_set"),
@@ -318,6 +326,11 @@ impl SignalVisitor {
                         self.bindings.shadow_value(&name);
                     }
                 }
+                // A local Drop implementation runs as part of the test body
+                // when its guard is instantiated. Visit local impls so cleanup
+                // mutations are not hidden behind the item's method body;
+                // ordinary helper function definitions remain excluded.
+                Stmt::Item(Item::Impl(item_impl)) => self.visit_item_impl(item_impl),
                 Stmt::Item(_) | Stmt::Macro(_) => {}
                 Stmt::Expr(expression, _) => self.visit_expr(expression),
             }
@@ -476,8 +489,18 @@ fn scan_file_for_unserialized_sites(
 ) -> Result<Vec<SerialSiteIdentity>> {
     let source = std::fs::read_to_string(path)
         .map_err(|err| eyre!("reading Rust source {:?}: {err}", path))?;
-    let syntax =
-        syn::parse_file(&source).map_err(|err| eyre!("parsing Rust source {:?}: {err}", path))?;
+    let syntax = match syn::parse_file(&source) {
+        Ok(syntax) => syntax,
+        Err(_) if is_nested_test_payload(path) => {
+            // Repositories commonly keep non-Rust fixture payloads or unused
+            // support snippets under a nested `tests/` directory with an
+            // `.rs` extension. They are not Cargo integration-test roots, and
+            // invalid Rust cannot be a compiled external module. Valid nested
+            // modules still parse and remain in the inventory.
+            return Ok(Vec::new());
+        }
+        Err(err) => return Err(eyre!("parsing Rust source {:?}: {err}", path)),
+    };
     let relative =
         path.strip_prefix(repo_root).unwrap_or(path).display().to_string().replace('\\', "/");
     let mut sites = Vec::new();
@@ -837,6 +860,32 @@ mod tests {
         )?;
         let path = repo.empty_registry()?;
         assert_eq!(repo.check(&path)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn local_drop_cleanup_mutation_is_part_of_the_test_body() -> Result<()> {
+        let repo = TempRepo::new("local-drop")?;
+        repo.write_test(
+            r#"
+#[test]
+fn restores_environment_on_drop() {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("A"); }
+        }
+    }
+    let _guard = Guard;
+    unsafe { std::env::set_var("A", "1"); }
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].test_function, "restores_environment_on_drop");
+        assert_eq!(sites[0].signals, vec!["env_remove", "env_set"]);
         Ok(())
     }
 
@@ -1328,6 +1377,23 @@ fn mutates_after_every_lexical_class() {
         assert_eq!(sites[0].path, "crates/demo/custom-target/deep/policy_fixture.rs");
         assert_eq!(sites[0].test_function, "flips_toolchain_env");
         assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_nested_test_payloads_are_not_treated_as_rust_targets() -> Result<()> {
+        let repo = TempRepo::new("fixture-payload")?;
+        fs::create_dir_all(repo.path.join("crates/demo/tests/fixtures"))?;
+        fs::write(
+            repo.path.join("crates/demo/tests/fixtures/perl_sample.rs"),
+            "this is fixture text with a Rust-looking extension, not a Rust target",
+        )?;
+        repo.write_test(UNANNOTATED_ENV_TEST)?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/demo.rs");
+        assert_eq!(sites[0].test_function, "flips_toolchain_env");
         Ok(())
     }
 
