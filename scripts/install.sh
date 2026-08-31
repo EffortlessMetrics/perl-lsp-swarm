@@ -48,7 +48,20 @@ NC='\033[0m'
 say()     { printf '%b\n' "$1"; }
 info()    { say "${GREEN}=>${NC} $1"; }
 warn()    { say "${YELLOW}warning:${NC} $1" >&2; }
-err()     { say "${RED}error:${NC} $1" >&2; exit 1; }
+# First-install selector rollback is invoked from err() so injected faults and
+# other exit-1 paths drop newly created PATH names without replacing the caller's
+# EXIT trap (main removes TMPDIR that way).
+rollback_new_path_selectors() {
+    if [ -n "${_plsp_rollback_server:-}" ]; then
+        rm -f -- "$_plsp_rollback_server"
+    fi
+    if [ -n "${_plsp_rollback_dap:-}" ]; then
+        rm -f -- "$_plsp_rollback_dap"
+    fi
+    _plsp_rollback_server=""
+    _plsp_rollback_dap=""
+}
+err()     { rollback_new_path_selectors; say "${RED}error:${NC} $1" >&2; exit 1; }
 
 need_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -1182,32 +1195,18 @@ Try one of:
     if [ ! -e "${INSTALL_DIR}/${DAP_BIN_NAME}" ] && [ ! -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
         _plsp_rollback_dap="${INSTALL_DIR}/${DAP_BIN_NAME}"
     fi
-    rollback_new_path_selectors() {
-        if [ -n "${_plsp_rollback_server:-}" ]; then
-            rm -f -- "$_plsp_rollback_server"
-        fi
-        if [ -n "${_plsp_rollback_dap:-}" ]; then
-            rm -f -- "$_plsp_rollback_dap"
-        fi
-        _plsp_rollback_server=""
-        _plsp_rollback_dap=""
-    }
     # Pair selectors are created before current flips so the commit publishes
     # both PATH names together. If commit fails closed, drop names this attempt
-    # created so a first install does not leave dangling commands. The EXIT trap
-    # covers err() (exit 1); explicit rollback covers function return.
-    trap rollback_new_path_selectors EXIT
+    # created so a first install does not leave dangling commands. err() runs the
+    # same rollback so injected faults do not replace main's TMPDIR EXIT trap.
     if ! ensure_path_visible_selectors 1 "$_incoming_pair" 0; then
         rollback_new_path_selectors
-        trap - EXIT
         return 1
     fi
     if ! commit_current_selection "$_id"; then
         rollback_new_path_selectors
-        trap - EXIT
         return 1
     fi
-    trap - EXIT
     _plsp_rollback_server=""
     _plsp_rollback_dap=""
     ensure_path_visible_selectors || return

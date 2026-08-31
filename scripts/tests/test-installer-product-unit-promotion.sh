@@ -109,6 +109,13 @@ else
     pass "Darwin fallback is rename not ln -sfn"
 fi
 
+if grep -E 'trap[[:space:]].*EXIT' "$INSTALLER" | grep -vq 'rm -rf'; then
+    fail_case "install_binaries does not replace the process EXIT trap" \
+        "$(grep -nE 'trap[[:space:]].*EXIT' "$INSTALLER" || true)"
+else
+    pass "install_binaries does not replace the process EXIT trap"
+fi
+
 if grep -Fq 'rm -f "${INSTALL_DIR}/${BIN_NAME}"' "$INSTALLER"; then
     fail_case "PATH selectors do not unlink before replace" "scripts/install.sh still removes PATH-visible perllsp before creating the selector"
 else
@@ -484,6 +491,27 @@ if [ "$LAST_STATUS" -eq 0 ] \
 else
     fail_case "source-to-release production path publishes the pair before the interleaved reader" \
         "status=$LAST_STATUS obs=$obs_text output=$LAST_OUTPUT"
+fi
+
+setup_root
+stage_pair "$EXTRACT_DIR" "server-trap" "dap-trap"
+_trap_marker="$TMP/caller-exit-trap"
+rm -f "$_trap_marker"
+# shellcheck disable=SC2064
+trap 'printf survived > "$_trap_marker"' EXIT
+set +e
+install_binaries release >/dev/null
+_trap_status=$?
+_trap_text="$(trap -p EXIT)"
+trap 'rm -rf "$TMP"' EXIT
+set -e
+if [ "$_trap_status" -eq 0 ] \
+    && assert_complete_pair "server-trap" "dap-trap" \
+    && [[ "$_trap_text" == *printf\ survived* ]]; then
+    pass "successful promotion keeps the caller EXIT trap"
+else
+    fail_case "successful promotion keeps the caller EXIT trap" \
+        "status=$_trap_status trap=$_trap_text"
 fi
 
 if [ "$FAIL" -ne 0 ]; then
