@@ -1109,7 +1109,7 @@ fn simd_performance_claim_residual(line: &str) -> String {
 
 fn simd_claim_is_negated(prefix: &str) -> bool {
     let clause = prefix
-        .rsplit(|character: char| matches!(character, '.' | ';' | '!' | '?' | '|'))
+        .rsplit(['.', ';', '!', '?', '|'])
         .next()
         .unwrap_or(prefix);
     let mut words = clause
