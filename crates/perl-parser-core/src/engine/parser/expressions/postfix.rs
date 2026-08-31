@@ -578,6 +578,11 @@ impl<'a> Parser<'a> {
                                     self.peek_kind(),
                                     Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                 ) {
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                    }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if is_bare_func {
                                         if !self.should_continue_bare_call_after_block() {
@@ -640,6 +645,11 @@ impl<'a> Parser<'a> {
                                         self.peek_kind(),
                                         Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                     ) {
+                                        if self.peek_kind() == Some(TokenKind::FatArrow)
+                                            && let Some(arg) = args.last_mut()
+                                        {
+                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                        }
                                         self.consume_token()?; // consume comma or fat arrow
                                         if self.is_implicit_arg_terminator() {
                                             break;
@@ -976,6 +986,11 @@ impl<'a> Parser<'a> {
                                             self.peek_kind(),
                                             Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                         ) {
+                                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                && let Some(arg) = args.last_mut()
+                                            {
+                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                            }
                                             self.consume_token()?;
                                         }
                                         // Check again after potential comma/fat arrow
@@ -1031,6 +1046,11 @@ impl<'a> Parser<'a> {
                                             self.peek_kind(),
                                             Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                         ) {
+                                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                && let Some(arg) = args.last_mut()
+                                            {
+                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                            }
                                             self.consume_token()?;
                                         }
                                         if self.is_implicit_arg_terminator() {
@@ -1065,6 +1085,11 @@ impl<'a> Parser<'a> {
                                             self.peek_kind(),
                                             Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                         ) {
+                                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                && let Some(arg) = args.last_mut()
+                                            {
+                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                            }
                                             self.consume_token()?;
                                         }
                                         if self.is_implicit_arg_terminator() {
@@ -1083,6 +1108,11 @@ impl<'a> Parser<'a> {
                                         self.peek_kind(),
                                         Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                     ) {
+                                        if self.peek_kind() == Some(TokenKind::FatArrow)
+                                            && let Some(arg) = args.last_mut()
+                                        {
+                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                        }
                                         self.consume_token()?; // consume comma or fat arrow
                                         if self.is_at_statement_end() {
                                             break;
@@ -1112,6 +1142,11 @@ impl<'a> Parser<'a> {
                                             self.peek_kind(),
                                             Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                         ) {
+                                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                && let Some(arg) = args.last_mut()
+                                            {
+                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                            }
                                             self.consume_token()?;
                                         }
                                         if self.is_at_statement_end() {
@@ -1220,6 +1255,11 @@ impl<'a> Parser<'a> {
                                                 self.peek_kind(),
                                                 Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                             ) {
+                                                if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                    && let Some(arg) = args.last_mut()
+                                                {
+                                                    Self::auto_quote_bareword_before_fat_comma(arg);
+                                                }
                                                 self.consume_token()?;
                                             }
                                             if self.is_at_statement_end() {
@@ -1280,6 +1320,11 @@ impl<'a> Parser<'a> {
                                             break;
                                         }
 
+                                        if self.peek_kind() == Some(TokenKind::FatArrow)
+                                            && let Some(arg) = args.last_mut()
+                                        {
+                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                        }
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
                                             break;
