@@ -948,10 +948,32 @@ fn preceding_attributes(source: &str, index: usize) -> String {
 /// A `cfg`-disabled fixture is not compiled and a `cfg_attr(..., ignore)` one is
 /// skipped, so neither is executed by the corpus command. Counting either as
 /// evidence would let a row claim support from a fixture that never runs.
+///
+/// Whitespace is removed before matching rather than enumerated: `#[ cfg(..) ]`
+/// is valid Rust and means exactly what `#[cfg(..)]` means, so a spacing the
+/// patterns did not anticipate would otherwise let a disabled fixture certify
+/// support. Removing whitespace as a variable covers every spelling at once
+/// instead of adding a rule per layout. `rustfmt` would normalise these forms,
+/// but the checker must not depend on another gate being green to be sound.
 fn suppresses_execution(attributes: &str) -> bool {
-    attributes.contains("#[cfg(")
-        || attributes.contains("#[cfg_attr(")
-        || attributes.contains("#[ignore")
+    let dense: String = attributes.chars().filter(|c| !c.is_whitespace()).collect();
+    dense.contains("#[cfg(") || dense.contains("#[cfg_attr(") || dense.contains("#[ignore")
+}
+
+/// Byte index of the `mod` keyword starting at `index`, if one does.
+///
+/// Matched as a token rather than the literal `"mod "`: `mod\tname` and a name
+/// on the next line are both valid Rust, and missing them would let a suppressed
+/// module's fixtures count as running evidence.
+fn mod_keyword_at(bytes: &[u8], index: usize) -> bool {
+    if !bytes[index..].starts_with(b"mod") {
+        return false;
+    }
+    if index > 0 && is_identifier_byte(bytes[index - 1]) {
+        return false;
+    }
+    // A keyword must be followed by separating whitespace, not more identifier.
+    bytes.get(index + 3).is_some_and(u8::is_ascii_whitespace)
 }
 
 /// Refuse to extract from a corpus containing a suppressed module.
@@ -967,15 +989,16 @@ fn suppresses_execution(attributes: &str) -> bool {
 fn reject_suppressed_modules(source: &str) -> Result<()> {
     let code = evidence_mask(source);
     let scan = blank_non_code(source, &code);
-    for (index, _) in source.match_indices("mod ") {
-        if !code.get(index).copied().unwrap_or(false) {
+    for (index, _) in source.match_indices("mod") {
+        if !code.get(index).copied().unwrap_or(false) || !mod_keyword_at(source.as_bytes(), index) {
             continue;
         }
         let attributes = preceding_attributes(&scan, item_start_before(&scan, index));
         if suppresses_execution(&attributes) {
             let name: String = source
-                .get(index + "mod ".len()..)
+                .get(index + "mod".len()..)
                 .unwrap_or_default()
+                .trim_start()
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
@@ -1966,6 +1989,60 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         assert!(corpus.contains("macro_rules! command_line_oneliner"), "corpus shape changed");
         let evidence = extract_corpus_evidence(&corpus);
         assert_eq!(evidence.switch_cases.len(), 18, "{:?}", evidence.switch_cases.keys());
+    }
+
+    /// Whitespace inside an attribute, or after `mod`, must not decide whether
+    /// a fixture is executable.
+    ///
+    /// `#[ cfg(any()) ]` and `mod\tname` are valid Rust meaning exactly what
+    /// their dense spellings mean. Matching the dense spelling alone let a
+    /// disabled fixture certify support — the over-claiming direction this
+    /// check exists to prevent. `rustfmt` would normalise these, but soundness
+    /// here must not depend on another gate being green.
+    #[test]
+    fn attribute_spacing_does_not_defeat_suppression() {
+        for source in [
+            "#[ cfg(any()) ]\ncommand_line_oneliner!(spaced, \"-e\", \"print 1;\");\n",
+            "#[cfg ( any() )]\ncommand_line_oneliner!(spaced, \"-e\", \"print 1;\");\n",
+            "#[\n    cfg(any())\n]\ncommand_line_oneliner!(spaced, \"-e\", \"print 1;\");\n",
+        ] {
+            let evidence = extract_corpus_evidence(source);
+            assert!(
+                evidence.switch_cases.is_empty(),
+                "spacing defeated suppression in {source:?}: {:?}",
+                evidence.switch_cases
+            );
+        }
+
+        for source in [
+            "#[ ignore ]\n#[test]\nfn parked() {}\n",
+            "#[test]\n#[ cfg_attr( windows , ignore ) ]\nfn parked() {}\n",
+        ] {
+            let evidence = extract_corpus_evidence(source);
+            assert!(
+                evidence.proof_tests.is_empty(),
+                "spacing defeated suppression in {source:?}: {:?}",
+                evidence.proof_tests
+            );
+        }
+
+        // The `mod` keyword is matched as a token, so separating whitespace and
+        // a name on the next line are both seen.
+        for form in [
+            "#[cfg(feature = \"x\")]\nmod\tdisabled {}\n",
+            "#[cfg(feature = \"x\")]\nmod\n    disabled {}\n",
+        ] {
+            match reject_suppressed_modules(form) {
+                Ok(()) => panic!("whitespace hid the suppressed module in {form:?}"),
+                Err(error) => assert!(error.to_string().contains("disabled"), "{error}"),
+            }
+        }
+
+        // A token match must not fire on an identifier that merely contains it.
+        for form in ["#[cfg(feature = \"x\")]\nfn modify() {}\n", "let commodity = 1;\n"] {
+            reject_suppressed_modules(form)
+                .unwrap_or_else(|error| panic!("`mod` matched inside a word in {form:?}: {error}"));
+        }
     }
 
     /// Blanking preserves byte offsets, so indices stay interchangeable with
