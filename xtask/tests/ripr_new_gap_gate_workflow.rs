@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_yaml_ng::Value;
+use zip::{ZipWriter, write::SimpleFileOptions};
 
 #[path = "support/workflow_bash.rs"]
 mod workflow_bash;
@@ -240,16 +241,32 @@ gh() {
     ))
 }
 
+fn runner_response(fixture: &str) -> Result<&'static str> {
+    match fixture {
+        "ready" => Ok(
+            r#"{"runners":[{"id":53001,"name":"cx53-ready","status":"online","busy":false,"labels":[{"name":"EM-CI"},{"name":"CX53"},{"name":"rust-small"},{"name":"trusted-pr"}]},{"id":43001,"name":"cx43-ready","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx43"},{"name":"rust-small"},{"name":"trusted-pr"}]},{"id":53002,"name":"cx53-busy","status":"online","busy":true,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"},{"name":"trusted-pr"}]},{"id":53003,"name":"cx53-missing-label","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"}]},{"id":53004,"name":"cx53-offline","status":"offline","busy":false,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"},{"name":"trusted-pr"}]}]}"#,
+        ),
+        "busy-only" => Ok(
+            r#"{"runners":[{"id":53002,"name":"cx53-busy","status":"online","busy":true,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"},{"name":"trusted-pr"}]}]}"#,
+        ),
+        "missing-label-only" => Ok(
+            r#"{"runners":[{"id":53003,"name":"cx53-missing-label","status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx53"},{"name":"rust-small"}]}]}"#,
+        ),
+        _ => bail!("unknown runner fixture: {fixture}"),
+    }
+}
+
 fn run_router_case(
     is_fork_pr: &str,
     gh_token: &str,
-    idle_cx53: &str,
+    runner_fixture: &str,
     curl_status: &str,
 ) -> Result<(std::process::Output, String)> {
     let sandbox = tempfile::tempdir().context("creating router sandbox")?;
     let output_file = sandbox.path().join("router-output");
     let summary = sandbox.path().join("summary.md");
     let run = workflow_run_block("route-ripr", "Decide target runner")?;
+    let runner_json = runner_response(runner_fixture)?;
     let fake = r#"
 curl() {
   local output=""
@@ -261,14 +278,44 @@ curl() {
       shift
     fi
   done
-  printf '%s\n' '{"runners":[]}' > "$output"
+  printf '%s\n' "$FAKE_RUNNERS_JSON" > "$output"
   printf '%s' "$FAKE_CURL_STATUS"
 }
 jq() {
   [ "$1" = "--arg" ] && [ "$2" = "runner_label" ] || return 1
-  case "$3" in
-    cx53) printf '%s\n' "$FAKE_IDLE_CX53" ;;
-    cx43) printf '0\n' ;;
+  [ "$#" -eq 5 ] || return 1
+  local runner_label="$3"
+  local jq_selector="$4"
+  local response="$5"
+  [ -f "$response" ] || return 1
+  [ "$(cat "$response")" = "$FAKE_RUNNERS_JSON" ] || return 1
+  for selector_fragment in \
+    'select(.status == "online")' \
+    'select(.busy == false)' \
+    'index("em-ci")' \
+    'index($runner_label)' \
+    'index("rust-small")' \
+    'index("trusted-pr")'; do
+    case "$jq_selector" in
+      *"$selector_fragment"*) ;;
+      *) printf 'missing selector fragment: %s\n' "$selector_fragment" >&2; return 1 ;;
+    esac
+  done
+  local ready_runner='"status":"online","busy":false,"labels":[{"name":"EM-CI"},{"name":"CX53"},{"name":"rust-small"},{"name":"trusted-pr"}]'
+  local ready_cx43='"status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx43"},{"name":"rust-small"},{"name":"trusted-pr"}]'
+  case "$runner_label" in
+    cx53)
+      case "$(cat "$response")" in
+        *"$ready_runner"*) printf '1\n' ;;
+        *) printf '0\n' ;;
+      esac
+      ;;
+    cx43)
+      case "$(cat "$response")" in
+        *"$ready_cx43"*) printf '1\n' ;;
+        *) printf '0\n' ;;
+      esac
+      ;;
     *) return 1 ;;
   esac
 }
@@ -282,7 +329,8 @@ jq() {
         .env("PR_AUTHOR_TYPE", "User")
         .env("GH_TOKEN", gh_token)
         .env("ORG", "EffortlessMetrics")
-        .env("FAKE_IDLE_CX53", idle_cx53)
+        .env("FAKE_RUNNER_FIXTURE", runner_fixture)
+        .env("FAKE_RUNNERS_JSON", runner_json)
         .env("FAKE_CURL_STATUS", curl_status)
         .env("GITHUB_OUTPUT", &output_file)
         .env("GITHUB_STEP_SUMMARY", &summary)
@@ -307,7 +355,10 @@ jq() {
     Ok((output, format!("{combined}\n{route_output}")))
 }
 
-fn run_preflight_case(image_present: bool) -> Result<(std::process::Output, String)> {
+fn run_preflight_case(
+    image_present: bool,
+    disk_guard_fails: bool,
+) -> Result<(std::process::Output, String)> {
     let sandbox = tempfile::tempdir().context("creating preflight sandbox")?;
     let output_file = sandbox.path().join("preflight-output");
     let summary = sandbox.path().join("summary.md");
@@ -324,13 +375,17 @@ docker() {
     return 0
   fi
 }
-ci-disk-guard() { return 0; }
+ci-disk-guard() {
+  [ "$FAKE_DISK_GUARD" = "fail" ] && return 1
+  return 0
+}
 "#;
     let script = format!("{fake}\n{run}");
     let mut child = Command::new(bash_executable())
         .args(["--noprofile", "--norc", "-s"])
         .current_dir(sandbox.path())
         .env("FAKE_IMAGE_PRESENT", image_present.to_string())
+        .env("FAKE_DISK_GUARD", if disk_guard_fails { "fail" } else { "pass" })
         .env("SCCACHE_DIR", cache.join("sccache"))
         .env("TMPDIR", scratch.join("tmp"))
         .env("CARGO_TARGET_DIR", scratch.join("target"))
@@ -378,6 +433,36 @@ fn retry_run_block() -> Result<String> {
         .ok_or_else(|| anyhow!("retry workflow run block is missing"))
 }
 
+fn write_retry_artifact(path: &std::path::Path, artifact_mode: &str) -> Result<()> {
+    if artifact_mode == "corrupt" {
+        fs::write(path, b"not a ZIP archive")?;
+        return Ok(());
+    }
+
+    let file = fs::File::create(path)?;
+    let mut archive = ZipWriter::new(file);
+    let options = SimpleFileOptions::default();
+    match artifact_mode {
+        "missing-file" => {
+            archive.start_file("unrelated.txt", options)?;
+            archive.write_all(b"not the classification file\n")?;
+        }
+        "malformed" => {
+            archive.start_file("ripr-gate-classification.env", options)?;
+            archive.write_all(b"classification=infra-no-proof\nrun_id=not-a-number\n")?;
+        }
+        "valid" | "download-failure" | "missing" => {
+            archive.start_file("ripr-gate-classification.env", options)?;
+            archive.write_all(
+                b"classification=infra-no-proof\nlane_name=ripr+ on GitHub Hosted\nlane_job_id=97001\nhead_sha=0123456789abcdef0123456789abcdef01234567\nrouter_target=github\nrun_id=4242\n",
+            )?;
+        }
+        _ => bail!("unknown artifact fixture: {artifact_mode}"),
+    }
+    archive.finish()?;
+    Ok(())
+}
+
 fn run_retry_case(
     artifact_mode: &str,
     run_attempt: &str,
@@ -385,6 +470,9 @@ fn run_retry_case(
     let sandbox = tempfile::tempdir().context("creating retry sandbox")?;
     let summary = sandbox.path().join("summary.md");
     let post_called = sandbox.path().join("retry-post-called");
+    let download_called = sandbox.path().join("artifact-download-called");
+    let zip_payload = sandbox.path().join("classification-payload.zip");
+    write_retry_artifact(&zip_payload, artifact_mode)?;
     let run = retry_run_block()?;
     let fake = r#"
 gh() {
@@ -421,10 +509,11 @@ gh() {
       fi
       ;;
     */actions/artifacts/99001/zip)
+      : > "$FAKE_DOWNLOAD_CALLED"
       if [ "$FAKE_ARTIFACT_MODE" = "download-failure" ]; then
         return 1
       fi
-      printf 'fake-zip-payload\n'
+      cat "$FAKE_ZIP_PAYLOAD"
       ;;
     */actions/runs/4242)
       if [ "$jq_selector" != '"\(.run_attempt) \(.status)"' ]; then
@@ -442,31 +531,6 @@ gh() {
       ;;
   esac
 }
-unzip() {
-  local destination=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "-d" ]; then
-      destination="$2"
-      shift 2
-    else
-      shift
-    fi
-  done
-  if [ "$FAKE_ARTIFACT_MODE" = "missing-file" ]; then
-    return 0
-  fi
-  if [ "$FAKE_ARTIFACT_MODE" = "malformed" ]; then
-    printf '%s\n' 'classification=infra-no-proof' 'run_id=not-a-number' > "$destination/ripr-gate-classification.env"
-    return 0
-  fi
-  printf '%s\n' \
-    'classification=infra-no-proof' \
-    'lane_name=ripr+ on GitHub Hosted' \
-    'lane_job_id=97001' \
-    'head_sha=0123456789abcdef0123456789abcdef01234567' \
-    'router_target=github' \
-    'run_id=4242' > "$destination/ripr-gate-classification.env"
-}
 "#;
     let script = format!("{fake}\n{run}");
     let mut child = Command::new(bash_executable())
@@ -478,6 +542,8 @@ unzip() {
         .env("RUN_ATTEMPT", run_attempt)
         .env("HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
         .env("FAKE_ARTIFACT_MODE", artifact_mode)
+        .env("FAKE_DOWNLOAD_CALLED", &download_called)
+        .env("FAKE_ZIP_PAYLOAD", &zip_payload)
         .env("FAKE_LIVE_ATTEMPT", "1")
         .env("FAKE_POST_CALLED", &post_called)
         .stdin(Stdio::piped())
@@ -496,8 +562,9 @@ unzip() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let downloaded = download_called.is_file();
     let posted = post_called.is_file();
-    Ok((output, combined, posted))
+    Ok((output, format!("{combined}\ndownload_called={downloaded}"), posted))
 }
 
 #[test]
@@ -623,31 +690,56 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         "missing self-hosted Rust image must be reported as preflight failure"
     );
     assert!(
-        workflow.contains("needs.ripr-cx53.outputs.preflight_ok == 'false'")
-            && workflow.contains("needs.ripr-cx43.outputs.preflight_ok == 'false'"),
-        "preflight_ok=false must route the run to the GitHub-hosted fallback"
+        workflow.contains(
+            "needs.route-ripr.outputs.target == 'cx53' && needs.ripr-cx53.result == 'failure' && needs.ripr-cx53.outputs.preflight_ok == 'false'",
+        )
+            && workflow.contains(
+                "needs.route-ripr.outputs.target == 'cx43' && needs.ripr-cx43.result == 'failure' && needs.ripr-cx43.outputs.preflight_ok == 'false'",
+            ),
+        "only a failed self-hosted preflight with preflight_ok=false must route the run to the GitHub-hosted fallback"
     );
 
     let (self_hosted_route, self_hosted_output) =
-        run_router_case("false", "runner-token", "1", "200")?;
+        run_router_case("false", "runner-token", "ready", "200")?;
     if !self_hosted_route.status.success()
         || !self_hosted_output.contains("target=cx53")
         || !self_hosted_output.contains("reason=cx53_idle")
+        || !self_hosted_output.contains("idle_cx53=1")
+        || !self_hosted_output.contains("idle_cx43=1")
     {
         bail!(
-            "router must select an idle CX53 runner through its real run block:\n{self_hosted_output}"
+            "router must select the eligible runner from a realistic response through its real run block:\n{self_hosted_output}"
         );
     }
-    let (hosted_route, hosted_output) = run_router_case("false", "runner-token", "0", "200")?;
+    let (busy_route, busy_output) = run_router_case("false", "runner-token", "busy-only", "200")?;
+    if !busy_route.status.success()
+        || !busy_output.contains("target=github")
+        || !busy_output.contains("reason=no_idle_runner")
+        || !busy_output.contains("idle_cx53=0")
+    {
+        bail!("a busy runner must not be routed to self-hosted:\n{busy_output}");
+    }
+    let (missing_label_route, missing_label_output) =
+        run_router_case("false", "runner-token", "missing-label-only", "200")?;
+    if !missing_label_route.status.success()
+        || !missing_label_output.contains("target=github")
+        || !missing_label_output.contains("reason=no_idle_runner")
+        || !missing_label_output.contains("idle_cx53=0")
+    {
+        bail!(
+            "a runner missing a required label must not be routed to self-hosted:\n{missing_label_output}"
+        );
+    }
+    let (hosted_route, hosted_output) = run_router_case("false", "runner-token", "ready", "503")?;
     if !hosted_route.status.success()
         || !hosted_output.contains("target=github")
-        || !hosted_output.contains("reason=no_idle_runner")
+        || !hosted_output.contains("reason=runner_api_failed")
     {
         bail!(
             "router must select GitHub-hosted when no self-hosted runner is idle:\n{hosted_output}"
         );
     }
-    let (missing_image, missing_image_output) = run_preflight_case(false)?;
+    let (missing_image, missing_image_output) = run_preflight_case(false, false)?;
     if missing_image.status.success()
         || !missing_image_output
             .contains("Required Docker image em-ci-rust:1.95 is missing on CX53")
@@ -657,10 +749,19 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
             "missing Docker image must fail the real preflight and record false:\n{missing_image_output}"
         );
     }
-    let (ready_image, ready_image_output) = run_preflight_case(true)?;
+    let (ready_image, ready_image_output) = run_preflight_case(true, false)?;
     if !ready_image.status.success() || !ready_image_output.contains("preflight_ok=true") {
         bail!(
             "available Docker image and disk guards must pass the real preflight:\n{ready_image_output}"
+        );
+    }
+    let (disk_guard_failure, disk_guard_output) = run_preflight_case(true, true)?;
+    if disk_guard_failure.status.success()
+        || !disk_guard_output.contains("preflight_ok=false")
+        || !disk_guard_output.contains("Self-hosted preflight failed on CX53")
+    {
+        bail!(
+            "a failing disk guard must fail preflight and record false for fallback routing:\n{disk_guard_output}"
         );
     }
 
@@ -836,15 +937,26 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     }
     let (download_failure, download_failure_output, download_failure_posted) =
         run_retry_case("download-failure", "1")?;
-    if download_failure.status.success() || download_failure_posted {
+    if download_failure.status.success()
+        || download_failure_posted
+        || !download_failure_output.contains("download_called=true")
+    {
         bail!(
             "classification artifact download failure must remain an explicit failed consumer path:\n{download_failure_output}"
         );
+    }
+    let (corrupt, corrupt_output, corrupt_posted) = run_retry_case("corrupt", "1")?;
+    if corrupt.status.success()
+        || corrupt_posted
+        || !corrupt_output.contains("download_called=true")
+    {
+        bail!("a corrupt downloaded ZIP must fail before retrying:\n{corrupt_output}");
     }
     let (missing_file, missing_file_output, missing_file_posted) =
         run_retry_case("missing-file", "1")?;
     if !missing_file.status.success()
         || !missing_file_output.contains("did not contain ripr-gate-classification.env")
+        || !missing_file_output.contains("download_called=true")
         || missing_file_posted
     {
         bail!("artifact without its classification file must skip retry:\n{missing_file_output}");
@@ -853,6 +965,7 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     if !malformed.status.success()
         || !malformed_output
             .contains("classification run id (invalid) does not match event run 4242")
+        || !malformed_output.contains("download_called=true")
         || malformed_posted
     {
         bail!("malformed classification data must fail closed before retry:\n{malformed_output}");
@@ -860,6 +973,7 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     let (valid, valid_output, valid_posted) = run_retry_case("valid", "1")?;
     if !valid.status.success()
         || !valid_output.contains("re-queued failed jobs of run 4242")
+        || !valid_output.contains("download_called=true")
         || !valid_posted
     {
         bail!("valid classification data must reach the bounded rerun API:\n{valid_output}");
