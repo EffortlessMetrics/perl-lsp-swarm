@@ -11,10 +11,12 @@
 //!   `std::env`;
 //! - process working directory: `env::set_current_dir`.
 //!
-//! Such a function must carry a serialization guard from the `serial_test`
-//! crate (`#[serial]`, `#[serial(..)]`, `#[serial_test::serial(..)]`,
-//! `#[serial_test::file_serial(..)]`), or it must be listed in the accepted
-//! identity registry (`ci/serial_test_identities.json`) with a reason.
+//! Such a function must carry an unkeyed in-process serialization guard from
+//! the `serial_test` crate (`#[serial]` or `#[serial_test::serial]`), or it must
+//! be listed in the accepted identity registry
+//! (`ci/serial_test_identities.json`) with a reason. Keyed `serial` guards and
+//! `file_serial` use different lock domains and therefore cannot establish
+//! mutual exclusion with every guard this policy accepts.
 //!
 //! The registry follows the `panic_test` identity-registry convention:
 //! `schema_version` 1, `active` rows must stay present in the inventory,
@@ -22,9 +24,10 @@
 //! registered site (annotating it) turns the gate red until the row is retired,
 //! so the accepted set only shrinks.
 //!
-//! Every Rust source under `crates/` and `xtask/` is parsed independently, so
-//! custom Cargo roots, external modules, and owned test-support crates do not
-//! depend on a reconstructed module graph. The source-only analysis does not
+//! Every Rust source under `crates/` and `xtask/` is parsed, independent of
+//! Cargo-root discovery. A bounded parent/child module map carries only
+//! relevant `std::env` bindings through explicit `super` imports; it does not
+//! attempt general Rust name resolution. The source-only analysis does not
 //! expand macros; macro-generated tests and process-global calls inside macro
 //! invocations remain unsupported. It deliberately ignores helper-mediated
 //! mutation outside the test's direct body, TCP port binds (current main binds
@@ -35,8 +38,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use syn::ext::IdentExt;
+use syn::parse::Parser;
+use syn::punctuated::Punctuated;
 use syn::visit::{self, Visit};
-use syn::{Attribute, Block, Expr, ExprCall, Item, ItemUse, Pat, Stmt, UseTree};
+use syn::{
+    Attribute, Block, Expr, ExprCall, ImplItem, Item, ItemUse, Meta, Pat, Stmt, Token, UseTree,
+};
 
 use perl_ci_hygiene::walk_rs_files;
 
@@ -128,6 +135,34 @@ impl EnvBindings {
                     self.direct_aliases
                         .insert(alias.unwrap_or_else(|| function.to_owned()), signal);
                 }
+            }
+        }
+    }
+
+    fn install_parent_use(&mut self, item_use: &ItemUse, parent: &Self) {
+        let mut paths = Vec::new();
+        flatten_use_tree(&item_use.tree, &mut Vec::new(), &mut paths);
+        for (path, alias, glob) in paths {
+            if path.first().is_none_or(|segment| segment != "super") {
+                continue;
+            }
+            if glob && path == ["super"] {
+                self.module_aliases.extend(parent.module_aliases.iter().cloned());
+                self.direct_aliases.extend(
+                    parent.direct_aliases.iter().map(|(name, signal)| (name.clone(), *signal)),
+                );
+                continue;
+            }
+            if glob || path.len() != 2 {
+                continue;
+            }
+            let source = &path[1];
+            let target = alias.unwrap_or_else(|| source.clone());
+            if parent.module_aliases.contains(source) {
+                self.module_aliases.insert(target.clone());
+            }
+            if let Some(signal) = parent.direct_aliases.get(source) {
+                self.direct_aliases.insert(target, *signal);
             }
         }
     }
@@ -242,10 +277,32 @@ fn is_test_function(attrs: &[Attribute]) -> bool {
 }
 
 fn has_serial_guard(attrs: &[Attribute]) -> bool {
-    attributes_match(
-        attrs,
-        &[&["serial"], &["serial_test", "serial"], &["serial_test", "file_serial"]],
-    )
+    attrs.iter().any(|attr| {
+        if !attributes_match(std::slice::from_ref(attr), &[&["serial"], &["serial_test", "serial"]])
+        {
+            return false;
+        }
+
+        match &attr.meta {
+            Meta::Path(_) => true,
+            Meta::NameValue(_) => false,
+            Meta::List(list) if list.tokens.is_empty() => true,
+            Meta::List(list) => {
+                let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
+                parser.parse2(list.tokens.clone()).is_ok_and(|arguments| {
+                    !arguments.is_empty()
+                        && arguments.iter().all(|argument| {
+                            matches!(
+                                argument,
+                                Meta::NameValue(value)
+                                    if value.path.is_ident("inner_attrs")
+                                        && matches!(value.value, Expr::Array(_))
+                            )
+                        })
+                })
+            }
+        }
+    })
 }
 
 #[derive(Default)]
@@ -326,11 +383,24 @@ impl SignalVisitor {
                         self.bindings.shadow_value(&name);
                     }
                 }
-                // A local Drop implementation runs as part of the test body
-                // when its guard is instantiated. Visit local impls so cleanup
-                // mutations are not hidden behind the item's method body;
-                // ordinary helper function definitions remain excluded.
-                Stmt::Item(Item::Impl(item_impl)) => self.visit_item_impl(item_impl),
+                // A local Drop implementation can run as part of the test body.
+                // Inspect only its `drop` method: ordinary local impl methods
+                // are unreachable unless called and are not mutation evidence.
+                Stmt::Item(Item::Impl(item_impl))
+                    if item_impl
+                        .trait_
+                        .as_ref()
+                        .and_then(|(_, path, _)| path.segments.last())
+                        .is_some_and(|segment| segment.ident == "Drop") =>
+                {
+                    for item in &item_impl.items {
+                        if let ImplItem::Fn(method) = item
+                            && method.sig.ident == "drop"
+                        {
+                            self.visit_block(&method.block);
+                        }
+                    }
+                }
                 Stmt::Item(_) | Stmt::Macro(_) => {}
                 Stmt::Expr(expression, _) => self.visit_expr(expression),
             }
@@ -429,11 +499,14 @@ impl<'ast> Visit<'ast> for SignalVisitor {
     fn visit_item_fn(&mut self, _function: &'ast syn::ItemFn) {}
 }
 
-fn module_bindings(items: &[Item]) -> EnvBindings {
+fn module_bindings(items: &[Item], parent: Option<&EnvBindings>) -> EnvBindings {
     let mut bindings = EnvBindings::default();
     for item in items {
         if let Item::Use(item_use) = item {
             bindings.install_env_glob(item_use);
+            if let Some(parent) = parent {
+                bindings.install_parent_use(item_use, parent);
+            }
         }
     }
     for item in items {
@@ -442,13 +515,21 @@ fn module_bindings(items: &[Item]) -> EnvBindings {
     for item in items {
         if let Item::Use(item_use) = item {
             bindings.install_explicit_env_use(item_use);
+            if let Some(parent) = parent {
+                bindings.install_parent_use(item_use, parent);
+            }
         }
     }
     bindings
 }
 
-fn collect_module_sites(path: &str, items: &[Item], sites: &mut Vec<SerialSiteIdentity>) {
-    let bindings = module_bindings(items);
+fn collect_module_sites(
+    path: &str,
+    items: &[Item],
+    parent: Option<&EnvBindings>,
+    sites: &mut Vec<SerialSiteIdentity>,
+) -> EnvBindings {
+    let bindings = module_bindings(items, parent);
     for item in items {
         match item {
             Item::Fn(function) if is_test_function(&function.attrs) => {
@@ -475,18 +556,22 @@ fn collect_module_sites(path: &str, items: &[Item], sites: &mut Vec<SerialSiteId
             }
             Item::Mod(module) => {
                 if let Some((_, child_items)) = &module.content {
-                    collect_module_sites(path, child_items, sites);
+                    collect_module_sites(path, child_items, Some(&bindings), sites);
                 }
             }
             _ => {}
         }
     }
+    bindings
 }
 
-fn scan_file_for_unserialized_sites(
-    repo_root: &Path,
-    path: &Path,
-) -> Result<Vec<SerialSiteIdentity>> {
+struct ParsedRustFile {
+    path: PathBuf,
+    relative: String,
+    syntax: syn::File,
+}
+
+fn parse_rust_file(repo_root: &Path, path: &Path) -> Result<Option<ParsedRustFile>> {
     let source = std::fs::read_to_string(path)
         .map_err(|err| eyre!("reading Rust source {:?}: {err}", path))?;
     let syntax = match syn::parse_file(&source) {
@@ -497,21 +582,110 @@ fn scan_file_for_unserialized_sites(
             // `.rs` extension. They are not Cargo integration-test roots, and
             // invalid Rust cannot be a compiled external module. Valid nested
             // modules still parse and remain in the inventory.
-            return Ok(Vec::new());
+            return Ok(None);
         }
         Err(err) => return Err(eyre!("parsing Rust source {:?}: {err}", path)),
     };
     let relative =
         path.strip_prefix(repo_root).unwrap_or(path).display().to_string().replace('\\', "/");
-    let mut sites = Vec::new();
-    collect_module_sites(&relative, &syntax.items, &mut sites);
-    Ok(sites)
+    Ok(Some(ParsedRustFile { path: path.to_path_buf(), relative, syntax }))
+}
+
+fn explicit_module_path(module: &syn::ItemMod) -> Option<PathBuf> {
+    module.attrs.iter().find_map(|attribute| {
+        if !attribute.path().is_ident("path") {
+            return None;
+        }
+        let Meta::NameValue(value) = &attribute.meta else { return None };
+        let Expr::Lit(literal) = &value.value else { return None };
+        let syn::Lit::Str(path) = &literal.lit else { return None };
+        Some(PathBuf::from(path.value()))
+    })
+}
+
+fn external_module_path(
+    parent: &Path,
+    module: &syn::ItemMod,
+    known: &BTreeMap<PathBuf, usize>,
+) -> Option<PathBuf> {
+    let directory = parent.parent()?;
+    if let Some(explicit) = explicit_module_path(module) {
+        let candidate = directory.join(explicit);
+        return known.contains_key(&candidate).then_some(candidate);
+    }
+
+    let name = ident_name(&module.ident);
+    let mut candidates = BTreeSet::new();
+    candidates.insert(directory.join(format!("{name}.rs")));
+    candidates.insert(directory.join(&name).join("mod.rs"));
+    if let Some(stem) = parent.file_stem() {
+        let nested = directory.join(stem);
+        candidates.insert(nested.join(format!("{name}.rs")));
+        candidates.insert(nested.join(&name).join("mod.rs"));
+    }
+    let matches = candidates
+        .into_iter()
+        .filter(|candidate| candidate != parent && known.contains_key(candidate))
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches[0].clone())
+}
+
+fn scan_parsed_file(
+    index: usize,
+    parent: Option<&EnvBindings>,
+    parsed: &[ParsedRustFile],
+    edges: &BTreeMap<usize, Vec<usize>>,
+    visited: &mut BTreeSet<usize>,
+    sites: &mut Vec<SerialSiteIdentity>,
+) {
+    if !visited.insert(index) {
+        return;
+    }
+    let file = &parsed[index];
+    let bindings = collect_module_sites(&file.relative, &file.syntax.items, parent, sites);
+    if let Some(children) = edges.get(&index) {
+        for child in children {
+            scan_parsed_file(*child, Some(&bindings), parsed, edges, visited, sites);
+        }
+    }
 }
 
 fn complete_serial_site_inventory(repo_root: &Path) -> Result<Vec<SerialSiteIdentity>> {
-    let mut sites = Vec::new();
+    let mut parsed = Vec::new();
     for path in walk_workspace_rust_files(repo_root) {
-        sites.extend(scan_file_for_unserialized_sites(repo_root, &path)?);
+        if let Some(file) = parse_rust_file(repo_root, &path)? {
+            parsed.push(file);
+        }
+    }
+    let known = parsed
+        .iter()
+        .enumerate()
+        .map(|(index, file)| (file.path.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    let mut edges = BTreeMap::<usize, Vec<usize>>::new();
+    let mut children = BTreeSet::new();
+    for (index, file) in parsed.iter().enumerate() {
+        for item in &file.syntax.items {
+            let Item::Mod(module) = item else { continue };
+            if module.content.is_some() {
+                continue;
+            }
+            let Some(path) = external_module_path(&file.path, module, &known) else { continue };
+            let Some(child) = known.get(&path).copied() else { continue };
+            edges.entry(index).or_default().push(child);
+            children.insert(child);
+        }
+    }
+
+    let mut sites = Vec::new();
+    let mut visited = BTreeSet::new();
+    for index in 0..parsed.len() {
+        if !children.contains(&index) {
+            scan_parsed_file(index, None, &parsed, &edges, &mut visited, &mut sites);
+        }
+    }
+    for index in 0..parsed.len() {
+        scan_parsed_file(index, None, &parsed, &edges, &mut visited, &mut sites);
     }
     sites.sort();
     Ok(sites)
@@ -828,14 +1002,45 @@ mod tests {
     }
 
     #[test]
-    fn keyed_and_reexported_serial_idioms_pass() -> Result<()> {
+    fn only_unkeyed_in_process_serial_guards_pass() -> Result<()> {
         let repo = TempRepo::new("serial-idioms")?;
         repo.write_test(concat!(
-            "#[test]\n#[serial(env_toolchain)]\nfn keyed() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
-            "#[test]\n#[serial_test::serial]\nfn reexported() {\n    std::env::remove_var(\"B\");\n}\n",
+            "#[test]\n#[serial]\nfn plain() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
+            "#[test]\n#[serial_test::serial]\nfn qualified() {\n    std::env::remove_var(\"B\");\n}\n",
+            "#[test]\n#[serial(inner_attrs = [cfg(unix)])]\nfn with_inner_attrs() {\n    std::env::set_var(\"C\", \"1\");\n}\n",
         ))?;
         let path = repo.empty_registry()?;
         assert_eq!(repo.check(&path)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn heterogeneous_serial_keys_do_not_satisfy_one_lock_domain() -> Result<()> {
+        let repo = TempRepo::new("serial-key-domains")?;
+        repo.write_test(concat!(
+            "#[test]\n#[serial(first)]\nfn first_key() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
+            "#[test]\n#[serial(second)]\nfn second_key() {\n    std::env::remove_var(\"B\");\n}\n",
+            "#[test]\n#[serial(third, inner_attrs = [cfg(unix)])]\nfn key_with_inner_attrs() {\n    std::env::set_var(\"C\", \"1\");\n}\n",
+        ))?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 3);
+        assert_eq!(sites[0].test_function, "first_key");
+        assert_eq!(sites[1].test_function, "key_with_inner_attrs");
+        assert_eq!(sites[2].test_function, "second_key");
+        Ok(())
+    }
+
+    #[test]
+    fn file_serial_does_not_coordinate_with_in_process_serial() -> Result<()> {
+        let repo = TempRepo::new("serial-file-domain")?;
+        repo.write_test(concat!(
+            "#[test]\n#[serial]\nfn process_lock() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
+            "#[test]\n#[file_serial]\nfn file_lock() {\n    std::env::remove_var(\"B\");\n}\n",
+        ))?;
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].test_function, "file_lock");
+        assert_eq!(sites[0].signals, vec!["env_remove"]);
         Ok(())
     }
 
@@ -886,6 +1091,29 @@ fn restores_environment_on_drop() {
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].test_function, "restores_environment_on_drop");
         assert_eq!(sites[0].signals, vec!["env_remove", "env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn unused_ordinary_local_impl_method_is_not_mutation_evidence() -> Result<()> {
+        let repo = TempRepo::new("unused-local-method")?;
+        repo.write_test(
+            r#"
+#[test]
+fn never_calls_helper_method() {
+    struct Helper;
+    impl Helper {
+        fn mutate_environment(&self) {
+            unsafe { std::env::remove_var("A"); }
+        }
+    }
+    let _helper = Helper;
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert!(sites.is_empty());
         Ok(())
     }
 
@@ -1014,6 +1242,41 @@ mod unrelated_sibling {
         let sites = complete_serial_site_inventory(&repo.path)?;
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].test_function, "imported_call");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn external_child_inherits_only_relevant_parent_environment_bindings() -> Result<()> {
+        let repo = TempRepo::new("external-parent-bindings")?;
+        repo.write_test(
+            r#"
+use std::env as process_environment;
+fn unrelated_set_var(_key: &str, _value: &str) {}
+mod inherited;
+"#,
+        )?;
+        fs::write(
+            repo.path.join("crates/demo/tests/inherited.rs"),
+            r#"
+use super::*;
+
+#[test]
+fn inherited_environment_alias() {
+    unsafe { process_environment::set_var("A", "1"); }
+}
+
+#[test]
+fn unrelated_inherited_helper_is_not_environment() {
+    unrelated_set_var("A", "1");
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/inherited.rs");
+        assert_eq!(sites[0].test_function, "inherited_environment_alias");
         assert_eq!(sites[0].signals, vec!["env_set"]);
         Ok(())
     }
@@ -1251,13 +1514,14 @@ fn mutates_after_every_lexical_class() {
     }
 
     #[test]
-    fn multiline_file_serial_attribute_guards_an_ordinary_test() -> Result<()> {
+    fn multiline_file_serial_attribute_does_not_guard_process_state() -> Result<()> {
         let repo = TempRepo::new("multiline-file-serial-attribute")?;
         repo.write_test(
             "#[test]\n/* policy explanation */\n#[serial_test::file_serial(\n)]\nfn guarded() {\n    std::env::set_var(\"A\", \"1\");\n}\n",
         )?;
-        let path = repo.empty_registry()?;
-        assert_eq!(repo.check(&path)?, 0);
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].test_function, "guarded");
         Ok(())
     }
 
@@ -1365,7 +1629,7 @@ fn mutates_after_every_lexical_class() {
     }
 
     #[test]
-    fn every_rust_source_is_scanned_without_module_graph_reconstruction() -> Result<()> {
+    fn every_rust_source_is_scanned_independent_of_cargo_roots() -> Result<()> {
         let repo = TempRepo::new("all-rust-files")?;
         fs::create_dir_all(repo.path.join("crates/demo/custom-target/deep"))?;
         fs::write(

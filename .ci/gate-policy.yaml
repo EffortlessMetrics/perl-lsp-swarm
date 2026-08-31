@@ -459,7 +459,7 @@ gates:
   # adjudicated row in ci/serial_test_identities.json) must not enter the
   # workspace. The gate is fail-closed on NEW identities; repairing a
   # registered site requires retiring its row, so the accepted set only
-  # shrinks. The 33 seeded rows are the measured current-main residual census
+  # shrinks. The 35 seeded rows are the measured current-main residual census
   # at 94e099747f (env/cwd signals; port binds and static counters are
   # documented non-goals in the lint module).
   - name: serial_test_ratchet
