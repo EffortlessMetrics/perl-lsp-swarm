@@ -163,7 +163,7 @@ mod guard {
         }
 
         for flag in UNSHIPPED_PERLLSP_FLAGS {
-            if line.contains(&format!("perllsp {flag}")) && !negates_unshipped(line) {
+            if line.contains(&format!("perllsp {flag}")) && !negates_unshipped(line, flag) {
                 findings.push(Finding {
                     rule: "unshipped_flag_recommended",
                     line: line_no,
@@ -245,12 +245,93 @@ mod guard {
             || contains_ci(line, "do not claim")
     }
 
-    fn negates_unshipped(line: &str) -> bool {
-        contains_ci(line, "there is no")
-            || contains_ci(line, "not shipped")
-            || contains_ci(line, "does not exist")
-            || contains_ci(line, "unshipped")
-            || contains_ci(line, "not on current")
+    /// True when this line denies that `flag` is a live `perllsp` command.
+    /// An unrelated "there is no" / "unshipped" clause elsewhere does not count.
+    fn negates_unshipped(line: &str, flag: &str) -> bool {
+        absence_introduces_flag(line, flag) || command_claim_is_absent(line, flag)
+    }
+
+    fn absence_introduces_flag(line: &str, flag: &str) -> bool {
+        let lower = line.to_ascii_lowercase();
+        let marker = "there is no";
+        let mut from = 0;
+        while let Some(rel) = lower.get(from..).and_then(|rest| rest.find(marker)) {
+            let after = from + rel + marker.len();
+            let Some(remainder) = line.get(after..) else {
+                break;
+            };
+            if skip_absence_introducers(remainder).starts_with(flag) {
+                return true;
+            }
+            from = after;
+        }
+        false
+    }
+
+    fn command_claim_is_absent(line: &str, flag: &str) -> bool {
+        let command = format!("perllsp {flag}");
+        let lower = line.to_ascii_lowercase();
+        let Some(idx) = lower.find(&command) else {
+            return false;
+        };
+        let Some(after) = line.get(idx + command.len()..) else {
+            return false;
+        };
+        let rest = skip_command_trailers(after).to_ascii_lowercase();
+        rest.starts_with("unshipped")
+            || rest.starts_with("not shipped")
+            || rest.starts_with("does not exist")
+            || rest.starts_with("not on current")
+    }
+
+    fn skip_absence_introducers(text: &str) -> &str {
+        let mut rest = text;
+        loop {
+            let next = rest
+                .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '`' | '"' | '\''));
+            if let Some(stripped) = strip_leading_ascii_word(next, &["a", "an", "the", "perllsp"]) {
+                rest = stripped;
+                continue;
+            }
+            if next.len() == rest.len() {
+                return next;
+            }
+            rest = next;
+        }
+    }
+
+    fn skip_command_trailers(text: &str) -> &str {
+        let mut rest = text;
+        loop {
+            let next = rest.trim_start_matches(|c: char| {
+                c.is_whitespace() || matches!(c, '`' | '"' | '\'' | ',' | '.' | ';' | ':')
+            });
+            if let Some(stripped) =
+                strip_leading_ascii_word(next, &["command", "flag", "option", "is", "are"])
+            {
+                rest = stripped;
+                continue;
+            }
+            if next.len() == rest.len() {
+                return next;
+            }
+            rest = next;
+        }
+    }
+
+    fn strip_leading_ascii_word<'a>(text: &'a str, words: &[&str]) -> Option<&'a str> {
+        let lower = text.to_ascii_lowercase();
+        for word in words {
+            if !lower.starts_with(word) {
+                continue;
+            }
+            let after = text.get(word.len())?;
+            match after.chars().next() {
+                Some(c) if c.is_ascii_alphanumeric() || c == '-' || c == '_' => {}
+                _ => return Some(after),
+            }
+        }
+        None
     }
 }
 
@@ -402,6 +483,45 @@ mod tests {
             vec!["native_said_to_run_perl"],
             "narrowing must still catch an explicit native-runs-perl claim"
         );
+    }
+
+    #[test]
+    fn unrelated_there_is_no_does_not_exempt_an_unshipped_flag_recommendation() {
+        for flag in UNSHIPPED_PERLLSP_FLAGS {
+            let findings = scan_current_copy(&format!(
+                "There is no slower path; run perllsp {flag} saved.pl\n"
+            ));
+            assert_eq!(
+                rules_in(&findings),
+                vec!["unshipped_flag_recommended"],
+                "unrelated 'there is no' must not exempt {flag}, got {findings:?}"
+            );
+            let findings = scan_current_copy(&format!(
+                "This path is unshipped; run perllsp {flag} saved.pl\n"
+            ));
+            assert_eq!(
+                rules_in(&findings),
+                vec!["unshipped_flag_recommended"],
+                "unrelated 'unshipped' must not exempt {flag}, got {findings:?}"
+            );
+        }
+        assert!(
+            scan_current_copy(NEGATED_UNSHIPPED).is_empty(),
+            "canonical 'There is no `perllsp --check-perl`' must still pass"
+        );
+        for flag in UNSHIPPED_PERLLSP_FLAGS {
+            assert!(
+                scan_current_copy(&format!(
+                    "There is no `perllsp {flag}` command on current main.\n"
+                ))
+                .is_empty(),
+                "command-bound absence of {flag} must still pass"
+            );
+            assert!(
+                scan_current_copy(&format!("`perllsp {flag}` is unshipped.\n")).is_empty(),
+                "{flag} is unshipped must still pass"
+            );
+        }
     }
 
     #[test]
