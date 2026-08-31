@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12529 |
+| Total tracked files | 12530 |
 | Rust-family files | 3885 |
-| Non-Rust files | 8644 |
-| Allowlisted | 6405 |
+| Non-Rust files | 8645 |
+| Allowlisted | 6406 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 497 |
-| documentation | 2819 |
+| documentation | 2820 |
 | generated | 2 |
 | production | 349 |
 | test | 2067 |
@@ -5389,6 +5389,7 @@
 | `docs/reference/SUBSYSTEM_HAZARD_DEFAULTS.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/SUPPLY_CHAIN_SECURITY.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/TEST2_INTEGRATION.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/reference/TEST2_PINNED_SOURCE_RECEIPT.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/TEST_FEATURES.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/TEST_INFRASTRUCTURE_GUIDE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/UPSTREAM_PERL_RUNNER_PARITY.md` | documentation | `non-rust-docs-tree` | docs |
