@@ -41,9 +41,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = "pull_request_target" ]; then
-            git fetch --no-tags origin "+refs/pull/${{ github.event.pull_request.number }}/merge:$SUBJECT_SHA"
+            git fetch --no-tags origin "+refs/pull/${{ github.event.pull_request.number }}/merge:refs/heads/non-rust-policy-subject"
+          elif [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
+            git fetch --no-tags origin "+$GITHUB_REF:refs/heads/non-rust-policy-subject"
           else
-            git fetch --no-tags origin "$SUBJECT_SHA"
+            git fetch --no-tags origin "+$GITHUB_REF:refs/heads/non-rust-policy-subject"
           fi
           test "$(git rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA"
           test "$(git rev-parse "$SUBJECT_SHA^{commit}")" = "$SUBJECT_SHA"
