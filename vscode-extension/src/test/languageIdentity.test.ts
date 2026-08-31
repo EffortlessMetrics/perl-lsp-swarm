@@ -16,7 +16,11 @@ function readExtensionManifest(): {
   activationEvents: string[];
   contributes: {
     languages: Array<{ id: string }>;
-    grammars: Array<{ language: string }>;
+    grammars: Array<{ language: string; scopeName: string; path: string }>;
+    breakpoints: Array<{ language: string }>;
+    snippets: Array<{ language: string; path: string }>;
+    menus: Record<string, Array<{ command: string; when?: string }>>;
+    keybindings: Array<{ command: string; key: string; when?: string }>;
   };
 } {
   return JSON.parse(fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'));
@@ -103,17 +107,113 @@ describe('language-ID manifest contract (#7699)', () => {
     expect(activationLanguageIds).toContain('perl5');
   });
 
-  test('the alias is never a second language contribution or grammar', () => {
+  test('the alias is never a second language contribution and shares the one canonical grammar', () => {
     const pkg = readExtensionManifest();
     const contributedIds = pkg.contributes.languages.map((language) => language.id);
     expect(contributedIds).toContain('perl');
     expect(contributedIds).not.toContain('perl5');
 
-    const grammarLanguages = pkg.contributes.grammars.map((grammar) => grammar.language);
-    for (const language of grammarLanguages) {
-      expect(contributedIds).toContain(language);
+    // The alias gets no second language contribution and no second grammar: a
+    // `perl5`-classified buffer is bound to the *same* bundled TextMate grammar
+    // (`source.perl`, `./syntaxes/perl.tmLanguage.json`) so the "same grammar"
+    // support claim is true, not advertised.
+    const perlGrammarEntries = pkg.contributes.grammars.filter((grammar) =>
+      SUPPORTED_PERL_LANGUAGE_IDS.includes(grammar.language),
+    );
+    expect(perlGrammarEntries.map((grammar) => grammar.language)).toEqual([
+      ...SUPPORTED_PERL_LANGUAGE_IDS,
+    ]);
+    const perlGrammarPaths = new Set(perlGrammarEntries.map((grammar) => grammar.path));
+    expect(perlGrammarPaths).toEqual(new Set(['./syntaxes/perl.tmLanguage.json']));
+    expect(new Set(perlGrammarEntries.map((grammar) => grammar.scopeName))).toEqual(
+      new Set(['source.perl']),
+    );
+
+    // Grammar entries for other languages still bind contributed languages.
+    const contributedIdSet = new Set(contributedIds);
+    for (const grammar of pkg.contributes.grammars) {
+      if (SUPPORTED_PERL_LANGUAGE_IDS.includes(grammar.language)) {
+        continue;
+      }
+      expect(contributedIdSet.has(grammar.language)).toBe(true);
     }
-    expect(grammarLanguages).not.toContain('perl5');
+  });
+
+  test('breakpoint registration covers every supported Perl language id', () => {
+    const pkg = readExtensionManifest();
+    const breakpointLanguages = pkg.contributes.breakpoints.map((entry) => entry.language);
+    for (const id of SUPPORTED_PERL_LANGUAGE_IDS) {
+      expect(breakpointLanguages).toContain(id);
+    }
+  });
+
+  test('the shared Perl snippet catalog binds to every supported Perl language id', () => {
+    const pkg = readExtensionManifest();
+    const perlSnippetLanguages = pkg.contributes.snippets
+      .filter((entry) => entry.path.endsWith('perl.json'))
+      .map((entry) => entry.language);
+    for (const id of SUPPORTED_PERL_LANGUAGE_IDS) {
+      expect(perlSnippetLanguages).toContain(id);
+    }
+  });
+
+  test('debug-config resolution activates for the alias too', () => {
+    const pkg = readExtensionManifest();
+    expect(pkg.activationEvents).toContain('onDebugResolve:perl');
+    expect(pkg.activationEvents).toContain('onDebugResolve:perl5');
+  });
+
+  test('every declarative language gate names the full supported Perl language-id set', () => {
+    const pkg = readExtensionManifest();
+    const langGatePattern = /(editorLangId|resourceLangId)\s*==\s*([A-Za-z0-9]+)/g;
+
+    const declarativeGates: Array<{ surface: string; command: string; when: string }> = [];
+    for (const [surface, entries] of Object.entries(pkg.contributes.menus)) {
+      for (const entry of entries) {
+        if (entry.when) {
+          declarativeGates.push({
+            surface: `menus.${surface}`,
+            command: entry.command,
+            when: entry.when,
+          });
+        }
+      }
+    }
+    for (const keybinding of pkg.contributes.keybindings) {
+      if (keybinding.when) {
+        declarativeGates.push({
+          surface: 'keybindings',
+          command: keybinding.command,
+          when: keybinding.when,
+        });
+      }
+    }
+    expect(declarativeGates.length).toBeGreaterThan(0);
+
+    const failures: string[] = [];
+    for (const gate of declarativeGates) {
+      const gatedIds = [...gate.when.matchAll(langGatePattern)]
+        .map((match) => match[2])
+        .filter((id): id is string => id !== undefined);
+      if (gatedIds.length === 0 || !gatedIds.some((id) => isPerlLanguageId(id))) {
+        continue;
+      }
+      for (const id of SUPPORTED_PERL_LANGUAGE_IDS) {
+        if (!gatedIds.includes(id)) {
+          failures.push(
+            `${gate.surface} '${gate.command}' gates on "${gate.when}" without supported alias id '${id}'`,
+          );
+        }
+      }
+      for (const id of gatedIds) {
+        if (!isPerlLanguageId(id) && /perl/i.test(id)) {
+          failures.push(
+            `${gate.surface} '${gate.command}' gates on unsupported Perl-like language id '${id}'`,
+          );
+        }
+      }
+    }
+    expect(failures).toEqual([]);
   });
 
   test('the language client selector is built from the authority, not inline literals', () => {
