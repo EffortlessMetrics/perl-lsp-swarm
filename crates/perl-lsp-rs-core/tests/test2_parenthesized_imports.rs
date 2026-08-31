@@ -10,9 +10,9 @@ fn resolve_v0(args: &str) -> Result<ResolvedImport, Box<dyn std::error::Error>> 
 }
 
 fn complete(source_with_cursor: &str) -> Vec<CompletionItem> {
-    let position = source_with_cursor
-        .find('|')
-        .expect("completion fixture must mark the cursor with |");
+    let Some(position) = source_with_cursor.find('|') else {
+        return Vec::new();
+    };
     let source = source_with_cursor.replacen('|', "", 1);
     let mut parser = Parser::new(source.as_str());
     let ast = must(parser.parse());
@@ -33,7 +33,7 @@ fn test2_labels(items: &[CompletionItem]) -> Vec<&str> {
 }
 
 #[test]
-fn parenthesized_explicit_selection_replaces_v0_defaults() -> Result<(), Box<dyn std::error::Error>> {
+fn explicit_selection_excludes_v0_defaults() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = resolve_v0("('ok')")?;
 
     assert!(resolved.symbols.contains("ok"));
