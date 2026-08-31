@@ -329,6 +329,16 @@ pub fn non_rust_exact_tree(
         repository,
     );
     if let Err(error) = &result {
+        let error_text = error.to_string();
+        let failure_stage = if error_text.contains("allowlist") || error_text.contains("parsing") {
+            "policy"
+        } else if error_text.contains("writing") || error_text.contains("output") {
+            "projection"
+        } else if error_text.contains("rev-parse") || error_text.contains("ancestry") {
+            "identity"
+        } else {
+            "evaluation"
+        };
         let receipt = ExactTreePolicyReceipt {
             schema_version: 2,
             event_name: event_name.map(str::to_string),
@@ -344,8 +354,8 @@ pub fn non_rust_exact_tree(
             subject_unclassified_count: 0,
             new_unclassified_paths: Vec::new(),
             outcome: "fail".to_string(),
-            failure_stage: Some("evaluation".to_string()),
-            error: Some(error.to_string()),
+            failure_stage: Some(failure_stage.to_string()),
+            error: Some(error_text),
             evaluator_commit: git_object(root, &["rev-parse", "HEAD"])
                 .ok()
                 .and_then(|b| String::from_utf8(b).ok())
