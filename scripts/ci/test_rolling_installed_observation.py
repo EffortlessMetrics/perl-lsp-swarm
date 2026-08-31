@@ -125,11 +125,23 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual(row["cells"]["artifact_identity"], "pass")
         self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "pass")
         self.assertEqual(row["cells"]["process_cleanup"], "pass")
+        self.assertEqual(row["cells"]["host_version_exactness"], "pass")
         self.assertEqual(row["cells"]["native_critic_installed"], "not_proven")
         self.assertEqual(row["cells"]["full_document_utf16_installed"], "not_proven")
         self.assertEqual(row["cells"]["dap_preview_installed"], "not_proven")
         self.assertEqual(row["status"], "not_proven")
         self.assertEqual(row["zero_budget_counts"]["wrong_binary_or_artifact"], 0)
+
+    def test_stable_selector_does_not_claim_concrete_host_version(self) -> None:
+        row = self.build_row(
+            receipt=smoke_receipt(self.server, vscode_version="stable"),
+            row_id="linux-current",
+            vscode_version="stable",
+        )
+        self.assertEqual(row["subject"]["vscode_selector"], "stable")
+        self.assertIsNone(row["subject"]["vscode_concrete_version"])
+        self.assertEqual(row["cells"]["host_version_exactness"], "not_proven")
+        self.assertEqual(row["status"], "not_proven")
 
     def test_wrong_server_hash_is_instrument_defect_not_pass(self) -> None:
         row = self.build_row(
@@ -142,11 +154,15 @@ class ObservationTest(unittest.TestCase):
     def test_missing_receipt_is_explicit_instrument_failure(self) -> None:
         row = self.build_row(receipt=None)
         self.assertEqual(row["cells"]["artifact_identity"], "instrument_defect")
-        self.assertEqual(row["cells"]["packaged_provider_edit_journey"], "instrument_defect")
+        self.assertEqual(
+            row["cells"]["packaged_provider_edit_journey"], "instrument_defect"
+        )
         self.assertEqual(row["status"], "not_proven")
 
     def test_cross_sha_receipt_cannot_satisfy_row(self) -> None:
-        row = self.build_row(receipt=smoke_receipt(self.server, repository_sha=OTHER_SHA))
+        row = self.build_row(
+            receipt=smoke_receipt(self.server, repository_sha=OTHER_SHA)
+        )
         self.assertEqual(row["cells"]["artifact_identity"], "instrument_defect")
         self.assertTrue(any("no exact" in finding for finding in row["findings"]))
 
@@ -187,7 +203,9 @@ class FanInTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def row(self, row_id: str, *, source_sha: str = SHA, verdict: str = "pass") -> None:
+    def row(
+        self, row_id: str, *, source_sha: str = SHA, verdict: str = "pass"
+    ) -> None:
         value = {
             "schema_version": MODULE.ROW_SCHEMA,
             "row_id": row_id,
@@ -195,8 +213,16 @@ class FanInTest(unittest.TestCase):
             "artifacts": {"perllsp": {"sha256": "1" * 64}},
             "mechanism_receipt": {"sha256": "2" * 64},
             "cells": {"observed": verdict},
-            "zero_budget_counts": {key: 0 for key in MODULE.ZERO_BUDGET_KEYS},
-            "status": "blocked" if verdict == "product_defect" else "not_proven" if verdict != "pass" else "pass",
+            "zero_budget_counts": {
+                key: 0 for key in MODULE.ZERO_BUDGET_KEYS
+            },
+            "status": (
+                "blocked"
+                if verdict == "product_defect"
+                else "not_proven"
+                if verdict != "pass"
+                else "pass"
+            ),
         }
         write_json(self.root / "rows" / f"{row_id}.json", value)
 
@@ -225,18 +251,24 @@ class FanInTest(unittest.TestCase):
         result, packet = self.fan_in()
         self.assertEqual(result, 0)
         self.assertEqual(packet["freeze_recommendation"], "not_proven")
-        self.assertEqual(packet["missing_rows"], ["linux-current", "windows-current"])
+        self.assertEqual(
+            packet["missing_rows"], ["linux-current", "windows-current"]
+        )
         self.assertFalse(packet["freezes_product"])
         self.assertFalse(packet["closes_6056"])
 
-    def test_complete_exact_rows_can_form_pass_without_cross_inheritance(self) -> None:
+    def test_complete_primary_rows_cannot_hide_unproven_retained_targets(self) -> None:
         for row_id in MODULE.REQUIRED_ROWS:
             self.row(row_id)
         result, packet = self.fan_in(require_ready=True)
-        self.assertEqual(result, 0)
-        self.assertEqual(packet["freeze_recommendation"], "pass")
+        self.assertEqual(result, 1)
+        self.assertEqual(packet["freeze_recommendation"], "not_proven")
         self.assertEqual(packet["platforms"]["linux"], "pass")
         self.assertEqual(packet["platforms"]["windows"], "pass")
+        self.assertEqual(packet["platforms"]["other_retained_targets"], "not_proven")
+        self.assertIn(
+            "topology:other_retained_targets", packet["not_proven_cells"]
+        )
 
     def test_cross_sha_row_is_rejected_and_cannot_be_ready(self) -> None:
         self.row("linux-minimum")
@@ -246,7 +278,12 @@ class FanInTest(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(packet["freeze_recommendation"], "not_proven")
         self.assertIn("linux-current", packet["missing_rows"])
-        self.assertTrue(any("another source SHA" in item for item in packet["instrument_defects"]))
+        self.assertTrue(
+            any(
+                "another source SHA" in item
+                for item in packet["instrument_defects"]
+            )
+        )
 
 
 if __name__ == "__main__":
