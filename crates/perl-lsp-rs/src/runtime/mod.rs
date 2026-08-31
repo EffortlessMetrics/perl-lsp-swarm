@@ -1432,10 +1432,10 @@ impl LspServer {
 
     /// Publish diagnostics with trailing-edge debouncing.
     ///
-    /// If a debouncer is installed (normal runtime via Scheduler), the publication
-    /// is deferred until a quiet period elapses. If no debouncer is installed
-    /// (unit tests that construct LspServer directly), falls through to immediate
-    /// publication.
+    /// If a working debouncer is installed (normal runtime via Scheduler), the
+    /// publication is deferred until a quiet period elapses. If no debouncer is
+    /// installed, or its worker has already become unavailable, falls through to
+    /// immediate publication.
     ///
     /// When [`RuntimeTuning::diagnostic_debounce_is_immediate`] is true (e.g. e2e
     /// mode), the debouncer is bypassed and diagnostics publish synchronously —
@@ -1446,13 +1446,15 @@ impl LspServer {
             self.publish_diagnostics(uri);
             return;
         }
-        let guard = self.diagnostic_debouncer.lock();
-        if let Some(ref d) = *guard {
-            d.schedule(uri);
-        } else {
-            drop(guard);
-            self.publish_diagnostics(uri);
+        let mut guard = self.diagnostic_debouncer.lock();
+        if let Some(debouncer) = guard.as_ref() {
+            if debouncer.schedule(uri) {
+                return;
+            }
+            *guard = None;
         }
+        drop(guard);
+        self.publish_diagnostics(uri);
     }
 
     /// Install the off-lock async parse worker (#3396 Phase 3).
