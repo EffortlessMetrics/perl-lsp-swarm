@@ -483,6 +483,7 @@ fn inspect_source(
 fn contains_simd_selection(source: &str) -> R<bool> {
     let source = sanitize_rust_source(source)?;
     let bytes = source.as_bytes();
+    let cfg_contexts = cfg_selector_contexts(bytes)?;
     for (start, _) in source.match_indices("feature") {
         let before_is_identifier = start
             .checked_sub(1)
@@ -493,6 +494,12 @@ fn contains_simd_selection(source: &str) -> R<bool> {
             .get(after_feature)
             .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
         if before_is_identifier || after_is_identifier {
+            continue;
+        }
+        if !cfg_contexts
+            .iter()
+            .any(|&(context_start, context_end)| context_start <= start && start < context_end)
+        {
             continue;
         }
         let Some(equal_start) = skip_rust_whitespace_and_comments(bytes, after_feature) else {
@@ -511,6 +518,82 @@ fn contains_simd_selection(source: &str) -> R<bool> {
     Ok(false)
 }
 
+fn cfg_selector_contexts(bytes: &[u8]) -> R<Vec<(usize, usize)>> {
+    let source = std::str::from_utf8(bytes)?;
+    let mut contexts = Vec::new();
+    for (start, _) in source.match_indices("cfg") {
+        let before_is_identifier = start
+            .checked_sub(1)
+            .and_then(|index| bytes.get(index))
+            .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
+        if before_is_identifier {
+            continue;
+        }
+
+        let cfg_end = start + "cfg".len();
+        let is_cfg_attr = bytes.get(cfg_end..cfg_end + "_attr".len()) == Some(b"_attr")
+            && !bytes
+                .get(cfg_end + "_attr".len())
+                .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
+        let name_end = if is_cfg_attr { cfg_end + "_attr".len() } else { cfg_end };
+        let Some(mut cursor) = skip_rust_whitespace_and_comments(bytes, name_end) else {
+            continue;
+        };
+        let is_cfg_macro = bytes.get(cursor) == Some(&b'!');
+        if is_cfg_macro {
+            cursor = skip_rust_whitespace_and_comments(bytes, cursor + 1)
+                .ok_or_else(|| missing("unterminated cfg! selector invocation"))?;
+        } else if !is_cfg_attr && !is_attribute_name(bytes, start) {
+            continue;
+        }
+        if bytes.get(cursor) != Some(&b'(') {
+            continue;
+        }
+        let close = matching_parenthesis(bytes, cursor)?;
+        contexts.push((cursor + 1, close));
+    }
+    Ok(contexts)
+}
+
+fn is_attribute_name(bytes: &[u8], start: usize) -> bool {
+    let Some(bracket) = previous_non_whitespace(bytes, start) else {
+        return false;
+    };
+    if bytes.get(bracket) != Some(&b'[') {
+        return false;
+    }
+    previous_non_whitespace(bytes, bracket).is_some_and(|hash| bytes.get(hash) == Some(&b'#'))
+}
+
+fn previous_non_whitespace(bytes: &[u8], mut index: usize) -> Option<usize> {
+    while index > 0 {
+        index -= 1;
+        if !bytes[index].is_ascii_whitespace() {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn matching_parenthesis(bytes: &[u8], open: usize) -> R<usize> {
+    let mut depth = 0usize;
+    for (index, character) in bytes.iter().enumerate().skip(open) {
+        match character {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| missing("unbalanced cfg selector invocation"))?;
+                if depth == 0 {
+                    return Ok(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(missing("unterminated cfg selector invocation"))
+}
+
 fn literal_include_sources(
     source: &str,
     source_path: &std::path::Path,
@@ -518,29 +601,56 @@ fn literal_include_sources(
 ) -> R<Vec<std::path::PathBuf>> {
     let original = source;
     let source = sanitize_rust_source(source)?;
+    let sanitized_bytes = source.as_bytes();
+    let original_bytes = original.as_bytes();
     let mut included_sources = Vec::new();
-    for (start, _) in source.match_indices("include!") {
+    for (start, _) in source.match_indices("include") {
         let before_is_identifier = start
             .checked_sub(1)
-            .and_then(|index| source.as_bytes().get(index))
+            .and_then(|index| sanitized_bytes.get(index))
             .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
         if before_is_identifier {
             continue;
         }
-        let remainder = original[start + "include!".len()..].trim_start();
-        let argument = remainder
-            .strip_prefix('(')
-            .ok_or_else(|| {
+        let Some(mut cursor) =
+            skip_rust_whitespace_and_comments(original_bytes, start + "include".len())
+        else {
+            continue;
+        };
+        if original_bytes.get(cursor) != Some(&b'!') {
+            continue;
+        }
+        cursor =
+            skip_rust_whitespace_and_comments(original_bytes, cursor + 1).ok_or_else(|| {
                 missing(format!("cannot inspect include! in {}", source_path.display()))
-            })?
-            .trim_start();
-        let literal = argument
-            .strip_prefix('"')
-            .and_then(|value| value.split_once('"').map(|(path, _)| path))
+            })?;
+        if original_bytes.get(cursor) != Some(&b'(') {
+            return Err(missing(format!("cannot inspect include! in {}", source_path.display())));
+        }
+        cursor = skip_rust_whitespace_and_comments(original_bytes, cursor + 1).ok_or_else(|| {
+            missing(format!(
+                "cannot inspect dynamically generated include! in {}; keep the simd gate closed",
+                source_path.display()
+            ))
+        })?;
+        if original_bytes.get(cursor) != Some(&b'"') {
+            return Err(missing(format!(
+                "cannot inspect dynamically generated include! in {}; keep the simd gate closed",
+                source_path.display()
+            )));
+        }
+        let literal_start = cursor + 1;
+        let literal_end = original_bytes
+            .get(literal_start..)
+            .and_then(|tail| tail.iter().position(|character| *character == b'"'))
+            .map(|offset| literal_start + offset)
             .ok_or_else(|| missing(format!(
                 "cannot inspect dynamically generated include! in {}; keep the simd gate closed",
                 source_path.display()
             )))?;
+        let literal = original.get(literal_start..literal_end).ok_or_else(|| {
+            missing(format!("cannot resolve include! in {}", source_path.display()))
+        })?;
         if literal.contains('\\') {
             return Err(missing(format!(
                 "cannot inspect escaped include! path in {}; keep the simd gate closed",
@@ -1000,7 +1110,10 @@ fn simd_gate_rejects_literal_include_under_excluded_directory() -> R {
 fn simd_gate_detects_raw_string_feature_selection() -> R {
     assert!(contains_simd_selection(r##"#[cfg(feature = r#"simd"#)]"##)?);
     assert!(contains_simd_selection(r###"cfg!(feature = r##"simd"##)"###)?);
+    assert!(contains_simd_selection(r##"#[cfg_attr(feature = "simd", allow(dead_code))]"##)?);
     assert!(contains_simd_selection(r##"#[cfg(feature = "\x73imd")]"##)?);
+    assert!(!contains_simd_selection(r#"let feature = "simd";"#)?);
+    assert!(!contains_simd_selection(r#"const FEATURE: &str = "simd";"#)?);
     assert!(!contains_simd_selection("// cfg(feature = \"simd\")")?);
     assert!(!contains_simd_selection("const TEXT: &str = \"cfg(feature = \\\"simd\\\")\";")?);
     Ok(())
