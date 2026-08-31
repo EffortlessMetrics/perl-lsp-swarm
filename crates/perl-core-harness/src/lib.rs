@@ -212,7 +212,7 @@ use perl_core_harness_types::{
     SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
     SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
     SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, validate_execution_mechanism,
-    workstream_for_bucket,
+    validate_file_result_mechanisms, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use run_authority::{
@@ -4066,7 +4066,32 @@ fn write_run_report(path: &Path, report: &RunReport) -> Result<()> {
 fn read_run_report(path: &Path) -> Result<RunReport> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading run report {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("decoding run report {}", path.display()))
+    let report: RunReport = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding run report {}", path.display()))?;
+    reject_inadmissible_report_mechanisms(&report)
+        .with_context(|| format!("run report {}", path.display()))?;
+    Ok(report)
+}
+
+/// Refuse a run report whose per-file execution-mechanism claims are not
+/// admissible for its mode.
+///
+/// A report is what becomes a checked-in baseline and what the ratchet compares
+/// against, so the mechanism contract has to hold wherever a report is decoded
+/// or accepted — not only where a runner-record line is (#14363).
+fn reject_inadmissible_report_mechanisms(report: &RunReport) -> Result<()> {
+    validate_file_result_mechanisms(report.mode, &report.file_results)
+        .map_err(|(path, violation)| color_eyre::eyre::eyre!("{path}: {violation}"))
+}
+
+/// Refuse a checked-in baseline whose per-file execution-mechanism claims are
+/// not admissible for its mode.
+fn reject_inadmissible_baseline_mechanisms(
+    mode: HarnessMode,
+    file_results: &[RunFileResult],
+) -> Result<()> {
+    validate_file_result_mechanisms(mode, file_results)
+        .map_err(|(path, violation)| color_eyre::eyre::eyre!("{path}: {violation}"))
 }
 
 fn write_direct_diagnostics_receipt(path: &Path, receipt: &DirectDiagnosticReceipt) -> Result<()> {
@@ -4082,7 +4107,11 @@ fn write_direct_diagnostics_receipt(path: &Path, receipt: &DirectDiagnosticRecei
 fn read_compile_baseline(path: &Path) -> Result<CompileBaseline> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("reading baseline {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("decoding baseline {}", path.display()))
+    let baseline: CompileBaseline = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding baseline {}", path.display()))?;
+    reject_inadmissible_baseline_mechanisms(baseline.mode, &baseline.file_results)
+        .with_context(|| format!("baseline {}", path.display()))?;
+    Ok(baseline)
 }
 
 fn write_compile_baseline(path: &Path, baseline: &CompileBaseline) -> Result<()> {
@@ -4126,6 +4155,9 @@ fn write_gap_map(path: &Path, gap_map: &GapMap) -> Result<()> {
 }
 
 fn baseline_from_report(report: &RunReport) -> Result<CompileBaseline> {
+    // Acceptance copies file results verbatim into the durable artifact, so an
+    // inadmissible claim must be refused here and not only at report decode.
+    reject_inadmissible_report_mechanisms(report)?;
     let mut baseline = CompileBaseline {
         schema_version: COMPILE_BASELINE_SCHEMA_VERSION.to_string(),
         report_schema_version: report.schema_version.clone(),
@@ -4165,6 +4197,7 @@ fn baseline_v2_from_report(
     previous: Option<&CompileBaselineV2>,
     retirements: &[BoundaryRetirement],
 ) -> Result<CompileBaselineV2> {
+    reject_inadmissible_report_mechanisms(report)?;
     let identities = required_v2_identities(config)?;
     validate_report_against_series(report, series, config.mode)?;
     validate_v2_identities_against_series(&identities, series)?;
@@ -4771,6 +4804,8 @@ fn parse_compile_baseline_v2(value: serde_json::Value, label: &str) -> Result<Co
     }
     let baseline: CompileBaselineV2 =
         serde_json::from_value(value).with_context(|| format!("decoding v2 baseline {label}"))?;
+    reject_inadmissible_baseline_mechanisms(baseline.mode, &baseline.file_results)
+        .with_context(|| format!("v2 baseline {label}"))?;
     let mut violations = validate_persisted_boundary_retirements(&baseline, None);
     violations.extend(validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries));
     if !violations.is_empty() {
@@ -8116,6 +8151,11 @@ mod tests {
             let report_path = temp.path().join(name);
             let mut report = sample_compile_report();
             report.mode = mode;
+            // Keep the fixture consistent with the mode under test: the
+            // subject here is the terminal status, not the mechanism.
+            for result in &mut report.file_results {
+                result.mechanism = mode_mechanism(mode);
+            }
             report.harness_status = status;
             write_run_report(&report_path, &report)?;
 
@@ -9561,6 +9601,112 @@ mod tests {
             "the published report must name the mechanism on the wire: {raw}"
         );
         assert!(!perl_tree.join("t").join("perl").exists(), "source Perl tree must not be mutated");
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_report_that_relabels_its_mechanism_fails_closed() -> TestResult {
+        // The report — not the runner-record JSONL — is what becomes a
+        // checked-in baseline and what the ratchet compares against. Editing
+        // one field of it must not upgrade a scaffold claim.
+        let temp = tempfile::tempdir()?;
+        for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+            let mut forged = sample_execute_report();
+            for result in &mut forged.file_results {
+                result.mechanism = Some(mechanism);
+            }
+            let path = temp.path().join(format!("{mechanism}-report.json"));
+            write_run_report(&path, &forged)?;
+
+            let Err(error) = read_run_report(&path) else {
+                bail!("a report claiming {mechanism} must not be readable");
+            };
+            let text = format!("{error:?}");
+            if !text.contains("no current rail can supply") {
+                bail!("unexpected report-read error for {mechanism}: {text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_report_that_drops_its_mechanism_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut stripped = sample_execute_report();
+        for result in &mut stripped.file_results {
+            result.mechanism = None;
+        }
+        let path = temp.path().join("stripped-report.json");
+        write_run_report(&path, &stripped)?;
+
+        let Err(error) = read_run_report(&path) else {
+            bail!("an execute report with no mechanism must not be readable");
+        };
+        let text = format!("{error:?}");
+        if !text.contains("does not declare an execution mechanism") {
+            bail!("unexpected report-read error: {text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepting_a_baseline_from_a_relabelled_report_fails_closed() -> TestResult {
+        // `baseline --accept` copies file_results straight into the baseline,
+        // so an unvalidated report would mint a forged checked-in artifact.
+        let mut forged = sample_execute_report();
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+
+        let Err(error) = baseline_from_report(&forged) else {
+            bail!("a forged report must not be acceptable as a baseline");
+        };
+        if !error.to_string().contains("no current rail can supply") {
+            bail!("unexpected baseline-accept error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_hand_edited_baseline_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut baseline = baseline_from_report(&sample_execute_report())?;
+        for result in &mut baseline.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let path = temp.path().join("forged-baseline.json");
+        write_compile_baseline(&path, &baseline)?;
+
+        let Err(error) = read_compile_baseline(&path) else {
+            bail!("a hand-edited baseline must not be readable");
+        };
+        let text = format!("{error:?}");
+        if !text.contains("no current rail can supply") {
+            bail!("unexpected baseline-read error: {text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_checked_in_execute_baseline_declares_fixture_replay() -> TestResult {
+        // The durable artifact this PR stamps must itself satisfy the contract.
+        let root = project_root()?;
+        let baseline = read_compile_baseline(
+            &root.join(".ci").join("perl-core-harness").join("base-execute-baseline.json"),
+        )?;
+
+        if baseline.file_results.is_empty() {
+            bail!("checked-in execute baseline has no file results");
+        }
+        for result in &baseline.file_results {
+            if result.mechanism != Some(ExecutionMechanism::FixtureReplay) {
+                bail!(
+                    "checked-in execute baseline does not classify {}: {:?}",
+                    result.path,
+                    result.mechanism
+                );
+            }
+        }
         Ok(())
     }
 

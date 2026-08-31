@@ -4,6 +4,7 @@ use perl_core_harness_types::{
     HarnessMode, HarnessProfile, HarnessRunner, ObservedSemanticBoundary,
     RUN_REPORT_SCHEMA_VERSION, RUNNER_RECORD_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
     RunnerRecord, RunnerStatus, SemanticBoundaryRecord, validate_execution_mechanism,
+    validate_file_result_mechanisms,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1308,6 +1309,7 @@ fn validate_report(report: &RunReport) -> Result<()> {
     if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
         bail!("unsupported run report schema: {}", report.schema_version);
     }
+    reject_inadmissible_report_mechanisms(report)?;
     for (label, value) in [
         ("commit", report.commit.as_str()),
         ("Perl ref", report.perl_ref.as_str()),
@@ -1418,10 +1420,27 @@ fn reject_violations(subject: &str, violations: &[BaselineViolation]) -> Result<
     bail!("{subject} is structurally invalid: {detail}")
 }
 
+/// Refuse a run report whose per-file execution-mechanism claims are not
+/// admissible for its mode.
+///
+/// Owned here as well as in `crate::read_run_report` because a report can reach
+/// derivation without passing through that reader (#14363).
+fn reject_inadmissible_report_mechanisms(report: &RunReport) -> Result<()> {
+    if let Err((path, violation)) =
+        validate_file_result_mechanisms(report.mode, &report.file_results)
+    {
+        bail!("run report file result {path}: {violation}");
+    }
+    Ok(())
+}
+
 fn records_from_reports(reports: &[RunReport]) -> Result<Vec<RunnerRecord>> {
     let mut records = Vec::new();
     let mut keys = BTreeSet::new();
     for report in reports {
+        // Validate before any record is built, so a tampered report cannot be
+        // materialized on disk and only rejected by the later self-check.
+        reject_inadmissible_report_mechanisms(report)?;
         let failures = report
             .failures
             .iter()

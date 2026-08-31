@@ -598,6 +598,28 @@ pub fn validate_execution_mechanism(
     }
 }
 
+/// Reject a receipt collection whose per-file execution-mechanism claims are
+/// not admissible for the mode that produced them.
+///
+/// Reports and baselines carry the same claim as runner records do, and a
+/// report is what becomes a checked-in baseline and what the ratchet compares
+/// against. Validating only the runner-record format would leave the artifact
+/// of record forgeable by editing one field of the report instead (#14363).
+///
+/// The offending path is returned with the violation so the caller can name the
+/// file rather than the collection.
+pub fn validate_file_result_mechanisms(
+    mode: HarnessMode,
+    file_results: &[RunFileResult],
+) -> Result<(), (&str, ExecutionMechanismViolation)> {
+    for result in file_results {
+        if let Err(violation) = validate_execution_mechanism(mode.as_str(), result.mechanism) {
+            return Err((result.path.as_str(), violation));
+        }
+    }
+    Ok(())
+}
+
 /// How a compiler receipt classified a non-static semantic boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
