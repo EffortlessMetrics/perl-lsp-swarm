@@ -402,26 +402,6 @@ impl<'a> Parser<'a> {
         false
     }
 
-    /// Apply Perl's fat-comma auto-quoting to the operand immediately left of a
-    /// `=>`.
-    ///
-    /// `before => 1` passes the *string* `before` even when a sub of that name
-    /// is in scope, whereas `before, 1` calls it. The separator alone decides,
-    /// so the distinction belongs to the parser: a consumer that recovers it
-    /// later from source bytes is reading a second, unbound authority beside
-    /// the tree.
-    ///
-    /// Only a bare identifier is rewritten. Anything already carrying a value
-    /// (a literal, a variable, a call with arguments) is left untouched.
-    pub(crate) fn auto_quote_bareword_before_fat_comma(arg: &mut Node) {
-        if let NodeKind::Identifier { ref name } = arg.kind {
-            *arg = Node::new(
-                NodeKind::String { value: name.clone(), interpolated: false },
-                arg.location,
-            );
-        }
-    }
-
     /// Parse a statement-start user function call with space-separated arguments.
     fn parse_unknown_lowercase_bareword_call(&mut self) -> ParseResult<Node> {
         self.with_recursion_guard(|s| {
