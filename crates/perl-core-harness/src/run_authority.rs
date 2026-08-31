@@ -736,6 +736,7 @@ mod tests {
 
     fn record(assertions: usize) -> RunnerRecord {
         RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),

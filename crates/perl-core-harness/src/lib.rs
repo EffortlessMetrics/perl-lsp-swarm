@@ -200,7 +200,7 @@ use perl_core_harness_types::{
     CompatibilitySeriesIdentity, CompatibilityTransition, CompatibilityTransitionCandidate,
     CompileBaseline, CompileBaselineV2, CompilerCompatibilitySeries, CompilerCompatibilityState,
     CurrentAuthorityEntry, CurrentAuthorityIndex, CurrentAuthorityStatus, DISCOVERY_SCHEMA_VERSION,
-    DiscoveredTest, DiscoveryReport, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
+    DiscoveredTest, DiscoveryReport, ExecutionMechanism, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
     FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster, FailureClusterHistory,
     FailureClusterHistoryEntry, FailureClusterHistoryPresence, FailureClusterHistoryStatus,
     FailureClusterIdentityQuality, FailureClusterReport, FailureClusterSignature,
@@ -211,7 +211,8 @@ use perl_core_harness_types::{
     SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
     SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
     SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
-    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, validate_execution_mechanism,
+    workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use run_authority::{
@@ -5583,15 +5584,41 @@ fn read_runner_records(path: &Path) -> Result<Vec<RunnerRecord>> {
         if trimmed.is_empty() {
             continue;
         }
-        let record = serde_json::from_str(trimmed).with_context(|| {
+        let record: RunnerRecord = serde_json::from_str(trimmed).with_context(|| {
             format!("decoding runner record {} in {}", index + 1, path.display())
         })?;
+        reject_inadmissible_mechanism(&record)
+            .with_context(|| format!("runner record {} in {}", index + 1, path.display()))?;
         records.push(record);
     }
     if records.is_empty() {
         bail!("runner context contained no records: {}", path.display());
     }
     Ok(records)
+}
+
+/// Refuse a runner record whose execution-mechanism claim is not admissible.
+///
+/// Ingestion is the point where an edited or hand-written receipt would
+/// otherwise enter the report as though the runner had produced it, so the
+/// mechanism contract is enforced here as well as at write time (#8254).
+fn reject_inadmissible_mechanism(record: &RunnerRecord) -> Result<()> {
+    validate_execution_mechanism(&record.mode, record.mechanism)
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
+}
+
+/// The rail a run's configured mode can currently produce.
+///
+/// Used only where a discovered test yielded no runner record at all: there is
+/// no receipt to read a mechanism from, and the failure still belongs to the
+/// rail the run selected. The only executor wired to `execute` is the
+/// selected-fixture replay scaffold; a future EIR rail names its own mechanism
+/// on the receipt and does not reach this fallback.
+fn mode_mechanism(mode: HarnessMode) -> Option<ExecutionMechanism> {
+    match mode {
+        HarnessMode::Parse | HarnessMode::Compile => None,
+        HarnessMode::Execute => Some(ExecutionMechanism::FixtureReplay),
+    }
 }
 
 fn read_runner_records_or_empty(path: &Path) -> Result<Vec<RunnerRecord>> {
@@ -5635,6 +5662,9 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                     status: record.status,
                     assertions_passed: record.assertions_passed,
                     assertions_total: record.assertions_total,
+                    // Read from the receipt, never inferred from the run's
+                    // mode: the receipt is what actually names its rail.
+                    mechanism: record.mechanism,
                 });
                 if record.status == RunnerStatus::Fail {
                     let bucket = record.bucket.clone().unwrap_or_else(|| "unknown".to_string());
@@ -5665,6 +5695,9 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                     status: RunnerStatus::Fail,
                     assertions_passed: 0,
                     assertions_total: 1,
+                    // No receipt exists to read, and the failure still belongs
+                    // to the rail this run selected.
+                    mechanism: mode_mechanism(input.config.mode),
                 });
                 let bucket = "harness_prepare".to_string();
                 *buckets.entry(bucket.clone()).or_insert(0) += 1;
@@ -6215,6 +6248,7 @@ mod tests {
         ];
         let records = vec![
             RunnerRecord {
+                mechanism: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/ok.t".into(),
@@ -6238,6 +6272,7 @@ mod tests {
                 }],
             },
             RunnerRecord {
+                mechanism: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/bad.t".into(),
@@ -6308,6 +6343,7 @@ mod tests {
             supporting_test: "base/ok.t".into(),
         };
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -6338,6 +6374,7 @@ mod tests {
     fn duplicate_upstream_records_fail_closed_instead_of_silently_collapsing() -> TestResult {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -6396,6 +6433,7 @@ mod tests {
     fn malformed_upstream_record_paths_fail_closed_before_report_assembly() -> TestResult {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "not-a-normalized-test.txt".into(),
@@ -6443,6 +6481,7 @@ mod tests {
             DiscoveredTest { path: "base/gap.t".into(), root: "base".into() },
         ];
         let upstream_only = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),
@@ -6497,6 +6536,7 @@ mod tests {
     fn equal_payload_upstream_and_probe_rows_stay_distinct_authority_rows() -> TestResult {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let payload = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),
@@ -6548,6 +6588,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: path.into(),
@@ -6592,6 +6633,7 @@ mod tests {
         // A leftover passing row for this subject from a previous run, still
         // present because stale-context removal failed.
         let stale_row = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/gap.t".into(),
@@ -6632,6 +6674,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/gap.t".into(), root: "base".into() }];
         let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(0))?;
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: path.into(),
@@ -6745,6 +6788,7 @@ mod tests {
             },
             buckets: BTreeMap::new(),
             file_results: vec![RunFileResult {
+                mechanism: None,
                 path: "base/ok.t".into(),
                 status: RunnerStatus::Pass,
                 assertions_passed: 1,
@@ -7179,6 +7223,7 @@ mod tests {
             baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])?;
         let mut report = sample_compile_report();
         report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Pass,
             assertions_passed: 1,
@@ -7895,6 +7940,7 @@ mod tests {
         let mut report = sample_compile_report();
         let baseline = baseline_from_report(&report)?;
         report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -7953,6 +7999,7 @@ mod tests {
         let baseline = baseline_from_report(&baseline_report)?;
         let mut current_report = baseline_report.clone();
         current_report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -8365,6 +8412,7 @@ mod tests {
         };
         let discovered = vec![DiscoveredTest { path: "base/if.t".into(), root: "base".into() }];
         let records = vec![RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/if.t".into(),
@@ -8412,12 +8460,14 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![
                 RunFileResult {
+                    mechanism: None,
                     path: "base/lex.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
                     assertions_total: 1,
                 },
                 RunFileResult {
+                    mechanism: None,
                     path: "base/ok.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -9164,36 +9214,42 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/cond.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
                     assertions_total: 4,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/if.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
                     assertions_total: 2,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/num.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 56,
                     assertions_total: 56,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/pat.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
                     assertions_total: 2,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/translate.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 257,
                     assertions_total: 257,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/while.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
@@ -9495,7 +9551,52 @@ mod tests {
         assert_eq!(report.summary.tap_assertions_passed, 2);
         assert_eq!(report.file_results[0].path, "base/if.t");
         assert_eq!(report.file_results[0].assertions_total, 2);
+        assert_eq!(
+            report.file_results[0].mechanism,
+            Some(ExecutionMechanism::FixtureReplay),
+            "the report must say which rail produced these assertions"
+        );
+        assert!(
+            raw.contains(r#""mechanism": "fixture_replay""#),
+            "the published report must name the mechanism on the wire: {raw}"
+        );
         assert!(!perl_tree.join("t").join("perl").exists(), "source Perl tree must not be mutated");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_execute_refuses_a_runner_that_hides_its_mechanism() -> TestResult {
+        // A runner that emits execute receipts without naming its rail fails
+        // the run rather than producing a report whose 2 assertions read as
+        // evaluated work (#8254).
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test(temp.path())?;
+        let runner = write_fake_unclassified_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        let error = match run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        }) {
+            Err(error) => error,
+            Ok(()) => bail!("an unclassified execute receipt must not produce a report"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("does not declare an execution mechanism") {
+            bail!("unexpected run error: {text}");
+        }
+        if output.exists() {
+            bail!("no report should be published from inadmissible receipts");
+        }
         Ok(())
     }
 
@@ -10393,6 +10494,11 @@ fi
 set -eu
 script="${1:-unknown.t}"
 mode="${PERL_LSP_HARNESS_MODE:-execute}"
+# Mirror the real runner: only execution receipts name their rail.
+mechanism=''
+if [ "$mode" = "execute" ]; then
+  mechanism=',"mechanism":"fixture_replay"'
+fi
 mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
 case "$script" in
   *base/cond.t)
@@ -10401,7 +10507,7 @@ case "$script" in
     printf 'ok 2 - operator ne\n'
     printf 'ok 3 - operator ==\n'
     printf 'ok 4 - operator !=\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/while.t)
     printf '1..4\n'
@@ -10409,7 +10515,7 @@ case "$script" in
     printf 'ok 2\n'
     printf 'ok 3\n'
     printf 'ok 4\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/num.t)
     printf '1..56\n'
@@ -10418,13 +10524,13 @@ case "$script" in
       printf 'ok %s\n' "$i"
       i=$((i + 1))
     done
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":56,"assertions_total":56,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":56,"assertions_total":56,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/pat.t)
     printf '1..2\n'
     printf 'ok 1 - match regex\n'
     printf 'ok 2 - match regex\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/translate.t)
     printf '1..257\n'
@@ -10436,15 +10542,34 @@ case "$script" in
       assertion=$((assertion + 1))
     done
     printf 'ok 257 - native_to_unicode of large number\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":257,"assertions_total":257,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":257,"assertions_total":257,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *)
     printf '1..2\n'
     printf 'ok 1 - if eq\n'
     printf 'ok 2 - if ne\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
 esac
+"#;
+        fs::write(&runner, body)?;
+        set_executable(&runner)?;
+        Ok(runner)
+    }
+
+    /// An execute runner that produces TAP but hides which rail produced it.
+    #[cfg(unix)]
+    fn write_fake_unclassified_execute_runner(root: &Path) -> TestResult<PathBuf> {
+        let runner = root.join("fake-runner-execute-unclassified.sh");
+        let body = r#"#!/bin/sh
+set -eu
+script="${1:-unknown.t}"
+mode="${PERL_LSP_HARNESS_MODE:-execute}"
+mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
+printf '1..2\n'
+printf 'ok 1 - if eq\n'
+printf 'ok 2 - if ne\n'
+printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
 "#;
         fs::write(&runner, body)?;
         set_executable(&runner)?;
