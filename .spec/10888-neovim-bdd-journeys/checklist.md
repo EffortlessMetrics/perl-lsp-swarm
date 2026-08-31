@@ -240,6 +240,14 @@ INVARIANT_BLOCKS = {
     # file boundary. Its claim-profile summary, evidence chain, and
     # authority/ownership table each assign an owner; leaving them unbound let a
     # corrected acceptance.md owner be silently contradicted from context.md.
+    "context_subject_substrate": ("context",
+                                  r"(?ms)^## Subject substrate \(consumed by reference; nothing re-pinned here\)$.*?(?=^## Stable scenario ID namespace)"),
+    "context_security_boundary": ("context",
+                                  r"(?ms)^## Security boundary$.*?(?=^## Authority and ownership)"),
+    "context_stable_vs_mutable": ("context",
+                                  r"(?ms)^## Stable versus mutable information$.*?(?=^## Alternatives rejected)"),
+    "context_scope_boundary": ("context",
+                               r"(?ms)^## Scope boundary$.*?\Z"),
     "context_claim_profiles": ("context",
                                r"(?ms)^## Claim profiles$.*?(?=^## Evidence boundaries and chain)"),
     "context_evidence_chain": ("context",
@@ -271,6 +279,35 @@ EXPECTED_INVARIANTS = {
     "context_claim_profiles",
     "context_evidence_chain",
     "context_authority",
+    "context_subject_substrate",
+    "context_security_boundary",
+    "context_stable_vs_mutable",
+    "context_scope_boundary",
+}
+
+# Every `## ` section of both normative files, classified. The recurring defect
+# in this packet was never the binding itself -- it was failing to NOTICE that a
+# section is normative. Enumerating by hand got it wrong twice, so the section
+# set is asserted instead: adding, renaming, or removing a section fails the
+# check until it is classified here. NORMATIVE sections must appear in
+# INVARIANT_BLOCKS; NARRATIVE ones state no law and assign no owner.
+CONTEXT_SECTIONS_NARRATIVE = {
+    "Problem",
+    "Why this approach (ledger-format evolution record)",
+    "Stable scenario ID namespace",
+    "Journey inventory (baseline = 41 scenarios, optional = 6)",
+    "Alternatives rejected",
+    "Prior art / duplicates",
+    "Links",
+}
+CONTEXT_SECTIONS_NORMATIVE = {
+    "Subject substrate (consumed by reference; nothing re-pinned here)",
+    "Claim profiles",
+    "Evidence boundaries and chain",
+    "Security boundary",
+    "Authority and ownership",
+    "Stable versus mutable information",
+    "Scope boundary",
 }
 
 INVARIANT_DIGESTS = {
@@ -279,6 +316,10 @@ INVARIANT_DIGESTS = {
     "claim_boundary": "3d6755e631a9c99f",
     "three_subject_law": "e53af321800e90fb",
     "branch_selection_law": "8cc5566b0f27acdb",
+    "context_subject_substrate": "c16c840fa8fd3468",
+    "context_security_boundary": "4cba375d52922d54",
+    "context_stable_vs_mutable": "7f53bd139a5e5698",
+    "context_scope_boundary": "d98a66078a25bbbe",
     "context_claim_profiles": "a45bb5a8c43c857a",
     "context_evidence_chain": "fbcccadeee3d7439",
     "context_authority": "ed488a4d0f3eaa88",
@@ -482,6 +523,24 @@ def main():
     # asks whether a token appears somewhere, so a sentence could be inverted
     # while a bare token survived elsewhere and the checker still passed.
     # Digest each named invariant block so reversing one fails closed.
+    # Assert the section inventory before checking any digest. Missing a
+    # normative section is the failure this packet kept repeating; a hand
+    # enumeration got it wrong twice. A new or renamed `## ` section now fails
+    # until it is classified, and every section classified NORMATIVE must have
+    # a bound invariant.
+    seen = set(re.findall(r"(?m)^## (.+)$", context))
+    known = CONTEXT_SECTIONS_NARRATIVE | CONTEXT_SECTIONS_NORMATIVE
+    if seen != known:
+        fail("context.md section set changed; classify each as narrative or "
+             f"normative: unclassified={sorted(seen - known)} "
+             f"missing={sorted(known - seen)}")
+    unbound = {s for s in CONTEXT_SECTIONS_NORMATIVE
+               if not any(s.split(" (")[0] in pat
+                          for which, pat in INVARIANT_BLOCKS.values()
+                          if which == "context")}
+    if unbound:
+        fail(f"context.md sections classified normative but not digest-bound: {sorted(unbound)}")
+
     sources = {"acceptance": acceptance, "context": context}
     if set(INVARIANT_BLOCKS) != EXPECTED_INVARIANTS or \
             set(INVARIANT_DIGESTS) != EXPECTED_INVARIANTS:
