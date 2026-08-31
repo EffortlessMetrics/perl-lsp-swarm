@@ -14,7 +14,7 @@ only executable proof is the embedded checker below.
 
 ### Step 2: Fail-closed controls first
 
-- Write the falsifier mutations T01–T14 (`acceptance.md` §Test-Grid, fixed
+- Write the falsifier mutations T01–T15 (`acceptance.md` §Test-Grid, fixed
   order) before trusting any positive result.
 - Verify: each mutation throws against the real manifest.
 
@@ -237,6 +237,7 @@ function Invoke-Structural-Laws($M) {
     foreach ($dep in $depList) {
       if (-not ($dep -is [int64] -or $dep -is [int32])) { throw "non-integer dependency at $($nd['issue'])" }
       if ($dep -eq $nd['issue']) { throw "self dependency at $($nd['issue'])" }
+      if ($dep -notin $expectedIssues) { throw "unresolved hard dependency $dep at $($nd['issue'])" }
     }
     foreach ($iid in @($nd['covered_invariants'])) {
       if (-not $invsIdx.ContainsKey($iid)) { throw "unresolved invariant $iid at $($nd['issue'])" }
@@ -347,7 +348,7 @@ function Semantic-Digest($doc) {
 }
 $d1 = Semantic-Digest $manifest
 
-# --- 6. fail-closed falsifier mutations T01..T12 ---
+# --- 6. fail-closed falsifier mutations T01..T15 ---
 function Deep-Copy($node) { return ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $node -Depth 100) -AsHashtable }
 function Expect-Reject([string]$name, [scriptblock]$mutate) {
   $m = Deep-Copy $manifest
@@ -375,6 +376,7 @@ Expect-Reject 'T09' { param($m) $m['contract_nodes'][3]['semantic_authority'] = 
 Expect-Reject 'T10' { param($m) $m['contract_nodes'][5]['consumers'] = @('99999') }
 Expect-Reject 'T11' { param($m) $m['contract_nodes'][7]['disposition_basis'] = 'proof obligation is cargo xtask check tidy' }
 Expect-Reject 'T13' { param($m) $keep = @($m['contract_nodes']); $m['contract_nodes'] = @($keep[0..($keep.Count - 2)]) }
+Expect-Reject 'T15' { param($m) $m['contract_nodes'][0]['hard_dependency_issues'] = @([int]999999) }
 # T12a rotation preserves semantic digest
 $rotNodes = @()
 $rotNodes += $manifest['contract_nodes'][$manifest['contract_nodes'].Count - 1]
@@ -396,7 +398,7 @@ foreach ($p in $files) {
   "FILE  $h  $p"
 }
 "CANON $d1"
-"OK    dap_reliability_contracts.v1 laws hold; T01-T14 all rejected"
+"OK    dap_reliability_contracts.v1 laws hold; T01-T15 all rejected"
 ```
 
 ## Adjacent-defect transfer boundary
