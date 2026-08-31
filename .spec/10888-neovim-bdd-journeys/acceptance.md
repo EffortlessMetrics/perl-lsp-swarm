@@ -176,6 +176,32 @@ No Rust or public API is introduced. Semantic contract terms defined here:
 | `native_neovim_first_class` | claim profile ID | deep + support stage laws | none found; #10888 |
 | `native_neovim_programme_closeout` | claim profile ID | programme fan-in | none found; #10888 |
 
+### Evidence-stage vocabulary (consumed, never minted)
+
+#10888 requires these distinctions to stay machine-visible. Each is consumed
+from an existing surface; this packet mints no Neovim-only verdict scalar and
+establishes no Neovim-owned emitter, validator, or adapter.
+
+| Term | Where it already exists | Disposition for `neovim.bdd.*` |
+| --- | --- | --- |
+| `configuration_documented` | registered tier in `policy/lsp-client-support.toml` | the current `neovim` tier value; substrate only |
+| `exact_source_actual_host` | generic `editor_client_compat.v1` stage vocabulary (#10527/#7777) | stage for #10504–#10507 host observations |
+| `release_candidate_actual_host` | same generic stage vocabulary | no Neovim row claims it yet; owner #10508 |
+| `public_artifact_actual_host` | same generic stage vocabulary | reachable only via `opt.03`; never inherited from exact-source |
+| `package_manager_public` | install-channel rows (#10516/#10518/#10520) | `support.03`/`support.04` keep channels separate |
+| `external_submission` / `external_acceptance` | external packet stages (#10511/#10514) | `support.06` keeps prepared ≠ submitted ≠ accepted |
+| `released_public_availability` | release/support projection (#10522/#7122) | `support.05`; exact-source is never public-installed proof |
+| server capability vs client capability | LSP capability exchange, observed by #10505 | advertisement alone never satisfies an actual-host row (F11) |
+| actual request/consumption vs applied semantic result | generic host-observation cells | `core.03`/`core.08` require application, not response (F5/F9) |
+| default-visible / opt-in available / opt-in behavior proven | generic capability ladder | `opt.*` rows are `consumes_if_available`; availability is not behavior |
+| `unsupported` | generic result vocabulary | terminal for a row the subject cannot express |
+| `upstream_dependency` | generic limitation vocabulary | `support.07`; may hold without failing core |
+| `not_proven` | generic result vocabulary | the default state of all 47 rows in this packet |
+| `instrument_failed` | shipped host-compat/receipt schemas | measurement-surface failure; never silently product failure |
+
+Generic vocabulary only. A downstream leaf records an allowed schema value plus
+limitation text until an owner proves the mapping.
+
 ## §Test-Grid
 
 All twenty-five falsifiers in fixed order. F1–F15 are the controlling issue's

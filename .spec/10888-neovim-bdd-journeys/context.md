@@ -83,7 +83,9 @@ Consequences, deliberately honest rather than convenient:
 - this packet must not mint a second subject pin to fill the gap.
 
 The documented user-visible configuration this ledger describes is the native
-built-in shape recorded in `docs/EDITORS/NEOVIM_SETUP.md`:
+built-in shape recorded in `docs/EDITORS/NEOVIM_SETUP.md`. The block below is a
+synthesis of that document's separate `lsp/perllsp.lua` and settings snippets,
+shown together for orientation; the document remains the authority:
 
 ```lua
 vim.lsp.config('perllsp', {

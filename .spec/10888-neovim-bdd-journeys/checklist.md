@@ -82,9 +82,12 @@ in fixed family order; **a digest of every complete normative row, so a
 published ID cannot be silently rebound to a different behavior, profile tag,
 or owner chain**; that no foreign rail ID appears as a ledger row; all
 twenty-five falsifiers with exact scenario/kind/verdict text in fixed order;
-`git diff --check` over the candidate range, work tree, and index, with a
-nonzero status failing the check rather than being discarded; and a fail-closed
-changed-path union restricted to exactly this packet.
+a digest of each named prose invariant (subject law, profile laws, claim
+boundary, three-subject law), so a boundary claim cannot be reversed while a
+bare required token survives elsewhere in the file; `git diff --check` over the
+candidate range, work tree, and index, with a nonzero status failing the check
+rather than being discarded; and a fail-closed changed-path union restricted to
+exactly this packet.
 
 Pinning the ID alone would be insufficient: a mutation could keep
 `neovim.bdd.core.04` while replacing the proposition it names, which is the
@@ -147,6 +150,23 @@ FOREIGN_ROW = re.compile(
 
 # Digest of each COMPLETE normative ledger row, so a published ID cannot
 # be silently rebound to a different proposition.
+# Load-bearing invariants that live in prose rather than in a table. Their
+# wording is pinned so a boundary claim cannot be reversed while the required
+# tokens survive elsewhere in the file.
+INVARIANT_BLOCKS = {
+    "subject_law": ("acceptance", r"(?ms)^Subject law:.*?(?=\n\n)"),
+    "profile_laws": ("acceptance", r"(?ms)^Laws: a stronger profile.*?(?=\n\n)"),
+    "claim_boundary": ("acceptance", r"(?ms)^- \*\*Claim boundary:\*\*.*?(?=\n\n|\Z)"),
+    "three_subject_law": ("context", r"(?ms)^Three-subject law:.*?(?=\n\n)"),
+}
+
+INVARIANT_DIGESTS = {
+    "subject_law": "a48b4d92cad52534",
+    "profile_laws": "60e532ff4fcc0274",
+    "claim_boundary": "3d6755e631a9c99f",
+    "three_subject_law": "e53af321800e90fb",
+}
+
 ROW_DIGESTS = {
     "neovim.bdd.attach.01": "3f5b7d942c7cb158",
     "neovim.bdd.attach.02": "e1dea4aedff52388",
@@ -327,6 +347,20 @@ def main():
         if actual != digest:
             fail(f"scenario {scenario_id} kept its ID but its normative row changed")
 
+    # Row digests bind the tables, but the load-bearing invariants of this
+    # packet live in prose. A required-term check is context-blind: it only
+    # asks whether a token appears somewhere, so a sentence could be inverted
+    # while a bare token survived elsewhere and the checker still passed.
+    # Digest each named invariant block so reversing one fails closed.
+    sources = {"acceptance": acceptance, "context": context}
+    for name, (which, pattern) in INVARIANT_BLOCKS.items():
+        m = re.search(pattern, sources[which])
+        if not m:
+            fail(f"invariant block missing or reshaped: {name}")
+        got = hashlib.sha256(" ".join(m.group(0).split()).encode("utf-8")).hexdigest()[:16]
+        if got != INVARIANT_DIGESTS[name]:
+            fail(f"invariant block changed: {name}")
+
     # Twenty-five falsifiers: fixed order, exact semantics.
     grid = re.search(r"(?ms)^## §Test-Grid\s*(.*?)(?=^## |\Z)", acceptance)
     if not grid:
@@ -418,6 +452,10 @@ byte-identical output and leave the tree fingerprint unchanged.
 - [ ] Every published scenario ID is digest-bound to its complete normative
       row, so an ID cannot be reused for a different proposition.
 - [ ] `git diff --check` is enforced, not merely invoked.
+- [ ] Named prose invariants are digest-bound, so a required term cannot be
+      satisfied by an unrelated mention while its sentence is inverted.
+- [ ] The evidence-stage vocabulary #10888 requires is consumed explicitly and
+      no Neovim-only verdict scalar is minted.
 - [ ] Security boundary keeps absolute/traversal include paths out of positive
       behavior (#4998).
 - [ ] No native-Neovim subject digest is pre-stated; `attach.02` binds by
