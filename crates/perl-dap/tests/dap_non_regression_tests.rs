@@ -585,16 +585,20 @@ fn test_goto_targets_response_has_targets_array() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-// AC:17 — stepInTargets response has 'targets' array
-fn test_step_in_targets_response_has_targets_array() -> Result<(), Box<dyn std::error::Error>> {
+// AC:17 / #9069 — unsupported stepInTargets fails honestly with no targets body
+fn test_step_in_targets_unsupported_response_has_no_targets_body()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
-    let body = assert_ok(
+    let (_, _, success, body, message) = unwrap_response(
         adapter.handle_request(1, "stepInTargets", Some(json!({"frameId": 0}))),
         "stepInTargets",
-    )?
-    .ok_or("stepInTargets must return a body")?;
-    assert!(body.get("targets").is_some(), "stepInTargets must include 'targets'");
-    assert!(body["targets"].is_array(), "'targets' must be an array");
+    )?;
+    assert!(!success, "stepInTargets must fail while unsupported (#9069)");
+    assert!(body.is_none(), "unsupported stepInTargets must not publish a targets body");
+    assert!(
+        message.is_some(),
+        "unsupported stepInTargets must explain its disposition"
+    );
     Ok(())
 }
 

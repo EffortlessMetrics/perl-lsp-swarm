@@ -49,8 +49,8 @@ use crate::protocol::{
     SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments,
     SetExpressionArguments, SetExpressionResponseBody, SetFunctionBreakpointsArguments,
     SetVariableArguments, SetVariableResponseBody, SourceArguments, SourceResponseBody,
-    StackTraceArguments, StepInArguments, StepInTarget, StepInTargetsArguments,
-    StepInTargetsResponseBody, StepOutArguments, TerminateArguments, VariablesArguments,
+    StackTraceArguments, StepInArguments, StepInTargetsArguments, StepOutArguments,
+    TerminateArguments, VariablesArguments,
 };
 use crate::stack::{PerlStackParser, is_internal_frame_name_and_path};
 use crate::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};

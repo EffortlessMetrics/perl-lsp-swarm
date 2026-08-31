@@ -4,14 +4,8 @@ use super::{
     AstBreakpointValidator, BreakpointValidator, ContinueArguments, ContinueResponseBody,
     DapMessage, DebugAdapter, DebugState, GotoArguments, GotoTarget, GotoTargetsArguments,
     GotoTargetsResponseBody, NextArguments, Ordering, PauseArguments, ResumeMode, StepInArguments,
-    StepInTarget, StepInTargetsArguments, StepInTargetsResponseBody, StepOutArguments, Value,
-    Write, json, lock_or_recover,
+    StepInTargetsArguments, StepOutArguments, Value, Write, json, lock_or_recover,
 };
-use regex::Regex;
-use std::sync::LazyLock;
-
-static STEP_IN_TARGET_CALL_RE: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r"(\w[\w:]*)\s*\(").ok());
 
 impl DebugAdapter {
     /// Build a protocol-safe guidance message for execution-control requests
@@ -546,67 +540,32 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
-        let args: StepInTargetsArguments =
-            match arguments.and_then(|v| serde_json::from_value(v).ok()) {
-                Some(a) => a,
-                None => {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "stepInTargets".to_string(),
-                        body: None,
-                        message: Some("Missing or invalid arguments".to_string()),
-                    };
-                }
-            };
+        // Wire-argument safety only: a malformed request still gets a typed
+        // failure, but no argument shape can unlock targeted stepping.
+        let args: Option<StepInTargetsArguments> =
+            arguments.and_then(|v| serde_json::from_value(v).ok());
 
-        let mut targets = Vec::new();
-
-        // Extract the frame source path while session lock is held, then release.
-        let frame_info = {
-            let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
-            if let Some(ref session) = *session_guard {
-                session
-                    .stack_frames
-                    .iter()
-                    .find(|f| i64::from(f.id) == args.frame_id)
-                    .map(|frame| (frame.source.path.clone(), frame.line))
-            } else {
-                None
-            }
-        };
-
-        if let Some((source_path, frame_line)) = frame_info {
-            // Defense-in-depth: validate even internal session paths
-            if let Ok(validated_path) = self.validate_source_path(&source_path)
-                && let Ok(content) = std::fs::read_to_string(&validated_path)
-            {
-                let line_idx = frame_line.max(0) as usize;
-                if let Some(source_line) = content.lines().nth(line_idx.saturating_sub(1)) {
-                    // Find function call patterns
-                    if let Some(call_re) = STEP_IN_TARGET_CALL_RE.as_ref() {
-                        for (idx, cap) in call_re.captures_iter(source_line).enumerate() {
-                            if let Some(name) = cap.get(1) {
-                                targets.push(StepInTarget {
-                                    id: idx as i64,
-                                    label: name.as_str().to_string(),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let body = StepInTargetsResponseBody { targets };
+        // #9069 fail-closed: native `stepIn` always issues the same perl5db
+        // `s` command, so a client-selected target ID cannot influence which
+        // callable is entered. Publishing regex-derived candidate IDs would
+        // promise selection the backend cannot honor, so `stepInTargets` is
+        // unadvertised (`dap.step_in_targets` advertised = false) and every
+        // request is refused before any session lock, source read, or target
+        // registry allocation. Re-enable requires the two-target exact-binary
+        // discriminator defined in #9069.
+        let _ = args;
         DapMessage::Response {
             seq,
             request_seq,
-            success: true,
+            success: false,
             command: "stepInTargets".to_string(),
-            body: serde_json::to_value(&body).ok(),
-            message: None,
+            body: None,
+            message: Some(
+                "stepInTargets is unsupported: the native backend cannot yet make a \
+                 selected target ID influence the next stepIn, so no actionable \
+                 step-in targets are published (#9069)"
+                    .to_string(),
+            ),
         }
     }
 

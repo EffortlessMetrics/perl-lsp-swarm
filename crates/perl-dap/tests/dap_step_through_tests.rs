@@ -302,10 +302,12 @@ fn test_step_in_to_xs_builtin_via_target_id() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
-// AC:3535
-fn test_step_in_targets_with_real_perl_function_calls() -> Result<(), Box<dyn std::error::Error>> {
+// AC:3535 / #9069
+fn test_step_in_targets_is_refused_without_source_scans() -> Result<(), Box<dyn std::error::Error>>
+{
     // Create a Perl source file containing multiple function calls on one line.
-    // stepInTargets should detect them.
+    // Even when such a frame exists, targeted stepping is fail-closed (#9069):
+    // the request must be refused without publishing regex-derived target IDs.
     let dir = tempfile::tempdir()?;
     let script_path = dir.path().join("subroutine_calls.pl");
     fs::write(
@@ -314,23 +316,20 @@ fn test_step_in_targets_with_real_perl_function_calls() -> Result<(), Box<dyn st
     )?;
 
     let mut adapter = make_adapter();
-    // We need a stack frame that refers to line 3 in the file above.
-    // stepInTargets looks up the frame from the session; without a session,
-    // frame_info is None → targets list is empty. Verify response shape.
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
 
     match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "stepInTargets should succeed");
+        DapMessage::Response { success, command, body, message, .. } => {
             assert_eq!(command, "stepInTargets");
-            let body = body.ok_or("expected body")?;
-            let targets =
-                body.get("targets").and_then(|v| v.as_array()).ok_or("expected targets")?;
-            // No active session → no frames → empty targets list
             assert!(
-                targets.is_empty(),
-                "without a session, stepInTargets should return empty targets"
+                !success,
+                "stepInTargets must be refused while targeted stepping is unsupported (#9069)"
+            );
+            assert!(body.is_none(), "refused stepInTargets must not publish target IDs");
+            assert!(
+                message.is_some_and(|m| !m.is_empty()),
+                "refused stepInTargets must explain the unsupported disposition"
             );
         }
         _ => return Err("Expected Response for stepInTargets".into()),
@@ -783,8 +782,8 @@ fn test_step_in_targets_missing_frame_id_returns_failure() -> Result<(), Box<dyn
 }
 
 #[test]
-// AC:3535
-fn test_step_in_targets_with_frame_id_no_session_returns_empty()
+// AC:3535 / #9069
+fn test_step_in_targets_with_frame_id_is_refused_without_session()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
 
@@ -793,17 +792,12 @@ fn test_step_in_targets_with_frame_id_no_session_returns_empty()
 
     match response {
         DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "stepInTargets with valid frameId should succeed");
             assert_eq!(command, "stepInTargets");
-            let body = body.ok_or("stepInTargets response must have a body")?;
-            let targets = body
-                .get("targets")
-                .and_then(|v| v.as_array())
-                .ok_or("stepInTargets body must have a targets array")?;
             assert!(
-                targets.is_empty(),
-                "without a session, stepInTargets must return empty targets"
+                !success,
+                "stepInTargets must fail while targeted stepping is unsupported (#9069)"
             );
+            assert!(body.is_none(), "refused stepInTargets must not carry a targets body");
         }
         _ => return Err("Expected Response for stepInTargets".into()),
     }
