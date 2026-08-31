@@ -1401,7 +1401,6 @@ mod tests {
     #[test]
     #[serial_test::serial]
     #[allow(unsafe_code)]
-    #[serial_test::serial]
     fn init_logging_does_not_panic_with_log_file() {
         let _snapshot = crate::test_support::EnvSnapshot::capture(&["PERL_LSP_LOG_FILE"]);
         let dir = std::env::temp_dir().join("perl-lsp-test-log-rotation");
@@ -1934,7 +1933,6 @@ mod tests {
     #[test]
     #[serial_test::serial]
     #[allow(unsafe_code)]
-    #[serial_test::serial]
     fn startup_banner_suppressed_by_quiet_env() {
         let _snapshot = crate::test_support::EnvSnapshot::capture(&["PERL_LSP_QUIET"]);
 
