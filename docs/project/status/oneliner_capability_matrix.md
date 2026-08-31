@@ -21,16 +21,16 @@ Evidence is parser-side only. A fixture from the parser corpus can earn layer 1 
 
 ## Layer summary
 
-| # | Layer | Earned rows | Total rows |
-| --- | --- | --- | --- |
-| 1 | Parser-body acceptance | 5 | 15 |
-| 2 | Structured-argv decoding | 0 | 1 |
-| 3 | Source composition and provenance | 0 | 1 |
-| 4 | Implicit runtime/loop context | 0 | 1 |
-| 5 | Compile-time feature/module/include context | 0 | 1 |
-| 6 | Diagnostics and editor operations | 0 | 1 |
-| 7 | Shell-specific extraction adapters | 0 | 3 |
-| 8 | Trusted differential-oracle coverage | 0 | 1 |
+| # | Layer | Supported | Partial | Total rows |
+| --- | --- | --- | --- | --- |
+| 1 | Parser-body acceptance | 4 | 1 | 15 |
+| 2 | Structured-argv decoding | 0 | 0 | 1 |
+| 3 | Source composition and provenance | 0 | 0 | 1 |
+| 4 | Implicit runtime/loop context | 0 | 0 | 1 |
+| 5 | Compile-time feature/module/include context | 0 | 0 | 1 |
+| 6 | Diagnostics and editor operations | 0 | 0 | 1 |
+| 7 | Shell-specific extraction adapters | 0 | 0 | 3 |
+| 8 | Trusted differential-oracle coverage | 0 | 0 | 1 |
 
 ## 1. Parser-body acceptance
 

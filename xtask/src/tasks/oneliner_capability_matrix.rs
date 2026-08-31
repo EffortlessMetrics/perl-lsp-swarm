@@ -740,6 +740,42 @@ fn suppresses_execution(attributes: &str) -> bool {
         || attributes.contains("#[ignore")
 }
 
+/// Refuse to extract from a corpus containing a suppressed module.
+///
+/// Attribute inspection is per-item: it cannot see that a fixture sits inside a
+/// `#[cfg(...)] mod { .. }` that is never compiled, so such a fixture would be
+/// counted as running evidence. Proving reachability properly needs a real Rust
+/// parser, which is more machinery than a documentation generator should carry.
+///
+/// Failing closed is the honest alternative. The corpus has no suppressed
+/// module today, so this never fires; if one appears, the check stops and says
+/// what to do rather than quietly over-counting.
+fn reject_suppressed_modules(source: &str) -> Result<()> {
+    let code = code_mask(source);
+    for (index, _) in source.match_indices("mod ") {
+        if !code.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        let attributes = preceding_attributes(source, index);
+        if suppresses_execution(&attributes) {
+            let name: String = source
+                .get(index + "mod ".len()..)
+                .unwrap_or_default()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            bail!(
+                "{CORPUS_PATH} declares module `{name}` under a suppressing attribute. \
+                 Fixture reachability inside a disabled module cannot be established by \
+                 attribute inspection, so evidence extraction stops rather than counting \
+                 fixtures that may never compile. Move the fixtures out of the module, or \
+                 extend the extractor with a real item walk."
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Extract corpus evidence from the conformance corpus source text.
 fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
     let mut evidence = CorpusEvidence::default();
@@ -965,10 +1001,18 @@ fn validate(rows: &[CapabilityRow], evidence: &CorpusEvidence) -> Result<()> {
         }
     }
 
-    // Every corpus case must be accounted for, so growing the corpus without
-    // revisiting the claim is a checkable drift rather than a silent gap.
-    for case in evidence.switch_cases.keys() {
-        let cited = rows.iter().any(|row| row.evidence.contains(&case.as_str()));
+    // Every corpus fixture must be accounted for, so growing the corpus without
+    // revisiting the claim is a checkable drift rather than a silent gap. Typed
+    // proof targets count too: adding one used to slip through, leaving a new
+    // fixture rendered in the table but assigned to no claim.
+    //
+    // A fixture is accounted for by either role. A negative control legitimately
+    // appears only in `boundary_controls`, so requiring `evidence` alone would
+    // reject the committed corpus rather than catch drift.
+    for case in evidence.switch_cases.keys().chain(evidence.proof_tests.iter()) {
+        let cited = rows.iter().any(|row| {
+            row.evidence.contains(&case.as_str()) || row.boundary_controls.contains(&case.as_str())
+        });
         if !cited {
             bail!(
                 "corpus case `{case}` is not cited by any capability row; \
@@ -985,6 +1029,7 @@ pub fn run(check: bool) -> Result<()> {
     let root = project_root()?;
     let corpus = fs::read_to_string(root.join(CORPUS_PATH))
         .with_context(|| format!("failed to read {CORPUS_PATH}"))?;
+    reject_suppressed_modules(&corpus)?;
     let evidence = extract_corpus_evidence(&corpus);
 
     if evidence.switch_cases.is_empty() {
@@ -1036,17 +1081,21 @@ fn render_matrix(rows: &[CapabilityRow], evidence: &CorpusEvidence) -> String {
     output.push_str("Evidence is parser-side only. A fixture from the parser corpus can earn layer 1 and nothing above it, so parser-only proof cannot be promoted into an end-to-end support claim.\n\n");
 
     output.push_str("## Layer summary\n\n");
-    output.push_str("| # | Layer | Earned rows | Total rows |\n");
-    output.push_str("| --- | --- | --- | --- |\n");
+    // `supported` and `partial` are counted separately: collapsing them into one
+    // "earned" number reads as more full support than the rows actually claim.
+    output.push_str("| # | Layer | Supported | Partial | Total rows |\n");
+    output.push_str("| --- | --- | --- | --- | --- |\n");
     for layer in Layer::ALL {
         let layer_rows: Vec<&CapabilityRow> =
             rows.iter().filter(|row| row.layer == *layer).collect();
-        let earned = layer_rows.iter().filter(|row| row.status.is_earned()).count();
+        let supported = layer_rows.iter().filter(|row| row.status == Support::Supported).count();
+        let partial = layer_rows.iter().filter(|row| row.status == Support::Partial).count();
         output.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} |\n",
             layer.ordinal(),
             escape_cell(layer.title()),
-            earned,
+            supported,
+            partial,
             layer_rows.len()
         ));
     }
@@ -1436,6 +1485,61 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             row.subject = subject;
             expect_rejected(&scaffold_with(row), "names no switch");
         }
+    }
+
+    /// Reachability inside a disabled module is not provable by attribute
+    /// inspection, so extraction stops rather than over-counting.
+    #[test]
+    fn suppressed_module_stops_extraction() {
+        let disabled_mod = concat!(
+            "#[cfg(feature = \"unfinished\")]\n",
+            "mod disabled_fixtures {\n",
+            "    command_line_oneliner!(ghost_in_mod, \"-e\", \"print 1;\");\n",
+            "}\n"
+        );
+        match reject_suppressed_modules(disabled_mod) {
+            Ok(()) => panic!("a suppressed module was accepted"),
+            Err(error) => {
+                let message = error.to_string();
+                assert!(message.contains("disabled_fixtures"), "{message}");
+                assert!(message.contains("reachability"), "{message}");
+            }
+        }
+
+        // An ordinary module declaration is fine; the committed corpus has one.
+        reject_suppressed_modules("mod cpan_test_helpers;\n").expect("plain module accepted");
+        let root = project_root().expect("project root");
+        let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
+        reject_suppressed_modules(&corpus).expect("committed corpus has no suppressed module");
+    }
+
+    /// Adding a typed proof target must not slip past the drift rule.
+    #[test]
+    fn uncited_proof_test_is_rejected() {
+        let corpus = format!("{CORPUS_SAMPLE}\n#[test]\nfn brand_new_proof_target() {{}}\n");
+        let evidence = extract_corpus_evidence(&corpus);
+        assert!(evidence.proof_tests.contains("brand_new_proof_target"));
+        match validate(&scaffold(), &evidence) {
+            Ok(()) => panic!("an uncited proof target was accepted"),
+            Err(error) => {
+                assert!(error.to_string().contains("brand_new_proof_target"), "{error}");
+            }
+        }
+    }
+
+    /// A negative control is cited as a boundary control, never as support, so
+    /// the drift rule has to accept either role.
+    #[test]
+    fn boundary_control_citation_satisfies_the_drift_rule() {
+        let evidence = real_evidence();
+        assert!(
+            !ROWS.iter().any(|row| {
+                row.evidence
+                    .contains(&"negative_controls_keep_context_errors_and_boundaries_visible")
+            }),
+            "the negative control should be cited only as a boundary control"
+        );
+        validate(ROWS, &evidence).expect("committed rows still validate");
     }
 
     /// A cfg-disabled fixture is never compiled, so the corpus command never
