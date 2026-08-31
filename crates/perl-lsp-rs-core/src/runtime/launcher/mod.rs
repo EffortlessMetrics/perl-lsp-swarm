@@ -1399,6 +1399,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     #[allow(unsafe_code)]
     #[serial_test::serial]
     fn init_logging_does_not_panic_with_log_file() {
@@ -1931,6 +1932,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     #[allow(unsafe_code)]
     #[serial_test::serial]
     fn startup_banner_suppressed_by_quiet_env() {
