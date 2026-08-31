@@ -8,9 +8,9 @@
 //! #10239 convergence with `source_convention`) has to argue with a stated
 //! contract rather than with a second copy of the same code.
 //!
-//! They do not speak for `next_edit::insertion_line_ending`, which still
-//! decides the same question by a different rule — see the owner module's
-//! documentation.
+//! Next-edit uses the position-aware `inferred_line_ending_at` helper from the
+//! same module, so these document-level properties deliberately do not assert
+//! its insertion-region behavior.
 
 use perl_lsp_perltidy::native::inferred_line_ending;
 use proptest::prelude::*;
