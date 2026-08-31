@@ -48,6 +48,7 @@ pub mod commit_checks;
 pub mod compare;
 #[cfg(feature = "parser-tasks")]
 pub mod compare_parsers;
+pub mod compat_inventory;
 pub mod compiler_lexical_cutline;
 pub mod compiler_oracle;
 pub mod compiler_profile;
@@ -120,6 +121,7 @@ pub mod native_format;
 pub mod native_neovim_train;
 pub mod native_product_surface;
 pub mod native_tooling;
+pub mod oneliner_capability_matrix;
 pub mod oracle_fixture_manifest;
 pub mod oracle_receipt_schema;
 pub mod oracle_runner;
