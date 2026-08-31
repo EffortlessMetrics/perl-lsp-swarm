@@ -606,7 +606,7 @@ fn reject_configured_build_script(root: &std::path::Path) -> R {
 
 fn is_build_assignment(line: &str) -> bool {
     line.split_once('=')
-        .map(|(key, _)| matches!(key.trim(), "build" | "\"build\""))
+        .map(|(key, _)| matches!(key.trim(), "build" | "\"build\"" | "'build'"))
         .unwrap_or(false)
 }
 
@@ -1028,37 +1028,36 @@ fn validate_simd_readme_contract(readme: &str) -> R {
             )));
         }
     }
-    let lowercase = readme.to_ascii_lowercase();
-    for forbidden in [
-        "enabled",
-        "active",
-        "available",
-        "accelerat",
-        "vectorized",
-        "optimized",
-        "optimization",
-        "simd implementation",
-        "simd processing",
-        "simd scanner",
-        "simd capability",
-        "simd support",
-        "simd path",
-        "simd is used",
-        "uses simd",
-        "simd acceleration",
-        "simd implementation",
-    ] {
-        if lowercase.contains(forbidden) {
-            return Err(missing(format!(
-                "README simd contract contains a contradictory capability claim: {forbidden}"
-            )));
+    for line in readme.to_ascii_lowercase().lines() {
+        if !line.contains("simd") {
+            continue;
         }
-    }
-    for line in lowercase.lines() {
-        if line.contains("simd")
-            && line.contains("performance")
-            && !line.contains("no simd performance claim is made")
-        {
+        for forbidden in [
+            "enabled",
+            "active",
+            "available",
+            "accelerat",
+            "vectorized",
+            "optimized",
+            "optimization",
+            "simd implementation",
+            "simd processing",
+            "simd scanner",
+            "simd capability",
+            "simd support",
+            "simd path",
+            "simd is used",
+            "uses simd",
+            "simd acceleration",
+            "simd implementation",
+        ] {
+            if line.contains(forbidden) {
+                return Err(missing(format!(
+                    "README simd contract contains a contradictory capability claim: {forbidden}"
+                )));
+            }
+        }
+        if line.contains("performance") && !line.contains("no simd performance claim is made") {
             return Err(missing(format!(
                 "README simd contract contains a contradictory performance claim: {line}"
             )));
@@ -1239,6 +1238,7 @@ fn simd_gate_rejects_uninspectable_custom_build_script_fixture() -> R {
 fn quoted_build_manifest_key_is_fail_closed_and_unrelated_keys_are_allowed() -> R {
     assert!(is_build_assignment("build = \"custom_build.rs\""));
     assert!(is_build_assignment("\"build\" = \"custom_build.rs\""));
+    assert!(is_build_assignment("'build' = \"custom_build.rs\""));
     assert!(!is_build_assignment("builder = \"custom_build.rs\""));
     assert!(!is_build_assignment("\"build-script\" = \"custom_build.rs\""));
     Ok(())
@@ -1270,5 +1270,13 @@ fn simd_readme_guard_rejects_contradictory_performance_claim() -> R {
         "README contradiction must identify the performance claim: {error}"
     );
     validate_simd_readme_contract(readme)?;
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_allows_unrelated_capability_wording() -> R {
+    let readme = include_str!("../README.md");
+    let unrelated = format!("{readme}\nInterpolation is enabled by default.\n");
+    validate_simd_readme_contract(&unrelated)?;
     Ok(())
 }
