@@ -314,6 +314,9 @@ fn forbidden_facade_references(code: &str) -> Vec<String> {
     let aliases = facade_aliases(code);
     for (alias, target) in aliases {
         let alias_chars: Vec<char> = alias.chars().collect();
+        if alias_chars.len() > chars.len() {
+            continue;
+        }
         for cursor in 0..=chars.len().saturating_sub(alias_chars.len()) {
             if chars[cursor..cursor + alias_chars.len()] == alias_chars[..]
                 && (cursor == 0
