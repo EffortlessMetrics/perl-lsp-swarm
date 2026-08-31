@@ -7,7 +7,7 @@
 
 use super::{
     DriverEvent, DriverEventKind, EmacsHostRunPlan, HermeticLayout, MAX_CAPTURE_BYTES,
-    bytes_sha256, file_sha256, lifecycle_rank, parse_driver_events, validate_driver_events,
+    bytes_sha256, file_sha256, lifecycle_rank, parse_driver_event_prefix, validate_driver_events,
     validate_safe_identity,
 };
 use anyhow::{Context, Result, bail};
@@ -37,6 +37,7 @@ struct ProcessLedger {
     surviving_processes: Vec<LedgerSurvivor>,
     event_count: usize,
     driver_complete: bool,
+    snapshot_persist: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -180,6 +181,14 @@ pub fn run_owned_process(
         }
         thread::sleep(Duration::from_millis(10));
     };
+    // Timeout/force cleanup owns this run's candidate identity, not only the
+    // host PID. Kill needle-matching survivors that were absent from the
+    // before-probe (never image-wide, never the pre-existing set). Descendants
+    // spawned with null stdio do not hold the host pipes; join_capture still
+    // unblocks on host EOF.
+    if timed_out || kill_requested {
+        reap_this_run_survivors(pid, &before_lines, &needle);
+    }
 
     let stdout_capture = join_capture(stdout_reader, "host stdout")?;
     let stderr_capture = join_capture(stderr_reader, "host stderr")?;
@@ -250,23 +259,48 @@ pub fn run_owned_process(
             }
         }
     };
-    let _ = fs::write(layout.process_snapshot_before(), render_process_snapshot(&before_lines));
-    let _ = fs::write(
-        layout.process_snapshot_after(),
-        match &probe_after {
-            Some(Ok(text)) => text.clone(),
-            _ => String::new(),
-        },
-    );
+    let after_raw = match &probe_after {
+        Some(Ok(text)) => text.clone(),
+        _ => String::new(),
+    };
+    let mut snapshot_persist_errors = Vec::new();
+    for (path, raw) in [
+        (layout.process_snapshot_before(), render_process_snapshot(&before_lines)),
+        (layout.process_snapshot_after(), after_raw),
+    ] {
+        let sanitized = sanitize_text(raw.as_bytes(), plan, layout);
+        if let Err(error) = persist_text(&path, &sanitized) {
+            snapshot_persist_errors.push(format!("{}: {error:#}", path.display()));
+        }
+    }
     if (timed_out || kill_requested || status.code() != Some(0)) && cleanup == CleanupResult::Pass {
         cleanup = CleanupResult::NotProven;
         cleanup_detail =
             "host exit skipped the driver shutdown path; orderly client shutdown not observed"
                 .to_string();
     }
+    if !snapshot_persist_errors.is_empty() {
+        if cleanup == CleanupResult::Pass {
+            cleanup = CleanupResult::NotProven;
+            cleanup_detail =
+                format!("process snapshot persist failed: {}", snapshot_persist_errors.join("; "));
+        } else {
+            cleanup_detail = format!(
+                "{cleanup_detail}; process snapshot persist failed: {}",
+                snapshot_persist_errors.join("; ")
+            );
+        }
+    }
+    let snapshot_persist = if snapshot_persist_errors.is_empty() {
+        "ok".to_string()
+    } else {
+        snapshot_persist_errors.join("; ")
+    };
 
     let event_bytes = fs::read(layout.event_file()).unwrap_or_default();
-    let events = parse_driver_events(&event_bytes, false).unwrap_or_default();
+    // Keep the valid JSONL prefix. A truncated trailing line must not wipe
+    // barriers already observed; an invalid first line still yields no events.
+    let events = parse_driver_event_prefix(&event_bytes);
     let driver_complete = validate_driver_events(&events, true).is_ok();
     let last_barrier = last_completed_barrier(&events);
 
@@ -335,6 +369,7 @@ pub fn run_owned_process(
             .collect(),
         event_count: events.len(),
         driver_complete,
+        snapshot_persist,
     };
     let ledger_bytes = serde_json::to_vec_pretty(&ledger)?;
     artifacts.push(write_sanitized_artifact(
@@ -743,6 +778,60 @@ pub fn surviving_processes(
         .collect()
 }
 
+fn persist_text(path: &Path, text: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating process snapshot parent {}", parent.display()))?;
+    }
+    fs::write(path, text)
+        .with_context(|| format!("writing process snapshot {}", path.display()))?;
+    Ok(())
+}
+
+/// Kill this-run candidate survivors after a force/timeout host kill.
+/// Selection is `surviving_processes` (needle match absent from the before-probe)
+/// minus the already-waited host PID. This is not an image-wide Windows
+/// `taskkill` and does not touch pre-existing matches.
+fn reap_this_run_survivors(host_pid: u32, before: &[ProcessProbeLine], needle: &str) {
+    for _ in 0..10 {
+        let Some(Ok(text)) = probe_process_table() else {
+            return;
+        };
+        let Ok(mid) = parse_probe(&text) else {
+            return;
+        };
+        let remaining: Vec<ProcessProbeLine> = surviving_processes(before, &mid, needle)
+            .into_iter()
+            .filter(|line| line.pid != host_pid)
+            .collect();
+        if remaining.is_empty() {
+            return;
+        }
+        for survivor in remaining {
+            stop_owned_pid(survivor.pid);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn stop_owned_pid(pid: u32) {
+    if cfg!(windows) {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    } else {
+        let _ = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 fn diagnostic_probe_failure(phase: &str, probe: &Option<Result<String>>) -> Option<String> {
     match probe {
         None => Some(format!(
@@ -781,5 +870,51 @@ mod process_tests {
         // which is exactly why run_owned_process fails closed on it instead.
         let after = vec![leaked];
         assert!(surviving_processes(&before, &after, needle).is_empty());
+    }
+
+    #[test]
+    fn timeout_reap_targets_this_run_survivors_only() {
+        let host = ProcessProbeLine { pid: 10, args: "/tmp/run/perllsp serve".into() };
+        let leaked = ProcessProbeLine { pid: 20, args: "/tmp/run/perllsp --stdio".into() };
+        let preexisting = ProcessProbeLine { pid: 5, args: "/tmp/run/perllsp older".into() };
+        let decoy = ProcessProbeLine { pid: 30, args: "/another/checkout/perllsp --stdio".into() };
+        let before = vec![preexisting.clone()];
+        let mid = vec![preexisting, host.clone(), leaked.clone(), decoy];
+        let targets: Vec<_> = surviving_processes(&before, &mid, "/tmp/run/perllsp")
+            .into_iter()
+            .filter(|line| line.pid != host.pid)
+            .collect();
+        assert_eq!(
+            targets,
+            vec![leaked],
+            "timeout reap must kill this-run needle matches, never the host pid, pre-existing set, or a different executable"
+        );
+    }
+
+    #[test]
+    fn process_snapshot_text_redacts_private_paths() {
+        let mut text = "4242 /home/observer/.netrc --flag\n".to_string();
+        redact_resident_private_paths(&mut text);
+        assert!(
+            !text.contains("/home/observer/.netrc"),
+            "durable process snapshots must not keep private path text"
+        );
+        assert!(text.contains("<PATH>"), "redaction must replace the private path token");
+    }
+
+    #[test]
+    fn process_snapshot_write_failure_is_surfaced() {
+        let tmp = tempfile::tempdir().expect("scratch directory");
+        let blocker = tmp.path().join("not-a-directory");
+        fs::write(&blocker, b"file").expect("create blocker file");
+        let dest = blocker.join("snapshot.txt");
+        let error =
+            persist_text(&dest, "1 /tmp/x\n").expect_err("write through a file parent must fail");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("writing process snapshot")
+                || rendered.contains("creating process snapshot parent"),
+            "the persist error must name the snapshot write, got {rendered}"
+        );
     }
 }

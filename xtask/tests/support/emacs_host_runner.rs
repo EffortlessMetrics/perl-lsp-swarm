@@ -504,6 +504,26 @@ pub fn parse_driver_events(bytes: &[u8], require_complete: bool) -> Result<Vec<D
     Ok(events)
 }
 
+/// Parse complete valid JSONL events and stop at the first invalid or
+/// truncated line. A partial trailing write must not erase barriers already
+/// observed. UTF-8 failure and an invalid first line yield an empty prefix.
+pub fn parse_driver_event_prefix(bytes: &[u8]) -> Vec<DriverEvent> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<DriverEvent>(line) {
+            Ok(event) => events.push(event),
+            Err(_) => break,
+        }
+    }
+    events
+}
+
 pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) -> Result<()> {
     ensure!(!events.is_empty(), "driver emitted no events");
     let mut singleton = BTreeSet::new();

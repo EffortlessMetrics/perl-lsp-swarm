@@ -420,6 +420,33 @@ fn run_fake_host_mode(mode: &str) -> Result<i32> {
             child_emit_lifecycle(&event_file, &mut sequence, None)?;
             Ok(0)
         }
+        "leak_descendant_then_hang" => {
+            let candidate = child_required_env("PERL_LSP_EMACS_CANDIDATE")?;
+            let ready_marker = event_file
+                .parent()
+                .context("event file must have a parent directory")?
+                .join(format!("descendant-ready-{}", std::process::id()));
+            let entry_test = std::env::var(FAKE_HOST_ENTRY_ENV)
+                .context("supervision child missing entry test name")?;
+            let _descendant_pid =
+                spawn_preexisting_candidate(&candidate, &ready_marker, &entry_test)?;
+            child_emit_lifecycle(&event_file, &mut sequence, Some("workspace_ready"))?;
+            for _ in 0..6000 {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Ok(7)
+        }
+        "partial_event_then_hang" => {
+            child_emit_lifecycle(&event_file, &mut sequence, Some("workspace_ready"))?;
+            use std::io::Write as _;
+            let mut file = fs::OpenOptions::new().create(true).append(true).open(&event_file)?;
+            write!(file, "{{\"schema_version\":\"{DRIVER_SCHEMA_VERSION}\",\"sequence\":")?;
+            drop(file);
+            for _ in 0..6000 {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Ok(7)
+        }
         other => bail!("unknown supervision fixture mode: {other}"),
     }
 }

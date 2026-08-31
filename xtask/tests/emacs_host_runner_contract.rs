@@ -1235,6 +1235,82 @@ fn timeout_records_last_completed_barrier_and_stays_not_proven() -> Result<()> {
     Ok(())
 }
 
+/// Timeout/force cleanup must reap this run's leaked candidate descendant, not
+/// only the host PID. A hang after a leak must not leave the descendant alive.
+#[test]
+fn timeout_reaps_this_run_leaked_descendant() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) =
+        run_fake_scenario(root.path(), "leak_descendant_then_hang", "timeoutreap", 20_000)?;
+    let _guard =
+        LeakGuard { pids: observation.surviving_processes.iter().map(|line| line.pid).collect() };
+    ensure!(
+        observation.timed_out && observation.kill_requested,
+        "the hang scenario must hit the runner deadline"
+    );
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("workspace_ready"),
+        "barriers emitted before the hang must survive timeout, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(
+        observation.surviving_processes.is_empty(),
+        "timeout must reap this-run candidate survivors, still observed {:?}",
+        observation
+            .surviving_processes
+            .iter()
+            .map(|line| format!("{} {}", line.pid, line.args))
+            .collect::<Vec<_>>()
+    );
+    ensure!(
+        observation.cleanup != CleanupResult::Pass,
+        "reaping on timeout is not an orderly shutdown pass, got {:?} ({})",
+        observation.cleanup,
+        observation.cleanup_detail
+    );
+    ensure!(!observation.passed_process_boundary());
+    Ok(())
+}
+
+/// A truncated trailing JSONL line must keep the valid prefix so timeout still
+/// records the last completed barrier instead of wiping the stream.
+#[test]
+fn truncated_trailing_event_line_keeps_prior_barrier() -> Result<()> {
+    let host_started = serde_json::json!({
+        "schema_version": emacs_host_runner::DRIVER_SCHEMA_VERSION,
+        "sequence": 1,
+        "event": "host_started",
+        "details": {"subject": "emacs"},
+    });
+    let workspace_ready = serde_json::json!({
+        "schema_version": emacs_host_runner::DRIVER_SCHEMA_VERSION,
+        "sequence": 2,
+        "event": "workspace_ready",
+        "details": {},
+    });
+    let bytes = format!("{host_started}\n{workspace_ready}\n{{\"schema_version\":\"");
+    let events = emacs_host_runner::parse_driver_event_prefix(bytes.as_bytes());
+    ensure!(events.len() == 2, "the valid prefix must be kept, got {} events", events.len());
+    ensure!(events[1].kind == DriverEventKind::WorkspaceReady);
+    ensure!(
+        emacs_host_runner::parse_driver_events(bytes.as_bytes(), false).is_err(),
+        "the strict parser must still refuse a truncated trailing line"
+    );
+
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) =
+        run_fake_scenario(root.path(), "partial_event_then_hang", "partialevt", 1_500)?;
+    ensure!(observation.timed_out && observation.kill_requested);
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("workspace_ready"),
+        "a truncated trailing event line must not erase the last barrier, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(!observation.driver_complete);
+    ensure!(observation.cleanup != CleanupResult::Pass);
+    Ok(())
+}
+
 #[test]
 fn malformed_driver_stream_fails_closed_with_bounded_diagnostics() -> Result<()> {
     let root = tempfile::tempdir()?;
@@ -1364,6 +1440,28 @@ fn chatty_output_never_persists_raw_private_paths() -> Result<()> {
             "raw private-looking values must not survive into durable artifacts: {private}"
         );
     }
+    for snapshot_name in ["processes-before.txt", "processes-after.txt"] {
+        let snapshot = fs::read_to_string(root.path().join("raw").join(snapshot_name))
+            .with_context(|| format!("reading persisted {snapshot_name}"))?;
+        for private in [
+            "/home/observer/.netrc",
+            "C:\\Users\\observer\\secret-token.txt",
+            "\\Users\\observer\\secret-token.txt",
+        ] {
+            ensure!(
+                !snapshot.contains(private),
+                "{snapshot_name} must not persist raw private-looking process-table text: {private}"
+            );
+        }
+    }
+    let ledger: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/process-ledger.json")?)
+            .context("ledger must be readable JSON")?;
+    ensure!(
+        ledger["snapshot_persist"] == "ok",
+        "process snapshots must persist, got {:?}",
+        ledger["snapshot_persist"]
+    );
     Ok(())
 }
 

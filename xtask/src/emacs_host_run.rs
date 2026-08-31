@@ -1020,7 +1020,8 @@ fn outcome_journey(observation: &ProcessObservation) -> Vec<JourneyCell> {
         evidence: vec!["emacs/process-ledger.json".to_string()],
         limitation: Some(
             "cleanup pass requires a driver-complete status-0 host exit and an independently \
-             observed empty candidate process set; an unusable probe is not_proven"
+             observed empty candidate process set; timeout/force cleanup reaps this-run \
+             candidate survivors by pid (never image-wide); an unusable probe is not_proven"
                 .to_string(),
         ),
     });
