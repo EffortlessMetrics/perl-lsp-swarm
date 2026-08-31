@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12505 |
+| Total tracked files | 12509 |
 | Rust-family files | 3870 |
-| Non-Rust files | 8635 |
-| Allowlisted | 6398 |
+| Non-Rust files | 8639 |
+| Allowlisted | 6402 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 497 |
-| documentation | 2817 |
+| documentation | 2818 |
 | generated | 2 |
-| production | 348 |
+| production | 349 |
 | test | 2067 |
-| tooling | 667 |
+| tooling | 669 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -2339,6 +2339,7 @@
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12815-Fixed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13073-Fixed-020212.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13123-Fixed-021700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13125-Fixed-021800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -6846,9 +6847,11 @@
 | `scripts/tests/test-install-path-contract.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-ps1-archive-safety.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-ps1-checksum-required.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-install-ps1-product-unit-promotion.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-target-selection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-archive-safety.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-checksum-required.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-installer-product-unit-promotion.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-termux-detection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-zero-args.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-list-gates-wrapper.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8459,6 +8462,7 @@
 | `vscode-extension/src/serverDemand.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/startupDiagnosis.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/streamingCompletion.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/strictSemver.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommands.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportPacket.ts` | production | `non-rust-vscode-extension` | editor/vscode |
