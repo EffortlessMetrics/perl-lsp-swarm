@@ -299,21 +299,21 @@ impl<'a> Parser<'a> {
                                     .tokens
                                     .peek_second()
                                     .is_ok_and(|t| t.kind() == TokenKind::Star)
-                                {
-                                    self.tokens.next()?; // consume $#
-                                    self.tokens.next()?; // consume *
-                                    let start = expr.location.start;
-                                    let end = self.previous_position();
-                                    record_postfix_layer()?;
-                                    expr = Node::new(
-                                        NodeKind::Unary {
-                                            op: "->$#*".to_string(),
-                                            operand: Box::new(expr),
-                                        },
-                                        SourceLocation { start, end },
-                                    );
-                                    continue;
-                                }
+                            {
+                                self.tokens.next()?; // consume $#
+                                self.tokens.next()?; // consume *
+                                let start = expr.location.start;
+                                let end = self.previous_position();
+                                record_postfix_layer()?;
+                                expr = Node::new(
+                                    NodeKind::Unary {
+                                        op: "->$#*".to_string(),
+                                        operand: Box::new(expr),
+                                    },
+                                    SourceLocation { start, end },
+                                );
+                                continue;
+                            }
 
                             // Method call
                             let method = self.consume_token()?.text.to_string();
@@ -425,27 +425,28 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::LeftBracket) => {
                     // Builtin function identifiers treat [ as anonymous-arrayref argument.
                     if let NodeKind::Identifier { name } = &expr.kind
-                        && (Self::is_builtin_function(name) || self.looks_like_bare_call(name)) {
-                            let name = name.clone();
-                            let start = expr.location.start;
-                            let mut args = vec![self.parse_ternary()?];
-                            while matches!(
-                                self.peek_kind(),
-                                Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
-                            ) {
-                                self.consume_token()?;
-                                if self.is_at_statement_end() {
-                                    break;
-                                }
-                                args.push(self.parse_ternary()?);
+                        && (Self::is_builtin_function(name) || self.looks_like_bare_call(name))
+                    {
+                        let name = name.clone();
+                        let start = expr.location.start;
+                        let mut args = vec![self.parse_ternary()?];
+                        while matches!(
+                            self.peek_kind(),
+                            Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
+                        ) {
+                            self.consume_token()?;
+                            if self.is_at_statement_end() {
+                                break;
                             }
-                            let end = args.last().map_or(expr.location.end, |a| a.location.end);
-                            expr = Node::new(
-                                NodeKind::FunctionCall { name, args },
-                                SourceLocation { start, end },
-                            );
-                            continue;
+                            args.push(self.parse_ternary()?);
                         }
+                        let end = args.last().map_or(expr.location.end, |a| a.location.end);
+                        expr = Node::new(
+                            NodeKind::FunctionCall { name, args },
+                            SourceLocation { start, end },
+                        );
+                        continue;
+                    }
                     // Detect array slices: @arr[...] or @{$aref}[...]
                     let is_array_slice = matches!(&expr.kind, NodeKind::Variable { sigil, .. } if sigil == "@")
                         || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
@@ -922,6 +923,7 @@ impl<'a> Parser<'a> {
                                     )
                                 });
 
+                            let mut scalar_filehandle = false;
                             if self.is_implicit_arg_terminator()
                                 || is_nullary_without_args
                                 || is_comma_terminated
@@ -1131,8 +1133,18 @@ impl<'a> Parser<'a> {
                                 {
                                     args.push(self.parse_shift()?);
                                 } else {
+                                    scalar_filehandle =
+                                        self.is_expression_scalar_filehandle_pattern(name);
+
                                     // Parse the first argument
-                                    args.push(self.parse_assignment_or_declaration()?);
+                                    if scalar_filehandle {
+                                        // Parse the filehandle alone. Parsing it as a full
+                                        // assignment first would consume `$fh %hash` as a
+                                        // modulo expression and lose the indirect-call boundary.
+                                        args.push(self.parse_primary()?);
+                                    } else {
+                                        args.push(self.parse_assignment_or_declaration()?);
+                                    }
 
                                     // Generic bare calls can also take implicit list arguments
                                     // after a leading block/hash argument, just like parse_args()
@@ -1199,6 +1211,45 @@ impl<'a> Parser<'a> {
                                                 break;
                                             }
                                             args.push(self.parse_assignment_or_declaration()?);
+                                            if scalar_filehandle
+                                                && matches!(
+                                                    args.last().map(|arg| &arg.kind),
+                                                    Some(NodeKind::Variable { sigil, name })
+                                                        if sigil == "%" && name.is_empty()
+                                                )
+                                            {
+                                                return Err(ParseError::syntax(
+                                                    "Incomplete hash variable",
+                                                    self.current_position(),
+                                                ));
+                                            }
+                                            if scalar_filehandle
+                                                && matches!(
+                                                    args.last().map(|arg| &arg.kind),
+                                                    Some(NodeKind::Number { .. })
+                                                )
+                                                && !matches!(
+                                                    self.peek_kind(),
+                                                    Some(
+                                                        TokenKind::Comma
+                                                            | TokenKind::FatArrow
+                                                            | TokenKind::WordOr
+                                                            | TokenKind::WordAnd
+                                                            | TokenKind::WordXor
+                                                            | TokenKind::WordNot
+                                                    )
+                                                )
+                                                && !self.is_at_statement_end()
+                                            {
+                                                // After a comma-less numeric message term, any
+                                                // token that neither separates arguments nor ends
+                                                // the call is malformed input: Perl requires an
+                                                // operator or separator there.
+                                                return Err(ParseError::syntax(
+                                                    "Adjacent terms after a numeric message require an operator or separator",
+                                                    self.current_position(),
+                                                ));
+                                            }
                                         }
                                     }
 
@@ -1232,10 +1283,30 @@ impl<'a> Parser<'a> {
                                     .location
                                     .end;
 
-                                expr = Node::new(
-                                    NodeKind::FunctionCall { name: name.clone(), args },
-                                    SourceLocation { start, end },
-                                );
+                                expr = if scalar_filehandle {
+                                    let mut message_args = args;
+                                    let object = if message_args.is_empty() {
+                                        return Err(ParseError::syntax(
+                                            "Missing scalar filehandle",
+                                            start,
+                                        ));
+                                    } else {
+                                        message_args.remove(0)
+                                    };
+                                    Node::new(
+                                        NodeKind::IndirectCall {
+                                            method: name.clone(),
+                                            object: Box::new(object),
+                                            args: message_args,
+                                        },
+                                        SourceLocation { start, end },
+                                    )
+                                } else {
+                                    Node::new(
+                                        NodeKind::FunctionCall { name: name.clone(), args },
+                                        SourceLocation { start, end },
+                                    )
+                                };
                             }
                         }
                     } else if matches!(expr.kind, NodeKind::Undef) {
