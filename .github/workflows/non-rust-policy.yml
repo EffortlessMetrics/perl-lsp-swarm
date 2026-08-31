@@ -58,6 +58,18 @@ jobs:
             test "$(git rev-parse "$SUBJECT_SHA^1")" = "$BASE_SHA"
           fi
 
+      - name: Verify trusted workflow contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/non-rust-policy.yml
+          grep -q '^  merge_group:' "$workflow"
+          grep -q 'name: Non-Rust policy exact-tree' "$workflow"
+          grep -q 'ref: .*BASE_SHA' "$workflow"
+          grep -q 'actions/upload-artifact@' "$workflow"
+          grep -q 'if: always()' "$workflow"
+          grep -q 'persist-credentials: false' "$workflow"
+          ! grep -Eq 'cargo run.*(pull_request|head\.sha|github\.event\.pull_request\.head)' "$workflow"
       - name: Run trusted exact-tree evaluator
         run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json
 

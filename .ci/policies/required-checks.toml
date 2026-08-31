@@ -39,6 +39,20 @@ contract_role = "advisory-workflow-shape"
 # inferred from the workflow, job, producer class, or context name.
 
 [[checks]]
+name = "Non-Rust policy exact-tree"
+producer = "repository-job"
+workflow = ".github/workflows/non-rust-policy.yml"
+job = "exact-tree"
+workflow_result = "propagate"
+events = ["pull_request_target", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+ruleset_integration_id = 15368
+reason = "Shadow exact-tree policy evaluator; advisory until canaries and ruleset promotion complete."
+
+[[checks]]
 name = "Perl LSP Rust Small Result"
 producer = "repository-job"
 workflow = ".github/workflows/em-ci-routed-rust.yml"

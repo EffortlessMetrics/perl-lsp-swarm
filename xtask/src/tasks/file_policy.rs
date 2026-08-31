@@ -176,7 +176,20 @@ fn prepare_allow_entries(entries: &[AllowEntry]) -> Vec<PreparedAllowEntry<'_>> 
 }
 
 fn validate_exact_allow_entries(entries: &[AllowEntry]) -> Result<()> {
+    let mut ids = std::collections::BTreeSet::new();
     for entry in entries.iter().filter(|entry| !entry.retired) {
+        if !ids.insert(&entry.id) {
+            bail!("duplicate allowlist entry id {}", entry.id);
+        }
+        if entry.kind.trim().is_empty()
+            || entry.language.trim().is_empty()
+            || entry.surface.trim().is_empty()
+            || entry.classification.trim().is_empty()
+            || entry.owner.trim().is_empty()
+            || entry.reason.trim().is_empty()
+        {
+            bail!("allowlist entry {} has empty required metadata", entry.id);
+        }
         match (entry.glob.as_deref(), entry.path.as_deref()) {
             (Some(_), Some(_)) => bail!("allowlist entry {} sets both glob and path", entry.id),
             (None, None) => bail!("allowlist entry {} has no glob or path", entry.id),
