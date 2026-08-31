@@ -1146,6 +1146,41 @@ fn a_row_without_a_trigger_is_rejected() {
 }
 
 #[test]
+fn a_graph_deeper_than_the_bound_is_reported_as_instrument_failure() {
+    // The traversal cap keeps the walk terminating on a cyclic graph, but a cap
+    // that truncates silently is an instrument failure reported as a pass: the
+    // spawn below sits past the bound, so coverage sees a short graph and finds
+    // nothing to complain about.
+    let mut body = String::from("impl Server { pub fn handle_initialize(&self) { hop_0(); }\n");
+    let hops = census::MAX_DEPTH + 3;
+    for hop in 0..hops {
+        body.push_str(&format!("pub fn hop_{hop}() {{ hop_{}(); }}\n", hop + 1));
+    }
+    body.push_str(&format!(
+        "pub fn hop_{hops}() {{ let _ = std::process::Command::new(\"perl\").output(); }} }}"
+    ));
+    let census = Census::from_sources(&[(SYNTHETIC_ROOT_FILE.to_string(), body)]);
+
+    let errors = ledger_errors_with_roots(&[baseline_row()], &census, &synthetic_roots());
+    assert_reports(&errors, "instrument failure");
+    assert_reports(&errors, "was truncated");
+    assert_reports(&errors, "coverage cannot be established");
+}
+
+#[test]
+fn a_graph_inside_the_bound_reports_no_truncation() {
+    // Negative control: the ordinary fixture must not be called truncated, or
+    // the rule above would fire on everything and discriminate nothing.
+    let census = Census::from_sources(&indirect_process_sources());
+    let errors = ledger_errors_with_roots(&[baseline_row()], &census, &synthetic_roots());
+
+    assert!(
+        !errors.iter().any(|error| error.contains("was truncated")),
+        "a graph that closes inside the bound must not be reported: {errors:#?}"
+    );
+}
+
+#[test]
 fn a_missing_census_root_is_rejected() {
     let census = Census::from_sources(&indirect_process_sources());
     let errors = ledger_errors_with_roots(

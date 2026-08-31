@@ -300,6 +300,11 @@ pub fn ledger_errors_with_roots(
         ));
     }
 
+    // A traversal cap that truncates silently is the same failure wearing a
+    // different hat: the reachable set is short, and coverage would pass
+    // against work the walk never got to.
+    errors.extend(bound_errors(census, roots));
+
     if rows.is_empty() {
         errors.push(
             "the ledger is empty; an initialize path always has operations to account for"
@@ -733,6 +738,34 @@ fn call_site_errors(
                 "row {} names call site `{}(\"{}\")`, but no initialize-reachable source makes \
                  that call",
                 row.operation_id, row.function, row.call_site_argument
+            ));
+        }
+    }
+    errors
+}
+
+/// Fail when the bounded traversal could not finish a root's reachable set.
+///
+/// `MAX_DEPTH` and `MAX_VISITED` are stated limitations of the census, but a
+/// limitation that fires without saying so is an instrument failure reported as
+/// a pass. Each root's frontier is inspected, and a cut edge to a function the
+/// walk never reached is a finding.
+///
+/// At most three witnesses per root: the point is to say the graph outgrew the
+/// bound and where, not to print the frontier.
+fn bound_errors(census: &Census, roots: &[(&str, &str)]) -> Vec<String> {
+    const MAX_WITNESSES: usize = 3;
+    let mut errors = Vec::new();
+    for (file, function) in roots {
+        let Some(root) = census.resolve(file, function) else {
+            continue;
+        };
+        for witness in
+            census.truncation_witnesses(root, census::MAX_DEPTH).iter().take(MAX_WITNESSES)
+        {
+            errors.push(format!(
+                "instrument failure: the census traversal from `{file}::{function}` was truncated \
+                 ({witness}), so the reachable set is incomplete and coverage cannot be established"
             ));
         }
     }

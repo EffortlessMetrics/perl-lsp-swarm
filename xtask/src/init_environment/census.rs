@@ -42,7 +42,13 @@ pub const SCANNED_CRATES: &[&str] =
     &["perl-lsp-rs", "perl-lsp-rs-core", "perl-workspace", "perl-workspace-core", "perl-dap"];
 
 /// Maximum call-graph depth walked from a census root.
-pub const MAX_DEPTH: usize = 8;
+///
+/// This is a termination safety valve for a cyclic graph, not a coverage
+/// decision: every root's reachable set closes by depth 10 today, and
+/// [`Census::truncation_witnesses`] makes the checker fail if the bound ever
+/// actually binds. A cap that silently truncated would let coverage pass
+/// against a reachable set the walk never finished.
+pub const MAX_DEPTH: usize = 16;
 
 /// Maximum number of distinct functions expanded during one traversal.
 pub const MAX_VISITED: usize = 20_000;
@@ -485,6 +491,48 @@ impl Census {
             }
         }
         seen
+    }
+
+    /// Frontier nodes where the bounded traversal from `root` was cut short.
+    ///
+    /// [`MAX_DEPTH`] and [`MAX_VISITED`] keep the walk terminating on a cyclic
+    /// graph, but a cap that truncates silently would let coverage pass against
+    /// a reachable set the census never finished building — an instrument
+    /// failure reported as a clean result. Reporting the frontier lets the
+    /// caller fail closed, the same way an unparsable source does.
+    ///
+    /// An edge to an already-reached function is not truncation: nothing is
+    /// lost, only a longer path to a node the walk already owns.
+    pub fn truncation_witnesses(&self, root: usize, max_depth: usize) -> Vec<String> {
+        let reached = self.reachable_from(root, max_depth);
+        if reached.len() >= MAX_VISITED {
+            return vec![format!("visit cap of {MAX_VISITED} functions reached")];
+        }
+
+        let mut witnesses = Vec::new();
+        for (&index, &depth) in &reached {
+            if depth < max_depth {
+                continue;
+            }
+            let Some(record) = self.funcs.get(index) else {
+                continue;
+            };
+            for (callee, kind) in record.all_calls() {
+                let Some(next) = self.resolve_edge(index, callee, kind) else {
+                    continue;
+                };
+                if !self.edge_is_admissible(index, next, kind) || reached.contains_key(&next) {
+                    continue;
+                }
+                witnesses.push(format!(
+                    "depth cap of {max_depth} reached at {} -> {}",
+                    self.qualified(index),
+                    self.qualified(next)
+                ));
+                break;
+            }
+        }
+        witnesses
     }
 
     /// Exposures transitively reachable from `root`, each with one shortest
