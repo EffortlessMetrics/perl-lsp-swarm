@@ -53,6 +53,19 @@ fn job_block<'a>(workflow: &'a str, job: &str) -> Option<&'a str> {
     Some(&rest[..end])
 }
 
+/// Extract one named step from a job block.
+///
+/// The Windows job contains several multiline `run: |` steps. Anchoring the
+/// lookup to the step name prevents a contract from accidentally inspecting a
+/// preceding helper step instead of the command it intends to guard.
+fn step_block<'a>(job: &'a str, step_name: &str) -> Option<&'a str> {
+    let header = format!("      - name: {step_name}\n");
+    let start = job.find(&header)?;
+    let rest = &job[start..];
+    let end = rest.match_indices("\n      - ").next().map_or(rest.len(), |(idx, _)| idx);
+    Some(&rest[..end])
+}
+
 /// #9594: the bit-rot guard must not pin the pull-request head SHA.
 ///
 /// For a `pull_request` event the workflow definition comes from the base
@@ -220,5 +233,40 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
          different command under the same watchdog. Extracted job:\n{job}"
     );
 
+    Ok(())
+}
+
+/// #14355: the Windows portability lane must admit integration targets.
+///
+/// The release-artifact smoke target is intentionally Unix-only at runtime,
+/// but its crate-root cfg must still be compiled on Windows. A library-only
+/// command silently skips every file under `tests/` and therefore cannot
+/// prove that boundary.
+#[test]
+fn windows_platform_smoke_compiles_integration_targets_without_running_them()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    let job = job_block(&ci, "windows-platform-smoke")
+        .ok_or("ci.yml no longer defines a `windows-platform-smoke` job")?;
+    let smoke_step = step_block(job, "Run Windows portability smoke")
+        .ok_or("windows platform smoke has no named smoke step")?;
+    assert!(
+        !smoke_step.contains("scope_cache_key.py"),
+        "Windows portability smoke contract must not inspect the preceding cache-key step"
+    );
+    let run = smoke_step
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("run: "))
+        .ok_or("windows platform smoke has no run command")?;
+
+    assert!(
+        run.contains("cargo test $WINDOWS_TEST_CRATES --locked --tests --no-run"),
+        "Windows portability smoke must compile selected integration targets without running Unix-only tests; command: {run}"
+    );
+    assert!(
+        !run.contains("--lib"),
+        "Windows portability smoke must not use --lib, which excludes integration targets; command: {run}"
+    );
     Ok(())
 }
