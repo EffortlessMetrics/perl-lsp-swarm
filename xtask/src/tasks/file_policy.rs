@@ -430,6 +430,40 @@ fn classify_tree_at(
     Ok((records, blob_sha))
 }
 
+fn expired_paths_in_tree(
+    root: &Path,
+    sha: &str,
+    evaluation_date: NaiveDate,
+) -> Result<Vec<String>> {
+    let (_, policy) = tree_file(root, sha, "policy/non-rust-allowlist.toml")?;
+    let allowlist: Allowlist = toml::from_str(std::str::from_utf8(&policy)?)?;
+    let expired = allowlist
+        .allow
+        .iter()
+        .filter(|entry| {
+            !entry.retired
+                && entry
+                    .expires
+                    .as_deref()
+                    .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+                    .is_some_and(|date| date < evaluation_date)
+        })
+        .filter_map(|entry| {
+            let matcher = entry.glob.as_deref().or(entry.path.as_deref())?;
+            Pattern::new(matcher).ok().map(|pattern| (pattern, entry.id.as_str()))
+        })
+        .collect::<Vec<_>>();
+    let mut paths = tree_paths(root, sha)?
+        .into_iter()
+        .filter(|path| {
+            !is_rust_file(path) && expired.iter().any(|(pattern, _)| pattern.matches(path))
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> Result<()> {
     let base_listing =
         git_object(root, &["ls-tree", base_sha, "--", ".github/workflows/non-rust-policy.yml"])?;
@@ -576,6 +610,16 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     if !evaluator_run.contains("cargo run --locked -p xtask -- non-rust exact-tree") {
         bail!("trusted evaluator step must execute the exact-tree command");
     }
+    for argument in [
+        "--base-sha \"$BASE_SHA\"",
+        "--subject-sha \"$SUBJECT_SHA\"",
+        "--event-name \"$GITHUB_EVENT_NAME\"",
+        "--repository \"$GITHUB_REPOSITORY\"",
+    ] {
+        if !evaluator_run.contains(argument) {
+            bail!("trusted evaluator step is missing exact argument {argument}");
+        }
+    }
     let condition = evaluator
         .get(key("if"))
         .and_then(serde_yaml_ng::Value::as_str)
@@ -595,9 +639,12 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     }) {
         bail!("trusted workflow must upload evidence with if: always()");
     }
-    for line in text.lines().map(str::trim) {
-        if let Some(action) = line.strip_prefix("uses:") {
-            let action = action.trim();
+    for step in steps {
+        if let Some(action) = step
+            .as_mapping()
+            .and_then(|map| map.get(key("uses")))
+            .and_then(serde_yaml_ng::Value::as_str)
+        {
             if !(action.starts_with("actions/checkout@")
                 || action.starts_with("dtolnay/rust-toolchain@")
                 || action.starts_with("taiki-e/install-action@")
@@ -620,6 +667,11 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     if text.contains("refs/pull/${{") {
         bail!("subject workflow must pass pull-request refs through environment data");
     }
+    let executable_text = steps
+        .iter()
+        .filter_map(|step| step.as_mapping()?.get(key("run")))
+        .filter_map(serde_yaml_ng::Value::as_str)
+        .collect::<Vec<_>>();
     for forbidden in [
         "git show",
         "git cat-file",
@@ -643,7 +695,7 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         "eval ",
         "git fetch .*head",
     ] {
-        if text.contains(forbidden) && forbidden != "refs/pull/" {
+        if executable_text.iter().any(|run| run.contains(forbidden)) && forbidden != "refs/pull/" {
             bail!(
                 "subject workflow must not execute or import candidate-derived content: {forbidden}"
             );
@@ -797,8 +849,14 @@ fn non_rust_exact_tree_inner(
         .filter(|r| r.category == "unclassified")
         .map(|r| r.path.clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let new_unclassified_paths =
+    let mut new_unclassified_paths =
         subject_unclassified.difference(&base_unclassified).cloned().collect::<Vec<_>>();
+    for path in expired_paths_in_tree(root, &subject_commit, evaluation_date)? {
+        if !new_unclassified_paths.contains(&path) {
+            new_unclassified_paths.push(path);
+        }
+    }
+    new_unclassified_paths.sort();
     let markdown = render_markdown(&subject_records);
     let output_dir = root.join("target/policy");
     fs::create_dir_all(&output_dir).context("creating exact-tree output directory")?;
