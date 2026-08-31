@@ -183,7 +183,8 @@ fn root_probe_driver_observes_stock_selection_without_prebinding() -> Result<(),
     let root = repo_root()?;
     let driver = read(&root, DRIVER)?;
     // The instrument must call the exact stock seams.
-    for seam in ["(require 'eglot)", "(project-current nil)", "(project-root project)", "(eglot--current-project)"] {
+    for seam in [
+        "(require 'eglot)", "(project-current nil)", "(project-root project)", "(eglot--current-project)"] {
         assert!(driver.contains(seam), "driver must observe through stock seam: {seam}");
     }
     // No-prebinding falsifiers: the instrument never injects, remembers, or
@@ -211,18 +212,28 @@ fn root_probe_driver_refuses_to_pass_without_cleanup_proof() -> Result<(), Box<d
     let driver = read(&root, DRIVER)?;
     // Cleanup verification happens after shutdown and drives the receipt:
     // live processes fail closed, and both cleanup slots are always present.
-    assert!(driver.contains("process-live-p") && driver.contains("--live-server-count server"), "driver must verify server liveness during cleanup");
+    assert!(
+        driver.contains("process-live-p") && driver.contains("--live-server-count server"),
+        "driver must verify server liveness during cleanup"
+    );
     assert!(
         driver.contains("live server process behind"),
         "driver must fail closed on surviving sessions"
     );
-    for slot in ["process_cleanup_live_servers", "cleanup_buffer_closed", "driver_complete", "generation_identity", "subject_id"] {
+    for slot in [
+        "process_cleanup_live_servers",
+        "cleanup_buffer_closed",
+        "driver_complete",
+        "generation_identity",
+        "subject_id",
+    ] {
         assert!(driver.contains(slot), "receipt must carry the {slot} cleanup slot");
     }
     // A missing candidate records a manual action with a typed refusal; it
     // can never degrade into an invented session fact.
     assert!(
-        driver.contains("candidate_executable_not_supplied") && driver.contains("generation_identity"),
+        driver.contains("candidate_executable_not_supplied")
+            && driver.contains("generation_identity"),
         "absent candidate is a typed refusal, not a pass"
     );
     assert!(
