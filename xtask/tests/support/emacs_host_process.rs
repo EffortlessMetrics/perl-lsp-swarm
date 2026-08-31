@@ -7,7 +7,7 @@
 
 use super::{
     DriverEvent, DriverEventKind, EmacsHostRunPlan, HermeticLayout, MAX_CAPTURE_BYTES,
-    bytes_sha256, file_sha256, lifecycle_rank, parse_driver_event_prefix, validate_driver_events,
+    bytes_sha256, file_sha256, lifecycle_rank, parse_driver_event_prefix, parse_driver_events,
     validate_safe_identity,
 };
 use anyhow::{Context, Result, bail};
@@ -38,6 +38,7 @@ struct ProcessLedger {
     event_count: usize,
     driver_complete: bool,
     snapshot_persist: String,
+    event_stream: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -153,9 +154,12 @@ pub fn run_owned_process(
     let needle = candidate_needle(plan);
     let probe_before = probe_process_table();
     let before_diagnostic = diagnostic_probe_failure("before", &probe_before);
-    let before_lines = match &probe_before {
-        Some(Ok(text)) => parse_probe(text).unwrap_or_default(),
-        _ => Vec::new(),
+    let (before_lines, before_usable) = match &probe_before {
+        Some(Ok(text)) => match parse_probe(text) {
+            Ok(lines) => (lines, true),
+            Err(_) => (Vec::new(), false),
+        },
+        _ => (Vec::new(), false),
     };
 
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -186,7 +190,7 @@ pub fn run_owned_process(
     // before-probe (never image-wide, never the pre-existing set). Descendants
     // spawned with null stdio do not hold the host pipes; join_capture still
     // unblocks on host EOF.
-    if timed_out || kill_requested {
+    if (timed_out || kill_requested) && before_usable {
         reap_this_run_survivors(pid, &before_lines, &needle);
     }
 
@@ -297,11 +301,15 @@ pub fn run_owned_process(
         snapshot_persist_errors.join("; ")
     };
 
-    let event_bytes = fs::read(layout.event_file()).unwrap_or_default();
-    // Keep the valid JSONL prefix. A truncated trailing line must not wipe
-    // barriers already observed; an invalid first line still yields no events.
+    let (event_bytes, event_stream) = match fs::read(layout.event_file()) {
+        Ok(bytes) => (bytes, "ok".to_string()),
+        Err(error) => (Vec::new(), format!("read failed: {error}")),
+    };
+    // Keep the valid JSONL prefix for last_completed_barrier. Completeness
+    // still requires the entire stream to parse and validate; trailing
+    // garbage after a complete ladder cannot pass.
     let events = parse_driver_event_prefix(&event_bytes);
-    let driver_complete = validate_driver_events(&events, true).is_ok();
+    let driver_complete = parse_driver_events(&event_bytes, true).is_ok();
     let last_barrier = last_completed_barrier(&events);
 
     let mut bounds: BTreeMap<String, CaptureBoundsRow> = BTreeMap::new();
@@ -370,6 +378,7 @@ pub fn run_owned_process(
         event_count: events.len(),
         driver_complete,
         snapshot_persist,
+        event_stream,
     };
     let ledger_bytes = serde_json::to_vec_pretty(&ledger)?;
     artifacts.push(write_sanitized_artifact(
@@ -839,7 +848,9 @@ fn persist_text(path: &Path, text: &str) -> Result<()> {
 /// Kill this-run candidate survivors after a force/timeout host kill.
 /// Selection is `surviving_processes` (needle match absent from the before-probe)
 /// minus the already-waited host PID. This is not an image-wide Windows
-/// `taskkill` and does not touch pre-existing matches.
+/// `taskkill` and does not touch pre-existing matches. Callers must skip this
+/// when the before-probe was unusable; an empty baseline would treat every
+/// match as this run's leak.
 fn reap_this_run_survivors(host_pid: u32, before: &[ProcessProbeLine], needle: &str) {
     for _ in 0..10 {
         let Some(Ok(text)) = probe_process_table() else {
@@ -848,10 +859,7 @@ fn reap_this_run_survivors(host_pid: u32, before: &[ProcessProbeLine], needle: &
         let Ok(mid) = parse_probe(&text) else {
             return;
         };
-        let remaining: Vec<ProcessProbeLine> = surviving_processes(before, &mid, needle)
-            .into_iter()
-            .filter(|line| line.pid != host_pid)
-            .collect();
+        let remaining = this_run_reap_targets(true, host_pid, before, &mid, needle);
         if remaining.is_empty() {
             return;
         }
@@ -860,6 +868,22 @@ fn reap_this_run_survivors(host_pid: u32, before: &[ProcessProbeLine], needle: &
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+fn this_run_reap_targets(
+    before_usable: bool,
+    host_pid: u32,
+    before: &[ProcessProbeLine],
+    mid: &[ProcessProbeLine],
+    needle: &str,
+) -> Vec<ProcessProbeLine> {
+    if !before_usable {
+        return Vec::new();
+    }
+    surviving_processes(before, mid, needle)
+        .into_iter()
+        .filter(|line| line.pid != host_pid)
+        .collect()
 }
 
 fn stop_owned_pid(pid: u32) {
@@ -982,6 +1006,23 @@ mod process_tests {
         assert!(
             !matches_needle_with("perllsp-tag-extra.exe", "perllsp-tag", true),
             "a different Windows image name is not this run"
+        );
+    }
+
+    #[test]
+    fn timeout_reap_is_skipped_when_the_before_probe_is_unusable() {
+        let preexisting = ProcessProbeLine { pid: 99, args: "/tmp/run/perllsp serve".into() };
+        let mid = vec![preexisting.clone()];
+        let targets = this_run_reap_targets(false, 1, &[], &mid, "/tmp/run/perllsp");
+        assert!(
+            targets.is_empty(),
+            "an unusable baseline must not turn a pre-existing match into a kill target"
+        );
+        let usable = this_run_reap_targets(true, 1, &[], &mid, "/tmp/run/perllsp");
+        assert_eq!(
+            usable,
+            vec![preexisting],
+            "a usable empty-of-needle baseline still attributes a new match to this run"
         );
     }
 

@@ -447,6 +447,14 @@ fn run_fake_host_mode(mode: &str) -> Result<i32> {
             }
             Ok(7)
         }
+        "complete_then_trailing_garbage" => {
+            child_emit_lifecycle(&event_file, &mut sequence, None)?;
+            use std::io::Write as _;
+            let mut file = fs::OpenOptions::new().create(true).append(true).open(&event_file)?;
+            write!(file, "{{\"schema_version\":\"{DRIVER_SCHEMA_VERSION}\",\"sequence\":")?;
+            drop(file);
+            Ok(0)
+        }
         other => bail!("unknown supervision fixture mode: {other}"),
     }
 }

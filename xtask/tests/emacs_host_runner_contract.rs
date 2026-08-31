@@ -1319,6 +1319,30 @@ fn truncated_trailing_event_line_keeps_prior_barrier() -> Result<()> {
     Ok(())
 }
 
+/// A complete lifecycle plus trailing garbage must keep the last barrier and
+/// still refuse driver completeness / the passing process boundary.
+#[test]
+fn complete_lifecycle_with_trailing_garbage_cannot_pass() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) =
+        run_fake_scenario(root.path(), "complete_then_trailing_garbage", "trailgarb", 30_000)?;
+    ensure!(observation.status_code == Some(0), "the host itself must exit zero");
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("shutdown_completed"),
+        "the valid prefix must keep the completed ladder, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(
+        !observation.driver_complete,
+        "trailing garbage after a complete ladder cannot count as a complete driver stream"
+    );
+    ensure!(
+        !observation.passed_process_boundary(),
+        "a corrupted event stream cannot satisfy the passing process boundary"
+    );
+    Ok(())
+}
+
 #[test]
 fn malformed_driver_stream_fails_closed_with_bounded_diagnostics() -> Result<()> {
     let root = tempfile::tempdir()?;
