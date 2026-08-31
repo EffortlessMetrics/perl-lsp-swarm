@@ -21,7 +21,7 @@ use super::facts::CanonicalDancer2FileFacts;
 use perl_semantic_facts::framework_adapters::dancer2::{
     DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
 };
-use perl_semantic_facts::route::{HandlerContextKind, RouteHandlerContextFact};
+use perl_semantic_facts::route::HandlerContextKind;
 
 /// Sort penalty applied to Dancer2 keyword completion items so ordinary
 /// lexical/workspace results rank ahead of framework keywords.
@@ -72,25 +72,17 @@ pub fn keyword_completion_candidates(
     // One canonical context query: route handlers and admitted hook handlers
     // both establish request context, and nothing else does (#13604).
     let request_context = facts.request_context_at(offset);
-    let inside_request_context =
-        request_context.is_some_and(RouteHandlerContextFact::establishes_request_context);
-    // The rendered scope names where the keyword is available *here*. Saying
-    // "route handler only" inside an admitted hook handler would contradict
-    // the very position that just offered it.
-    let request_scope_detail = match request_context {
-        Some(context) if context.establishes_request_context() => match context.handler_kind {
-            HandlerContextKind::Hook => "request-scoped, in this hook handler",
-            _ => "request-scoped, in this route handler",
-        },
-        _ => "request-scoped (route or admitted hook handler)",
-    };
+    // The only context that may offer a request-scoped keyword is one that
+    // establishes request context, so narrow to that once. Keeping the
+    // narrowed context rather than a separate boolean means the decision to
+    // offer the keyword and the description of where it is offered cannot
+    // disagree: both read this single value.
+    let established_context =
+        request_context.filter(|context| context.establishes_request_context());
     let mut candidates = Vec::new();
     for keyword in &activation.facts.keywords {
         if keyword.state != Dancer2KeywordState::Imported {
             // `!keyword` at the activating import: never offered.
-            continue;
-        }
-        if keyword.scope == DslKeywordScope::RouteHandlerOnly && !inside_request_context {
             continue;
         }
         if locally_declared_subnames(&keyword.keyword) {
@@ -98,19 +90,34 @@ pub fn keyword_completion_candidates(
             // ordinary Perl completion covers it.
             continue;
         }
+        // The rendered scope names where the keyword is available *here*.
+        // Saying "route handler only" inside an admitted hook handler would
+        // contradict the very position that just offered it.
+        let scope_detail = match keyword.scope {
+            DslKeywordScope::Global => "global",
+            DslKeywordScope::RouteHandlerOnly => {
+                // A request-scoped keyword is offered only from a context that
+                // establishes request context; without one there is nothing
+                // honest to say about where it applies, so it is not offered.
+                // Deciding that here, rather than in a separate guard, is what
+                // keeps an unreachable description from existing at all.
+                let Some(context) = established_context else {
+                    continue;
+                };
+                match context.handler_kind {
+                    HandlerContextKind::Hook => "request-scoped, in this hook handler",
+                    _ => "request-scoped, in this route handler",
+                }
+            }
+            _ => "unknown",
+        };
         candidates.push(Dancer2CompletionCandidate {
             label: keyword.keyword.clone(),
             scope: keyword.scope,
             rank_penalty: KEYWORD_RANK_PENALTY,
             detail: format!(
                 "Dancer2 {} keyword ({} — {})",
-                &version,
-                match keyword.scope {
-                    DslKeywordScope::Global => "global",
-                    DslKeywordScope::RouteHandlerOnly => request_scope_detail,
-                    _ => "unknown",
-                },
-                DANCER2_DSL_CONTRACT_VERSION
+                &version, scope_detail, DANCER2_DSL_CONTRACT_VERSION
             ),
             dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
         });
