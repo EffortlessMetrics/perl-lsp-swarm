@@ -32,7 +32,7 @@
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 /// A lane step: banner name plus exact cargo argv (no shell interpolation).
@@ -589,6 +589,20 @@ fn capture_worktree_dirty(receipt_path: &Path) -> Result<bool> {
 /// input to the proof. Without this, a `--receipt` destination inside the
 /// repository and not gitignored would change the tree after subject capture,
 /// and the command's own verifier would reject the receipt it just wrote.
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let _ = normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
 fn receipt_exclusions(receipt_path: &Path) -> Result<Vec<String>> {
     // `--receipt` is caller-relative, but `git status` reports
     // repository-root-relative paths. Resolving the exclusion against the
@@ -601,7 +615,8 @@ fn receipt_exclusions(receipt_path: &Path) -> Result<Vec<String>> {
     let mut paths = Vec::new();
     for candidate in [receipt_path.to_path_buf(), staging_path(receipt_path)] {
         let absolute = if candidate.is_absolute() { candidate } else { cwd.join(&candidate) };
-        if let Ok(relative) = absolute.strip_prefix(&root) {
+        let normalized = lexically_normalize(&absolute);
+        if let Ok(relative) = normalized.strip_prefix(&root) {
             paths.push(relative.to_string_lossy().replace('\\', "/"));
         }
     }
@@ -940,11 +955,17 @@ fn fail_closed(
     // instead. The lane still reports the failure through its exit and error;
     // only the receipt, which could not honestly describe the run, is lost.
     match capture_subject(receipt_path) {
-        Ok(current) if current == *subject => {
-            if let Err(write_error) = write_receipt(receipt_path, &receipt) {
-                eprintln!("[rust-small-proof] receipt emission also failed: {write_error:#}");
+        Ok(current) if current == *subject => match verify_receipt(&receipt, None) {
+            Ok(()) => {
+                if let Err(write_error) = write_receipt(receipt_path, &receipt) {
+                    eprintln!("[rust-small-proof] receipt emission also failed: {write_error:#}");
+                }
             }
-        }
+            Err(verify_error) => eprintln!(
+                "[rust-small-proof] refusing to publish an internally invalid failure receipt: \
+                 {verify_error:#}"
+            ),
+        },
         Ok(_) => eprintln!(
             "[rust-small-proof] the subject changed while the lane ran; withholding a receipt \
              that would misdescribe which subject failed"
@@ -1763,6 +1784,28 @@ tests::gamma: test
     }
 
     #[test]
+    fn parent_components_are_normalized_before_matching_git_status_paths() {
+        let path = Path::new("evidence")
+            .join("nested")
+            .join("..")
+            .join("rust-small.json");
+        let Ok(excluded) = receipt_exclusions(&path) else {
+            panic!("exclusions must resolve inside a git checkout");
+        };
+        assert!(
+            excluded.iter().any(|item| item.ends_with("evidence/rust-small.json")),
+            "the normalized receipt path must be excluded: {excluded:?}"
+        );
+        assert!(
+            excluded
+                .iter()
+                .flat_map(|item| Path::new(item).components())
+                .all(|component| component != Component::ParentDir),
+            "git-status exclusions must not retain parent components: {excluded:?}"
+        );
+    }
+
+    #[test]
     fn a_census_count_must_agree_with_the_census_step() {
         let census_at = CARGO_STEPS.len();
 
@@ -1955,6 +1998,44 @@ tests::gamma: test
         assert!(
             verify_receipt(&receipt, Some(&live)).is_ok(),
             "the receipt this command emits must pass its own verifier"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_invalid_failure_receipt_is_withheld_without_masking_the_lane_failure() {
+        let dir = scratch_dir("invalid-failure-receipt");
+        let path = dir.join("emitted.json");
+
+        let mut recorder = Recorder::new();
+        recorder.record(
+            "fetch locked inputs",
+            argv("cargo", &["fetch", "--locked"]),
+            StepOutcome::Ok,
+            None,
+        );
+
+        let Ok(live) = capture_subject(&path) else { panic!("subject capture") };
+        let emitted = fail_closed(
+            &path,
+            &live,
+            recorder,
+            None,
+            ProofResult::ProductFailure,
+            eyre!("original lane failure"),
+        );
+
+        let Err(error) = emitted else {
+            panic!("the lane must still fail");
+        };
+        assert!(
+            format!("{error:#}").contains("original lane failure"),
+            "receipt validation must not replace the original failure: {error:#}"
+        );
+        assert!(
+            !path.exists(),
+            "a receipt rejected by the canonical verifier must not be published"
         );
 
         let _ = fs::remove_dir_all(&dir);
