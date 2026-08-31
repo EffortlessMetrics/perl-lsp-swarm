@@ -26,6 +26,7 @@
 //!
 //! Refs: #8174, #8566.
 
+use chrono::NaiveDate;
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
@@ -241,7 +242,7 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         }
         if let Some(glob) = glob {
             Pattern::new(glob).with_context(|| format!("invalid glob in allow entry {id}"))?;
-            if glob.contains("**")
+            if is_policy_broad_glob(glob)
                 && table.get("broad_glob_reason").and_then(toml::Value::as_str).is_none()
             {
                 bail!("broad glob in allow entry {id} lacks broad_glob_reason");
@@ -252,14 +253,19 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         if !KNOWN_CLASSIFICATIONS.contains(&classification) {
             bail!("unknown classification {classification} in allow entry {id}");
         }
+        let mut dates = BTreeMap::new();
         for field in ["created", "review_after", "expires"] {
-            if let Some(date) = table.get(field).and_then(toml::Value::as_str)
-                && (date.len() != 10
-                    || date.as_bytes().get(4) != Some(&b'-')
-                    || date.as_bytes().get(7) != Some(&b'-'))
-            {
-                bail!("invalid {field} date in allow entry {id}");
+            if let Some(date) = table.get(field).and_then(toml::Value::as_str) {
+                let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                    .with_context(|| format!("invalid {field} date in allow entry {id}"))?;
+                dates.insert(field, parsed);
             }
+        }
+        if let (Some(created), Some(review_after)) =
+            (dates.get("created"), dates.get("review_after"))
+            && created > review_after
+        {
+            bail!("created date is after review_after in allow entry {id}");
         }
     }
     Ok(())
