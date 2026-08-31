@@ -101,7 +101,11 @@ impl DebugBackend for NativePerlDbBackend {
             logpoints: negotiated.supports_log_points,
             function_breakpoints: negotiated.supports_function_breakpoints,
             data_breakpoints: negotiated.supports_data_breakpoints,
-            evaluate: negotiated.supports_evaluate_for_hovers,
+            // General evaluation, not the hover promise. These were one field
+            // until #9573; deriving `evaluate` from the hover capability would
+            // have disabled watch/repl/clipboard evaluation the moment hover
+            // was closed.
+            evaluate: negotiated.supports_evaluate,
             variables: true,
             scopes: true,
             stack_trace: true,
