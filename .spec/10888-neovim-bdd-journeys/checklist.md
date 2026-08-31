@@ -112,6 +112,14 @@ duplicate `non_rust_inventory_check`, whose job it already is. The boundary is
 deliberate: the checker catches an omitted or hand-faked packet refresh; the
 gate owns whole-file equivalence.
 
+Stated limitation, enforcement: no repository gate runs this checker. It is
+executed by extracting it from this file, which binds the documented and
+executed bytes to each other but not to CI, so a later ledger change can be
+made without it. Wiring a gate means new `xtask` and CI surface, which this
+docs-only claim does not own; the Vim rail gained its catalog mirror only after
+#11371 merged, under separate ownership, and the same sequencing applies here.
+Until such an owner exists, this checker is a review instrument, not a ratchet.
+
 Stated limitation, digests: a row and its digest can be changed together in one commit,
 so the digests prove *consistency and visibility*, not *authority*. They make
 an ID reassignment impossible to perform silently; they cannot establish that
