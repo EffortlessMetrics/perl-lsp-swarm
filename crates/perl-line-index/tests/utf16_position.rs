@@ -154,8 +154,9 @@ fn test_utf16_first_line_unaffected_by_second_line() -> Result<(), Box<dyn std::
 }
 
 /// CRLF line endings are included in the addressable line text: callers may
-/// address the `\r`, the `\n`, and the one-past-end range position at the
-/// start of the next line while still using UTF-16 columns.
+/// address the `\r` and the `\n`, but the first byte of the next line is not
+/// reachable through this line (#9837).  The newline is the one-past-content
+/// position and remains valid as a range end.
 #[test]
 fn test_utf16_crlf_line_accepts_newline_and_range_end_positions()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -165,13 +166,55 @@ fn test_utf16_crlf_line_accepts_newline_and_range_end_positions()
     assert_eq!(idx.position_to_byte_utf16(text, 0, 0), Some(0));
     assert_eq!(idx.position_to_byte_utf16(text, 0, 2), Some(2));
     assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3));
-    assert_eq!(idx.position_to_byte_utf16(text, 0, 4), Some(4));
+    // #9837: column 4 is the start of line 1 — out of range for line 0.  The
+    // pre-fix implementation returned Some(4), silently resolving to the next
+    // line while the byte-column siblings reject the same position.
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 4), None);
 
     // Line 1 starts after the CRLF. The emoji occupies two UTF-16 units, so
     // column 3 is the `d` after the emoji and column 2 is an invalid interior
     // surrogate-pair position.
     assert_eq!(idx.position_to_byte_utf16(text, 1, 3), Some(9));
     assert_eq!(idx.position_to_byte_utf16(text, 1, 2), None);
+    Ok(())
+}
+
+/// #9837 regression: a UTF-16 column one past the last addressable position on
+/// a non-final line must be rejected, not resolved to the next line's start.
+/// The two byte-column siblings already reject the same position.
+#[test]
+fn test_utf16_one_past_newline_on_nonfinal_line_is_rejected()
+-> Result<(), Box<dyn std::error::Error>> {
+    let text = "ab\ncd";
+    let idx = LineIndex::new(text);
+
+    assert_eq!(idx.position_to_byte(0, 3), None);
+    assert_eq!(idx.position_to_byte_checked(0, 3), None);
+    // Pre-fix this returned Some(3) — the first byte of line 1.
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), None);
+    // The newline itself stays addressable (byte 2), and line 1 col 0 is
+    // byte 3 when addressed through its own line.
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 2), Some(2));
+    assert_eq!(idx.position_to_byte_utf16(text, 1, 0), Some(3));
+    // The one-past-end position on the final line is still accepted for
+    // range ends.
+    assert_eq!(idx.position_to_byte_utf16(text, 1, 2), Some(5));
+    Ok(())
+}
+
+/// #9837 regression on CRLF: the same rejection must hold when the line ends
+/// with `\r\n`, matching `position_to_byte_checked` exactly.
+#[test]
+fn test_utf16_crlf_one_past_next_line_start_is_rejected() -> Result<(), Box<dyn std::error::Error>>
+{
+    let text = "ab\r\ncd";
+    let idx = LineIndex::new(text);
+
+    assert_eq!(idx.position_to_byte_checked(0, 4), None);
+    // Pre-fix this returned Some(4).
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 4), None);
+    // The `\n` (byte 3) remains the last addressable position on line 0.
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3));
     Ok(())
 }
 

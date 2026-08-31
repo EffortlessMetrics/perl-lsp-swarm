@@ -94,6 +94,10 @@ impl LineIndex {
     /// Returns `None` when:
     /// - `line` is out of range (same as [`position_to_byte`]).
     /// - `column` is past the end of the line (UTF-16 length of the line text).
+    ///   On a non-final line the `'\n'` terminator itself is the last
+    ///   addressable position; any position at or beyond the start of the next
+    ///   line is rejected (#9837), matching [`position_to_byte`] and
+    ///   [`position_to_byte_checked`].
     /// - `column` points into the middle of a UTF-16 surrogate pair (the
     ///   interior of a supplementary character, U+10000..=U+10FFFF).
     ///
@@ -104,10 +108,15 @@ impl LineIndex {
     #[must_use]
     pub fn position_to_byte_utf16(&self, text: &str, line: usize, column: usize) -> Option<usize> {
         let line_start = *self.line_starts.get(line)?;
-        // Determine where this line's content ends (exclusive).  For non-final
-        // lines that includes the '\n' byte itself so positions pointing at the
-        // newline are accepted.  For the final line we use text_len.
-        let line_end = self.line_starts.get(line + 1).copied().unwrap_or(self.text_len);
+        // Determine where this line's content ends (exclusive).  The '\n'
+        // terminator belongs to this line and stays addressable (it is the
+        // one-past-content position), but the first byte of the *next* line
+        // must not resolve through this line (#9837).  This mirrors the
+        // boundary rule of `position_to_byte` and `position_to_byte_checked`.
+        let line_end = self
+            .line_starts
+            .get(line + 1)
+            .map_or(self.text_len, |next_start| next_start.saturating_sub(1));
         let line_text = text.get(line_start..line_end)?;
 
         // Walk the line, accumulating UTF-16 units until we reach `column`.
@@ -124,8 +133,10 @@ impl LineIndex {
             utf16_units += ch_utf16;
         }
 
-        // `column` == total UTF-16 length of the line is the one-past-end
-        // position (valid for range ends).
+        // `column` == total UTF-16 length of the line content is the newline
+        // byte on a non-final line (addressable, valid for range ends) and
+        // `text_len` on the final line. One further points at the next line
+        // and is rejected (#9837).
         if utf16_units == column { Some(line_start + line_text.len()) } else { None }
     }
 
