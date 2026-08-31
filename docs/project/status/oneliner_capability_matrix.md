@@ -8,7 +8,7 @@ Evidence source: [`crates/perl-parser-core/tests/command_line_oneliners.rs`](../
 
 "One-liner support" is not one capability. This matrix separates it into eight layers so that accepting a program body is never reported as understanding a command line. Each row carries its own evidence: a row claiming `supported` or `partial` must cite fixtures that are live in the conformance corpus, and the generator fails instead of rendering a claim that has none.
 
-Scope of the check, exactly: it proves each citation is real and reachable — present in the corpus as running code, not commented out, quoted, or `#[ignore]`d, and declaring the switch the row claims. It does not run the fixtures. Execution is `cargo test -p perl-parser-core --test command_line_oneliners`, which every earned row names.
+Scope of the check, exactly: it proves each citation is real and reachable — present in the corpus as running code, not commented out, quoted, `#[ignore]`d, or disabled by `cfg`, and declaring every switch the row claims. It does not run the fixtures. Execution is `cargo test -p perl-parser-core --test command_line_oneliners`, which every earned row names.
 
 Support vocabulary:
 

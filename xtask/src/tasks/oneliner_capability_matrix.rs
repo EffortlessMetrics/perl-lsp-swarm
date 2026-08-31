@@ -15,8 +15,8 @@
 //!
 //! What this check does and does not establish, stated exactly: it proves the
 //! citation is real and reachable — the fixture exists in the corpus as running
-//! code, is not commented out, quoted, or `#[ignore]`d, and declares the switch
-//! the row claims. It does **not** execute the fixture; whether it passes is
+//! code, is not commented out, quoted, `#[ignore]`d, or disabled by `cfg`, and
+//! declares every switch the row claims. It does **not** execute the fixture; whether it passes is
 //! established by running [`CORPUS_COMMAND`], which every earned row names so a
 //! reader can run it. The two together are the guarantee; neither alone is.
 
@@ -615,12 +615,12 @@ fn code_mask(source: &str) -> Vec<bool> {
             continue;
         }
 
-        if byte == b'\'' {
-            if let Some(end) = char_literal_end(source, i) {
-                i = end;
-                continue;
-            }
-            // A lifetime, not a literal: ordinary code.
+        // A `'` that does not open a literal is a lifetime: ordinary code.
+        if byte == b'\''
+            && let Some(end) = char_literal_end(source, i)
+        {
+            i = end;
+            continue;
         }
 
         mask[i] = true;
@@ -663,6 +663,43 @@ fn char_literal_end(source: &str, quote: usize) -> Option<usize> {
     if source.as_bytes().get(after) == Some(&b'\'') { Some(after + 1) } else { None }
 }
 
+/// The contiguous block of attribute lines directly above the item containing
+/// `index`, used to see what is attached to a fixture before it is counted.
+fn preceding_attributes(source: &str, index: usize) -> String {
+    const MAX_LINES: usize = 12;
+    let Some(head) = source.get(..index) else {
+        return String::new();
+    };
+    let mut lines: Vec<&str> = head.lines().collect();
+    // Drop the partial line the item sits on. When the item begins exactly at a
+    // line boundary there is no partial line to drop, and dropping one anyway
+    // would discard the very attribute being looked for.
+    if !head.ends_with('\n') {
+        lines.pop();
+    }
+    let mut block: Vec<&str> = Vec::new();
+    for line in lines.iter().rev().take(MAX_LINES) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("#[") || trimmed.starts_with("#!") {
+            block.push(trimmed);
+            continue;
+        }
+        break;
+    }
+    block.join("\n")
+}
+
+/// Whether attribute text disables the item or stops it from running.
+///
+/// A `cfg`-disabled fixture is not compiled and a `cfg_attr(..., ignore)` one is
+/// skipped, so neither is executed by the corpus command. Counting either as
+/// evidence would let a row claim support from a fixture that never runs.
+fn suppresses_execution(attributes: &str) -> bool {
+    attributes.contains("#[cfg(")
+        || attributes.contains("#[cfg_attr(")
+        || attributes.contains("#[ignore")
+}
+
 /// Extract corpus evidence from the conformance corpus source text.
 fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
     let mut evidence = CorpusEvidence::default();
@@ -670,6 +707,9 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
 
     for (index, _) in source.match_indices("command_line_oneliner!(") {
         if !code.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        if suppresses_execution(&preceding_attributes(source, index)) {
             continue;
         }
         let Some(rest) = source.get(index + "command_line_oneliner!(".len()..) else {
@@ -724,8 +764,10 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
         if gap.contains(['{', '}', ';']) {
             continue;
         }
-        // An ignored test does not run, so it cannot evidence anything.
-        if gap.contains("#[ignore") {
+        // A test that is ignored, cfg-disabled, or conditionally ignored does
+        // not run, so it cannot evidence anything. Attributes may sit on either
+        // side of `#[test]`, so both neighbourhoods are inspected.
+        if suppresses_execution(gap) || suppresses_execution(&preceding_attributes(source, index)) {
             continue;
         }
         let Some(after_fn) = rest.get(fn_offset + "fn ".len()..) else {
@@ -840,22 +882,27 @@ fn validate(rows: &[CapabilityRow], evidence: &CorpusEvidence) -> Result<()> {
                     row.status.as_str()
                 );
             }
-            let bound = switches.iter().any(|switch| {
-                row.evidence.iter().any(|id| evidence.case_declares_switch(id, switch))
-            });
-            if !bound {
-                bail!(
-                    "{layer} / {subject} claims `{}` but no cited corpus case declares `{}`",
-                    row.status.as_str(),
-                    switches.join("` or `")
-                );
+            // Every switch the subject names needs its own declaring fixture.
+            // A combined subject such as `-0 / -g` claims both, so evidence for
+            // one must not publish support for the other.
+            for switch in &switches {
+                let bound = row.evidence.iter().any(|id| evidence.case_declares_switch(id, switch));
+                if !bound {
+                    bail!(
+                        "{layer} / {subject} claims `{}` but no cited corpus case declares `{}`",
+                        row.status.as_str(),
+                        switch
+                    );
+                }
             }
         }
     }
 
+    // Pinned to the layer: a required form moved elsewhere would otherwise
+    // satisfy completeness while silently losing its parser-body classification.
     for subject in REQUIRED_SUBJECTS {
-        if !rows.iter().any(|row| row.subject == *subject) {
-            bail!("no capability row classifies the command-line form `{subject}`");
+        if !rows.iter().any(|row| row.layer == Layer::ParserBody && row.subject == *subject) {
+            bail!("no parser-body capability row classifies the command-line form `{subject}`");
         }
     }
 
@@ -931,7 +978,7 @@ fn render_matrix(rows: &[CapabilityRow], evidence: &CorpusEvidence) -> String {
     output.push_str(&format!("Evidence source: [`{CORPUS_PATH}`](../../../{CORPUS_PATH})\n\n"));
 
     output.push_str("\"One-liner support\" is not one capability. This matrix separates it into eight layers so that accepting a program body is never reported as understanding a command line. Each row carries its own evidence: a row claiming `supported` or `partial` must cite fixtures that are live in the conformance corpus, and the generator fails instead of rendering a claim that has none.\n\n");
-    output.push_str(&format!("Scope of the check, exactly: it proves each citation is real and reachable — present in the corpus as running code, not commented out, quoted, or `#[ignore]`d, and declaring the switch the row claims. It does not run the fixtures. Execution is `{CORPUS_COMMAND}`, which every earned row names.\n\n"));
+    output.push_str(&format!("Scope of the check, exactly: it proves each citation is real and reachable — present in the corpus as running code, not commented out, quoted, `#[ignore]`d, or disabled by `cfg`, and declaring every switch the row claims. It does not run the fixtures. Execution is `{CORPUS_COMMAND}`, which every earned row names.\n\n"));
 
     output.push_str("Support vocabulary:\n\n");
     output.push_str("- `supported`: earned for this layer, with cited fixture evidence and an invocable command.\n");
@@ -1342,6 +1389,64 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             row.subject = subject;
             expect_rejected(&scaffold_with(row), "names no switch");
         }
+    }
+
+    /// A cfg-disabled fixture is never compiled, so the corpus command never
+    /// runs it and it cannot be evidence.
+    #[test]
+    fn cfg_disabled_fixtures_are_not_evidence() {
+        let disabled_case = concat!(
+            "#[cfg(feature = \"unfinished\")]\n",
+            "command_line_oneliner!(ghost_cfg, \"-e\", \"print 1;\");\n"
+        );
+        let evidence = extract_corpus_evidence(disabled_case);
+        assert!(
+            evidence.switch_cases.is_empty(),
+            "cfg-disabled macro case was captured: {:?}",
+            evidence.switch_cases
+        );
+
+        // `cfg_attr(..., ignore)` on either side of `#[test]` also suppresses.
+        for source in [
+            "#[test]\n#[cfg_attr(windows, ignore)]\nfn conditionally_ignored() {}\n",
+            "#[cfg_attr(windows, ignore)]\n#[test]\nfn conditionally_ignored() {}\n",
+            "#[cfg(target_os = \"linux\")]\n#[test]\nfn platform_only() {}\n",
+        ] {
+            let evidence = extract_corpus_evidence(source);
+            assert!(
+                evidence.proof_tests.is_empty(),
+                "suppressed test was captured from {source:?}: {:?}",
+                evidence.proof_tests
+            );
+        }
+    }
+
+    /// Pinning required forms to their layer stops a form from being moved out
+    /// of parser-body while completeness still reads as satisfied.
+    #[test]
+    fn required_form_in_the_wrong_layer_is_rejected() {
+        let mut rows = scaffold();
+        for row in rows.iter_mut() {
+            if row.layer == Layer::ParserBody && row.subject == "-M" {
+                row.layer = Layer::DifferentialOracle;
+            }
+        }
+        expect_rejected(&rows, "no parser-body capability row classifies");
+    }
+
+    /// A combined subject claims every switch it names, so evidence for one
+    /// must not publish support for the other.
+    #[test]
+    fn combined_switch_row_needs_evidence_for_each_switch() {
+        let mut row = base_row();
+        row.subject = "-0 / -g";
+        // A fixture declaring `-e` covers neither; even one that covered `-0`
+        // alone must not carry `-g`.
+        row.evidence = &["e_print_literal"];
+        expect_rejected(&scaffold_with(row), "no cited corpus case declares");
+
+        // Both halves present is what the rule actually requires.
+        assert_eq!(subject_switches("-0 / -g"), vec!["-0", "-g"]);
     }
 
     /// An ignored test does not run, so citing it must not earn support.
