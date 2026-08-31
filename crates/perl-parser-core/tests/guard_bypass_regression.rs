@@ -94,6 +94,11 @@ fn has_structural_nesting_stop_cause(output: &ParseOutput) -> bool {
     )
 }
 
+fn has_structural_nesting_error(output: &ParseOutput) -> bool {
+    output.diagnostics.iter().any(is_structural_nesting_error)
+        && !output.diagnostics.iter().any(is_recursion_guard_family)
+}
+
 #[test]
 fn parse_error_oracle_rejects_swapped_field_direct_recorded_contradictions() -> Result<(), String> {
     let recursion = ParseError::RecursionDepthExhausted { depth: 129, max_depth: 128 };
@@ -434,11 +439,6 @@ fn pathological_block_depth_still_hits_limit() -> Result<(), String> {
             output.stop_cause()
         ),
     )
-}
-
-fn has_structural_nesting_error(output: &ParseOutput) -> bool {
-    output.diagnostics.iter().any(is_structural_nesting_error)
-        && !output.diagnostics.iter().any(is_recursion_guard_family)
 }
 
 fn nested_eval_blocks(depth: usize) -> String {
