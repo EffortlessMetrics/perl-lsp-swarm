@@ -375,12 +375,7 @@ impl PatternDetector for RegexHeredocDetector {
             .into_iter()
             .map(|start| {
                 let location = location_from_start(line_starts, offset, start);
-                (
-                    AntiPattern::RegexCodeBlockHeredoc {
-                        location: location.clone(),
-                    },
-                    location,
-                )
+                (AntiPattern::RegexCodeBlockHeredoc { location: location.clone() }, location)
             })
             .collect()
     }
