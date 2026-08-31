@@ -247,7 +247,7 @@ function! s:EmitReplay(replay_index, generation) abort
   call s:Emit('generation_replay_observed', {
         \ 'replay_index': string(a:replay_index),
         \ 'initialize_generation': string(a:generation),
-        \ 'document': 'main.pl',
+        \ 'document': s:opened_file_rel,
         \ 'root': l:root_rel,
         \ 'did_open_replayed': '1',
         \ 'client_init_events': string(VimLspHostServerInitCount()),
@@ -529,11 +529,16 @@ endif
 
 if empty(s:failures)
   if s:ApplyStimulus(3, 4)
-    call s:Emit('shutdown_during_pending_observed', {
-          \ 'old_generation_dead': '1',
-          \ 'new_generation_started': '0',
-          \ 'recovery_route': 'pending_manual_reopen',
-          \ })
+    if VimLspHostServerInitCount() == 3
+          \ && VimLspHostBufferEnabledCount() == 3
+      call s:Emit('shutdown_during_pending_observed', {
+            \ 'old_generation_dead': '1',
+            \ 'new_generation_started': '0',
+            \ 'recovery_route': 'pending_manual_reopen',
+            \ })
+    else
+      call s:Fail('shutdown_pending_state_not_observed')
+    endif
   endif
 endif
 
