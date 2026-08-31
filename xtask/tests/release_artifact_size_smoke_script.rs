@@ -6,6 +6,8 @@
 //! tests drive `scripts/ci/release_artifact_size_smoke.sh` with a stub cargo so
 //! that retention contract is proven here rather than only on a macOS runner.
 
+#![cfg(unix)]
+
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
