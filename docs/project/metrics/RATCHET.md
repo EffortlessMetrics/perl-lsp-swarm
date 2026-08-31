@@ -15,8 +15,9 @@
 
 ```bash
 # Check that all scorecard floor baselines pass.
-# Receipt-backed routes are bootstrap-safe (pass if no receipt); the editor_ux
-# route is fail-closed on missing metrics.  See "Running the Ratchet Locally".
+# Receipt-backed routes are bootstrap-safe (pass if no receipt).  The editor_ux
+# route reads no receipt and is fail-closed on missing metrics in its own
+# measurement input.  See "Running the Ratchet Locally".
 just ci-metrics-ratchet
 
 # Check a single subsystem
@@ -117,13 +118,13 @@ just ci-metrics-ratchet
 just ci-metrics-ratchet-check parser
 ```
 
-The recipe runs two kinds of route, and they behave differently when current
-metrics are absent:
+The recipe runs two kinds of route. They read different inputs, so "no receipt"
+and "no metrics" are separate conditions and must not be read as one:
 
-| Route | Covers | No current metrics |
-|---|---|---|
-| `cargo xtask metrics ratchet-check <subsystem>` | `parser`, `engineering_health`, `parser_accuracy`, `token` | **Bootstrap-safe** — passes |
-| `cargo xtask ux-scorecard --format json --ratchet-check` | `editor_ux` | **Fail-closed** — fails |
+| Route | Covers | Reads | If no receipt exists | If its own metrics are missing |
+|---|---|---|---|---|
+| `cargo xtask metrics ratchet-check <subsystem>` | `parser`, `engineering_health`, `parser_accuracy`, `token` | `target/receipts/metrics/<subsystem>.json` | **Bootstrap-safe** — passes | n/a: absent receipt is the bootstrap case |
+| `cargo xtask ux-scorecard --format json --ratchet-check` | `editor_ux` | the committed UX measurement input | **Unaffected** — never reads receipts | **Fail-closed** — fails |
 
 **Bootstrap mode** (receipt-backed routes): when no receipt exists at
 `target/receipts/metrics/<subsystem>.json`, the xtask falls back to the
@@ -131,12 +132,20 @@ committed baseline values.  This means the check always passes until a sweep
 generates a fresh receipt.  This is intentional — infrastructure validation
 before measurement instrumentation.
 
-**Fail-closed editor UX**: the `editor_ux` route does not read a receipt.  It
-computes its metrics directly and fails when any instrumented floor metric is
-missing or non-finite, before any scorecard publication.  A red
-`scorecard-ratchet-check` job with no metric regression in the log is normally
-this route reporting absent instrumentation — it is a real failure to fix, not
-bootstrap noise.
+**Fail-closed editor UX**: the `editor_ux` route does not read a receipt at
+all.  It computes its metrics from the committed UX measurement input and fails
+when any instrumented floor metric is missing or non-finite in *that* artifact,
+before any scorecard publication.
+
+Because it never consults `target/receipts/metrics/`, a receipt-less checkout
+does not by itself make this route fail — a run with no receipts anywhere can
+still be entirely green.  Its fail-closed condition is about its own
+instrumentation, not about receipt presence.  So when the
+`scorecard-ratchet-check` job is red with no metric regression in the log, the
+usual cause is this route reporting absent or non-finite metrics in the
+measurement input.  That is a real failure to fix, and reading it as
+"bootstrap noise" will send you looking for a missing receipt that was never
+required here.
 
 **With a fresh receipt**: after running the parser sweep the xtask reads the
 receipt and compares against the baseline.  Any floor-metric regression causes
@@ -157,9 +166,11 @@ checks:
   no fresh receipt in `target/receipts/metrics/`, the receipt-backed routes use
   baseline values as current values and report bootstrap mode.
 - **Bootstrap safety**: applies to the receipt-backed
-  `metrics ratchet-check` routes only.  The job also runs the `editor_ux`
-  route, which is fail-closed on missing metrics (see above), so the job as a
-  whole is **not** bootstrap-safe.
+  `metrics ratchet-check` routes only.  A receipt-less run of those routes
+  passes.  The job also runs the `editor_ux` route, which never reads receipts
+  and so is neither helped nor hurt by their absence; it is fail-closed on
+  missing or non-finite metrics in its own measurement input (see above).
+  Treat the two conditions separately when diagnosing a red job.
 
 ### Merge gate (`ci-gate`)
 

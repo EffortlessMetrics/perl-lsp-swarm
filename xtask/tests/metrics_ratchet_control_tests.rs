@@ -46,12 +46,27 @@ impl RatchetRoute {
         }
     }
 
-    /// Markers the ratchet guide must carry so operators can find this route's
-    /// missing-receipt behavior documented.
-    fn documentation_markers(&self) -> &'static [&'static str] {
+    /// Command text identifying this route in the ratchet guide.
+    fn documented_command(&self) -> &'static str {
         match self {
-            RatchetRoute::Subsystem(_) => &["metrics ratchet-check"],
-            RatchetRoute::EditorUx => &["ux-scorecard", "--ratchet-check"],
+            RatchetRoute::Subsystem(_) => "metrics ratchet-check",
+            RatchetRoute::EditorUx => "ux-scorecard",
+        }
+    }
+
+    /// Disposition the guide must state for this route, on the same line as the
+    /// command, so the two stay bound together.
+    ///
+    /// Whole-file token checks are not enough: `metrics ratchet-check` and
+    /// `ux-scorecard` both appear in the guide's command examples, so a check
+    /// for their mere presence stays green even if every explanation of what
+    /// the route does on missing metrics is deleted. Requiring command and
+    /// disposition to co-occur is what makes this pin behavior rather than
+    /// vocabulary.
+    fn documented_dispositions(&self) -> &'static [&'static str] {
+        match self {
+            RatchetRoute::Subsystem(_) => &["bootstrap-safe", "bootstrap safe"],
+            RatchetRoute::EditorUx => &["fail-closed", "fail closed"],
         }
     }
 }
@@ -120,9 +135,37 @@ fn ci_metrics_ratchet_routes(justfile: &str) -> Result<Vec<RatchetRoute>, Box<dy
     let mut routes = Vec::new();
 
     for command in ci_metrics_ratchet_body(justfile)? {
-        // `@echo` progress lines and comments check nothing.
-        if command.starts_with('@') || command.starts_with('#') {
+        // `just` line prefixes: `@` suppresses echo, `-` ignores failure, `+`
+        // is the shebang-recipe form. Strip them before reading the command —
+        // `@cargo run …` is a real invocation, not a progress line.
+        let command = command.trim_start_matches(['@', '-', '+']).trim();
+
+        // Progress lines and comments check nothing.
+        if command.starts_with("echo ") || command.starts_with('#') || command.is_empty() {
             continue;
+        }
+
+        // A route only counts if the recipe actually runs it and lets it fail.
+        // `echo cargo run … ratchet-check parser` or a `|| true` suffix leaves
+        // the substring intact while the floor stops being enforced, so a
+        // neutered command must not read as coverage.
+        if let Some(suppressor) =
+            ["|| true", "|| :", "|| exit 0", "||true"].iter().find(|s| command.contains(**s))
+        {
+            return Err(format!(
+                "`ci-metrics-ratchet` suppresses the failure of `{command}` with `{suppressor}`. \
+                 A ratchet route that cannot fail does not enforce its floor; remove the \
+                 suppressor or drop the route rather than leaving it reading as covered."
+            )
+            .into());
+        }
+        if !command.starts_with("cargo ") {
+            return Err(format!(
+                "`ci-metrics-ratchet` command `{command}` is not a direct `cargo` invocation. \
+                 Routes must be executed, not printed or wrapped; a wrapper would keep the \
+                 command text while the floor stops being enforced."
+            )
+            .into());
         }
 
         if let Some((_, tail)) = command.split_once("metrics ratchet-check ") {
@@ -241,8 +284,9 @@ fn ratchet_guide_lists_every_committed_baseline() -> Result<(), Box<dyn std::err
 /// assertion, the workflow job, and the guide carrying the phrase all landed
 /// together in `aafdaa0`, with the phrase written only into the guide, so the
 /// assertion was red from its first run (#14175). Reinstating the literal would
-/// also have documented a falsehood — the recipe's `editor_ux` route is
-/// fail-closed on missing metrics, so the job as a whole is not bootstrap-safe.
+/// also have overstated the guarantee: bootstrap safety is a property of the
+/// receipt-backed routes, while the recipe's `editor_ux` route reads no receipt
+/// at all and fails closed on its own missing instrumentation instead.
 #[test]
 fn nightly_ratchet_job_is_label_gated_and_documents_missing_receipt_behavior()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -267,50 +311,65 @@ fn nightly_ratchet_job_is_label_gated_and_documents_missing_receipt_behavior()
          missing-receipt behavior of the routes it runs"
     );
 
-    // Each route the recipe actually runs must be documented in that guide, so
-    // adding a route to the recipe cannot leave its behavior undocumented.
+    // Each route the recipe actually runs must have its missing-metric
+    // disposition documented in that guide, bound to the route rather than
+    // merely present somewhere in the file.
     let justfile = fs::read_to_string(root.join("justfile"))?;
     let guide = fs::read_to_string(root.join(RATCHET_GUIDE))?;
     for route in ci_metrics_ratchet_routes(&justfile)? {
-        for marker in route.documentation_markers() {
-            assert!(
-                guide.contains(marker),
-                "{RATCHET_GUIDE} must document the `{}` route run by just \
-                 ci-metrics-ratchet (missing marker `{marker}`)",
-                route.subsystem()
-            );
-        }
+        assert!(
+            guide_binds_route_to_disposition(&guide, &route),
+            "{RATCHET_GUIDE} must state the missing-metric disposition of the `{}` route on \
+             the same line as `{}` — one of {:?}. The guide's command examples contain that \
+             command on their own, so a whole-file check would stay green with every \
+             explanation deleted.",
+            route.subsystem(),
+            route.documented_command(),
+            route.documented_dispositions()
+        );
     }
 
     Ok(())
 }
 
-/// The guide must not tell operators the nightly job passes with no receipts
-/// while the recipe still runs the fail-closed `editor_ux` route.
+/// Whether the guide states this route's disposition on the same line as the
+/// route's command, so deleting the explanation cannot leave the contract green.
+fn guide_binds_route_to_disposition(guide: &str, route: &RatchetRoute) -> bool {
+    guide.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains(route.documented_command())
+            && route.documented_dispositions().iter().any(|d| lower.contains(d))
+    })
+}
+
+/// The guide must keep receipt absence and missing instrumentation separate.
 ///
-/// `ux-scorecard --ratchet-check` computes its metrics directly and fails on
-/// missing or non-finite instrumented floor metrics
-/// (`xtask/src/tasks/ux_scorecard.rs`), unlike the receipt-backed
-/// `metrics ratchet-check` route, which falls back to baseline values. An
-/// operator who reads a blanket bootstrap-safety claim will mis-diagnose that
-/// failure as infrastructure noise.
+/// `ux-scorecard --ratchet-check` never reads `target/receipts/metrics/`; it
+/// computes `editor_ux` metrics from the committed measurement input
+/// (`xtask/src/tasks/ux_scorecard.rs`) and fails closed on missing or
+/// non-finite values *there*. So a receipt-less run does not fail on its
+/// account, and an operator told the job is simply "not bootstrap-safe" will
+/// hunt for a missing receipt this route never wanted. The guide has to say
+/// that the route reads no receipt, not just that it is fail-closed.
 #[test]
-fn ratchet_guide_scopes_bootstrap_safety_to_the_receipt_backed_route()
+fn ratchet_guide_separates_receipt_absence_from_missing_instrumentation()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let justfile = fs::read_to_string(root.join("justfile"))?;
     let guide = fs::read_to_string(root.join(RATCHET_GUIDE))?;
 
-    let runs_editor_ux =
-        ci_metrics_ratchet_routes(&justfile)?.iter().any(|route| *route == RatchetRoute::EditorUx);
+    let runs_editor_ux = ci_metrics_ratchet_routes(&justfile)?.contains(&RatchetRoute::EditorUx);
     if !runs_editor_ux {
         return Ok(());
     }
 
+    let lower = guide.to_ascii_lowercase();
     assert!(
-        guide.contains("fail-closed"),
-        "{RATCHET_GUIDE} must record that the `{EDITOR_UX_SUBSYSTEM}` route is fail-closed \
-         on missing metrics, because just ci-metrics-ratchet runs it"
+        lower.contains("never reads receipts")
+            || lower.contains("does not read a receipt")
+            || lower.contains("never consults"),
+        "{RATCHET_GUIDE} must record that the `{EDITOR_UX_SUBSYSTEM}` route reads no receipt, \
+         so operators do not read its fail-closed behavior as a missing-receipt symptom"
     );
 
     Ok(())
