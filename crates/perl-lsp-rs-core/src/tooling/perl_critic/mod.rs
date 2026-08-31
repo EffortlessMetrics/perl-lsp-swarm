@@ -13,6 +13,8 @@ mod remediation;
 mod result_identity;
 mod semantic;
 mod service;
+#[cfg(test)]
+mod test_core_authority_policy;
 mod types;
 
 pub use analyzer::{CriticAnalyzer, hash_content};

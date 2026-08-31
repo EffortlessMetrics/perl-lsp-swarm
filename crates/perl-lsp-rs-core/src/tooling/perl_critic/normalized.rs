@@ -223,6 +223,12 @@ pub struct CriticFindingContributor {
     explanation: Option<String>,
     remediation_suggestion: Option<String>,
     remediation_related_information: Vec<CriticRelatedInformation>,
+    /// Whether this producer advertised an automatic fix. Contributor-owned so
+    /// stripping the producer from a merged row also strips its fix
+    /// advertisement from the row-level view (#13798); skipped in the
+    /// serialized form, which keeps the published row contract unchanged.
+    #[serde(skip)]
+    fix_available: bool,
 }
 
 impl CriticFindingContributor {
@@ -234,6 +240,7 @@ impl CriticFindingContributor {
             explanation: candidate.explanation.clone(),
             remediation_suggestion: candidate.remediation_suggestion.clone(),
             remediation_related_information: candidate.remediation_related_information.clone(),
+            fix_available: candidate.fix_available,
         }
     }
 
@@ -280,13 +287,11 @@ impl CriticFindingContributor {
 pub enum CriticPolicyRetention {
     /// The row is admitted; every contributor is retained.
     Admitted,
-    /// The critic-side policy rejected the row without naming the built-in
-    /// core proposition: Critic contributors are stripped and an independently
-    /// owned built-in contributor survives.
+    /// The critic-side policy rejected the row: Critic contributors are
+    /// stripped and an independently owned built-in contributor survives with
+    /// its row-level view recomputed. A row without a built-in contributor is
+    /// removed entirely, so critic-owned rows remain fully removable.
     StripCritic,
-    /// The policy names the built-in core proposition itself (exclude of its
-    /// own code) and revokes the whole row.
-    RemoveRow,
 }
 
 /// One normalized logical critic finding.
@@ -562,21 +567,19 @@ impl NormalizedCriticFinding {
     /// Critic severity thresholds and include/exclude filters own the Critic
     /// producers' contributions only: they may remove those contributions from
     /// a merged row, but they cannot revoke an independently emitted built-in
-    /// core proposition while that contributor remains present. A
+    /// core proposition while that contributor remains present - not even an
+    /// exclude spelled with the built-in code itself, whose removal is a
+    /// built-in-policy decision, never a Critic-policy one. A
     /// [`CriticPolicyRetention::Admitted`] row is returned unchanged; a
     /// [`CriticPolicyRetention::StripCritic`] row survives with only its
     /// built-in contributors - recomputing severity, severity conflict,
-    /// explanation, and remediation from the retained provenance - or `None`
-    /// when the row carried no built-in contributor, so critic-owned rows
-    /// remain fully removable. [`CriticPolicyRetention::RemoveRow`] covers an
-    /// exclude that names the built-in code itself and revokes the whole row,
-    /// preserving the "one spelling removes the whole alias set" guarantee.
-    /// Presentation is unchanged because a built-in contributor always owns
-    /// the best presentation rank. Scoped `## no critic` suppression
-    /// deliberately keeps removing whole rows; the source-directive ruling is
-    /// deferred (#14021). Row-level `fix_available` is producer-declared and
-    /// informational, so it is left as merged rather than widened to a
-    /// per-contributor contract.
+    /// explanation, remediation, and fix availability from the retained
+    /// provenance so no stripped producer's advertisement survives - or
+    /// `None` when the row carried no built-in contributor, so critic-owned
+    /// rows remain fully removable. Presentation is unchanged because a
+    /// built-in contributor always owns the best presentation rank. Scoped
+    /// `## no critic` suppression deliberately keeps removing whole rows; the
+    /// source-directive ruling is deferred (#14021).
     #[must_use]
     pub fn retained_under_critic_policy(
         mut self,
@@ -584,7 +587,6 @@ impl NormalizedCriticFinding {
     ) -> Option<Self> {
         match retention {
             CriticPolicyRetention::Admitted => return Some(self),
-            CriticPolicyRetention::RemoveRow => return None,
             CriticPolicyRetention::StripCritic => {}
         }
 
@@ -611,6 +613,7 @@ impl NormalizedCriticFinding {
             .map(|contributor| contributor.severity() as u8)
             .collect::<std::collections::BTreeSet<u8>>();
         self.severity_conflict = distinct_retained.len() > 1;
+        self.fix_available = self.contributors.iter().any(|contributor| contributor.fix_available);
 
         let retained_explanation = self.contributors.iter().filter_map(|contributor| {
             contributor.explanation().map(|text| {
@@ -728,7 +731,7 @@ fn explanation_rank(origin: CriticFindingOrigin) -> u8 {
     }
 }
 
-fn severity_score(severity: Severity) -> u8 {
+pub(super) fn severity_score(severity: Severity) -> u8 {
     severity as u8
 }
 
