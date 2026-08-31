@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12550 |
-| Rust-family files | 3892 |
-| Non-Rust files | 8658 |
-| Allowlisted | 6419 |
+| Total tracked files | 12573 |
+| Rust-family files | 3903 |
+| Non-Rust files | 8670 |
+| Allowlisted | 6431 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 498 |
-| documentation | 2831 |
+| config | 500 |
+| documentation | 2833 |
 | generated | 2 |
 | production | 349 |
-| test | 2067 |
+| test | 2075 |
 | tooling | 672 |
 | unclassified | 2239 |
 
@@ -2515,6 +2515,7 @@
 | `.changes/unreleased/product-9597-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9677-Fixed-195900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9768-Fixed-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-9923-Added-204500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9978-Added-232100.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9992-Added-232600.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-10001-Added-234000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -6259,6 +6260,15 @@
 | `fixtures/experience/standalone_candidate_selection/20_previous_current_alias.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/21_private_path_leakage.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/22_current_names_missing_candidate.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
+| `fixtures/open_vsx_public_state/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `fixtures/open_vsx_public_state/incident_shape_listing_absent.json` | test | `non-rust-open-vsx-public-state-incident-fixture` | release/ci |
+| `fixtures/open_vsx_public_state/synthetic_available_exact.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |
+| `fixtures/open_vsx_public_state/synthetic_instrument_incomplete.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |
+| `fixtures/open_vsx_public_state/synthetic_listing_missing_version_retrievable.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |
+| `fixtures/open_vsx_public_state/synthetic_namespace_absent.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |
+| `fixtures/open_vsx_public_state/synthetic_provider_rate_limited.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |
+| `fixtures/open_vsx_public_state/synthetic_public_digest_mismatch.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |
+| `fixtures/open_vsx_public_state/synthetic_unplanned_request_url.json` | test | `non-rust-open-vsx-public-state-fixtures` | release/ci |
 | `fixtures/product_health_status/expected/status.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/registry.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/sources/chk-a.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
@@ -6444,6 +6454,8 @@
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
 | `schemas/native_neovim_train.v1.schema.json` | documentation | `non-rust-native-neovim-train-schema` | neovim-train |
+| `schemas/open_vsx_public_state.v1.schema.json` | config | `non-rust-open-vsx-public-state-schema` | release/ci |
+| `schemas/open_vsx_public_state_observation.v1.schema.json` | config | `non-rust-open-vsx-public-state-observation-schema` | release/ci |
 | `schemas/perl_builtin_semantics.v1.schema.json` | config | `non-rust-compiler-builtin-semantics-schema` | compiler |
 | `schemas/perl_compiler_concept_proof.v1.schema.json` | config | `non-rust-compiler-concept-proof-schema` | compiler |
 | `schemas/perl_compiler_concepts.v1.schema.json` | config | `non-rust-compiler-concepts-schema` | compiler |
