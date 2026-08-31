@@ -8,9 +8,9 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{HirFile, lower_ast};
 use perl_parser_core::pir::{
-    PIR_RECEIPT_VERSION, PirAccessMode, PirCallee, PirContext, PirDynamicBoundaryKind,
-    PirEdgeKind, PirEvaluationDemand, PirGraph, PirLoweringMode, PirMethod, PirOperation,
-    lower_hir, lower_hir_with_identity,
+    PIR_RECEIPT_VERSION, PirAccessMode, PirCallee, PirContext, PirDynamicBoundaryKind, PirEdgeKind,
+    PirEvaluationDemand, PirGraph, PirLoweringMode, PirMethod, PirOperation, lower_hir,
+    lower_hir_with_identity,
 };
 use perl_tdd_support::must_some;
 
@@ -60,7 +60,6 @@ fn lexical_declaration_writes_lvalue_and_assigns() {
     assert_eq!(name.sigil, "$");
     assert_eq!(name.name, "x");
 }
-
 
 #[test]
 fn literal_operands_precede_enclosing_pir_parents() {
@@ -599,10 +598,7 @@ fn control_flow_branch_shell_is_now_lowered_to_branch() {
 fn control_flow_loop_shell_lowers_to_truth_test_demand() {
     let graph = lower("while ($condition) { 1 }");
     let loop_node = must_some(
-        graph
-            .nodes
-            .iter()
-            .find(|node| matches!(node.operation, PirOperation::Loop { .. })),
+        graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::Loop { .. })),
     );
 
     assert_eq!(loop_node.demand, PirEvaluationDemand::TruthTest);
