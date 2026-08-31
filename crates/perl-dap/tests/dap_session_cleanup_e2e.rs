@@ -182,19 +182,21 @@ mod cleanup_tests {
 
     // ── Perl-requiring tests (skipped when `perl` is absent) ──────────────────
 
-    /// Cancellation flag is set before `clear_active_session_state` so that any
-    /// in-flight output-reader loop sees `cancel_requested = true` and exits;
-    /// this test exercises the flag ordering without a live Perl process.
+    /// Cancellation registry is settled before `clear_active_session_state`
+    /// so that any live cancellable operation is retired and its waiter
+    /// wakes; this test exercises the settle ordering without a live Perl
+    /// process (#9074).
     ///
-    /// We verify by initialising and immediately dropping — if the output-reader
-    /// thread (spawned on launch) holds a reference, the `Arc<AtomicBool>` write
-    /// in Drop propagates to it; without a real process there is no thread to
-    /// observe it, but the ordering contract is exercised.
+    /// We verify by initialising and immediately dropping — the Drop body
+    /// settles the registry (retiring every live operation and emptying the
+    /// request→operation mapping) before delegating to
+    /// `clear_active_session_state`; without a real process there is no
+    /// waiter to observe it, but the ordering contract is exercised.
     #[test]
     fn test_cancel_flag_set_before_session_clear() -> Result<()> {
         let (mut adapter, _rx) = make_adapter();
         let _ = adapter.handle_request(1, "initialize", None);
-        // Drop triggers: store(true, Release) → clear_active_session_state()
+        // Drop triggers: settle_all() → clear_active_session_state()
         drop(adapter);
         Ok(())
     }

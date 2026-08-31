@@ -1,11 +1,12 @@
 //! Execution control: continue, next, step in, step out, pause, goto, cancel.
 
+use super::cancel_registry;
 use super::{
-    AstBreakpointValidator, BreakpointValidator, ContinueArguments, ContinueResponseBody,
-    DapMessage, DebugAdapter, DebugState, GotoArguments, GotoTarget, GotoTargetsArguments,
-    GotoTargetsResponseBody, NextArguments, Ordering, PauseArguments, ResumeMode, StepInArguments,
-    StepInTarget, StepInTargetsArguments, StepInTargetsResponseBody, StepOutArguments, Value,
-    Write, json, lock_or_recover,
+    AstBreakpointValidator, BreakpointValidator, CancelArguments, ContinueArguments,
+    ContinueResponseBody, DapMessage, DebugAdapter, DebugState, GotoArguments, GotoTarget,
+    GotoTargetsArguments, GotoTargetsResponseBody, NextArguments, PauseArguments, ResumeMode,
+    StepInArguments, StepInTarget, StepInTargetsArguments, StepInTargetsResponseBody,
+    StepOutArguments, Value, Write, json, lock_or_recover,
 };
 use regex::Regex;
 use std::sync::LazyLock;
@@ -422,10 +423,16 @@ impl DebugAdapter {
         let search_start = (args.line - 5).max(1);
         let search_end = args.line + 5;
 
+        // This scan is the cancellable operation mapped to its own request
+        // sequence (#9074): a cancel targeting another request can never
+        // truncate it, and a cancel targeting it settles it as cancelled.
+        let operation = self.cancel_registry.register(request_seq, "gotoTargets");
+        let mut cancelled = false;
+
         if let Ok(validator) = AstBreakpointValidator::new(&content) {
             for line in search_start..=search_end {
-                if self.cancel_requested.load(Ordering::Acquire) {
-                    self.cancel_requested.store(false, Ordering::Release);
+                if operation.is_cancelled() {
+                    cancelled = true;
                     break;
                 }
                 if validator.is_executable_line(line) {
@@ -445,6 +452,12 @@ impl DebugAdapter {
         }
         drop(goto_map);
         drop(id_counter);
+
+        operation.settle(if cancelled {
+            cancel_registry::OperationOutcome::Cancelled
+        } else {
+            cancel_registry::OperationOutcome::Completed
+        });
 
         let body = GotoTargetsResponseBody { targets };
         DapMessage::Response {
@@ -614,10 +627,34 @@ impl DebugAdapter {
         &self,
         seq: i64,
         request_seq: i64,
-        _arguments: Option<Value>,
+        arguments: Option<Value>,
     ) -> DapMessage {
-        // cancel_requested field will be added by the integration task
-        self.cancel_requested.store(true, Ordering::Release);
+        // Request-scoped cancellation (#9074): the standard DAP cancel
+        // arguments name the exact target to retire.
+        //
+        // #6737 wire semantics: `requestId` (the seq of the request to
+        // cancel) takes precedence when both `requestId` and `progressId`
+        // are supplied. The adapter registers no progress identity, so a
+        // progress-only target deterministically retires nothing. Unknown,
+        // already-terminal, malformed, and absent targets never cancel
+        // "whatever is current".
+        let args: Option<CancelArguments> =
+            arguments.and_then(|value| serde_json::from_value(value).ok());
+        let disposition = match args {
+            Some(CancelArguments { request_id: Some(target), .. }) => {
+                Some(self.cancel_registry.cancel_request(target))
+            }
+            Some(CancelArguments { request_id: None, progress_id: Some(_) }) => {
+                Some(cancel_registry::CancelDisposition::UnknownTarget)
+            }
+            _ => None,
+        };
+        tracing::debug!(?disposition, target_request = request_seq, "cancel request disposition");
+
+        // A successful cancel response means the cancellation request was
+        // accepted for the exact target (or that no explicit target was
+        // named); it never fabricates that the target has terminated. The
+        // typed disposition stays observable for tests and diagnostics.
         DapMessage::Response {
             seq,
             request_seq,

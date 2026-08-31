@@ -130,7 +130,13 @@ impl DebugAdapter {
             "supportsDataBreakpoints": supports_watchpoints,
             "supportsReadMemoryRequest": false,
             "supportsDisassembleRequest": false,
-            "supportsCancelRequest": supports_core,
+            // #9074 selected capability rule: request-scoped cancellation is
+            // advertised only for backend/mode/request families whose
+            // operation lifecycle provably consumes the cancellation token
+            // under the #7568 exact-binary positive/negative rows. Handler
+            // presence or a global flag is not evidence, so the wire value
+            // stays an explicit false here rather than `supports_core`.
+            "supportsCancelRequest": false,
             "supportsBreakpointLocationsRequest": supports_basic_breakpoints,
             "supportsClipboardContext": false,
             "supportsSteppingGranularity": false,
@@ -1894,6 +1900,11 @@ impl DebugAdapter {
 
     /// Clear active process session, TCP session, and PID-attach mode state.
     pub(super) fn clear_active_session_state(&self) {
+        // Session teardown retires every live cancellable operation and
+        // empties the request→operation mapping (#9074): operations belong
+        // to the session they were registered in, and client EOF/terminate
+        // must compose with cleanup instead of leaving one registered.
+        self.cancel_registry.settle_all();
         Self::clear_active_session_state_with_state(
             &self.session,
             &self.tcp_session,

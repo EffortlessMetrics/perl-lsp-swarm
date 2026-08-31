@@ -4,6 +4,7 @@
 //! to enable debugging support in VSCode and other DAP-compatible editors.
 
 mod breakpoints;
+mod cancel_registry;
 mod data_breakpoints;
 mod evaluation;
 mod execution;
@@ -40,10 +41,10 @@ use crate::feature_catalog::has_feature as catalog_has_feature;
 use crate::inline_values::{collect_inline_values_with_runtime, extract_variable_names};
 use crate::protocol::{
     BreakpointLocation, BreakpointLocationsArguments, BreakpointLocationsResponseBody,
-    CompletionItem, CompletionsArguments, CompletionsResponseBody, ContinueArguments,
-    ContinueResponseBody, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody,
-    DisconnectArguments, EvaluateArguments, EvaluateResponseBody, ExceptionDetails,
-    ExceptionInfoArguments, ExceptionInfoResponseBody, GotoArguments, GotoTarget,
+    CancelArguments, CompletionItem, CompletionsArguments, CompletionsResponseBody,
+    ContinueArguments, ContinueResponseBody, DataBreakpointInfoArguments,
+    DataBreakpointInfoResponseBody, DisconnectArguments, EvaluateArguments, EvaluateResponseBody,
+    ExceptionDetails, ExceptionInfoArguments, ExceptionInfoResponseBody, GotoArguments, GotoTarget,
     GotoTargetsArguments, GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
     LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, NextArguments,
     PauseArguments, RestartArguments, Scope, ScopesArguments, ScopesResponseBody,
@@ -155,8 +156,9 @@ pub struct DebugAdapter {
     debugger_output_marker: Arc<AtomicU64>,
     /// Test-observable count of framed debugger query writes.
     debugger_query_count: Arc<AtomicU64>,
-    /// Cancellation flag for in-progress requests.
-    cancel_requested: Arc<AtomicBool>,
+    /// Session-bound registry mapping DAP request sequences to their
+    /// cancellable operation identities (#9074).
+    cancel_registry: Arc<cancel_registry::CancelRegistry>,
     /// Data breakpoints (watchpoints) stored with REPLACE semantics
     data_breakpoints: Arc<Mutex<Vec<DataBreakpointRecord>>>,
     /// Last exception message captured by the output reader (for exceptionInfo)
@@ -228,7 +230,12 @@ impl Default for DebugAdapter {
 
 impl Drop for DebugAdapter {
     fn drop(&mut self) {
-        self.cancel_requested.store(true, Ordering::Release);
+        // Adapter teardown retires every live cancellable operation and
+        // empties the request→operation mapping (#9074): late identities
+        // from this session can never reach a later one, and any waiter
+        // still polling its operation's token observes retirement before
+        // the session state is cleared.
+        self.cancel_registry.settle_all();
         self.clear_active_session_state();
     }
 }
@@ -252,7 +259,7 @@ impl DebugAdapter {
             exception_break_on_warn: Arc::new(Mutex::new(false)),
             debugger_output_marker: Arc::new(AtomicU64::new(1)),
             debugger_query_count: Arc::new(AtomicU64::new(0)),
-            cancel_requested: Arc::new(AtomicBool::new(false)),
+            cancel_registry: Arc::new(cancel_registry::CancelRegistry::new()),
             data_breakpoints: Arc::new(Mutex::new(Vec::new())),
             last_exception_message: Arc::new(Mutex::new(None)),
             last_launch_args: Arc::new(Mutex::new(None)),
@@ -469,11 +476,18 @@ impl DebugAdapter {
     }
 
     /// Capture debugger output lines between begin/end markers.
+    ///
+    /// `cancel` binds this wait to exactly one registered operation's
+    /// cancellation token (#9074): a retired token ends the wait and the
+    /// captured frame is dropped — it can never satisfy a later request.
+    /// `None` marks a non-cancellable wait; no caller may fall back to a
+    /// shared cancel state.
     fn capture_framed_debugger_output(
         &self,
         begin_marker: &str,
         end_marker: &str,
         timeout_ms: u64,
+        cancel: Option<&cancel_registry::CancellationToken>,
     ) -> Option<Vec<String>> {
         let deadline =
             Instant::now() + Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms));
@@ -482,9 +496,11 @@ impl DebugAdapter {
         let mut framed_lines = Vec::new();
 
         loop {
-            // Check for cancellation before each poll iteration
-            if self.cancel_requested.load(Ordering::Acquire) {
-                self.cancel_requested.store(false, Ordering::Release);
+            // Check for cancellation of this exact operation before each
+            // poll iteration. A retired token ends the wait; the captured
+            // frame is quarantined (dropped), never consumed by another
+            // request.
+            if cancel.is_some_and(|token| token.is_cancelled()) {
                 return None;
             }
 
@@ -815,29 +831,37 @@ print "result: $final\n";
         assert!(adapter.breakpoints.is_empty());
     }
 
-    // --- `impl Drop for DebugAdapter` coverage (#1405) ---
+    // --- `impl Drop for DebugAdapter` coverage (#1405, #9074) ---
     //
-    // These are direct call-observation --lib tests proving the Drop body's two
-    // effects without spawning a real `perl -d` child process: (1) the cancel
-    // flag is set before delegating to `clear_active_session_state`, and (2)
-    // `clear_active_session_state` genuinely clears adapter-owned state when the
-    // adapter is dropped (not merely called directly). The SIGTERM/kill branches
-    // inside `terminate_child_process` sit behind a real OS process and are
-    // covered by the Perl-gated tests in `tests/dap_session_cleanup_e2e.rs`
-    // instead (see `ripr-suppress-debug-adapter-drop-process-boundary` in
+    // These are direct call-observation --lib tests proving the Drop body's
+    // effects without spawning a real `perl -d` child process: (1) the
+    // cancel registry settles every live operation and empties the
+    // request→operation mapping before delegating to
+    // `clear_active_session_state`, and (2) `clear_active_session_state`
+    // genuinely clears adapter-owned state when the adapter is dropped (not
+    // merely called directly). The SIGTERM/kill branches inside
+    // `terminate_child_process` sit behind a real OS process and are covered
+    // by the Perl-gated tests in `tests/dap_session_cleanup_e2e.rs` instead
+    // (see `ripr-suppress-debug-adapter-drop-process-boundary` in
     // `policy/ripr-suppressions.toml`).
 
     #[test]
-    fn test_drop_sets_cancel_requested_before_clearing_session_state() {
+    fn test_drop_settles_cancel_registry_before_clearing_session_state() {
         let adapter = DebugAdapter::new();
-        let cancel_flag = Arc::clone(&adapter.cancel_requested);
-        assert!(!cancel_flag.load(Ordering::Acquire), "cancel flag should start false");
+        let registry = Arc::clone(&adapter.cancel_registry);
+        let operation = registry.register(7, "stackTrace");
+        assert!(!operation.is_cancelled(), "a live operation starts uncancelled");
 
         drop(adapter);
 
         assert!(
-            cancel_flag.load(Ordering::Acquire),
-            "Drop must set cancel_requested so any in-flight output-reader thread observes it"
+            operation.is_cancelled(),
+            "Drop must retire every live cancellable operation so any waiter observes it"
+        );
+        assert_eq!(
+            registry.cancel_request(7),
+            cancel_registry::CancelDisposition::UnknownTarget,
+            "Drop must empty the request→operation mapping so stale identities reach nothing"
         );
     }
 
@@ -863,6 +887,144 @@ print "result: $final\n";
         assert_eq!(adapter.next_seq(), 1);
         assert_eq!(adapter.next_seq(), 2);
         assert_eq!(adapter.next_seq(), 3);
+    }
+
+    // --- Request-scoped cancellation wire semantics (#9074) ---
+    //
+    // These rows discriminate the registry-backed `cancel` handler from the
+    // retired adapter-global flag: the target identity is honored (#6737
+    // precedence), an unknown target never cancels "whatever is current",
+    // and accepted-cancel stays distinct from the terminal outcome.
+
+    fn cancel_response_ok(
+        adapter: &mut DebugAdapter,
+        request_seq: i64,
+        arguments: Option<Value>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match adapter.handle_request(request_seq, "cancel", arguments) {
+            DapMessage::Response { command, success, .. } => {
+                assert_eq!(command, "cancel");
+                assert!(success, "cancel must acknowledge the request protocol-safely");
+                Ok(())
+            }
+            other => Err(format!("cancel: expected Response, got {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn test_cancel_targets_the_mapped_operation_only() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let registry = Arc::clone(&adapter.cancel_registry);
+        let a = registry.register(11, "gotoTargets");
+        let b = registry.register(12, "stackTrace");
+
+        cancel_response_ok(&mut adapter, 20, Some(json!({ "requestId": 11 })))?;
+
+        assert!(a.is_cancelled(), "cancel(requestId=A) must retire operation A");
+        assert!(!b.is_cancelled(), "cancel(requestId=A) must never retire operation B");
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancel_unknown_request_id_never_cancels_current_operations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let registry = Arc::clone(&adapter.cancel_registry);
+        let live = registry.register(31, "stackTrace");
+
+        cancel_response_ok(&mut adapter, 32, Some(json!({ "requestId": 999 })))?;
+
+        assert!(!live.is_cancelled(), "an unknown explicit target must not cancel what is current");
+        assert_eq!(
+            registry.cancel_request(31),
+            cancel_registry::CancelDisposition::Accepted { operation: live.operation() },
+            "the unrelated operation must still be live and cancellable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancel_request_id_takes_precedence_over_progress_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let registry = Arc::clone(&adapter.cancel_registry);
+        let a = registry.register(41, "gotoTargets");
+        let b = registry.register(42, "stackTrace");
+
+        // #6737: when both are supplied, requestId wins.
+        cancel_response_ok(&mut adapter, 43, Some(json!({ "requestId": 41, "progressId": "p1" })))?;
+        assert!(a.is_cancelled(), "requestId must take precedence and retire operation A");
+        assert!(!b.is_cancelled());
+
+        // A progress-only target registers no progress identity here: the
+        // cancel is acknowledged but retires nothing (#9074 wire rule).
+        let c = registry.register(44, "stackTrace");
+        cancel_response_ok(&mut adapter, 45, Some(json!({ "progressId": "p2" })))?;
+        assert!(!c.is_cancelled(), "progress-only targets have no identity to retire");
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancel_malformed_or_absent_arguments_are_protocol_safe()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let registry = Arc::clone(&adapter.cancel_registry);
+        let live = registry.register(51, "loadedSources");
+
+        cancel_response_ok(&mut adapter, 52, None)?;
+        cancel_response_ok(&mut adapter, 53, Some(json!({})))?;
+        cancel_response_ok(&mut adapter, 54, Some(json!({ "requestId": "not-a-number" })))?;
+
+        assert!(
+            !live.is_cancelled(),
+            "malformed or absent targets must not cancel registered operations"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancel_after_terminal_outcome_is_distinct_from_accepted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        let registry = Arc::clone(&adapter.cancel_registry);
+        let operation = registry.register(61, "gotoTargets");
+        operation.settle(cancel_registry::OperationOutcome::Completed);
+
+        cancel_response_ok(&mut adapter, 62, Some(json!({ "requestId": 61 })))?;
+
+        assert!(
+            !operation.is_cancelled(),
+            "a late cancel must not retire an already-terminal operation"
+        );
+        assert_eq!(
+            registry.cancel_request(61),
+            cancel_registry::CancelDisposition::AlreadyTerminal {
+                operation: operation.operation()
+            },
+            "the recorded terminal outcome must stay distinct from accepted-cancel"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancel_capability_stays_false_until_exact_binary_proof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #9074 selected capability rule: supportsCancelRequest is
+        // advertised only after the #7568 exact-binary positive/negative
+        // rows pass for the consuming request families.
+        let mut adapter = DebugAdapter::new();
+        let response = adapter.handle_request(1, "initialize", None);
+        match response {
+            DapMessage::Response { success: true, body: Some(body), .. } => {
+                assert_eq!(
+                    body.get("supportsCancelRequest").and_then(Value::as_bool),
+                    Some(false),
+                    "supportsCancelRequest must stay false until #7568 exact-binary proof"
+                );
+                Ok(())
+            }
+            _ => Err("initialize must return a successful capabilities response".into()),
+        }
     }
 
     #[test]

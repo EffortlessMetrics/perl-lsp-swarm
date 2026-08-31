@@ -366,13 +366,18 @@ fn test_capabilities_loaded_sources_advertised_and_working()
 }
 
 #[test]
-// AC:17 — supportsCancelRequest is advertised and cancel always succeeds
+// AC:17 — supportsCancelRequest stays false until request-scoped
+// cancellation has exact-binary proof (#9074/#7568); cancel still responds
+// protocol-safely.
 fn test_capabilities_cancel_advertised_and_working() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
     let caps = get_capabilities(&mut adapter)?;
     let advertised = caps.get("supportsCancelRequest").and_then(Value::as_bool).unwrap_or(false);
 
-    assert!(advertised, "supportsCancelRequest must be advertised");
+    assert!(
+        !advertised,
+        "supportsCancelRequest must stay false until the #7568 exact-binary cancel rows pass"
+    );
 
     let mut adapter2 = new_adapter();
     assert_ok(adapter2.handle_request(2, "cancel", None), "cancel")?;
@@ -774,21 +779,17 @@ fn test_request_seq_min_i64_is_valid() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-// AC:17 — cancel flag does not corrupt subsequent command responses on the same adapter
+// AC:17 — cancel does not corrupt subsequent command responses on the same adapter
 fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dyn std::error::Error>>
 {
-    // cancel sets an internal cancel_requested flag that gotoTargets and breakpointLocations
-    // read during their inner loops. Verify that a subsequent command on the same adapter
-    // still returns a well-formed Response and doesn't panic or hang.
-    //
-    // Note: gotoTargets with source.path=None returns early before reaching the
-    // cancel_requested check, so cancel_requested remains true after that call.
-    // Using a real source path here ensures the check fires and the flag resets.
-    // The non-existent path causes an early file-read error return, which is also
-    // fine — what matters is that a Response is returned and request_seq is echoed.
+    // #9074: cancel carries no shared state anymore — it targets exactly the
+    // operation named by its requestId (or nothing at all). A subsequent
+    // command on the same adapter must still return a well-formed Response
+    // and never be truncated or influenced by an earlier cancel.
     let mut adapter = new_adapter();
 
-    // First: cancel sets cancel_requested = true
+    // First: cancel with an unknown requestId is acknowledged without
+    // touching any operation.
     let cancel_msg = adapter.handle_request(1, "cancel", None);
     match cancel_msg {
         DapMessage::Response { command, success, .. } => {
@@ -798,8 +799,8 @@ fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dy
         other => return Err(format!("cancel: expected Response, got {other:?}").into()),
     }
 
-    // Second: breakpointLocations with a source path triggers the cancel_requested check
-    // in its inner loop, resets the flag, and returns a valid Response.
+    // Second: breakpointLocations runs its scan undisturbed — no cancel
+    // state exists for it to observe.
     let bp_msg = adapter.handle_request(
         2,
         "breakpointLocations",
