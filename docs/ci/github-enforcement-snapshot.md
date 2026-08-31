@@ -166,15 +166,25 @@ Branch and repository names are percent-encoded per path segment, so a branch co
 
 A bundle is bound to the repository, branch, and acquisition time it was taken with, and `assemble` reads all three from the bundle rather than from the command line. An imported capture therefore keeps its original `observed_at` — it cannot become fresh evidence by being assembled later — and cannot be relabelled onto another branch, which two branches sharing a commit would otherwise reconcile without complaint. The acquisition time is stamped before the first request, so a long capture never makes its earliest responses look newer than they are, and the captured `refs/heads/...` ref is checked against the bundled branch. A bundle missing any of the three fails closed.
 
+### What a bundle does and does not attest
+
+A bundle is bytes on disk. `capture` binds its evidence to GitHub at the transport layer — a fixed API root and no redirects — but `assemble` has no such binding, and the observer cannot tell whether a bundle it is handed was ever fetched from anywhere. The bundle makes a capture *reviewable*, not *authenticated*.
+
+So an imported capture may only ever claim `connector`. `trusted_default_branch` and `operator` assert how the bytes were obtained; a bundle carries no evidence of that, and allowing an import to claim either would put the top of the ladder one command-line flag away. `assemble` does not offer those labels and `build_snapshot` refuses them for an imported capture, so neither the command line nor a programmatic caller can make the claim.
+
+`connector` therefore carries exactly the trust of whoever supplied the bundle — the same way `operator` carries the trust of whoever ran the requests. What constrains it is not the observer but the reconciler's independently declared authority and its staleness bound: a fabricated bundle still has to match the declared repository, repository ID, branch, and freshness window to reconcile at all. Treat an imported observation as evidence about a capture someone vouched for, and vouch accordingly.
+
 ### Execution shapes
 
 The observer supports the least-privileged shape that can actually read both surfaces:
 
 ```text
-trusted_default_branch  repository-owned default-branch job
-operator                a maintainer running the command directly
+trusted_default_branch  repository-owned default-branch job     capture only
+operator                a maintainer running the command directly  capture only
 connector               a capture bundle imported as a typed observation
 ```
+
+`capture` may claim any of the three; `assemble` may claim only `connector`, for the reason given under [What a bundle does and does not attest](#what-a-bundle-does-and-does-not-attest).
 
 The two surfaces do not cost the same access. Observed against this repository with an ordinary repository-scoped token:
 

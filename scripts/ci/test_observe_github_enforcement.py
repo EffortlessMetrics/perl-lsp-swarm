@@ -1067,6 +1067,43 @@ class AcquisitionBinding(unittest.TestCase):
             with self.assertRaises(observer.ObserverError):
                 observer.Capture.from_bundle(bundle)
 
+    def test_an_imported_capture_cannot_claim_a_higher_trust_source(
+        self,
+    ) -> None:
+        """An import is an import, whatever the command line says.
+
+        `trusted_default_branch` asserts the evidence came from a
+        repository-owned job on the default branch, and `operator` that
+        someone ran the requests themselves. A bundle is bytes on disk: the
+        observer cannot tell where it came from, so it may only ever claim
+        `connector`, which carries the trust of whoever imported it. Without
+        this, the source ladder's top rung would be reachable by passing a
+        different flag — the same relabelling defect as re-dating a stale
+        bundle or moving it onto another branch.
+        """
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        restored = observer.Capture.from_bundle(capture.to_bundle())
+        for claimed in ("trusted_default_branch", "operator"):
+            with self.assertRaises(observer.ObserverError):
+                observer.build_snapshot(
+                    restored, source=claimed, static_receipt=static_receipt()
+                )
+        # The honest label still works.
+        snapshot = observer.build_snapshot(
+            restored, source="connector", static_receipt=static_receipt()
+        )
+        self.assertEqual(snapshot["observation"]["source"], "connector")
+
+    def test_a_live_capture_is_not_forced_to_claim_connector(self) -> None:
+        """Negative control: the restriction must bind imports only."""
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        snapshot = observer.build_snapshot(
+            capture, source="trusted_default_branch", static_receipt=static_receipt()
+        )
+        self.assertEqual(
+            snapshot["observation"]["source"], "trusted_default_branch"
+        )
+
     def test_build_snapshot_has_no_acquisition_time_override(self) -> None:
         """A caller override would reopen the staleness hole it closed.
 
@@ -1167,7 +1204,7 @@ class CommandLine(unittest.TestCase):
                     "--repository",
                     REPOSITORY,
                     "--source",
-                    "operator",
+                    "connector",
                     "--static-receipt",
                     str(receipt),
                     "--snapshot",
@@ -1175,6 +1212,45 @@ class CommandLine(unittest.TestCase):
                 ]
             )
             self.assertEqual(code, 2)
+
+    def test_assemble_does_not_offer_a_higher_trust_source(self) -> None:
+        """The command line refuses the label before any work is done.
+
+        `build_snapshot` already refuses it, so this pins the outer seam
+        independently: removing the narrowing would otherwise leave the suite
+        green and the refusal would arrive only after the bundle had been
+        read and parsed.
+        """
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle = root / "capture.json"
+            receipt = root / "static.json"
+            snapshot = root / "snapshot.json"
+            bundle.write_text(json.dumps(capture.to_bundle()), encoding="utf-8")
+            receipt.write_text(json.dumps(static_receipt()), encoding="utf-8")
+            argv = [
+                "assemble",
+                "--capture",
+                str(bundle),
+                "--repository",
+                REPOSITORY,
+                "--source",
+                "trusted_default_branch",
+                "--static-receipt",
+                str(receipt),
+                "--snapshot",
+                str(snapshot),
+            ]
+            with self.assertRaises(SystemExit) as raised:
+                observer.main(argv)
+            self.assertEqual(raised.exception.code, 2)
+            self.assertFalse(snapshot.exists())
+            # Negative control: `capture` still accepts the same label, so the
+            # narrowing binds the import path and not the source list itself.
+            self.assertIn(
+                "trusted_default_branch", observer.LIVE_SOURCES
+            )
 
     def test_no_output_is_written_when_the_authority_is_invalid(self) -> None:
         """A partial write pairs a fresh snapshot with a stale authority.
@@ -1202,7 +1278,7 @@ class CommandLine(unittest.TestCase):
                     "--authority-repository-id",
                     "0",  # rejected: must be a positive integer
                     "--source",
-                    "operator",
+                    "connector",
                     "--static-receipt",
                     str(receipt),
                     "--snapshot",
@@ -1232,7 +1308,7 @@ class CommandLine(unittest.TestCase):
                     "--repository",
                     REPOSITORY,
                     "--source",
-                    "operator",
+                    "connector",
                     "--static-receipt",
                     str(root / "absent.json"),
                     "--snapshot",
@@ -1564,7 +1640,7 @@ class AuthorityIndependence(unittest.TestCase):
                     "--repository",
                     REPOSITORY,
                     "--source",
-                    "operator",
+                    "connector",
                     "--static-receipt",
                     str(receipt),
                     "--snapshot",

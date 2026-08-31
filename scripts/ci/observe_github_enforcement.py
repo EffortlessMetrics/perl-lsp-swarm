@@ -38,6 +38,9 @@ CAPTURE_VERSION = 2
 API_ROOT = "https://api.github.com"
 API_VERSION = "2022-11-28"
 LIVE_SOURCES = ("trusted_default_branch", "operator", "connector")
+# The only source an imported capture bundle may claim. The other two assert
+# how the bytes were obtained; a bundle carries no evidence of that.
+IMPORTED_SOURCE = "connector"
 TOKEN_VARIABLES = ("GITHUB_TOKEN", "GH_TOKEN")
 
 # Closed, private-safe limitation vocabulary. Raw host errors, response bodies,
@@ -224,6 +227,11 @@ class Capture:
     A capture is bound to the repository, branch, and acquisition time it was
     taken with. Those travel inside the bundle so an imported capture cannot
     be relabelled onto another branch or re-dated as fresh evidence.
+
+    `imported` records that the evidence was read from a bundle rather than
+    fetched. It is not part of the bundle — a bundle cannot clear it — and it
+    is what stops an import claiming a source that asserts how the bytes were
+    obtained.
     """
 
     def __init__(
@@ -232,11 +240,13 @@ class Capture:
         repository: str = "",
         branch: str = "",
         captured_at: str = "",
+        imported: bool = False,
     ) -> None:
         self.entries: dict[str, ApiResult] = {}
         self.repository = repository
         self.branch = branch
         self.captured_at = captured_at
+        self.imported = imported
 
     def record(self, key: str, result: ApiResult) -> ApiResult:
         self.entries[key] = result
@@ -293,7 +303,10 @@ class Capture:
                 raise ObserverError(f"capture bundle is missing {field}")
         normalize_timestamp(captured_at, "capture bundle captured_at")
         capture = cls(
-            repository=repository, branch=branch, captured_at=captured_at
+            repository=repository,
+            branch=branch,
+            captured_at=captured_at,
+            imported=True,
         )
         for entry in entries:
             if not isinstance(entry, dict):
@@ -454,6 +467,17 @@ def build_snapshot(
         raise ObserverError(
             f"source must be one of {sorted(LIVE_SOURCES)}; "
             "the observer never emits a fixture observation"
+        )
+    # An imported bundle is bytes on disk. The observer cannot tell whether
+    # they came from GitHub, so it may only ever claim the source whose trust
+    # is the importer's — otherwise the ladder's top rung would be reachable
+    # by passing a different flag, which is the same relabelling defect as
+    # re-dating a stale bundle or moving it onto another branch.
+    if capture.imported and source != IMPORTED_SOURCE:
+        raise ObserverError(
+            f"an imported capture may only claim source "
+            f"'{IMPORTED_SOURCE}', not '{source}': the observer cannot "
+            "authenticate the origin of a bundle it did not fetch"
         )
     branch = capture.branch
     if not branch:
@@ -1167,14 +1191,20 @@ def emit(args: argparse.Namespace, capture: Capture) -> int:
     return 0 if observation["permission"] == "complete" else 2
 
 
-def add_common_arguments(parser: argparse.ArgumentParser) -> None:
-    """Arguments shared by `capture` and `assemble`."""
+def add_common_arguments(
+    parser: argparse.ArgumentParser, *, sources: Iterable[str] = LIVE_SOURCES
+) -> None:
+    """Arguments shared by `capture` and `assemble`.
+
+    `sources` narrows the accepted labels: `assemble` reads a bundle, so it
+    offers only the source an import may honestly claim.
+    """
     # Declared by the operator, never derived from the observation: these are
     # what the reconciliation authority states independently.
     parser.add_argument("--repository", required=True)
     parser.add_argument("--authority-repository-id", type=int)
     parser.add_argument("--branch", default="main")
-    parser.add_argument("--source", choices=list(LIVE_SOURCES), required=True)
+    parser.add_argument("--source", choices=list(sources), required=True)
     parser.add_argument("--static-receipt", type=Path, required=True)
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--authority", type=Path)
@@ -1197,7 +1227,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "assemble", help="emit a snapshot from a previously captured bundle"
     )
     assemble.add_argument("--capture", type=Path, required=True)
-    add_common_arguments(assemble)
+    add_common_arguments(assemble, sources=(IMPORTED_SOURCE,))
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
