@@ -400,9 +400,6 @@ impl PatternDetector for RegexHeredocDetector {
         }
     }
 }
-}
-
-
 
 // Eval heredoc detector
 struct EvalHeredocDetector;
