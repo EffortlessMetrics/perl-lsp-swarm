@@ -71,6 +71,8 @@ interface ActiveClient<TClient extends LifecycleClient<TEvent>, TEvent = unknown
 
 interface CleanupResult {
   readonly error: unknown | undefined;
+  /** True only when every lifecycle-owned cleanup operation completed successfully. */
+  readonly terminal: boolean;
 }
 
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
@@ -92,6 +94,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   private startPromise: Promise<TClient | undefined> | undefined;
   private restartPromise: Promise<TClient | undefined> | undefined;
   private stopPromise: Promise<void> | undefined;
+  private replacementBlockedError: unknown | undefined;
   private readonly cleanupPromises = new WeakMap<TClient, Promise<CleanupResult>>();
 
   constructor(
@@ -126,6 +129,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     }
     if (this.startPromise) {
       return this.startPromise;
+    }
+    if (this.replacementBlockedError !== undefined) {
+      return Promise.reject(this.replacementBlockedFailure());
     }
     if (this.state === 'running' && this.activeClient) {
       return Promise.resolve(this.activeClient.client);
@@ -168,6 +174,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   }
 
   private beginStart(): Promise<TClient | undefined> {
+    if (this.replacementBlockedError !== undefined) {
+      return Promise.reject(this.replacementBlockedFailure());
+    }
     if (this.startPromise) {
       return this.startPromise;
     }
@@ -224,7 +233,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
       await client.start();
       if (!this.isCurrentActive(active)) {
-        await this.shutdown(active);
+        this.recordCleanupResult(await this.shutdown(active));
         return undefined;
       }
 
@@ -232,7 +241,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         await this.hooks.onStarted(client, serverPath);
       }
       if (!this.isCurrentActive(active)) {
-        await this.shutdown(active);
+        this.recordCleanupResult(await this.shutdown(active));
         return undefined;
       }
 
@@ -240,7 +249,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       return client;
     } catch (error: unknown) {
       if (active) {
-        await this.shutdown(active);
+        this.recordCleanupResult(await this.shutdown(active));
       }
       if (!this.isCurrentGeneration(startGeneration)) {
         return undefined;
@@ -260,12 +269,18 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     this.serverPath = null;
     this.transition('stopping', stopGeneration);
 
-    const cleanup = active ? await this.shutdown(active) : { error: undefined };
-    if (cleanup.error !== undefined) {
-      this.error = cleanup.error;
+    const cleanup = active
+      ? await this.shutdown(active)
+      : this.replacementBlockedError !== undefined
+        ? { error: this.replacementBlockedError, terminal: false }
+        : { error: undefined, terminal: true };
+    if (!cleanup.terminal) {
+      this.recordCleanupResult(cleanup);
+      this.error = cleanup.error ?? this.replacementBlockedFailure();
       this.transition('failed', stopGeneration);
       this.notifyCallback('failed', this.hooks.onFailed, this.snapshot);
     } else {
+      this.replacementBlockedError = undefined;
       this.error = undefined;
       this.transition('stopped', stopGeneration);
       this.notifyCallback('stopped', this.hooks.onStopped, this.snapshot);
@@ -274,6 +289,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
   private async runRestart(): Promise<TClient | undefined> {
     await this.stop();
+    if (this.replacementBlockedError !== undefined) {
+      throw this.replacementBlockedFailure();
+    }
     return this.beginStart();
   }
 
@@ -343,26 +361,49 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     }
 
     let firstError: unknown = undefined;
+    let terminal = true;
     if (active.listener) {
       try {
         active.listener.dispose();
       } catch (error: unknown) {
         firstError = error;
+        terminal = false;
       }
       active.listener = undefined;
     }
 
     const stopError = await this.runBounded('stop', () => active.client.stop());
-    if (firstError === undefined && stopError !== undefined) {
-      firstError = stopError;
+    if (stopError !== undefined) {
+      firstError ??= stopError;
+      terminal = false;
     }
 
     const disposeError = await this.runBounded('dispose', () => active.client.dispose());
-    if (firstError === undefined && disposeError !== undefined) {
-      firstError = disposeError;
+    if (disposeError !== undefined) {
+      firstError ??= disposeError;
+      terminal = false;
     }
 
-    return { error: firstError };
+    return { error: firstError, terminal };
+  }
+
+  private recordCleanupResult(cleanup: CleanupResult): void {
+    if (cleanup.terminal) {
+      return;
+    }
+    this.replacementBlockedError = cleanup.error ?? new LanguageClientLifecycleError(
+      'Language client cleanup did not establish terminal state.',
+    );
+  }
+
+  private replacementBlockedFailure(): LanguageClientLifecycleError {
+    const detail =
+      this.replacementBlockedError instanceof Error && this.replacementBlockedError.message
+        ? `: ${this.replacementBlockedError.message}`
+        : '';
+    return new LanguageClientLifecycleError(
+      `Language client cleanup is not terminal; replacement startup is blocked${detail}`,
+    );
   }
 
   private async runBounded(
