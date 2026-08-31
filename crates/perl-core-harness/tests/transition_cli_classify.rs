@@ -921,6 +921,7 @@ fn sample_results(total: usize, passed: usize) -> Vec<RunFileResult> {
         .map(|index| {
             let status = if index < passed { RunnerStatus::Pass } else { RunnerStatus::Fail };
             RunFileResult {
+                mechanism: None,
                 path: format!("base/{index}.t"),
                 status,
                 assertions_passed: usize::from(status == RunnerStatus::Pass),
