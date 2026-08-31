@@ -103,6 +103,19 @@ fn position_to_line_col_uses_utf8_byte_offsets() {
 }
 
 #[test]
+fn position_to_line_col_handles_empty_source() {
+    assert_eq!(position_to_line_col("", 0), (1, 1));
+}
+
+#[test]
+fn position_to_line_col_floors_offsets_inside_utf8_scalars() {
+    assert_eq!(position_to_line_col("é", 1), (1, 1));
+    assert_eq!(position_to_line_col("🙂", 1), (1, 1));
+    assert_eq!(position_to_line_col("🙂", 3), (1, 1));
+    assert_eq!(position_to_line_col("🙂", "🙂".len()), (1, 2));
+}
+
+#[test]
 fn read_source_bytes_preserves_utf8() -> Result<(), Box<dyn std::error::Error>> {
     let decoded = read_source_bytes(b"use strict;\n".to_vec())?;
     assert_eq!(decoded, "use strict;\n");
