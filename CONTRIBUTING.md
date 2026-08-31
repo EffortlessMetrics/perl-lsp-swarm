@@ -8,11 +8,34 @@ This guide covers the ordinary contributor path. Agentic environments should als
 the [agent contributing guide](docs/how-to/AGENT_CONTRIBUTING.md), which points to the
 provider-native repository contracts without creating a second workflow.
 
+## Repository context
+
+Ordinary development happens in
+[`EffortlessMetrics/perl-lsp-swarm`](https://github.com/EffortlessMetrics/perl-lsp-swarm)
+on `main`. Clone this repository, open development issues here, and target pull requests
+here.
+
+[`EffortlessMetrics/perl-lsp`](https://github.com/EffortlessMetrics/perl-lsp) on
+`master` owns public release lineage and published artifacts. A merge to
+`perl-lsp-swarm/main` is development state; it does not establish that a change is in a
+release, package registry, editor marketplace, or other public channel. Installation and
+release links may therefore point to `perl-lsp` intentionally.
+
+The current relationship is defined by
+[product identity](docs/reference/product-identity.md). The landed contributor-topology
+projection derives it from local authorities, but the bare command intentionally leaves live
+stage and channel status `NOT_PROVEN`; a captured `--observation` is required to project
+observed status:
+
+```bash
+cargo run --locked -p xtask --bin contributor-topology
+```
+
 ## Quick start
 
 ```bash
-git clone https://github.com/EffortlessMetrics/perl-lsp.git
-cd perl-lsp
+git clone https://github.com/EffortlessMetrics/perl-lsp-swarm.git
+cd perl-lsp-swarm
 
 # Recommended reproducible environment
 nix develop
@@ -310,7 +333,7 @@ second run.
 
 For documentation-only changes, verify links and run the narrow docs checks selected by
 CI. Historical or forensic records may preserve old terminology and branch names; current
-operational guides must use current authority and `main`.
+operational guides must use current authority and repository-qualified branch context.
 
 ## Security and privacy
 
@@ -334,11 +357,14 @@ checks, issue, and landed commit are the durable record; runtime agent state is 
 
 ## Community and licensing
 
-Use [GitHub issues](https://github.com/EffortlessMetrics/perl-lsp/issues) for confirmed
-defects and scoped implementation work. Keep reports reproducible, redact private data,
-and link the smallest relevant evidence. Repository discussion/support surfaces may be
-enabled separately; do not use a feature proposal as a substitute for a verified bug
-report or accepted plan.
+Use [development issues](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues) for
+confirmed defects and scoped implementation work. Keep reports reproducible, redact
+private data, and link the smallest relevant evidence. Public release and installation
+claims should still cite the publication repository or released artifact they concern;
+opening the development issue here does not promote swarm state to public availability.
+
+Repository discussion/support surfaces may be enabled separately; do not use a feature
+proposal as a substitute for a verified bug report or accepted plan.
 
 Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md), and security
 reports follow [SECURITY.md](SECURITY.md). Contributions are licensed under both
@@ -346,7 +372,7 @@ reports follow [SECURITY.md](SECURITY.md). Contributions are licensed under both
 
 ## Where to ask or start
 
-- [Open issues](https://github.com/EffortlessMetrics/perl-lsp/issues)
+- [Open development issues](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues)
 - [Project roadmap](docs/project/ROADMAP.md)
 - [Commands reference](docs/reference/COMMANDS_REFERENCE.md)
 - [Architecture reference](docs/reference/ARCHITECTURE.md)
