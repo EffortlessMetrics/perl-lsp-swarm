@@ -3658,7 +3658,7 @@ review_after = "2026-08-13"
         assert!(error.to_string().contains("notes.txt"));
 
         let (temp, base) = exact_fixture()?;
-        write_fixture(temp.path(), "policy/non-rust-allowlist.toml", "")?;
+        write_fixture(temp.path(), "policy/non-rust-allowlist.toml", "allow = []\n")?;
         let subject = commit_fixture(temp.path(), "allowlist regression")?;
         let error = non_rust_exact_tree(
             temp.path(),
