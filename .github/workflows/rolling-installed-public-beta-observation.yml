@@ -207,30 +207,32 @@ jobs:
             --output "$ARCHIVE_PATH" \
             --manifest-output "$ROW_ROOT/artifacts/product-unit-manifest.json"
 
-      - name: Select VS Code host version
+      - name: Configure exact smoke subject and host selector
         shell: bash
         env:
           HOST_ROLE: ${{ matrix.host_role }}
           MINIMUM_VSCODE: ${{ needs.subject.outputs.minimum_vscode }}
+          SOURCE_SHA: ${{ needs.subject.outputs.source_sha }}
+          ROW_ID: ${{ matrix.row_id }}
         run: |
           set -euo pipefail
           if [ "$HOST_ROLE" = "minimum_supported" ]; then
-            printf 'OBSERVED_VSCODE_VERSION=%s\n' "$MINIMUM_VSCODE" >> "$GITHUB_ENV"
+            VSCODE_SELECTOR="$MINIMUM_VSCODE"
           else
-            echo 'OBSERVED_VSCODE_VERSION=stable' >> "$GITHUB_ENV"
+            VSCODE_SELECTOR=stable
           fi
+          printf 'OBSERVED_VSCODE_VERSION=%s\n' "$VSCODE_SELECTOR" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_FIRST_HOUR_SERVER_PATH=%s\n' "$SERVER_PATH" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_SERVER_SOURCE_SHA=%s\n' "$SOURCE_SHA" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_VSCODE_VERSION=%s\n' "$VSCODE_SELECTOR" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_SMOKE_RECEIPTS_DIR=%s/%s/vscode\n' "$GITHUB_WORKSPACE" "$ROW_ROOT" >> "$GITHUB_ENV"
+          printf 'PERL_LSP_SMOKE_SOURCE_LABEL=rolling-installed-%s\n' "$ROW_ID" >> "$GITHUB_ENV"
 
       - name: Run exact packaged VSIX journey under Xvfb
         id: linux_smoke
         if: runner.os == 'Linux'
         continue-on-error: true
         working-directory: vscode-extension
-        env:
-          PERL_LSP_FIRST_HOUR_SERVER_PATH: ${{ env.SERVER_PATH }}
-          PERL_LSP_SERVER_SOURCE_SHA: ${{ needs.subject.outputs.source_sha }}
-          PERL_LSP_VSCODE_VERSION: ${{ env.OBSERVED_VSCODE_VERSION }}
-          PERL_LSP_SMOKE_RECEIPTS_DIR: ${{ github.workspace }}/${{ env.ROW_ROOT }}/vscode
-          PERL_LSP_SMOKE_SOURCE_LABEL: rolling-installed-${{ matrix.row_id }}
         run: xvfb-run -a npm run test:published:local
 
       - name: Run exact packaged VSIX journey on Windows
@@ -238,12 +240,6 @@ jobs:
         if: runner.os == 'Windows'
         continue-on-error: true
         working-directory: vscode-extension
-        env:
-          PERL_LSP_FIRST_HOUR_SERVER_PATH: ${{ env.SERVER_PATH }}
-          PERL_LSP_SERVER_SOURCE_SHA: ${{ needs.subject.outputs.source_sha }}
-          PERL_LSP_VSCODE_VERSION: ${{ env.OBSERVED_VSCODE_VERSION }}
-          PERL_LSP_SMOKE_RECEIPTS_DIR: ${{ github.workspace }}/${{ env.ROW_ROOT }}/vscode
-          PERL_LSP_SMOKE_SOURCE_LABEL: rolling-installed-${{ matrix.row_id }}
         run: npm run test:published:local
 
       - name: Record smoke process disposition
@@ -304,7 +300,7 @@ jobs:
 
   fan-in:
     name: Assemble rolling pre-freeze packet
-    if: always() && github.event_name == 'workflow_dispatch'
+    if: always() && github.event_name == 'workflow_dispatch' && needs.subject.result == 'success'
     needs: [subject, installed-row]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -376,6 +372,7 @@ jobs:
           print(f"- Recommendation: `{packet['freeze_recommendation']}`")
           print(f"- Linux: `{packet['platforms']['linux']}`")
           print(f"- Windows: `{packet['platforms']['windows']}`")
+          print(f"- Other targets: `{packet['platforms']['other_retained_targets']}`")
           print(f"- Product blockers: {len(packet['product_blockers'])}")
           print(f"- Instrument defects: {len(packet['instrument_defects'])}")
           print(f"- Not-proven cells: {len(packet['not_proven_cells'])}")
