@@ -1687,6 +1687,29 @@ tests::gamma: test
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Serializes the tests that read or mutate the shared repository working
+    /// tree.
+    ///
+    /// `capture_worktree_dirty` reads `git status` in the process working
+    /// directory, and two tests below create untracked probe files there to
+    /// prove "untracked file => dirty". Run concurrently they observe each
+    /// other's probes and fail on a tree state they did not create.
+    ///
+    /// Pointing them at a scratch repository is not available: the production
+    /// path resolves the tree from `std::env::current_dir()`, which is
+    /// process-global, so changing it per test would itself be a race. A lock
+    /// removes the interference without weakening any assertion.
+    static WORKTREE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Recovers from poisoning so one panicking test reports its own failure
+    /// instead of cascading lock errors into every sibling.
+    fn lock_worktree() -> std::sync::MutexGuard<'static, ()> {
+        match WORKTREE.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     /// Scratch directory for tests that exercise real receipt files.
     fn scratch_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rsp-{label}-{}", std::process::id()));
@@ -1734,6 +1757,7 @@ tests::gamma: test
 
     #[test]
     fn the_dirty_signal_reads_this_checkout_and_ignores_the_receipt_itself() {
+        let _tree = lock_worktree();
         let receipt = PathBuf::from(DEFAULT_RECEIPT_PATH);
         let Ok(before) = capture_worktree_dirty(&receipt) else {
             panic!("dirty capture must succeed in a git checkout");
@@ -1804,6 +1828,7 @@ tests::gamma: test
 
     #[test]
     fn a_nested_untracked_receipt_is_not_mistaken_for_tree_drift() {
+        let _tree = lock_worktree();
         let Ok(root) = capture_stdout("git", &["rev-parse", "--show-toplevel"]) else {
             panic!("repository root");
         };
@@ -1969,6 +1994,7 @@ tests::gamma: test
 
     #[test]
     fn the_failure_emission_path_writes_a_complete_verifiable_receipt() {
+        let _tree = lock_worktree();
         // Emission itself was only covered end-to-end through the CLI. This
         // pins the same code path permanently: `fail_closed` must write a
         // receipt describing the whole lane *and* propagate the original
@@ -2035,6 +2061,7 @@ tests::gamma: test
 
     #[test]
     fn an_invalid_failure_receipt_is_withheld_without_masking_the_lane_failure() {
+        let _tree = lock_worktree();
         let dir = scratch_dir("invalid-failure-receipt");
         let path = dir.join("emitted.json");
 
@@ -2073,6 +2100,7 @@ tests::gamma: test
 
     #[test]
     fn a_failure_receipt_is_withheld_when_the_subject_moved() {
+        let _tree = lock_worktree();
         // A receipt naming the start-of-run subject after the checkout moved
         // would describe a run spanning two subjects, and restoring that
         // checkout would make it verify. The failure still propagates; only
