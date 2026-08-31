@@ -91,10 +91,7 @@ fn must_some_failure_reports_type_and_shape() -> Result<(), String> {
         let _ = must_some(Option::<MissingItem>::None);
     })?;
 
-    let expected = format!(
-        "must_some: unexpected None<{}>",
-        std::any::type_name::<MissingItem>()
-    );
+    let expected = format!("must_some: unexpected None<{}>", std::any::type_name::<MissingItem>());
     assert_eq!(message, expected);
     Ok(())
 }
