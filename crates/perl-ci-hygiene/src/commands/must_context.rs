@@ -364,16 +364,28 @@ fn compiled_regex<'a>(
 /// Returns an error when no usable base ref can be resolved or when `git diff`
 /// cannot be executed.
 pub(crate) fn check(repo_root: &Path, base: Option<&str>) -> Result<i32> {
-    let base = resolve_base(repo_root, base)?;
+    let Some(requested_base) = resolve_base(repo_root, base)? else {
+        // Not a pass: nothing was compared. Said plainly so a green line is
+        // never mistaken for evidence that no explanation was dropped.
+        println!(
+            "{YELLOW}• must* context guard not evaluated{NC}: no base ref resolved (tried: {}). \
+             Pass --base to name one.",
+            base_candidates().join(", ")
+        );
+        return Ok(0);
+    };
+    let base = merge_base(repo_root, &requested_base);
     let diff = read_diff(repo_root, &base)?;
     let findings = scan_unified_diff(&diff)?;
 
     if findings.is_empty() {
-        println!("{GREEN}✅ No assertion context dropped by a must* migration{NC} (base: {base})");
+        println!(
+            "{GREEN}✅ No assertion context dropped by a must* migration{NC} (base: {requested_base})"
+        );
         return Ok(0);
     }
 
-    println!("{RED}❌ must* migration dropped assertion context{NC} (base: {base})");
+    println!("{RED}❌ must* migration dropped assertion context{NC} (base: {requested_base})");
     for finding in &findings {
         println!("  {}:{}", finding.file, finding.new_start_line);
         for context in &finding.dropped_contexts {
@@ -408,20 +420,42 @@ fn base_candidates() -> Vec<String> {
 }
 
 /// Selects the first candidate base ref that `git` can resolve.
-fn resolve_base(repo_root: &Path, requested: Option<&str>) -> Result<String> {
+///
+/// An explicitly requested base that does not resolve is an error: the caller
+/// named a subject that does not exist. Auto-resolution finding nothing is not
+/// — that is "no subject to evaluate", which [`check`] reports as an
+/// unevaluated run rather than as a violation. A shallow clone with no
+/// `origin/main` and no `HEAD~1` must not be able to fail this guard, because
+/// an absent diff is not a dropped explanation.
+fn resolve_base(repo_root: &Path, requested: Option<&str>) -> Result<Option<String>> {
     if let Some(base) = requested {
         if ref_exists(repo_root, base) {
-            return Ok(base.to_owned());
+            return Ok(Some(base.to_owned()));
         }
         return Err(eyre!("base ref '{base}' does not resolve in {}", repo_root.display()));
     }
 
-    let candidates = base_candidates();
-    candidates
-        .iter()
-        .find(|candidate| ref_exists(repo_root, candidate))
-        .cloned()
-        .ok_or_else(|| eyre!("no base ref resolved; tried: {}", candidates.join(", ")))
+    Ok(base_candidates().into_iter().find(|candidate| ref_exists(repo_root, candidate)))
+}
+
+/// Resolves the merge base of `base` and `HEAD`, falling back to `base` itself.
+///
+/// The scan then diffs that commit against the **working tree**, so a migration
+/// a contributor has edited but not yet committed is in subject. Diffing
+/// `base...HEAD` instead reported a clean result for exactly the uncommitted
+/// change the local gate exists to catch. In CI the tree is clean, so the two
+/// ranges agree.
+fn merge_base(repo_root: &Path, base: &str) -> String {
+    Command::new("git")
+        .current_dir(repo_root)
+        .args(["merge-base", base, "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|sha| sha.trim().to_owned())
+        .filter(|sha| !sha.is_empty())
+        .unwrap_or_else(|| base.to_owned())
 }
 
 /// Returns `true` when `git rev-parse --verify` resolves `reference`.
@@ -433,10 +467,11 @@ fn ref_exists(repo_root: &Path, reference: &str) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-/// Reads the `base...HEAD` Rust-source diff with zero context lines.
+/// Reads the Rust-source diff from `base` to the working tree, zero context.
 ///
 /// Zero context keeps hunks minimal, so a removal and an addition are paired
-/// only when they are genuinely adjacent.
+/// only when they are genuinely adjacent. `base` is already the merge base, and
+/// the range is two-dot so staged and unstaged edits are included.
 ///
 /// The `a/`/`b/` prefixes are pinned explicitly. [`post_image_path`] finds the
 /// file boundary by the ` b/` separator, so an ambient `diff.noprefix=true`
@@ -452,7 +487,7 @@ fn read_diff(repo_root: &Path, base: &str) -> Result<String> {
             "--no-color",
             "--src-prefix=a/",
             "--dst-prefix=b/",
-            &format!("{base}...HEAD"),
+            base,
             "--",
             "*.rs",
         ])
@@ -461,7 +496,7 @@ fn read_diff(repo_root: &Path, base: &str) -> Result<String> {
 
     if !output.status.success() {
         return Err(eyre!(
-            "`git diff {base}...HEAD` failed: {}",
+            "`git diff {base}` failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
