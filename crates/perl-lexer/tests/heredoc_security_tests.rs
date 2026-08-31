@@ -17,10 +17,11 @@ fn test_heredoc_depth_limit_preserves_error_payload_and_span() -> TestResult {
     let mut lexer = PerlLexer::new(&code);
     let tokens = lexer.collect_tokens();
 
-    let error = tokens
+    let error_index = tokens
         .iter()
-        .find(|token| matches!(token.token_type, TokenType::Error(ref message) if &**message == "Heredoc nesting too deep"))
+        .position(|token| matches!(token.token_type, TokenType::Error(ref message) if &**message == "Heredoc nesting too deep"))
         .ok_or_else(|| "production heredoc path should emit a depth error".to_string())?;
+    let error = &tokens[error_index];
     let expected_start =
         code.find("<<EOF100").ok_or_else(|| "depth-limit header should be present".to_string())?;
     let expected_end = expected_start + "<<EOF100".len();
@@ -29,6 +30,24 @@ fn test_heredoc_depth_limit_preserves_error_payload_and_span() -> TestResult {
     assert_eq!(error.end, expected_end, "depth error span must stop at the header boundary");
     assert_eq!(&*error.text, &code[expected_start..expected_end]);
     assert!(error.end < code.len(), "depth recovery must not consume the remaining statement");
+    assert!(
+        matches!(
+            tokens.get(error_index + 1).map(|token| &token.token_type),
+            Some(TokenType::Comma)
+        ),
+        "depth recovery must continue with the delimiter after the rejected header"
+    );
+    assert!(
+        tokens
+            .iter()
+            .skip(error_index + 1)
+            .any(|token| matches!(token.token_type, TokenType::Semicolon)),
+        "depth recovery must leave the rest of the statement reachable"
+    );
+    assert!(
+        matches!(tokens.last().map(|token| &token.token_type), Some(TokenType::EOF)),
+        "collect_tokens must still reach the terminal EOF after depth recovery"
+    );
     Ok(())
 }
 
