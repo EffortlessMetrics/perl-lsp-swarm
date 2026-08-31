@@ -466,6 +466,26 @@ pub enum PayloadContradiction {
         /// Index of the offending segment in recorded order.
         index: usize,
     },
+    /// A terminal proving empty source alongside a non-empty proven value.
+    ///
+    /// Distinct from
+    /// [`PayloadContradiction::EmptyTerminalWithNonEmptyContent`], which
+    /// compares the terminal against the *content region*. This compares it
+    /// against the *value*, and is the only check that fires when the region is
+    /// correctly empty but the payload still claims proven text over it.
+    EmptyTerminalWithNonEmptyValue,
+    /// A terminated string whose content region leaves no room for a delimiter.
+    ///
+    /// A string's `raw_range` spans its delimiters, so proven-terminated
+    /// content must start after the opening one and end before the closing one.
+    /// Only `Unterminated` may reach the right edge, having no closing
+    /// delimiter to fit. Heredoc bodies carry no delimiters, so this is checked
+    /// on strings alone.
+    ///
+    /// This assumes every representable [`StringForm`] is delimited, which
+    /// holds today; an undelimited form (recorded on issue 8608) would have to
+    /// revisit it.
+    TerminatedStringWithoutDelimiterBytes,
 }
 
 /// Check one payload's geometry and disposition agreement.
@@ -503,6 +523,13 @@ fn payload_contradictions(
 
     if terminal.proves_empty_content() && content_range.is_some_and(|range| !range.is_empty()) {
         found.push(PayloadContradiction::EmptyTerminalWithNonEmptyContent);
+    }
+
+    // The region being correctly empty is not enough: the value is a separate
+    // proposition, and an unsegmented payload has nothing else to contradict.
+    if terminal.proves_empty_content() && cooked.proven_text().is_some_and(|text| !text.is_empty())
+    {
+        found.push(PayloadContradiction::EmptyTerminalWithNonEmptyValue);
     }
 
     if matches!(terminal, PayloadTerminal::Complete)
@@ -842,6 +869,16 @@ impl StringSyntax {
         );
         if !self.form.admits_delimiter(self.delimiter) {
             found.push(PayloadContradiction::FormDelimiterMismatch);
+        }
+        // `raw_range` spans the delimiters. Malformed bounds are reported by the
+        // shared check above and compare meaninglessly, so skip them here.
+        if self.terminal.is_terminated()
+            && !is_malformed(self.raw_range)
+            && let Some(content) = self.content_range
+            && !is_malformed(content)
+            && (content.start <= self.raw_range.start || content.end >= self.raw_range.end)
+        {
+            found.push(PayloadContradiction::TerminatedStringWithoutDelimiterBytes);
         }
         found
     }
@@ -1660,8 +1697,15 @@ mod tests {
 
     #[test]
     fn string_compat_value_tracks_the_typed_state_it_projects() {
-        let mut string = empty_single_quoted_string();
-        assert_eq!(string.compat_value(), Some(""));
+        // A proven-empty payload projects an empty value, not "no value".
+        assert_eq!(empty_single_quoted_string().compat_value(), Some(""));
+
+        // The value is varied on a payload whose terminal permits a non-empty
+        // one. An `Empty` terminal would not: it proves the source holds
+        // nothing, so `a_proven_empty_payload_may_not_publish_a_nonempty_value`
+        // refuses that combination outright.
+        let mut string = plain_double_quoted_string();
+        assert_eq!(string.compat_value(), Some("abc"));
 
         // Segmentation is withdrawn alongside the value: an exact segmentation
         // still claiming the old fragments would contradict the new value, and
@@ -2000,7 +2044,8 @@ mod tests {
         let mut command = plain_double_quoted_string();
         command.form = StringForm::QxCommand;
         command.delimiter = StringDelimiter::Paired { open: '{', close: '}' };
-        command.raw_range = span(0, 8);
+        // `qx{ls -l}` is nine bytes: the closing brace is inside `raw_range`.
+        command.raw_range = span(0, 9);
         command.content_range = Some(span(3, 8));
         command.segmentation = SourceSegmentation::Exact(vec![literal_segment(3, 8, "ls -l")]);
         command.cooked = CookedValue::Proven("ls -l".to_string());
@@ -2263,6 +2308,79 @@ mod tests {
 
         // The correctly-spelled empty payload stays coherent.
         assert!(empty_single_quoted_string().is_coherent());
+    }
+
+    #[test]
+    fn a_proven_empty_payload_may_not_publish_a_nonempty_value() {
+        // `Empty` asserts the source is proven to hold nothing. A non-empty
+        // proven value asserts the opposite about the same payload. The region
+        // check alone never catches this: the region here is correctly empty,
+        // and an unsegmented payload has no segments to disagree with either.
+        let mut string = empty_single_quoted_string();
+        string.segmentation = SourceSegmentation::Unavailable;
+        string.cooked = CookedValue::Proven("abc".to_string());
+        assert!(
+            string.contradictions().contains(&PayloadContradiction::EmptyTerminalWithNonEmptyValue)
+        );
+        assert_eq!(string.compat_value(), None);
+
+        // The same axis on a heredoc, where the body region plays the content
+        // role -- one checker, both payload shapes.
+        let mut empty_body = heredoc(HeredocForm::Bare, PayloadTerminal::Empty);
+        empty_body.raw_body_range = Some(span(8, 8));
+        empty_body.segmentation = SourceSegmentation::Unavailable;
+        assert!(
+            empty_body
+                .contradictions()
+                .contains(&PayloadContradiction::EmptyTerminalWithNonEmptyValue)
+        );
+        assert_eq!(empty_body.compat_content(), None);
+
+        // An honestly empty payload proves an empty value, and stays coherent.
+        assert!(empty_single_quoted_string().is_coherent());
+    }
+
+    #[test]
+    fn a_terminated_string_leaves_room_for_both_delimiters() {
+        // `raw_range` spans the delimiters, so proven-terminated content cannot
+        // touch either edge: `"abc"` is 0..5 with content 1..4.
+        let mut swallows_opening = plain_double_quoted_string();
+        swallows_opening.content_range = Some(span(0, 4));
+        swallows_opening.segmentation =
+            SourceSegmentation::Exact(vec![literal_segment(0, 4, "abc")]);
+        assert!(
+            swallows_opening
+                .contradictions()
+                .contains(&PayloadContradiction::TerminatedStringWithoutDelimiterBytes)
+        );
+        assert_eq!(swallows_opening.compat_value(), None);
+
+        let mut swallows_closing = plain_double_quoted_string();
+        swallows_closing.content_range = Some(span(1, 5));
+        swallows_closing.segmentation =
+            SourceSegmentation::Exact(vec![literal_segment(1, 5, "abc")]);
+        assert!(
+            swallows_closing
+                .contradictions()
+                .contains(&PayloadContradiction::TerminatedStringWithoutDelimiterBytes)
+        );
+
+        // An unterminated string has no closing delimiter to fit, so the right
+        // edge stays legitimately available to it. Forbidding it here would
+        // make an honest state unrepresentable.
+        let mut unterminated = plain_double_quoted_string();
+        unterminated.content_range = Some(span(1, 5));
+        unterminated.segmentation = SourceSegmentation::Exact(vec![literal_segment(1, 5, "abc")]);
+        unterminated.cooked = CookedValue::Unavailable;
+        unterminated.terminal = PayloadTerminal::Unterminated;
+        assert!(
+            !unterminated
+                .contradictions()
+                .contains(&PayloadContradiction::TerminatedStringWithoutDelimiterBytes)
+        );
+
+        // Heredoc bodies are not delimiter-wrapped, so the rule is string-only.
+        assert!(heredoc(HeredocForm::Bare, PayloadTerminal::Complete).is_coherent());
     }
 
     #[test]
