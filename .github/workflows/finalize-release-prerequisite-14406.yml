@@ -6,6 +6,7 @@ on:
       - agent/release-exact-prerequisite-graph
     paths:
       - '.github/workflows/finalize-release-prerequisite-14406.yml'
+      - '.ci/finalize-release-prerequisite-14406.trigger'
 
 permissions:
   contents: write
