@@ -739,9 +739,7 @@ fn macro_definition_bodies(source: &str, code: &[bool]) -> Vec<(usize, usize)> {
         // treating it as a definition would blank a real fixture's arguments —
         // the same token-boundary rule `code_mask` applies to a raw string's
         // leading `r`.
-        if !code.get(index).copied().unwrap_or(false)
-            || bytes.get(index.wrapping_sub(1)).is_some_and(|byte| is_identifier_byte(*byte))
-        {
+        if !code.get(index).copied().unwrap_or(false) || !starts_token(bytes, index) {
             continue;
         }
         // Step over the macro's name to its opening delimiter. Anything else
@@ -960,16 +958,27 @@ fn suppresses_execution(attributes: &str) -> bool {
     dense.contains("#[cfg(") || dense.contains("#[cfg_attr(") || dense.contains("#[ignore")
 }
 
-/// Byte index of the `mod` keyword starting at `index`, if one does.
+/// Whether a match at `index` begins a token rather than continuing an
+/// identifier.
+///
+/// Every scan in this module looks for a literal, and a literal also occurs
+/// inside longer names: `helper_command_line_oneliner!`, `émacro_rules!`,
+/// `commodity`. Without this the scan reads an unrelated construct as the one it
+/// was looking for, which has been the single most repeated defect here — three
+/// separate instances during review. It belongs in one predicate applied at
+/// every site rather than at whichever site was last reported.
+fn starts_token(bytes: &[u8], index: usize) -> bool {
+    !bytes.get(index.wrapping_sub(1)).is_some_and(|byte| is_identifier_byte(*byte))
+}
+
+/// Whether the `mod` keyword starts at `index`.
 ///
 /// Matched as a token rather than the literal `"mod "`: `mod\tname` and a name
 /// on the next line are both valid Rust, and missing them would let a suppressed
-/// module's fixtures count as running evidence.
+/// module's fixtures count as running evidence. Callers pass the blanked view,
+/// so `mod/* c */name` separates correctly too.
 fn mod_keyword_at(bytes: &[u8], index: usize) -> bool {
-    if !bytes[index..].starts_with(b"mod") {
-        return false;
-    }
-    if index > 0 && is_identifier_byte(bytes[index - 1]) {
+    if !bytes[index..].starts_with(b"mod") || !starts_token(bytes, index) {
         return false;
     }
     // A keyword must be followed by separating whitespace, not more identifier.
@@ -990,12 +999,12 @@ fn reject_suppressed_modules(source: &str) -> Result<()> {
     let code = evidence_mask(source);
     let scan = blank_non_code(source, &code);
     for (index, _) in source.match_indices("mod") {
-        if !code.get(index).copied().unwrap_or(false) || !mod_keyword_at(source.as_bytes(), index) {
+        if !code.get(index).copied().unwrap_or(false) || !mod_keyword_at(scan.as_bytes(), index) {
             continue;
         }
         let attributes = preceding_attributes(&scan, item_start_before(&scan, index));
         if suppresses_execution(&attributes) {
-            let name: String = source
+            let name: String = scan
                 .get(index + "mod".len()..)
                 .unwrap_or_default()
                 .trim_start()
@@ -1021,7 +1030,9 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
     let scan = blank_non_code(source, &code);
 
     for (index, _) in source.match_indices("command_line_oneliner!(") {
-        if !code.get(index).copied().unwrap_or(false) {
+        // `helper_command_line_oneliner!(..)` is a different macro whose name
+        // ends with this one; its arguments are not corpus fixtures.
+        if !code.get(index).copied().unwrap_or(false) || !starts_token(source.as_bytes(), index) {
             continue;
         }
         if suppresses_execution(&preceding_attributes(&scan, item_start_before(&scan, index))) {
@@ -1069,11 +1080,10 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
         // The declaration must be real code. A `fn ` inside a doc attribute,
         // string, or comment between the attribute and the declaration would
         // otherwise supply the fixture name.
-        let Some(fn_offset) = rest
-            .match_indices("fn ")
-            .map(|(offset, _)| offset)
-            .find(|offset| code.get(index + offset).copied().unwrap_or(false))
-        else {
+        let Some(fn_offset) = rest.match_indices("fn ").map(|(offset, _)| offset).find(|offset| {
+            code.get(index + offset).copied().unwrap_or(false)
+                && starts_token(source.as_bytes(), index + offset)
+        }) else {
             continue;
         };
         // Only accept the declaration that actually follows the attribute.
@@ -2042,6 +2052,56 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         for form in ["#[cfg(feature = \"x\")]\nfn modify() {}\n", "let commodity = 1;\n"] {
             reject_suppressed_modules(form)
                 .unwrap_or_else(|error| panic!("`mod` matched inside a word in {form:?}: {error}"));
+        }
+    }
+
+    /// Every literal this module scans for also occurs inside longer names, so
+    /// each scan must find a token rather than a substring.
+    ///
+    /// This shape has been the most repeated defect in the module — a fixture
+    /// macro, the `macro_rules!` keyword, and a switch bundle each hit it — so
+    /// the control sweeps all of the sites at once rather than the one last
+    /// reported.
+    #[test]
+    fn scans_match_tokens_not_substrings() {
+        // A different macro whose name ends with the fixture macro's.
+        let helper = "helper_command_line_oneliner!(fake, \"-e\", \"print 1;\");\n";
+        let evidence = extract_corpus_evidence(helper);
+        assert!(
+            evidence.switch_cases.is_empty(),
+            "an unrelated macro supplied a fixture: {:?}",
+            evidence.switch_cases
+        );
+
+        // A `fn ` ending an identifier in attribute *code* — not inside a
+        // string, which the mask already removes — must not supply the name.
+        let decoy = "#[test]\n#[allow(myfn x)]\nfn real_proof() {}\n";
+        let evidence = extract_corpus_evidence(decoy);
+        assert_eq!(
+            evidence.proof_tests.iter().collect::<Vec<_>>(),
+            vec!["real_proof"],
+            "declaration name came from something other than the declaration"
+        );
+
+        // `mod` separated from its name by a comment is still the keyword.
+        assert!(
+            reject_suppressed_modules("#[cfg(feature = \"x\")]\nmod/* c */disabled {}\n").is_err(),
+            "a comment between `mod` and its name hid the suppressed module"
+        );
+
+        // …and the refusal must still name the module, not an empty string.
+        match reject_suppressed_modules("#[cfg(feature = \"x\")]\nmod /* c */ disabled {}\n") {
+            Ok(()) => panic!("a comment hid the suppressed module"),
+            Err(error) => assert!(
+                error.to_string().contains("`disabled`"),
+                "refusal did not name the module: {error}"
+            ),
+        }
+
+        // Identifiers that merely contain a scanned literal stay untouched.
+        for form in ["fn modify() {}\n", "let commodity = 1;\n"] {
+            reject_suppressed_modules(form)
+                .unwrap_or_else(|error| panic!("`mod` matched inside a word: {error}"));
         }
     }
 
