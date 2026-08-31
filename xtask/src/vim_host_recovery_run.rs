@@ -550,17 +550,10 @@ fn shell_words(args: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut word = String::new();
     let mut quote = None;
-    let mut escaped = false;
     for character in args.chars() {
-        if escaped {
-            word.push(character);
-            escaped = false;
-            continue;
-        }
         match (quote, character) {
-            (Some('"'), '\\') => escaped = true,
             (Some(active), c) if c == active => quote = None,
-            (None, '"' | '\'') => quote = Some(c),
+            (None, '"' | '\'') => quote = Some(character),
             (None, c) if c.is_whitespace() => {
                 if !word.is_empty() {
                     words.push(std::mem::take(&mut word));
@@ -568,9 +561,6 @@ fn shell_words(args: &str) -> Vec<String> {
             }
             (_, c) => word.push(c),
         }
-    }
-    if escaped {
-        word.push('\\');
     }
     if !word.is_empty() {
         words.push(word);
@@ -1269,7 +1259,7 @@ pub fn evaluate_recovery_observation(
     // carries the old defect signature, and the driver observed the settled
     // quiet window.
     let rejection_observed = !rejections.is_empty();
-    let replacement_initialize = recovery_wire.initialize_line_of(4);
+    let replacement_initialize = recovery_wire.initialize_line_of(expected_generation_count);
     let old_signature_clean = replacement_initialize.is_some_and(|line| {
         recovery_wire
             .batches_after(MAIN_TOKEN, line)
