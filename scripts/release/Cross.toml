@@ -2,6 +2,24 @@
 # Cross withholds arbitrary host env unless build.env.passthrough authorizes it.
 # scripts/release_build_identity.py validates this closed enrollment and binds
 # the file bytes into toolchain_digest when runner=cross; CROSS_CONFIG points here.
+#
+# Container toolchain pinning (#7534). Host `rustc --version --verbose` and the
+# Cross client version describe the host, not the container that actually runs
+# the compiler, linker and sysroot for a cross target. Without an explicit
+# `image`, cross derives `ghcr.io/cross-rs/<target>:<tag>` itself, where the tag
+# is the crate version for a registry build and the rolling `main` tag when the
+# client is built from a git checkout — which is how the release workflow
+# installs it. Either default is a mutable tag, so the container toolchain could
+# change with no input to toolchain_digest changing.
+#
+# Each cross target below therefore pins one immutable `@sha256:` image digest.
+# An immutable image digest fixes the in-container compiler, linker and sysroot
+# transitively; release_build_identity.py binds the pin into toolchain_digest
+# and fails closed when a cross target is unpinned or pinned by a mutable tag.
+#
+# These digests are the 0.2.5 images, matching the cross client revision pinned
+# in .github/workflows/release.yml. To move an image deliberately, resolve the
+# new digest and update the pin here; toolchain_digest changes with it.
 
 [build.env]
 passthrough = [
@@ -12,3 +30,12 @@ passthrough = [
   "PERL_LSP_CANDIDATE_ID",
   "PERL_LSP_ARTIFACT_ROLE",
 ]
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:7f8308a8734d9fcd2ebbe9a3e4bdea74af293f0799d80c3cc341e340cda49a4c"
+
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl@sha256:77db671d8356a64ae72a3e1415e63f547f26d374fbe3c4762c1cd36c7eac7b99"
+
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl@sha256:702154f52b2d8091671aa2c84d5582d849f949977228c735ff8462f93cc0e1e4"

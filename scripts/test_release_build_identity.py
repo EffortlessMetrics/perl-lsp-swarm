@@ -23,6 +23,48 @@ sys.modules[SPEC.name] = subject
 SPEC.loader.exec_module(subject)
 
 
+CROSS_TARGET = "aarch64-unknown-linux-gnu"
+OTHER_CROSS_TARGET = "x86_64-unknown-linux-musl"
+
+
+def write_cross_config(
+    root: Path, images: dict[str, str] | None = None
+) -> Path:
+    """Write a Cross config with an exact passthrough enrollment."""
+    if images is None:
+        images = {
+            CROSS_TARGET: (
+                f"{subject.CROSS_IMAGE_REGISTRY}/{CROSS_TARGET}"
+                f"@sha256:{'a' * 64}"
+            ),
+            OTHER_CROSS_TARGET: (
+                f"{subject.CROSS_IMAGE_REGISTRY}/{OTHER_CROSS_TARGET}"
+                f"@sha256:{'c' * 64}"
+            ),
+        }
+    path = root / subject.CROSS_CONFIG_RELATIVE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rendered = "".join(f'  "{key}",\n' for key in subject.IDENTITY_ENV_KEYS)
+    targets = "".join(
+        f'\n[target.{target}]\nimage = "{image}"\n'
+        for target, image in images.items()
+    )
+    path.write_text(
+        f"[build.env]\npassthrough = [\n{rendered}]\n{targets}",
+        encoding="utf-8",
+    )
+    return path
+
+
+def cross_runner_outputs(calls: int) -> list[mock.Mock]:
+    """Host rustc/cross probes for `calls` toolchain_digest invocations."""
+    outputs: list[mock.Mock] = []
+    for _ in range(calls):
+        outputs.append(mock.Mock(stdout=b"rustc 1\n"))
+        outputs.append(mock.Mock(stdout=b"cross 1\n"))
+    return outputs
+
+
 def valid_mapping() -> dict[str, str]:
     return {
         "schema_version": subject.INPUT_SCHEMA,
@@ -299,7 +341,7 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
 
     def test_cross_config_enrolls_all_six_identity_vars(self) -> None:
         config = REPO_ROOT / subject.CROSS_CONFIG_RELATIVE
-        subject.validate_cross_config(config)
+        subject.validate_cross_config(config, CROSS_TARGET)
         passthrough = subject.load_cross_passthrough(config)
         self.assertEqual(passthrough, list(subject.IDENTITY_ENV_KEYS))
         self.assertEqual(len(passthrough), 6)
@@ -318,12 +360,15 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
             with self.assertRaisesRegex(
                 subject.BuildIdentityError, "missing="
             ):
-                subject.validate_cross_config(path)
+                subject.validate_cross_config(path, CROSS_TARGET)
 
     def test_cross_runner_exports_cross_config_for_build_and_verify(
         self,
     ) -> None:
-        identity = subject.ReleaseBuildIdentity.from_mapping(valid_mapping())
+        mapping = valid_mapping()
+        # A cross build must name a target the reviewed config actually pins.
+        mapping["target"] = CROSS_TARGET
+        identity = subject.ReleaseBuildIdentity.from_mapping(mapping)
         env = subject.build_environment(
             identity, root=REPO_ROOT, runner="cross"
         )
@@ -351,38 +396,143 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
     def test_cross_toolchain_digest_binds_reviewed_config_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = root / subject.CROSS_CONFIG_RELATIVE
-            config.parent.mkdir(parents=True)
-            config.write_text(
-                "[build.env]\n"
-                "passthrough = [\n"
-                + "".join(
-                    f'  "{key}",\n' for key in subject.IDENTITY_ENV_KEYS
-                )
-                + "]\n",
-                encoding="utf-8",
-            )
-            with (
-                mock.patch.object(
-                    subject,
-                    "run",
-                    side_effect=[
-                        mock.Mock(stdout=b"rustc 1\n"),
-                        mock.Mock(stdout=b"cross 1\n"),
-                        mock.Mock(stdout=b"rustc 1\n"),
-                        mock.Mock(stdout=b"cross 1\n"),
-                    ],
-                ),
+            config = write_cross_config(root)
+            with mock.patch.object(
+                subject, "run", side_effect=cross_runner_outputs(2)
             ):
-                first = subject.toolchain_digest(root, "cross")
+                first = subject.toolchain_digest(root, "cross", CROSS_TARGET)
                 config.write_text(
                     config.read_text(encoding="utf-8") + "# touch\n",
                     encoding="utf-8",
                 )
                 # Config no longer exact after comment? Order still exact;
                 # bytes changed so digest must move. Re-validate still passes.
-                second = subject.toolchain_digest(root, "cross")
+                second = subject.toolchain_digest(root, "cross", CROSS_TARGET)
             self.assertNotEqual(first, second)
+
+    def test_cross_toolchain_digest_moves_with_pinned_image_digest(
+        self,
+    ) -> None:
+        """#7534: the container that runs the compiler must bind the digest.
+
+        Host `rustc --version --verbose` and the cross client version describe
+        the host, not the container supplying the compiler, linker and sysroot.
+        Selecting a different immutable image must move `toolchain_digest`.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = write_cross_config(root)
+            with mock.patch.object(
+                subject, "run", side_effect=cross_runner_outputs(2)
+            ):
+                first = subject.toolchain_digest(root, "cross", CROSS_TARGET)
+                config.write_text(
+                    config.read_text(encoding="utf-8").replace(
+                        "a" * 64, "b" * 64
+                    ),
+                    encoding="utf-8",
+                )
+                second = subject.toolchain_digest(root, "cross", CROSS_TARGET)
+            self.assertNotEqual(first, second)
+
+    def test_cross_toolchain_digest_separates_targets_sharing_one_config(
+        self,
+    ) -> None:
+        """Two cross targets read the same file but select different images."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_cross_config(root)
+            with mock.patch.object(
+                subject, "run", side_effect=cross_runner_outputs(2)
+            ):
+                first = subject.toolchain_digest(root, "cross", CROSS_TARGET)
+                second = subject.toolchain_digest(
+                    root, "cross", OTHER_CROSS_TARGET
+                )
+            self.assertNotEqual(first, second)
+
+    def test_cargo_runner_digest_ignores_cross_image_pins(self) -> None:
+        """A non-cross build must not depend on the container config."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = write_cross_config(root)
+            with mock.patch.object(
+                subject,
+                "run",
+                side_effect=[
+                    mock.Mock(stdout=b"rustc 1\n"),
+                    mock.Mock(stdout=b"cargo 1\n"),
+                    mock.Mock(stdout=b"rustc 1\n"),
+                    mock.Mock(stdout=b"cargo 1\n"),
+                ],
+            ):
+                first = subject.toolchain_digest(
+                    root, "cargo", "x86_64-unknown-linux-gnu"
+                )
+                config.write_text(
+                    config.read_text(encoding="utf-8").replace(
+                        "a" * 64, "b" * 64
+                    ),
+                    encoding="utf-8",
+                )
+                second = subject.toolchain_digest(
+                    root, "cargo", "x86_64-unknown-linux-gnu"
+                )
+            self.assertEqual(first, second)
+
+    def test_cross_config_rejects_unpinned_target(self) -> None:
+        """The pre-#7534 config shape must no longer be admitted."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = write_cross_config(root, images={})
+            with self.assertRaisesRegex(
+                subject.BuildIdentityError, "does not pin a container image"
+            ):
+                subject.validate_cross_config(config, CROSS_TARGET)
+
+    def test_cross_config_rejects_mutable_tag_pin(self) -> None:
+        for mutable in (
+            f"ghcr.io/cross-rs/{CROSS_TARGET}:main",
+            f"ghcr.io/cross-rs/{CROSS_TARGET}:0.2.5",
+            f"ghcr.io/cross-rs/{CROSS_TARGET}",
+        ):
+            with self.subTest(image=mutable):
+                with self.assertRaisesRegex(
+                    subject.BuildIdentityError, "immutable"
+                ):
+                    subject.validate_cross_image(mutable, CROSS_TARGET)
+
+    def test_cross_config_rejects_another_targets_image(self) -> None:
+        with self.assertRaisesRegex(
+            subject.BuildIdentityError, "another target's image repository"
+        ):
+            subject.validate_cross_image(
+                f"ghcr.io/cross-rs/{OTHER_CROSS_TARGET}@sha256:{'a' * 64}",
+                CROSS_TARGET,
+            )
+
+    def test_reviewed_cross_config_pins_every_release_cross_target(
+        self,
+    ) -> None:
+        """Every `use_cross: true` row in the live matrix must be pinned."""
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "release.yml"
+        ).read_text(encoding="utf-8")
+        lines = workflow.splitlines()
+        cross_targets = [
+            line.split("target:", 1)[1].strip()
+            for index, line in enumerate(lines)
+            if "- target:" in line
+            and "use_cross: true" in "\n".join(lines[index : index + 4])
+        ]
+        self.assertEqual(len(cross_targets), 3)
+        config = REPO_ROOT / subject.CROSS_CONFIG_RELATIVE
+        for target in cross_targets:
+            with self.subTest(target=target):
+                self.assertEqual(
+                    subject.validate_cross_config(config, target),
+                    subject.load_cross_image(config, target),
+                )
 
     def test_release_workflow_declares_all_three_cross_rows(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
