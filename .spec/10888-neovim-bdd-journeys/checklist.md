@@ -74,13 +74,23 @@ only the standard library, and genuinely runs in this repository.
 
 The script below is the canonical checker. The proof extracts it from this
 file and runs it twice, so the executed bytes and the documented bytes cannot
-drift. It enforces: the exact three files; required canonical headings;
-required contract terms (owner chains, profile names, envelope vocabulary,
-documented-configuration shape); the exact forty-seven scenario IDs bound to
-their §Behavior ledger rows in fixed family order; that no foreign rail ID
-appears as a ledger row; all twenty-five falsifiers with exact
-scenario/kind/verdict text in fixed order; and a fail-closed changed-path union
-restricted to exactly this packet.
+drift. It enforces: the exact three files; required canonical headings, each as
+a real heading line rather than a cross-reference; required contract terms
+(owner chains, profile names, envelope vocabulary, documented-configuration
+shape); the exact forty-seven scenario IDs bound to their §Behavior ledger rows
+in fixed family order; **a digest of every complete normative row, so a
+published ID cannot be silently rebound to a different behavior, profile tag,
+or owner chain**; that no foreign rail ID appears as a ledger row; all
+twenty-five falsifiers with exact scenario/kind/verdict text in fixed order;
+`git diff --check` over the candidate range, work tree, and index, with a
+nonzero status failing the check rather than being discarded; and a fail-closed
+changed-path union restricted to exactly this packet.
+
+Pinning the ID alone would be insufficient: a mutation could keep
+`neovim.bdd.core.04` while replacing the proposition it names, which is the
+precise failure the immutability law exists to prevent. The row digests make
+the ID and its meaning inseparable, so any legitimate rewording of a published
+row must update its digest deliberately and visibly in the diff.
 
 ```python
 #!/usr/bin/env python3
@@ -89,6 +99,7 @@ restricted to exactly this packet.
 Read-only. Re-reads and revalidates every table on each invocation; it never
 writes to the work tree. Exits non-zero with a named reason on any violation.
 """
+import hashlib
 import re
 import subprocess
 
@@ -122,6 +133,58 @@ EXPECTED_IDS = [f"neovim.bdd.{fam}.{n:02d}"
 # Foreign rails must never appear as a ledger row ID in this packet.
 FOREIGN_ROW = re.compile(
     r"(?m)^\|\s*`(?:vim\.bdd\.|coc\.[a-z]+\.bdd\.|lite_xl\.bdd\.)")
+
+# Digest of each COMPLETE normative ledger row, so a published ID cannot
+# be silently rebound to a different proposition.
+ROW_DIGESTS = {
+    "neovim.bdd.attach.01": "3f5b7d942c7cb158",
+    "neovim.bdd.attach.02": "e1dea4aedff52388",
+    "neovim.bdd.attach.03": "7f9a2da986de1c22",
+    "neovim.bdd.attach.04": "2ec42d3754a59bb5",
+    "neovim.bdd.attach.05": "896f778bc55f4df5",
+    "neovim.bdd.attach.06": "12e3818ea5ce3dfb",
+    "neovim.bdd.core.01": "274214192adc000c",
+    "neovim.bdd.core.02": "f0d4bc0c256f182e",
+    "neovim.bdd.core.03": "5b6b8511c1daff92",
+    "neovim.bdd.core.04": "d881fd24dda16ba4",
+    "neovim.bdd.core.05": "536b8c2c4595235e",
+    "neovim.bdd.core.06": "3554602a0e868157",
+    "neovim.bdd.core.07": "4f7218ff0f57ffe3",
+    "neovim.bdd.core.08": "017f59ff8c2ea204",
+    "neovim.bdd.core.09": "16e3e514e05e4f72",
+    "neovim.bdd.core.10": "3e7e2560e23ddd46",
+    "neovim.bdd.sync.01": "ce355803bdafb023",
+    "neovim.bdd.sync.02": "8d49977e2907ff3e",
+    "neovim.bdd.sync.03": "a5c7662893a99d0d",
+    "neovim.bdd.sync.04": "4ff9e5dc406f452c",
+    "neovim.bdd.sync.05": "9bdfb454cb275425",
+    "neovim.bdd.sync.06": "0b626995740ae34c",
+    "neovim.bdd.sync.07": "1f12e3511014e612",
+    "neovim.bdd.sync.08": "3f672dca2e5b4115",
+    "neovim.bdd.sync.09": "7a0cc843b267b0ae",
+    "neovim.bdd.sync.10": "1bbb96fa8d412193",
+    "neovim.bdd.lifecycle.01": "eb7a2d0f3d283ac1",
+    "neovim.bdd.lifecycle.02": "dedecd133898cce7",
+    "neovim.bdd.lifecycle.03": "5b222faae72d315f",
+    "neovim.bdd.lifecycle.04": "1d61b0cf358bf0b5",
+    "neovim.bdd.lifecycle.05": "93a0c2c98fc6f1df",
+    "neovim.bdd.lifecycle.06": "5236178f0faa8351",
+    "neovim.bdd.lifecycle.07": "78da30c0d117d88c",
+    "neovim.bdd.support.01": "4d3847a971a26329",
+    "neovim.bdd.support.02": "a1ca4b3c6cac015b",
+    "neovim.bdd.support.03": "a22b75e60ed6ca3b",
+    "neovim.bdd.support.04": "db4db9ac7e555029",
+    "neovim.bdd.support.05": "854b07f5a63fa7c5",
+    "neovim.bdd.support.06": "20a4e683cc554e48",
+    "neovim.bdd.support.07": "871a2bd1e6d5bd3f",
+    "neovim.bdd.support.08": "5411a6c538655928",
+    "neovim.bdd.opt.01": "9fd025ec4f3020e5",
+    "neovim.bdd.opt.02": "8c4b577b783155cd",
+    "neovim.bdd.opt.03": "4e7d57f9874537a3",
+    "neovim.bdd.opt.04": "e11adc269e551f73",
+    "neovim.bdd.opt.05": "66c897131a0d5185",
+    "neovim.bdd.opt.06": "a62e775f1fd1dd84",
+}
 
 EXPECTED_ROWS = [
     (1, 'Native filetype was pre-set before observation', 'negative', 'reject; activation must be observed, not arranged (attach.01)'),
@@ -225,6 +288,27 @@ def main():
     if FOREIGN_ROW.search(acceptance):
         fail("a foreign rail ID appears as a ledger row in this packet")
 
+    # A stable ID must name a stable proposition. Pinning the ID alone would
+    # let a mutation keep `neovim.bdd.core.04` while replacing its behavior,
+    # profile tag, or owner chain -- silent semantic reuse of a published ID,
+    # which is exactly what the immutability law forbids. Bind each ID to a
+    # digest of its COMPLETE normative row.
+    rows_by_id = {}
+    for line in acceptance.splitlines():
+        m = re.match(
+            r"^\|\s*`(neovim\.bdd\.(?:attach|core|sync|lifecycle|support|opt)\.\d{2})`\s*\|",
+            line)
+        if m:
+            canonical = " ".join(line.split())
+            rows_by_id[m.group(1)] = hashlib.sha256(
+                canonical.encode("utf-8")).hexdigest()[:16]
+    for scenario_id, digest in ROW_DIGESTS.items():
+        actual = rows_by_id.get(scenario_id)
+        if actual is None:
+            fail(f"scenario row missing: {scenario_id}")
+        if actual != digest:
+            fail(f"scenario {scenario_id} kept its ID but its normative row changed")
+
     # Twenty-five falsifiers: fixed order, exact semantics.
     grid = re.search(r"(?ms)^## §Test-Grid\s*(.*?)(?=^## |\Z)", acceptance)
     if not grid:
@@ -244,7 +328,15 @@ def main():
     if subprocess.run(["git", "merge-base", "--is-ancestor", base, head],
                       capture_output=True).returncode != 0:
         fail("candidate range is not origin/main..HEAD")
-    subprocess.run(["git", "diff", "--check", f"{base}..{head}"], check=False)
+    # Whitespace hygiene is part of the proof, so a nonzero status must fail
+    # the checker rather than being discarded.
+    for label, argv in (
+            ("candidate range", ["diff", "--check", f"{base}..{head}"]),
+            ("work tree", ["diff", "--check"]),
+            ("index", ["diff", "--cached", "--check"])):
+        probe = subprocess.run(["git", *argv], capture_output=True, text=True)
+        if probe.returncode != 0:
+            fail(f"git diff --check reported whitespace errors in the {label}")
 
     changed = set()
     changed.update(git("diff", "--name-only", f"{base}..{head}").split())
@@ -302,6 +394,9 @@ byte-identical output and leave the tree fingerprint unchanged.
 - [ ] Both #8129 sync branches are published as conditional groups and neither
       is asserted current.
 - [ ] All twenty-five falsifiers present, fixed order, exact verdict semantics.
+- [ ] Every published scenario ID is digest-bound to its complete normative
+      row, so an ID cannot be reused for a different proposition.
+- [ ] `git diff --check` is enforced, not merely invoked.
 - [ ] Security boundary keeps absolute/traversal include paths out of positive
       behavior (#4998).
 - [ ] No native-Neovim subject digest is pre-stated; `attach.02` binds by
