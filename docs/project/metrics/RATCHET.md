@@ -14,7 +14,9 @@
 ## Quick Reference
 
 ```bash
-# Check that all scorecard floor baselines pass (bootstrap-safe: passes if no receipt)
+# Check that all scorecard floor baselines pass.
+# Receipt-backed routes are bootstrap-safe (pass if no receipt); the editor_ux
+# route is fail-closed on missing metrics.  See "Running the Ratchet Locally".
 just ci-metrics-ratchet
 
 # Check a single subsystem
@@ -108,18 +110,33 @@ Tolerance default is `0.005` (0.5 %).  Each baseline can override via
 ## Running the Ratchet Locally
 
 ```bash
-# Check both committed subsystems (bootstrap-safe)
+# Check every committed scorecard baseline
 just ci-metrics-ratchet
 
 # Single subsystem
 just ci-metrics-ratchet-check parser
 ```
 
-**Bootstrap mode**: when no receipt exists at
+The recipe runs two kinds of route, and they behave differently when current
+metrics are absent:
+
+| Route | Covers | No current metrics |
+|---|---|---|
+| `cargo xtask metrics ratchet-check <subsystem>` | `parser`, `engineering_health`, `parser_accuracy`, `token` | **Bootstrap-safe** — passes |
+| `cargo xtask ux-scorecard --format json --ratchet-check` | `editor_ux` | **Fail-closed** — fails |
+
+**Bootstrap mode** (receipt-backed routes): when no receipt exists at
 `target/receipts/metrics/<subsystem>.json`, the xtask falls back to the
 committed baseline values.  This means the check always passes until a sweep
 generates a fresh receipt.  This is intentional — infrastructure validation
 before measurement instrumentation.
+
+**Fail-closed editor UX**: the `editor_ux` route does not read a receipt.  It
+computes its metrics directly and fails when any instrumented floor metric is
+missing or non-finite, before any scorecard publication.  A red
+`scorecard-ratchet-check` job with no metric regression in the log is normally
+this route reporting absent instrumentation — it is a real failure to fix, not
+bootstrap noise.
 
 **With a fresh receipt**: after running the parser sweep the xtask reads the
 receipt and compares against the baseline.  Any floor-metric regression causes
@@ -137,9 +154,12 @@ checks:
 - **Trigger**: nightly schedule, `workflow_dispatch`, or `ci:metrics-ratchet`
   label on a PR.
 - **Effect**: non-zero exit on any floor-metric regression.  If a subsystem has
-  no fresh receipt in `target/receipts/metrics/`, the check uses baseline values
-  as current values and reports bootstrap mode.
-- **Bootstrap safety**: job passes if no receipt exists (see above).
+  no fresh receipt in `target/receipts/metrics/`, the receipt-backed routes use
+  baseline values as current values and report bootstrap mode.
+- **Bootstrap safety**: applies to the receipt-backed
+  `metrics ratchet-check` routes only.  The job also runs the `editor_ux`
+  route, which is fail-closed on missing metrics (see above), so the job as a
+  whole is **not** bootstrap-safe.
 
 ### Merge gate (`ci-gate`)
 
