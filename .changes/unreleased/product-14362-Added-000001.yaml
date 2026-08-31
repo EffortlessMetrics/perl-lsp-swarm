@@ -1,0 +1,14 @@
+project: product
+component: Language intelligence
+kind: Added
+body: >-
+  Write the lexer budget-stop recovery contract into the crate docs and pin
+  every over-budget token shape with executable tests: empty-text UnknownRest
+  over the degraded remainder through EOF for regex scan steps, regex bytes,
+  delimiter depth, and heredoc bytes, with the budget-bounded EOF-inside-budget
+  heredoc payload as the one documented exception.
+time: 2026-08-30T00:00:00Z
+custom:
+  PR: "14362"
+  Slug: budget-stop-recovery-contract
+  Breaking: "no"
