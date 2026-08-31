@@ -678,6 +678,14 @@
       "rule": "expression_in_run_source"
     },
     {
+      "evidence": "permissions: {}",
+      "fingerprint": "55d80e02c6058726bc7816b4e47528f8c7d87ba496c3e9658868a55b2562ec82",
+      "line": 542,
+      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
+      "path": ".github/workflows/release-orchestration.yml",
+      "rule": "unsupported_security_yaml_indirection"
+    },
+    {
       "evidence": "echo \"::warning::Primary runner (${{ needs.route-ripr.outputs.target }}) failed \u2014 falling back to GitHub-hosted for ripr. Reclaim runner disk before next run.\"",
       "fingerprint": "446e1c1a0d5437b8aef182ef818da5a221952ca2cc7d94336e3678bd6837b30a",
       "line": 881,

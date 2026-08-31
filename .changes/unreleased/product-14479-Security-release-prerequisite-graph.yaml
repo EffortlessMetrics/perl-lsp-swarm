@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Security
+body: Release publishers now remain unreachable until the exact release build, archive checks, checksums, curated notes, and non-empty SPDX SBOM complete successfully for the same source and tag. The release orchestrator binds each downstream publisher to that exact predecessor run and artifact manifest instead of dispatching irreversible channels beside the build.
+time: 2026-08-31T22:00:00Z
+custom:
+  PR: 14479
+  Slug: release-prerequisite-graph
+  Breaking: "no"
