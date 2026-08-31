@@ -3,9 +3,11 @@
 //! One typed authority owns the accepted initialize/session wire contract:
 //! `sync_kind = full` and `position_encoding = utf-16` are accepted
 //! together, derived from a closed classification of the client's
-//! `general.positionEncodings` offer. The `InitializeResult`, the stored
-//! session state, and the bounded evidence projection are all built from
-//! the same accepted value, so they cannot diverge silently.
+//! `general.positionEncodings` offer. Every valid string list selects the
+//! mandatory UTF-16 wire contract; malformed shapes fail before acceptance.
+//! The `InitializeResult`, stored session state, and bounded evidence
+//! projection are all built from the same accepted value, so they cannot
+//! diverge silently.
 //!
 //! Branch authority: #8129 selected `full_document_utf16` for the v0.18
 //! release envelope. Negotiated UTF-8, incremental sync, and provider
@@ -125,18 +127,15 @@ pub(crate) enum Utf16SelectionReason {
     OfferEmpty,
     /// The offer contained `utf-16`.
     ClientOfferedUtf16,
+    /// A valid nonempty string list omitted UTF-16. The v0.18 bounded
+    /// contract still selects mandatory UTF-16 and records that fallback.
+    MandatoryUtf16Fallback,
 }
 
-/// Typed initialize failure for offers the v0.18 envelope cannot accept.
+/// Typed initialize failure for malformed offer shapes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case", tag = "reason")]
 pub(crate) enum SessionContractRejection {
-    /// Present nonempty offer without `utf-16`. Fail-closed: a client that
-    /// explicitly excludes UTF-16 is unsupported on this branch.
-    NoCommonEncoding {
-        /// Bounded view of what was offered.
-        offered: Vec<String>,
-    },
     /// Offer present but not a string array.
     MalformedOffer {
         /// What was wrong with the value.
@@ -147,17 +146,9 @@ pub(crate) enum SessionContractRejection {
 impl SessionContractRejection {
     /// Typed -32602 initialize failure carrying the bounded classification.
     pub(crate) fn to_jsonrpc_error(&self) -> JsonRpcError {
-        let message = match self {
-            Self::NoCommonEncoding { .. } => {
-                "client position encoding offer does not include the required utf-16 encoding"
-            }
-            Self::MalformedOffer { .. } => {
-                "general.positionEncodings must be an array of position encoding strings"
-            }
-        };
         JsonRpcError::with_data(
             INVALID_PARAMS,
-            message,
+            "general.positionEncodings must be an array of position encoding strings",
             json!({
                 "schema": TEXT_SYNC_CONTRACT_SCHEMA,
                 "rejection": self,
@@ -235,8 +226,8 @@ pub(crate) struct TextSyncSessionContract {
 
 impl TextSyncSessionContract {
     /// Classify the client offer and construct the complete contract
-    /// candidate. Pure with respect to server state: a rejection here means
-    /// initialize fails before any capability/session mutation.
+    /// candidate. Pure with respect to server state: a malformed offer means
+    /// initialize fails before any accepted-session mutation.
     pub(crate) fn accept(
         params: Option<&Value>,
         session_id: String,
@@ -246,24 +237,13 @@ impl TextSyncSessionContract {
             PositionEncodingOffer::Absent | PositionEncodingOffer::Null => {
                 Utf16SelectionReason::OfferAbsent
             }
-            PositionEncodingOffer::Present(receipt) => {
-                if receipt.total_entries == 0 {
-                    Utf16SelectionReason::OfferEmpty
-                } else if receipt.contains_utf16 {
-                    Utf16SelectionReason::ClientOfferedUtf16
-                } else {
-                    // Present nonempty without utf-16 — the v0.18 envelope is
-                    // fail-closed (#8129 branch `full_document_utf16`): a
-                    // client that explicitly excludes UTF-16 is unsupported,
-                    // and silence here would advertise an encoding the
-                    // client cannot parse. Red-then-green: this branch was
-                    // flipped from the old main fallback after the focused
-                    // runtime gate observed the fallback RED.
-                    return Err(SessionContractRejection::NoCommonEncoding {
-                        offered: receipt.retained_entries(),
-                    });
-                }
+            PositionEncodingOffer::Present(receipt) if receipt.total_entries == 0 => {
+                Utf16SelectionReason::OfferEmpty
             }
+            PositionEncodingOffer::Present(receipt) if receipt.contains_utf16 => {
+                Utf16SelectionReason::ClientOfferedUtf16
+            }
+            PositionEncodingOffer::Present(_) => Utf16SelectionReason::MandatoryUtf16Fallback,
         };
         Ok(Self {
             schema: TEXT_SYNC_CONTRACT_SCHEMA,
@@ -337,10 +317,9 @@ impl TextSyncSessionContract {
     }
 }
 
-/// A classify-only view used by the initialize transaction before any state
-/// mutation. Kept separate from [`TextSyncSessionContract::accept`] so the
-/// failure classification is the single source for both the typed error and
-/// the accepted contract.
+/// A classify-only view used by the initialize transaction. Kept separate
+/// from [`TextSyncSessionContract::accept`] so malformed-input classification
+/// is the single source for both the typed error and accepted contract.
 pub(crate) fn classify_position_encoding_offer(
     params: Option<&Value>,
 ) -> Result<PositionEncodingOffer, SessionContractRejection> {
@@ -524,9 +503,8 @@ impl super::super::LspServer {
     /// session contract on this connection. Lifecycle completion, the
     /// router's ServerNotInitialized (-32002) arm, and the formatting
     /// intercept all consult this one predicate — the same stored-contract
-    /// authority — so a consumed one-shot guard without acceptance (the
-    /// failed-classification/failed-acceptance window, review 5061915323)
-    /// can neither serve requests nor complete the lifecycle. Do not add an
+    /// authority — so a consumed one-shot guard without acceptance can
+    /// neither serve requests nor complete the lifecycle. Do not add an
     /// independent readiness truth beside it.
     pub(crate) fn initialization_accepted(&self) -> bool {
         self.accepted_text_sync_session().is_some()
