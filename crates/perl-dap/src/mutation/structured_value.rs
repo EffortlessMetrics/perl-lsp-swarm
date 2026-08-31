@@ -470,7 +470,7 @@ impl<'a> Parser<'a> {
             {
                 return Err(refused_at(backslash));
             }
-            let low = Self::hex4(self.input, backslash + 8, backslash)?;
+            let low = Self::hex4(self.input, backslash + 8, backslash + 6)?;
             if !(0xDC00..=0xDFFF).contains(&low) {
                 return Err(refused_at(backslash));
             }
