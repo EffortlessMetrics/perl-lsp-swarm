@@ -333,12 +333,15 @@ impl DapPeerBridge {
         // its own. Still intersected with catalog ∩ backend so that, if the peer
         // gate is ever promoted, it cannot over-advertise against a peer that
         // cannot evaluate at all.
-        crate::backend::capabilities::PEER_BRIDGE_ADVERTISES_EVALUATE_FOR_HOVERS
-            && intersect_dap_capabilities(
-                &CatalogDapFlags::from_catalog(),
-                &self.backend.capabilities(),
-            )
-            .supports_evaluate
+        let negotiated = intersect_dap_capabilities(
+            &CatalogDapFlags::from_catalog(),
+            &self.backend.capabilities(),
+        );
+        crate::backend::capabilities::peer_bridge_hover_admission(
+            crate::backend::capabilities::advertises_evaluate_for_hovers(),
+            crate::backend::capabilities::PEER_BRIDGE_ADVERTISES_EVALUATE_FOR_HOVERS,
+            negotiated.supports_evaluate,
+        )
     }
 
     fn capabilities_body(&self) -> Value {

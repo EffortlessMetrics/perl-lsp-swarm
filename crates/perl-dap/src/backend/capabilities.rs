@@ -254,6 +254,27 @@ pub(crate) fn refuse_hover_evaluation(advertised_hover: bool, context: Option<&s
 /// Promoting this requires that separate peer-side proof.
 pub(crate) const PEER_BRIDGE_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
 
+/// The external-peer bridge's hover decision, as a pure function.
+///
+/// `native_hover_gate` is accepted and **deliberately not used**. That is the
+/// property under test, not an oversight: the peer mode must not inherit the
+/// native proof gate (#9573). Taking it as a parameter is what makes the
+/// independence provable in CI — a test can evaluate this under both possible
+/// native values and require the result to be identical, without mutating any
+/// constant. If someone later re-reads the native gate here, that test fails.
+///
+/// The peer's own gate decides, still intersected with whether the peer can
+/// evaluate at all, so promoting the peer gate cannot over-advertise against a
+/// peer that offered no evaluation.
+#[must_use]
+pub(crate) fn peer_bridge_hover_admission(
+    _native_hover_gate: bool,
+    peer_hover_gate: bool,
+    backend_can_evaluate: bool,
+) -> bool {
+    peer_hover_gate && backend_can_evaluate
+}
+
 /// The `supportsEvaluateForHovers` value the static mirror profile advertises.
 ///
 /// Mirror mode is conservative by construction and has no pure hover inspection
@@ -465,6 +486,44 @@ mod tests {
         );
         assert!(!refuse_hover_evaluation(true, Some("watch")));
         assert!(!refuse_hover_evaluation(true, None));
+    }
+
+    /// #9573: the peer bridge's hover decision does not read the native gate.
+    ///
+    /// Asserting "the peer is closed today" would be vacuous — both gates are
+    /// false, so a *recoupled* implementation would pass it too, and CI could
+    /// only catch recoupling by mutating production source. This instead
+    /// evaluates the decision under **both** native values and requires the
+    /// result to be identical, which fails the moment the native gate is read
+    /// again, with no mutation needed.
+    #[test]
+    fn peer_hover_admission_is_independent_of_the_native_gate() {
+        for peer_gate in [false, true] {
+            for can_evaluate in [false, true] {
+                assert_eq!(
+                    peer_bridge_hover_admission(false, peer_gate, can_evaluate),
+                    peer_bridge_hover_admission(true, peer_gate, can_evaluate),
+                    "the peer decision changed with the native gate \
+                     (peer_gate={peer_gate}, can_evaluate={can_evaluate}); promoting native \
+                     must never open an external-peer hover path"
+                );
+            }
+        }
+
+        // The peer's own gate is what decides, and it still respects whether the
+        // peer can evaluate at all.
+        assert!(
+            !peer_bridge_hover_admission(true, false, true),
+            "a closed peer gate stays closed even with native promoted"
+        );
+        assert!(
+            peer_bridge_hover_admission(false, true, true),
+            "an open peer gate opens on its own authority, not the native one"
+        );
+        assert!(
+            !peer_bridge_hover_admission(true, true, false),
+            "a peer that cannot evaluate is never advertised for hover"
+        );
     }
 
     /// Mirror mode advertises and enforces the same value, independently.
