@@ -117,7 +117,7 @@ any downstream projection must preserve.
 | `native_neovim_core` | exactly the 16 rows of `attach.*` + `core.*` | bounded core; nothing else blocks or widens it |
 | `native_neovim_deep_lifecycle` | core + `lifecycle.01–07` + the one `sync.*` branch selected by #8129 | never a prerequisite of core |
 | `native_neovim_first_class` | deep + `support.01–08` stage laws | public stages require their own direct evidence |
-| `release_v0_18_bounded` | the one `sync.*` branch selected by `nv_release_scope_decision` plus only the cells the bounded public claim requires | selection is re-evaluated whenever either branch materially lands; a stale selection fails closed |
+| `release_v0_18_bounded` | the one `sync.*` branch that qualifies under `nv_release_scope_decision` plus only the cells the bounded public claim requires | no current selection is recorded by that authority; the qualifying value on a gate is not a ruling, and a stale selection fails closed |
 | `native_neovim_programme_closeout` | fan-in over independently terminal child propositions | composes child results only; manufactures none |
 
 Laws: a stronger profile never erases a narrower valid one; optional rows are
@@ -156,7 +156,7 @@ built-in LSP receipts satisfy `neovim.bdd.*`.
 | Workspace-field admission | #6736 catalog | core.07 admits only catalog fields whose sources include workspace configuration |
 | Include-path security | #4998 | core.07 positive shape workspace-contained relative; core.10 guard row |
 | Generic receipt semantics | #10527/#7777; generic `editor_client_compat.v1` cells | receipt stage consumed as boundary owner; no Neovim-local receipt ontology |
-| Typed edge/profile vocabulary | #10858 | five programme profiles defined with membership rules, ceilings, `consumes_if_available` class |
+| Typed edge/profile vocabulary | #10858 | the six #11392-governed programme profiles consumed with membership rules, ceilings, `consumes_if_available` class |
 | Host reliability/cleanup | #10894 (generic), #10507 downstream | core.09/lifecycle.07 require independent cleanup observation |
 | Text-sync envelope selection | #8129 | sync.* published as two conditional groups; neither asserted current |
 | Support registry tiers | `policy/lsp-client-support.toml` registered `neovim` tier (`configuration_documented`, `requires_actual_client_receipt = true`) | tags reuse registered vocabulary; no tier change here |
@@ -170,11 +170,12 @@ No Rust or public API is introduced. Semantic contract terms defined here:
 | Item | Kind | Shape | Dup-risk / owner |
 | --- | --- | --- | --- |
 | `neovim.bdd.<family>.<nn>` | stable scenario ID namespace | 47 IDs, fixed families/order, immutable once published | none found on main; this packet |
-| `native_neovim_configuration` | claim profile ID | documented native setup substrate | aligns with registered `neovim` tier name; binding is new here |
-| `native_neovim_core` | claim profile ID | membership = the 16 attach/core rows | none found; #10888 |
-| `native_neovim_deep_lifecycle` | claim profile ID | core + lifecycle + selected sync branch | none found; #10888 |
-| `native_neovim_first_class` | claim profile ID | deep + support stage laws | none found; #10888 |
-| `native_neovim_programme_closeout` | claim profile ID | programme fan-in | none found; #10888 |
+| `native_neovim_configuration` | claim profile ID | documented native setup substrate | **governed by #11392**; consumed verbatim, not declared here |
+| `native_neovim_core` | claim profile ID | membership = the 16 attach/core rows | **governed by #11392**; consumed verbatim |
+| `release_v0_18_bounded` | claim profile ID | the sync branch qualifying under `nv_release_scope_decision` plus the cells the bounded public claim requires | **governed by #11392**; consumed verbatim |
+| `native_neovim_deep_lifecycle` | claim profile ID | core + lifecycle + the qualifying sync branch | **governed by #11392**; consumed verbatim |
+| `native_neovim_first_class` | claim profile ID | deep + support stage laws | **governed by #11392**; consumed verbatim |
+| `native_neovim_programme_closeout` | claim profile ID | programme fan-in | **governed by #11392**; consumed verbatim |
 
 ### Evidence-stage vocabulary (consumed, never minted)
 

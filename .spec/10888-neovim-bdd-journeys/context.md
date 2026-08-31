@@ -158,15 +158,18 @@ neovim.bdd.sync.06–10    branch B `full_document_utf16`: UTF-16 selection,
 ```
 
 Both groups are published so each has a stable owner regardless of how the
-selection moves. The selection itself is **not this packet's to make**: it is
+selection resolves. The selection is **not this packet's to make**: it is
 governed by the `nv_release_scope_decision` selecting authority in #11392,
-whose allowed values are exactly `full_document_utf16` and `atomic_incremental`
-and whose current recorded value is `full_document_utf16`. That authority
-re-evaluates the selection whenever either branch materially lands, and a stale
-selection fails closed — which is precisely why both branch groups keep
-published IDs here rather than the losing branch being deleted. At any moment
-exactly one group is applicable and the other is `not_applicable` by that
-authority's value, never by an assertion in this packet.
+whose `allowed_values` are exactly `full_document_utf16` and
+`atomic_incremental` and whose controller node is `nv_ctrl_release_decision`.
+
+That authority records **no current value**. `selected_value` appears in #11392
+only as per-node *gate* metadata — `full_document_utf16` qualifies the bounded
+release gate, `atomic_incremental` qualifies the deep atomic branch — and a
+gate's qualifying condition is not a ruling. Publishing both groups therefore
+asserts neither. When the governed selection is established, exactly one group
+becomes applicable and the other `not_applicable` by that authority, never by
+an assertion here; a stale selection fails closed.
 
 ### Feature: Neovim preserves parser and lifecycle truth
 
@@ -220,7 +223,7 @@ native_neovim_configuration       documented native setup only; substrate; prove
                                   behavior; aligns with the registered `neovim` tier in
                                   policy/lsp-client-support.toml
 native_neovim_core                exactly attach.01–06 + core.01–10 (16 rows)
-release_v0_18_bounded             the one sync branch selected by nv_release_scope_decision
+release_v0_18_bounded             the sync branch qualifying under nv_release_scope_decision
                                   plus only the cells the bounded public claim requires
 native_neovim_deep_lifecycle      core + lifecycle.01–07 + the selected sync branch
 native_neovim_first_class         deep + support.01–08 stage laws
