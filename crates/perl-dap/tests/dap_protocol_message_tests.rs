@@ -535,13 +535,20 @@ fn assert_step_in_targets_unsupported(
             assert_eq!(command, "stepInTargets", "command name must match");
             assert!(!success, "stepInTargets must fail while unsupported (#9069)");
             assert!(body.is_none(), "unsupported stepInTargets must not publish target IDs");
-            message
-                .ok_or_else(|| {
-                    std::io::Error::other(
-                        "unsupported stepInTargets response must include an error message",
-                    )
-                })
-                .map_err(Into::into)
+            let message = message.ok_or_else(|| {
+                std::io::Error::other(
+                    "unsupported stepInTargets response must include an error message",
+                )
+            })?;
+            assert!(
+                !message.trim().is_empty(),
+                "unsupported stepInTargets response must include a non-empty error message"
+            );
+            assert!(
+                message.to_lowercase().contains("unsupported"),
+                "unsupported stepInTargets response must explain its disposition: {message}"
+            );
+            Ok(message)
         }
         other => Err(format!("expected Response for stepInTargets, got {other:?}").into()),
     }
