@@ -405,15 +405,14 @@ fn non_rust_exact_tree_inner(
     if !topology.success() {
         bail!("subject {subject_commit} is not based on base {base_commit}");
     }
-    if pr_head_sha.is_some()
-        && git_object(root, &["rev-parse", &format!("{subject_commit}^1")])?
-            .iter()
-            .map(|b| *b as char)
-            .collect::<String>()
-            .trim()
-            != base_commit
-    {
-        bail!("PR subject first parent is not base {base_commit}");
+    if matches!(event_name, Some("pull_request_target") | Some("merge_group")) {
+        let first_parent =
+            String::from_utf8(git_object(root, &["rev-parse", &format!("{subject_commit}^1")])?)?
+                .trim()
+                .to_string();
+        if first_parent != base_commit {
+            bail!("subject first parent {first_parent} is not base {base_commit}");
+        }
     }
     let base_tree_ref = format!("{base_commit}^{{tree}}");
     let subject_tree_ref = format!("{subject_commit}^{{tree}}");
