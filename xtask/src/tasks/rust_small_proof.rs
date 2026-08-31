@@ -570,10 +570,7 @@ fn capture_worktree_dirty(receipt_path: &Path) -> Result<bool> {
     // `-z` gives NUL-delimited, *unquoted* paths. The default porcelain
     // format C-quotes anything unusual (`?? "weird\tname.txt"`), which a
     // newline-and-substring reader would mis-parse.
-    let raw = capture_stdout_raw(
-        "git",
-        &["status", "--porcelain", "-z", "--untracked-files=all"],
-    )?;
+    let raw = capture_stdout_raw("git", &["status", "--porcelain", "-z", "--untracked-files=all"])?;
     for entry in raw.split('\0') {
         // Each record is `XY <path>`; a rename contributes a bare second
         // record holding the original path, which has no status prefix.
