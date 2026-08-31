@@ -94,7 +94,7 @@ pub struct FileRecord {
 
 /// Exact-tree policy comparison used by trusted CI. The evaluator is sourced
 /// from the trusted checkout; candidate trees are read only as Git objects.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ExactTreePolicyReceipt {
     pub schema_version: u32,
     pub base_sha: String,
@@ -3419,7 +3419,8 @@ review_after = "2026-08-13"
     #[test]
     fn exact_tree_workflow_keeps_trusted_shadow_contract() -> Result<()> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..", ".github/workflows/non-rust-policy.yml");
+            .join("..")
+            .join(".github/workflows/non-rust-policy.yml");
         let workflow = fs::read_to_string(root)?;
         for required in [
             "pull_request_target:",
