@@ -656,20 +656,6 @@ impl LspServer {
                     return Ok(());
                 }
 
-                // Invalidate the perlcritic violation cache for this file so that
-                // the next diagnostic cycle re-runs perlcritic on the new content.
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let file_path = url::Url::parse(uri).ok().and_then(|u| u.to_file_path().ok());
-                    if let Some(path) = file_path {
-                        let path_str = path.to_string_lossy().to_string();
-                        if let Some(ref mut analyzer) = *self.critic_analyzer.lock() {
-                            analyzer.invalidate_cache(&path_str);
-                        }
-                        self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
-                    }
-                }
-
                 let mut doc_state =
                     existing_doc.unwrap_or_else(|| empty_state(incoming_version.unwrap_or(0)));
 

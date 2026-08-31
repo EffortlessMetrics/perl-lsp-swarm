@@ -1480,10 +1480,8 @@ impl LspServer {
                 // changed so the next diagnostic cycle rebuilds it with the new config.
                 #[cfg(not(target_arch = "wasm32"))]
                 if critic_config_changed {
-                    *self.critic_analyzer.lock() = None;
                     self.session_warning_dedup
                         .clear_family(super::session_warning_dedup::SessionWarningFamily::Critic);
-                    self.pull_diagnostics_orchestrator.reset();
                 }
 
                 // Update workspace config (include paths, @INC)
@@ -2139,6 +2137,10 @@ impl LspServer {
 
             if !change.added.is_empty() {
                 let mut workspace_folders = self.workspace_folders.lock();
+                // Invalidate subjects while the topology guard is held so an
+                // added root cannot race a reader with the old generation.
+                self.workspace_topology_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 for uri in &change.added {
                     tracing::debug!(uri, "Added workspace folder");
                     let mut folder_state =
@@ -2154,17 +2156,23 @@ impl LspServer {
             }
 
             if !change.removed.is_empty() {
-                let mut workspace_folders = self.workspace_folders.lock();
                 let removed_uris: std::collections::HashSet<String> =
                     change.removed.iter().cloned().collect();
+
+                // Apply the topology transition while holding only the
+                // workspace-folder authority.  Eviction acquires `documents`
+                // (and subordinate caches), so calling it while this guard is
+                // live would invert the established publication order
+                // (`documents` -> `workspace_folders`) and can deadlock a
+                // concurrent diagnostic commit.  Capture the exact removed
+                // identities, release the topology guard, then retire their
+                // document/index state in a second phase.
+                self.apply_workspace_folder_removal(&removed_uris);
 
                 for uri in &change.removed {
                     tracing::debug!(uri, "Removed workspace folder");
                     self.evict_workspace_folder_state(uri);
                 }
-
-                // Retain only folders that are not in the removed list
-                workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
             }
 
             // Workspace folder membership changed, so any in-flight reverse
@@ -2189,6 +2197,19 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             drop(_indexing_transition);
 
+            // Pull-capable clients will receive the refresh request below. A
+            // push-only client has no refresh protocol, so retry diagnostics
+            // for documents that survived the topology transition after the
+            // new folder/configuration authorities are installed. The publish
+            // path still performs its sink currentness check; this is only a
+            // recomputation trigger for candidates rejected during the move.
+            if !self.client_supports_pull_diags.load(std::sync::atomic::Ordering::Relaxed) {
+                let open_uris = self.documents.lock().keys().cloned().collect::<Vec<_>>();
+                for uri in open_uris {
+                    self.publish_diagnostics(&uri);
+                }
+            }
+
             // Trigger client refresh after workspace folder changes
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after workspace folder changes");
@@ -2200,6 +2221,23 @@ impl LspServer {
         }
 
         Ok(())
+    }
+
+    /// Apply the topology half of a workspace-folder removal.
+    ///
+    /// This helper deliberately touches only the workspace-folder authority.
+    /// Document and cache retirement belongs to the subsequent phase after the
+    /// guard returned here has been dropped; keeping that separation prevents
+    /// a `workspace_folders -> documents` lock inversion with diagnostic
+    /// publication.
+    fn apply_workspace_folder_removal(&self, removed_uris: &std::collections::HashSet<String>) {
+        let mut workspace_folders = self.workspace_folders.lock();
+        workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
+        // Advance the topology identity while the membership mutation is
+        // still protected.  Any diagnostic or virtual-content reader that
+        // captured the previous generation must now fail its final
+        // currentness check, even before document eviction completes.
+        self.workspace_topology_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Start a background workspace indexing scan
@@ -3642,6 +3680,8 @@ mod tests {
     fn did_change_workspace_folders_clears_pending_workspace_configuration_requests()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
+        let generation_before =
+            server.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
         let request_id =
             crate::runtime::types::ServerRequestId::new(7).ok_or("valid request id")?;
         server.pending_workspace_configuration_requests.lock().insert(
@@ -3664,6 +3704,11 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(server.pending_workspace_configuration_requests.lock().is_empty());
+        assert_eq!(
+            server.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst),
+            generation_before + 1,
+            "added workspace folders must invalidate in-flight subjects"
+        );
         Ok(())
     }
 
@@ -4004,6 +4049,47 @@ mod tests {
                 .all(|folder| { folder.uri != removed_folder_uri.to_string() })
         );
 
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_removal_releases_topology_before_document_eviction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::{Arc, Barrier, mpsc};
+
+        let server = Arc::new(LspServer::new());
+        let folder_uri = "file:///removed".to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri.clone()));
+        let removed = std::collections::HashSet::from([folder_uri.clone()]);
+        let ready = Arc::new(Barrier::new(2));
+        let (phase_a_tx, phase_a_rx) = mpsc::channel();
+        let worker_server = Arc::clone(&server);
+        let worker_ready = Arc::clone(&ready);
+        let worker = std::thread::spawn(move || {
+            worker_ready.wait();
+            worker_server.apply_workspace_folder_removal(&removed);
+            phase_a_tx.send(()).expect("phase-A signal");
+            worker_server.evict_workspace_folder_state(&folder_uri);
+        });
+
+        // Hold `documents` across the topology phase.  The worker must still
+        // complete phase A and release `workspace_folders`; otherwise this
+        // assertion would observe the lock inversion directly.
+        let documents_guard = server.documents.lock();
+        ready.wait();
+        let phase_a = phase_a_rx.recv_timeout(std::time::Duration::from_secs(2));
+        let topology_released = server.workspace_folders.try_lock().is_some();
+        drop(documents_guard);
+        worker.join().map_err(|_| "workspace eviction worker panicked")?;
+        phase_a.map_err(|error| format!("phase-A completion timed out: {error}"))?;
+        assert!(
+            topology_released,
+            "workspace topology guard must be released before document eviction"
+        );
         Ok(())
     }
 

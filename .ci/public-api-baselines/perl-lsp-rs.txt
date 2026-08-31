@@ -127,6 +127,12 @@ pub use perl_lsp::features::diagnostics::DiagnosticTag
 pub use perl_lsp::features::diagnostics::DiagnosticsProvider
 pub use perl_lsp::features::diagnostics::RelatedInformation
 pub mod perl_lsp::features::diagnostics::pull
+pub struct perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness(_)
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::always_current() -> Self
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::holds(&self) -> bool
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::new(check: alloc::sync::Arc<(dyn core::ops::function::Fn() -> bool + core::marker::Send + core::marker::Sync)>) -> Self
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::clone(&self) -> perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp::features::diagnostics::pull::DiagnosticData
 pub perl_lsp::features::diagnostics::pull::DiagnosticData::category: alloc::string::String
 pub perl_lsp::features::diagnostics::pull::DiagnosticData::code: alloc::string::String
@@ -137,6 +143,8 @@ pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::fmt(&self, f: &mut
 pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp::features::diagnostics::pull::PullDiagnosticsContext
+pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::accepted_critic_snapshot: perl_lsp_rs_core::config::critic_state::AcceptedCriticSnapshot
+pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::accepted_state_currentness: perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
@@ -158,13 +166,13 @@ pub struct perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider
 pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_document_diagnostics(&self, uri: &lsp_types::uri::Uri, content: &str, previous_result_id: core::option::Option<alloc::string::String>, include_paths: core::option::Option<alloc::vec::Vec<alloc::string::String>>) -> lsp_types::document_diagnostic::DocumentDiagnosticReport
 pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_document_diagnostics_with_context(&self, uri: &lsp_types::uri::Uri, content: &str, previous_result_id: core::option::Option<alloc::string::String>, context: &perl_lsp::features::diagnostics::pull::PullDiagnosticsContext, doc_state: core::option::Option<&perl_lsp::state::DocumentState>) -> lsp_types::document_diagnostic::DocumentDiagnosticReport
 pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics(&self, documents: &std::collections::hash::map::HashMap<alloc::string::String, perl_lsp::state::DocumentState>, previous_result_ids: alloc::vec::Vec<(lsp_types::uri::Uri, alloc::string::String)>) -> lsp_types::workspace_diagnostic::WorkspaceDiagnosticReport
-pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_partial_with_context(&self, documents: &[(alloc::string::String, alloc::string::String)], batch_size: usize, context: &perl_lsp::features::diagnostics::pull::PullDiagnosticsContext) -> alloc::vec::Vec<lsp_types::workspace_diagnostic::WorkspaceDiagnosticReportPartialResult>
-pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_with_context(&self, documents: &std::collections::hash::map::HashMap<alloc::string::String, perl_lsp::state::DocumentState>, previous_result_ids: alloc::vec::Vec<(lsp_types::uri::Uri, alloc::string::String)>, context: &perl_lsp::features::diagnostics::pull::PullDiagnosticsContext) -> lsp_types::workspace_diagnostic::WorkspaceDiagnosticReport
+pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_partial_with_context<F>(&self, documents: &[(alloc::string::String, alloc::string::String)], batch_size: usize, context_for_uri: &F) -> alloc::vec::Vec<lsp_types::workspace_diagnostic::WorkspaceDiagnosticReportPartialResult> where F: core::ops::function::Fn(&str) -> perl_lsp::features::diagnostics::pull::PullDiagnosticsContext
+pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_with_context<F>(&self, documents: &std::collections::hash::map::HashMap<alloc::string::String, perl_lsp::state::DocumentState>, previous_result_ids: alloc::vec::Vec<(lsp_types::uri::Uri, alloc::string::String)>, context_for_uri: &F) -> lsp_types::workspace_diagnostic::WorkspaceDiagnosticReport where F: core::ops::function::Fn(&str) -> perl_lsp::features::diagnostics::pull::PullDiagnosticsContext
 pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::new() -> Self
 pub mod perl_lsp::features::diagnostics::report_identity
 pub enum perl_lsp::features::diagnostics::report_identity::NotReusable
+pub perl_lsp::features::diagnostics::report_identity::NotReusable::MissingCriticRootAuthority
 pub perl_lsp::features::diagnostics::report_identity::NotReusable::MissingRootAuthority
-pub perl_lsp::features::diagnostics::report_identity::NotReusable::PolicyIncomplete(perl_lsp_rs_core::tooling::perl_critic::result_identity::CriticPolicyIdentityError)
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::clone(&self) -> perl_lsp::features::diagnostics::report_identity::NotReusable
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::eq(&self, other: &perl_lsp::features::diagnostics::report_identity::NotReusable) -> bool
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -196,8 +204,8 @@ pub fn perl_lsp::features::diagnostics::report_identity::PullReportSubject::fmt(
 pub const perl_lsp::features::diagnostics::report_identity::PULL_REPORT_IDENTITY_SCHEMA_VERSION: u16
 pub fn perl_lsp::features::diagnostics::report_identity::pull_report_subject(uri: &str, content: &str, document_generation: core::option::Option<u64>, context: &perl_lsp::features::diagnostics::pull::PullDiagnosticsContext) -> core::result::Result<perl_lsp::features::diagnostics::report_identity::PullReportSubject, perl_lsp::features::diagnostics::report_identity::NotReusable>
 pub enum perl_lsp::features::diagnostics::NotReusable
+pub perl_lsp::features::diagnostics::NotReusable::MissingCriticRootAuthority
 pub perl_lsp::features::diagnostics::NotReusable::MissingRootAuthority
-pub perl_lsp::features::diagnostics::NotReusable::PolicyIncomplete(perl_lsp_rs_core::tooling::perl_critic::result_identity::CriticPolicyIdentityError)
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::clone(&self) -> perl_lsp::features::diagnostics::report_identity::NotReusable
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::eq(&self, other: &perl_lsp::features::diagnostics::report_identity::NotReusable) -> bool
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -208,6 +216,12 @@ pub perl_lsp::features::diagnostics::PullPositionEncoding::Utf8
 pub fn perl_lsp::features::diagnostics::report_identity::PullPositionEncoding::clone(&self) -> perl_lsp::features::diagnostics::report_identity::PullPositionEncoding
 pub fn perl_lsp::features::diagnostics::report_identity::PullPositionEncoding::eq(&self, other: &perl_lsp::features::diagnostics::report_identity::PullPositionEncoding) -> bool
 pub fn perl_lsp::features::diagnostics::report_identity::PullPositionEncoding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp::features::diagnostics::AcceptedStateCurrentness(_)
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::always_current() -> Self
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::holds(&self) -> bool
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::new(check: alloc::sync::Arc<(dyn core::ops::function::Fn() -> bool + core::marker::Send + core::marker::Sync)>) -> Self
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::clone(&self) -> perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness
+pub fn perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp::features::diagnostics::DiagnosticProjectionFragment
 pub perl_lsp::features::diagnostics::DiagnosticProjectionFragment::markup_messages: bool
 pub perl_lsp::features::diagnostics::DiagnosticProjectionFragment::position_encoding: perl_lsp::features::diagnostics::report_identity::PullPositionEncoding
@@ -215,6 +229,8 @@ pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFra
 pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment::eq(&self, other: &perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment) -> bool
 pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp::features::diagnostics::PullDiagnosticsContext
+pub perl_lsp::features::diagnostics::PullDiagnosticsContext::accepted_critic_snapshot: perl_lsp_rs_core::config::critic_state::AcceptedCriticSnapshot
+pub perl_lsp::features::diagnostics::PullDiagnosticsContext::accepted_state_currentness: perl_lsp::features::diagnostics::pull::AcceptedStateCurrentness
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
@@ -236,8 +252,8 @@ pub struct perl_lsp::features::diagnostics::PullDiagnosticsProvider
 pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_document_diagnostics(&self, uri: &lsp_types::uri::Uri, content: &str, previous_result_id: core::option::Option<alloc::string::String>, include_paths: core::option::Option<alloc::vec::Vec<alloc::string::String>>) -> lsp_types::document_diagnostic::DocumentDiagnosticReport
 pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_document_diagnostics_with_context(&self, uri: &lsp_types::uri::Uri, content: &str, previous_result_id: core::option::Option<alloc::string::String>, context: &perl_lsp::features::diagnostics::pull::PullDiagnosticsContext, doc_state: core::option::Option<&perl_lsp::state::DocumentState>) -> lsp_types::document_diagnostic::DocumentDiagnosticReport
 pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics(&self, documents: &std::collections::hash::map::HashMap<alloc::string::String, perl_lsp::state::DocumentState>, previous_result_ids: alloc::vec::Vec<(lsp_types::uri::Uri, alloc::string::String)>) -> lsp_types::workspace_diagnostic::WorkspaceDiagnosticReport
-pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_partial_with_context(&self, documents: &[(alloc::string::String, alloc::string::String)], batch_size: usize, context: &perl_lsp::features::diagnostics::pull::PullDiagnosticsContext) -> alloc::vec::Vec<lsp_types::workspace_diagnostic::WorkspaceDiagnosticReportPartialResult>
-pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_with_context(&self, documents: &std::collections::hash::map::HashMap<alloc::string::String, perl_lsp::state::DocumentState>, previous_result_ids: alloc::vec::Vec<(lsp_types::uri::Uri, alloc::string::String)>, context: &perl_lsp::features::diagnostics::pull::PullDiagnosticsContext) -> lsp_types::workspace_diagnostic::WorkspaceDiagnosticReport
+pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_partial_with_context<F>(&self, documents: &[(alloc::string::String, alloc::string::String)], batch_size: usize, context_for_uri: &F) -> alloc::vec::Vec<lsp_types::workspace_diagnostic::WorkspaceDiagnosticReportPartialResult> where F: core::ops::function::Fn(&str) -> perl_lsp::features::diagnostics::pull::PullDiagnosticsContext
+pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_with_context<F>(&self, documents: &std::collections::hash::map::HashMap<alloc::string::String, perl_lsp::state::DocumentState>, previous_result_ids: alloc::vec::Vec<(lsp_types::uri::Uri, alloc::string::String)>, context_for_uri: &F) -> lsp_types::workspace_diagnostic::WorkspaceDiagnosticReport where F: core::ops::function::Fn(&str) -> perl_lsp::features::diagnostics::pull::PullDiagnosticsContext
 pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::new() -> Self
 pub struct perl_lsp::features::diagnostics::PullReportResultId(_)
 pub fn perl_lsp::features::diagnostics::report_identity::PullReportResultId::as_str(&self) -> &str

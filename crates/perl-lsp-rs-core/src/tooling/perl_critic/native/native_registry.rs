@@ -371,6 +371,12 @@ impl NativeCriticRegistry {
         self.rules.iter().map(|rule| rule.id()).collect()
     }
 
+    /// Count rules that will execute for the supplied include/exclude gates.
+    #[must_use]
+    pub fn enabled_rule_count(&self, config: &CriticConfig) -> usize {
+        self.rules.iter().filter(|rule| rule_enabled(rule.as_ref(), config)).count()
+    }
+
     /// Producer-owned `(rule_id, shape)` obligations for identity coverage.
     #[must_use]
     pub const fn identity_dispositions() -> &'static [NativeCriticIdentityDisposition] {

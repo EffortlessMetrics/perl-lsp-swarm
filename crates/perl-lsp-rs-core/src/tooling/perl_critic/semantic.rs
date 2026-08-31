@@ -12,8 +12,8 @@
 
 use super::native::CriticRelatedInformation;
 use super::normalized::{
-    CriticFindingCandidate, CriticSourceIdentity, NormalizedCriticFinding,
-    normalize_critic_findings,
+    CriticFindingCandidate, CriticPolicyRetention, CriticSourceIdentity, NormalizedCriticFinding,
+    normalize_critic_findings, severity_score,
 };
 use super::{
     CriticFindingOrigin, CriticFindingShape, CriticObservedIdentity, Severity,
@@ -483,12 +483,19 @@ pub fn account_unresolved_native_identities(
 
 /// Normalize candidates and apply native policy exactly once post-merge.
 ///
-/// Order: canonical alias merge, then severity threshold, then
-/// include/exclude over approved aliases, then scoped suppression.
-/// Deterministic output order is owned entirely by
-/// [`normalize_critic_findings`]. Filtering here, on merged rows,
-/// is what makes "exclude/suppress one spelling" unable to leave a registered
-/// sibling spelling behind.
+/// Order: canonical alias merge, then critic-owned severity threshold and
+/// include/exclude retention, then scoped suppression. The severity and
+/// include/exclude filters are Critic-producer policy: they strip the Critic
+/// contribution from a merged row while an independently emitted built-in core
+/// proposition survives ([`NormalizedCriticFinding::retained_under_critic_policy`],
+/// #13798), and they still remove critic-owned rows wholesale. The threshold
+/// is evaluated over the Critic-owned contributors' own severities, so a
+/// built-in contributor's stricter severity can never admit a below-threshold
+/// Critic contribution. Deterministic output order is owned entirely by
+/// [`normalize_critic_findings`]. Filtering merged rows here is what makes
+/// "exclude/suppress one spelling" unable to leave a registered sibling
+/// Critic spelling behind; the built-in proposition itself remains governed by
+/// built-in policy, never by Critic config.
 #[must_use]
 pub fn normalize_with_native_policy(
     candidates: impl IntoIterator<Item = CriticFindingCandidate>,
@@ -496,16 +503,56 @@ pub fn normalize_with_native_policy(
 ) -> Vec<NormalizedCriticFinding> {
     normalize_critic_findings(candidates)
         .into_iter()
-        .filter(|finding| severity_passes_threshold(finding.severity(), policy.severity_threshold))
-        .filter(|finding| include_exclude_admits(finding, policy.include, policy.exclude))
+        .filter_map(|finding| {
+            let retention = critic_policy_retention(&finding, policy);
+            finding.retained_under_critic_policy(retention)
+        })
         .filter(|finding| !policy.suppressions.suppresses_normalized(finding))
         .collect()
+}
+
+/// Evaluate critic-owned severity and include/exclude policy for one merged
+/// row (#13798).
+///
+/// An admitted row keeps every contributor. A rejected row strips its Critic
+/// contributors while an independently owned built-in core proposition
+/// survives. The threshold is evaluated against the Critic-owned
+/// contributors' own effective severity (their strongest), never the merged
+/// row severity, so a stricter built-in severity cannot admit a
+/// below-threshold Critic contribution; rows without Critic contributors keep
+/// the merged-severity decision, and either outcome leaves a built-in-only
+/// row intact because there is no Critic contribution to strip.
+fn critic_policy_retention(
+    finding: &NormalizedCriticFinding,
+    policy: &NativeCriticPolicy<'_>,
+) -> CriticPolicyRetention {
+    let mut critic_effective_severity: Option<Severity> = None;
+    for contributor in finding.contributors() {
+        if contributor.identity().origin() != CriticFindingOrigin::BuiltInDiagnostic {
+            let severity = contributor.severity();
+            critic_effective_severity = Some(match critic_effective_severity {
+                Some(best) if severity_score(best) >= severity_score(severity) => best,
+                _ => severity,
+            });
+        }
+    }
+
+    let severity_admitted = match critic_effective_severity {
+        Some(effective) => severity_passes_threshold(effective, policy.severity_threshold),
+        None => severity_passes_threshold(finding.severity(), policy.severity_threshold),
+    };
+    if severity_admitted && include_exclude_admits(finding, policy.include, policy.exclude) {
+        CriticPolicyRetention::Admitted
+    } else {
+        CriticPolicyRetention::StripCritic
+    }
 }
 
 /// Whether one normalized row survives the configured severity threshold.
 ///
 /// Severities are perlcritic threshold values (1-5, higher is stricter); a
-/// row survives when its merged severity meets or exceeds the threshold.
+/// Critic contribution survives when its producer-owned severity meets or
+/// exceeds the threshold. Independently owned core severity cannot admit it.
 fn severity_passes_threshold(severity: Severity, threshold: u8) -> bool {
     severity as u8 >= threshold
 }
@@ -532,13 +579,13 @@ mod tests {
     use perl_parser_core::position::{Position, Range};
 
     use super::{
-        NativeCriticPolicy, critic_source_identity_for_uri, native_finding_candidates,
-        normalize_with_native_policy,
+        NativeCriticPolicy, critic_policy_retention, critic_source_identity_for_uri,
+        native_finding_candidates, normalize_with_native_policy,
     };
     use crate::tooling::perl_critic::{
         CriticFinding, CriticFindingCandidate, CriticFindingOrigin, CriticFindingShape,
-        CriticObservedIdentity, CriticSourceIdentity, CriticSuppressionMap, Severity,
-        normalize_critic_findings,
+        CriticObservedIdentity, CriticPolicyRetention, CriticSourceIdentity, CriticSuppressionMap,
+        Severity, normalize_critic_findings,
     };
 
     const GENERATION: u64 = 7;
@@ -632,6 +679,54 @@ mod tests {
         );
 
         normalize_critic_findings(native_candidates.into_iter().chain(built_in))
+    }
+
+    /// #13304: the published diagnostic and the code action that resolves it
+    /// must render one composition. `message()` stays the normalized problem
+    /// statement; `user_visible_message()` is the complete text, so a surface
+    /// that renders the bare message drops the producer's remediation and
+    /// stops matching the row a client already received.
+    #[test]
+    fn merged_row_user_visible_message_carries_the_producer_remediation() {
+        let bytes = system_call_bytes();
+        let (native_candidates, unresolved) = native_finding_candidates(
+            [native_finding_at_source_bytes(
+                "native.security.system_exec",
+                CriticFindingShape::SystemCall,
+                Severity::Harsh,
+                bytes,
+            )],
+            subject(),
+        );
+        assert!(unresolved.is_empty());
+
+        let suggestion = "Pass system() a list so no shell is involved";
+        let built_in = super::built_in_observation_candidates(
+            [super::BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                bytes,
+                "system() executes a shell command. Ensure input is sanitized.".to_string(),
+                None,
+            )
+            .with_suggestion(suggestion)],
+            OVERLAP_SOURCE,
+            subject(),
+        );
+
+        let rows = normalize_critic_findings(native_candidates.into_iter().chain(built_in));
+        assert_eq!(rows.len(), 1, "the reviewed alias pair must merge into one row");
+        let Some(row) = rows.first() else { return };
+
+        assert_eq!(row.remediation_suggestion(), Some(suggestion));
+        assert!(
+            !row.message().contains("Suggestion:"),
+            "the normalized problem statement must not already embed the remediation"
+        );
+        assert_eq!(
+            row.user_visible_message(),
+            format!("{}\nSuggestion: {suggestion}", row.message()),
+            "the complete user-visible text must append the producer's remediation"
+        );
     }
 
     #[test]
@@ -1225,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn exclusion_by_any_approved_spelling_removes_the_logical_row() {
+    fn exclusion_by_any_approved_spelling_strips_critic_contributors() {
         let include: Vec<String> = Vec::new();
         let suppressions = CriticSuppressionMap::from_source("");
         let exclude_native_rule = vec!["native.security.qx_readpipe".to_string()];
@@ -1235,16 +1330,157 @@ mod tests {
             NativeCriticPolicy::new(1, &include, &exclude_native_rule, &suppressions);
         assert!(normalize_with_native_policy(qx_native_candidates(), &by_native_rule).is_empty());
 
-        let by_compat_alias =
-            NativeCriticPolicy::new(1, &include, &exclude_compat_alias, &suppressions);
-        assert!(
-            normalize_with_native_policy(
-                qx_native_candidates().into_iter().chain([pl601_qx_candidate()]),
-                &by_compat_alias,
-            )
-            .is_empty(),
-            "excluding one spelling must remove the whole alias set"
+        // Excluding one spelling must remove the whole Critic alias set, but
+        // the independently owned built-in core proposition survives the
+        // Critic-side exclusion (core-only row, #13798).
+        let rows = normalize_with_native_policy(
+            qx_native_candidates().into_iter().chain([pl601_qx_candidate()]),
+            &NativeCriticPolicy::new(1, &include, &exclude_compat_alias, &suppressions),
         );
+        assert_eq!(rows.len(), 1, "the built-in core proposition must survive");
+        assert_eq!(rows[0].public_code(), "PL601");
+        assert_eq!(
+            rows[0].contributors().len(),
+            1,
+            "the excluded Critic spelling may not keep an active contribution"
+        );
+        assert!(
+            rows[0].contributors().iter().all(|contributor| contributor.identity().origin()
+                == CriticFindingOrigin::BuiltInDiagnostic),
+            "only the built-in contributor survives a Critic-side exclusion"
+        );
+    }
+
+    #[test]
+    fn core_code_exclude_strips_critic_only_with_a_critic_only_control() -> Result<(), String> {
+        let include = Vec::new();
+        let suppressions = CriticSuppressionMap::from_source("");
+
+        let overlap = merged_rows_for_one_system_call();
+        let overlap_row = overlap.first().ok_or_else(|| {
+            "the reviewed core/native overlap fixture must normalize to one row".to_string()
+        })?;
+        let exclude_core = vec!["PL603".to_string()];
+        let overlap_policy = NativeCriticPolicy::new(1, &include, &exclude_core, &suppressions);
+        if critic_policy_retention(overlap_row, &overlap_policy)
+            != CriticPolicyRetention::StripCritic
+        {
+            return Err(
+                "excluding the built-in code may only strip the Critic contribution; removing the \
+                 core proposition is a built-in-policy decision, never Critic config"
+                    .to_string(),
+            );
+        }
+
+        let critic_only = normalize_critic_findings(qx_native_candidates());
+        let critic_only_row = critic_only
+            .first()
+            .ok_or_else(|| "the critic-only control must normalize to one row".to_string())?;
+        let exclude_compat = vec!["PL601".to_string()];
+        let critic_only_policy =
+            NativeCriticPolicy::new(1, &include, &exclude_compat, &suppressions);
+        if critic_policy_retention(critic_only_row, &critic_only_policy)
+            != CriticPolicyRetention::StripCritic
+        {
+            return Err(
+                "without a core contributor, an alias exclusion strips Critic rather than claiming core revocation"
+                    .to_string(),
+            );
+        }
+        if !normalize_with_native_policy(qx_native_candidates(), &critic_only_policy).is_empty() {
+            return Err(
+                "the critic-only row must still be removed after its sole contribution is stripped"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn critic_threshold_uses_critic_contributor_severity_without_spending_core_authority()
+    -> Result<(), String> {
+        let include = Vec::new();
+        let exclude = Vec::new();
+        let suppressions = CriticSuppressionMap::from_source("");
+        let policy = NativeCriticPolicy::new(4, &include, &exclude, &suppressions);
+
+        let bytes = system_call_bytes();
+        let (native, unresolved) = native_finding_candidates(
+            [native_finding_at_source_bytes(
+                "native.security.system_exec",
+                CriticFindingShape::SystemCall,
+                Severity::Harsh,
+                bytes,
+            )],
+            subject(),
+        );
+        if !unresolved.is_empty() {
+            return Err("the native controls must resolve their reviewed identity".to_string());
+        }
+        let core = super::built_in_observation_candidates(
+            [super::BuiltInCriticObservation::pl603_system(
+                Severity::Gentle,
+                bytes,
+                "system() executes a shell command. Ensure input is sanitized.".to_string(),
+                None,
+            )],
+            OVERLAP_SOURCE,
+            subject(),
+        );
+
+        let normalized_overlap =
+            normalize_critic_findings(native.clone().into_iter().chain(core.clone()));
+        let overlap = normalized_overlap.first().ok_or_else(|| {
+            "the conflicting-severity overlap must normalize to one row".to_string()
+        })?;
+        if overlap.severity() != Severity::Gentle || !overlap.has_severity_conflict() {
+            return Err(
+                "the merged fixture must expose core severity 5 over native severity 3".to_string()
+            );
+        }
+        if critic_policy_retention(overlap, &policy) != CriticPolicyRetention::StripCritic {
+            return Err(
+                "core severity 5 must not admit a native Critic severity 3 contribution at threshold 4"
+                    .to_string(),
+            );
+        }
+
+        if !normalize_with_native_policy(native.clone(), &policy).is_empty() {
+            return Err("native Critic severity 3 must be removed at threshold 4".to_string());
+        }
+
+        let retained_overlap =
+            normalize_with_native_policy(native.into_iter().chain(core.clone()), &policy);
+        let retained = retained_overlap.first().ok_or_else(|| {
+            "the independent core row must survive Critic threshold rejection".to_string()
+        })?;
+        let retained_contributor = retained
+            .contributors()
+            .first()
+            .ok_or_else(|| "the retained core row must carry its core contributor".to_string())?;
+        if retained_overlap.len() != 1
+            || retained.severity() != Severity::Gentle
+            || retained.has_severity_conflict()
+            || retained.contributors().len() != 1
+            || retained_contributor.identity().origin() != CriticFindingOrigin::BuiltInDiagnostic
+        {
+            return Err("threshold rejection must retain exactly the core severity-5 contribution"
+                .to_string());
+        }
+
+        let retained_core_only = normalize_with_native_policy(core, &policy);
+        let retained_core = retained_core_only
+            .first()
+            .ok_or_else(|| "Critic threshold policy must retain the core-only row".to_string())?;
+        if retained_core_only.len() != 1
+            || retained_core.severity() != Severity::Gentle
+            || retained_core.contributors().len() != 1
+        {
+            return Err(
+                "Critic threshold policy must not remove a core-only severity-5 row".to_string()
+            );
+        }
+        Ok(())
     }
 
     #[test]

@@ -7,19 +7,23 @@
 #[cfg(test)]
 use super::*;
 use super::{
-    Arc, BuiltInAnalyzer, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity,
-    JsonRpcError, LspServer, Mutex, Ordering, Value,
+    Arc, DiagnosticsProvider, DocumentState, InternalDiagnosticSeverity, JsonRpcError, LspServer,
+    Ordering, Value,
     diagnostics_sink::{
         PushDiagnosticIdentity, PushDiagnosticsCommitOutcome, PushDiagnosticsDisposition,
     },
     json, source_path_from_uri,
+    types::best_workspace_folder_for_doc,
 };
 use crate::features::diagnostics::report_identity::{
     DiagnosticProjectionFragment, PullPositionEncoding, PullReportResultId, compose_report_identity,
 };
+use perl_lsp_rs_core::config::AcceptedCriticSnapshot;
+
 use crate::features::diagnostics::{
-    Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
-    PullDiagnosticsContext, RelatedInformation as InternalRelatedInformation,
+    AcceptedStateCurrentness as PullAcceptedStateCurrentness, Diagnostic as InternalDiagnostic,
+    DiagnosticTag as InternalDiagnosticTag, PullDiagnosticsContext,
+    RelatedInformation as InternalRelatedInformation,
 };
 use crate::runtime::window::RequestProgressGuard;
 use perl_diagnostics::codes::DiagnosticCode;
@@ -75,70 +79,6 @@ fn publish_diagnostics_params(uri: &str, version: Option<i32>, diagnostics: &[Va
         params["version"] = json!(v);
     }
     params
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn resolve_configured_profile_path(
-    configured_profile: &str,
-    workspace_root: Option<&std::path::Path>,
-    file_path: &std::path::Path,
-) -> Option<std::path::PathBuf> {
-    let profile_path = std::path::Path::new(configured_profile);
-    if profile_path.is_absolute() {
-        return profile_path.exists().then(|| profile_path.to_path_buf());
-    }
-
-    let file_dir = file_path.parent();
-    [
-        Some(profile_path.to_path_buf()),
-        workspace_root.map(|root| root.join(profile_path)),
-        file_dir.map(|dir| dir.join(profile_path)),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|candidate| candidate.exists())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn workspace_root_for_doc(server: &LspServer, uri: &str) -> Option<std::path::PathBuf> {
-    server
-        .folder_for_doc_uri(uri)
-        .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
-        .or_else(|| server.root_path.lock().clone())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn find_workspace_perlcritic_profile(
-    workspace_root: Option<&std::path::Path>,
-    file_path: &std::path::Path,
-) -> Option<String> {
-    let mut dir = file_path.parent().map(|p| p.to_path_buf());
-    while let Some(current) = dir {
-        for profile_name in [".perlcriticrc", "perlcriticrc"] {
-            let candidate = current.join(profile_name);
-            if candidate.exists() {
-                return candidate.to_str().map(|s| s.to_string());
-            }
-        }
-
-        if workspace_root == Some(current.as_path()) || current.parent().is_none() {
-            break;
-        }
-        dir = current.parent().map(|p| p.to_path_buf());
-    }
-    None
-}
-
-fn critic_range_to_byte_range(
-    content: &str,
-    start_line: u32,
-    start_column: u32,
-    end_line: u32,
-    end_column: u32,
-) -> Option<(usize, usize)> {
-    let start = crate::util::position_to_offset(content, start_line, start_column)?;
-    let end = crate::util::position_to_offset(content, end_line, end_column)?;
-    (start <= end).then_some((start, end))
 }
 
 fn parse_error_base_message(error: &crate::error::ParseError) -> String {
@@ -204,51 +144,18 @@ fn resolved_parse_diagnostic_offset(error: &crate::error::ParseError, text: &str
 /// Coordinates between LspServer state and the pure-logic PullDiagnosticsProvider.
 /// Handles:
 /// - Building context from server state (config, workspace index, capabilities)
-/// - Managing the cached CriticAnalyzer for external perlcritic integration
 /// - Emitting workspace-scoped warnings (with deduplication)
 /// - @INC path resolution for module diagnostics
-pub struct PullDiagnosticsOrchestrator {
-    /// Cached CriticAnalyzer for external perlcritic
-    #[cfg(not(target_arch = "wasm32"))]
-    critic_analyzer: Mutex<Option<perl_lsp_rs_core::tooling::perl_critic::CriticAnalyzer>>,
-}
+pub struct PullDiagnosticsOrchestrator {}
 
 impl PullDiagnosticsOrchestrator {
     /// Create a new orchestrator.
     pub fn new() -> Self {
-        Self {
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-        }
+        Self {}
     }
 
     /// Build context from LspServer state.
     pub fn build_context(&self, server: &LspServer, uri: &str) -> PullDiagnosticsContext {
-        // Get config values
-        let (
-            perlcritic_enabled,
-            perlcritic_severity,
-            perlcritic_profile,
-            critic_engine,
-            native_critic_profile,
-            native_critic_include,
-            native_critic_exclude,
-        ) = {
-            let cfg = server.config.lock();
-            (
-                cfg.perlcritic_enabled,
-                cfg.perlcritic_severity,
-                cfg.perlcritic_profile.clone(),
-                cfg.critic_engine,
-                cfg.native_critic_profile.clone(),
-                cfg.native_critic_include.clone(),
-                cfg.native_critic_exclude.clone(),
-            )
-        };
-
-        let profile =
-            perlcritic_profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
-
         // Get workspace root for this document's containing folder (multi-root aware).
         // Falls back to the global root_path when no specific folder matches.
         //
@@ -265,6 +172,63 @@ impl PullDiagnosticsOrchestrator {
         // Absent authority stays absent: the report is then served in full
         // without a reusable result ID instead of minting an unsound one.
         let root_key = workspace_root.as_ref().map(|path| path.to_string_lossy().into_owned());
+
+        // Get config values. The complete accepted critic state (#8253/#9062)
+        // derives through the authority seam in this same single lock scope,
+        // so the native critic service consumes one coherent generation.
+        let (
+            perlcritic_enabled,
+            perlcritic_severity,
+            perlcritic_profile,
+            critic_engine,
+            native_critic_profile,
+            native_critic_include,
+            native_critic_exclude,
+            accepted_critic_snapshot,
+        ) = {
+            let cfg = server.config.lock();
+            (
+                cfg.perlcritic_enabled,
+                cfg.perlcritic_severity,
+                cfg.perlcritic_profile.clone(),
+                cfg.critic_engine,
+                cfg.native_critic_profile.clone(),
+                cfg.native_critic_include.clone(),
+                cfg.native_critic_exclude.clone(),
+                AcceptedCriticSnapshot::capture(&cfg, root_key.as_deref()),
+            )
+        };
+
+        // Live currentness authority for the snapshot above (#9062/#13304).
+        // Same fingerprint comparison the push path uses, bound to the same
+        // owning root, so one document cannot be judged current under a policy
+        // that has already moved.
+        let accepted_state_currentness = {
+            let accepted_snapshot = accepted_critic_snapshot.clone();
+            let config = std::sync::Arc::clone(&server.config);
+            let workspace_folders = std::sync::Arc::clone(&server.workspace_folders);
+            let root_path = std::sync::Arc::clone(&server.root_path);
+            let topology_generation = std::sync::Arc::clone(&server.workspace_topology_generation);
+            let accepted_topology_generation =
+                topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+            let currentness_uri = uri.to_string();
+            PullAcceptedStateCurrentness::new(std::sync::Arc::new(move || {
+                let live_root = {
+                    let folders = workspace_folders.lock();
+                    best_workspace_folder_for_doc(&folders, &currentness_uri).cloned()
+                }
+                .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
+                .or_else(|| root_path.lock().clone())
+                .map(|path| path.to_string_lossy().into_owned());
+                live_root.as_deref() == accepted_snapshot.owning_root()
+                    && topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+                        == accepted_topology_generation
+                    && accepted_snapshot.is_current(&config.lock())
+            }))
+        };
+
+        let profile =
+            perlcritic_profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
 
         // Get include paths for the document
         let include_paths: Vec<String> = server
@@ -318,6 +282,8 @@ impl PullDiagnosticsOrchestrator {
             markup_message_support,
             identity_root_key: root_key,
             facts_generation,
+            accepted_critic_snapshot,
+            accepted_state_currentness,
             projection: DiagnosticProjectionFragment {
                 position_encoding: match position_encoding {
                     crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
@@ -327,229 +293,6 @@ impl PullDiagnosticsOrchestrator {
             },
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             workspace_index,
-        }
-    }
-
-    /// Collect external perlcritic diagnostics.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn collect_perlcritic_diagnostics(
-        &self,
-        server: &LspServer,
-        uri: &str,
-        doc_text: &str,
-        diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
-        use perl_lsp_rs_core::tooling::perl_critic::{CriticAnalyzer, CriticConfig};
-
-        // Check config
-        let (enabled, severity, profile, theme, critic_engine) = {
-            let cfg = server.config.lock();
-            (
-                cfg.perlcritic_enabled,
-                cfg.perlcritic_severity,
-                cfg.perlcritic_profile.clone(),
-                cfg.perlcritic_theme.clone(),
-                cfg.critic_engine,
-            )
-        };
-
-        if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
-            return;
-        }
-
-        let profile = profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
-
-        // Convert URI to file path
-        let file_path = match url::Url::parse(uri) {
-            Ok(u) => match u.to_file_path() {
-                Ok(p) => p,
-                Err(()) => {
-                    tracing::warn!(uri, "perlcritic: URI is not a file path");
-                    return;
-                }
-            },
-            Err(e) => {
-                tracing::warn!(uri, error = %e, "perlcritic: failed to parse URI");
-                return;
-            }
-        };
-
-        // Check if perlcritic is available (unless bypassed for tests)
-        let skip_check = server.skip_perlcritic_command_check.load(Ordering::Relaxed);
-        let force_unavailable =
-            server.force_perlcritic_command_unavailable.load(std::sync::atomic::Ordering::Relaxed);
-        if force_unavailable
-            || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
-        {
-            self.emit_warning(
-                server,
-                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
-                None,
-                "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
-            );
-            return;
-        }
-
-        let workspace_root = workspace_root_for_doc(server, uri);
-
-        // Validate configured profile if present.
-        let resolved_configured_profile = if let Some(ref configured_profile) = profile {
-            let resolved = resolve_configured_profile_path(
-                configured_profile,
-                workspace_root.as_deref(),
-                &file_path,
-            );
-            if resolved.is_none() {
-                self.emit_warning(
-                    server,
-                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
-                    Some(configured_profile),
-                    &format!(
-                        "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
-                    ),
-                );
-                return;
-            }
-            resolved
-        } else {
-            None
-        };
-
-        // Lazy-init the CriticAnalyzer
-        {
-            let mut guard = self.critic_analyzer.lock();
-            if guard.is_none() {
-                // Walk up directory tree looking for .perlcriticrc / perlcriticrc.
-                let resolved_profile = resolved_configured_profile
-                    .as_ref()
-                    .and_then(|p| p.to_str().map(|s| s.to_string()))
-                    .or_else(|| {
-                        find_workspace_perlcritic_profile(workspace_root.as_deref(), &file_path)
-                    });
-
-                let critic_config = CriticConfig {
-                    severity,
-                    profile: resolved_profile,
-                    theme: theme.clone(),
-                    ..Default::default()
-                };
-
-                // Use injected test runtime if present, otherwise OS runtime
-                let analyzer = {
-                    let rt_guard = server.critic_runtime_override.lock();
-                    if let Some(ref rt) = *rt_guard {
-                        CriticAnalyzer::new(critic_config, std::sync::Arc::clone(rt))
-                    } else {
-                        CriticAnalyzer::with_os_runtime(critic_config)
-                    }
-                };
-
-                *guard = Some(analyzer);
-            }
-        }
-
-        // Compute content hash for cache validation (detects stale entries from
-        // external file changes that bypass the LSP didChange notification).
-        let content_hash = perl_lsp_rs_core::tooling::perl_critic::hash_content(doc_text);
-
-        // Run analysis
-        let result = {
-            let mut guard = self.critic_analyzer.lock();
-            guard
-                .as_mut()
-                .map(|a| a.analyze_file_with_hash(&file_path, content_hash, Some(doc_text)))
-        };
-
-        match result {
-            Some(Ok(violations)) => {
-                for v in violations {
-                    let internal_severity = critic_severity_to_internal(v.severity);
-                    let fixable = is_fixable_diagnostic(&v.policy);
-
-                    let Some((start_byte, end_byte)) = critic_range_to_byte_range(
-                        doc_text,
-                        v.range.start.line,
-                        v.range.start.column,
-                        v.range.end.line,
-                        v.range.end.column,
-                    ) else {
-                        tracing::trace!(
-                            uri,
-                            policy = %v.policy,
-                            start_line = v.range.start.line,
-                            start_column = v.range.start.column,
-                            end_line = v.range.end.line,
-                            end_column = v.range.end.column,
-                            "dropping malformed perlcritic diagnostic range"
-                        );
-                        continue;
-                    };
-
-                    diagnostics.push(InternalDiagnostic {
-                        range: (start_byte, end_byte),
-                        severity: internal_severity,
-                        code: Some(v.policy),
-                        message: v.description,
-                        related_information: Vec::new(),
-                        tags: Vec::new(),
-                        suggestion: None,
-                        fixable,
-                        critic_observation: None,
-                    });
-                }
-            }
-            Some(Err(e)) => {
-                self.emit_warning(
-                    server,
-                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
-                    Some(&e.to_string()),
-                    &format!("Perl::Critic execution failed: {e}"),
-                );
-                tracing::warn!(uri, error = %e, "perlcritic failed");
-            }
-            None => {}
-        }
-    }
-
-    /// No-op stub for WASM targets.
-    #[cfg(target_arch = "wasm32")]
-    pub fn collect_perlcritic_diagnostics(
-        &self,
-        _server: &LspServer,
-        _uri: &str,
-        _doc_text: &str,
-        _diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
-    }
-
-    /// Emit a workspace-scoped warning unless the same reviewed subject was
-    /// already emitted this session. Suppression identity lives in the
-    /// server's bounded session-warning dedup store (#9769), so the pull
-    /// path shares the same typed, hard-capped critic family as the push
-    /// path and retains no raw key strings of its own.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn emit_warning(
-        &self,
-        server: &LspServer,
-        code: super::session_warning_dedup::SessionWarningCode,
-        subject: Option<&str>,
-        message: &str,
-    ) {
-        let identity = match subject {
-            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
-                code,
-                super::session_warning_dedup::SessionWarningSubjectTag::None,
-                subject,
-            ),
-            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
-        };
-        if !matches!(
-            server
-                .session_warning_dedup
-                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
-            super::session_warning_dedup::SessionWarningDecision::Suppress
-        ) {
-            server.show_message_or_log(super::window::MessageType::Warning, message);
         }
     }
 
@@ -563,34 +306,6 @@ impl PullDiagnosticsOrchestrator {
         _message: &str,
     ) {
     }
-
-    /// Reset the orchestrator state (e.g., on configuration change).
-    ///
-    /// Warning-dedup state is not held here anymore: the didChangeConfiguration
-    /// critic transition clears the shared critic family (#9769) immediately
-    /// before calling this reset, keeping the analyzer and warning lifecycles
-    /// aligned.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn reset(&self) {
-        *self.critic_analyzer.lock() = None;
-    }
-
-    /// No-op stub for WASM targets.
-    #[cfg(target_arch = "wasm32")]
-    pub fn reset(&self) {}
-
-    /// Invalidate cached perlcritic violations for a single file path.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn invalidate_file_cache(&self, file_path: &std::path::Path) {
-        let path_str = file_path.to_string_lossy().to_string();
-        if let Some(ref mut analyzer) = *self.critic_analyzer.lock() {
-            analyzer.invalidate_cache(&path_str);
-        }
-    }
-
-    /// No-op stub for WASM targets.
-    #[cfg(target_arch = "wasm32")]
-    pub fn invalidate_file_cache(&self, _file_path: &std::path::Path) {}
 }
 
 impl Default for PullDiagnosticsOrchestrator {
@@ -709,6 +424,8 @@ impl LspServer {
             return;
         };
 
+        let topology_at_snapshot = self.workspace_topology_generation.load(Ordering::SeqCst);
+
         #[cfg(test)]
         if let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref() {
             hook();
@@ -717,6 +434,10 @@ impl LspServer {
         // Position helper on the snapshotted line_starts + text (no rope clone).
         let pos16 = |offset: usize| line_starts.offset_to_position(&text, offset);
 
+        // Accepted native critic policy behind whatever critic rows this
+        // publication ends up carrying (#13304). Stays `None` for the
+        // parse-error-only branch, which depends on no critic configuration.
+        let mut accepted_critic_snapshot: Option<AcceptedCriticSnapshot> = None;
         let lsp_diagnostics: Vec<Value> = if let Some(ast) = &ast_opt {
             // Get diagnostics (already includes unused variable detection).
             // resolver is called with the documents lock *released* — no reentrant deadlock.
@@ -834,18 +555,19 @@ impl LspServer {
                 source_path.as_deref(),
             );
 
-            // Add configured policy critic diagnostics.
+            // Evaluate the native critic over one accepted subject, committing
+            // nothing yet: policy can still move before this report reaches the
+            // sink, so the contribution stays pending until the boundary below.
             let critic_source_identity = critic_source_identity_for(uri, gen_at_snapshot);
-            self.collect_policy_critic_diagnostics(
+            let accepted_critic = self.capture_accepted_critic(uri);
+            let pending_critic = self.evaluate_native_critic(
                 ast,
                 &text,
                 uri,
                 critic_source_identity,
-                &mut diagnostics,
+                accepted_critic.clone(),
+                &diagnostics,
             );
-
-            // Add external perlcritic diagnostics (opt-in)
-            self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
 
             // Add dead code diagnostics from workspace-wide symbol analysis.
             // Re-check freshness immediately before reading the index: readiness
@@ -906,6 +628,13 @@ impl LspServer {
             // fire on the same range with the same severity but different codes.
             // Collapse them, preferring built-in PL* codes over native-critic codes.
             // (#5088)
+            // Publication boundary: commit or withhold the pending Critic
+            // contribution against its own accepted subject. Only a still-current
+            // subject may bind a policy into the irreversible sink identity.
+            if self.finalize_pending_critic(&mut diagnostics, pending_critic) {
+                accepted_critic_snapshot = Some(accepted_critic);
+            }
+
             dedup_overlapping_diagnostics(&mut diagnostics);
 
             // Convert to LSP diagnostics
@@ -1044,7 +773,9 @@ impl LspServer {
         // document whose stale instance counter had not moved (close/reopen
         // ABA) and left the send itself outside any currentness decision.
         let identity =
-            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot)
+                .with_accepted_critic_snapshot(accepted_critic_snapshot)
+                .with_accepted_topology_generation(topology_at_snapshot);
         let disposition = if lsp_diagnostics.is_empty() {
             PushDiagnosticsDisposition::Clear
         } else {
@@ -1070,6 +801,11 @@ impl LspServer {
                 current_gen = generation.load(Ordering::SeqCst),
                 "Skipping stale diagnostic publish (superseded at sink boundary; \
                  the debouncer fires again for the latest version)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping diagnostic publish (critic policy moved before sink boundary;                  the next cycle re-analyzes under the live policy)"
             ),
             PushDiagnosticsCommitOutcome::OutboundFailure => {
                 tracing::error!(uri, "Failed to publish diagnostics")
@@ -1178,6 +914,11 @@ impl LspServer {
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
                 "Skipping stale syntax-only diagnostic publish (superseded at sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping syntax-only diagnostic publish (critic policy moved at sink boundary)"
             ),
             PushDiagnosticsCommitOutcome::OutboundFailure => {
                 tracing::error!(uri, "Failed to publish syntax-only diagnostics")
@@ -1323,6 +1064,11 @@ impl LspServer {
                 gen_at_snapshot,
                 current_gen = generation.load(Ordering::SeqCst),
                 "Skipping fast parse-error publish (superseded at sink boundary)"
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy => tracing::debug!(
+                uri = %normalized_uri,
+                gen_at_snapshot,
+                "Skipping fast parse-error publish (critic policy moved at sink boundary)"
             ),
             PushDiagnosticsCommitOutcome::OutboundFailure => {
                 tracing::error!(
@@ -1470,15 +1216,6 @@ impl LspServer {
                 Some(&doc),
             );
 
-            // Collect external perlcritic diagnostics via orchestrator
-            let mut perlcritic_diags = Vec::new();
-            self.pull_diagnostics_orchestrator.collect_perlcritic_diagnostics(
-                self,
-                uri_str,
-                &doc.text,
-                &mut perlcritic_diags,
-            );
-
             // Generation-aware staleness guard: if a newer didChange arrived while
             // diagnostics were being computed, discard this result — the next
             // diagnostic request will compute from the latest version.  Mirrors the
@@ -1497,12 +1234,7 @@ impl LspServer {
             }
 
             // Convert report to JSON
-            return Ok(Some(self.document_report_to_json(
-                &report,
-                &doc,
-                uri_str,
-                &perlcritic_diags,
-            )));
+            return Ok(Some(self.document_report_to_json(&report, &doc, uri_str)));
         }
 
         // Return empty diagnostics if document not found or document not yet open
@@ -1552,29 +1284,18 @@ impl LspServer {
         report: &lsp_types::DocumentDiagnosticReport,
         doc: &crate::state::DocumentState,
         uri: &str,
-        perlcritic_diags: &[InternalDiagnostic],
     ) -> Value {
         use lsp_types::DocumentDiagnosticReport;
 
         match report {
             DocumentDiagnosticReport::Full(full) => {
                 let markup_message_support = self.client_capabilities.lock().markup_message_support;
-                let mut items: Vec<Value> = full
+                let items: Vec<Value> = full
                     .full_document_diagnostic_report
                     .items
                     .iter()
                     .map(|d| self.lsp_diagnostic_to_json(d, doc, uri, markup_message_support))
                     .collect();
-
-                // Add perlcritic diagnostics
-                for d in perlcritic_diags {
-                    items.push(self.internal_diagnostic_to_json(
-                        d,
-                        doc,
-                        uri,
-                        markup_message_support,
-                    ));
-                }
 
                 let mut payload = json!({
                     "kind": "full",
@@ -1634,88 +1355,6 @@ impl LspServer {
         diag
     }
 
-    /// Convert internal diagnostic to JSON value.
-    fn internal_diagnostic_to_json(
-        &self,
-        d: &InternalDiagnostic,
-        doc: &crate::state::DocumentState,
-        uri: &str,
-        markup_message_support: bool,
-    ) -> Value {
-        let start_pos = doc.line_starts.offset_to_position_rope(&doc.rope, d.range.0);
-        let end_pos = doc.line_starts.offset_to_position_rope(&doc.rope, d.range.1);
-
-        let severity = match d.severity {
-            InternalDiagnosticSeverity::Error => 1,
-            InternalDiagnosticSeverity::Warning => 2,
-            InternalDiagnosticSeverity::Information => 3,
-            InternalDiagnosticSeverity::Hint => 4,
-            // Forward-compatible fallback for future variants (#2898)
-            _ => 1,
-        };
-        let code_str = d.code.as_deref().unwrap_or("");
-        let message_val = Self::diagnostic_message_value(&d.message, None, markup_message_support);
-
-        let mut diag = diagnostic_json(
-            start_pos.0,
-            start_pos.1,
-            end_pos.0,
-            end_pos.1,
-            severity,
-            code_str,
-            diagnostic_source(d.code.as_deref()),
-            message_val.as_str().unwrap_or("").to_string(),
-        );
-
-        if !d.tags.is_empty() {
-            diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
-        }
-
-        if !d.related_information.is_empty() {
-            diag["relatedInformation"] = json!(
-                d.related_information
-                    .iter()
-                    .map(|ri| {
-                        let ri_start =
-                            doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.0);
-                        let ri_end =
-                            doc.line_starts.offset_to_position_rope(&doc.rope, ri.location.1);
-                        json!({
-                            "location": {
-                                "uri": uri,
-                                "range": {
-                                    "start": {"line": ri_start.0, "character": ri_start.1},
-                                    "end":   {"line": ri_end.0,   "character": ri_end.1},
-                                }
-                            },
-                            "message": ri.message
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            );
-        }
-
-        if let Some(ref code_str) = d.code {
-            let category = DiagnosticCode::parse_code(code_str)
-                .map(|dc| format!("{:?}", dc.category()))
-                .unwrap_or_else(|| "Other".to_string());
-            let fixable = d.fixable;
-            let tag_strings: Vec<String> = d
-                .tags
-                .iter()
-                .map(|t| match t {
-                    InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
-                    InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
-                    // Forward-compatible fallback for future variants (#2898)
-                    _ => "Unnecessary".to_string(),
-                })
-                .collect();
-            diag["data"] = diagnostic_data(code_str, &category, fixable, &tag_strings);
-        }
-
-        diag
-    }
-
     /// Handle workspace/diagnostic request (LSP 3.17 pull diagnostics)
     ///
     /// Computes diagnostics for all open documents in the workspace using the
@@ -1769,37 +1408,6 @@ impl LspServer {
 
         let mut items = Vec::new();
         let markup_message_support = self.client_capabilities.lock().markup_message_support;
-
-        // Hoisted accepted-configuration subject values for report identity
-        // composition (#7480). Per-document resolver roots, folder authority
-        // and fact generation are sampled inside the loop below.
-        let (
-            identity_perlcritic_enabled,
-            identity_perlcritic_severity,
-            identity_perlcritic_profile,
-            identity_critic_engine,
-            identity_native_profile,
-            identity_native_include,
-            identity_native_exclude,
-        ) = {
-            let cfg = self.config.lock();
-            (
-                cfg.perlcritic_enabled,
-                cfg.perlcritic_severity,
-                cfg.perlcritic_profile.clone(),
-                cfg.critic_engine,
-                cfg.native_critic_profile.clone(),
-                cfg.native_critic_include.clone(),
-                cfg.native_critic_exclude.clone(),
-            )
-        };
-        let identity_projection = DiagnosticProjectionFragment {
-            position_encoding: match self.client_capabilities.lock().position_encoding {
-                crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
-                crate::textdoc::PosEnc::Utf16 => PullPositionEncoding::Utf16,
-            },
-            markup_messages: markup_message_support,
-        };
 
         // Collect document snapshots without holding lock.
         // Also capture each document's generation Arc and the generation value
@@ -1949,18 +1557,23 @@ impl LspServer {
                     source_path.as_deref(),
                 );
 
-                // Add native critic diagnostics when explicitly selected.
+                // One accepted Critic subject per document, captured once and
+                // then used for evaluation, finalization and result identity
+                // alike. Nothing Critic-policy-bearing is hoisted outside this
+                // loop any more: hoisting is what let identity describe an older
+                // policy than the rows.
+                let identity_context =
+                    PullDiagnosticsOrchestrator::new().build_context(self, uri_str);
                 let critic_source_identity = critic_source_identity_for(uri_str, *gen_at_snapshot);
-                self.collect_native_critic_diagnostics(
+                let pending_critic = self.begin_workspace_critic_transaction(
                     ast,
                     &doc.text,
                     uri_str,
                     critic_source_identity,
-                    &mut diagnostics,
+                    identity_context,
+                    Some(u64::from(doc.current_generation())),
+                    &diagnostics,
                 );
-
-                // Add external perlcritic diagnostics (opt-in)
-                self.collect_external_perlcritic_diagnostics(uri_str, &doc.text, &mut diagnostics);
 
                 // Add dead code diagnostics from workspace-wide symbol analysis
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -1992,53 +1605,25 @@ impl LspServer {
                     continue;
                 }
 
-                // Complete-subject result identity (#7480): derives the result
-                // ID from the evaluation and projection subject, not from
-                // content alone.
-                let mut identity_context = PullDiagnosticsContext::new();
-                identity_context.perlcritic_enabled = identity_perlcritic_enabled;
-                identity_context.perlcritic_severity = identity_perlcritic_severity.into();
-                identity_context.perlcritic_profile =
-                    identity_perlcritic_profile.clone().filter(|p| !p.trim().is_empty());
-                identity_context.critic_engine = identity_critic_engine;
-                identity_context.native_critic_profile = identity_native_profile.clone();
-                identity_context.native_critic_include = identity_native_include.clone();
-                identity_context.native_critic_exclude = identity_native_exclude.clone();
-                identity_context.include_paths = self
-                    .include_paths_for_doc(uri_str)
-                    .into_iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect();
-                identity_context.identity_root_key = self
-                    .folder_for_doc_uri(uri_str)
-                    .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
-                    .or_else(|| self.root_path.lock().clone())
-                    .map(|path| path.to_string_lossy().into_owned());
-                #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                {
-                    identity_context.facts_generation = workspace_index_tier_enabled
-                        .then(|| self.workspace_index())
-                        .flatten()
-                        .map(|index| index.write_version());
-                }
-                identity_context.projection = identity_projection;
-
-                let result_id = compose_report_identity(
-                    uri_str,
-                    &doc.text,
-                    Some(u64::from(doc.current_generation())),
-                    &identity_context,
-                    true,
-                );
-                let result_id_json =
-                    result_id.as_ref().map(|id| Value::String(id.as_str().to_string()));
+                // The composed identity encodes the critic policy this report
+                // was evaluated under. A run that could not publish leaves the
+                // report incomplete for that policy, and a policy that has since
+                // moved makes the identity describe a dead subject - neither may
+                // be handed back as reusable (#13304).
+                // Publication boundary for this document: commit or withhold
+                // the pending contribution against its own subject, and let the
+                // same answer decide Critic result-ID reuse.
+                let critic_identity =
+                    self.finalize_workspace_critic_transaction(&mut diagnostics, pending_critic);
+                let result_id_json = critic_identity
+                    .result_id
+                    .as_ref()
+                    .map(|id| Value::String(id.as_str().to_string()));
 
                 // `Unchanged` requires a prior ID that parses under the current
                 // schema and equals the complete current subject (#7480).
-                let prev_matches = prev_id.as_deref().is_some_and(|prior| {
-                    PullReportResultId::from_wire(prior)
-                        .is_some_and(|prior| result_id.as_ref() == Some(&prior))
-                });
+                let prev_matches =
+                    prev_id.as_deref().is_some_and(|prior| critic_identity.matches_previous(prior));
 
                 // Check if unchanged
                 let mut report = if let Some(prev) = prev_id {
@@ -2263,360 +1848,176 @@ impl LspServer {
         Ok(Some(json!({ "items": items })))
     }
 
-    fn collect_policy_critic_diagnostics(
-        &self,
-        ast: &std::sync::Arc<perl_parser::ast::Node>,
-        doc_text: &str,
-        subject: &str,
-        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-        diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
-        let critic_engine = { self.config.lock().critic_engine };
-        match critic_engine {
-            perl_lsp_rs_core::config::CriticEngine::Legacy => {
-                let built_in_analyzer = BuiltInAnalyzer::new();
-                let violations = built_in_analyzer.analyze(ast, doc_text);
-                diagnostics.extend(violations.iter().map(builtin_violation_to_diagnostic));
-            }
-            perl_lsp_rs_core::config::CriticEngine::Native => {
-                self.collect_native_critic_diagnostics(
-                    ast,
-                    doc_text,
-                    subject,
-                    source_identity,
-                    diagnostics,
-                );
-            }
-        }
+    /// Capture the accepted Critic subject for one document (#12067 review).
+    ///
+    /// Owning root and accepted state are resolved together, once. Every
+    /// downstream use -- evaluation, final publication currentness, and the
+    /// Critic portion of report identity -- consumes this same value, so a
+    /// transport cannot evaluate under one policy while composing identity from
+    /// another.
+    pub(crate) fn capture_accepted_critic(&self, subject: &str) -> AcceptedCriticSnapshot {
+        let root_key = self
+            .folder_for_doc_uri(subject)
+            .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
+            .or_else(|| self.root_path.lock().clone())
+            .map(|path| path.to_string_lossy().into_owned());
+        let config = self.config.lock();
+        AcceptedCriticSnapshot::capture(&config, root_key.as_deref())
     }
 
-    fn collect_native_critic_diagnostics(
+    /// Begin one workspace pull transaction from a single sealed context.
+    ///
+    /// The caller cannot pass a second accepted snapshot: evaluation derives
+    /// it from the same owned context that finalization later consumes for
+    /// result identity.
+    fn begin_workspace_critic_transaction(
         &self,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         doc_text: &str,
         subject: &str,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-        diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
-        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
-        use perl_lsp_rs_core::tooling::perl_critic::{
-            BuiltInCriticObservation, NativeCriticPolicy, built_in_observation_candidates,
-            native_finding_candidates_with_accounting, normalize_with_native_policy,
-        };
-
-        let (critic_engine, severity, profile, native_profile, native_include, native_exclude) = {
-            let cfg = self.config.lock();
-            (
-                cfg.critic_engine,
-                cfg.perlcritic_severity,
-                cfg.perlcritic_profile.clone(),
-                cfg.native_critic_profile.clone(),
-                cfg.native_critic_include.clone(),
-                cfg.native_critic_exclude.clone(),
-            )
-        };
-        if critic_engine != perl_lsp_rs_core::config::CriticEngine::Native {
-            return;
-        }
-
-        let severity_threshold = severity.clamp(1, 5);
-        let critic_config = crate::perl_critic::CriticConfig {
-            severity: severity_threshold,
-            profile,
-            include: native_include.clone(),
-            exclude: native_exclude.clone(),
-            ..crate::perl_critic::CriticConfig::default()
-        };
-        let critic_context =
-            crate::perl_critic::CriticContext::new(doc_text, ast.as_ref(), &critic_config);
-        let profile = crate::perl_critic::NativeCriticProfile::parse_legacy(&native_profile)
-            .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
-        let registry = crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
-            profile,
-            &critic_config,
-        );
-
-        // Producer outputs enter the canonical normalized set (#7475): checked
-        // identities at collection, alias merge, then policy applied exactly
-        // once post-merge. Findings without a registered producer-owned
-        // identity are rejected here rather than guessed, and every rejection
-        // is accounted for instead of silently vanishing.
-        //
-        // Core lint emitters that declared a reviewed critic overlap
-        // observation surrender their ordinary diagnostic here (#11918): the
-        // logical row comes out of this same normalization, merged with the
-        // native alias and carrying both contributor identities.
-        let overlap_observations: Vec<BuiltInCriticObservation> =
-            take_critic_overlap_observations(diagnostics);
-        let candidates = native_finding_candidates_with_accounting(
+        identity_context: PullDiagnosticsContext,
+        document_generation: Option<u64>,
+        diagnostics: &[InternalDiagnostic],
+    ) -> PendingWorkspaceCriticTransaction {
+        let candidate_result_id = compose_report_identity(
             subject,
-            registry.check_unfiltered(&critic_context),
-            source_identity,
-        )
-        .into_iter()
-        .chain(built_in_observation_candidates(
-            overlap_observations,
             doc_text,
+            document_generation,
+            &identity_context,
+            true,
+        );
+        let contribution = self.evaluate_native_critic(
+            ast,
+            doc_text,
+            subject,
             source_identity,
-        ));
-        let suppressions =
-            perl_lsp_rs_core::tooling::perl_critic::CriticSuppressionMap::from_source(doc_text);
-        let policy = NativeCriticPolicy::new(
-            severity_threshold,
-            &native_include,
-            &native_exclude,
-            &suppressions,
+            identity_context.accepted_critic_snapshot.clone(),
+            diagnostics,
         );
-
-        diagnostics.extend(
-            normalize_with_native_policy(candidates, &policy)
-                .iter()
-                .map(normalized_critic_finding_to_diagnostic),
-        );
+        PendingWorkspaceCriticTransaction {
+            candidate_result_id,
+            accepted_state_currentness: identity_context.accepted_state_currentness.clone(),
+            contribution,
+        }
     }
 
-    /// Collect external perlcritic diagnostics if the feature is enabled.
-    ///
-    /// Checks the `perlcritic_enabled` config flag and whether `perlcritic` is
-    /// installed on the system. If both conditions are met, runs perlcritic on
-    /// the file and appends violations with severity mapped from Perl::Critic's
-    /// 1-5 scale to LSP severity levels (5 -> Error, 4/3 -> Warning,
-    /// 2 -> Information, 1 -> Hint).
-    ///
-    /// The `CriticAnalyzer` is reused across calls via `self.critic_analyzer`
-    /// so that the per-file violation cache survives between `didChange` events.
-    /// `invalidate_cache` is called from the `didChange` handler, and the
-    /// analyzer is reset to `None` from `didChangeConfiguration` whenever any
-    /// critic-related setting changes.
-    ///
-    /// Emits a workspace-scoped warning when perlcritic is unavailable,
-    /// configured profile is missing, or execution fails.
-    /// Skips file-local diagnostics for those tooling-state errors.
-    /// The `doc_text` parameter is used to convert perlcritic's line/column
-    /// positions into byte offsets for the internal diagnostic range.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn collect_external_perlcritic_diagnostics(
+    /// Commit or withhold, then compose identity from the same owned context.
+    fn finalize_workspace_critic_transaction(
         &self,
-        uri: &str,
-        doc_text: &str,
         diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
-        // Check config: perlcritic must be explicitly enabled (opt-in)
-        let (enabled, severity, profile, theme, critic_engine) = {
-            let cfg = self.config.lock();
-            (
-                cfg.perlcritic_enabled,
-                cfg.perlcritic_severity,
-                cfg.perlcritic_profile.clone(),
-                cfg.perlcritic_theme.clone(),
-                cfg.critic_engine,
-            )
-        };
-        if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
-            return;
-        }
-        let profile = profile.and_then(|profile| (!profile.trim().is_empty()).then_some(profile));
-
-        // Convert URI to file system path; skip non-file URIs
-        let file_path = match url::Url::parse(uri) {
-            Ok(u) => match u.to_file_path() {
-                Ok(p) => p,
-                Err(()) => {
-                    tracing::warn!(uri, "perlcritic: URI is not a file path");
-                    return;
-                }
-            },
-            Err(e) => {
-                tracing::warn!(uri, error = %e, "perlcritic: failed to parse URI");
-                return;
-            }
-        };
-
-        // Warn the user once if perlcritic is not installed.
-        // The `skip_perlcritic_command_check` flag is always `false` in production
-        // and is only set to `true` through the test helper
-        // `LspServer::test_bypass_perlcritic_command_check`, enabling mock-runtime
-        // injection without a real `perlcritic` binary.
-        let skip_check =
-            self.skip_perlcritic_command_check.load(std::sync::atomic::Ordering::Relaxed);
-        let force_unavailable =
-            self.force_perlcritic_command_unavailable.load(std::sync::atomic::Ordering::Relaxed);
-        if force_unavailable
-            || (!skip_check && !crate::execute_command::command_exists("perlcritic"))
-        {
-            self.emit_perlcritic_workspace_warning(
-                super::session_warning_dedup::SessionWarningCode::CriticMissingBinary,
-                None,
-                "Perl::Critic is enabled but `perlcritic` was not found on PATH. Install Perl::Critic (for example: `cpanm Perl::Critic`) or disable perl.perlcritic.enabled.",
-            );
-            return;
-        }
-
-        let workspace_root = workspace_root_for_doc(self, uri);
-        let resolved_configured_profile = if let Some(ref configured_profile) = profile {
-            let resolved = resolve_configured_profile_path(
-                configured_profile,
-                workspace_root.as_deref(),
-                &file_path,
-            );
-            if resolved.is_none() {
-                self.emit_perlcritic_workspace_warning(
-                    super::session_warning_dedup::SessionWarningCode::CriticMissingProfile,
-                    Some(configured_profile),
-                    &format!(
-                        "Perl::Critic profile path does not exist: {configured_profile}. Update perl.perlcritic.profile or create the profile file."
-                    ),
-                );
-                return;
-            }
-            resolved
-        } else {
-            None
-        };
-
-        // Lazy-init the shared CriticAnalyzer.  If the profile or severity
-        // changed, `didChangeConfiguration` has already reset the field to
-        // `None`, so we rebuild here with the current config.
-        //
-        // The `.perlcriticrc` walk-up is intentionally placed inside the
-        // `is_none()` branch so that filesystem stat calls are skipped on
-        // every subsequent diagnostic cycle once the analyzer is warm.
-        {
-            let mut guard = self.critic_analyzer.lock();
-            if guard.is_none() {
-                // Walk up the directory tree from the file's parent to the
-                // workspace root looking for `.perlcriticrc`.  Ensures that a
-                // repo-root config is found even when the file lives in a
-                // sub-directory.  Only runs when the analyzer needs (re-)init.
-                let resolved_profile = resolved_configured_profile
-                    .as_ref()
-                    .and_then(|p| p.to_str().map(|s| s.to_string()))
-                    .or_else(|| {
-                        find_workspace_perlcritic_profile(workspace_root.as_deref(), &file_path)
-                    });
-                let critic_config = crate::perl_critic::CriticConfig {
-                    severity,
-                    profile: resolved_profile,
-                    theme: theme.clone(),
-                    ..crate::perl_critic::CriticConfig::default()
-                };
-                // Use the injected test runtime when present; otherwise fall back
-                // to the OS subprocess runtime.
-                let analyzer = {
-                    let rt_guard = self.critic_runtime_override.lock();
-                    if let Some(ref rt) = *rt_guard {
-                        crate::perl_critic::CriticAnalyzer::new(
-                            critic_config,
-                            std::sync::Arc::clone(rt),
-                        )
-                    } else {
-                        crate::perl_critic::CriticAnalyzer::with_os_runtime(critic_config)
-                    }
-                };
-                *guard = Some(analyzer);
-            }
-        }
-
-        // Compute a content hash so the cache can detect stale entries when the
-        // file changes without triggering a `didChange` LSP event (e.g. external
-        // editor or `git checkout` while the server is running).
-        let content_hash = crate::perl_critic::hash_content(doc_text);
-
-        // Borrow the shared analyzer to run the analysis.  The lock is held
-        // only for the duration of the `analyze_file_with_hash` call.
-        let result = {
-            let mut guard = self.critic_analyzer.lock();
-            guard
-                .as_mut()
-                .map(|a| a.analyze_file_with_hash(&file_path, content_hash, Some(doc_text)))
-        };
-
-        match result {
-            Some(Ok(violations)) => {
-                for v in violations {
-                    let internal_severity = critic_severity_to_internal(v.severity);
-                    let fixable = is_fixable_diagnostic(&v.policy);
-
-                    let Some((start_byte, end_byte)) = critic_range_to_byte_range(
-                        doc_text,
-                        v.range.start.line,
-                        v.range.start.column,
-                        v.range.end.line,
-                        v.range.end.column,
-                    ) else {
-                        tracing::trace!(
-                            uri,
-                            policy = %v.policy,
-                            start_line = v.range.start.line,
-                            start_column = v.range.start.column,
-                            end_line = v.range.end.line,
-                            end_column = v.range.end.column,
-                            "dropping malformed perlcritic diagnostic range"
-                        );
-                        continue;
-                    };
-
-                    diagnostics.push(InternalDiagnostic {
-                        range: (start_byte, end_byte),
-                        severity: internal_severity,
-                        code: Some(v.policy),
-                        message: v.description,
-                        related_information: Vec::new(),
-                        tags: Vec::new(),
-                        suggestion: None,
-                        fixable,
-                        critic_observation: None,
-                    });
-                }
-            }
-            Some(Err(e)) => {
-                self.emit_perlcritic_workspace_warning(
-                    super::session_warning_dedup::SessionWarningCode::CriticExecutionFailed,
-                    Some(&e.to_string()),
-                    &format!("Perl::Critic execution failed: {e}"),
-                );
-                tracing::warn!(uri, error = %e, "perlcritic failed");
-            }
-            None => {}
+        transaction: PendingWorkspaceCriticTransaction,
+    ) -> FinalizedWorkspaceCriticIdentity {
+        let PendingWorkspaceCriticTransaction {
+            candidate_result_id,
+            accepted_state_currentness,
+            contribution,
+        } = transaction;
+        let critic_subject_current = self.finalize_pending_critic(diagnostics, contribution);
+        FinalizedWorkspaceCriticIdentity {
+            result_id: critic_subject_current.then_some(candidate_result_id).flatten(),
+            accepted_state_currentness,
         }
     }
 
-    /// No-op stub for WASM targets where subprocess execution is unavailable.
-    #[cfg(target_arch = "wasm32")]
-    fn collect_external_perlcritic_diagnostics(
+    /// Evaluate native critic rules over one accepted subject, committing
+    /// nothing.
+    ///
+    /// Deliberately pure with respect to configuration and to the diagnostic
+    /// set: it does not lock config, derive a root, take a fresh accepted state,
+    /// mutate `diagnostics`, or surrender overlap carriers. That is what makes
+    /// the workspace "identity old / evaluation new" race unrepresentable --
+    /// there is no second sampling point left inside evaluation.
+    fn evaluate_native_critic(
         &self,
-        _uri: &str,
-        _doc_text: &str,
-        _diagnostics: &mut Vec<InternalDiagnostic>,
-    ) {
+        ast: &std::sync::Arc<perl_parser::ast::Node>,
+        doc_text: &str,
+        subject: &str,
+        source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
+        snapshot: AcceptedCriticSnapshot,
+        diagnostics: &[InternalDiagnostic],
+    ) -> PendingCriticContribution {
+        use perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations;
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            NativeCriticService, NativeCriticSubject, RunGate,
+        };
+
+        // Read the producer-declared overlap observations non-destructively: an
+        // unpublishable or superseded outcome must leave every independent core
+        // row intact, so carriers are surrendered only at finalization.
+        let overlap_observations = critic_overlap_observations(diagnostics);
+
+        let workspace_folders = std::sync::Arc::clone(&self.workspace_folders);
+        let root_path = std::sync::Arc::clone(&self.root_path);
+        let config = std::sync::Arc::clone(&self.config);
+        let topology_generation = std::sync::Arc::clone(&self.workspace_topology_generation);
+        let accepted_topology_generation =
+            topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+        let gate_subject = subject.to_string();
+        let gate_snapshot = snapshot.clone();
+        let snapshot_is_current = move || {
+            let live_root = {
+                let folders = workspace_folders.lock();
+                best_workspace_folder_for_doc(&folders, &gate_subject).cloned()
+            }
+            .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
+            .or_else(|| root_path.lock().clone())
+            .map(|path| path.to_string_lossy().into_owned());
+            live_root.as_deref() == gate_snapshot.owning_root()
+                && topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+                    == accepted_topology_generation
+                && gate_snapshot.is_current(&config.lock())
+        };
+
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            subject,
+            source_identity,
+            ast,
+            doc_text,
+            snapshot.state().clone(),
+            overlap_observations,
+            RunGate::open(),
+            RunGate::new(&snapshot_is_current),
+        ));
+
+        PendingCriticContribution { subject: subject.to_string(), snapshot, run }
     }
 
-    /// Show a workspace-scoped Perl::Critic warning unless the same reviewed
-    /// subject was already emitted this session (#9769). `subject` is the
-    /// client/environment-controlled identity (configured profile string,
-    /// execution error text); only its deterministic fingerprint is retained.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn emit_perlcritic_workspace_warning(
+    /// Commit or withhold a pending Critic contribution at the publication
+    /// boundary (#12067 review).
+    ///
+    /// This is the only path that may append normalized native rows or drain
+    /// overlap carriers, and it always consults final accepted-subject
+    /// currentness first. Service settlement is not the irreversible boundary:
+    /// policy can move between settlement and the report leaving the server.
+    ///
+    /// Returns whether the Critic subject behind this report is still current,
+    /// which is what decides Critic result-ID reuse.
+    fn finalize_pending_critic(
         &self,
-        code: super::session_warning_dedup::SessionWarningCode,
-        subject: Option<&str>,
-        message: &str,
-    ) {
-        let identity = match subject {
-            Some(subject) => super::session_warning_dedup::SessionWarningIdentity::fingerprinted(
-                code,
-                super::session_warning_dedup::SessionWarningSubjectTag::None,
-                subject,
-            ),
-            None => super::session_warning_dedup::SessionWarningIdentity::subjectless(code),
-        };
-        if !matches!(
-            self.session_warning_dedup
-                .note(super::session_warning_dedup::SessionWarningFamily::Critic, identity),
-            super::session_warning_dedup::SessionWarningDecision::Suppress
-        ) {
-            self.show_message_or_log(super::window::MessageType::Warning, message);
+        diagnostics: &mut Vec<InternalDiagnostic>,
+        pending: PendingCriticContribution,
+    ) -> bool {
+        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
+
+        let PendingCriticContribution { subject, snapshot, run } = pending;
+        if self.capture_accepted_critic(&subject) != snapshot {
+            // The subject moved after evaluation. Core rows stay exactly as
+            // their emitters produced them, no native row enters the report,
+            // and the report cannot be cached as current for this policy.
+            return false;
         }
+        if !run.is_publishable() {
+            return false;
+        }
+        // A `Disabled` run is publishable and current, but evaluates nothing and
+        // consumes no observation, so it supersedes no carrier. Draining here
+        // would delete independently owned core rows -- the PL603 case.
+        if run.superseded_overlap_carriers() {
+            take_critic_overlap_observations(diagnostics);
+        }
+        diagnostics.extend(run.findings().iter().map(normalized_critic_finding_to_diagnostic));
+        true
     }
 }
 
@@ -2692,57 +2093,6 @@ fn is_native_critic_code(code: Option<&str>) -> bool {
     !code.is_some_and(|c| c.starts_with("PL"))
 }
 
-/// Returns `true` when a quick-fix code action exists for the given diagnostic code.
-///
-/// Mirrors the list in `crates/perl-lsp-rs/src/features/diagnostics/pull.rs`.
-/// The authoritative source is `crates/perl-lsp-code-actions/src/code_actions.rs`.
-fn is_fixable_diagnostic(code: &str) -> bool {
-    is_fixable_perlcritic_policy(code)
-        || matches!(
-            DiagnosticCode::parse_code(code),
-            Some(
-                DiagnosticCode::ParseError
-                    | DiagnosticCode::MissingStrict
-                    | DiagnosticCode::MissingWarnings
-                    | DiagnosticCode::PhaseScopedStrictPragma
-                    | DiagnosticCode::PhaseScopedWarningsPragma
-                    | DiagnosticCode::UnusedVariable
-                    | DiagnosticCode::UndefinedVariable
-                    | DiagnosticCode::VariableShadowing
-                    | DiagnosticCode::UnusedParameter
-                    | DiagnosticCode::UnquotedBareword
-                    | DiagnosticCode::BarewordFilehandle
-                    | DiagnosticCode::TwoArgOpen
-                    | DiagnosticCode::AssignmentInCondition
-                    | DiagnosticCode::NumericComparisonWithUndef
-                    | DiagnosticCode::DeprecatedDefined
-                    | DiagnosticCode::MissingPackageDeclaration
-                    | DiagnosticCode::VariableRedeclaration
-                    | DiagnosticCode::MisspelledPragma
-                    | DiagnosticCode::UnreachableCode
-                    | DiagnosticCode::DuplicateSubroutine
-                    | DiagnosticCode::MissingReturn
-            )
-        )
-}
-
-fn is_fixable_perlcritic_policy(code: &str) -> bool {
-    matches!(
-        code,
-        "InputOutput::ProhibitBarewordFileHandles"
-            | "InputOutput::RequireBriefOpen"
-            | "InputOutput::RequireThreeArgOpen"
-            | "TestingAndDebugging::RequireUseStrict"
-            | "TestingAndDebugging::RequireUseWarnings"
-            | "native.testing.require_use_strict"
-            | "native.testing.require_use_warnings"
-            | "native.common.undef_comparison"
-            | "native.io.bareword_filehandle"
-            | "native.io.two_arg_open"
-            | "Variables::ProhibitUnusedVariables"
-    )
-}
-
 /// Determine the diagnostic source based on the code.
 ///
 /// Source taxonomy (see issue #4627):
@@ -2780,6 +2130,43 @@ fn push_diagnostic_source(code: Option<&str>) -> &'static str {
 /// rows; producer spellings never reach this projection directly (#7475).
 /// The contributing ordinary producer's user-visible remediation rides along
 /// so the merged row renders exactly what its retired twin rendered (#12004).
+/// One evaluated-but-uncommitted native Critic contribution (#12067 review).
+///
+/// Holds the exact accepted subject the run was evaluated under together with
+/// the run itself, so finalization can re-check that same subject rather than
+/// re-deriving one. Deliberately runtime-private: `AcceptedCriticSnapshot` is
+/// the cross-layer domain seam, while this is transport orchestration.
+///
+/// No `Published`/`Withheld` discriminant: `NativeCriticRun` already carries the
+/// richer truth (completeness, carrier supersession, work receipt), and the
+/// snapshot carries the identity, so a second encoding could only disagree.
+struct PendingCriticContribution {
+    subject: String,
+    snapshot: AcceptedCriticSnapshot,
+    run: perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun,
+}
+
+/// One live workspace pull transaction before its report boundary.
+struct PendingWorkspaceCriticTransaction {
+    candidate_result_id: Option<PullReportResultId>,
+    accepted_state_currentness: PullAcceptedStateCurrentness,
+    contribution: PendingCriticContribution,
+}
+
+/// Result identity and its still-live currentness authority after commit.
+struct FinalizedWorkspaceCriticIdentity {
+    result_id: Option<PullReportResultId>,
+    accepted_state_currentness: PullAcceptedStateCurrentness,
+}
+
+impl FinalizedWorkspaceCriticIdentity {
+    fn matches_previous(&self, previous: &str) -> bool {
+        PullReportResultId::from_wire(previous)
+            .is_some_and(|previous| self.result_id.as_ref() == Some(&previous))
+            && self.accepted_state_currentness.holds()
+    }
+}
+
 fn normalized_critic_finding_to_diagnostic(
     finding: &perl_lsp_rs_core::tooling::perl_critic::NormalizedCriticFinding,
 ) -> InternalDiagnostic {
@@ -2839,23 +2226,6 @@ pub(crate) fn critic_severity_to_internal(
         }
         crate::perl_critic::Severity::Cruel => InternalDiagnosticSeverity::Information,
         crate::perl_critic::Severity::Brutal => InternalDiagnosticSeverity::Hint,
-    }
-}
-
-/// Convert a built-in analyzer violation to an internal diagnostic.
-fn builtin_violation_to_diagnostic(
-    violation: &crate::perl_critic::Violation,
-) -> InternalDiagnostic {
-    InternalDiagnostic {
-        range: (violation.range.start.byte, violation.range.end.byte),
-        severity: critic_severity_to_internal(violation.severity),
-        code: Some(violation.policy.clone()),
-        message: violation.description.clone(),
-        related_information: Vec::new(),
-        tags: Vec::new(),
-        suggestion: None,
-        fixable: is_fixable_diagnostic(&violation.policy),
-        critic_observation: None,
     }
 }
 
@@ -2919,84 +2289,6 @@ mod tests {
             runtime_tuning,
         );
         (server, buf)
-    }
-
-    fn capture_until(
-        buffer: &StdArc<parking_lot::Mutex<Vec<u8>>>,
-        predicate: impl Fn(&str) -> bool,
-    ) -> String {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
-            if predicate(&output) || Instant::now() >= deadline {
-                return output;
-            }
-            std::thread::yield_now();
-        }
-    }
-
-    #[test]
-    fn critic_range_mapping_rejects_malformed_positions() {
-        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 0, 0, 2), Some((0, 2)));
-        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 2, 0, 2), Some((2, 2)));
-        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 3, 0, 3, 1), None);
-        assert_eq!(critic_range_to_byte_range("my $x = 1;\n", 0, 4, 0, 2), None);
-    }
-
-    #[test]
-    fn push_perlcritic_drops_malformed_ranges() {
-        use perl_lsp_rs_core::config::CriticEngine;
-        use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
-
-        let (server, buffer) = make_server_with_capture_and_tuning(
-            perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults(),
-        );
-        let uri = if cfg!(windows) { "file:///C:/tmp/test.pl" } else { "file:///tmp/test.pl" };
-        server.test_configure_perlcritic(true, 3, None);
-        server.test_configure_critic_engine(CriticEngine::Legacy);
-
-        let runtime = StdArc::new(MockSubprocessRuntime::new());
-        let mock_response = MockResponse::success(
-            b"test.pl:1:1:3:TestingAndDebugging::RequireUseStrict:valid range\n\
-              test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad line range\n\
-              test.pl:1:99:3:TestingAndDebugging::RequireUseStrict:bad column range\n"
-                .to_vec(),
-        );
-        runtime.add_response(mock_response);
-        let runtime_for_server: StdArc<dyn perl_subprocess_runtime::SubprocessRuntime> =
-            runtime.clone();
-        server.test_install_mock_critic_runtime(runtime_for_server);
-        server.test_bypass_perlcritic_command_check();
-
-        server
-            .test_handle_did_open(Some(json!({
-                    "textDocument": {
-                        "uri": uri,
-                        "languageId": "perl",
-                        "version": 1,
-                        "text": "print 'hello';\n"
-                    }
-            })))
-            .expect("didOpen should succeed");
-        let _initial_output =
-            capture_until(&buffer, |output| output.contains("publishDiagnostics"));
-        server
-            .test_publish_parse_for_current_generation(uri)
-            .expect("test parse should publish the current snapshot");
-        buffer.lock().clear();
-        server.publish_diagnostics(uri);
-        capture_until(&buffer, |output| output.contains("valid range"));
-        drop(server);
-        let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
-
-        assert!(
-            output.contains("valid range"),
-            "valid external critic range must publish a diagnostic: {output:?}"
-        );
-        assert!(
-            !output.contains("bad line range") && !output.contains("bad column range"),
-            "malformed external critic ranges must not publish diagnostics: {output:?}"
-        );
     }
 
     /// Positive case: when no concurrent change arrives during diagnostic computation,
@@ -3385,11 +2677,16 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict() {
+    fn accepted_critic_state_normalizes_profile_case_and_whitespace_for_push() {
+        // Intended #8253/#9062 behavior change: the push path no longer
+        // reparses a raw profile carrier with exact-token legacy semantics
+        // (invalid case => strict fallback). The accepted state derivation
+        // normalizes case and surrounding whitespace, so this carrier yields
+        // the recommended profile and the strict-only POD rule stays absent.
         let (server, buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.config.lock().native_critic_profile = " RECOMMENDED ".to_string();
-        let uri = "file:///native_critic_legacy_profile_test.pl";
+        let uri = "file:///native_critic_normalized_profile_test.pl";
         server
             .test_handle_did_open(Some(json!({
                 "textDocument": {
@@ -3407,8 +2704,8 @@ mod tests {
 
         let text = String::from_utf8(buf.lock().clone()).unwrap_or_default();
         assert!(
-            text.contains("native.documentation.require_pod_sections"),
-            "legacy invalid profile fallback must remain strict; got: {text:?}"
+            !text.contains("native.documentation.require_pod_sections"),
+            "accepted normalization must not widen to the strict profile; got: {text:?}"
         );
     }
 
@@ -3463,10 +2760,15 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_exclusion_by_compat_spelling_removes_the_logical_row() {
+    fn native_critic_exclusion_by_compat_spelling_strips_critic_and_keeps_the_core_row() {
         // #7475 discriminating control: excluding a reviewed compatibility
-        // spelling must remove the whole logical alias set. Producer-side
+        // spelling must remove the whole Critic alias set. Producer-side
         // rule-ID gating alone could never honor `PL601`.
+        //
+        // #14209 (residual of #13798/#13999): the exclude is Critic-producer
+        // policy, so it strips the Critic contribution and may not revoke the
+        // independently owned built-in core proposition; removing the core
+        // row itself is a built-in-policy decision, never Critic config.
         let (server, buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
@@ -3491,14 +2793,14 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap_or_default();
         assert!(
             !text.contains("native.security.backtick_exec"),
-            "excluding PL601 must remove the backtick logical row; got: {text:?}"
+            "excluding PL601 must strip the backtick Critic contribution; got: {text:?}"
         );
-        // #11918: exclusion by the compatibility spelling removes the whole
-        // logical row — the built-in contributor no longer survives beside
-        // the excluded native alias.
+        // #11918/#14209: the built-in contributor survives beside the excluded
+        // native alias as a core-only PL601 row.
         assert!(
-            !text.contains("PL601"),
-            "excluding PL601 must remove the complete alias row; got: {text:?}"
+            text.contains("PL601"),
+            "excluding PL601 may only strip the Critic side; the built-in core \
+             proposition must survive; got: {text:?}"
         );
     }
 
@@ -3718,37 +3020,49 @@ mod tests {
     }
 
     #[test]
-    fn legacy_critic_engine_keeps_legacy_policy_diagnostics_for_push() {
-        let (server, buf) = make_server_with_capture();
-        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-        let uri = "file:///legacy_critic_push_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "my $x = 1;\n"
-                }
-            })))
-            .unwrap();
+    fn deprecated_engine_value_cannot_select_the_legacy_analyzer_for_push() {
+        // #9062/#8253: `EffectiveCriticState` is `Disabled | Native`, so a
+        // deprecated raw `legacy` value is a migration observation and cannot
+        // construct runtime state. The proposition is behavioral equivalence:
+        // the deprecated value cannot change what the push transport publishes.
+        //
+        // Asserting on a native rule code would be the wrong observable here --
+        // the transport dedup (#5088) collapses `native.testing.require_use_strict`
+        // into the core `PL100` row at the same range and severity. Comparing the
+        // two configurations directly is immune to that.
+        fn published_for(engine: perl_lsp_rs_core::config::CriticEngine) -> String {
+            let (server, buf) = make_server_with_capture();
+            server.test_configure_critic_engine(engine);
+            server.test_configure_native_critic_profile("strict");
+            let uri = "file:///deprecated_engine_push_test.pl";
+            server
+                .test_handle_did_open(Some(json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "perl",
+                        "version": 1,
+                        "text": "my $path = 'f.txt';
+system($path);
+"
+                    }
+                })))
+                .expect("did_open must succeed");
+            server.publish_diagnostics(uri);
+            drop(server);
+            std::thread::sleep(Duration::from_millis(50));
+            String::from_utf8(buf.lock().clone()).unwrap_or_default()
+        }
 
-        server.publish_diagnostics(uri);
-        drop(server);
-        std::thread::sleep(Duration::from_millis(50));
+        let deprecated = published_for(perl_lsp_rs_core::config::CriticEngine::Legacy);
+        let native = published_for(perl_lsp_rs_core::config::CriticEngine::Native);
 
-        let bytes = buf.lock().clone();
-        let text = String::from_utf8(bytes).unwrap_or_default();
-        // After dedup (#5088), the legacy critic's RequireUseStrict collapses to
-        // PL100 (same range + severity).  Verify the strict finding is present via
-        // PL100 and that native policy IDs are absent.
         assert!(
-            text.contains("PL100"),
-            "legacy critic strict finding should be present (PL100 after dedup); got: {text:?}"
+            !deprecated.contains("Perl::Critic"),
+            "a deprecated raw engine value must not brand rows with Perl::Critic; got: {deprecated:?}"
         );
-        assert!(
-            !text.contains("native.testing.require_use_strict"),
-            "explicit legacy critic engine should not publish native policy IDs; got: {text:?}"
+        assert_eq!(
+            deprecated, native,
+            "a deprecated raw engine value must not change what the push transport publishes"
         );
     }
 
@@ -4205,25 +3519,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn builtin_violation_maps_gentle_to_error() {
-        let violation = crate::perl_critic::Violation {
-            policy: "GentlePolicy".to_string(),
-            description: "gentle".to_string(),
-            explanation: String::new(),
-            severity: crate::perl_critic::Severity::Gentle,
-            range: perl_parser::position::Range {
-                start: perl_parser::position::Position { byte: 0, line: 0, column: 0 },
-                end: perl_parser::position::Position { byte: 0, line: 0, column: 1 },
-            },
-            file: "test.pl".to_string(),
-        };
-
-        let diagnostic = builtin_violation_to_diagnostic(&violation);
-        assert_eq!(diagnostic.severity, InternalDiagnosticSeverity::Error);
-        assert_eq!(diagnostic.code.as_deref(), Some("GentlePolicy"));
-    }
-
     // --- build_context workspace root tests ---
 
     /// build_context must use the workspace root of the folder that owns the document,
@@ -4307,6 +3602,46 @@ mod tests {
             Some(workspace.as_path()),
             "workspace_root must fall back to root_path when no folder contains the document"
         );
+        Ok(())
+    }
+
+    /// A workspace-folder ownership rebind is accepted-subject movement even
+    /// when the global Critic configuration itself is byte-identical.
+    #[test]
+    fn pull_context_currentness_rejects_workspace_folder_rebind()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let fallback = temp.path().join("fallback");
+        let original_owner = temp.path().join("owner");
+        let script = original_owner.join("script.pl");
+        std::fs::create_dir_all(&fallback)?;
+        std::fs::create_dir_all(&original_owner)?;
+        std::fs::write(&script, "use strict;\n")?;
+
+        let doc_uri =
+            url::Url::from_file_path(&script).map_err(|_| "bad document uri")?.to_string();
+        let owner_uri = url::Url::from_directory_path(&original_owner)
+            .map_err(|_| "bad owner uri")?
+            .to_string();
+        let (server, _buf) = make_server_with_capture();
+        *server.root_path.lock() = Some(fallback);
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(owner_uri)
+                .with_path(original_owner),
+        );
+
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+        if !context.accepted_state_currentness.holds() {
+            return Err("newly captured document ownership must initially be current".into());
+        }
+
+        server.workspace_folders.lock().clear();
+        if context.accepted_state_currentness.holds() {
+            return Err(
+                "moving the document from its folder owner to fallback root must stale the snapshot"
+                    .into(),
+            );
+        }
         Ok(())
     }
 
@@ -4640,6 +3975,193 @@ print \"unreachable\\n\";\n";
         Ok(())
     }
 
+    /// #13304: switching the critic off must not delete ordinary core rows on
+    /// the push path either. PL603 is a core shell-injection warning that
+    /// carries a critic overlap observation (#11918) purely so a merged logical
+    /// row can replace it when the critic runs. A `Disabled` accepted state is
+    /// publishable but evaluates nothing, so a transport that surrenders
+    /// carriers on publishability alone silently drops a security diagnostic.
+    #[test]
+    fn disabled_critic_state_retains_core_overlap_carrier_rows_on_push() {
+        let (server, _buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_perlcritic(false, 3, None);
+        let uri = "file:///disabled_carrier_push.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $path = 'f.txt';
+system($path);
+"
+                }
+            })))
+            .expect("did_open must succeed");
+
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({ "textDocument": { "uri": uri } })))
+            .expect("document diagnostic must succeed")
+            .unwrap_or_default();
+        let codes: Vec<String> = report["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|row| row["code"].as_str().map(str::to_string))
+            .collect();
+
+        assert!(
+            codes.iter().any(|code| code == "PL603"),
+            "disabling the critic must not delete the core PL603 security row; got: {codes:?}"
+        );
+    }
+
+    /// The finalization law, pinned directly (#12067 review).
+    ///
+    /// This is the cheapest proof of the transaction; the transport tests then
+    /// prove the transports actually route through it. It replaces the semantic
+    /// distinctions the retired `NativeCriticContribution` enum used to carry.
+    #[test]
+    fn finalize_pending_critic_matrix() {
+        // `system($path)` gives a core PL603 security row that also declares a
+        // critic overlap observation, so carrier survival is observable.
+        const SOURCE: &str = "my $path = 'f.txt';
+system($path);
+";
+
+        fn core_rows(server: &LspServer, uri: &str) -> Vec<InternalDiagnostic> {
+            let documents = server.documents_guard();
+            let doc = server.get_document(&documents, uri).expect("open document");
+            let parsed = doc.current_parsed().expect("parsed");
+            let ast = parsed.ast().expect("ast");
+            DiagnosticsProvider::new().get_diagnostics(
+                ast,
+                &parsed.parse_errors_arc(),
+                &doc.text,
+                None,
+            )
+        }
+
+        fn evaluate_with(
+            server: &LspServer,
+            uri: &str,
+            diagnostics: &[InternalDiagnostic],
+            snapshot: AcceptedCriticSnapshot,
+        ) -> PendingCriticContribution {
+            let documents = server.documents_guard();
+            let doc = server.get_document(&documents, uri).expect("open document");
+            let parsed = doc.current_parsed().expect("parsed");
+            let ast = std::sync::Arc::clone(parsed.ast().expect("ast"));
+            let text = doc.text.clone();
+            let generation = doc.current_generation();
+            drop(documents);
+            server.evaluate_native_critic(
+                &ast,
+                &text,
+                uri,
+                critic_source_identity_for(uri, generation),
+                snapshot,
+                diagnostics,
+            )
+        }
+
+        fn evaluate(
+            server: &LspServer,
+            uri: &str,
+            diagnostics: &[InternalDiagnostic],
+        ) -> PendingCriticContribution {
+            evaluate_with(server, uri, diagnostics, server.capture_accepted_critic(uri))
+        }
+
+        fn open(uri: &str, enabled: bool) -> LspServer {
+            let (server, _buf) = make_server_with_capture();
+            server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+            server.test_configure_native_critic_profile("strict");
+            server.test_configure_perlcritic(enabled, 3, None);
+            server
+                .test_handle_did_open(Some(json!({
+                    "textDocument": {
+                        "uri": uri, "languageId": "perl", "version": 1, "text": SOURCE
+                    }
+                })))
+                .expect("did_open");
+            server
+        }
+
+        let has_native = |rows: &[InternalDiagnostic]| {
+            rows.iter().any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("native.")))
+        };
+        let has_pl603 =
+            |rows: &[InternalDiagnostic]| rows.iter().any(|d| d.code.as_deref() == Some("PL603"));
+
+        // Row 1: publishable native + current subject -> commit.
+        let server = open("file:///fin_a.pl", true);
+        let mut rows = core_rows(&server, "file:///fin_a.pl");
+        assert!(has_pl603(&rows), "fixture must emit the core PL603 carrier");
+        let pending = evaluate(&server, "file:///fin_a.pl", &rows);
+        assert!(server.finalize_pending_critic(&mut rows, pending), "current subject is reusable");
+        assert!(has_native(&rows), "a current publishable run must commit its rows");
+
+        // Row 2: publishable native, subject moves before the boundary -> withhold.
+        let server = open("file:///fin_b.pl", true);
+        let mut rows = core_rows(&server, "file:///fin_b.pl");
+        let pending = evaluate(&server, "file:///fin_b.pl", &rows);
+        server.test_configure_perlcritic(true, 5, None);
+        assert!(
+            !server.finalize_pending_critic(&mut rows, pending),
+            "a moved subject must not be reusable"
+        );
+        assert!(!has_native(&rows), "a moved subject must commit no native rows");
+        assert!(has_pl603(&rows), "core rows must survive a moved subject");
+
+        // Row 3: disabled accepted state, current -> commits nothing, keeps core
+        // rows, and remains a reusable subject. This is the PL603 regression row.
+        let server = open("file:///fin_c.pl", false);
+        let mut rows = core_rows(&server, "file:///fin_c.pl");
+        let pending = evaluate(&server, "file:///fin_c.pl", &rows);
+        assert!(
+            server.finalize_pending_critic(&mut rows, pending),
+            "a current disabled subject is still a current subject"
+        );
+        assert!(!has_native(&rows), "a disabled run evaluates nothing");
+        assert!(has_pl603(&rows), "a disabled critic must not delete core security rows");
+
+        // Row 4: disabled, then the subject moves -> not reusable, core intact.
+        let server = open("file:///fin_d.pl", false);
+        let mut rows = core_rows(&server, "file:///fin_d.pl");
+        let pending = evaluate(&server, "file:///fin_d.pl", &rows);
+        server.test_configure_perlcritic(true, 3, None);
+        assert!(
+            !server.finalize_pending_critic(&mut rows, pending),
+            "enabling the critic must invalidate a disabled subject"
+        );
+        assert!(has_pl603(&rows), "core rows must survive a moved disabled subject");
+
+        // Row 5: the subject is current at the boundary, but the run itself is
+        // unpublishable. Arranged without touching production: move the policy
+        // so the service settles the run Stale, then restore it so finalization
+        // sees a current subject. This proves the run disposition is consulted
+        // independently of the final snapshot gate.
+        let server = open("file:///fin_e.pl", true);
+        let mut rows = core_rows(&server, "file:///fin_e.pl");
+        let snapshot = server.capture_accepted_critic("file:///fin_e.pl");
+        server.test_configure_perlcritic(true, 5, None);
+        let pending = evaluate_with(&server, "file:///fin_e.pl", &rows, snapshot);
+        assert!(
+            !pending.run.is_publishable(),
+            "moving the policy during evaluation must settle the run unpublishable"
+        );
+        server.test_configure_perlcritic(true, 3, None);
+        assert!(
+            !server.finalize_pending_critic(&mut rows, pending),
+            "a current subject cannot make an unpublishable run reusable"
+        );
+        assert!(!has_native(&rows), "an unpublishable run must commit no native rows");
+        assert!(has_pl603(&rows), "an unpublishable run must surrender no core carriers");
+    }
+
     /// Full-range code-action params for a freshly opened perl document.
     fn code_action_params(uri: &str) -> Value {
         json!({
@@ -4708,21 +4230,107 @@ print \"unreachable\\n\";\n";
         );
     }
 
+    /// #13304: the action transport must present the SAME logical row as the
+    /// diagnostic transports.
+    ///
+    /// Two properties are proven at once. First, reaching this assertion at all
+    /// proves the runtime document guard was released before the native critic
+    /// run: `native_critic_code_actions` re-acquires `documents_guard()` to
+    /// revalidate the accepted generation, so an implementation that still held
+    /// the guard across the service call (the state this repaired) deadlocks
+    /// here instead of returning. Second, the action's embedded diagnostic must
+    /// carry the normalized public identity — code, severity and message — that
+    /// the pull report publishes, not producer-local fields, or a client cannot
+    /// associate the fix with the problem it resolves.
     #[test]
-    fn legacy_critic_code_actions_keep_perl_critic_source() {
-        // The opt-in legacy compatibility engine still shares the external
-        // tool's policy names, so its code actions keep `source: Perl::Critic`.
-        // This is the compatibility adapter path — the brand is expected here.
+    fn native_critic_code_action_diagnostic_matches_the_published_row() {
         let (server, _buf) = make_server_with_capture();
-        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
-        let uri = "file:///legacy_critic_code_action.pl";
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///native_critic_action_parity.pl";
         server
             .test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
-                    "text": "my $x = 1;\nprint $x;\n"
+                    "text": "my $path = 'f.txt';\nmy $out = `ls`;\nmy $u;\nif ($u == undef) { print $u; }\nsystem($path);\nprint $out;\n"
+                }
+            })))
+            .expect("did_open must succeed");
+
+        let actions = server
+            .test_handle_code_action(Some(code_action_params(uri)))
+            .expect("code_action must succeed")
+            .unwrap_or_default();
+
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": uri }
+            })))
+            .expect("document diagnostic must succeed")
+            .unwrap_or_default();
+        let published = report["items"]
+            .as_array()
+            .cloned()
+            .or_else(|| report["diagnostics"].as_array().cloned())
+            .unwrap_or_default();
+
+        // Every native row an action embeds must exist, identically, in the
+        // published set.
+        let mut compared = 0usize;
+        for action in actions.as_array().cloned().unwrap_or_default() {
+            for embedded in action["diagnostics"].as_array().cloned().unwrap_or_default() {
+                let Some(code) = embedded["code"].as_str() else { continue };
+                if !code.starts_with("native.") {
+                    continue;
+                }
+                let found = published.iter().find(|row| row["code"].as_str() == Some(code));
+                assert!(
+                    found.is_some(),
+                    "action embedded native row `{code}` has no published counterpart;                      published: {published:?}"
+                );
+                let Some(matching) = found else { continue };
+                assert_eq!(
+                    embedded["message"], matching["message"],
+                    "action and published message must be the same normalized text for {code}"
+                );
+                assert_eq!(
+                    embedded["severity"], matching["severity"],
+                    "action and published severity must agree for {code}"
+                );
+                assert_eq!(
+                    embedded["source"], matching["source"],
+                    "action and published source must agree for {code}"
+                );
+                compared += 1;
+            }
+        }
+        assert!(
+            compared > 0,
+            "the fixture must produce at least one native action row to compare;              actions: {actions}"
+        );
+    }
+
+    #[test]
+    fn deprecated_engine_value_cannot_select_the_legacy_analyzer_for_code_actions() {
+        // Same ruling on the action transport: the deprecated raw value cannot
+        // select a second evaluator, so no action may carry the external
+        // `Perl::Critic` brand or a legacy policy name. Before the cutover this
+        // path ran `BuiltInAnalyzer` directly and emitted both.
+        let (server, _buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
+        server.test_configure_native_critic_profile("strict");
+        let uri = "file:///deprecated_engine_code_action.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $x = 1;
+print $x;
+"
                 }
             })))
             .expect("did_open must succeed");
@@ -4734,13 +4342,23 @@ print \"unreachable\\n\";\n";
         let text = result.to_string();
 
         assert!(
-            text.contains("Perl::Critic"),
-            "legacy engine code actions keep the Perl::Critic source; got: {text}"
+            !text.contains("Perl::Critic"),
+            "a deprecated raw engine value must not brand actions with Perl::Critic; got: {text}"
         );
         assert!(
-            text.contains("TestingAndDebugging::RequireUseStrict"),
-            "legacy engine code actions keep the legacy policy code; got: {text}"
+            !text.contains("TestingAndDebugging::RequireUseStrict"),
+            "a deprecated raw engine value must not select the legacy analyzer; got: {text}"
         );
+        let actions = result.as_array().cloned().unwrap_or_default();
+        let native_action = actions.iter().any(|action| {
+            action["diagnostics"].as_array().is_some_and(|diags| {
+                diags.iter().any(|d| {
+                    d["code"].as_str().is_some_and(|c| c.starts_with("native."))
+                        && d["source"].as_str() == Some("perl-lsp")
+                })
+            })
+        });
+        assert!(native_action, "the native service must still supply the action rows; got: {text}");
     }
 
     fn native_critic_quickfixes_for_code<'a>(actions: &'a [Value], code: &str) -> Vec<&'a Value> {

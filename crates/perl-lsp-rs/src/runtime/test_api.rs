@@ -626,47 +626,6 @@ impl LspServer {
         *self.formatter_runtime_override.lock() = Some(runtime);
     }
 
-    /// Install a mock subprocess runtime for the `CriticAnalyzer`.
-    ///
-    /// When set, the lazy-init path in `collect_external_perlcritic_diagnostics`
-    /// constructs a `CriticAnalyzer` using this runtime instead of the OS runtime.
-    /// This allows tests to exercise the full pipeline — including config-driven
-    /// profile discovery — without spawning a real `perlcritic` process.
-    ///
-    /// Call [`Self::test_bypass_perlcritic_command_check`] alongside this to
-    /// skip the `command_exists` guard.
-    ///
-    /// Resets the cached analyzer to `None` so the next diagnostic cycle
-    /// rebuilds it with the injected runtime.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_install_mock_critic_runtime(
-        &self,
-        runtime: std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>,
-    ) {
-        *self.critic_runtime_override.lock() = Some(runtime);
-        // Reset any cached analyzer so it is rebuilt with the new runtime.
-        *self.critic_analyzer.lock() = None;
-    }
-
-    /// Skip the `command_exists("perlcritic")` guard in
-    /// `collect_external_perlcritic_diagnostics` for the lifetime of this server.
-    ///
-    /// This lets tests exercise the full diagnostic pipeline with a mock runtime
-    /// without needing perlcritic installed on the test machine.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_bypass_perlcritic_command_check(&self) {
-        self.skip_perlcritic_command_check.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Force the perlcritic availability check to report a missing binary.
-    ///
-    /// This keeps unavailable-binary tests deterministic on hosts where
-    /// `perlcritic` is installed, without changing the process `PATH`.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn test_force_perlcritic_command_unavailable(&self) {
-        self.force_perlcritic_command_unavailable.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
     /// Set the server root path (used for `.perlcriticrc` walk-up discovery).
     pub fn test_set_root_path(&self, path: std::path::PathBuf) {
         *self.root_path.lock() = Some(path);

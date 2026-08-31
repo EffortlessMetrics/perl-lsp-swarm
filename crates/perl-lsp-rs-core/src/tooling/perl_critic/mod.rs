@@ -12,6 +12,9 @@ mod quick_fix;
 mod remediation;
 mod result_identity;
 mod semantic;
+mod service;
+#[cfg(test)]
+mod test_core_authority_policy;
 mod types;
 
 pub use analyzer::{CriticAnalyzer, hash_content};
@@ -32,21 +35,25 @@ pub use native::{
     UndefComparisonRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
 };
 pub use normalized::{
-    CriticFindingCandidate, CriticFindingContributor, CriticSourceIdentity,
+    CriticFindingCandidate, CriticFindingContributor, CriticPolicyRetention, CriticSourceIdentity,
     NormalizedCriticFinding, OwnedCriticObservedIdentity, normalize_critic_findings,
 };
 pub use quick_fix::{QuickFix, TextEdit};
 pub use remediation::{CriticRemediationClass, CriticRemediationEligibility};
 pub use result_identity::{
-    CriticPolicyIdentity, CriticPolicyIdentityError, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION,
-    DiagnosticFactIdentity, DiagnosticResultIdentity, DiagnosticResultIdentityInput,
-    DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
+    AcceptedCriticPolicyIdentity, CriticPolicyIdentity, CriticPolicyIdentityError,
+    DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity, DiagnosticResultIdentity,
+    DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
 };
 pub use semantic::{
     BuiltInCriticObservation, NativeCriticPolicy, UnresolvedNativeFindingIdentity,
     account_unresolved_native_identities, built_in_observation_candidates,
     critic_source_identity_for_uri, native_finding_candidates,
     native_finding_candidates_with_accounting, normalize_with_native_policy,
+};
+pub use service::{
+    NativeCriticRun, NativeCriticRunCompleteness, NativeCriticService, NativeCriticSubject,
+    NativeCriticWorkReceipt, RunGate,
 };
 pub use types::{CriticConfig, Severity, Violation};
 

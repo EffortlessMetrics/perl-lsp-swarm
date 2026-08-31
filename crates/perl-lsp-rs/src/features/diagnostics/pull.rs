@@ -18,11 +18,9 @@ use serde::{Deserialize, Serialize};
 use crate::state::DocumentState;
 use crate::util::uri::parse_uri;
 use perl_diagnostics::codes::DiagnosticCode;
-use perl_lsp_rs_core::config::CriticEngine;
+use perl_lsp_rs_core::config::{AcceptedCriticSnapshot, CriticEngine, ServerConfig};
 use perl_lsp_rs_core::providers::diagnostics::{parse_error_code, parse_error_severity};
-use perl_lsp_rs_core::tooling::perl_critic::{
-    CriticConfig, CriticContext, NativeCriticProfile, NativeCriticRegistry, Severity,
-};
+use perl_lsp_rs_core::tooling::perl_critic::Severity;
 use perl_module::{
     UseLibOperation, extract_use_lib_operations_with_offsets,
     no_lib_cancelled_paths_from_operations_at_offset,
@@ -51,6 +49,53 @@ use super::{
 /// (fail-closed, full-report-without-ID).
 const PROVIDER_DEFAULT_ROOT_AUTHORITY: &str = "perl-lsp:pull-provider-default-root";
 
+/// Live currentness predicate for the accepted critic state behind one pull
+/// report (#9062/#13304).
+///
+/// `PullDiagnosticsContext` carries an immutable `AcceptedCriticSnapshot`
+/// snapshot taken when the report subject was composed. Rule evaluation and
+/// report composition both happen after that snapshot, so configuration can
+/// move underneath a run in flight. This predicate is the transport's live
+/// authority: production wires it to the same fingerprint comparison the push
+/// path uses, and it is consulted twice — inside the native critic service at
+/// its settlement barrier, and again at the report boundary before a reusable
+/// result ID may be minted.
+///
+/// The default is `always_current`, which is honest only where no live
+/// configuration exists to move: default and test contexts.
+#[derive(Clone)]
+pub struct AcceptedStateCurrentness(Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>);
+
+impl AcceptedStateCurrentness {
+    /// A predicate for contexts with no live configuration authority behind
+    /// them; the snapshot cannot go stale because nothing can move it.
+    #[must_use]
+    pub fn always_current() -> Self {
+        Self(None)
+    }
+
+    /// Bind one caller-owned liveness predicate. `true` means the accepted
+    /// state behind this context still equals live configuration.
+    #[must_use]
+    pub fn new(check: std::sync::Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self(Some(check))
+    }
+
+    /// Whether the accepted state behind this context is still current.
+    #[must_use]
+    pub fn holds(&self) -> bool {
+        self.0.as_ref().is_none_or(|check| check())
+    }
+}
+
+impl std::fmt::Debug for AcceptedStateCurrentness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AcceptedStateCurrentness")
+            .field(&if self.0.is_some() { "live" } else { "always-current" })
+            .finish()
+    }
+}
+
 /// Context for pull diagnostics operations.
 ///
 /// Contains all configuration and state needed to compute diagnostics
@@ -58,19 +103,19 @@ const PROVIDER_DEFAULT_ROOT_AUTHORITY: &str = "perl-lsp:pull-provider-default-ro
 /// clean separation of concerns.
 #[derive(Clone)]
 pub struct PullDiagnosticsContext {
-    /// Whether perlcritic is enabled
+    /// Deprecated raw migration observation; not Critic behavior authority.
     pub perlcritic_enabled: bool,
-    /// Minimum severity for perlcritic (1-5)
+    /// Deprecated raw migration observation; not Critic behavior authority.
     pub perlcritic_severity: i32,
-    /// Optional perlcritic profile path
+    /// Deprecated raw migration observation; not Critic behavior authority.
     pub perlcritic_profile: Option<String>,
-    /// Critic engine used for policy diagnostics.
+    /// Deprecated raw migration observation; not Critic behavior authority.
     pub critic_engine: CriticEngine,
-    /// Native critic profile used when `critic_engine` is native.
+    /// Deprecated raw migration observation; not Critic behavior authority.
     pub native_critic_profile: String,
-    /// Native critic rule IDs to include. Empty means use the selected profile.
+    /// Deprecated raw migration observation; not Critic behavior authority.
     pub native_critic_include: Vec<String>,
-    /// Native critic rule IDs to exclude from the selected profile.
+    /// Deprecated raw migration observation; not Critic behavior authority.
     pub native_critic_exclude: Vec<String>,
     /// Workspace root for .perlcriticrc discovery
     pub workspace_root: Option<PathBuf>,
@@ -90,11 +135,40 @@ pub struct PullDiagnosticsContext {
     /// is live and fresh for this document. `None` encodes the explicit
     /// not-ready/unavailable fact state.
     pub facts_generation: Option<u64>,
+    /// One sealed accepted Critic authority derived through #8253 for this
+    /// document/root. Evaluation, finalization and result identity all consume
+    /// this exact value. The raw sibling fields above are migration
+    /// observations only: changing them cannot change Critic behaviour or
+    /// identity (#9062/#12067 review).
+    pub accepted_critic_snapshot: AcceptedCriticSnapshot,
+    /// Live currentness authority for [`Self::accepted_critic_snapshot`]
+    /// (#9062/#13304). Consulted at the native critic service's settlement
+    /// barrier and again at the report boundary, so configuration movement
+    /// under an in-flight run can neither publish stale native rows nor mint a
+    /// reusable result ID for a report that dropped them.
+    pub accepted_state_currentness: AcceptedStateCurrentness,
     /// Behavior-bearing negotiated wire-projection state (#7480).
     pub projection: DiagnosticProjectionFragment,
 }
 
 impl PullDiagnosticsContext {
+    /// Derive the accepted critic state through the #8253 authority from one
+    /// coherent raw sibling snapshot (#9062). Used where no live
+    /// `ServerConfig` exists (default/test contexts); every production path
+    /// derives straight from its live configuration.
+    fn accepted_snapshot_from_defaults(
+        enabled: bool,
+        severity: i32,
+        root: Option<&str>,
+    ) -> AcceptedCriticSnapshot {
+        let config = ServerConfig {
+            perlcritic_enabled: enabled,
+            perlcritic_severity: severity.clamp(1, 5) as u8,
+            ..ServerConfig::default()
+        };
+        AcceptedCriticSnapshot::capture(&config, root)
+    }
+
     /// Create a new empty context with default values.
     pub fn new() -> Self {
         Self {
@@ -110,31 +184,12 @@ impl PullDiagnosticsContext {
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
-            projection: DiagnosticProjectionFragment {
-                position_encoding: PullPositionEncoding::Utf16,
-                markup_messages: false,
-            },
-            #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            workspace_index: None,
-        }
-    }
-
-    /// Create a context with perlcritic enabled.
-    #[cfg(test)]
-    pub fn with_perlcritic(severity: i32, profile: Option<String>) -> Self {
-        Self {
-            perlcritic_enabled: true,
-            perlcritic_severity: severity,
-            perlcritic_profile: profile,
-            critic_engine: CriticEngine::Legacy,
-            native_critic_profile: "recommended".to_string(),
-            native_critic_include: Vec::new(),
-            native_critic_exclude: Vec::new(),
-            workspace_root: None,
-            include_paths: Vec::new(),
-            markup_message_support: false,
-            identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
-            facts_generation: None,
+            accepted_critic_snapshot: Self::accepted_snapshot_from_defaults(
+                true,
+                3,
+                Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
+            ),
+            accepted_state_currentness: AcceptedStateCurrentness::always_current(),
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
                 markup_messages: false,
@@ -162,6 +217,12 @@ impl PullDiagnosticsContext {
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
             facts_generation: None,
+            accepted_critic_snapshot: Self::accepted_snapshot_from_defaults(
+                true,
+                3,
+                Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
+            ),
+            accepted_state_currentness: AcceptedStateCurrentness::always_current(),
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
                 markup_messages: false,
@@ -186,9 +247,34 @@ impl std::fmt::Debug for PullDiagnosticsContext {
             .field("markup_message_support", &self.markup_message_support)
             .field("identity_root_key", &self.identity_root_key)
             .field("facts_generation", &self.facts_generation)
+            .field("accepted_critic_snapshot", &self.accepted_critic_snapshot)
+            .field("accepted_state_currentness", &self.accepted_state_currentness)
             .field("projection", &self.projection)
             .field("workspace_index", &"<WorkspaceIndex>")
             .finish()
+    }
+}
+
+/// Native Critic work evaluated but not yet committed to a pull report.
+///
+/// Keeping the run and its exact accepted snapshot together prevents an early
+/// append from surviving policy movement between service settlement and the
+/// report boundary.
+struct PendingPullCriticContribution {
+    snapshot: AcceptedCriticSnapshot,
+    run: perl_lsp_rs_core::tooling::perl_critic::NativeCriticRun,
+}
+
+/// Diagnostics staged before the irreversible pull-report boundary.
+struct PendingPullDiagnostics {
+    core: Vec<InternalDiagnostic>,
+    projected: Vec<LspDiagnostic>,
+    critic: Option<PendingPullCriticContribution>,
+}
+
+impl PendingPullDiagnostics {
+    fn projected(diagnostics: Vec<LspDiagnostic>) -> Self {
+        Self { core: Vec::new(), projected: diagnostics, critic: None }
     }
 }
 
@@ -236,12 +322,17 @@ impl PullDiagnosticsProvider {
         context: &PullDiagnosticsContext,
         doc_state: Option<&DocumentState>,
     ) -> DocumentDiagnosticReport {
+        // The report subject encodes the accepted critic policy snapshotted
+        // when this context was built. If configuration has already moved, the
+        // composed identity describes a policy that is no longer live: it must
+        // neither answer `Unchanged` nor be handed back as reusable (#13304).
+        let accepted_state_current = context.accepted_state_currentness.holds();
         let result_id = compose_report_identity(
             &uri.to_string(),
             content,
             doc_state.map(DocumentState::current_generation).map(u64::from),
             context,
-            true,
+            accepted_state_current,
         );
 
         // `Unchanged` only for a prior ID that parses under the current schema
@@ -250,13 +341,18 @@ impl PullDiagnosticsProvider {
             .as_deref()
             .and_then(PullReportResultId::from_wire)
             .filter(|prior| result_id.as_ref() == Some(prior));
-        if let Some(prior) = unchanged_prior {
+        if let Some(prior) = unchanged_prior
+            && context.accepted_state_currentness.holds()
+        {
             return self.build_unchanged_report(prior.into_string());
         }
 
-        let diagnostics =
+        let pending =
             self.collect_diagnostics_for_text_with_context(uri, content, context, doc_state);
-        self.build_full_report(result_id, diagnostics)
+        let (diagnostics, critic_subject_current) =
+            self.finalize_pending_diagnostics(uri, content, context, pending);
+        let reusable_id = critic_subject_current.then_some(result_id).flatten();
+        self.build_full_report(reusable_id, diagnostics)
     }
 
     /// Handle workspace/diagnostic request.
@@ -265,33 +361,43 @@ impl PullDiagnosticsProvider {
         documents: &HashMap<String, DocumentState>,
         previous_result_ids: Vec<(Uri, String)>,
     ) -> WorkspaceDiagnosticReport {
-        let context = PullDiagnosticsContext::new();
-        self.get_workspace_diagnostics_with_context(documents, previous_result_ids, &context)
+        self.get_workspace_diagnostics_with_context(documents, previous_result_ids, &|_| {
+            PullDiagnosticsContext::new()
+        })
     }
 
-    /// Handle workspace/diagnostic request with full context.
-    pub fn get_workspace_diagnostics_with_context(
+    /// Handle workspace/diagnostic request with one sealed context per URI.
+    pub fn get_workspace_diagnostics_with_context<F>(
         &self,
         documents: &HashMap<String, DocumentState>,
         previous_result_ids: Vec<(Uri, String)>,
-        context: &PullDiagnosticsContext,
-    ) -> WorkspaceDiagnosticReport {
+        context_for_uri: &F,
+    ) -> WorkspaceDiagnosticReport
+    where
+        F: Fn(&str) -> PullDiagnosticsContext,
+    {
         let mut items = Vec::new();
         let prev_ids: HashMap<Uri, String> = previous_result_ids.into_iter().collect();
 
         for (uri_str, doc_state) in documents {
+            let document_context = context_for_uri(uri_str);
             let uri = parse_uri(uri_str);
             let prev_id = prev_ids.get(&uri).cloned();
 
             // A pending-parse gap (#3396 PR4) is an explicit not-ready subject:
             // the report stays full but never carries a reusable ID, so it can
             // never be echoed back as `Unchanged` (#7480).
-            let ready = doc_state.current_parsed().is_some();
+            //
+            // Accepted critic policy that has already moved is the same kind of
+            // not-ready subject: the composed identity would describe a dead
+            // policy (#13304).
+            let ready = doc_state.current_parsed().is_some()
+                && document_context.accepted_state_currentness.holds();
             let result_id = compose_report_identity(
                 uri_str,
                 &doc_state.text,
                 Some(u64::from(doc_state.current_generation())),
-                context,
+                &document_context,
                 ready,
             );
 
@@ -299,14 +405,26 @@ impl PullDiagnosticsProvider {
                 .and_then(PullReportResultId::from_wire)
                 .filter(|prior| result_id.as_ref() == Some(prior));
 
-            let report = match unchanged_prior {
+            let report = match unchanged_prior
+                .filter(|_| document_context.accepted_state_currentness.holds())
+            {
                 Some(prior) => self.build_unchanged_report(prior.into_string()),
                 None => {
                     // Without readiness the composed identity is suppressed so
                     // the not-ready subject cannot be cached client-side.
-                    let reusable_id = ready.then_some(result_id).flatten();
-                    let diagnostics =
-                        self.collect_diagnostics_for_state_with_context(&uri, doc_state, context);
+                    let pending = self.collect_diagnostics_for_state_with_context(
+                        &uri,
+                        doc_state,
+                        &document_context,
+                    );
+                    let (diagnostics, critic_subject_current) = self.finalize_pending_diagnostics(
+                        &uri,
+                        &doc_state.text,
+                        &document_context,
+                        pending,
+                    );
+                    let reusable_id =
+                        (ready && critic_subject_current).then_some(result_id).flatten();
                     self.build_full_report(reusable_id, diagnostics)
                 }
             };
@@ -317,27 +435,46 @@ impl PullDiagnosticsProvider {
         WorkspaceDiagnosticReport { items }
     }
 
-    /// Handle workspace/diagnostic partial result with context.
-    pub fn get_workspace_diagnostics_partial_with_context(
+    /// Handle workspace/diagnostic partial result with one sealed context per
+    /// URI. A caller cannot accidentally reuse root A's accepted authority for
+    /// root B merely because both documents share one workspace request.
+    pub fn get_workspace_diagnostics_partial_with_context<F>(
         &self,
         documents: &[(String, String)],
         batch_size: usize,
-        context: &PullDiagnosticsContext,
-    ) -> Vec<WorkspaceDiagnosticReportPartialResult> {
+        context_for_uri: &F,
+    ) -> Vec<WorkspaceDiagnosticReportPartialResult>
+    where
+        F: Fn(&str) -> PullDiagnosticsContext,
+    {
         let mut results = Vec::new();
 
         for chunk in documents.chunks(batch_size) {
             let mut items = Vec::new();
 
             for (uri_str, content) in chunk {
+                let document_context = context_for_uri(uri_str);
                 let uri = parse_uri(uri_str);
                 // Partial workspace progress items use the same per-document
                 // identity authority as document and full workspace reports.
-                let result_id = compose_report_identity(uri_str, content, None, context, true);
+                let result_id = compose_report_identity(
+                    uri_str,
+                    content,
+                    None,
+                    &document_context,
+                    document_context.accepted_state_currentness.holds(),
+                );
                 // For partial results, we need to parse the content
-                let diagnostics =
-                    self.collect_diagnostics_for_text_with_context(&uri, content, context, None);
-                let report = self.build_full_report(result_id, diagnostics);
+                let pending = self.collect_diagnostics_for_text_with_context(
+                    &uri,
+                    content,
+                    &document_context,
+                    None,
+                );
+                let (diagnostics, critic_subject_current) =
+                    self.finalize_pending_diagnostics(&uri, content, &document_context, pending);
+                let reusable_id = critic_subject_current.then_some(result_id).flatten();
+                let report = self.build_full_report(reusable_id, diagnostics);
 
                 items.push(self.to_workspace_report(uri, None, report));
             }
@@ -354,7 +491,7 @@ impl PullDiagnosticsProvider {
         content: &str,
         context: &PullDiagnosticsContext,
         doc_state: Option<&DocumentState>,
-    ) -> Vec<LspDiagnostic> {
+    ) -> PendingPullDiagnostics {
         let code_text = code_slice(content);
         let mut parser = Parser::new(code_text);
 
@@ -458,15 +595,13 @@ impl PullDiagnosticsProvider {
                     source_path.as_deref(),
                 );
 
-                let mut core_diagnostics = core_diagnostics;
                 // Critic composition runs over the producer-owned core rows so
                 // declared overlap observations can enter the normalized seam
                 // before LSP projection (#11918); surviving rows are mapped
                 // afterwards.
-                let mut critic_rows: Vec<LspDiagnostic> = Vec::new();
                 let critic_generation =
                     doc_state.map(|state| state.current_generation()).unwrap_or(0);
-                self.add_policy_critic_diagnostics(
+                let critic = self.evaluate_policy_critic(
                     uri,
                     &ast,
                     content,
@@ -475,19 +610,18 @@ impl PullDiagnosticsProvider {
                         &uri.to_string(),
                         critic_generation,
                     ),
-                    &mut core_diagnostics,
-                    &mut critic_rows,
+                    &core_diagnostics,
                 );
 
-                core_diagnostics
-                    .into_iter()
-                    .map(|d| self.to_lsp_diagnostic_with_context(uri, content, d, context))
-                    .chain(critic_rows)
-                    .collect()
+                PendingPullDiagnostics {
+                    core: core_diagnostics,
+                    projected: Vec::new(),
+                    critic: Some(critic),
+                }
             }
-            Err(error) => {
-                vec![self.parse_error_to_diagnostic_with_context(uri, content, &error, context)]
-            }
+            Err(error) => PendingPullDiagnostics::projected(vec![
+                self.parse_error_to_diagnostic_with_context(uri, content, &error, context),
+            ]),
         }
     }
 
@@ -605,140 +739,112 @@ impl PullDiagnosticsProvider {
     /// emitter declared a reviewed critic overlap observation: those ordinary
     /// rows are replaced by the normalized logical rows appended to
     /// `critic_rows`, merged with their native aliases (#11918).
-    fn add_policy_critic_diagnostics(
+    fn evaluate_policy_critic(
         &self,
         uri: &Uri,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         content: &str,
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-        core_diagnostics: &mut Vec<InternalDiagnostic>,
-        critic_rows: &mut Vec<LspDiagnostic>,
-    ) {
-        match context.critic_engine {
-            CriticEngine::Legacy => {
-                self.add_builtin_critic_diagnostics(uri, ast, content, critic_rows);
-            }
-            CriticEngine::Native => {
-                self.add_native_critic_diagnostics(
-                    uri,
-                    ast,
-                    content,
-                    context,
-                    source_identity,
-                    core_diagnostics,
-                    critic_rows,
-                );
-            }
-        }
-    }
-
-    /// Add built-in Perl::Critic policy diagnostics.
-    fn add_builtin_critic_diagnostics(
-        &self,
-        uri: &Uri,
-        ast: &std::sync::Arc<perl_parser::ast::Node>,
-        content: &str,
-        diagnostics: &mut Vec<LspDiagnostic>,
-    ) {
-        use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
-
-        let built_in_analyzer = BuiltInAnalyzer::new();
-        let violations = built_in_analyzer.analyze(ast, content);
-
-        for violation in violations {
-            let lsp_severity = violation.severity.to_diagnostic_severity();
-            let internal_severity = match lsp_severity {
-                lsp_types::DiagnosticSeverity::ERROR => InternalDiagnosticSeverity::Error,
-                lsp_types::DiagnosticSeverity::WARNING => InternalDiagnosticSeverity::Warning,
-                lsp_types::DiagnosticSeverity::INFORMATION => {
-                    InternalDiagnosticSeverity::Information
-                }
-                lsp_types::DiagnosticSeverity::HINT => InternalDiagnosticSeverity::Hint,
-                _ => InternalDiagnosticSeverity::Hint,
-            };
-
-            let internal_diag = InternalDiagnostic {
-                range: (violation.range.start.byte, violation.range.end.byte),
-                severity: internal_severity,
-                code: Some(violation.policy.clone()),
-                message: violation.description.clone(),
-                related_information: Vec::new(),
-                tags: Vec::new(),
-                suggestion: None,
-                fixable: is_fixable_diagnostic(&violation.policy),
-                critic_observation: None,
-            };
-
-            diagnostics.push(self.to_lsp_diagnostic(uri, content, internal_diag));
-        }
+        core_diagnostics: &[InternalDiagnostic],
+    ) -> PendingPullCriticContribution {
+        // #9062: routing authority is the accepted state (#8253), never the raw
+        // engine setting. `EffectiveCriticState` is `Disabled | Native`, so a
+        // deprecated `legacy`/`external`/`perlcritic` value is a migration
+        // observation that cannot construct runtime state and cannot select a
+        // second evaluator here. The service owns the disabled contribution
+        // too, so there is no consumer-side branch left to get wrong.
+        self.evaluate_native_critic(uri, ast, content, context, source_identity, core_diagnostics)
     }
 
     /// Add native critic policy diagnostics.
-    fn add_native_critic_diagnostics(
+    ///
+    /// Routed through the one protocol-neutral [`NativeCriticService`]
+    /// (#9062). The immutable context carries the complete accepted state
+    /// (#8253), so the service — not this transport — owns registry
+    /// construction, candidate collection, canonical normalization, policy,
+    /// and ordering. This method only extracts emitter-declared overlap
+    /// observations (#11918) and projects the resulting logical rows.
+    fn evaluate_native_critic(
         &self,
         uri: &Uri,
         ast: &std::sync::Arc<perl_parser::ast::Node>,
         content: &str,
         context: &PullDiagnosticsContext,
         source_identity: perl_lsp_rs_core::tooling::perl_critic::CriticSourceIdentity,
-        core_diagnostics: &mut Vec<InternalDiagnostic>,
-        critic_rows: &mut Vec<LspDiagnostic>,
-    ) {
-        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
+        core_diagnostics: &[InternalDiagnostic],
+    ) -> PendingPullCriticContribution {
+        use perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations;
         use perl_lsp_rs_core::tooling::perl_critic::{
-            BuiltInCriticObservation, CriticSuppressionMap, NativeCriticPolicy,
-            built_in_observation_candidates, native_finding_candidates_with_accounting,
-            normalize_with_native_policy,
+            NativeCriticService, NativeCriticSubject, RunGate,
         };
 
-        let severity_threshold = context.perlcritic_severity.clamp(1, 5) as u8;
-        let critic_config = CriticConfig {
-            severity: severity_threshold,
-            profile: context.perlcritic_profile.clone(),
-            include: context.native_critic_include.clone(),
-            exclude: context.native_critic_exclude.clone(),
-            ..CriticConfig::default()
-        };
-        let critic_context = CriticContext::new(content, ast.as_ref(), &critic_config);
-        let profile = NativeCriticProfile::parse_legacy(&context.native_critic_profile)
-            .unwrap_or(NativeCriticProfile::Strict);
-        let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
-
-        // Producer outputs enter the canonical normalized set (#7475): checked
-        // identities at collection, alias merge, then policy applied exactly
-        // once post-merge. Findings without a registered producer-owned
-        // identity are rejected here rather than guessed, and every rejection
-        // is accounted for instead of silently vanishing.
-        //
         // Core lint emitters that declared a reviewed critic overlap
         // observation surrender their ordinary diagnostic here (#11918): the
-        // logical row comes out of this same normalization, merged with the
-        // native alias and carrying both contributor identities.
-        let overlap_observations: Vec<BuiltInCriticObservation> =
-            take_critic_overlap_observations(core_diagnostics);
-        let candidates = native_finding_candidates_with_accounting(
-            &uri.to_string(),
-            registry.check_unfiltered(&critic_context),
-            source_identity,
-        )
-        .into_iter()
-        .chain(built_in_observation_candidates(
-            overlap_observations,
-            content,
-            source_identity,
-        ));
-        let suppressions = CriticSuppressionMap::from_source(content);
-        let policy = NativeCriticPolicy::new(
-            severity_threshold,
-            &context.native_critic_include,
-            &context.native_critic_exclude,
-            &suppressions,
-        );
+        // logical row comes out of the same normalization inside the service,
+        // merged with the native alias and carrying both contributor
+        // identities. Read non-destructively first (#9062): carriers are
+        // surrendered only after a publishable normalized replacement exists,
+        // so an unpublishable run retains every independent core row.
+        let overlap_observations = critic_overlap_observations(core_diagnostics);
 
-        for finding in normalize_with_native_policy(candidates, &policy) {
-            critic_rows.push(self.normalized_finding_to_lsp_diagnostic(uri, content, &finding));
+        // The accepted state was snapshotted when the report subject was
+        // composed; configuration can move while rules evaluate. The service
+        // re-checks this gate at its settlement barrier, so a run whose policy
+        // moved underneath it settles `Stale` and publishes nothing (#13304).
+        let accepted_state_is_current = || context.accepted_state_currentness.holds();
+
+        let snapshot = context.accepted_critic_snapshot.clone();
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            &uri.to_string(),
+            source_identity,
+            ast,
+            content,
+            snapshot.state().clone(),
+            overlap_observations,
+            RunGate::open(),
+            RunGate::new(&accepted_state_is_current),
+        ));
+
+        PendingPullCriticContribution { snapshot, run }
+    }
+
+    /// Commit or withhold the staged Critic contribution at the report
+    /// boundary. This is the only pull path allowed to drain overlap carriers
+    /// or append normalized native rows.
+    fn finalize_pending_diagnostics(
+        &self,
+        uri: &Uri,
+        content: &str,
+        context: &PullDiagnosticsContext,
+        mut pending: PendingPullDiagnostics,
+    ) -> (Vec<LspDiagnostic>, bool) {
+        use perl_lsp_rs_core::providers::diagnostics::take_critic_overlap_observations;
+
+        let mut critic_subject_current = context.accepted_state_currentness.holds();
+        if let Some(critic) = pending.critic {
+            critic_subject_current &= critic.snapshot == context.accepted_critic_snapshot;
+            if !critic.run.is_publishable() {
+                critic_subject_current = false;
+            } else if critic_subject_current {
+                if critic.run.superseded_overlap_carriers() {
+                    take_critic_overlap_observations(&mut pending.core);
+                }
+                pending.projected.extend(critic.run.findings().iter().map(|finding| {
+                    self.normalized_finding_to_lsp_diagnostic(uri, content, finding)
+                }));
+            }
         }
+
+        let mut diagnostics: Vec<LspDiagnostic> = pending
+            .core
+            .into_iter()
+            .map(|diagnostic| {
+                self.to_lsp_diagnostic_with_context(uri, content, diagnostic, context)
+            })
+            .collect();
+        diagnostics.extend(pending.projected);
+        (diagnostics, critic_subject_current)
     }
 
     fn normalized_finding_to_lsp_diagnostic(
@@ -761,11 +867,10 @@ impl PullDiagnosticsProvider {
         }));
 
         // #12004: render the contributing ordinary producer's user-visible
-        // remediation exactly the way the ordinary-row path renders it.
-        let mut message = finding.message().to_string();
-        if let Some(suggestion) = finding.remediation_suggestion() {
-            message = format!("{message}\nSuggestion: {suggestion}");
-        }
+        // remediation exactly the way the ordinary-row path renders it. The
+        // composition is owned by the normalized finding so the code-action
+        // surface renders the identical text (#13304).
+        let message = finding.user_visible_message();
         let remediation_notes: Vec<RelatedInformation> = finding
             .remediation_related_information()
             .iter()
@@ -794,12 +899,12 @@ impl PullDiagnosticsProvider {
         uri: &Uri,
         doc_state: &DocumentState,
         context: &PullDiagnosticsContext,
-    ) -> Vec<LspDiagnostic> {
+    ) -> PendingPullDiagnostics {
         // No published snapshot at all (e.g. a document that never parsed --
         // large-file/binary/template guards) behaves like the pre-migration
         // default: no AST, no parse errors, nothing to report.
         let Some(parsed) = doc_state.current_parsed() else {
-            return Vec::new();
+            return PendingPullDiagnostics::projected(Vec::new());
         };
         if let Some(ast) = parsed.ast() {
             let parse_errors = parsed.parse_errors();
@@ -889,8 +994,7 @@ impl PullDiagnosticsProvider {
             let mut core_diagnostics = core_diagnostics;
             // Critic composition over producer-owned core rows first (#11918);
             // surviving rows map to LSP afterwards.
-            let mut critic_rows: Vec<LspDiagnostic> = Vec::new();
-            self.add_policy_critic_diagnostics(
+            let critic = self.evaluate_policy_critic(
                 uri,
                 ast,
                 &doc_state.text,
@@ -899,14 +1003,8 @@ impl PullDiagnosticsProvider {
                     &uri.to_string(),
                     doc_state.current_generation(),
                 ),
-                &mut core_diagnostics,
-                &mut critic_rows,
+                &core_diagnostics,
             );
-            let mut diagnostics: Vec<LspDiagnostic> = core_diagnostics
-                .into_iter()
-                .map(|d| self.to_lsp_diagnostic_with_context(uri, &doc_state.text, d, context))
-                .chain(critic_rows)
-                .collect();
 
             // Add dead code diagnostics from workspace-wide symbol analysis
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -921,32 +1019,33 @@ impl PullDiagnosticsProvider {
                         );
                     // Convert dead code diagnostics to LSP format
                     for d in dead_code_diags {
-                        diagnostics.push(self.internal_to_lsp_diagnostic(
-                            uri,
-                            &doc_state.text,
-                            d,
-                            context,
-                        ));
+                        core_diagnostics.push(d);
                     }
                 }
             }
 
-            diagnostics
+            PendingPullDiagnostics {
+                core: core_diagnostics,
+                projected: Vec::new(),
+                critic: Some(critic),
+            }
         } else if parsed.parse_errors().is_empty() {
-            Vec::new()
+            PendingPullDiagnostics::projected(Vec::new())
         } else {
-            parsed
-                .parse_errors()
-                .iter()
-                .map(|error| {
-                    self.parse_error_to_diagnostic_with_context(
-                        uri,
-                        &doc_state.text,
-                        error,
-                        context,
-                    )
-                })
-                .collect()
+            PendingPullDiagnostics::projected(
+                parsed
+                    .parse_errors()
+                    .iter()
+                    .map(|error| {
+                        self.parse_error_to_diagnostic_with_context(
+                            uri,
+                            &doc_state.text,
+                            error,
+                            context,
+                        )
+                    })
+                    .collect(),
+            )
         }
     }
 
@@ -1004,81 +1103,6 @@ impl PullDiagnosticsProvider {
                     },
                 )
             }
-        }
-    }
-
-    fn to_lsp_diagnostic(
-        &self,
-        uri: &Uri,
-        text: &str,
-        diagnostic: InternalDiagnostic,
-    ) -> LspDiagnostic {
-        let range = lsp_range_from_offsets(text, diagnostic.range.0, diagnostic.range.1);
-        let severity = Some(to_lsp_severity(diagnostic.severity));
-        let code = diagnostic.code.map(NumberOrString::String);
-        let related_information =
-            to_lsp_related_information(uri, text, &diagnostic.related_information);
-
-        // Collect tag strings before diagnostic is partially moved by the suggestion match
-        let tag_strings: Vec<String> = diagnostic
-            .tags
-            .iter()
-            .map(|t| match t {
-                InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
-                InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
-                // Forward-compatible fallback for future variants (#2898)
-                _ => "Unnecessary".to_string(),
-            })
-            .collect();
-        let tags = to_lsp_tags(&diagnostic.tags);
-        let fixable = diagnostic.fixable;
-
-        // Append the context_hint and suggestion to the message so users
-        // see actionable remediation inline (#5109). context_hint comes from
-        // the DiagnosticCode metadata (codes/metadata.rs) and provides
-        // targeted fix instructions for each PL* code.
-        let mut message = diagnostic.message.clone();
-        if let Some(code_str) = code.as_ref().and_then(|c| match c {
-            NumberOrString::String(s) => Some(s.as_str()),
-            _ => None,
-        }) && let Some(dc) = DiagnosticCode::parse_code(code_str)
-            && let Some(hint) = dc.context_hint()
-        {
-            message = format!("{message}\n\n💡 {hint}");
-        }
-        if let Some(ref suggestion) = diagnostic.suggestion {
-            message = format!("{message}\nSuggestion: {suggestion}");
-        }
-
-        let data = code.as_ref().and_then(|c| {
-            if let NumberOrString::String(code_str) = c {
-                let category = DiagnosticCode::parse_code(code_str)
-                    .map(|dc| format!("{:?}", dc.category()))
-                    .unwrap_or_else(|| "Other".to_string());
-                serde_json::to_value(DiagnosticData {
-                    code: code_str.clone(),
-                    category,
-                    fixable,
-                    tags: tag_strings,
-                })
-                .ok()
-            } else {
-                None
-            }
-        });
-
-        let code_description = lsp_code_description(code.as_ref());
-
-        LspDiagnostic {
-            range,
-            severity,
-            code,
-            code_description,
-            source: Some("perl-lsp".to_string()),
-            message,
-            related_information,
-            tags,
-            data,
         }
     }
 
@@ -1164,87 +1188,6 @@ impl PullDiagnosticsProvider {
             source: diagnostic_source(code_for_source.as_ref()),
             message,
             related_information,
-            tags,
-            data,
-        }
-    }
-
-    /// Convert internal diagnostic from perl-lsp-diagnostics crate to LSP diagnostic.
-    fn internal_to_lsp_diagnostic(
-        &self,
-        _uri: &Uri,
-        text: &str,
-        diagnostic: perl_lsp_rs_core::providers::diagnostics::Diagnostic,
-        context: &PullDiagnosticsContext,
-    ) -> LspDiagnostic {
-        let range = lsp_range_from_offsets(text, diagnostic.range.0, diagnostic.range.1);
-        let severity = Some(to_lsp_severity(diagnostic.severity));
-        let code = diagnostic.code.map(NumberOrString::String);
-        let code_for_source = code.clone();
-        let tags = to_lsp_tags(&diagnostic.tags);
-
-        // Collect tag strings
-        let tag_strings: Vec<String> = diagnostic
-            .tags
-            .iter()
-            .map(|t| match t {
-                perl_lsp_rs_core::providers::diagnostics::DiagnosticTag::Unnecessary => {
-                    "Unnecessary".to_string()
-                }
-                perl_lsp_rs_core::providers::diagnostics::DiagnosticTag::Deprecated => {
-                    "Deprecated".to_string()
-                }
-                // Forward-compatible fallback for future variants (#2898)
-                _ => "Unnecessary".to_string(),
-            })
-            .collect();
-
-        let message = match diagnostic.suggestion {
-            Some(ref suggestion) => format!("{}\nSuggestion: {}", diagnostic.message, suggestion),
-            None => diagnostic.message.clone(),
-        };
-
-        let data = code.as_ref().and_then(|c| {
-            if let NumberOrString::String(code_str) = c {
-                let category = DiagnosticCode::parse_code(code_str)
-                    .map(|dc| format!("{:?}", dc.category()))
-                    .unwrap_or_else(|| "Other".to_string());
-                let fixable = is_fixable_diagnostic(code_str);
-                let data_obj = DiagnosticData {
-                    code: code_str.clone(),
-                    category,
-                    fixable,
-                    tags: tag_strings.clone(),
-                };
-
-                // Add LSP 3.18 markup message support if enabled
-                if context.markup_message_support {
-                    let markdown = format!("**{}**: {}", code_str, diagnostic.message);
-                    return serde_json::to_value(data_obj).ok().map(|mut v| {
-                        v["messageMarkup"] = serde_json::json!({
-                            "kind": "markdown",
-                            "value": markdown
-                        });
-                        v
-                    });
-                }
-
-                serde_json::to_value(data_obj).ok()
-            } else {
-                None
-            }
-        });
-
-        let code_description = lsp_code_description(code.as_ref());
-
-        LspDiagnostic {
-            range,
-            severity,
-            code,
-            code_description,
-            source: diagnostic_source(code_for_source.as_ref()),
-            message,
-            related_information: None,
             tags,
             data,
         }
@@ -1545,6 +1488,38 @@ fn diagnostic_source(code: Option<&NumberOrString>) -> Option<String> {
 mod tests {
     use super::*;
     use lsp_types::{DocumentDiagnosticReport, NumberOrString};
+    /// Derive an accepted critic snapshot through the #8253 authority from the
+    /// raw siblings a test wants to exercise (#9062). Mirrors exactly what a
+    /// live `ServerConfig` snapshot does in production.
+    fn accepted_state(
+        profile: &str,
+        severity: u8,
+        include: Vec<String>,
+        exclude: Vec<String>,
+    ) -> AcceptedCriticSnapshot {
+        accepted_state_at_root(profile, severity, include, exclude, PROVIDER_DEFAULT_ROOT_AUTHORITY)
+    }
+
+    fn accepted_state_at_root(
+        profile: &str,
+        severity: u8,
+        include: Vec<String>,
+        exclude: Vec<String>,
+        root: &str,
+    ) -> AcceptedCriticSnapshot {
+        let config = perl_lsp_rs_core::config::ServerConfig {
+            native_critic_profile: profile.to_string(),
+            perlcritic_severity: severity,
+            native_critic_include: include,
+            native_critic_exclude: exclude,
+            ..perl_lsp_rs_core::config::ServerConfig::default()
+        };
+        AcceptedCriticSnapshot::capture(&config, Some(root))
+    }
+
+    fn strict_accepted_state(severity: u8) -> AcceptedCriticSnapshot {
+        accepted_state("strict", severity, Vec::new(), Vec::new())
+    }
 
     fn get_full_items(report: DocumentDiagnosticReport) -> Vec<lsp_types::Diagnostic> {
         match report {
@@ -1769,6 +1744,7 @@ mod tests {
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "strict".to_string();
+        context.accepted_critic_snapshot = strict_accepted_state(3);
         context.perlcritic_severity = 3;
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
@@ -2282,13 +2258,21 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
+    fn accepted_critic_state_normalizes_profile_case_and_whitespace()
     -> Result<(), Box<dyn std::error::Error>> {
+        // Intended #8253/#9062 behavior change: migrated transports no longer
+        // reparse a raw profile carrier with exact-token legacy semantics
+        // (invalid case => strict fallback). The accepted state derivation
+        // normalizes case and surrounding whitespace, so this carrier yields
+        // the recommended profile: the strict-only unused-lexical rule must
+        // stay absent while native rows keep flowing.
         let provider = PullDiagnosticsProvider::new();
         let uri: Uri = "file:///test.pl".parse()?;
         let mut context = PullDiagnosticsContext::new();
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = " RECOMMENDED ".to_string();
+        context.accepted_critic_snapshot =
+            accepted_state(" RECOMMENDED ", 3, Vec::new(), Vec::new());
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
             &uri,
@@ -2299,12 +2283,12 @@ mod tests {
         ));
 
         assert!(
-            items.iter().any(|diag| {
+            !items.iter().any(|diag| {
                 diag.code.as_ref().is_some_and(
                     |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
                 )
             }),
-            "legacy invalid profile fallback must remain strict: {items:?}"
+            "accepted normalization must not widen to the strict profile: {items:?}"
         );
 
         Ok(())
@@ -2320,6 +2304,12 @@ mod tests {
         context.native_critic_profile = "recommended".to_string();
         context.native_critic_include = vec!["native.testing.require_use_strict".to_string()];
         context.native_critic_exclude = vec!["native.common.assignment_in_condition".to_string()];
+        context.accepted_critic_snapshot = accepted_state(
+            "recommended",
+            3,
+            vec!["native.testing.require_use_strict".to_string()],
+            vec!["native.common.assignment_in_condition".to_string()],
+        );
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
             &uri,
@@ -2369,6 +2359,12 @@ mod tests {
         context.critic_engine = CriticEngine::Native;
         context.native_critic_profile = "recommended".to_string();
         context.native_critic_include = vec!["native.variables.unused_lexical".to_string()];
+        context.accepted_critic_snapshot = accepted_state(
+            "recommended",
+            3,
+            vec!["native.variables.unused_lexical".to_string()],
+            Vec::new(),
+        );
 
         let items = get_full_items(provider.get_document_diagnostics_with_context(
             &uri,
@@ -2725,6 +2721,174 @@ mod tests {
         }
     }
 
+    /// Review probe: a disabled accepted state must not delete ordinary core
+    /// rows. `PL603` is a core security lint about shell injection; it carries
+    /// a critic overlap observation (#11918) only so a merged logical row can
+    /// replace it when the native critic actually runs. With critic disabled no
+    /// replacement is produced, so the ordinary row must survive.
+    #[test]
+    fn disabled_critic_state_retains_core_overlap_carrier_rows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///disabled_carrier.pl".parse()?;
+        let source = "my $path = 'f.txt';
+system($path);
+";
+
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.accepted_critic_snapshot = AcceptedCriticSnapshot::capture(
+            &ServerConfig { perlcritic_enabled: false, ..ServerConfig::default() },
+            Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
+        );
+        context.perlcritic_enabled = false;
+
+        let report =
+            provider.get_document_diagnostics_with_context(&uri, source, None, &context, None);
+        if full_result_id(&report).is_none() {
+            return Err("a current Disabled snapshot must remain reusable".into());
+        }
+        let items = get_full_items(report);
+
+        if has_native_critic_row(&items) {
+            return Err("a Disabled snapshot must not publish native rows".into());
+        }
+
+        let has_pl603 = items.iter().any(|diag| {
+            diag.code
+                .as_ref()
+                .is_some_and(|code| matches!(code, NumberOrString::String(v) if v == "PL603"))
+        });
+        if !has_pl603 {
+            return Err(format!(
+                "disabling native Critic must retain PL603; got: {:?}",
+                items.iter().filter_map(|d| d.code.clone()).collect::<Vec<_>>()
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    // ── accepted-state currentness at the pull result boundary (#13304) ────
+
+    /// Build the strict native context the currentness proofs share.
+    fn strict_native_context() -> PullDiagnosticsContext {
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = "strict".to_string();
+        context.accepted_critic_snapshot = strict_accepted_state(3);
+        context.perlcritic_severity = 3;
+        context
+    }
+
+    fn has_native_critic_row(items: &[LspDiagnostic]) -> bool {
+        items.iter().any(|diag| {
+            diag.code.as_ref().is_some_and(|code| {
+                matches!(code, NumberOrString::String(value) if value.starts_with("native."))
+            })
+        })
+    }
+
+    /// #13304: a pull run whose accepted policy moved underneath it must
+    /// neither publish its native rows nor hand back a reusable result ID. An
+    /// implementation that passes `RunGate::open()` for currentness (the state
+    /// this repaired) returns the dead-policy rows and caches them.
+    #[test]
+    fn moved_policy_withholds_native_rows_and_reusable_result_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///pull_currentness.pl".parse()?;
+        let source = "my $x = 1;
+";
+
+        // Control: with the accepted policy still live, this subject really
+        // does produce native rows and a reusable ID — so the assertions below
+        // are discriminating rather than vacuous.
+        let current = strict_native_context();
+        let live =
+            provider.get_document_diagnostics_with_context(&uri, source, None, &current, None);
+        assert!(
+            has_native_critic_row(&get_full_items(live.clone())),
+            "the fixture must produce native critic rows while the policy is live"
+        );
+        assert!(
+            full_result_id(&live).is_some(),
+            "a fully current subject must carry a reusable result ID"
+        );
+
+        // The accepted policy is dead for the whole run.
+        let mut moved = strict_native_context();
+        moved.accepted_state_currentness =
+            AcceptedStateCurrentness::new(std::sync::Arc::new(|| false));
+        let report =
+            provider.get_document_diagnostics_with_context(&uri, source, None, &moved, None);
+
+        assert!(
+            !has_native_critic_row(&get_full_items(report.clone())),
+            "rows produced under a dead policy must not reach the client"
+        );
+        assert!(
+            full_result_id(&report).is_none(),
+            "a report that dropped its critic rows must not be cacheable as current"
+        );
+        Ok(())
+    }
+
+    /// #13304: the gate must also close for a policy that was live when the
+    /// report subject was composed and moved while rules evaluated. Checking
+    /// currentness only before collection leaves this run cacheable.
+    #[test]
+    fn policy_moving_during_collection_withholds_the_reusable_result_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///pull_currentness_race.pl".parse()?;
+
+        // Current for identity composition and service settlement, dead only
+        // at the report boundary. This is the exact early-append falsifier.
+        let observations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&observations);
+        let mut context = strict_native_context();
+        context.accepted_state_currentness =
+            AcceptedStateCurrentness::new(std::sync::Arc::new(move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2
+            }));
+
+        let report = provider.get_document_diagnostics_with_context(
+            &uri,
+            "my $path = 'f.txt';
+system($path);
+",
+            None,
+            &context,
+            None,
+        );
+
+        if observations.load(std::sync::atomic::Ordering::SeqCst) <= 1 {
+            return Err("the currentness authority must be consulted again after collection".into());
+        }
+        if full_result_id(&report).is_some() {
+            return Err(
+                "a policy that moved during collection must suppress the reusable result ID".into(),
+            );
+        }
+        let items = get_full_items(report);
+        if has_native_critic_row(&items) {
+            return Err(
+                "service-current native rows must remain staged when the report boundary is stale"
+                    .into(),
+            );
+        }
+        if !items.iter().any(|diagnostic| {
+            matches!(&diagnostic.code, Some(NumberOrString::String(code)) if code == "PL603")
+        }) {
+            return Err(
+                "withholding the staged Critic contribution must preserve the core overlap carrier"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Exact same complete subject/profile → deterministic same ID and a valid
     /// `Unchanged` on the next pull (#7480 fixture).
     #[test]
@@ -2760,6 +2924,42 @@ mod tests {
             other => Err(format!("expected Unchanged for identical subject, got: {other:?}"))?,
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn matching_previous_id_with_moved_subject_never_returns_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_moved_before_unchanged.pl".parse()?;
+        let source = "my $x = 1;\n";
+        let baseline_context = strict_native_context();
+        let first = provider.get_document_diagnostics_with_context(
+            &uri,
+            source,
+            None,
+            &baseline_context,
+            None,
+        );
+        let previous = full_result_id(&first).ok_or("baseline result ID missing")?;
+
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = std::sync::Arc::clone(&calls);
+        let mut moved = baseline_context;
+        moved.accepted_state_currentness =
+            AcceptedStateCurrentness::new(std::sync::Arc::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+            }));
+        let report = provider.get_document_diagnostics_with_context(
+            &uri,
+            source,
+            Some(previous),
+            &moved,
+            None,
+        );
+        if !matches!(report, DocumentDiagnosticReport::Full(_)) {
+            return Err("a moved accepted snapshot must never return Unchanged".into());
+        }
         Ok(())
     }
 
@@ -2817,8 +3017,8 @@ mod tests {
         );
         let baseline_id = full_result_id(&first).ok_or("expected reusable baseline ID")?;
 
-        // Severity movement with identical bytes.
-        context.perlcritic_severity = 4;
+        // Accepted severity movement with identical bytes.
+        context.accepted_critic_snapshot = strict_accepted_state(4);
         let severity_moved = provider.get_document_diagnostics_with_context(
             &uri,
             "my $x = 1;\n",
@@ -2850,6 +3050,45 @@ mod tests {
             "projection-profile movement must invalidate the prior result ID"
         );
 
+        Ok(())
+    }
+
+    /// Deprecated raw selector fields are migration observations only. They
+    /// cannot select product behaviour or move the accepted Critic result ID.
+    #[test]
+    fn raw_legacy_selector_movement_changes_neither_rows_nor_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///identity_raw_observation.pl".parse()?;
+        let source = "my $x = 1;\n";
+        let baseline_context = strict_native_context();
+        let baseline = provider.get_document_diagnostics_with_context(
+            &uri,
+            source,
+            None,
+            &baseline_context,
+            None,
+        );
+        let baseline_id = full_result_id(&baseline).ok_or("baseline result ID missing")?;
+        let baseline_items = get_full_items(baseline);
+
+        let mut observed = baseline_context.clone();
+        observed.critic_engine = CriticEngine::Legacy;
+        observed.perlcritic_enabled = false;
+        observed.perlcritic_severity = 5;
+        observed.perlcritic_profile = Some("/ignored/.perlcriticrc".to_string());
+        observed.native_critic_profile = "recommended".to_string();
+        observed.native_critic_include = vec!["ignored.include".to_string()];
+        observed.native_critic_exclude = vec!["ignored.exclude".to_string()];
+
+        let report =
+            provider.get_document_diagnostics_with_context(&uri, source, None, &observed, None);
+        if full_result_id(&report).as_deref() != Some(baseline_id.as_str()) {
+            return Err("raw selector observations must not move the result ID".into());
+        }
+        if get_full_items(report) != baseline_items {
+            return Err("raw selector observations must not move product behaviour".into());
+        }
         Ok(())
     }
 
@@ -2937,7 +3176,7 @@ mod tests {
         let partial = provider.get_workspace_diagnostics_partial_with_context(
             &[(uri_str.into(), content.into())],
             8,
-            &context,
+            &|_| context.clone(),
         );
         let [chunk] = partial.as_slice() else {
             return Err("expected exactly one partial chunk".into());
@@ -2955,6 +3194,204 @@ mod tests {
             "workspace partial items must reuse the document identity authority"
         );
 
+        Ok(())
+    }
+
+    /// A workspace request is a collection of document transactions, not one
+    /// root transaction cloned across every item. Root A is deliberately
+    /// Disabled while root B is strict-native; both full and partial APIs must
+    /// resolve the contradictory authority for each URI independently.
+    #[test]
+    fn workspace_full_and_partial_capture_a_sealed_context_per_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const ROOT_A: &str = "file:///root-a";
+        const ROOT_B: &str = "file:///root-b";
+        const URI_A: &str = "file:///root-a/a.pl";
+        const URI_B: &str = "file:///root-b/b.pl";
+        const SOURCE: &str = "my $x = 1;\nprint $x;\n";
+
+        fn context_for(uri: &str) -> PullDiagnosticsContext {
+            let (root, enabled) =
+                if uri.starts_with(ROOT_A) { (ROOT_A, false) } else { (ROOT_B, true) };
+            let mut context = PullDiagnosticsContext::new();
+            context.identity_root_key = Some(root.to_string());
+            context.workspace_root = Some(PathBuf::from(root));
+            context.accepted_critic_snapshot = if enabled {
+                accepted_state_at_root("strict", 3, Vec::new(), Vec::new(), root)
+            } else {
+                AcceptedCriticSnapshot::capture(
+                    &ServerConfig { perlcritic_enabled: false, ..ServerConfig::default() },
+                    Some(root),
+                )
+            };
+            context
+        }
+
+        fn current_document() -> Result<DocumentState, Box<dyn std::error::Error>> {
+            let mut parser = Parser::new(SOURCE);
+            let ast = parser.parse().map_err(|error| error.to_string())?;
+            let errors = parser.errors().to_vec();
+            let mut document = DocumentState::new(SOURCE, 1);
+            let generation = document.current_generation();
+            let snapshot = crate::state::ParsedSnapshot::from_parse_result(
+                generation,
+                SOURCE,
+                Some(std::sync::Arc::new(ast)),
+                errors,
+            );
+            if !document.publish_parsed_if_current(generation, std::sync::Arc::new(snapshot)) {
+                return Err("current parse snapshot must publish".into());
+            }
+            Ok(document)
+        }
+
+        fn native_presence(
+            items: &[WorkspaceDocumentDiagnosticReport],
+            uri: &str,
+        ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
+            let item = items
+                .iter()
+                .find(|item| match item {
+                    WorkspaceDocumentDiagnosticReport::Full(full) => full.uri.to_string() == uri,
+                    WorkspaceDocumentDiagnosticReport::Unchanged(unchanged) => {
+                        unchanged.uri.to_string() == uri
+                    }
+                })
+                .ok_or_else(|| format!("missing workspace item for {uri}"))?;
+            let WorkspaceDocumentDiagnosticReport::Full(full) = item else {
+                return Err(format!("expected Full workspace item for {uri}").into());
+            };
+            Ok((
+                has_native_critic_row(&full.full_document_diagnostic_report.items),
+                full.full_document_diagnostic_report.result_id.clone(),
+            ))
+        }
+
+        let provider = PullDiagnosticsProvider::new();
+        let mut documents = HashMap::new();
+        documents.insert(URI_A.to_string(), current_document()?);
+        documents.insert(URI_B.to_string(), current_document()?);
+        let full =
+            provider.get_workspace_diagnostics_with_context(&documents, Vec::new(), &context_for);
+        let full_a = native_presence(&full.items, URI_A)?;
+        let full_b = native_presence(&full.items, URI_B)?;
+        if full_a.0 || !full_b.0 {
+            return Err("full workspace reused one root's Critic authority across documents".into());
+        }
+        if full_a.1.is_none() || full_b.1.is_none() || full_a.1 == full_b.1 {
+            return Err("full workspace identities must bind each document's distinct root".into());
+        }
+
+        let partial = provider.get_workspace_diagnostics_partial_with_context(
+            &[(URI_A.to_string(), SOURCE.to_string()), (URI_B.to_string(), SOURCE.to_string())],
+            8,
+            &context_for,
+        );
+        let partial_items = partial.first().ok_or("expected one partial workspace chunk")?;
+        let partial_a = native_presence(&partial_items.items, URI_A)?;
+        let partial_b = native_presence(&partial_items.items, URI_B)?;
+        if partial_a.0 || !partial_b.0 {
+            return Err(
+                "partial workspace reused one root's Critic authority across documents".into()
+            );
+        }
+        if partial_a.1.is_none() || partial_b.1.is_none() || partial_a.1 == partial_b.1 {
+            return Err(
+                "partial workspace identities must bind each document's distinct root".into()
+            );
+        }
+        Ok(())
+    }
+
+    /// Full and partial workspace reports obey the same report-boundary
+    /// commit-or-withhold law when accepted policy moves after service
+    /// settlement.
+    #[test]
+    fn workspace_full_and_partial_withhold_the_same_stale_contribution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const URI: &str = "file:///workspace_transaction_parity.pl";
+        const SOURCE: &str = "my $path = 'f.txt';\nsystem($path);\n";
+
+        fn moving_context() -> PullDiagnosticsContext {
+            let observations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen = std::sync::Arc::clone(&observations);
+            let mut context = strict_native_context();
+            context.accepted_state_currentness =
+                AcceptedStateCurrentness::new(std::sync::Arc::new(move || {
+                    seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2
+                }));
+            context
+        }
+
+        fn current_document() -> Result<DocumentState, Box<dyn std::error::Error>> {
+            let mut parser = Parser::new(SOURCE);
+            let ast = parser.parse().map_err(|error| error.to_string())?;
+            let errors = parser.errors().to_vec();
+            let mut document = DocumentState::new(SOURCE, 1);
+            let generation = document.current_generation();
+            let snapshot = crate::state::ParsedSnapshot::from_parse_result(
+                generation,
+                SOURCE,
+                Some(std::sync::Arc::new(ast)),
+                errors,
+            );
+            if !document.publish_parsed_if_current(generation, std::sync::Arc::new(snapshot)) {
+                return Err("current parse snapshot must publish".into());
+            }
+            Ok(document)
+        }
+
+        fn verify_withheld(
+            report: &WorkspaceFullDocumentDiagnosticReport,
+        ) -> Result<Vec<LspDiagnostic>, Box<dyn std::error::Error>> {
+            let full = &report.full_document_diagnostic_report;
+            if full.result_id.is_some() {
+                return Err("stale workspace Critic subject must not carry a result ID".into());
+            }
+            if has_native_critic_row(&full.items) {
+                return Err(
+                    "stale workspace Critic contribution must not publish native rows".into()
+                );
+            }
+            if !full.items.iter().any(|diagnostic| {
+                matches!(&diagnostic.code, Some(NumberOrString::String(code)) if code == "PL603")
+            }) {
+                return Err("withholding must retain the PL603 overlap carrier".into());
+            }
+            Ok(full.items.clone())
+        }
+
+        let provider = PullDiagnosticsProvider::new();
+        let mut documents = HashMap::new();
+        documents.insert(URI.to_string(), current_document()?);
+        let full = provider
+            .get_workspace_diagnostics_with_context(&documents, Vec::new(), &|_| moving_context());
+        let [full_item] = full.items.as_slice() else {
+            return Err("expected one full-workspace item".into());
+        };
+        let WorkspaceDocumentDiagnosticReport::Full(full_report) = full_item else {
+            return Err("expected full-workspace Full report".into());
+        };
+        let full_items = verify_withheld(full_report)?;
+
+        let partial = provider.get_workspace_diagnostics_partial_with_context(
+            &[(URI.to_string(), SOURCE.to_string())],
+            8,
+            &|_| moving_context(),
+        );
+        let [chunk] = partial.as_slice() else {
+            return Err("expected one partial-workspace chunk".into());
+        };
+        let [partial_item] = chunk.items.as_slice() else {
+            return Err("expected one partial-workspace item".into());
+        };
+        let WorkspaceDocumentDiagnosticReport::Full(partial_report) = partial_item else {
+            return Err("expected partial-workspace Full report".into());
+        };
+        let partial_items = verify_withheld(partial_report)?;
+        if full_items != partial_items {
+            return Err("full and partial workspace transactions must withhold identically".into());
+        }
         Ok(())
     }
 }

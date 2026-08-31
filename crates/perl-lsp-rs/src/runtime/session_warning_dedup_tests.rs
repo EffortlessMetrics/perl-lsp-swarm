@@ -21,7 +21,7 @@ use super::session_warning_dedup::{
 
 fn profile_identity(profile: &str) -> SessionWarningIdentity {
     SessionWarningIdentity::fingerprinted(
-        SessionWarningCode::CriticMissingProfile,
+        SessionWarningCode::ClientSettingInvalidValue,
         SessionWarningSubjectTag::None,
         profile,
     )
@@ -145,7 +145,7 @@ fn no_secret_or_absolute_path_sentinel_appears_in_retained_identity() {
     const PATH_SENTINEL: &str = "C:\\Users\\private\\absolute\\perlcriticrc";
 
     let secret_identity = SessionWarningIdentity::fingerprinted(
-        SessionWarningCode::CriticExecutionFailed,
+        SessionWarningCode::AiBackendAuthFailure,
         SessionWarningSubjectTag::None,
         &format!("execution failed: authorization header {SECRET_SENTINEL}"),
     );

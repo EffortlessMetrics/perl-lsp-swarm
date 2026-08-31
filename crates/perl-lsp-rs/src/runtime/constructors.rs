@@ -4,8 +4,8 @@
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
 use super::{
-    Arc, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap, HashSet,
-    IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
+    Arc, AtomicBool, AtomicI32, AtomicU32, BufReader, ClientCapabilities, FeatureProfile, HashMap,
+    HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
     WorkspaceConfig, Write, io, notebook, outbound, refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
@@ -65,6 +65,7 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(AtomicU32::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -116,16 +117,8 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -252,6 +245,7 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(AtomicU32::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -303,16 +297,8 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -380,6 +366,7 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(AtomicU32::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -431,16 +418,8 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
