@@ -28,19 +28,22 @@ while let Some(token) = lexer.next_token() {
 ## Configuration contract
 
 `LexerConfig` remains a public struct, but its fields do not all represent
-independent implementation modes:
+independent implementation modes. Two legacy no-op surfaces are explicitly
+deprecated as of 0.17.0 and are removed at the next semver boundary (#8749):
 
 | Field / feature | Current behavior |
 | --- | --- |
 | `parse_interpolation` | Controls interpolation recognition in ordinary double-quoted strings. Disabled non-empty strings retain one `Literal` part in the legacy `InterpolatedString` token shape. Quote-like `qq` bodies remain opaque and do not consume this switch. |
-| `track_positions` | Compatibility field. Token byte spans are always produced because parser and editor consumers require them. |
+| `track_positions` | **Deprecated** (since 0.17.0, removed at the next semver boundary by #8749). Compatibility field with no runtime effect. Token byte spans are always produced because parser and editor consumers require them. Migration: remove the field from struct literals (or route the rest of the literal through `..LexerConfig::default()`); token output is identical. |
 | `max_lookahead` | Maximum zero-based offset admitted by shared character, byte, and fixed-pattern cursor probes. `0` permits only the current offset/one-byte pattern; larger values can change identifier, operator, delimiter, numeric, Unicode, and BOM decisions. |
 | `symbol_table` | Optionally supplies file-local subroutine names for the declared bareword/regex ambiguity. |
-| Cargo feature `simd` | Compatibility no-op. It currently selects no distinct implementation; issue #6715 owns implementation or removal. |
+| Cargo feature `simd` | **Deprecated** (since 0.17.0, removed at the next semver boundary by #8749). Compatibility no-op: it selects no distinct implementation, no code depends on it, and `--features simd` builds are equivalent to the default build. No SIMD performance claim is made. |
 
 Use `LexerConfig::DEFAULT_MAX_LOOKAHEAD`,
 `LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED`, and the query methods on
 `LexerConfig` instead of inferring behavior from historical field names.
+Checkpoints do not embed lexer configuration, so legacy no-op variation never
+invalidates a captured checkpoint.
 
 ## License
 

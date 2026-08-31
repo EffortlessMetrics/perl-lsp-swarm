@@ -17,9 +17,8 @@ use crate::symbol_table::LocalSymbolTable;
 ///
 /// let config = LexerConfig {
 ///     parse_interpolation: true,
-///     track_positions: true,
 ///     max_lookahead: LexerConfig::DEFAULT_MAX_LOOKAHEAD,
-///     symbol_table: None,
+///     ..LexerConfig::default()
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -32,13 +31,27 @@ pub struct LexerConfig {
     /// bodies are currently opaque whole tokens and therefore do not consume
     /// this switch.
     pub parse_interpolation: bool,
-    /// Compatibility field retained for existing struct literals.
+    /// Deprecated compatibility field: token byte spans are always tracked.
     ///
-    /// Token byte spans are always tracked because parser and editor consumers
+    /// Token byte spans are always produced because parser and editor consumers
     /// require them. Setting this field to `false` does **not** remove or replace
     /// `Token::start` and `Token::end`; use
     /// [`LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED`] as the executable contract.
-    /// Removal or retyping is tracked by issue #6715.
+    ///
+    /// Deprecation schedule: the field has had no runtime effect since the
+    /// authoritative-span contract landed, and describing it as a live control
+    /// misleads callers and docs.rs readers. Since 0.17.0 the field is
+    /// explicitly deprecated. Migration: remove `track_positions` from struct
+    /// literals (or route the rest of the literal through
+    /// `..LexerConfig::default()`); token kind, payload, text, and spans are
+    /// identical either way. The field itself is removed at the next semver
+    /// boundary by #8749 under the #6715 lexer-API program; removal keeps the
+    /// declared schedule and fails post-removal literals with standard
+    /// diagnostics.
+    #[deprecated(
+        since = "0.17.0",
+        note = "no runtime effect: token byte spans are always tracked (POSITIONS_ARE_ALWAYS_TRACKED); remove the field from literals, scheduled removal at the 0.18 boundary (#8749)"
+    )]
     pub track_positions: bool,
     /// Maximum zero-based offset admitted by shared cursor lookahead helpers.
     ///
@@ -91,6 +104,7 @@ impl LexerConfig {
 }
 
 impl Default for LexerConfig {
+    #[allow(deprecated)] // The compatibility field keeps its default value until #8749 removes it.
     fn default() -> Self {
         Self {
             parse_interpolation: true,
@@ -138,6 +152,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Deliberately exercises the deprecated compatibility field.
     fn clone_preserves_field_values() {
         let config = LexerConfig {
             parse_interpolation: false,

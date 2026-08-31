@@ -2,7 +2,13 @@
 //!
 //! These tests exercise `PerlLexer::with_config` rather than treating field
 //! names as evidence. They distinguish observable effects, compatibility fields,
-//! shared-cursor thresholds, and the currently empty `simd` Cargo feature.
+//! shared-cursor thresholds, and the deprecated empty `simd` Cargo feature.
+//!
+//! The `track_positions` field is deprecated (since 0.17.0, removal owned by
+//! #8749) but remains the exact surface under contract until removal, so these
+//! tests deliberately keep naming it.
+
+#![allow(deprecated)]
 
 use std::sync::Arc;
 
@@ -295,4 +301,107 @@ fn canonical_token_contract_is_exact_under_every_compiled_feature_set() {
     ];
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn checkpoint_identity_ignores_noop_configuration_variation() -> R {
+    // Checkpoints capture replay state only. The deprecated `track_positions`
+    // field is a no-op, so flipping it between capture and restore must neither
+    // reject the checkpoint nor change the replayed token projection.
+    let input = "my $x = q{v}; print $x;";
+    for prefix_tokens in [1usize, 3] {
+        let mut tracked = PerlLexer::with_config(input, LexerConfig::default());
+        for _ in 0..prefix_tokens {
+            if tracked.next_token().is_none() {
+                break;
+            }
+        }
+        let checkpoint = tracked.checkpoint();
+        assert!(tracked.can_restore(&checkpoint), "captured checkpoint must be valid");
+
+        let mut untracked = PerlLexer::with_config(
+            input,
+            LexerConfig { track_positions: false, ..LexerConfig::default() },
+        );
+        assert!(
+            untracked.can_restore(&checkpoint),
+            "no-op field variation must not invalidate checkpoint identity"
+        );
+
+        let from_tracked = collect_remaining(&mut tracked);
+        untracked.restore(&checkpoint);
+        let replayed = collect_remaining(&mut untracked);
+        assert_eq!(
+            from_tracked, replayed,
+            "replay changed under track_positions variation after {prefix_tokens} prefix token(s)"
+        );
+
+        // The reverse direction: a checkpoint captured under the no-op value
+        // restores into the default configuration unchanged.
+        let mut source = PerlLexer::with_config(
+            input,
+            LexerConfig { track_positions: false, ..LexerConfig::default() },
+        );
+        for _ in 0..prefix_tokens {
+            if source.next_token().is_none() {
+                break;
+            }
+        }
+        let flipped_checkpoint = source.checkpoint();
+        let back_on_default = PerlLexer::with_config(input, LexerConfig::default());
+        assert!(
+            back_on_default.can_restore(&flipped_checkpoint),
+            "default configuration must accept checkpoints captured under the no-op value"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn simd_feature_stays_declared_empty_and_unreferenced() -> R {
+    // The `simd` feature is a deprecated compatibility no-op (since 0.17.0,
+    // removal owned by #8749). This gate fails if anyone gives the feature a
+    // dependency list, selects it from code, or drops the no-op declaration —
+    // which would silently turn the advertised feature into a real claim.
+    let manifest = include_str!("../Cargo.toml");
+    let features_block = manifest
+        .split("[features]")
+        .nth(1)
+        .ok_or_else(|| missing("Cargo.toml lost its [features] table"))?;
+    let simd_row =
+        features_block.lines().map(str::trim).find(|line| line.starts_with("simd ")).ok_or_else(
+            || missing("Cargo.toml no longer declares the compatibility simd feature"),
+        )?;
+    assert_eq!(
+        simd_row, "simd = []",
+        "the deprecated simd feature must stay an empty dependency-free no-op until #8749 removes it"
+    );
+
+    let readme = include_str!("../README.md");
+    assert!(
+        readme.contains("Compatibility no-op") && readme.contains("#8749"),
+        "README must keep describing simd as a deprecated compatibility no-op with the removal owner"
+    );
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![src.clone()];
+    let mut offenders = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let contents = std::fs::read_to_string(&path)?;
+                if contents.contains("feature = \"simd\"") {
+                    offenders.push(path);
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "no source file may select the compatibility simd feature, but these do: {offenders:?}"
+    );
+    Ok(())
 }
