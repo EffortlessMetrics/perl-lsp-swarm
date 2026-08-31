@@ -36,6 +36,16 @@
 //! declares every switch the row claims. It does **not** execute the fixture; whether it passes is
 //! established by running [`CORPUS_COMMAND`], which every earned row names so a
 //! reader can run it. The two together are the guarantee; neither alone is.
+//!
+//! In CI the executing half is `unit_routed_full`, the only pr_fast gate that
+//! runs `tests/` directories — and it is scope-aware, so it executes the corpus
+//! only when the diff touches `perl-parser-core`. That is weaker than it
+//! sounds only in one direction: a citation can go stale solely because the
+//! corpus or the code under it changed, and either change is what routes the
+//! gate. A cited fixture broken purely by a dependency, with `perl-parser-core`
+//! untouched, is the residual gap, and it is the repository-wide integration
+//! routing gap recorded on that gate (#4642, corrected in #11694), not one this
+//! check introduces.
 
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
@@ -688,6 +698,59 @@ fn char_literal_end(source: &str, quote: usize) -> Option<usize> {
     if source.as_bytes().get(after) == Some(&b'\'') { Some(after + 1) } else { None }
 }
 
+/// Qualifiers that may sit between an item's attributes and its keyword.
+const ITEM_QUALIFIERS: &[&str] = &["pub", "unsafe", "async", "default", "const"];
+
+/// Byte index where an item's own tokens begin, stepping back over any
+/// visibility or modifier qualifiers before its keyword.
+///
+/// `#[cfg(..)] pub mod x` puts `pub` between the attribute and `mod`, so
+/// searching for attributes directly above the keyword finds none and the
+/// suppression is missed.
+fn item_start_before(source: &str, index: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut start = index;
+    loop {
+        let mut cursor = start;
+        while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+            cursor -= 1;
+        }
+        // A restriction such as `pub(crate)` precedes its keyword.
+        if cursor > 0 && bytes[cursor - 1] == b')' {
+            let mut depth = 0usize;
+            let mut scan = cursor;
+            while scan > 0 {
+                scan -= 1;
+                match bytes[scan] {
+                    b')' => depth += 1,
+                    b'(' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if depth != 0 {
+                return start;
+            }
+            cursor = scan;
+        }
+        let word_end = cursor;
+        while cursor > 0 && is_identifier_byte(bytes[cursor - 1]) {
+            cursor -= 1;
+        }
+        let Some(word) = source.get(cursor..word_end) else {
+            return start;
+        };
+        if !ITEM_QUALIFIERS.contains(&word) {
+            return start;
+        }
+        start = cursor;
+    }
+}
+
 /// The attributes attached directly above the item containing `index`.
 ///
 /// Attributes are consumed as bracket-balanced groups rather than as lines,
@@ -773,7 +836,7 @@ fn reject_suppressed_modules(source: &str) -> Result<()> {
         if !code.get(index).copied().unwrap_or(false) {
             continue;
         }
-        let attributes = preceding_attributes(source, index);
+        let attributes = preceding_attributes(source, item_start_before(source, index));
         if suppresses_execution(&attributes) {
             let name: String = source
                 .get(index + "mod ".len()..)
@@ -1523,8 +1586,22 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             }
         }
 
+        // A visibility qualifier between the attribute and the keyword must not
+        // hide the suppression.
+        for form in [
+            "#[cfg(feature = \"x\")]\npub mod d {\n    command_line_oneliner!(g, \"-e\", \"print 1;\");\n}\n",
+            "#[cfg(feature = \"x\")]\npub(crate) mod d {}\n",
+            "#[cfg(feature = \"x\")]\npub(in crate::a) mod d {}\n",
+        ] {
+            assert!(
+                reject_suppressed_modules(form).is_err(),
+                "qualifier hid the suppressed module in {form:?}"
+            );
+        }
+
         // An ordinary module declaration is fine; the committed corpus has one.
         reject_suppressed_modules("mod cpan_test_helpers;\n").expect("plain module accepted");
+        reject_suppressed_modules("pub mod helpers;\n").expect("plain pub module accepted");
         let root = project_root().expect("project root");
         let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
         reject_suppressed_modules(&corpus).expect("committed corpus has no suppressed module");
