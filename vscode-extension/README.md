@@ -248,8 +248,11 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
   contributes it or you classify a file that way explicitly
   (`files.associations`, _Change Language Mode_). Such buffers activate the
   extension, attach to the same single language client, grammar, settings, and
-  server process, and receive the same commands as `perl` buffers. There is no
-  second server, dialect mode, or configuration namespace for the alias
+  server process, and receive the same commands as `perl` buffers: the bundled
+  TextMate grammar (`source.perl`) is declaratively bound to the `perl5`
+  language ID too, and every menu, keybinding, snippet, breakpoint, and
+  debug-resolution gate enumerates both IDs. There is no second server, dialect
+  mode, or configuration namespace for the alias
   (see `src/languageIdentity.ts` and issue #7699).
 
 ## Commands

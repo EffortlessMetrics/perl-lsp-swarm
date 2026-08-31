@@ -34,6 +34,7 @@ export type ActivationTriggerId =
   | 'onLanguage:gherkin'
   | 'onWalkthrough:perl-lsp.gettingStarted'
   | 'onDebugResolve:perl'
+  | 'onDebugResolve:perl5'
   | 'onDebugInitialConfigurations';
 
 /**
@@ -91,6 +92,15 @@ export const ACTIVATION_TRIGGER_LEDGER: readonly ActivationTriggerRow[] = [
     perllsp: 'on-first-use',
     perlDap: 'immediate',
     note: 'Debugging owns its own adapter process; the language server is not required to debug.',
+  },
+  {
+    trigger: 'onDebugResolve:perl5',
+    perllsp: 'on-first-use',
+    perlDap: 'immediate',
+    note:
+      'Debug-config resolution for an alias-classified buffer (#7699): the alias shares the ' +
+      'canonical onDebugResolve:perl disposition — DAP starts immediately, the language server ' +
+      'only on first use.',
   },
   {
     trigger: 'onDebugInitialConfigurations',
