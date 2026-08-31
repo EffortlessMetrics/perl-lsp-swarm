@@ -12,7 +12,14 @@ fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 fn read(root: &Path, path: &str) -> Result<String, Box<dyn std::error::Error>> {
-    Ok(fs::read_to_string(root.join(path))?)
+    let full_path = root.join(path);
+    fs::read_to_string(&full_path).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("failed to read {}: {error}", full_path.display()),
+        )
+        .into()
+    })
 }
 
 fn prose(text: &str) -> String {
@@ -164,6 +171,60 @@ fn validate_contract(spec: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_review_wave_skills(address: &str, finish: &str) -> Result<(), String> {
+    let repair = section(address, "### Repair-wave boundary")?;
+    for marker in [
+        "Judge finding validity and current-candidate admission separately.",
+        "one-use or non-gated proof instrument",
+        "promote them to one failure class",
+        "Run a class-level falsifier only when a failure class was promoted.",
+        "run `$simplify-candidate` before final challenge",
+        "current claim, proof, limitations, and remaining work",
+    ] {
+        if !address.contains(marker) {
+            return Err(format!("address-review-comments lost marker {marker:?}"));
+        }
+    }
+    let admission = repair
+        .find("Judge finding validity and current-candidate admission separately.")
+        .ok_or_else(|| "missing current-candidate admission judgment".to_string())?;
+    let class_promotion = repair
+        .find("Do not treat comments as independent patch instructions.")
+        .ok_or_else(|| "missing failure-class promotion boundary".to_string())?;
+    if admission >= class_promotion {
+        return Err("failure classes must be admitted to the current claim before promotion".to_string());
+    }
+
+    let stabilization = section(finish, "## Repair waves and head stabilization")?;
+    for marker in [
+        "Do not publish one commit per comment.",
+        "when a class was promoted",
+        "run `$simplify-candidate` before final challenge",
+        "bounded fresh merge-tree re-evaluation selected by `$verify-live-ci`",
+        "sole action owner for that exception",
+    ] {
+        if !stabilization.contains(marker) {
+            return Err(format!("finish-pr lost marker {marker:?}"));
+        }
+    }
+
+    for forbidden in [
+        "CLASS_REPAIR_REQUIRED",
+        "REPAIR_WAVE_NOT_PROVEN",
+        "HEAD_STABILIZED_FOR_CI",
+    ] {
+        if address.contains(forbidden) || finish.contains(forbidden) {
+            return Err(format!("review-wave guidance minted overlapping result/state {forbidden}"));
+        }
+    }
+
+    if !address.contains("`MUTABLE_FINDINGS_OPEN`") || !finish.contains("`MUTABLE_FINDINGS_OPEN`") {
+        return Err("ordinary repair waves must keep the existing MUTABLE_FINDINGS_OPEN route".to_string());
+    }
+
+    Ok(())
+}
+
 #[test]
 fn accepted_spec_has_closed_semantic_model() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
@@ -236,6 +297,49 @@ fn catalogs_name_the_current_contract() -> Result<(), Box<dyn std::error::Error>
         !index.contains("0.14.0 Readiness Queue](releases/0.14.0-readiness.md) — current-release"),
         "documentation index must not present the historical 0.14.0 queue as current"
     );
+
+    Ok(())
+}
+
+#[test]
+fn provider_review_repair_convergence_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+
+    for (provider, prefix) in [("Codex", ".agents"), ("Claude", ".claude")] {
+        let address = read(&root, &format!("{prefix}/skills/address-review-comments/SKILL.md"))?;
+        let finish = read(&root, &format!("{prefix}/skills/finish-pr/SKILL.md"))?;
+
+        validate_review_wave_skills(&address, &finish)
+            .map_err(|error| format!("{provider} review-wave contract: {error}"))?;
+
+        let unconditional = address.replacen(
+            "only when a failure class was promoted",
+            "for every finding",
+            1,
+        );
+        assert_ne!(unconditional, address, "conditional falsifier mutation must apply");
+        assert!(
+            validate_review_wave_skills(&unconditional, &finish).is_err(),
+            "{provider} must not require a class-level falsifier for an isolated finding"
+        );
+
+        let minted = format!("{address}\nCLASS_REPAIR_REQUIRED\n");
+        assert!(
+            validate_review_wave_skills(&minted, &finish).is_err(),
+            "{provider} must reuse the canonical findings and NOT_PROVEN results"
+        );
+
+        let lost_thaw = finish.replacen(
+            "bounded fresh merge-tree re-evaluation selected by",
+            "ordinary behind-only update selected by",
+            1,
+        );
+        assert_ne!(lost_thaw, finish, "fresh-subject thaw mutation must apply");
+        assert!(
+            validate_review_wave_skills(&address, &lost_thaw).is_err(),
+            "{provider} must preserve the verify-live-ci-owned fresh merge-tree exception"
+        );
+    }
 
     Ok(())
 }

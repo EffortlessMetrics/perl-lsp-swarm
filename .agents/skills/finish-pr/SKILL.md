@@ -27,6 +27,7 @@ The accountable root retains:
 
 - the earliest still-useful entry point in the PR route;
 - whether a finding is valid, stale, refuted, superseded, or a bounded follow-up;
+- whether resolving a valid finding belongs in this candidate;
 - which repairs materially change proof or review dimensions;
 - substantive review sufficiency and cumulative candidate judgment;
 - candidate/base/integration failure ownership;
@@ -96,7 +97,7 @@ candidate is mutable and no useful current substantive review exists
 → affected `$review-pr`
 
 `REVIEW_CURRENT`
-→ establish `HEAD_STABILIZED_FOR_CI`
+→ stabilize the reviewed candidate head for required CI
 → `$verify-live-ci`
 
 `INTEGRATION_READY`
@@ -141,25 +142,31 @@ restart a full deep review merely because another commit was pushed.
 
 ## Repair waves and head stabilization
 
-When a review pass yields multiple findings, do not publish one commit per comment.
-`$address-review-comments` first pins the current observation basis, joins the review
-wave, and promotes repeated mechanisms to bounded failure classes. One writer integrates
-the accepted wave, runs the class-level falsifier and affected proof, rereads the
-complete governing semantic units and dependent claims, and then publishes one candidate
-update.
+Do not publish one commit per comment. `$address-review-comments` first pins the current
+observation basis, decides finding validity separately from current-candidate admission,
+joins the review wave, and promotes only repeated mechanisms to bounded failure classes.
+One writer integrates the accepted wave, runs affected proof and—when a class was
+promoted—its class-level falsifier, rereads the complete governing semantic units and
+dependent claims, and publishes one candidate update.
 
-After the affected final challenge and substantive review return `REVIEW_CURRENT`,
-record `HEAD_STABILIZED_FOR_CI` and keep the candidate head stable while required checks
-evaluate it. Reopen mutation only for a current candidate defect, material claim
-contradiction, candidate-owned required-check failure, actual merge conflict, or
-demonstrated combined-tree interaction. A new material finding opens one new joined
-repair wave and the repaired candidate must earn `REVIEW_CURRENT` again before
-restabilizing.
+If the repair wave introduces a new checker, registry, parser, abstraction, or
+substantial proof surface, run `$simplify-candidate` before final challenge. Reconcile
+the PR body to the candidate's current claim, proof, limitations, and remaining work;
+do not retain an ever-growing diary of superseded intermediate defects.
+
+After the affected final challenge and substantive review return `REVIEW_CURRENT`, keep
+the reviewed candidate head stable while required checks evaluate it. Reopen mutation
+only for a current candidate defect, material claim contradiction, candidate-owned
+required-check failure, actual merge conflict, demonstrated combined-tree interaction,
+or the bounded fresh merge-tree re-evaluation selected by `$verify-live-ci` under the
+currentness contract. `$verify-live-ci` remains the sole action owner for that exception;
+this skill does not prescribe an empty commit independently.
 
 Do not mutate the stabilized head for duplicate corroboration, wording preference,
 reviewer quota or availability, optional stronger proof that cannot change the current
-verdict, or behind-only movement on `main`. Those are review context or remote-wait
-facts, not candidate defects.
+verdict, or behind-only movement on `main`. A new material finding opens one new joined
+repair wave and the repaired candidate must earn `REVIEW_CURRENT` again before it is
+stabilized for integration.
 
 ## Candidate and integration boundary
 
@@ -209,18 +216,18 @@ rather than copying them.
 ### Findings and challenge
 
 - `FINDINGS_REPAIRED_OR_DISPOSITIONED` → affected proof, then `$final-challenge`
-- `CLASS_REPAIR_REQUIRED` / `MUTABLE_FINDINGS_OPEN` → one joined repair wave through `$address-review-comments`
-- `REPAIR_WAVE_NOT_PROVEN` → preserve the missing review, bounded denominator, authority, or proof
+- `MUTABLE_FINDINGS_OPEN` → one joined repair wave through `$address-review-comments`
 - `PROOF_WEAKENED` / `PROOF_REVISE` → `$prepare-proof`
 - `MATERIAL_PREMISE_CHANGED` / `SPLIT_CLAIM` → `$prepare-issue`
 - `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up and continue
-- `DISPOSITION_INSTRUMENT_FAILURE` → preserve the finding and return `NOT_PROVEN`
+- `DISPOSITION_INSTRUMENT_FAILURE` / `NOT_PROVEN` → preserve the missing review,
+  bounded denominator, authority, instrument, or proof
 
 ### Substantive review
 
 - `CANDIDATE_READY_FOR_REVIEW` → `$final-challenge`, `$orchestrate-work`, then
   `$review-pr`
-- `REVIEW_CURRENT` → establish `HEAD_STABILIZED_FOR_CI`, then `$verify-live-ci`
+- `REVIEW_CURRENT` → stabilize the candidate head, then `$verify-live-ci`
 - `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` → `$address-review-comments`
 - `REVIEW_SCOPE_CHANGED` → review the affected dimensions; use `$prepare-issue` only
   when claim or owner changed
