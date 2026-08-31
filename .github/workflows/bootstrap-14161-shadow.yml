@@ -70,6 +70,29 @@ jobs:
               path.parent.mkdir(parents=True, exist_ok=True)
               path.write_bytes(base64.b64decode(payload["content"]))
 
+          test_path = Path("scripts/ci/test_non_rust_policy_shadow.py")
+          test_text = test_path.read_text(encoding="utf-8")
+          old_healer_assertion = '''        healer = (
+              self.root / ".github/workflows/post-merge-status-update.yml"
+          ).read_text(encoding="utf-8")
+          self.assertIn("non-rust inventory --write", healer)
+          '''
+          new_healer_assertion = '''        workflows = [
+              path.read_text(encoding="utf-8")
+              for path in (self.root / ".github/workflows").glob("*.yml")
+          ]
+          self.assertTrue(
+              any("non-rust inventory --write" in workflow for workflow in workflows),
+              "existing post-merge inventory healer must remain present",
+          )
+          '''
+          if old_healer_assertion not in test_text:
+              raise SystemExit("expected healer assertion not found in test source")
+          test_path.write_text(
+              test_text.replace(old_healer_assertion, new_healer_assertion),
+              encoding="utf-8",
+          )
+
           def append_once(raw_path: str, marker: str, block: str) -> None:
               path = Path(raw_path)
               text = path.read_text(encoding="utf-8")
