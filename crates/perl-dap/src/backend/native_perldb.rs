@@ -102,7 +102,11 @@ impl NativePerlDbBackend {
             hit_conditions: catalog.hit_condition,
             logpoints: catalog.logpoints,
             // set_function_breakpoints: implemented; delegates to the adapter.
-            function_breakpoints: catalog.function_breakpoints,
+            // Keyed on `dap.core`, not `dap.breakpoints.function`: the shipped
+            // initialize seam (debug_adapter) gates `supportsFunctionBreakpoints`
+            // on `dap.core`, and two surfaces consulting different catalog rows
+            // for one logical capability could drift apart independently.
+            function_breakpoints: catalog.core,
             // No set_data_breakpoints method exists on this backend.
             data_breakpoints: false,
             // evaluate: Unsupported until DF3.
@@ -329,11 +333,13 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn capabilities_reflect_catalog_and_engine() {
+    fn capabilities_are_fail_closed_and_catalog_narrowed() {
         // #7339: replaced by `capabilities_are_a_fail_closed_method_inventory`
         // and `catalog_rows_cannot_widen_unimplemented_families`, which pin
         // the fail-closed method inventory instead of the former catalog ∩
         // full() negotiation that advertised Unsupported families as true.
+        // (Renamed from `capabilities_reflect_catalog_and_engine`: the old
+        // name described the negotiation this assertion set replaced.)
         let backend = NativePerlDbBackend::new();
         let caps = backend.capabilities();
         assert!(caps.source_breakpoints);
@@ -508,24 +514,27 @@ mod tests {
     /// its `DebugBackendCapabilities` at all. This source gate fails when a
     /// future change widens the production initialize response from the
     /// partial backend.
+    ///
+    /// The gate walks the whole `src/debug_adapter` tree recursively (nested
+    /// submodules are production code too) and strips `#[cfg(test)]` module
+    /// blocks before matching, so test-only references cannot trip it. It
+    /// stays a tripwire, not a compile-time guarantee: it is text-level, runs
+    /// with the test suite rather than the build, and its test exclusion is
+    /// syntactic — a cfg-gated block whose braces do not balance as a `mod`
+    /// body would be scanned rather than stripped.
     #[test]
     fn production_adapter_does_not_consume_the_partial_backend() {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let adapter_dir = manifest_dir.join("src/debug_adapter");
         let mut scanned = 0usize;
         let mut offenders: Vec<String> = Vec::new();
-        for entry in std::fs::read_dir(&adapter_dir)
-            .unwrap_or_else(|e| panic!("read_dir {adapter_dir:?}: {e}"))
-        {
-            let path = entry.unwrap_or_else(|e| panic!("dir entry: {e}")).path();
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
+        for path in rust_sources_under(adapter_dir) {
             scanned += 1;
             let source =
-                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {:?}: {e}", path));
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+            let production = strip_cfg_test_modules(&source);
             for needle in ["NativePerlDbBackend", "DebugBackendCapabilities"] {
-                if source.contains(needle) {
+                if production.contains(needle) {
                     offenders.push(format!("{} references {needle}", path.display()));
                 }
             }
@@ -535,5 +544,66 @@ mod tests {
             offenders.is_empty(),
             "production adapter must not consume the partial backend: {offenders:?}"
         );
+    }
+
+    /// Every `.rs` file under `dir`, recursively, excluding test-only sources:
+    /// integration test directories (`tests` path components) and files named
+    /// `tests.rs` / `*_tests.rs`.
+    fn rust_sources_under(dir: std::path::PathBuf) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        let mut stack = vec![dir];
+        while let Some(dir) = stack.pop() {
+            let entries =
+                std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}"));
+            for entry in entries {
+                let path = entry.unwrap_or_else(|e| panic!("dir entry: {e}")).path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let name = path.file_stem().and_then(|e| e.to_str()).unwrap_or_default();
+                if name == "tests" || name.ends_with("_tests") {
+                    continue;
+                }
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    /// Remove `#[cfg(test)] mod ... { ... }` blocks (brace-matched) so the
+    /// source gate reads only production text.
+    fn strip_cfg_test_modules(source: &str) -> String {
+        let mut out = String::with_capacity(source.len());
+        let mut lines = source.lines();
+        while let Some(line) = lines.next() {
+            if line.trim_start().starts_with("#[cfg(test)]") {
+                // Skip through the balanced body of the `mod` declaration that
+                // follows.
+                let mut depth: i64 = 0;
+                let mut declared = false;
+                for inner in lines.by_ref() {
+                    let trimmed = inner.trim_start();
+                    if !declared && trimmed.starts_with("mod ") {
+                        declared = true;
+                    }
+                    depth += trimmed.chars().filter(|c| *c == '{').count() as i64;
+                    depth -= trimmed.chars().filter(|c| *c == '}').count() as i64;
+                    if declared && depth <= 0 {
+                        break;
+                    }
+                    if depth < 0 {
+                        break;
+                    }
+                }
+                continue;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
     }
 }
