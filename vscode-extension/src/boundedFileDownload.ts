@@ -16,7 +16,11 @@ export interface BoundedFileDownloadOptions {
 }
 
 function defaultRemovePartialFile(dest: string): void {
-  fs.unlink(dest, () => {});
+  try {
+    fs.unlinkSync(dest);
+  } catch {
+    // Cleanup is best effort when the destination is already absent.
+  }
 }
 
 /**
@@ -58,6 +62,7 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
     let cancellation: DisposableLike | undefined;
     let timeoutId: NodeJS.Timeout | undefined;
     let settled = false;
+    let failureRejected = false;
     let receivedBytes = 0;
 
     const cleanup = (): void => {
@@ -67,17 +72,35 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
       }
     };
 
+    const rejectAfterPartialCleanup = (error: Error): void => {
+      if (failureRejected) {
+        return;
+      }
+      failureRejected = true;
+      try {
+        removePartialFile(dest);
+      } catch {
+        // Preserve the original download failure.
+      }
+      if (fs.existsSync(dest)) {
+        defaultRemovePartialFile(dest);
+      }
+      reject(error);
+    };
+
     const fail = (error: Error): void => {
       if (settled) {
         return;
       }
       settled = true;
       cleanup();
-      if (file) {
-        file.destroy();
+      if (!file || file.closed) {
+        file?.destroy();
+        rejectAfterPartialCleanup(error);
+        return;
       }
-      removePartialFile(dest);
-      reject(error);
+      file.once('close', () => rejectAfterPartialCleanup(error));
+      file.destroy();
     };
 
     const succeed = (): void => {

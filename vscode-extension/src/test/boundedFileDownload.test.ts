@@ -130,6 +130,29 @@ describe('downloadBoundedFile', () => {
     expect(fs.existsSync(dest)).toBe(false);
   });
 
+  test('does not reject until an injected partial-file cleanup has completed', async () => {
+    const dest = destPath();
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, { 'content-type': 'application/octet-stream' });
+          response.write('0123456789');
+          response.end('abcdefghij');
+        },
+        (url) =>
+          downloadBoundedFile({
+            requestFactory: (listener) => http.get(url, listener),
+            dest,
+            timeoutMs: 1000,
+            maxBytes: 12,
+            operationName: 'Archive download',
+            removePartialFile: () => {},
+          }),
+      ),
+    ).rejects.toThrow('exceeded 12 compressed bytes');
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
   test('deletes a partial dest when cancellation is signalled during transfer', async () => {
     const dest = destPath();
     const token = new TestCancellationToken();
