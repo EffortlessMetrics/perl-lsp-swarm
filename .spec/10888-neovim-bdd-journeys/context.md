@@ -220,8 +220,9 @@ the programme vocabulary and prevent downstream evidence from composing across
 the journey and train surfaces.
 
 ```text
-native_neovim_configuration       documented native setup only; substrate; proves no
-                                  behavior; aligns with the registered `neovim` tier in
+native_neovim_configuration       documented native setup + canonical filetype/root envelope
+                                  + settings schema; substrate; proves no behavior; aligns
+                                  with the registered `neovim` tier in
                                   policy/lsp-client-support.toml
 native_neovim_core                exactly attach.01–06 + core.01–10 (16 rows)
 release_v0_18_bounded             the full-document branch sync.06–10, which qualifies under
@@ -229,7 +230,8 @@ release_v0_18_bounded             the full-document branch sync.06–10, which q
                                   public claim requires
 native_neovim_deep_lifecycle      core + lifecycle.01–07 + the atomic branch sync.01–05
                                   (nv_deep_atomic_branch); never the full-document branch
-native_neovim_first_class         deep + support.01–08 stage laws
+native_neovim_first_class         the distribution/public-stage rows support.01–08;
+                                  not core and not deep
 native_neovim_programme_closeout  fan-in over terminal child propositions
 ```
 

@@ -90,7 +90,7 @@ any downstream projection must preserve.
 | Scenario ID | Proposition | Profile / evidence tag | Evidence boundary (owner chain) |
 | --- | --- | --- | --- |
 | `neovim.bdd.support.01` | The maintained support floor (Neovim 0.11.3, per `docs/EDITORS/NEOVIM_SETUP.md`) and the current stable Neovim version are separate rows; neither substitutes for the other, and no receipt certifies a broad `0.11+` matrix | distribution; stage law | #10508 version/platform rows; exact version cells owned by #7716 |
-| `neovim.bdd.support.02` | Linux, macOS, and Windows remain separate rows | distribution; stage law | #10508 |
+| `neovim.bdd.support.02` | Linux, macOS, and Windows remain separate rows | distribution; stage law | platform-cell layout #10508; #11392 governs `nv_platform_linux` and `nv_platform_macos` only, so Windows has **no governed platform owner** and is permanently `not_proven` until one exists — it is never satisfied by another platform's evidence |
 | `neovim.bdd.support.03` | Manual native configuration, upstream `nvim-lspconfig` registration, and Mason registry availability remain separate rows | distribution; stage law | manual route is `native_neovim_configuration` substrate; #10511 nvim-lspconfig track; #10514 Mason registry track; independence law #7730 |
 | `neovim.bdd.support.04` | The stable, nightly, and dev-pin public install channels remain separate rows, and an aggregate installed-binary receipt never substitutes for a per-channel one | distribution; stage law | #7730 channel contract; #10516/#10518/#10520 per channel; #7770 first-mile aggregate |
 | `neovim.bdd.support.05` | Exact-source behavior is never public-installed proof | distribution; stage law | #10508 + #10522/#7122 projection |
@@ -113,11 +113,11 @@ any downstream projection must preserve.
 
 | Profile | Membership rule | Ceiling |
 | --- | --- | --- |
-| `native_neovim_configuration` | documented native setup only (`docs/EDITORS/NEOVIM_SETUP.md`) | substrate only; proves no behavior; matches the registered `neovim` tier |
+| `native_neovim_configuration` | the documented native setup (`docs/EDITORS/NEOVIM_SETUP.md`) together with the canonical filetype/root envelope and settings schema (`nv_config_canonical_root`, `nv_settings_schema_generic`) | substrate only; proves no behavior; matches the registered `neovim` tier |
 | `native_neovim_core` | exactly the 16 rows of `attach.*` + `core.*` | bounded core; nothing else blocks or widens it |
 | `native_neovim_deep_lifecycle` | core + `lifecycle.01–07` + the atomic branch `sync.01–05` (`nv_deep_atomic_branch`, #10505); the full-document branch never enters this profile, whatever #8129 selects | never a prerequisite of core |
-| `native_neovim_first_class` | deep + `support.01–08` stage laws | public stages require their own direct evidence |
-| `release_v0_18_bounded` | the full-document branch `sync.06–10`, which is the branch qualifying under `nv_release_scope_decision`, plus only the cells the bounded public claim requires | no current selection is recorded by that authority; the qualifying value on a gate is not a ruling, and a stale selection fails closed |
+| `native_neovim_first_class` | the distribution and public-stage rows `support.01–08`; #11392's members are the version/platform, install-channel, upstream-track, progressive-support, status-projection and documentation stages, so this profile does **not** require core or deep | public stages require their own direct evidence |
+| `release_v0_18_bounded` | the full-document branch `sync.06–10`, which is the branch qualifying under `nv_release_scope_decision`, plus only the cells the bounded public claim requires, which include the exact-subject core receipts (`nv_core_fanin_exact_subject_receipts`) | no current selection is recorded by that authority; the qualifying value on a gate is not a ruling, and a stale selection fails closed |
 | `native_neovim_programme_closeout` | fan-in over independently terminal child propositions | composes child results only; manufactures none |
 
 Laws: a stronger profile never erases a narrower valid one; optional rows are
@@ -170,11 +170,11 @@ No Rust or public API is introduced. Semantic contract terms defined here:
 | Item | Kind | Shape | Dup-risk / owner |
 | --- | --- | --- | --- |
 | `neovim.bdd.<family>.<nn>` | stable scenario ID namespace | 47 IDs, fixed families/order, immutable once published | none found on main; this packet |
-| `native_neovim_configuration` | claim profile ID | documented native setup substrate | **governed by #11392**; consumed verbatim, not declared here |
+| `native_neovim_configuration` | claim profile ID | documented native setup, canonical root envelope, settings schema | **governed by #11392**; consumed verbatim, not declared here |
 | `native_neovim_core` | claim profile ID | membership = the 16 attach/core rows | **governed by #11392**; consumed verbatim |
 | `release_v0_18_bounded` | claim profile ID | the full-document sync branch, which qualifies under `nv_release_scope_decision`, plus the cells the bounded public claim requires | **governed by #11392**; consumed verbatim |
 | `native_neovim_deep_lifecycle` | claim profile ID | core + lifecycle + the atomic sync branch | **governed by #11392**; consumed verbatim |
-| `native_neovim_first_class` | claim profile ID | deep + support stage laws | **governed by #11392**; consumed verbatim |
+| `native_neovim_first_class` | claim profile ID | the distribution and public-stage rows; not core or deep | **governed by #11392**; consumed verbatim |
 | `native_neovim_programme_closeout` | claim profile ID | programme fan-in | **governed by #11392**; consumed verbatim |
 
 ### Evidence-stage vocabulary (consumed, never minted)

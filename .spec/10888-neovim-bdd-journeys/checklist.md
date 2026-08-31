@@ -91,7 +91,8 @@ an entry cannot be dropped to retire a row's binding while the checker still
 reports every row as bound; that no foreign rail ID appears as a ledger row; all
 twenty-five falsifiers with exact scenario/kind/verdict text in fixed order;
 a digest of each named prose invariant (subject law, profile laws, claim
-boundary, three-subject law), so a boundary claim cannot be reversed while a
+boundary, three-subject law, evidence vocabulary, and the claim-profile
+membership table), so a boundary claim cannot be reversed while a
 bare required token survives elsewhere in the file, together with the same
 exact-coverage requirement over the named invariant set; `git diff --check` over the
 candidate range, work tree, and index, with a nonzero status failing the check
@@ -190,6 +191,13 @@ INVARIANT_BLOCKS = {
     # table could be deleted and the checker would still pass.
     "evidence_vocabulary": ("acceptance",
                             r"(?ms)^### Evidence-stage vocabulary.*?(?=^## §Test-Grid)"),
+    # The claim-profile membership table. Its rows are not `neovim.bdd.*`
+    # rows, so ROW_DIGESTS never covered them: a profile's membership could be
+    # rewritten -- folding in a branch #11392 forbids, or making one profile a
+    # prerequisite of another -- with every other check still passing. Three
+    # separate review rounds found exactly that. Bind the table.
+    "profile_membership": ("acceptance",
+                           r"(?ms)^## Claim profiles \(ledger membership\).*?(?=^Laws: a stronger profile)"),
 }
 
 # The set of invariants that must be bound, stated independently of the maps
@@ -202,6 +210,7 @@ EXPECTED_INVARIANTS = {
     "claim_boundary",
     "three_subject_law",
     "evidence_vocabulary",
+    "profile_membership",
 }
 
 INVARIANT_DIGESTS = {
@@ -209,6 +218,7 @@ INVARIANT_DIGESTS = {
     "profile_laws": "60e532ff4fcc0274",
     "claim_boundary": "3d6755e631a9c99f",
     "three_subject_law": "e53af321800e90fb",
+    "profile_membership": "f4de26e57133c176",
     "evidence_vocabulary": "d78c020224e6bc3d",
 }
 
@@ -247,7 +257,7 @@ ROW_DIGESTS = {
     "neovim.bdd.lifecycle.06": "5236178f0faa8351",
     "neovim.bdd.lifecycle.07": "78da30c0d117d88c",
     "neovim.bdd.support.01": "b97c19e0b19b003a",
-    "neovim.bdd.support.02": "a1ca4b3c6cac015b",
+    "neovim.bdd.support.02": "d09ca51510597409",
     "neovim.bdd.support.03": "0c128b4e7684f657",
     "neovim.bdd.support.04": "9280e2dc24e5c1e2",
     "neovim.bdd.support.05": "854b07f5a63fa7c5",
