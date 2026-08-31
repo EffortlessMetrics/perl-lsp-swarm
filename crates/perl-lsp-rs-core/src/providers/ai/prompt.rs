@@ -2,6 +2,20 @@
 
 use crate::providers::inline_completion::PreparedInlineCompletionContext;
 
+/// Sentinel injected between the prefix and the suffix in the user message.
+const CURSOR_MARKER: &str = "<CURSOR>";
+/// Zero-collision substitute for marker occurrences inside captured user
+/// text. Escaping is not invertible, but the prompt only needs the real
+/// marker to appear exactly once.
+const CURSOR_MARKER_ESCAPE: &str = "<CURSOR_ESCAPED>";
+
+/// Escape cursor-marker occurrences in user-supplied text before injection
+/// so captured code containing the literal sentinel cannot create a second,
+/// ambiguous completion point.
+fn escape_cursor_marker(text: &str) -> String {
+    text.replace(CURSOR_MARKER, CURSOR_MARKER_ESCAPE)
+}
+
 /// Build an OpenAI-compatible prompt from the prepared context.
 ///
 /// Returns a `(system, user)` message pair suitable for the chat completions API.
@@ -33,17 +47,19 @@ pub fn build_fim_prompt(context: &PreparedInlineCompletionContext) -> (String, S
     // Build the user message with the code context. The suffix and the
     // bounded following lines (#10273 capture) close the FIM gap: the model
     // can see the closing brace or function epilogue after the cursor.
+    // Every captured piece is marker-escaped: user text containing the
+    // literal sentinel must not create a second completion point.
     let mut user = String::new();
     if let Some(ref prev) = context.previous_non_empty_line {
-        user.push_str(prev);
+        user.push_str(&escape_cursor_marker(prev));
         user.push('\n');
     }
-    user.push_str(&context.prefix);
-    user.push_str("<CURSOR>");
-    user.push_str(&context.suffix);
+    user.push_str(&escape_cursor_marker(&context.prefix));
+    user.push_str(CURSOR_MARKER);
+    user.push_str(&escape_cursor_marker(&context.suffix));
     for line in &context.following_lines {
         user.push('\n');
-        user.push_str(line);
+        user.push_str(&escape_cursor_marker(line));
     }
 
     (system, user)
@@ -103,5 +119,29 @@ mod tests {
         };
         let (_, user) = build_fim_prompt(&ctx);
         assert!(user.ends_with("<CURSOR>"), "no suffix must end at the marker, got: {user}");
+    }
+
+    #[test]
+    fn user_text_containing_cursor_marker_is_escaped() {
+        let ctx = PreparedInlineCompletionContext {
+            prefix: "my $x = ".to_string(),
+            current_line: "my $x = ".to_string(),
+            suffix: "s{<CURSOR>}{replacement}g;".to_string(),
+            following_lines: vec!["print q[<CURSOR>];".to_string()],
+            ..PreparedInlineCompletionContext::default()
+        };
+        let (_, user) = build_fim_prompt(&ctx);
+        // Exactly one literal marker may remain: the injected completion
+        // point. A second marker from captured text makes the prompt
+        // ambiguous about where the completion belongs.
+        assert_eq!(
+            user.matches("<CURSOR>").count(),
+            1,
+            "cursor marker must stay unambiguous, got: {user}"
+        );
+        assert!(
+            user.contains("<CURSOR_ESCAPED>"),
+            "user-supplied marker occurrences must be escaped, got: {user}"
+        );
     }
 }

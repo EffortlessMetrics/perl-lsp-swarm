@@ -3,7 +3,7 @@
 use super::destination::{ApprovedDestination, credential_may_attach, validate_endpoint};
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
-use super::sanitize::sanitize_completion_text;
+use super::sanitize::{sanitize_completion_text, sanitize_streaming_text};
 use super::sse::SseParser;
 use crate::config::{
     DEFAULT_AI_API_KEY_HEADER, DEFAULT_AI_API_KEY_PREFIX, is_safe_http_header_value_part,
@@ -12,7 +12,7 @@ use crate::config::{
 use crate::providers::inline_completion::{
     BackendError, BackendRequest, InlineCompletionBackend, StreamChunk, StreamControl,
 };
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use ureq::unversioned::resolver::{ResolvedSocketAddrs, Resolver};
@@ -243,6 +243,72 @@ impl OpenAiProvider {
             _ => None,
         }
     }
+
+    /// Text for one `StreamChunk`: held-back live text for in-flight chunks,
+    /// full boundary sanitization once the completion is final. Buffered
+    /// `complete()` consumes this same final chunk, so both routes observe
+    /// the identical sanitized candidate from this single choke point.
+    fn stream_chunk_text(cumulative: &str, is_final: bool) -> String {
+        if is_final {
+            sanitize_completion_text(cumulative)
+        } else {
+            sanitize_streaming_text(cumulative)
+        }
+    }
+
+    /// Drive the SSE event loop, forwarding cumulative candidate chunks to
+    /// `sink`. Split out from [`Self::stream`] so the delta-to-sink wiring
+    /// is testable without an HTTP transport.
+    fn drive_sse_stream<R: BufRead>(
+        parser: &mut SseParser<R>,
+        api_key: &str,
+        sink: &mut dyn FnMut(StreamChunk) -> StreamControl,
+    ) -> Result<(), BackendError> {
+        let mut cumulative = String::new();
+
+        loop {
+            match parser.next_event() {
+                Ok(Some(event)) => {
+                    if let Some(delta) = Self::extract_content_delta(&event.data) {
+                        cumulative.push_str(&delta);
+
+                        let is_final = Self::extract_finish_reason(&event.data)
+                            .is_some_and(|r| r == "stop" || r == "length");
+
+                        // In-flight chunks show the live candidate with
+                        // ambiguous fence markers held back; only the
+                        // completion boundary runs the full strip (#5049).
+                        // Stateless per-chunk stripping deleted already-shown
+                        // code mid-stream whenever a content fence arrived
+                        // and leaked partially delivered markers for a tick.
+                        let control = sink(StreamChunk {
+                            text: Self::stream_chunk_text(&cumulative, is_final),
+                            is_final,
+                        });
+
+                        if control == StreamControl::Stop || is_final {
+                            break;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Stream ended -- emit final chunk if we have content
+                    if !cumulative.is_empty() {
+                        sink(StreamChunk {
+                            text: Self::stream_chunk_text(&cumulative, true),
+                            is_final: true,
+                        });
+                    }
+                    break;
+                }
+                Err(e) => {
+                    return Err(Self::map_transport_error(e.to_string(), api_key));
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -292,6 +358,119 @@ mod tests {
     fn detects_responses_completion_event() {
         let data = r#"{"type":"response.completed"}"#;
         assert_eq!(OpenAiProvider::extract_finish_reason(data), Some("stop".to_string()));
+    }
+
+    /// Frame a delta sequence as chat-completions SSE events; the final
+    /// event carries `finish_reason: "stop"`.
+    fn sse_framed_deltas(deltas: &[String]) -> String {
+        let last = deltas.len() - 1;
+        let mut body = String::new();
+        for (i, delta) in deltas.iter().enumerate() {
+            let finish_reason: serde_json::Value =
+                if i == last { "stop".into() } else { serde_json::Value::Null };
+            let event = serde_json::json!({
+                "choices": [{
+                    "delta": { "content": delta },
+                    "finish_reason": finish_reason,
+                }]
+            });
+            body.push_str(&format!("data: {event}\n\n"));
+        }
+        body
+    }
+
+    /// Drive the real SSE loop over synthetic frames and collect every
+    /// `(text, is_final)` chunk handed to the sink.
+    fn collect_stream_chunks(deltas: &[String]) -> Vec<(String, bool)> {
+        let body = sse_framed_deltas(deltas);
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut chunks: Vec<(String, bool)> = Vec::new();
+        OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |chunk| {
+            chunks.push((chunk.text, chunk.is_final));
+            if chunk.is_final {
+                crate::providers::inline_completion::StreamControl::Stop
+            } else {
+                crate::providers::inline_completion::StreamControl::Continue
+            }
+        })
+        .expect("synthetic SSE frames must drive the stream loop");
+        chunks
+    }
+
+    #[test]
+    fn stream_holds_partial_fence_markers_and_sanitizes_only_at_the_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Character-by-character delivery of a fenced candidate: both the
+        // opening and the closing marker arrive split across deltas.
+        let deltas: Vec<String> = ["`", "`", "`", "perl", "\n", "my $x = 1;", "\n", "`", "`", "`"]
+            .iter()
+            .map(|delta| (*delta).to_string())
+            .collect();
+        let chunks = collect_stream_chunks(&deltas);
+
+        // The cumulative partial opening marker never reaches the sink.
+        assert_eq!(
+            chunks[1],
+            (String::new(), false),
+            "partial opening fence must be held back, got: {:?}",
+            chunks[1]
+        );
+        // No in-flight chunk surfaces any fence marker for this candidate,
+        // and only the boundary event is final.
+        for (text, is_final) in chunks.iter().take(chunks.len() - 1) {
+            assert!(!is_final, "only the boundary event may be final");
+            assert!(!text.contains('`'), "in-flight chunk surfaced a fence marker: {text:?}");
+        }
+        // The candidate grows monotonically once visible; shown code is
+        // never deleted mid-stream.
+        for window in chunks.windows(2) {
+            assert!(
+                window[1].0.starts_with(&window[0].0),
+                "streamed candidate deleted shown text: {:?} -> {:?}",
+                window[0].0,
+                window[1].0
+            );
+        }
+        // Boundary parity: the final streamed chunk equals the buffered
+        // sanitize of the whole candidate, and `complete()` consumes exactly
+        // this chunk, so both routes agree.
+        let (final_text, is_final) = chunks.last().ok_or("expected at least one chunk")?;
+        assert!(is_final);
+        assert_eq!(final_text, "my $x = 1;");
+        assert_eq!(
+            final_text,
+            &crate::providers::ai::sanitize::sanitize_completion_text(&deltas.concat())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stream_heredoc_candidate_never_collapses_or_truncates_mid_stream()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The sanitize.rs here-doc falsifier, streamed: a candidate whose
+        // CONTENT contains line-initial fences must never collapse to an
+        // empty candidate, never delete already-shown text, and land
+        // unchanged at the boundary.
+        let raw = "my $doc = <<'EOF';\n# Usage\n```perl\nmy $x = 1;\n```\nEOF";
+        let deltas: Vec<String> = raw.chars().map(String::from).collect();
+        let chunks = collect_stream_chunks(&deltas);
+
+        assert!(
+            chunks.iter().all(|(text, _)| !text.is_empty()),
+            "content-anchored candidate must never collapse mid-stream"
+        );
+        for window in chunks.windows(2) {
+            assert!(
+                window[1].0.starts_with(&window[0].0),
+                "streamed candidate deleted shown text: {:?} -> {:?}",
+                window[0].0,
+                window[1].0
+            );
+        }
+        let (final_text, is_final) = chunks.last().ok_or("expected at least one chunk")?;
+        assert!(is_final);
+        assert_eq!(final_text, raw, "content fences must survive the boundary");
+        Ok(())
     }
 
     #[test]
@@ -413,48 +592,6 @@ impl InlineCompletionBackend for OpenAiProvider {
 
         let reader = BufReader::new(response.into_body().into_reader());
         let mut parser = SseParser::new(reader);
-        let mut cumulative = String::new();
-
-        loop {
-            match parser.next_event() {
-                Ok(Some(event)) => {
-                    if let Some(delta) = Self::extract_content_delta(&event.data) {
-                        cumulative.push_str(&delta);
-
-                        let is_final = Self::extract_finish_reason(&event.data)
-                            .is_some_and(|r| r == "stop" || r == "length");
-
-                        // Strip a Markdown fence wrapper before the candidate
-                        // reaches any consumer (#5049): both the buffered
-                        // `complete` buffer and the streaming sink see only
-                        // sanitized cumulative text, so the parse-safety seam
-                        // judges the actual completion, not its packaging.
-                        let control = sink(StreamChunk {
-                            text: sanitize_completion_text(&cumulative),
-                            is_final,
-                        });
-
-                        if control == StreamControl::Stop || is_final {
-                            break;
-                        }
-                    }
-                }
-                Ok(None) => {
-                    // Stream ended -- emit final chunk if we have content
-                    if !cumulative.is_empty() {
-                        sink(StreamChunk {
-                            text: sanitize_completion_text(&cumulative),
-                            is_final: true,
-                        });
-                    }
-                    break;
-                }
-                Err(e) => {
-                    return Err(Self::map_transport_error(e.to_string(), &self.config.api_key));
-                }
-            }
-        }
-
-        Ok(())
+        Self::drive_sse_stream(&mut parser, &self.config.api_key, sink)
     }
 }
