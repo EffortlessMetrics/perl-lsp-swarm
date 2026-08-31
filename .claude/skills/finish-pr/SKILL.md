@@ -7,9 +7,9 @@ argument-hint: "[PR number, branch, or candidate]"
 # Finish PR
 
 Carry one coherent acceptance-and-rollback candidate through its current GitHub state.
-The main Claude thread remains the accountable orchestrator for this root-held claim
-frame. Do not inspect sibling implementations or treat nearby files, crates, branches,
-or worktrees as ownership.
+The main Claude thread remains the accountable orchestrator for this root-held claim frame. Do
+not inspect sibling implementations or treat nearby files, crates, branches, or
+worktrees as ownership.
 
 Read the selected PR, controlling issue, governing authority, cumulative diff, proof
 and limitations, submitted reviews, inline threads, current substantive review result,
@@ -24,24 +24,28 @@ Claude's operational path is this skill together with `orchestrate-work`,
 
 ### Root decisions
 
-The main Claude thread retains the earliest useful route entry, finding
-validity/disposition, whether resolving a valid finding belongs in this candidate,
-which repairs materially change proof/review dimensions, substantive review
-sufficiency, candidate/base/integration failure ownership, remote in-flight/blocking
-classification, protected merge, and current-main reconciliation.
+The main Claude thread retains:
 
-### Useful subagent and workflow work
+- the earliest still-useful entry point in the PR route;
+- whether a finding is valid, stale, refuted, superseded, or a bounded follow-up;
+- whether resolving a valid finding belongs in this candidate;
+- whether the candidate or claim changed and which proof/review dimensions became stale;
+- substantive review sufficiency and cumulative candidate judgment;
+- candidate/base/integration failure ownership;
+- whether a remote state is in flight, blocked, or not proven;
+- the protected merge and current-main reconciliation decision.
 
-Use focused subagents, context forks, an Ultracode workflow, or an Agent Team only where
-useful for:
+### Delegable read-only work
+
+Use focused subagents, context forks, an Ultracode workflow, or an Agent Team only where useful for:
 
 - complete review-thread and submitted-review inventory;
-- source-backed finding verification;
-- high-output CI log/artifact classification;
+- source-backed verification of human/bot findings;
+- high-output CI log and artifact classification;
 - live required-check/ruleset discovery;
 - production-path, external-oracle, proof, candidate, security, package, migration,
   persistence, support, or release review;
-- merged-effect and residual-claim verification.
+- merged-effect and residual-claim verification after integration.
 
 Each child receives the exact PR/candidate, accepted claim, current GitHub snapshot,
 named skill where applicable, one bounded question, falsifiers, sufficient evidence,
@@ -52,17 +56,17 @@ uncertainty, and non-goals. Children return graph deltas, not merge verdicts.
 One writer integrates accepted candidate repairs. Read-only reviewers and CI evidence
 agents do not mutate the candidate.
 
-The main Claude thread joins current findings/dispositions, affected proof, cumulative
-review, live integration facts, contradictions, and limitations into one typed route
-result. Repeated bot findings or several agents reading one artifact are not independent
-evidence.
+The main Claude thread joins current findings/dispositions, candidate and claim mutation,
+stale proof/review dimensions, cumulative review, live integration facts,
+contradictions, and limitations into one typed route result. Repeated bot findings or
+several agents reading one artifact are not independent evidence.
 
 ### Return packet
 
-Return PR/candidate identity, claim/non-goals, current finding dispositions,
-proof/review dimensions current or stale, substantive review result, integration
-posture, exact remote wait/wake event, limitations/`NOT_PROVEN`, merge/closeout result,
-and next route.
+Return PR/candidate identity, claim and non-goals, current finding dispositions,
+`candidate_changed`, `claim_changed`, `stale_review_dimensions`, proof/review dimensions
+current or stale, substantive review result, integration posture, exact remote wait and
+wake event, limitations/`NOT_PROVEN`, merge/closeout result, and next route.
 
 ## Procedure
 
@@ -79,7 +83,7 @@ draft with a real remote-proof, collaboration, or protected-experiment purpose
 substantive human/bot/CI findings or failed candidate proof
 → `address-review-comments`
 → one joined repair wave
-→ affected proof
+→ affected proof only when the candidate changed or review dimensions became stale
 
 candidate is mutable and no useful current substantive review exists
 → `final-challenge`
@@ -88,10 +92,12 @@ candidate is mutable and no useful current substantive review exists
 
 `CHANGES_REQUIRED`
 → `address-review-comments`
-→ one writer publishes the joined repair wave once
-→ affected proof
-→ affected `final-challenge`
-→ affected `review-pr`
+→ one writer publishes the joined repair wave once when candidate bytes must change
+→ affected proof/challenge/review only for changed or stale dimensions
+
+no candidate or claim change + no stale review dimension
+→ preserve current proof/review
+→ continue at the earliest genuinely missing judgment
 
 `REVIEW_CURRENT`
 → stabilize the reviewed candidate head for required CI
@@ -106,23 +112,21 @@ merged or deliberately closed but unreconciled
 
 Do not skip directly from “no open findings” to live CI unless a useful cumulative
 `REVIEW_CURRENT` judgment exists. The review must be evidence-backed and semantically
-current; it need not be repeated merely because the head SHA changed.
+current; it need not be repeated merely because the head SHA or thread state changed.
 
 ## Claude-native review handoff
 
-Before `review-pr`, the main Claude thread uses `orchestrate-work` to select only review
-lenses that can change the decision. It may delegate `review-tests`, `review-candidate`,
-a production-path trace, an external oracle, or a focused
-security/package/migration/persistence/support question to read-only subagents or
-context forks. Use Agent Teams only when lateral communication changes the result.
-
+Before `review-pr`, the root uses `orchestrate-work` to select only review lenses
+that can change the decision. It may delegate `review-tests`, `review-candidate`, a
+production-path trace, an external oracle, or a focused
+security/package/migration/persistence/support question to read-only subagents or context forks.
 Each child receives the exact candidate, controlling claim, established facts,
 authority, named skill, falsifiers, read-only boundary, sufficient evidence, and
 non-goals.
 
-The main Claude thread joins evidence rather than votes, inspects load-bearing seams,
-and publishes one cumulative `review-pr` judgment. Reviewers do not authorize merge.
-One writer repairs accepted findings.
+The main Claude thread joins evidence rather than votes, inspects the load-bearing seams, and
+publishes one cumulative `review-pr` judgment. Reviewers do not authorize merge. One
+integrating writer repairs accepted findings.
 
 ## Review-forward repair
 
@@ -131,22 +135,31 @@ Review is cumulative and semantic:
 - verify each repair against the finding, proof, and seam it changes;
 - revisit claim, production reachability, authority, compatibility, risk, rollback, or
   proof only when the repair materially changes that dimension;
+- a supported no-change disposition changes thread state, not candidate meaning;
 - formatting, editorial cleanup, generated receipt refresh, and stronger tests do not
   automatically invalidate prior review;
 - actual conflict or combined-tree repair receives focused review of the affected
   interaction.
 
 Do not compute a claim digest, require a review receipt tied to the current head, or
-restart a full deep review merely because another commit was pushed.
+restart a full deep review merely because another commit was pushed or a comment was
+resolved.
 
 ## Repair waves and head stabilization
 
 Do not publish one commit per comment. `address-review-comments` first pins the current
 observation basis, decides finding validity separately from current-candidate admission,
 joins the review wave, and promotes only repeated mechanisms to bounded failure classes.
-One writer integrates the accepted wave, runs affected proof and—when a class was promoted—
-its class-level falsifier, rereads the complete governing semantic units and
-dependent claims, and publishes one candidate update.
+One writer integrates admitted source/proof changes, runs affected proof and—when a
+class was promoted—its class-level falsifier, rereads the complete governing semantic
+units and dependent claims, and publishes one candidate update.
+
+The repair-wave packet must state `candidate_changed`, `claim_changed`, and
+`stale_review_dimensions`. When the candidate or claim changed, or review dimensions
+became stale, refresh only those proof/challenge/review dimensions. When
+`candidate_changed=false`, `claim_changed=false`, and `stale_review_dimensions` is
+empty, preserve current proof and review conclusions; do not create an empty repair
+commit or manufacture another final-challenge cycle.
 
 If the repair wave introduces a new checker, registry, parser, abstraction, or
 substantial proof surface, run `simplify-candidate` before final challenge. Reconcile
@@ -174,7 +187,8 @@ review, CI classification, and oracle work may assist.
 
 - behind-only movement on `main` requires no action;
 - a real Git conflict is resolved in this claim;
-- an explicit stack is retargeted after its prerequisite lands;
+- an explicit squash-merge stack is reconciled against the actual landed parent and its
+  child-only delta rather than merely changing the PR base;
 - a combined-tree interaction is repaired in the smallest affected candidate;
 - only affected proof and review are refreshed.
 
@@ -196,9 +210,9 @@ comment; localized findings inline; finding dispositions in replies before resol
 one cumulative submitted review; one material remote wait/wake update when another
 context needs it; and landed-effect/residual-claim closeout on the issue.
 
-Keep subagent/Team topology, task progress, raw bot/CI logs, repeated check snapshots,
-retries, unchanged polls, and routine route transitions runtime-local. Link stable
-artifacts rather than copying them.
+Keep subagent/Team topology, task progress, raw bot/CI logs, repeated check snapshots, retries,
+unchanged polls, and routine route transitions runtime-local. Link stable artifacts
+rather than copying them.
 
 ## Routes
 
@@ -214,7 +228,11 @@ artifacts rather than copying them.
 
 ### Findings and challenge
 
-- `FINDINGS_REPAIRED_OR_DISPOSITIONED` → affected proof, then `final-challenge`
+- `FINDINGS_REPAIRED_OR_DISPOSITIONED` with candidate/claim change or non-empty
+  `stale_review_dimensions` → affected proof, then `final-challenge`
+- `FINDINGS_REPAIRED_OR_DISPOSITIONED` with no candidate/claim change and empty
+  `stale_review_dimensions` → preserve current proof/review and continue at the earliest
+  genuinely missing judgment
 - `MUTABLE_FINDINGS_OPEN` → one joined repair wave through `address-review-comments`
 - `PROOF_WEAKENED` / `PROOF_REVISE` → `prepare-proof`
 - `MATERIAL_PREMISE_CHANGED` / `SPLIT_CLAIM` → `prepare-issue`
