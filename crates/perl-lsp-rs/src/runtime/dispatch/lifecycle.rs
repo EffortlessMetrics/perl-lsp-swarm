@@ -107,6 +107,7 @@ impl LspServer {
 
         // Clear any pending cancelled requests on shutdown
         self.cancelled.lock().clear();
+        self.clear_position_encoding_session_context();
         // Destroy the session-keyed resolve authenticator so every envelope
         // from this session becomes unverifiable (#8342).
         self.teardown_resolve_session();
@@ -287,6 +288,10 @@ mod tests {
         assert!(
             server.shutdown_received.load(Ordering::Acquire),
             "shutdown_received must be set (exit will use code 0)"
+        );
+        assert!(
+            server.position_encoding_session_context().is_none(),
+            "shutdown must invalidate the active coordinate context"
         );
         Ok(())
     }

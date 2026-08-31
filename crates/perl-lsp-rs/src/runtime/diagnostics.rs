@@ -223,7 +223,11 @@ impl PullDiagnosticsOrchestrator {
     }
 
     /// Build context from LspServer state.
-    pub fn build_context(&self, server: &LspServer, uri: &str) -> PullDiagnosticsContext {
+    pub fn build_context(
+        &self,
+        server: &LspServer,
+        uri: &str,
+    ) -> Result<PullDiagnosticsContext, crate::protocol::JsonRpcError> {
         // Get config values
         let (
             perlcritic_enabled,
@@ -275,7 +279,7 @@ impl PullDiagnosticsOrchestrator {
 
         // Get client capabilities
         let markup_message_support = server.client_capabilities.lock().markup_message_support;
-        let position_encoding = server.client_capabilities.lock().position_encoding;
+        let position_encoding = server.position_encoding_for_coordinates()?;
 
         // Wait for index build, then sample per-document staleness before wiring
         // workspace semantic queries or dead-code analysis into pull diagnostics
@@ -305,7 +309,7 @@ impl PullDiagnosticsOrchestrator {
         let facts_generation: Option<u64> = None;
 
         // Build context
-        PullDiagnosticsContext {
+        Ok(PullDiagnosticsContext {
             perlcritic_enabled,
             perlcritic_severity: perlcritic_severity.into(),
             perlcritic_profile: profile,
@@ -320,14 +324,14 @@ impl PullDiagnosticsOrchestrator {
             facts_generation,
             projection: DiagnosticProjectionFragment {
                 position_encoding: match position_encoding {
-                    crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
-                    crate::textdoc::PosEnc::Utf16 => PullPositionEncoding::Utf16,
+                    perl_position_tracking::PositionEncoding::Utf8 => PullPositionEncoding::Utf8,
+                    perl_position_tracking::PositionEncoding::Utf16 => PullPositionEncoding::Utf16,
                 },
                 markup_messages: markup_message_support,
             },
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
             workspace_index,
-        }
+        })
     }
 
     /// Collect external perlcritic diagnostics.
@@ -1458,7 +1462,7 @@ impl LspServer {
             let _progress = RequestProgressGuard::new(self, "diagnostics", "Running diagnostics");
 
             // Build context from server state
-            let context = self.pull_diagnostics_orchestrator.build_context(self, uri_str);
+            let context = self.pull_diagnostics_orchestrator.build_context(self, uri_str)?;
 
             // Use PullDiagnosticsProvider for clean, testable logic
             let provider = PullDiagnosticsProvider::new();
@@ -1793,10 +1797,14 @@ impl LspServer {
                 cfg.native_critic_exclude.clone(),
             )
         };
+        let position_encoding = match self.position_encoding_for_coordinates() {
+            Ok(encoding) => encoding,
+            Err(_) => return,
+        };
         let identity_projection = DiagnosticProjectionFragment {
-            position_encoding: match self.client_capabilities.lock().position_encoding {
-                crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
-                crate::textdoc::PosEnc::Utf16 => PullPositionEncoding::Utf16,
+            position_encoding: match position_encoding {
+                perl_position_tracking::PositionEncoding::Utf8 => PullPositionEncoding::Utf8,
+                perl_position_tracking::PositionEncoding::Utf16 => PullPositionEncoding::Utf16,
             },
             markup_messages: markup_message_support,
         };
@@ -4241,6 +4249,7 @@ mod tests {
         let doc_uri = url::Url::from_file_path(&script_b).map_err(|_| "bad uri")?.to_string();
 
         let (server, _buf) = make_server_with_capture();
+        server.handle_initialize(Some(json!({"capabilities": {}})))?;
         // root_path points to folder_a (the "primary" folder)
         *server.root_path.lock() = Some(folder_a.clone());
         {
@@ -4260,7 +4269,7 @@ mod tests {
         }
 
         let orchestrator = PullDiagnosticsOrchestrator::new();
-        let context = orchestrator.build_context(&server, &doc_uri);
+        let context = orchestrator.build_context(&server, &doc_uri)?;
 
         assert_eq!(
             context.workspace_root.as_deref(),
@@ -4286,6 +4295,7 @@ mod tests {
         let doc_uri = url::Url::from_file_path(&script).map_err(|_| "bad uri")?.to_string();
 
         let (server, _buf) = make_server_with_capture();
+        server.handle_initialize(Some(json!({"capabilities": {}})))?;
         *server.root_path.lock() = Some(workspace.clone());
         {
             let mut folders = server.workspace_folders.lock();
@@ -4300,12 +4310,32 @@ mod tests {
         }
 
         let orchestrator = PullDiagnosticsOrchestrator::new();
-        let context = orchestrator.build_context(&server, &doc_uri);
+        let context = orchestrator.build_context(&server, &doc_uri)?;
 
         assert_eq!(
             context.workspace_root.as_deref(),
             Some(workspace.as_path()),
             "workspace_root must fall back to root_path when no folder contains the document"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_context_uses_server_owned_encoding_after_initialize()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, _buf) = make_server_with_capture();
+        server.handle_initialize(Some(serde_json::json!({
+            "capabilities": {"general": {"positionEncodings": ["utf-8"]}}
+        })))?;
+        server.client_capabilities.lock().position_encoding = crate::textdoc::PosEnc::Utf8;
+
+        let context =
+            PullDiagnosticsOrchestrator::new().build_context(&server, "file:///test.pl")?;
+
+        assert_eq!(
+            context.projection.position_encoding,
+            PullPositionEncoding::Utf16,
+            "diagnostic projection must use the server-owned active encoding"
         );
         Ok(())
     }

@@ -52,6 +52,7 @@ impl LspServer {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
+            position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
@@ -239,6 +240,7 @@ impl LspServer {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
+            position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
@@ -367,6 +369,7 @@ impl LspServer {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
+            position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]

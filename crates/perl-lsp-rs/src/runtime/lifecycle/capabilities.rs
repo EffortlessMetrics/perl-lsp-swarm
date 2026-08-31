@@ -823,10 +823,11 @@ impl LspServer {
 
         // Add fields not yet in lsp-types 0.97
         //
-        // Phase 1 (this PR) only negotiates and stores the client's preferred
-        // position encoding on `ClientCapabilities.position_encoding` for
-        // future use. `text_sync` and every feature provider (hover,
-        // definition, diagnostics, ...) still compute positions in UTF-16
+        // Client preference remains available on `ClientCapabilities` for
+        // compatibility parsing, while the server-owned active context keeps
+        // coordinate consumers on UTF-16 during this migration. `text_sync`
+        // and providers not yet migrated (hover, definition, ...) still
+        // compute positions in UTF-16
         // code units. Per the LSP 3.17 spec, client and server MUST agree on
         // one encoding or offsets are misinterpreted, so the *advertised*
         // `positionEncoding` MUST stay pinned to "utf-16" — the mandatory
@@ -873,6 +874,11 @@ impl LspServer {
                 Value::Bool(true),
             );
         }
+
+        // Publish coordinate authority only after the complete initialize
+        // response has been constructed successfully. Client preference stays
+        // available for compatibility parsing but is not active authority.
+        self.publish_position_encoding_session_context();
 
         Ok(Some(json!({
             "capabilities": capabilities,
