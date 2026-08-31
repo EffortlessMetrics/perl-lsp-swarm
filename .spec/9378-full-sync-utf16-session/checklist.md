@@ -1,37 +1,54 @@
 # Checklist — #9378 full-sync UTF-16 initialize/session contract
 
-- [x] Two-writer check: no open PR references #9378 (2026-08-29).
-- [x] Premise verified on current main lineage (a83ad9a027): split
-      authorities, no-common fallback test, no session contract.
-- [x] #8129 gate: `full_document_utf16` selected for implementation.
-- [x] Model: closed offer classification, selection reason, immutable
-      accepted session contract, bounded evidence (session_contract.rs).
-- [x] Transaction: classify before mutation; typed -32602 failure for
-      no-common/malformed; atomic acceptance after response verification.
-- [x] Projection: response positionEncoding/textDocumentSync built from the
-      accepted contract; divergence is a typed failure.
-- [x] Competing authorities removed: `ClientCapabilities.position_encoding`
-      deleted; local `sync_kind` and hard-pinned string deleted.
-- [x] Consumers re-pointed: pull-diagnostics projection, parity test helper.
-- [x] Ledger: `positionEncodingPin` row + `positionEncodingUtf16Pin` compat
-      row updated; `docs/specs/lsp-final-surface-inventory.json` regenerated
-      via the crate's sanctioned regeneration entry point.
-- [x] Falsifiers LSP-FS16-001..012 encoded as tests; red-then-green recorded
-      (focused runtime gate observed RED with the old fallback wired through
-      the new pipeline, GREEN after the fail-closed flip).
-- [x] Package proof green: perl-lsp-rs lib 1842 / perl-lsp-rs-core lib 3715
-      / lifecycle integration + census + ownership map green; per-package
-      fmt clean; clippy: perl-lsp-rs --all-targets clean, perl-lsp-rs-core
-      findings confined to pre-existing untouched files (host baseline).
-- [x] PR opened citing (#9378): EffortlessMetrics/perl-lsp-swarm#14159, closes #9378 on merge if acceptance is met.
+- [x] #8129 selected `full_document_utf16` for the v0.18 envelope.
+- [x] One immutable accepted contract owns `sync_kind = full` and
+      `position_encoding = utf-16`.
+- [x] Every valid position-encoding string list accepts that contract.
+- [x] Valid nonempty lists omitting UTF-16 retain the bounded
+      `mandatory-utf16-fallback` reason rather than creating another encoding
+      or a `no-common-encoding` rejection.
+- [x] Absent, null, empty, explicit UTF-16, and mandatory-fallback offers have
+      distinct evidence dispositions.
+- [x] Non-array values and non-string entries fail typed `-32602` with no
+      accepted session.
+- [x] First-attempt authority is consumed before classification; accepted and
+      rejected first attempts are both one-shot.
+- [x] Every second initialize returns `-32600` before parameter-specific
+      classification and cannot replace an accepted contract.
+- [x] Concurrent attempts have exactly one first-attempt owner.
+- [x] Attempted-but-unaccepted state cannot serve requests, complete
+      initialization, intercept formatting, mutate documents, start
+      watcher/index/bootstrap work, or emit readiness.
+- [x] `initialization_accepted()` remains the single serving/completion truth.
+- [x] Response `positionEncoding` and `textDocumentSync.change` are derived
+      from the accepted contract and verified before acceptance.
+- [x] `ClientCapabilities.position_encoding`, local sync-kind authority, and
+      independent hard-pinned response strings are removed.
+- [x] Pull-diagnostics and effective-surface parity consumers read the accepted
+      session contract.
+- [x] Bounded evidence records exact offer, reason, session, contract digest,
+      response digest, and terminal outcome.
+- [x] `.spec/9378-full-sync-utf16-session/` states the same one-shot and
+      mandatory-fallback law as code and tests.
+- [ ] Wire-level malformed-first → valid-second, accepted-first → malformed-
+      second, post-rejection serving, and mandatory-fallback sequences pass on
+      the exact current branch.
+- [ ] Focused Rust tests, Clippy, rustfmt, generated final-surface checks, and
+      exact-head substantive review are current after the #12067 integration
+      restack.
+- [ ] PR #14159 is merged before #9380 begins.
 
-Known-unrelated observations (documented for review):
+## Integration order
 
-- `runtime::text_sync::tests::test_diagnostics_churn_drains_retained_state_after_close_delete`
-  is load-flaky under parallel suite runs; reproduced identically on clean
-  main a83ad9a027 in an isolated proof worktree (67 passed / 1 failed both
-  sides). Not touched by this claim.
-- On this Windows host, `tests/lsp_3_17_lifecycle_tests.rs`
-  `test_shutdown_exit_3_17` (main's code, untouched) terminates its own test
-  process early, truncating that binary's full run; the test passes in CI
-  environments and the targeted suites around it are green here.
+```text
+land #12067
+→ restack #14159 once
+→ regenerate affected public API and non-Rust inventory
+→ run focused and affected proof
+→ receive fresh exact-head review
+→ merge #9378
+→ admit #9380
+```
+
+Do not repeatedly chase unrelated `main` movement after the one required
+integration restack. Do not race either live writer branch.
