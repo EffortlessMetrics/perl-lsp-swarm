@@ -22,9 +22,17 @@ export interface DebugTestLaunchTarget {
 export type DebugConfigTemplate =
   | 'launch-script'
   | 'attach-process'
-  | 'remote-ssh'
+  | 'remote-tcp-attach'
   | 'external-peer'
   | 'all';
+
+/**
+ * Deprecated selector retained as a compatibility alias for `remote-tcp-attach`
+ * (#9868): the wizard never persisted template ids, but earlier extensions and
+ * tests could pass `remote-ssh` programmatically. It produces the same honest
+ * TCP-attach configuration — never an SSH-owned tunnel.
+ */
+export type LegacyDebugConfigTemplate = 'remote-ssh';
 
 /**
  * Build the content of a `.vscode/launch.json` file for the given template.
@@ -51,11 +59,14 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
     timeout: 5000,
   };
 
-  const remoteSSH = {
+  // #9868: this is an ordinary DAP TCP attach. perl-lsp does not create, own,
+  // or verify any SSH tunnel; the endpoint may be directly reachable or exposed
+  // by a port forward the user controls.
+  const remoteTcpAttach = {
     type: 'perl',
     request: 'attach',
-    name: 'Perl: Remote (SSH)',
-    host: 'remote-host',
+    name: 'Perl: Remote TCP Attach',
+    host: 'localhost',
     port: 13603,
     timeout: 10000,
   };
@@ -75,14 +86,16 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
     case 'attach-process':
       configurations = [attachProcess];
       break;
+    // 'remote-ssh' is a legacy alias for the same honest TCP attach (#9868).
+    case 'remote-tcp-attach':
     case 'remote-ssh':
-      configurations = [remoteSSH];
+      configurations = [remoteTcpAttach];
       break;
     case 'external-peer':
       configurations = [externalPeer];
       break;
     case 'all':
-      configurations = [launchScript, attachProcess, remoteSSH, externalPeer];
+      configurations = [launchScript, attachProcess, remoteTcpAttach, externalPeer];
       break;
     case 'launch-script':
     default:
@@ -103,6 +116,61 @@ export function hasLaunchJson(workspaceRoot: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The wizard's template choices as pure data (exported so unit tests can pin
+ * the user-facing copy, #9868).
+ *
+ * The remote entry deliberately describes an ordinary DAP TCP attach: the
+ * endpoint may be directly reachable or exposed through a port forward the
+ * user runs. perl-lsp never creates, owns, or verifies an SSH connection or
+ * tunnel, so no choice copy may claim otherwise.
+ */
+export interface DebugConfigTemplateChoice {
+  label: string;
+  description: string;
+  detail: string;
+  template: DebugConfigTemplate;
+}
+
+export function debugConfigTemplateChoices(): DebugConfigTemplateChoice[] {
+  return [
+    {
+      label: '$(play) Launch Script',
+      description: 'Run the active Perl file under the debugger',
+      detail: 'Adds a "Launch Script" configuration — the most common starting point.',
+      template: 'launch-script',
+    },
+    {
+      label: '$(plug) Attach to Process',
+      description: 'Connect to a running Perl process over TCP',
+      detail: 'Adds an "Attach" configuration targeting localhost:13603.',
+      template: 'attach-process',
+    },
+    {
+      label: '$(remote) Remote TCP Attach',
+      description:
+        'Attach to a Perl debugger endpoint over TCP (direct or via a port forward you run)',
+      detail:
+        'Adds a remote TCP attach configuration — edit the host to the reachable debugger endpoint, such as localhost for an existing port forward.',
+      template: 'remote-tcp-attach',
+    },
+    {
+      label: '$(beaker) External Debugger Peer (experimental)',
+      description: 'Connect to a peer implementation that already speaks the peer protocol',
+      detail:
+        'Developer preview. Host behavior is proven against repository peers; stock Devel::ptkdb compatibility is not yet proven.',
+      template: 'external-peer',
+    },
+    {
+      label: '$(list-flat) All Templates',
+      description: 'Include native, attach, remote, and experimental peer configurations',
+      detail:
+        'Launch Script + Attach to Process + Remote TCP Attach + External Debugger Peer (experimental).',
+      template: 'all',
+    },
+  ];
 }
 
 /**
@@ -172,40 +240,7 @@ export async function createDebugConfigWizard(): Promise<void> {
     detail: string;
   }
 
-  const templateItems: TemplateItem[] = [
-    {
-      label: '$(play) Launch Script',
-      description: 'Run the active Perl file under the debugger',
-      detail: 'Adds a "Launch Script" configuration — the most common starting point.',
-      template: 'launch-script',
-    },
-    {
-      label: '$(plug) Attach to Process',
-      description: 'Connect to a running Perl process over TCP',
-      detail: 'Adds an "Attach" configuration targeting localhost:13603.',
-      template: 'attach-process',
-    },
-    {
-      label: '$(remote) Remote (SSH)',
-      description: 'Attach to a remote Perl process via SSH tunnel',
-      detail: 'Adds a remote attach configuration — edit the host to match your SSH target.',
-      template: 'remote-ssh',
-    },
-    {
-      label: '$(beaker) External Debugger Peer (experimental)',
-      description: 'Connect to a peer implementation that already speaks the peer protocol',
-      detail:
-        'Developer preview. Host behavior is proven against repository peers; stock Devel::ptkdb compatibility is not yet proven.',
-      template: 'external-peer',
-    },
-    {
-      label: '$(list-flat) All Templates',
-      description: 'Include native, attach, remote, and experimental peer configurations',
-      detail:
-        'Launch Script + Attach to Process + Remote (SSH) + External Debugger Peer (experimental).',
-      template: 'all',
-    },
-  ];
+  const templateItems: TemplateItem[] = debugConfigTemplateChoices();
 
   const selected = await vscode.window.showQuickPick(templateItems, {
     placeHolder: 'Choose a debug configuration template',
