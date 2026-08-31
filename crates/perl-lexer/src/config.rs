@@ -50,7 +50,7 @@ pub struct LexerConfig {
     /// later boundary has landed.
     #[deprecated(
         since = "0.17.0",
-        note = "no runtime effect: token byte spans are always tracked (POSITIONS_ARE_ALWAYS_TRACKED); remove the field from literals, planned future removal under open issue #8749"
+        note = "no runtime effect: token byte spans are always tracked (POSITIONS_ARE_ALWAYS_TRACKED); while this compatibility field remains, remove the field from literals and add ..LexerConfig::default() (or temporarily retain it with an allowance); planned future removal under open issue #8749"
     )]
     pub track_positions: bool,
     /// Maximum zero-based offset admitted by shared cursor lookahead helpers.

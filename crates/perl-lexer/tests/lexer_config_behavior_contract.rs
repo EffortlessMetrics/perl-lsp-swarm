@@ -192,6 +192,28 @@ fn position_compatibility_field_does_not_change_authoritative_tokens() {
 }
 
 #[test]
+fn track_positions_deprecation_diagnostic_preserves_struct_update_guidance() -> R {
+    let source = include_str!("../src/config.rs");
+    let note = source
+        .lines()
+        .find(|line| line.trim_start().starts_with("note = "))
+        .ok_or_else(|| missing("track_positions deprecation note disappeared"))?;
+    for required in [
+        "while this compatibility field remains",
+        "remove the field from literals and add",
+        "..LexerConfig::default()",
+        "temporarily retain it with an allowance",
+    ] {
+        if !note.contains(required) {
+            return Err(missing(format!(
+                "track_positions deprecation note lost migration guidance: {required}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn shared_lookahead_limit_has_distinct_zero_one_and_two_boundaries() -> R {
     let zero = LexerConfig { max_lookahead: 0, ..LexerConfig::default() };
     let one = LexerConfig { max_lookahead: 1, ..LexerConfig::default() };
@@ -1060,16 +1082,29 @@ fn validate_simd_readme_contract(readme: &str) -> R {
                 )));
             }
         }
-        if line.contains("performance")
-            && (!line.contains("no simd performance claim is made")
-                || line.match_indices("performance").count() > 1)
-        {
+        let residual = simd_performance_claim_residual(line);
+        if residual.contains("simd") && residual.contains("performance") {
             return Err(missing(format!(
                 "README simd contract contains a contradictory performance claim: {line}"
             )));
         }
     }
     Ok(())
+}
+
+fn simd_performance_claim_residual(line: &str) -> String {
+    let mut residual = line.to_ascii_lowercase();
+    for disclaimer in [
+        "no simd performance claim is made",
+        "no simd performance claims are made",
+        "no claim about simd performance is made",
+        "no claim of simd performance is made",
+        "does not make a simd performance claim",
+        "doesn't make a simd performance claim",
+    ] {
+        residual = residual.replace(disclaimer, " ");
+    }
+    residual
 }
 
 fn simd_claim_is_negated(prefix: &str) -> bool {
@@ -1333,6 +1368,16 @@ fn simd_readme_guard_rejects_contradictory_performance_claim() -> R {
         "README contradiction must identify the performance claim: {error}"
     );
     validate_simd_readme_contract(readme)?;
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_allows_repeated_truthful_performance_disclaimers() -> R {
+    let readme = include_str!("../README.md");
+    let truthful = format!(
+        "{readme}\nNo SIMD performance claim is made; no SIMD performance claim is made.\n"
+    );
+    validate_simd_readme_contract(&truthful)?;
     Ok(())
 }
 
