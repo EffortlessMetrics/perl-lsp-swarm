@@ -481,23 +481,24 @@ fn escaped_control_and_unicode_escapes_decode_to_inert_data() -> TestResult {
 
 #[test]
 fn invalid_unicode_escapes_refuse_deterministically() -> TestResult {
-    for malformed in [
-        r#"json:"\u12""#,
-        r#"json:"\uzzzz""#,
-        r#"json:"\ud800""#,
-        r#"json:"\udbff""#,
-        r#"json:"\udc00""#,
-        r#"json:"\udfff""#,
-        r#"json:"\ud800\ud800""#,
-        r#"json:"\udbff\uffff""#,
-        r#"json:"\ud800x""#,
-        r#"json:"\ud83d\n""#,
-        r#"json:"\ud83d""#,
+    for (malformed, expected_offset) in [
+        (r#"json:"\u12""#, 6),
+        (r#"json:"\uzzzz""#, 6),
+        (r#"json:"\ud800""#, 6),
+        (r#"json:"\udbff""#, 6),
+        (r#"json:"\udc00""#, 6),
+        (r#"json:"\udfff""#, 6),
+        (r#"json:"\ud800\ud800""#, 12),
+        (r#"json:"\udbff\uffff""#, 12),
+        (r#"json:"\ud800x""#, 6),
+        (r#"json:"\ud83d\n""#, 6),
+        (r#"json:"\ud83d""#, 6),
     ] {
         let error = parse_refusal(malformed)?;
-        assert!(
-            matches!(error, StructuredRefusal::InvalidSyntax { .. }),
-            "{malformed:?} must refuse as invalid syntax, got {error:?}"
+        assert_eq!(
+            error,
+            StructuredRefusal::InvalidSyntax { offset: expected_offset },
+            "{malformed:?} must report the offending escape backslash"
         );
     }
     Ok(())
