@@ -175,7 +175,7 @@ fn prepare_allow_entries_at(
                 .expires
                 .as_deref()
                 .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
-                .is_some_and(|expires| expires <= evaluation_date)
+                .is_some_and(|expires| expires < evaluation_date)
         {
             continue;
         }
@@ -449,14 +449,23 @@ fn expired_paths_in_tree(
                     .is_some_and(|date| date < evaluation_date)
         })
         .filter_map(|entry| {
-            let matcher = entry.glob.as_deref().or(entry.path.as_deref())?;
-            Pattern::new(matcher).ok().map(|pattern| (pattern, entry.id.as_str()))
+            if let Some(glob) = entry.glob.as_deref() {
+                Pattern::new(glob).ok().map(|pattern| (Some(pattern), None, entry.id.as_str()))
+            } else {
+                entry.path.as_deref().map(|path| (None, Some(path), entry.id.as_str()))
+            }
         })
         .collect::<Vec<_>>();
+    let active = prepare_allow_entries_at(&allowlist.allow, evaluation_date);
     let mut paths = tree_paths(root, sha)?
         .into_iter()
         .filter(|path| {
-            !is_rust_file(path) && expired.iter().any(|(pattern, _)| pattern.matches(path))
+            !is_rust_file(path)
+                && expired.iter().any(|(glob, exact, _)| {
+                    glob.as_ref().is_some_and(|pattern| pattern.matches(path))
+                        || exact.is_some_and(|candidate| candidate == path)
+                })
+                && find_matching_prepared_entry(path, &active).is_none()
         })
         .collect::<Vec<_>>();
     paths.sort();
