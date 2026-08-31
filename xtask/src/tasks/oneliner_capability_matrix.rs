@@ -501,7 +501,9 @@ fn bundle_declares(bundle: &str, switch: &str) -> bool {
 
 /// Perl switches whose value is attached directly to the flag, so everything
 /// after them in a cluster is that value rather than further flags.
-const VALUE_ATTACHED_FLAGS: &[char] = &['M', 'm', 'I', 'F', '0', 'i', 'D'];
+/// `-e` and `-E` are included because the program text can be written
+/// attached (`-eprint`), and everything after it is source, not flags.
+const VALUE_ATTACHED_FLAGS: &[char] = &['M', 'm', 'I', 'F', '0', 'i', 'D', 'e', 'E'];
 
 /// The flags a switch bundle actually declares.
 ///
@@ -513,7 +515,13 @@ fn bundle_flags(bundle: &str) -> Vec<char> {
         return Vec::new();
     };
     let mut flags = Vec::new();
-    for flag in cluster.chars() {
+    for (position, flag) in cluster.char_indices() {
+        // A digit after the first position is a value, not a flag: `-l0777`
+        // sets the record separator, it does not request `-0` or `-7`. At the
+        // first position a digit *is* the flag, as in `-0777`.
+        if position > 0 && flag.is_ascii_digit() {
+            break;
+        }
         flags.push(flag);
         if VALUE_ATTACHED_FLAGS.contains(&flag) {
             break;
@@ -663,30 +671,62 @@ fn char_literal_end(source: &str, quote: usize) -> Option<usize> {
     if source.as_bytes().get(after) == Some(&b'\'') { Some(after + 1) } else { None }
 }
 
-/// The contiguous block of attribute lines directly above the item containing
-/// `index`, used to see what is attached to a fixture before it is counted.
+/// The attributes attached directly above the item containing `index`.
+///
+/// Attributes are consumed as bracket-balanced groups rather than as lines,
+/// because a `cfg_attr` may be wrapped across several lines. A line-based walk
+/// stops at the continuation line and misses the suppression entirely.
 fn preceding_attributes(source: &str, index: usize) -> String {
-    const MAX_LINES: usize = 12;
+    const MAX_ATTRIBUTES: usize = 12;
     let Some(head) = source.get(..index) else {
         return String::new();
     };
-    let mut lines: Vec<&str> = head.lines().collect();
-    // Drop the partial line the item sits on. When the item begins exactly at a
-    // line boundary there is no partial line to drop, and dropping one anyway
-    // would discard the very attribute being looked for.
-    if !head.ends_with('\n') {
-        lines.pop();
-    }
-    let mut block: Vec<&str> = Vec::new();
-    for line in lines.iter().rev().take(MAX_LINES) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("#[") || trimmed.starts_with("#!") {
-            block.push(trimmed);
-            continue;
+    let bytes = head.as_bytes();
+    let mut end = head.len();
+    let mut collected: Vec<&str> = Vec::new();
+
+    for _ in 0..MAX_ATTRIBUTES {
+        // Step back over whitespace between the item and the attribute above.
+        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
         }
-        break;
+        if end == 0 || bytes[end - 1] != b']' {
+            break;
+        }
+        // Walk back to the matching `[` so a multiline group stays intact.
+        let mut depth = 0usize;
+        let mut start = end;
+        while start > 0 {
+            start -= 1;
+            match bytes[start] {
+                b']' => depth += 1,
+                b'[' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // An attribute is `#[..]` or the inner form `#![..]`.
+        let marker = start.saturating_sub(if bytes.get(start.wrapping_sub(1)) == Some(&b'!') {
+            2
+        } else {
+            1
+        });
+        if depth != 0 || bytes.get(marker) != Some(&b'#') {
+            break;
+        }
+        let Some(text) = head.get(marker..end) else {
+            break;
+        };
+        collected.push(text);
+        end = marker;
     }
-    block.join("\n")
+
+    collected.reverse();
+    collected.join("\n")
 }
 
 /// Whether attribute text disables the item or stops it from running.
@@ -751,7 +791,14 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
         let Some(rest) = source.get(index..) else {
             continue;
         };
-        let Some(fn_offset) = rest.find("fn ") else {
+        // The declaration must be real code. A `fn ` inside a doc attribute,
+        // string, or comment between the attribute and the declaration would
+        // otherwise supply the fixture name.
+        let Some(fn_offset) = rest
+            .match_indices("fn ")
+            .map(|(offset, _)| offset)
+            .find(|offset| code.get(index + offset).copied().unwrap_or(false))
+        else {
             continue;
         };
         // Only accept the declaration that actually follows the attribute.
@@ -1459,6 +1506,84 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             "an ignored test was captured as evidence: {:?}",
             evidence.proof_tests
         );
+    }
+
+    /// A `cfg_attr` wrapped across lines must still be seen. A line-based walk
+    /// stopped at the continuation and let the fixture count as running.
+    #[test]
+    fn multiline_attributes_still_suppress_a_fixture() {
+        let wrapped = concat!(
+            "#[cfg_attr(\n",
+            "    target_os = \"windows\",\n",
+            "    ignore = \"flaky on windows\"\n",
+            ")]\n",
+            "#[test]\n",
+            "fn wrapped_but_ignored() {}\n"
+        );
+        let evidence = extract_corpus_evidence(wrapped);
+        assert!(
+            evidence.proof_tests.is_empty(),
+            "multiline cfg_attr did not suppress: {:?}",
+            evidence.proof_tests
+        );
+
+        let wrapped_case = concat!(
+            "#[cfg(\n",
+            "    feature = \"unfinished\"\n",
+            ")]\n",
+            "command_line_oneliner!(ghost_wrapped, \"-e\", \"print 1;\");\n"
+        );
+        let evidence = extract_corpus_evidence(wrapped_case);
+        assert!(
+            evidence.switch_cases.is_empty(),
+            "multiline cfg did not suppress: {:?}",
+            evidence.switch_cases
+        );
+    }
+
+    /// The fixture name must come from a real declaration, not from text inside
+    /// a doc attribute or comment sitting between `#[test]` and the `fn`.
+    #[test]
+    fn quoted_function_names_are_not_fixture_names() {
+        let doc_decoy = concat!(
+            "#[test]\n",
+            "#[doc = \"fn decoy_fixture() is only prose\"]\n",
+            "fn real_fixture() {}\n"
+        );
+        let evidence = extract_corpus_evidence(doc_decoy);
+        assert!(
+            !evidence.proof_tests.contains("decoy_fixture"),
+            "a doc attribute supplied the fixture name: {:?}",
+            evidence.proof_tests
+        );
+        assert!(evidence.proof_tests.contains("real_fixture"));
+
+        let comment_decoy = "#[test]\n// fn commented_fixture()\nfn real_fixture() {}\n";
+        let evidence = extract_corpus_evidence(comment_decoy);
+        assert!(!evidence.proof_tests.contains("commented_fixture"));
+        assert!(evidence.proof_tests.contains("real_fixture"));
+    }
+
+    /// Attached program text and numeric arguments are values, not flags.
+    #[test]
+    fn attached_values_do_not_masquerade_as_flags() {
+        // `-eprint` is `-e` plus a program, not a request for -p/-r/-i/-n/-t.
+        assert_eq!(bundle_flags("-eprint"), vec!['e']);
+        assert!(!bundle_declares("-eprint", "-p"));
+        assert!(!bundle_declares("-eprint", "-n"));
+        assert!(bundle_declares("-eprint", "-e"));
+
+        // `-l0777` sets the record separator; it is not `-0` or `-7`.
+        assert_eq!(bundle_flags("-l0777"), vec!['l']);
+        assert!(!bundle_declares("-l0777", "-0"));
+        assert!(bundle_declares("-l0777", "-l"));
+
+        // A leading digit *is* the flag.
+        assert_eq!(bundle_flags("-0777"), vec!['0']);
+        assert!(bundle_declares("-0777", "-0"));
+
+        // Ordinary clusters are untouched.
+        assert_eq!(bundle_flags("-lane"), vec!['l', 'a', 'n', 'e']);
     }
 
     /// Substring membership would let a switch value masquerade as flags.
