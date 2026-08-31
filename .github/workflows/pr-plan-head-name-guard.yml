@@ -1,0 +1,59 @@
+# PR Plan Trigger Guard
+#
+# .github/workflows/pr-plan.yml triggers solely on pull_request_target, which
+# GitHub documents as possibly not triggering when the pull request HEAD branch
+# name looks like a commit SHA. The suppressed event never starts a run, so the
+# suppressed workflow itself cannot surface the gap. This sentinel instead runs
+# on the pull_request event and classifies only the event payload string:
+#
+# - no checkout of any ref and no actions of any kind;
+# - nothing executed from any ref except this evaluator;
+# - no secrets and no write permissions;
+# - no plan artifacts written (PR Plan stays the single ci-plan producer).
+#
+# Documented silence boundary: GitHub does not run pull_request workflows while
+# a pull request has a merge conflict either. In the combined case — SHA-like
+# head name AND conflicted pull request — both PR Plan and this guard stay
+# silent; that residue is accepted here until the branch-naming ruleset closes
+# the class (#6238 follow-up), not claimed as an unconditional sentinel.
+#
+# The classification over-approximates GitHub's unpublished suppression matcher
+# (`^[0-9a-fA-F]{7,40}$`) and fails closed loud rather than staying silent on a
+# possible miss. Like PR Plan itself it is advisory-only: it owns no required
+# check and writes no conclusion (#6238).
+
+name: PR Plan Trigger Guard
+
+on:
+  # `branches:` selects the pull request BASE branch and plays no role in the
+  # SHA-like head-name suppression this guard surfaces.
+  pull_request:
+    branches: [master, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: pr-plan-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  head-name-guard:
+    name: Head branch name must allow PR Plan to trigger
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Classify head branch name
+        env:
+          # Env indirection keeps untrusted payload text out of run-script
+          # syntax; only the variable reference reaches the shell.
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_REF" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+            echo "::error::Head branch '$HEAD_REF' looks like a commit SHA. GitHub may suppress the pull_request_target event for such names, so the advisory PR Plan will silently not run for this event. Rename the branch to the repo convention (<prefix>/description), then push a NEW commit — renaming fires no event and pushing an unchanged tip is a no-op, so an empty commit (git commit --allow-empty) or closing and reopening the pull request is required before this guard and PR Plan run again."
+            exit 1
+          fi
+          echo "Head branch '$HEAD_REF' allows PR Plan triggering."

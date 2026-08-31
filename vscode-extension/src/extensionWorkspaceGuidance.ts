@@ -3,9 +3,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-const COEXISTENCE_GUIDE_URL =
-  'https://github.com/EffortlessMetrics/perl-lsp/blob/master/vscode-extension/README.md#extension-coexistence';
-
 export async function validateIncludePaths(context: vscode.ExtensionContext): Promise<void> {
   const workspaceFolders = vscode.workspace.workspaceFolders;
   if (!workspaceFolders || workspaceFolders.length === 0) {
@@ -334,88 +331,4 @@ export async function openDemoProjectCommand(context: vscode.ExtensionContext): 
   await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(demoPath), {
     forceNewWindow: true,
   });
-}
-
-type ExtensionPackage = {
-  publisher?: string;
-  name?: string;
-  version?: string;
-  displayName?: string;
-  description?: string;
-  keywords?: string[];
-  contributes?: { languages?: Array<{ id?: string }> };
-};
-
-type InstalledExtension = {
-  id?: string;
-  packageJSON?: ExtensionPackage;
-};
-
-function isPerlLanguageExtension(extension: InstalledExtension): boolean {
-  const packageJSON = extension.packageJSON;
-  if (!packageJSON) {
-    return false;
-  }
-
-  if ((packageJSON.contributes?.languages ?? []).some((language) => language.id === 'perl')) {
-    return true;
-  }
-
-  const haystack = [
-    extension.id,
-    packageJSON.publisher && packageJSON.name
-      ? `${packageJSON.publisher}.${packageJSON.name}`
-      : undefined,
-    packageJSON.displayName,
-    packageJSON.name,
-    packageJSON.description,
-    ...(packageJSON.keywords ?? []),
-  ]
-    .filter((value): value is string => typeof value === 'string' && value.length > 0)
-    .join(' ')
-    .toLowerCase();
-
-  return /\bperl(?:\b|[-:]|navigator|critic|tidy|lsp)/i.test(haystack);
-}
-
-export async function warnAboutPerlExtensionConflicts(
-  context: vscode.ExtensionContext,
-): Promise<void> {
-  const packageJSON = context.extension.packageJSON as ExtensionPackage;
-  const currentMajor = String(packageJSON.version ?? '0').split('.')[0] ?? '0';
-  const warnedMajor = context.globalState.get<string>('perl-lsp.conflictWarningMajorVersion');
-  if (warnedMajor === currentMajor) {
-    return;
-  }
-
-  const selfId =
-    `${packageJSON.publisher ?? 'EffortlessMetrics'}.${packageJSON.name ?? 'perl-lsp-rs'}`.toLowerCase();
-  const conflicts = (vscode.extensions.all as unknown as InstalledExtension[]).filter(
-    (extension) =>
-      extension && extension.id?.toLowerCase() !== selfId && isPerlLanguageExtension(extension),
-  );
-
-  if (conflicts.length === 0) {
-    return;
-  }
-
-  const names = conflicts
-    .map((extension) => extension.packageJSON?.displayName ?? extension.id ?? 'unknown extension')
-    .slice(0, 3);
-  const label =
-    names.length === 1
-      ? names[0]
-      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-  const extra =
-    conflicts.length > names.length ? ` (+${conflicts.length - names.length} more)` : '';
-  const choice = await vscode.window.showWarningMessage(
-    `Perl LSP detected ${conflicts.length} other Perl extension${conflicts.length === 1 ? '' : 's'}: ${label}${extra}. These can conflict with completion, hover, diagnostics, or formatting. See the coexistence guide for details.`,
-    'Open Coexistence Guide',
-  );
-
-  if (choice === 'Open Coexistence Guide') {
-    await vscode.env.openExternal(vscode.Uri.parse(COEXISTENCE_GUIDE_URL));
-  }
-
-  await context.globalState.update('perl-lsp.conflictWarningMajorVersion', currentMajor);
 }

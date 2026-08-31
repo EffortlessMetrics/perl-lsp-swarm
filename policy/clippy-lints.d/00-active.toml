@@ -79,10 +79,10 @@ reason = "Activated by #6305 after the 293-site burn-down (#6375-#6380), a warn-
 
 [[lint]]
 name = "clippy::collapsible_match"
-level = "allow"
+level = "deny"
 status = "active"
 class = "style"
-reason = "The temporary workspace allow remains current until #6113 remeasures the Rust 1.97.1 denominator and performs the behavior-preserving deny ratchet."
+reason = "Activated by #6113 after the behavior-preserving collapse of all measured sites and removal of the workspace allow plus six crate-root and one test-target masks."
 
 [[lint]]
 name = "clippy::decimal_bitwise_operands"
@@ -107,10 +107,10 @@ reason = "Keep stale numeric type drift visible without claiming every boundary 
 
 [[lint]]
 name = "clippy::manual_ilog2"
-level = "warn"
+level = "deny"
 status = "active"
 class = "numeric"
-reason = "Prefer the standard integer logarithm helper where domain and failure semantics match."
+reason = "Promoted to deny by #9896 after zero-site confirmation on current all-targets; prefer the standard integer logarithm helper where domain and failure semantics match."
 
 [[lint]]
 name = "clippy::manual_take"
@@ -151,8 +151,9 @@ reason = "Library code must use tracing rather than direct stdout, with intentio
 name = "clippy::disallowed_fields"
 level = "deny"
 status = "active"
+configuration_state = "empty-by-design"
 class = "architecture"
-reason = "The mechanism is active; clippy.toml deliberately carries an empty protected-field set until #6114 completes the governed Phase 1 contract."
+reason = "The deny mechanism is active, while the protected-field set remains deliberately empty until a separately reviewed selector lands; the configuration marker prevents that zero denominator from being mistaken for effective field protection."
 
 [[lint]]
 name = "clippy::ptr_arg"

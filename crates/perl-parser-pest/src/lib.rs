@@ -40,12 +40,19 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 pub mod error;
+pub mod outcome;
 pub mod pratt_parser;
 pub mod pure_rust_parser;
 pub mod sexp_formatter;
 
 // Re-export the main types for convenience
 pub use error::{ParseError, ParseResult};
+pub use outcome::{
+    OutcomeError, PARSE_OUTCOME_SCHEMA, PARSER_FAILURE_SCHEMA, ParseAttempt, ParseCompleteness,
+    ParseDiagnostic, ParseDiagnosticKind, ParseOutcome, ParseOutcomeVocabulary, ParserFailure,
+    ParserFailureKind, RecoveryAction, STRICT_PARSE_ERROR_SCHEMA, SourceLineColumn, SourceRange,
+    StrictParseError,
+};
 pub use pratt_parser::PrattParser;
 pub use pure_rust_parser::{AstNode, PerlParser, PureRustPerlParser};
 pub use sexp_formatter::SexpFormatter;

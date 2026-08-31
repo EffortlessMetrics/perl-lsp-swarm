@@ -60,6 +60,7 @@ perl-pod = { workspace = true }
 perl-ripr-facts = { workspace = true }
 perl-ast = { workspace = true }
 perl-parser-core = { workspace = true }
+perl-tdd-support = { workspace = true }
 perl-source-identity.workspace = true
 perl-workspace = { workspace = true }
 perl-lexer = { workspace = true }
@@ -125,7 +126,6 @@ predicates = "3.1.3"
 serial_test = "4.0.1"
 tempfile.workspace = true
 proptest.workspace = true
-perl-tdd-support = { workspace = true }
 # Wave Final PR B: perl-content-length-framing absorbed into perl-lsp-rs-core::transport::framing
 parking_lot.workspace = true
 criterion.workspace = true

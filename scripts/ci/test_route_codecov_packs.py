@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import tomllib
 import unittest
 
 
@@ -17,6 +18,24 @@ SPEC.loader.exec_module(router)
 
 
 class RouteCodecovPacksTests(unittest.TestCase):
+    def test_both_ripr_badge_python_paths_select_the_focused_non_lcov_pack(self) -> None:
+        manifest = tomllib.loads(
+            (Path(__file__).parents[2] / ".ci/coverage-packs.toml").read_text(
+                encoding="utf-8"
+            )
+        )
+        packs = manifest["pack"]
+        for path in [
+            "scripts/generate-badges.py",
+            "scripts/tests/test-generate-badges.py",
+        ]:
+            with self.subTest(path=path):
+                self.assertEqual([], router.selected_packs(packs, [path]))
+                self.assertIn(
+                    "patch-coverage-ripr-badge-endpoints",
+                    [pack["id"] for pack in router.non_lcov_matches(packs, [path])],
+                )
+
     def test_non_lcov_router_script_change_is_skipped_by_policy(self) -> None:
         packs = [
             {

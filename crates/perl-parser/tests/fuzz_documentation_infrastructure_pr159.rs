@@ -11,7 +11,7 @@
 //!
 //! Labels: tests:fuzz, perl-fuzz:pr159, documentation:infrastructure
 
-#![allow(unnameable_test_items, dead_code, clippy::collapsible_match)]
+#![allow(unnameable_test_items, dead_code)]
 
 use perl_parser::*;
 use proptest::prelude::*;
@@ -374,10 +374,8 @@ fn collect_symbols_recursive(node: &Node, symbols: &mut Vec<String>) {
         NodeKind::Variable { name, .. } => {
             symbols.push(name.clone());
         }
-        NodeKind::Subroutine { name, .. } => {
-            if let Some(name) = name {
-                symbols.push(name.clone());
-            }
+        NodeKind::Subroutine { name: Some(name), .. } => {
+            symbols.push(name.clone());
         }
         _ => {}
     }

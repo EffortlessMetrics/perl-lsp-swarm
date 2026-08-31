@@ -33,6 +33,8 @@ on:
     branches: [master, main]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
+  push:
+    branches: [master, main]
   # #12563: seed the ripr rust caches from a main-ref run so hosted PR runs
   # restore warm artifacts instead of cold-building into the runner-eviction
   # window. Pull_request runs stay restore-only (docs/ci/cache-policy.md):
@@ -342,6 +344,8 @@ jobs:
               # still upload whatever artifacts were produced.
               cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
+              mkdir -p target/receipts/quality
+              printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
               cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
@@ -411,6 +415,7 @@ jobs:
             target/ripr/review/**
             target/xtask/impacted-evidence/**
             target/receipts/quality/ripr-plus.json
+            target/receipts/quality/ripr-badge-producer.json
             target/receipts/quality/quality-gate-ripr.json
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
@@ -592,6 +597,8 @@ jobs:
               # still upload whatever artifacts were produced.
               cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
+              mkdir -p target/receipts/quality
+              printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
               cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
@@ -661,6 +668,7 @@ jobs:
             target/ripr/review/**
             target/xtask/impacted-evidence/**
             target/receipts/quality/ripr-plus.json
+            target/receipts/quality/ripr-badge-producer.json
             target/receipts/quality/quality-gate-ripr.json
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
@@ -747,6 +755,12 @@ jobs:
         if: always()
         run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
 
+      - name: Record exact RIPR badge producer
+        if: always()
+        run: |
+          mkdir -p target/receipts/quality
+          printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
+
       - name: Generate review guidance
         if: always()
         run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
@@ -825,6 +839,7 @@ jobs:
             target/ripr/review/**
             target/xtask/impacted-evidence/**
             target/receipts/quality/ripr-plus.json
+            target/receipts/quality/ripr-badge-producer.json
             target/receipts/quality/quality-gate-ripr.json
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
@@ -909,6 +924,12 @@ jobs:
         if: always()
         run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
 
+      - name: Record exact RIPR badge producer
+        if: always()
+        run: |
+          mkdir -p target/receipts/quality
+          printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' "$(git rev-parse HEAD)" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
+
       - name: Generate review guidance
         if: always()
         run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
@@ -981,12 +1002,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
-          name: ripr-pr-evidence-fallback
+          name: ripr-pr-evidence
           path: |
             target/ripr/pr/**
             target/ripr/review/**
             target/xtask/impacted-evidence/**
             target/receipts/quality/ripr-plus.json
+            target/receipts/quality/ripr-badge-producer.json
             target/receipts/quality/quality-gate-ripr.json
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
@@ -1053,6 +1075,14 @@ jobs:
       # #6807: read the failed lane's job log to classify runner evictions.
       actions: read
     steps:
+      # The aggregator classifies lane termination through the shared,
+      # unit-tested classifier in scripts/ci/ (#6807, #12563, complementing
+      # #12771's bounded auto-retry handoff).
+      - name: Checkout decision scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Evaluate routed result
         shell: bash
         env:
@@ -1098,11 +1128,13 @@ jobs:
           # ready-for-review the workflow re-triggers and ripr runs for real.
           if [ "$ROUTE_RESULT" = "skipped" ]; then
             echo "::notice::ripr router was skipped (draft PR or non-applicable event) — ripr gate is neutral/pass."
+            echo "RIPR_GATE_VERDICT=neutral-router-skipped"
             echo "ripr+ New Gap Gate: neutral (router skipped — draft PR or non-applicable event)"
             exit 0
           fi
 
           if [ "$ROUTE_RESULT" != "success" ]; then
+            echo "RIPR_GATE_VERDICT=router-not-success"
             echo "::error::ripr router did not complete successfully: $ROUTE_RESULT"
             exit 1
           fi
@@ -1119,6 +1151,7 @@ jobs:
           # supersession. Keep it blocking because no proof was produced.
           for lane_result in "$CX53_RESULT" "$CX43_RESULT" "$GITHUB_RESULT" "$FALLBACK_RESULT"; do
             if [ "$lane_result" = "cancelled" ]; then
+              echo "RIPR_GATE_VERDICT=cancelled-no-verdict"
               echo "::error::ripr lane cancelled — no proof produced for this SHA. This is NOT a new RIPR gap. Normal PR synchronization does not cancel active RIPR runs; investigate an external, manual, or API cancellation and re-run this head."
               echo "ripr+ New Gap Gate: cancelled (no proof for this SHA)"
               exit 1
@@ -1152,17 +1185,25 @@ jobs:
             lane_job_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
               --jq ".jobs[] | select(.name == \"${lane_name}\") | .id" | head -1 || true)
             if [ -n "$lane_job_id" ]; then
-              # grep -c reads the whole stream before exiting; `grep -q` exits
-              # on the first match and its SIGPIPE then trips pipefail, making
-              # every eviction classify as ripr-failure (#6807 follow-up).
-              # Fetch first and count only on a complete successful read: a
-              # partial log carrying a signature after a failed fetch must
+              # Fetch first and classify only on a complete successful read:
+              # a partial log carrying a signature after a failed fetch must
               # never become infra-no-proof; retrieval failure stays
-              # ripr-failure.
+              # ripr-failure (#6807 follow-up).
+              #
+              # #12563 complement to #12771: the decision itself lives in the
+              # unit-tested scripts/ci/classify-ripr-lane-termination so the
+              # boundary — a genuine gap receipt ("quality gate failed; see
+              # receipt") always outranks teardown markers; infra-no-proof
+              # requires positive runner-teardown evidence — is pinned by the
+              # fixture suite in ci-gate-self-tests. This block stays the ONE
+              # classifier: it runs that script and hands its verdict to
+              # ripr-infra-retry.yml strictly as data.
               lane_log=$(mktemp)
               if gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
-                eviction_matches=$(grep -cE "The runner has received a shutdown signal|Process completed with exit code 143|The operation was canceled" "$lane_log" || true)
-                if [ "${eviction_matches:-0}" -gt 0 ]; then
+                clf_out=$(bash scripts/ci/classify-ripr-lane-termination "$lane_log") || clf_out=""
+                printf '%s\n' "$clf_out"
+                clf_class=$(printf '%s\n' "$clf_out" | sed -n 's/^classification=//p' | head -1)
+                if [ "${clf_class:-}" = "infra-no-proof" ]; then
                   lane_class="infra-no-proof"
                 fi
               fi
@@ -1171,6 +1212,11 @@ jobs:
           fi
           report_lane_failure() {
             if [ "$lane_class" = "infra-no-proof" ]; then
+              # Machine-checkable verdicts (#12563): every application of this
+              # gate names its outcome class explicitly so reviewers and tooling
+              # can audit the infra-no-verdict decision boundary.
+              echo "RIPR_GATE_VERDICT=infra-no-proof"
+              echo "RIPR_GATE_DECISION boundary=\"infra-no-proof needs positive runner-teardown evidence with no genuine gap receipt; a real red always reds; one automatic same-head retry max via ripr-infra-retry, then the manual path\""
               echo "::error::ripr lane \`${lane_name}\` was killed by the runner (infra-no-proof: shutdown signal / SIGTERM / API cancellation), NOT by a ripr source gap. No proof exists for ${GITHUB_SHA}. Safe same-head recovery: \`gh run rerun ${GITHUB_RUN_ID} --failed\` — the evaluated tree is unchanged by an infra kill, so a rerun re-runs this exact head (#6807, #12563)."
               # #6807 slice 2: hand the verdict to the bounded auto-retry
               # (ripr-infra-retry.yml) as data so there is exactly one
@@ -1188,9 +1234,10 @@ jobs:
                 echo "- classification: \`infra-no-proof (runner eviction)\`"
                 echo "- lane: \`${lane_name}\` (job \`${lane_job_id:-unknown}\`)"
                 echo "- head: \`${GITHUB_SHA}\`"
-                echo "- rerun: \`gh run rerun ${GITHUB_RUN_ID} --failed\`"
+                echo "- rerun: \`gh run rerun ${GITHUB_RUN_ID} --failed\` (automatic bounded retry armed once; second eviction = manual path)"
               } >> "$GITHUB_STEP_SUMMARY"
             else
+              echo "RIPR_GATE_VERDICT=ripr-failure"
               echo "::error::$1"
             fi
             exit 1
@@ -1230,6 +1277,7 @@ jobs:
               ;;
           esac
 
+          echo "RIPR_GATE_VERDICT=success"
           echo "ripr+ New Gap Gate: success (runner: ${ROUTER_TARGET:-unknown}, reason: ${ROUTER_REASON:-unknown})"
 
       # #6807 slice 2: on an infra-no-proof failure the evaluate step leaves

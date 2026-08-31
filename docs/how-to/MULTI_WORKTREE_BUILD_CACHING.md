@@ -112,6 +112,22 @@ strangely across a version move, clean the shared root once:
 cargo clean --target-dir "$DEVPLANE/target"
 ```
 
+Between full cleans, reap trees nothing has touched recently — whole stale
+`target/` directories, not files inside active ones — with `scripts/target-gc.sh`:
+
+```bash
+just target-gc              # dry-run: reports which targets are stale (default 30d)
+just target-gc --apply      # delete the stale candidates
+bash scripts/target-gc.sh --self-test   # built-in discrimination test
+```
+
+The tool never touches lockfiles or the cargo registry, refuses to run while
+the devplane build flock is held, and keeps any tree in which even one file was
+modified inside the window — so a fresh build's output is immune by
+construction. A tree that stays continuously hot accumulates internal orphaned
+hash-versioned artifacts that this whole-tree rule will not reclaim; pruning
+those would need per-file mtime semantics and remains future work.
+
 ### Lock serialization
 
 Concurrent builds against one shared `CARGO_TARGET_DIR` serialize. Cargo's

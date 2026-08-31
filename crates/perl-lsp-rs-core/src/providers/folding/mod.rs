@@ -340,11 +340,11 @@ impl FoldingRangeExtractor {
                 self.visit_node(init);
             }
 
-            NodeKind::DataSection { marker: _, body } => {
+            NodeKind::DataSection { marker: _, body }
                 // Fold the data section body as a comment
-                if body.is_some() {
-                    self.add_range_from_node(node, Some(FoldingRangeKind::Comment));
-                }
+                if body.is_some() =>
+            {
+                self.add_range_from_node(node, Some(FoldingRangeKind::Comment));
             }
 
             NodeKind::LabeledStatement { label: _, statement } => {

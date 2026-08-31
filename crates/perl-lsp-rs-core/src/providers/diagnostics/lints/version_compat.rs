@@ -319,11 +319,11 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             }
 
             // `say` function call — requires v5.10
-            NodeKind::FunctionCall { name, .. } if name == "say" => {
-                if !pragma_state.has_feature("say") {
-                    let min = feature_min_version("say");
-                    diagnostics.push(make_diagnostic(n, "say", Some("say"), declared_version, min));
-                }
+            NodeKind::FunctionCall { name, .. }
+                if name == "say" && !pragma_state.has_feature("say") =>
+            {
+                let min = feature_min_version("say");
+                diagnostics.push(make_diagnostic(n, "say", Some("say"), declared_version, min));
             }
 
             // `defer { }` block — the `defer` feature shipped in v5.36 and is
@@ -397,17 +397,11 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             }
 
             // `state $x` declaration — requires v5.10
-            NodeKind::VariableDeclaration { declarator, .. } if declarator == "state" => {
-                if !pragma_state.has_feature("state") {
-                    let min = feature_min_version("state");
-                    diagnostics.push(make_diagnostic(
-                        n,
-                        "state",
-                        Some("state"),
-                        declared_version,
-                        min,
-                    ));
-                }
+            NodeKind::VariableDeclaration { declarator, .. }
+                if declarator == "state" && !pragma_state.has_feature("state") =>
+            {
+                let min = feature_min_version("state");
+                diagnostics.push(make_diagnostic(n, "state", Some("state"), declared_version, min));
             }
 
             // Postfix dereference `$x->@*`, `$x->%*`, `$x->$*` — requires v5.20
@@ -453,25 +447,23 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             }
 
             // Subroutine with a signature — requires v5.20
-            NodeKind::Subroutine { signature: Some(_), .. } => {
-                if !pragma_state.has_feature("signatures") {
-                    let min = feature_min_version("signatures");
-                    diagnostics.push(make_diagnostic(
-                        n,
-                        "subroutine signatures",
-                        Some("signatures"),
-                        declared_version,
-                        min,
-                    ));
-                }
+            NodeKind::Subroutine { signature: Some(_), .. }
+                if !pragma_state.has_feature("signatures") =>
+            {
+                let min = feature_min_version("signatures");
+                diagnostics.push(make_diagnostic(
+                    n,
+                    "subroutine signatures",
+                    Some("signatures"),
+                    declared_version,
+                    min,
+                ));
             }
 
             // `$obj isa 'ClassName'` — infix operator; stable at v5.36
-            NodeKind::Binary { op, .. } if op == "isa" => {
-                if !pragma_state.has_feature("isa") {
-                    let min = feature_min_version("isa");
-                    diagnostics.push(make_diagnostic(n, "isa", Some("isa"), declared_version, min));
-                }
+            NodeKind::Binary { op, .. } if op == "isa" && !pragma_state.has_feature("isa") => {
+                let min = feature_min_version("isa");
+                diagnostics.push(make_diagnostic(n, "isa", Some("isa"), declared_version, min));
             }
 
             // Smartmatch operator `~~` — enabled by `use feature 'switch'` in v5.10+,

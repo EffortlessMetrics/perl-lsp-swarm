@@ -120,6 +120,16 @@ when both claims are specified and disjoint, and unsafe when they are vague, bec
 vague claims overlap and overlapping writers produce rework rather than parallelism. The
 precondition for a second writer is a specification, not a slot.
 
+Fleet width changes posture, not doctrine:
+
+- widen poll and probe spacing as lane count rises, and prefer event-driven wakes over
+  polling — at width, shared-API budget is the binding constraint, not attention;
+- usage-window mortality is expected, so every brief and branch must be
+  recoverable-by-stranger: push early, name the resume point in the durable subject,
+  and never let a lane's only copy of its state live in its own context;
+- relaunch priority after a mortality event follows dependency gates, not launch
+  order — the lane whose proof unblocks the most downstream claims revives first.
+
 Count what the host carries, not what was dispatched. These quantities come apart:
 
 ```text
@@ -170,6 +180,35 @@ one candidate.
 
 Silence is also not spare capacity and not completion. A lane holding a current wait
 condition is not stalled, and re-tasking it discards work in flight.
+
+### Salvage revive
+
+Before recording `NOT_PROVEN` or reassigning a quiet lane's claim, revive salvage-first:
+survey the lane's worktree and remote head for unpushed state — uncommitted edits,
+unpushed commits, a viable but unpublished candidate. What exists is evidence; do not
+discard it to make the ledger tidy.
+
+- push surviving work-in-progress to a named salvage branch and **open a salvage PR**
+  for it immediately — or reuse the lane's existing PR if it has one. Before either,
+  establish a single writer: either verify through the task handle that the task is dead
+  and cannot resume, then confirm its process tree has exited and its locks are gone; or
+  obtain the prior writer's acknowledged authority handoff, stop or revoke that writer
+  so it cannot resume, and only then record the transfer in the durable subject.
+  Process-group exit, budget exhaustion, silence, or a unilateral transfer record alone
+  is insufficient; reusing the existing PR assumes this lane is now its single writer.
+  The hosted workflows validate pull requests and main, not arbitrary branch pushes,
+  so a branch-only push starts no hosted proof; without the PR, the claim retains
+  `NOT_PROVEN`. With the salvage PR
+  open, remote CI becomes the verification of record rather than a local re-proof the
+  quiet lane can no longer run;
+- order relaunches by dependency-gate priority, not by which lane died first;
+- type the result as synthesized/salvaged, not `FAILED_NO_RETURN` — that types the
+  artifact's provenance; the claim's own state remains what the salvaged evidence
+  proves (`NOT_PROVEN` or `PARTIAL`) until affected proof and judgment catch up.
+
+Practiced and receipted: mass-kill salvage PRs #12465 (salvaged #12150), #12435
+(salvaged #8921), #12474 (salvaged #8924) — each pushed the quiet lane's WIP and let
+Salvage-PR CI serve as the verification of record.
 
 ## Runtime-local frontier
 

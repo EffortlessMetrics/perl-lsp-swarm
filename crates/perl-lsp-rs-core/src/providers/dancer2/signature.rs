@@ -77,23 +77,24 @@ fn method_list(methods: &perl_semantic_facts::route::RouteMethodSet) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_some_with;
 
     #[test]
     fn get_reports_get_and_head_semantics() {
-        let forms = route_keyword_signature_forms("get").expect("get forms");
+        let forms = must_some_with(route_keyword_signature_forms("get"), "get forms");
         assert!(forms.iter().any(|form| form.description.contains("GET, HEAD")));
         assert!(forms.iter().any(|form| form.parameters.contains("NAME")));
     }
 
     #[test]
     fn forms_are_not_flattened() {
-        let forms = route_keyword_signature_forms("post").expect("post forms");
+        let forms = must_some_with(route_keyword_signature_forms("post"), "post forms");
         assert!(forms.len() >= 4, "several forms stay distinct: {forms:?}");
     }
 
     #[test]
     fn any_documents_explicit_method_list_and_defaults() {
-        let forms = route_keyword_signature_forms("any").expect("any forms");
+        let forms = must_some_with(route_keyword_signature_forms("any"), "any forms");
         assert!(
             forms.iter().any(|form| form.parameters.starts_with("[METHODS]")),
             "any carries the explicit method-list form"

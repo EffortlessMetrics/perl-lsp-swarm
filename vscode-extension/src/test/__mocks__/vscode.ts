@@ -361,6 +361,13 @@ export class Disposable {
   }
 }
 
+export class RelativePattern {
+  constructor(
+    public base: unknown,
+    public pattern: string,
+  ) {}
+}
+
 export class EventEmitter {
   event = jest.fn();
   fire = jest.fn();

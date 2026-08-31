@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "unproven",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.unproven",
+  "subject": "unproven@fixture-tree",
+  "source_result": "not_proven",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:71e410d31263d6fabbee61ad47742d174b71959ef4b9fc54723620c3d1a092f1",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}

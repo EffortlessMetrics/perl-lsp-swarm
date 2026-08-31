@@ -214,7 +214,7 @@ fn suppression(
         build_profile_config_tool_inputs: &["initializationOptions.disabledFeatures"],
         disposition: Disposition::Unadvertised,
         runtime_route_owner: "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
-        evidence_owner: "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+        evidence_owner: "features.toml feature catalog; perl-lsp-rs lifecycle tests; S02 typed model authority crates/perl-lsp-rs-core/src/protocol/effective_surface.rs (#9665); live cutover remains S03",
         competing_paths: Vec::new(),
         target_issue: "#9665",
         compatibility: None,

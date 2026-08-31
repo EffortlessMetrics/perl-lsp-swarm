@@ -189,9 +189,9 @@ workflow_result = "propagate"
 events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
-applicability = "conditional"
+applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "Selected deterministic contexts are promoted separately from this advisory summary."
+reason = "#12911 hardens this candidate-controlled aggregate for advisory diagnostics only; trusted enforcement requires the separate organization-ruleset workflow plan."
 
 [[checks]]
 name = "Gate Enforcement Contract"
@@ -218,3 +218,29 @@ policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
 reason = "CP00 containment guard (#10413) fails internally contradictory terminal close relations and NOT_PROVEN evidence before semantic evaluation; required-promotion review stays under #10168."
+
+[[checks]]
+name = "Public API Surface (facade PR)"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "public-api-pr"
+workflow_result = "propagate"
+events = ["pull_request"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "#2266 auto-runs the cargo-public-api baseline ratchet when a PR touches a published facade surface or .ci/public-api-baselines/; out-of-scope diffs settle as green scoped-noops so a later ruleset promotion resolves cleanly instead of pending forever."
+
+[[checks]]
+name = "Semver Compatibility (facade PR)"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "semver-pr"
+workflow_result = "continue"
+events = ["pull_request"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "#2266 auto-runs cargo-semver-checks against the newest canonical release tag for the five published parser-stack crates; stays advisory (continue-on-error) until baseline confidence supports hard-gating."
