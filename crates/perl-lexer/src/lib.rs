@@ -586,17 +586,21 @@ impl<'a> PerlLexer<'a> {
     ///
     /// **Limits**:
     /// - `MAX_REGEX_BYTES` (64KB): Maximum bytes in a single regex literal
-    /// - `MAX_DELIM_NEST` (128): Maximum delimiter nesting depth
+    /// - `depth` is an internal guard input retained for the crate's unit pin;
+    ///   `parse_regex` always passes `0`. Public quote-like delimiter parsing
+    ///   enforces `MAX_DELIM_NEST` in the balanced-segment helpers instead.
     ///
     /// **Graceful Degradation**:
-    /// - Budget exceeded → emit `UnknownRest` token
-    /// - Jump to EOF to prevent further parsing of problematic region
-    /// - LSP client can emit soft diagnostic about truncation
-    /// - All previously parsed symbols remain valid
-    /// - Recovery is geometry-only: empty text over `[start, input.len())`,
-    ///   followed by terminal `EOF`. The unbounded source remainder is never
-    ///   copied; see the crate-level budget-stop recovery contract and
-    ///   `tests/budget_recovery_contract.rs` (#6717, #14158).
+    /// - A regex byte-budget stop emits `UnknownRest` and jumps to EOF.
+    /// - That recovery is geometry-only: empty text over
+    ///   `[start, input.len())`, followed by terminal `EOF`. The unbounded
+    ///   source remainder is never copied; see the crate-level budget-stop
+    ///   recovery contract and `tests/budget_recovery_contract.rs`
+    ///   (#6717, #14158).
+    /// - `MAX_DELIM_NEST` is a separate local-recovery path: the balanced
+    ///   segment helpers return `None` at the rejected opener, and their
+    ///   owning quote/interpolation parser emits a bounded error or continues
+    ///   locally. It does not produce this guard's `UnknownRest` token.
     ///
     /// **Performance**:
     /// - Fast path: inlined subtraction + comparison (~1-2 CPU cycles)

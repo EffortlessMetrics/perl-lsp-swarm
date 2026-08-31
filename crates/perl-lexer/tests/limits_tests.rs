@@ -19,7 +19,7 @@
 //!    Elapsed time is deliberately not part of the lexer's source-derived token
 //!    contract (hang-detector, 2-second ceiling — not a latency benchmark).
 
-use perl_lexer::{MAX_REGEX_PARSE_STEPS, PerlLexer, TokenType};
+use perl_lexer::{MAX_REGEX_PARSE_STEPS, PerlLexer, StringPart, TokenType};
 use std::time::Instant;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -114,6 +114,47 @@ fn limits_q_operator_excessive_nesting_terminates() -> TestResult {
 
     assert!(elapsed.as_secs() < 2, "Lexer hung on deeply-nested q{{}} (elapsed {:?})", elapsed);
     assert!(!tokens.is_empty(), "Lexer must emit at least one token for deeply-nested q{{}}");
+    Ok(())
+}
+
+/// The production interpolated-string path enforces MAX_DELIM_NEST locally.
+/// Its rejected opener is kept in the expression part only up to the limit;
+/// the remaining source stays in the enclosing string and the semicolon is
+/// still reachable. This is distinct from budget_guard's UnknownRest/EOF path.
+#[test]
+fn limits_interpolation_excessive_nesting_uses_local_recovery() -> TestResult {
+    const MAX_DELIM_NEST: usize = 128;
+    let mut input = String::from("my $x = \"${");
+    input.push_str(&"{".repeat(200));
+    input.push_str("tail\";");
+
+    let mut lexer = PerlLexer::new(&input);
+    let tokens = lexer.collect_tokens();
+    let string_token = tokens
+        .iter()
+        .find(|token| matches!(token.token_type, TokenType::InterpolatedString(_)))
+        .ok_or("production interpolation path should emit an interpolated string")?;
+
+    let TokenType::InterpolatedString(parts) = &string_token.token_type else {
+        return Err("expected an interpolated-string token".into());
+    };
+    let expected_expression = format!("${}", "{".repeat(MAX_DELIM_NEST));
+    assert!(
+        matches!(parts.first(), Some(StringPart::Expression(text)) if text.as_ref() == expected_expression),
+        "depth rejection must stop the expression at MAX_DELIM_NEST"
+    );
+    assert!(
+        string_token.end < input.len(),
+        "local recovery must not consume the trailing semicolon"
+    );
+    assert!(
+        tokens.iter().any(|token| matches!(token.token_type, TokenType::Semicolon)),
+        "local delimiter recovery must leave the trailing statement delimiter reachable"
+    );
+    assert!(
+        !tokens.iter().any(|token| matches!(token.token_type, TokenType::UnknownRest)),
+        "MAX_DELIM_NEST rejection must not use budget_guard's UnknownRest path"
+    );
     Ok(())
 }
 
