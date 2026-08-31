@@ -544,7 +544,7 @@ fn cfg_selector_contexts(bytes: &[u8]) -> R<Vec<(usize, usize)>> {
         if is_cfg_macro {
             cursor = skip_rust_whitespace_and_comments(bytes, cursor + 1)
                 .ok_or_else(|| missing("unterminated cfg! selector invocation"))?;
-        } else if is_cfg_attr && !is_attribute_name(bytes, start) {
+        } else if !is_attribute_name(bytes, start) {
             continue;
         }
         if bytes.get(cursor) != Some(&b'(') {
@@ -594,11 +594,7 @@ fn reject_configured_build_script(root: &std::path::Path) -> R {
             in_package = line == "[package]";
             continue;
         }
-        if in_package
-            && line
-                .strip_prefix("build")
-                .is_some_and(|remainder| remainder.trim_start().starts_with('='))
-        {
+        if in_package && is_build_assignment(line) {
             return Err(missing(format!(
                 "cannot verify configured build script in {}; generated source is not inspectable, so keep the simd gate closed",
                 manifest.display()
@@ -606,6 +602,12 @@ fn reject_configured_build_script(root: &std::path::Path) -> R {
         }
     }
     Ok(())
+}
+
+fn is_build_assignment(line: &str) -> bool {
+    line.split_once('=')
+        .map(|(key, _)| matches!(key.trim(), "build" | "\"build\""))
+        .unwrap_or(false)
 }
 
 fn previous_non_whitespace(bytes: &[u8], mut index: usize) -> Option<usize> {
@@ -1052,6 +1054,16 @@ fn validate_simd_readme_contract(readme: &str) -> R {
             )));
         }
     }
+    for line in lowercase.lines() {
+        if line.contains("simd")
+            && line.contains("performance")
+            && !line.contains("no simd performance claim is made")
+        {
+            return Err(missing(format!(
+                "README simd contract contains a contradictory performance claim: {line}"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -1169,6 +1181,7 @@ fn simd_gate_detects_raw_string_feature_selection() -> R {
 fn simd_gate_detects_inner_attributes_and_ignores_cfg_attr_calls() -> R {
     assert!(contains_simd_selection("#![cfg(feature = \"simd\")]")?);
     assert!(contains_simd_selection("#![cfg_attr(feature = \"simd\", allow(dead_code))]")?);
+    assert!(!contains_simd_selection("cfg(feature = \"simd\")")?);
     assert!(!contains_simd_selection("fn cfg_attr(feature: &str) {}\ncfg_attr(\"simd\");")?);
     assert!(!contains_simd_selection(
         "macro_rules! cfg_attr { ($($item:tt)*) => {} }\ncfg_attr!(feature = \"simd\");"
@@ -1223,6 +1236,15 @@ fn simd_gate_rejects_uninspectable_custom_build_script_fixture() -> R {
 }
 
 #[test]
+fn quoted_build_manifest_key_is_fail_closed_and_unrelated_keys_are_allowed() -> R {
+    assert!(is_build_assignment("build = \"custom_build.rs\""));
+    assert!(is_build_assignment("\"build\" = \"custom_build.rs\""));
+    assert!(!is_build_assignment("builder = \"custom_build.rs\""));
+    assert!(!is_build_assignment("\"build-script\" = \"custom_build.rs\""));
+    Ok(())
+}
+
+#[test]
 fn simd_readme_guard_rejects_contradictory_capability_claim() -> R {
     let readme = include_str!("../README.md");
     let contradictory = format!("{readme}\nThe lexer uses SIMD acceleration.\n");
@@ -1233,5 +1255,20 @@ fn simd_readme_guard_rejects_contradictory_capability_claim() -> R {
         error.to_string().contains("accelerat"),
         "README contradiction must identify the capability claim: {error}"
     );
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_rejects_contradictory_performance_claim() -> R {
+    let readme = include_str!("../README.md");
+    let contradictory = format!("{readme}\nThe lexer provides better SIMD performance.\n");
+    let error = validate_simd_readme_contract(&contradictory).err().ok_or_else(|| {
+        missing("contradictory README SIMD performance wording unexpectedly passed")
+    })?;
+    assert!(
+        error.to_string().contains("performance"),
+        "README contradiction must identify the performance claim: {error}"
+    );
+    validate_simd_readme_contract(readme)?;
     Ok(())
 }
