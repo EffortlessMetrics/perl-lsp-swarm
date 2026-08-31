@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12519 |
-| Rust-family files | 3873 |
-| Non-Rust files | 8646 |
-| Allowlisted | 6409 |
-| Unclassified | 2237 |
+| Total tracked files | 12536 |
+| Rust-family files | 3886 |
+| Non-Rust files | 8650 |
+| Allowlisted | 6411 |
+| Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
 | config | 497 |
-| documentation | 2823 |
+| documentation | 2824 |
 | generated | 2 |
 | production | 349 |
 | test | 2067 |
-| tooling | 671 |
-| unclassified | 2237 |
+| tooling | 672 |
+| unclassified | 2239 |
 
 ## Unclassified files
 
@@ -83,6 +83,8 @@
 | `crates/perl-kwalitee/fixtures/legacy_receipt_v1.json` | `json` |
 | `crates/perl-kwalitee/legacy_indicator_migrations.toml` | `toml` |
 | `crates/perl-lexer/tests/fixtures/ripr_seam_proof_peek_char_unit.inc` | `inc` |
+| `crates/perl-lexer/tests/fixtures/simd_feature_includes/excluded/selector.inc` | `inc` |
+| `crates/perl-lexer/tests/fixtures/simd_feature_includes/payload.inc` | `inc` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/data_literal_preserve.expected-diagnostics.txt` | `txt` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/end_literal_preserve.expected-diagnostics.txt` | `txt` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/format_body_literal_preserve.expected-diagnostics.txt` | `txt` |
@@ -3631,6 +3633,7 @@
 | `ci/quarantine-baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/quick_check.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/regex_static_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/serial_test_identities.json` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/test_heredocs.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/test_quality_rebaseline_receipt.toml` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/todo_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
@@ -5247,6 +5250,7 @@
 | `docs/project/status/native_tooling_readiness.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/neovim-didchange-latency-receipt.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/neovim_latency.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/project/status/oneliner_capability_matrix.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/parser.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/parser_accuracy_failure_packets.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/parser_accuracy_failure_worklist.md` | documentation | `non-rust-docs-tree` | docs |
