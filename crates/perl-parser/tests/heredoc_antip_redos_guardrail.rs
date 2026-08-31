@@ -82,6 +82,78 @@ fn antip_detects_nested_multiline_regex_code_block_heredoc() {
     );
 }
 
+fn regex_code_block_count(code: &str) -> usize {
+    detect(code)
+        .iter()
+        .filter(|d| matches!(d.pattern, AntiPattern::RegexCodeBlockHeredoc { .. }))
+        .count()
+}
+
+#[test]
+fn antip_heredoc_body_braces_do_not_suppress_the_block() {
+    // Braces in heredoc *text* are data, not Perl block structure. Before the
+    // body mask, a lone `{` inflated the brace depth, the outer `(?{ ... })`
+    // never closed, and the diagnostic vanished from valid code (#14352).
+    for (label, code) in [
+        ("unmatched open brace", "qr/x(?{ print <<'M';\ntext with { brace\nM\n})/;\n"),
+        ("unmatched close brace", "qr/x(?{ print <<'M';\ntext with } brace\nM\n})/;\n"),
+        ("bare delimiter", "qr/x(?{ print <<M;\nhas { brace\nM\n})/;\n"),
+        ("double-quoted delimiter", "qr/x(?{ print <<\"M\";\nhas { brace\nM\n})/;\n"),
+        // Perl's indented form is `<<~`; there is no `<<-` heredoc in Perl.
+        ("indented delimiter", "qr/x(?{ print <<~'M';\n  has { brace\n  M\n})/;\n"),
+        ("stacked delimiters", "qr/x(?{ print <<'A', <<'B';\n{ a\nA\n{ b\nB\n})/;\n"),
+    ] {
+        assert!(
+            has_regex_code_block(code),
+            "{label}: a brace in heredoc text must not suppress the diagnostic; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_malformed_block_does_not_blind_the_rest_of_the_file() {
+    // The scan stops at an unmatched outer block to stay linear, so an
+    // unbalanced brace in heredoc data used to disable detection for every
+    // later block in the file, not just its own (#14352).
+    let code = "qr/x(?{ print <<'M';\n{ unbalanced\nM\n})/;\nqr/y(?{ print <<'N';\nok\nN\n})/;\n";
+
+    assert_eq!(
+        regex_code_block_count(code),
+        2,
+        "both blocks must be reported; got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn antip_heredoc_body_does_not_fabricate_a_regex_code_block() {
+    // The opposite direction: a `}` in heredoc text could close a block that
+    // was never opened, and body text resembling `(?{ … <<` could be read as
+    // an opener. Masking the body has to close both directions, not just the
+    // suppression one.
+    for (label, code) in [
+        ("body closes then opens", "my $t = <<'M';\n} (?{ x << y }\nM\nprint $t;\n"),
+        ("body opener only", "print <<'M';\n} (?{ a << b }\nM\n"),
+        ("indented body opener", "print <<~'M';\n  } (?{ a << b }\n  M\n"),
+    ] {
+        assert_eq!(
+            regex_code_block_count(code),
+            0,
+            "{label}: heredoc text must not fabricate a code block; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // Control: the mask must not swallow a real block that merely follows one.
+    assert!(
+        has_regex_code_block(
+            "print <<'M';\n} (?{ a << b }\nM\nqr/y(?{ print <<'N';\nok\nN\n})/;\n"
+        ),
+        "a real block after a masked body must still be reported"
+    );
+}
+
 #[test]
 fn antip_detects_multiline_eval_string_heredoc() {
     // An eval string declaring a heredoc must span newlines to reach the
