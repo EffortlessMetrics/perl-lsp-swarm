@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "bounded fixture assertions for #3021")]
 //! Discriminating tests for `TokenStream` backing modes (issue #8128).
 //!
 //! The live backing must apply parser-directed contextual operations by

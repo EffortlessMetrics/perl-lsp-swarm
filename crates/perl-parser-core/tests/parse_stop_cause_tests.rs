@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "bounded fixture assertion for #3021")]
 /// Deterministic fixtures for `ParseStopCause` — the typed terminal stop authority on
 /// [`ParseOutput`].
 ///

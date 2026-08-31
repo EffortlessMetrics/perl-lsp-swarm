@@ -340,7 +340,7 @@ impl<'a> TokenStream<'a> {
     /// Peek at the next token without consuming it
     pub fn peek(&mut self) -> ParseResult<&Token> {
         if self.peeked.is_none() {
-            let token = self.next_token()?;
+            let token = self.next_token(true)?;
             self.peek_boundary = self.last_boundary.take();
             self.peeked = Some(token);
         }
@@ -365,7 +365,7 @@ impl<'a> TokenStream<'a> {
             }
             Ok(token)
         } else {
-            let token = self.next_token()?;
+            let token = self.next_token(false)?;
             // The token is consumed immediately; its boundary must not be
             // mistaken for the boundary of a later lookahead fill.
             self.last_boundary = None;
@@ -389,7 +389,7 @@ impl<'a> TokenStream<'a> {
 
         // If we don't have a second peeked token, get it
         if self.peeked_second.is_none() {
-            let token = self.next_token()?;
+            let token = self.next_token(true)?;
             self.peek_second_boundary = self.last_boundary.take();
             self.peeked_second = Some(token);
         }
@@ -404,7 +404,7 @@ impl<'a> TokenStream<'a> {
 
         // If we don't have a third peeked token, get it
         if self.peeked_third.is_none() {
-            let token = self.next_token()?;
+            let token = self.next_token(true)?;
             self.peek_third_boundary = self.last_boundary.take();
             self.peeked_third = Some(token);
         }
@@ -659,7 +659,7 @@ impl<'a> TokenStream<'a> {
     }
 
     /// Get the next token from the backing source.
-    fn next_token(&mut self) -> ParseResult<Token> {
+    fn next_token(&mut self, capture_boundary: bool) -> ParseResult<Token> {
         match &mut self.inner {
             TokenStreamInner::Lexer(lexer) => {
                 // Capture the complete lexer state before any trivia is drained
@@ -667,9 +667,9 @@ impl<'a> TokenStream<'a> {
                 // head token was produced from (#8128). Restoring a boundary
                 // with a pending heredoc queue is safe here: the checkpoint
                 // captures the full queue and the input is unchanged.
-                let boundary = lexer.checkpoint();
+                let boundary = capture_boundary.then(|| lexer.checkpoint());
                 let token = Self::next_token_from_lexer(lexer)?;
-                self.last_boundary = Some(boundary);
+                self.last_boundary = boundary;
                 Ok(token)
             }
             TokenStreamInner::Buffered(buffer) => {
