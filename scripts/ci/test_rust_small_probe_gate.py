@@ -9,8 +9,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "em-ci-routed-rust.yml"
-PROBE_MARKER = "      - name: Probe main-red refusal\n"
-EVALUATE_MARKER = "      - name: Evaluate routed result\n"
+PROBE_STEP = "Probe main-red refusal"
+EVALUATE_STEP = "Evaluate routed result"
+STRUCTURAL_STEP = "Prove rustfmt prevention contract"
 CONTRACT_TEST = "scripts/ci/test_rust_small_probe_gate.py"
 EXPECTED_EXPRESSION = """
 (github.event_name != 'pull_request' || github.event.pull_request.draft != true) &&
@@ -32,14 +33,29 @@ def normalize_expression(value: str) -> str:
     return re.sub(r"\s+", "", value)
 
 
+def step_block(workflow: str, step_name: str) -> tuple[str, int]:
+    pattern = re.compile(
+        rf"(?ms)^(?P<indent>[ \\t]*)- name: {re.escape(step_name)}[ \\t]*\\n"
+        rf"(?P<body>.*?)(?=^(?P=indent)- name: |\\Z)"
+    )
+    match = pattern.search(workflow)
+    if match is None:
+        raise AssertionError(f"workflow step not found: {step_name}")
+    return match.group(0), match.start()
+
+
 def probe_expression(workflow: str) -> str:
-    start = workflow.index(PROBE_MARKER) + len(PROBE_MARKER)
-    shell = workflow.index("        shell: bash\n", start)
-    block = workflow[start:shell]
-    prefix = "        if: >-\n"
-    if not block.startswith(prefix):
+    block, _ = step_block(workflow, PROBE_STEP)
+    if_match = re.search(r"(?m)^(?P<indent>[ \\t]+)if: >-[ \\t]*$", block)
+    if if_match is None:
         raise AssertionError("main-red probe must use a multiline applicability expression")
-    return block[len(prefix) :]
+    shell_match = re.search(
+        rf"(?m)^{re.escape(if_match.group('indent'))}shell:",
+        block[if_match.end() :],
+    )
+    if shell_match is None:
+        raise AssertionError("main-red probe must declare its shell after the applicability expression")
+    return block[if_match.end() : if_match.end() + shell_match.start()]
 
 
 def should_probe(
@@ -72,9 +88,9 @@ def validate_probe_gate(workflow: str) -> None:
             "main-red probe applicability must require successful selected proof or admitted fallback"
         )
 
-    structural = workflow.index("      - name: Prove rustfmt prevention contract")
-    probe = workflow.index(PROBE_MARKER)
-    evaluate = workflow.index(EVALUATE_MARKER)
+    _, structural = step_block(workflow, STRUCTURAL_STEP)
+    _, probe = step_block(workflow, PROBE_STEP)
+    _, evaluate = step_block(workflow, EVALUATE_STEP)
     if not structural < probe < evaluate:
         raise AssertionError(
             "probe applicability must be evaluated after structural contracts and before final route evaluation"
@@ -106,6 +122,7 @@ class RustSmallProbeGateTests(unittest.TestCase):
             dict(event_name="pull_request", draft=True, route_result="skipped", target="github", github="skipped"),
             dict(event_name="pull_request", draft=False, route_result="failure", target="github", github="success"),
             dict(event_name="pull_request", draft=False, route_result="success", target="github", github="cancelled"),
+            dict(event_name="pull_request", draft=False, route_result="success", target="cx53", cx53="cancelled"),
             dict(event_name="pull_request", draft=False, route_result="success", target="cx53", cx53="failure"),
             dict(event_name="pull_request", draft=False, route_result="success", target="cx43", cx43="cancelled"),
             dict(event_name="pull_request", draft=False, route_result="success", target="none"),
@@ -130,17 +147,23 @@ class RustSmallProbeGateTests(unittest.TestCase):
                 "needs.rust-small-github.result == 'cancelled'",
             ),
             "cx53 fallback dropped": expression.replace(
-                " || needs.rust-small-fallback.result == 'success'", "", 1
+                "needs.route-rust-small.outputs.target == 'cx53' && (needs.rust-small-cx53.result == 'success' || needs.rust-small-fallback.result == 'success')",
+                "needs.route-rust-small.outputs.target == 'cx53' && needs.rust-small-cx53.result == 'success'",
             ),
             "github route dropped": expression.replace(
                 " ||\n            (needs.route-rust-small.outputs.target == 'github' && needs.rust-small-github.result == 'success')",
                 "",
             ),
         }
-        start = self.workflow.index(PROBE_MARKER) + len(PROBE_MARKER)
-        shell = self.workflow.index("        shell: bash\n", start)
+        probe_block, probe_start = step_block(self.workflow, PROBE_STEP)
+        start = probe_start
+        shell = probe_start + probe_block.index("        shell: bash\n")
         for name, mutated_expression in mutations.items():
             with self.subTest(name=name):
+                if mutated_expression == expression:
+                    self.fail(
+                        f"mutation {name!r} did not apply; update the mutation anchor"
+                    )
                 broken = (
                     self.workflow[:start]
                     + "        if: >-\n"
