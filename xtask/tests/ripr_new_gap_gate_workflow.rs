@@ -23,22 +23,24 @@ fn project_root() -> Result<PathBuf> {
 }
 
 fn evaluate_run_block() -> Result<String> {
+    workflow_run_block("ripr", "Evaluate routed result")
+}
+
+fn workflow_run_block(job_name: &str, step_name: &str) -> Result<String> {
     let root = project_root()?;
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
     let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
     yaml.get("jobs")
-        .and_then(|jobs| jobs.get("ripr"))
+        .and_then(|jobs| jobs.get(job_name))
         .and_then(|job| job.get("steps"))
         .and_then(Value::as_sequence)
         .and_then(|steps| {
-            steps.iter().find(|step| {
-                step.get("name").and_then(Value::as_str) == Some("Evaluate routed result")
-            })
+            steps.iter().find(|step| step.get("name").and_then(Value::as_str) == Some(step_name))
         })
         .and_then(|step| step.get("run"))
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .ok_or_else(|| anyhow!("ripr gate Evaluate routed result run block is missing"))
+        .ok_or_else(|| anyhow!("{job_name} {step_name} run block is missing"))
 }
 
 #[derive(Clone, Copy)]
@@ -62,8 +64,36 @@ impl<'a> GateRoute<'a> {
     }
 }
 
+fn gate_lane_identity(route: GateRoute<'_>) -> (&'static str, &'static str) {
+    if route.fallback_result == "failure" || route.fallback_result == "cancelled" {
+        return ("ripr+ (Disk-Full Fallback)", "88001");
+    }
+    match route.router_target {
+        "cx53" => ("ripr+ on CX53", "53001"),
+        "cx43" => ("ripr+ on CX43", "43001"),
+        "github" => ("ripr+ on GitHub Hosted", "97001"),
+        _ => ("unknown", "0"),
+    }
+}
+
 fn run_gate_with_fake_gh(
     log: Option<&str>,
+    lookup_failures: u32,
+    fetch_failures: u32,
+    route: GateRoute<'_>,
+) -> Result<(std::process::Output, String, Option<String>)> {
+    run_gate_with_fake_gh_logs(
+        log,
+        "##[error]The runner has received a shutdown signal.\n",
+        lookup_failures,
+        fetch_failures,
+        route,
+    )
+}
+
+fn run_gate_with_fake_gh_logs(
+    log: Option<&str>,
+    partial_log: &str,
     lookup_failures: u32,
     fetch_failures: u32,
     route: GateRoute<'_>,
@@ -79,23 +109,53 @@ fn run_gate_with_fake_gh(
     let summary = sandbox.path().join("summary.md");
     let lookup_calls = sandbox.path().join("job-lookup-calls");
     let fetch_calls = sandbox.path().join("log-fetch-calls");
+    let fetch_urls = sandbox.path().join("log-fetch-urls");
     let classification = sandbox.path().join("ripr-gate-classification.env");
     let run = evaluate_run_block()?;
+    let (job_name, job_id) = gate_lane_identity(route);
     let fake = r#"
 sleep() { :; }
 gh() {
   [ "$1" = "api" ] || return 1
-  local url="$2"
+  shift
+  local url="$1"
+  shift
+  local jq_selector=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--jq" ]; then
+      jq_selector="$2"
+      shift 2
+    else
+      shift
+    fi
+  done
   case "$url" in
     */jobs?per_page=100)
       local count=0
       if [ -f "$FAKE_LOOKUP_CALLS" ]; then count=$(cat "$FAKE_LOOKUP_CALLS"); fi
       printf '%s' "$((count + 1))" > "$FAKE_LOOKUP_CALLS"
       if [ "$count" -lt "$FAKE_LOOKUP_FAILURES" ]; then return 1; fi
-      printf '98765\n'
+      if [ "$jq_selector" != ".jobs[] | select(.name == \"$FAKE_JOB_NAME\") | .id" ]; then
+        printf 'unexpected job selector: %s\n' "$jq_selector" >&2
+        return 1
+      fi
+      # A stale job appears first in the response. The fake applies the
+      # workflow's exact selector and returns only the selected lane ID.
+      printf '{"jobs":[{"name":"ripr+ stale job","id":11111},{"name":"%s","id":%s}]}\n' "$FAKE_JOB_NAME" "$FAKE_JOB_ID" >/dev/null
+      printf '%s\n' "$FAKE_JOB_ID"
       return
       ;;
-    */logs)
+    */actions/jobs/*/logs)
+      local requested_job_id="${url%/logs}"
+      requested_job_id="${requested_job_id##*/}"
+      printf '%s\n' "$requested_job_id" >> "$FAKE_FETCH_URLS"
+      if [ "$requested_job_id" != "$FAKE_JOB_ID" ]; then
+        # A stale or hard-coded job ID must not look like the selected lane's
+        # teardown log. Returning a genuine gap makes wrong-job selection
+        # observable through the real classifier.
+        printf '%s' 'quality gate failed; see receipt from stale job\n'
+        return 0
+      fi
       local count=0
       if [ -f "$FAKE_FETCH_CALLS" ]; then count=$(cat "$FAKE_FETCH_CALLS"); fi
       printf '%s' "$((count + 1))" > "$FAKE_FETCH_CALLS"
@@ -129,9 +189,12 @@ gh() {
         .env("FAKE_LOOKUP_FAILURES", lookup_failures.to_string())
         .env("FAKE_FETCH_FAILURES", fetch_failures.to_string())
         .env("FAKE_LOG", log.unwrap_or(""))
-        .env("FAKE_PARTIAL_LOG", "##[error]The runner has received a shutdown signal.\n")
+        .env("FAKE_PARTIAL_LOG", partial_log)
         .env("FAKE_LOOKUP_CALLS", &lookup_calls)
         .env("FAKE_FETCH_CALLS", &fetch_calls)
+        .env("FAKE_FETCH_URLS", &fetch_urls)
+        .env("FAKE_JOB_NAME", job_name)
+        .env("FAKE_JOB_ID", job_id)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -158,6 +221,11 @@ gh() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error).context("reading fake log fetch count"),
     };
+    let fetch_urls_text = match fs::read_to_string(&fetch_urls) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("reading fake log fetch URLs"),
+    };
     let classification_text = match fs::read_to_string(&classification) {
         Ok(text) => Some(text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -165,9 +233,271 @@ gh() {
     };
     Ok((
         output,
-        format!("{combined}\nlookup={lookup_text:?}\nfetch={fetch_text:?}"),
+        format!(
+            "{combined}\nlookup={lookup_text:?}\nfetch={fetch_text:?}\nfetch_urls={fetch_urls_text:?}"
+        ),
         classification_text,
     ))
+}
+
+fn run_router_case(
+    is_fork_pr: &str,
+    gh_token: &str,
+    idle_cx53: &str,
+    curl_status: &str,
+) -> Result<(std::process::Output, String)> {
+    let sandbox = tempfile::tempdir().context("creating router sandbox")?;
+    let output_file = sandbox.path().join("router-output");
+    let summary = sandbox.path().join("summary.md");
+    let run = workflow_run_block("route-ripr", "Decide target runner")?;
+    let fake = r#"
+curl() {
+  local output=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+      output="$2"
+      shift 2
+    else
+      shift
+    fi
+  done
+  printf '%s\n' '{"runners":[]}' > "$output"
+  printf '%s' "$FAKE_CURL_STATUS"
+}
+jq() {
+  [ "$1" = "--arg" ] && [ "$2" = "runner_label" ] || return 1
+  case "$3" in
+    cx53) printf '%s\n' "$FAKE_IDLE_CX53" ;;
+    cx43) printf '0\n' ;;
+    *) return 1 ;;
+  esac
+}
+"#;
+    let script = format!("{fake}\n{run}");
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("IS_FORK_PR", is_fork_pr)
+        .env("PR_AUTHOR_LOGIN", "human")
+        .env("PR_AUTHOR_TYPE", "User")
+        .env("GH_TOKEN", gh_token)
+        .env("ORG", "EffortlessMetrics")
+        .env("FAKE_IDLE_CX53", idle_cx53)
+        .env("FAKE_CURL_STATUS", curl_status)
+        .env("GITHUB_OUTPUT", &output_file)
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("executing the real ripr router run block")?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("router bash stdin is unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output().context("waiting for router run block")?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let route_output = fs::read_to_string(&output_file)
+        .with_context(|| format!("reading router output {}", output_file.display()))?;
+    Ok((output, format!("{combined}\n{route_output}")))
+}
+
+fn run_preflight_case(image_present: bool) -> Result<(std::process::Output, String)> {
+    let sandbox = tempfile::tempdir().context("creating preflight sandbox")?;
+    let output_file = sandbox.path().join("preflight-output");
+    let summary = sandbox.path().join("summary.md");
+    let scratch = sandbox.path().join("scratch");
+    let cache = sandbox.path().join("cache");
+    fs::create_dir_all(&scratch)?;
+    fs::create_dir_all(&cache)?;
+    let run = workflow_run_block("ripr-cx53", "Preflight disk")?;
+    let fake = r#"
+docker() {
+  if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+    [ "$FAKE_IMAGE_PRESENT" = "true" ]
+  else
+    return 0
+  fi
+}
+ci-disk-guard() { return 0; }
+"#;
+    let script = format!("{fake}\n{run}");
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("FAKE_IMAGE_PRESENT", image_present.to_string())
+        .env("SCCACHE_DIR", cache.join("sccache"))
+        .env("TMPDIR", scratch.join("tmp"))
+        .env("CARGO_TARGET_DIR", scratch.join("target"))
+        .env("CARGO_HOME", cache.join("cargo-home"))
+        .env("GITHUB_OUTPUT", &output_file)
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("executing the real ripr preflight run block")?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("preflight bash stdin is unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output().context("waiting for preflight run block")?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let preflight_output = fs::read_to_string(&output_file)
+        .with_context(|| format!("reading preflight output {}", output_file.display()))?;
+    Ok((output, format!("{combined}\n{preflight_output}")))
+}
+
+fn retry_run_block() -> Result<String> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr-infra-retry.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    yaml.get("jobs")
+        .and_then(|jobs| jobs.get("retry-on-eviction"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find(|step| {
+                step.get("name").and_then(Value::as_str)
+                    == Some("Retry once when the gate classified the failure as infra-no-proof")
+            })
+        })
+        .and_then(|step| step.get("run"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("retry workflow run block is missing"))
+}
+
+fn run_retry_case(
+    artifact_mode: &str,
+    run_attempt: &str,
+) -> Result<(std::process::Output, String, bool)> {
+    let sandbox = tempfile::tempdir().context("creating retry sandbox")?;
+    let summary = sandbox.path().join("summary.md");
+    let post_called = sandbox.path().join("retry-post-called");
+    let run = retry_run_block()?;
+    let fake = r#"
+gh() {
+  [ "$1" = "api" ] || return 1
+  shift
+  local method="GET"
+  if [ "$1" = "-X" ]; then
+    method="$2"
+    shift 2
+  fi
+  local url="$1"
+  shift
+  local jq_selector=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--jq" ]; then
+      jq_selector="$2"
+      shift 2
+    else
+      shift
+    fi
+  done
+  case "$url" in
+    */artifacts?per_page=100)
+      if [ "$jq_selector" != '.artifacts[] | select(.name == "ripr-gate-classification") | .id' ]; then
+        printf 'unexpected artifact selector: %s\n' "$jq_selector" >&2
+        return 1
+      fi
+      if [ "$FAKE_ARTIFACT_MODE" = "missing" ]; then
+        # A different artifact exists, but the requested selector must not
+        # accidentally return its ID.
+        printf '%s\n' ''
+      else
+        printf '99001\n'
+      fi
+      ;;
+    */actions/artifacts/99001/zip)
+      if [ "$FAKE_ARTIFACT_MODE" = "download-failure" ]; then
+        return 1
+      fi
+      printf 'fake-zip-payload\n'
+      ;;
+    */actions/runs/4242)
+      if [ "$jq_selector" != '"\(.run_attempt) \(.status)"' ]; then
+        printf 'unexpected run selector: %s\n' "$jq_selector" >&2
+        return 1
+      fi
+      printf '%s completed\n' "$FAKE_LIVE_ATTEMPT"
+      ;;
+    */actions/runs/4242/rerun-failed-jobs)
+      [ "$method" = "POST" ] || return 1
+      : > "$FAKE_POST_CALLED"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+unzip() {
+  local destination=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-d" ]; then
+      destination="$2"
+      shift 2
+    else
+      shift
+    fi
+  done
+  if [ "$FAKE_ARTIFACT_MODE" = "missing-file" ]; then
+    return 0
+  fi
+  if [ "$FAKE_ARTIFACT_MODE" = "malformed" ]; then
+    printf '%s\n' 'classification=infra-no-proof' 'run_id=not-a-number' > "$destination/ripr-gate-classification.env"
+    return 0
+  fi
+  printf '%s\n' \
+    'classification=infra-no-proof' \
+    'lane_name=ripr+ on GitHub Hosted' \
+    'lane_job_id=97001' \
+    'head_sha=0123456789abcdef0123456789abcdef01234567' \
+    'router_target=github' \
+    'run_id=4242' > "$destination/ripr-gate-classification.env"
+}
+"#;
+    let script = format!("{fake}\n{run}");
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("RUN_ID", "4242")
+        .env("RUN_ATTEMPT", run_attempt)
+        .env("HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
+        .env("FAKE_ARTIFACT_MODE", artifact_mode)
+        .env("FAKE_LIVE_ATTEMPT", "1")
+        .env("FAKE_POST_CALLED", &post_called)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("executing the real ripr retry run block")?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("retry bash stdin is unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output().context("waiting for retry run block")?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let posted = post_called.is_file();
+    Ok((output, combined, posted))
 }
 
 #[test]
@@ -272,8 +602,7 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
 }
 
 #[test]
-fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing()
--> Result<(), Box<dyn std::error::Error>> {
+fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Result<()> {
     let root = project_root()?;
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
 
@@ -298,6 +627,42 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing()
             && workflow.contains("needs.ripr-cx43.outputs.preflight_ok == 'false'"),
         "preflight_ok=false must route the run to the GitHub-hosted fallback"
     );
+
+    let (self_hosted_route, self_hosted_output) =
+        run_router_case("false", "runner-token", "1", "200")?;
+    if !self_hosted_route.status.success()
+        || !self_hosted_output.contains("target=cx53")
+        || !self_hosted_output.contains("reason=cx53_idle")
+    {
+        bail!(
+            "router must select an idle CX53 runner through its real run block:\n{self_hosted_output}"
+        );
+    }
+    let (hosted_route, hosted_output) = run_router_case("false", "runner-token", "0", "200")?;
+    if !hosted_route.status.success()
+        || !hosted_output.contains("target=github")
+        || !hosted_output.contains("reason=no_idle_runner")
+    {
+        bail!(
+            "router must select GitHub-hosted when no self-hosted runner is idle:\n{hosted_output}"
+        );
+    }
+    let (missing_image, missing_image_output) = run_preflight_case(false)?;
+    if missing_image.status.success()
+        || !missing_image_output
+            .contains("Required Docker image em-ci-rust:1.95 is missing on CX53")
+        || !missing_image_output.contains("preflight_ok=false")
+    {
+        bail!(
+            "missing Docker image must fail the real preflight and record false:\n{missing_image_output}"
+        );
+    }
+    let (ready_image, ready_image_output) = run_preflight_case(true)?;
+    if !ready_image.status.success() || !ready_image_output.contains("preflight_ok=true") {
+        bail!(
+            "available Docker image and disk guards must pass the real preflight:\n{ready_image_output}"
+        );
+    }
 
     Ok(())
 }
@@ -394,15 +759,15 @@ fn ripr_docs_use_direct_local_proof_commands() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
-fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<(), Box<dyn std::error::Error>> {
+fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     let root = project_root()?;
     let gate = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
     let retry = fs::read_to_string(root.join(".github/workflows/ripr-infra-retry.yml"))?;
 
     // #6807 slice 2: the gate remains the single eviction classifier and
     // hands its verdict to the retry workflow strictly as data.
-    let evaluate_step =
-        workflow_step(&gate, "Evaluate routed result").ok_or("missing evaluate step")?;
+    let evaluate_step = workflow_step(&gate, "Evaluate routed result")
+        .ok_or_else(|| anyhow!("missing evaluate step"))?;
     assert!(
         evaluate_step.contains("classification=infra-no-proof")
             && evaluate_step.contains("> ripr-gate-classification.env")
@@ -411,7 +776,7 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<(), Box<dyn std::
         "the ripr gate must emit its infra-no-proof verdict as a data file for the retry workflow"
     );
     let upload_step = workflow_step(&gate, "Upload gate classification")
-        .ok_or("missing classification upload")?;
+        .ok_or_else(|| anyhow!("missing classification upload"))?;
     assert!(
         upload_step.contains("if: failure()")
             && upload_step.contains("name: ripr-gate-classification")
@@ -459,6 +824,53 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<(), Box<dyn std::
         !retry.contains("[ \"${gate_head}\" != \"${HEAD_SHA}\" ]"),
         "ripr-infra-retry must not gate the retry on a head-SHA comparison (merge ref vs branch tip)"
     );
+
+    let (missing, missing_output, missing_posted) = run_retry_case("missing", "1")?;
+    if !missing.status.success()
+        || !missing_output.contains("no ripr-gate-classification artifact")
+        || missing_posted
+    {
+        bail!(
+            "missing classification artifact must skip retry without arming it:\n{missing_output}"
+        );
+    }
+    let (download_failure, download_failure_output, download_failure_posted) =
+        run_retry_case("download-failure", "1")?;
+    if download_failure.status.success() || download_failure_posted {
+        bail!(
+            "classification artifact download failure must remain an explicit failed consumer path:\n{download_failure_output}"
+        );
+    }
+    let (missing_file, missing_file_output, missing_file_posted) =
+        run_retry_case("missing-file", "1")?;
+    if !missing_file.status.success()
+        || !missing_file_output.contains("did not contain ripr-gate-classification.env")
+        || missing_file_posted
+    {
+        bail!("artifact without its classification file must skip retry:\n{missing_file_output}");
+    }
+    let (malformed, malformed_output, malformed_posted) = run_retry_case("malformed", "1")?;
+    if !malformed.status.success()
+        || !malformed_output
+            .contains("classification run id (invalid) does not match event run 4242")
+        || malformed_posted
+    {
+        bail!("malformed classification data must fail closed before retry:\n{malformed_output}");
+    }
+    let (valid, valid_output, valid_posted) = run_retry_case("valid", "1")?;
+    if !valid.status.success()
+        || !valid_output.contains("re-queued failed jobs of run 4242")
+        || !valid_posted
+    {
+        bail!("valid classification data must reach the bounded rerun API:\n{valid_output}");
+    }
+    let (exhausted, exhausted_output, exhausted_posted) = run_retry_case("valid", "2")?;
+    if !exhausted.status.success()
+        || !exhausted_output.contains("RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted")
+        || exhausted_posted
+    {
+        bail!("attempt two must take the loud manual NOT_PROVEN path:\n{exhausted_output}");
+    }
 
     Ok(())
 }
@@ -694,6 +1106,30 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         bail!("retried successful evidence must produce an infra classification artifact");
     }
 
+    let partial_teardown = "##[error]The runner has received a shutdown signal.\n";
+    let genuine_after_partial =
+        "quality gate failed; see receipt target/receipts/quality/quality-gate-ripr.json\n";
+    let (reused, reused_output, reused_classification) = run_gate_with_fake_gh_logs(
+        Some(genuine_after_partial),
+        partial_teardown,
+        0,
+        1,
+        GateRoute::github_failure(),
+    )?;
+    if reused.status.success()
+        || !reused_output.contains("classification=ripr-failure")
+        || !reused_output.contains("gap_receipt_matches=1")
+        || !reused_output.contains("shutdown_signal_matches=0")
+        || !reused_output.contains("log_lines_scanned=1")
+        || !reused_output.contains("fetch=Some(\"2\")")
+        || !reused_output.contains("fetch_urls=Some(\"97001\\n97001\\n\")")
+        || reused_classification.is_some()
+    {
+        bail!(
+            "a failed partial teardown fetch followed by a distinct genuine-gap log must truncate and reclassify the buffer:\n{reused_output}"
+        );
+    }
+
     for (route_name, route) in [
         (
             "cx53",
@@ -716,6 +1152,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
             },
         ),
     ] {
+        let expected_job_id = if route_name == "cx53" { "53001" } else { "43001" };
         let (self_hosted, output, artifact) =
             run_gate_with_fake_gh(Some(evicted_log), 0, 0, route)?;
         let artifact = artifact.ok_or_else(|| anyhow!("{route_name} classification is missing"))?;
@@ -724,7 +1161,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
             || !output.contains("RIPR_GATE_VERDICT=infra-no-proof")
             || !output.contains("lookup=Some(\"1\")\nfetch=Some(\"1\")")
             || !artifact.contains(&format!("lane_name=ripr+ on {}", route_name.to_uppercase()))
-            || !artifact.contains("lane_job_id=98765")
+            || !artifact.contains(&format!("lane_job_id={expected_job_id}"))
         {
             bail!(
                 "{route_name} runner failure must select its job, classify its downloaded log, and publish the retry artifact:\n{output}\n{artifact}"
@@ -748,6 +1185,28 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     {
         bail!(
             "successful disk-full fallback must preserve primary fail-closed retrieval and then take the fallback route without a retry artifact:\n{fallback_output}"
+        );
+    }
+
+    let fallback_failure_route = GateRoute {
+        router_target: "cx53",
+        cx53_result: "failure",
+        cx43_result: "skipped",
+        github_result: "skipped",
+        fallback_result: "failure",
+    };
+    let (fallback_failure, fallback_failure_output, fallback_failure_artifact) =
+        run_gate_with_fake_gh(Some(evicted_log), 0, 0, fallback_failure_route)?;
+    let fallback_failure_artifact = fallback_failure_artifact
+        .ok_or_else(|| anyhow!("fallback failure classification artifact is missing"))?;
+    if fallback_failure.status.success()
+        || !fallback_failure_output.contains("RIPR_GATE_VERDICT=infra-no-proof")
+        || !fallback_failure_output.contains("fetch_urls=Some(\"88001\\n\")")
+        || !fallback_failure_artifact.contains("lane_name=ripr+ (Disk-Full Fallback)")
+        || !fallback_failure_artifact.contains("lane_job_id=88001")
+    {
+        bail!(
+            "fallback failure must select and classify the fallback job rather than a stale primary job:\n{fallback_failure_output}\n{fallback_failure_artifact}"
         );
     }
 
