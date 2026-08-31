@@ -557,8 +557,29 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     {
         bail!("trusted workflow must bind the exact SUBJECT_SHA Git object");
     }
-    if !step_run_contains("cargo run --locked -p xtask -- non-rust exact-tree") {
-        bail!("trusted workflow must execute the exact-tree evaluator in a run step");
+    let evaluator_steps = steps
+        .iter()
+        .filter_map(|step| {
+            let map = step.as_mapping()?;
+            let name = map.get(key("name")).and_then(serde_yaml_ng::Value::as_str)?;
+            (name == "Run trusted exact-tree evaluator").then_some(map)
+        })
+        .collect::<Vec<_>>();
+    if evaluator_steps.len() != 1 {
+        bail!("trusted workflow must define exactly one named evaluator step");
+    }
+    let evaluator = evaluator_steps[0];
+    let evaluator_run = evaluator
+        .get(key("run"))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .ok_or_else(|| eyre!("trusted evaluator step must execute a run command"))?;
+    if !evaluator_run.contains("cargo run --locked -p xtask -- non-rust exact-tree") {
+        bail!("trusted evaluator step must execute the exact-tree command");
+    }
+    if let Some(condition) = evaluator.get(key("if")).and_then(serde_yaml_ng::Value::as_str)
+        && !condition.contains("steps.bind.outcome == 'success'")
+    {
+        bail!("trusted evaluator step must not be independently disabled");
     }
     if !steps.iter().any(|step| {
         let Some(map) = step.as_mapping() else { return false };
