@@ -439,9 +439,17 @@ def main():
             set(INVARIANT_DIGESTS) != EXPECTED_INVARIANTS:
         fail("invariant maps do not cover exactly the named invariant set")
     for name, (which, pattern) in INVARIANT_BLOCKS.items():
-        m = re.search(pattern, sources[which])
-        if not m:
+        # Digesting the FIRST match would leave a second, contradictory copy
+        # of the same block entirely unchecked: the governing paragraph could
+        # be restated later with its ownership or applicability reversed, and
+        # the digest of the untouched original would still match. An invariant
+        # must occur exactly once to be an invariant.
+        found = re.findall(pattern, sources[which])
+        if not found:
             fail(f"invariant block missing or reshaped: {name}")
+        if len(found) != 1:
+            fail(f"invariant block occurs {len(found)} times, must be unique: {name}")
+        m = re.search(pattern, sources[which])
         got = hashlib.sha256(" ".join(m.group(0).split()).encode("utf-8")).hexdigest()[:16]
         if got != INVARIANT_DIGESTS[name]:
             fail(f"invariant block changed: {name}")
