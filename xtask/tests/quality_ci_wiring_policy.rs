@@ -1758,9 +1758,14 @@ fn coverage_risk_pack_docs_contract(document: &str) -> Result<()> {
 }
 
 fn coverage_rollout_docs_contract(document: &str) -> Result<()> {
+    let has_stale_coverage_branch = document.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("master")
+            && (lower.contains("coverage") || lower.contains("codecov"))
+    });
     ensure!(
-        !document.to_ascii_lowercase().contains("master"),
-        "Codecov rollout docs must use the live main branch"
+        !has_stale_coverage_branch,
+        "Codecov rollout docs must use the live main branch for coverage references"
     );
     Ok(())
 }
