@@ -16,7 +16,11 @@ fn root() -> Result<PathBuf, DynError> {
 fn read(root: &Path, path: &str) -> Result<String, DynError> {
     let full = root.join(path);
     fs::read_to_string(&full).map_err(|error| {
-        std::io::Error::new(error.kind(), format!("failed to read {}: {error}", full.display())).into()
+        std::io::Error::new(
+            error.kind(),
+            format!("failed to read {}: {error}", full.display()),
+        )
+        .into()
     })
 }
 
@@ -26,6 +30,14 @@ fn neutral(text: &str) -> String {
 
 fn collapsed(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn prose(text: &str) -> String {
+    text.replace(['`', '*'], "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
 }
 
 fn heading_level(line: &str) -> Option<usize> {
@@ -50,41 +62,74 @@ fn section<'a>(document: &'a str, heading: &str) -> Result<&'a str, String> {
                 start = Some(offset + line.len());
             }
         } else if heading_level(body).is_some_and(|candidate| candidate <= level) {
-            return Ok(&document[start.expect("section start exists")..offset]);
+            let section_start = start.ok_or_else(|| format!("missing section {heading:?}"))?;
+            return Ok(&document[section_start..offset]);
         }
         offset += line.len();
     }
-    start.map(|start| &document[start..]).ok_or_else(|| format!("missing section {heading:?}"))
+    start
+        .map(|section_start| &document[section_start..])
+        .ok_or_else(|| format!("missing section {heading:?}"))
 }
 
-fn table_first_cells(body: &str) -> BTreeSet<String> {
+fn table_rows(body: &str) -> Vec<Vec<String>> {
     body.lines()
         .filter_map(|line| {
-            let cells = line.trim().trim_matches('|').split('|').map(str::trim).collect::<Vec<_>>();
-            let first = cells.first()?.trim_matches('`');
-            (!first.is_empty() && first != "Disposition" && !first.chars().all(|ch| ch == '-' || ch == ':'))
-                .then(|| first.to_string())
+            let trimmed = line.trim();
+            if !trimmed.starts_with('|') {
+                return None;
+            }
+            let cells = trimmed
+                .trim_matches('|')
+                .split('|')
+                .map(|cell| cell.trim().trim_matches('`').to_string())
+                .collect::<Vec<_>>();
+            if cells.is_empty()
+                || cells
+                    .iter()
+                    .all(|cell| cell.chars().all(|ch| ch == '-' || ch == ':'))
+                || matches!(
+                    cells.first().map(String::as_str),
+                    Some("Disposition" | "Observation" | "Later event")
+                )
+            {
+                return None;
+            }
+            Some(cells)
         })
         .collect()
 }
 
-fn validate_spec(spec: &str) -> Result<(), String> {
-    for marker in [
+fn validate_contract(spec: &str) -> Result<(), String> {
+    let required_markers = [
         "# PLSP-SPEC-0006: PR semantic incorporation and disposition",
         "Status: accepted (amended 2026-08-11)",
         "Those requirements are superseded by this amendment.",
+        "### Semantic candidate and proof",
+        "### Integration",
+        "### Live required status",
+        "### Merge race and landed result",
         "There is no mechanical one-rebase limit.",
         "gh pr merge <n> --squash --match-head-commit <current-head-sha>",
-    ] {
+    ];
+    for marker in required_markers {
         if !spec.contains(marker) {
-            return Err(format!("missing spec marker {marker:?}"));
+            return Err(format!(
+                "missing current semantic-convergence marker {marker:?}"
+            ));
         }
     }
+
     if spec.lines().any(|line| line.starts_with("Linked plan:")) {
-        return Err("obsolete linked-plan authority remains".into());
+        return Err("obsolete release-plan authority remains".to_string());
     }
 
-    let expected = [
+    let disposition_rows = table_rows(section(spec, "## Canonical dispositions")?);
+    let actual_dispositions = disposition_rows
+        .iter()
+        .filter_map(|row| row.first().cloned())
+        .collect::<BTreeSet<_>>();
+    let expected_dispositions = [
         "MERGE_EXISTING_CANDIDATE",
         "REPAIR_EXISTING_CANDIDATE",
         "RESOLVE_CONFLICT",
@@ -98,27 +143,81 @@ fn validate_spec(spec: &str) -> Result<(), String> {
     .into_iter()
     .map(str::to_string)
     .collect::<BTreeSet<_>>();
-    let actual = table_first_cells(section(spec, "## Canonical dispositions")?);
-    if actual != expected {
-        return Err(format!("canonical dispositions changed: {actual:?}"));
+    if actual_dispositions != expected_dispositions {
+        return Err(format!(
+            "canonical disposition set changed: expected {expected_dispositions:?}, got {actual_dispositions:?}"
+        ));
     }
 
-    let normalized = collapsed(spec).to_ascii_lowercase();
+    let invalidation_rows = table_rows(section(spec, "## Invalidation matrix")?);
+    let unrelated_main = invalidation_rows
+        .iter()
+        .find(|row| {
+            row.first()
+                .is_some_and(|cell| prose(cell) == "unrelated main movement")
+        })
+        .ok_or_else(|| "missing unrelated-main invalidation row".to_string())?;
+    if unrelated_main
+        .last()
+        .is_none_or(|response| !prose(response).contains("leave the candidate unchanged"))
+    {
+        return Err("unrelated main movement no longer preserves the candidate".to_string());
+    }
+
+    let observation_rows = table_rows(section(spec, "## Conflict and unknown-state semantics")?);
+    let behind_only = observation_rows
+        .iter()
+        .find(|row| row.first().is_some_and(|cell| cell == "BEHIND_ONLY"))
+        .ok_or_else(|| "missing BEHIND_ONLY observation".to_string())?;
+    if behind_only
+        .last()
+        .is_none_or(|route| !prose(route).contains("no required action"))
+    {
+        return Err("BEHIND_ONLY must remain a no-action observation".to_string());
+    }
+
+    let base_section = prose(section(spec, "## Base reconciliation and rebase")?);
+    for required in [
+        "a reconcile_base_for_concrete_reason disposition must name at least one reason",
+        "an actual textual conflict",
+        "current main changed the same semantic contract",
+        "an explicit stack prerequisite changed",
+        "live branch protection or merge-queue policy requires a current integration basis",
+        "selected proof cannot be interpreted without incorporating the prerequisite",
+    ] {
+        if !base_section.contains(required) {
+            return Err(format!("base reconciliation lost prerequisite {required:?}"));
+        }
+    }
+    for insufficient in [
+        "the candidate is old or inactive",
+        "the branch is many commits behind",
+        "unrelated files changed on main",
+        "a current status is missing",
+        "a prior rebase already happened or has not happened yet",
+    ] {
+        if !base_section.contains(insufficient) {
+            return Err(format!(
+                "base reconciliation lost insufficiency rule {insufficient:?}"
+            ));
+        }
+    }
+
+    let normalized = prose(spec);
     for forbidden in [
         "every candidate must update its base before merge",
         "all candidates must rebase before merge",
         "behind branches must be updated before merge",
         "every pull request must rebase onto current main",
+        "the branch must be current with main before merge",
     ] {
         if normalized.contains(forbidden) {
-            return Err(format!("mandatory refresh restored: {forbidden}"));
+            return Err(format!(
+                "mandatory-refresh paraphrase restored: {forbidden:?}"
+            ));
         }
     }
 
-    let conflict = collapsed(section(spec, "## Conflict and unknown-state semantics")?);
-    if !conflict.contains("`BEHIND_ONLY`") || !conflict.contains("no required action") {
-        return Err("BEHIND_ONLY must remain no-action".into());
-    }
     Ok(())
 }
 
@@ -150,16 +249,27 @@ fn validate_review_wave(address: &str, finish: &str) -> Result<(), String> {
         ],
         "repair boundary",
     )?;
-    let admission = repair.find("Judge finding validity and current-candidate admission separately.")
+    let admission = repair
+        .find("Judge finding validity and current-candidate admission separately.")
         .ok_or("missing admission decision")?;
-    let promotion = repair.find("Do not treat comments as independent patch instructions.")
+    let promotion = repair
+        .find("Do not treat comments as independent patch instructions.")
         .ok_or("missing promotion boundary")?;
     if admission >= promotion {
         return Err("class promotion precedes candidate admission".into());
     }
 
     let packet = collapsed(section(&address, "### Return packet")?);
-    require_all(&packet, &["candidate_changed", "claim_changed", "stale_review_dimensions", "earliest still-missing judgment"], "return packet")?;
+    require_all(
+        &packet,
+        &[
+            "candidate_changed",
+            "claim_changed",
+            "stale_review_dimensions",
+            "earliest still-missing judgment",
+        ],
+        "return packet",
+    )?;
 
     let procedure = collapsed(section(&address, "## Procedure")?);
     require_all(
@@ -167,11 +277,23 @@ fn validate_review_wave(address: &str, finish: &str) -> Result<(), String> {
         &[
             "Run a class-level falsifier only when a failure class was promoted.",
             "do not create an empty repair commit when no candidate bytes need to change",
+            "When the candidate or claim changed or review dimensions became stale",
             "candidate_changed=false",
             "claim_changed=false",
             "preserve current proof/review conclusions and do not manufacture another challenge cycle",
         ],
         "procedure",
+    )?;
+
+    let routes = collapsed(section(&address, "## Routes")?);
+    require_all(
+        &routes,
+        &[
+            "`candidate_changed=true`, `claim_changed=true`, or non-empty `stale_review_dimensions`",
+            "`candidate_changed=false`, `claim_changed=false`, and empty `stale_review_dimensions`",
+            "preserve current proof/review and continue at the earliest still-missing judgment",
+        ],
+        "routes",
     )?;
 
     let stabilization = collapsed(section(&finish, "## Repair waves and head stabilization")?);
@@ -191,12 +313,18 @@ fn validate_review_wave(address: &str, finish: &str) -> Result<(), String> {
         "finish-pr",
     )?;
 
-    for forbidden in ["CLASS_REPAIR_REQUIRED", "REPAIR_WAVE_NOT_PROVEN", "HEAD_STABILIZED_FOR_CI"] {
+    for forbidden in [
+        "CLASS_REPAIR_REQUIRED",
+        "REPAIR_WAVE_NOT_PROVEN",
+        "HEAD_STABILIZED_FOR_CI",
+    ] {
         if address.contains(forbidden) || finish.contains(forbidden) {
             return Err(format!("minted overlapping state {forbidden}"));
         }
     }
-    if !address.contains("`MUTABLE_FINDINGS_OPEN`") || !finish.contains("`MUTABLE_FINDINGS_OPEN`") {
+    if !address.contains("`MUTABLE_FINDINGS_OPEN`")
+        || !finish.contains("`MUTABLE_FINDINGS_OPEN`")
+    {
         return Err("lost canonical mutable-findings route".into());
     }
     Ok(())
@@ -204,27 +332,118 @@ fn validate_review_wave(address: &str, finish: &str) -> Result<(), String> {
 
 #[test]
 fn accepted_spec_has_closed_semantic_model() -> Result<(), DynError> {
-    validate_spec(&read(&root()?, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?)
-        .map_err(|error| format!("PLSP-SPEC-0006: {error}"))?;
+    let root = root()?;
+    let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
+
+    validate_contract(&spec).map_err(|error| format!("PLSP-SPEC-0006: {error}"))?;
     Ok(())
 }
 
 #[test]
-fn spec_ratchets_reject_refresh_and_disposition_regressions() -> Result<(), DynError> {
-    let spec = read(&root()?, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
-    assert!(validate_spec(&format!("{spec}\nEvery candidate must update its base before merge.\n")).is_err());
-    let anchor = "| `NOT_PROVEN` | Required source, review, proof, policy, or tool evidence could not be established |";
-    let mutated = spec.replacen(anchor, &format!("| `NEEDS_REBASE` | The branch is behind `main` |\n{anchor}"), 1);
-    assert_ne!(mutated, spec);
-    assert!(validate_spec(&mutated).is_err());
+fn ratchet_rejects_paraphrased_mandatory_refresh() -> Result<(), DynError> {
+    let root = root()?;
+    let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
+    let mutated = format!("{spec}\n\nEvery candidate must update its base before merge.\n");
+
+    assert!(
+        validate_contract(&mutated).is_err(),
+        "paraphrased mandatory-base-refresh doctrine must fail the contract"
+    );
     Ok(())
+}
+
+#[test]
+fn ratchet_rejects_age_driven_disposition() -> Result<(), DynError> {
+    let root = root()?;
+    let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
+    let anchor = "| `NOT_PROVEN` | Required source, review, proof, policy, or tool evidence could not be established |";
+    let replacement = format!("| `NEEDS_REBASE` | The branch is behind `main` |\n{anchor}");
+    let mutated = spec.replacen(anchor, &replacement, 1);
+
+    assert_ne!(mutated, spec, "disposition mutation fixture must apply");
+    assert!(
+        validate_contract(&mutated).is_err(),
+        "an added age/behind disposition must fail the closed model"
+    );
+    Ok(())
+}
+
+#[test]
+fn ratchet_rejects_behind_only_update_route() -> Result<(), DynError> {
+    let root = root()?;
+    let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
+    let current = "| `BEHIND_ONLY` | The candidate is conflict-free while `main` advanced | no required action |";
+    let regressed = "| `BEHIND_ONLY` | The candidate is conflict-free while `main` advanced | update the branch before merge |";
+    let mutated = spec.replacen(current, regressed, 1);
+
+    assert_ne!(mutated, spec, "BEHIND_ONLY mutation fixture must apply");
+    assert!(
+        validate_contract(&mutated).is_err(),
+        "behind-only branch mutation must fail the contract"
+    );
+    Ok(())
+}
+
+#[test]
+fn ratchet_retains_invalidation_and_reconciliation_coverage() -> Result<(), DynError> {
+    let root = root()?;
+    let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
+
+    let invalidation = spec.replacen(
+        "leave the candidate unchanged",
+        "refresh the candidate unconditionally",
+        1,
+    );
+    assert_ne!(invalidation, spec, "invalidation mutation fixture must apply");
+    assert!(
+        validate_contract(&invalidation).is_err(),
+        "unrelated-main invalidation regression must fail the contract"
+    );
+
+    let reconciliation = spec.replacen(
+        "an actual textual conflict",
+        "a branch that is merely behind",
+        1,
+    );
+    assert_ne!(
+        reconciliation, spec,
+        "base-reconciliation mutation fixture must apply"
+    );
+    assert!(
+        validate_contract(&reconciliation).is_err(),
+        "base-reconciliation prerequisite loss must fail the contract"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn canonical_disposition_parser_ignores_surrounding_prose() {
+    let body = "Introductory prose.\n\n| Disposition | Meaning |\n| --- | --- |\n| `BLOCKED` | Wait |\n\nClosing prose.";
+    let rows = table_rows(body);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0], "BLOCKED");
 }
 
 #[test]
 fn catalogs_name_the_current_contract() -> Result<(), DynError> {
     let root = root()?;
-    assert!(read(&root, "docs/specs/README.md")?.contains("PLSP-SPEC-0006: PR semantic incorporation and disposition"));
-    assert!(read(&root, "docs/INDEX.md")?.contains("PR Semantic Incorporation and Disposition Spec"));
+    let catalog = read(&root, "docs/specs/README.md")?;
+    let index = read(&root, "docs/INDEX.md")?;
+
+    assert!(
+        catalog.contains("PLSP-SPEC-0006: PR semantic incorporation and disposition"),
+        "spec catalog must expose the amended title"
+    );
+    assert!(
+        index.contains("PR Semantic Incorporation and Disposition Spec"),
+        "documentation index must point to the amended contract"
+    );
+    assert!(
+        !index.contains("0.14.0 Readiness Queue](releases/0.14.0-readiness.md) — current-release"),
+        "documentation index must not present the historical 0.14.0 queue as current"
+    );
+
     Ok(())
 }
 
@@ -232,9 +451,13 @@ fn catalogs_name_the_current_contract() -> Result<(), DynError> {
 fn provider_review_repair_convergence_is_bounded() -> Result<(), DynError> {
     let root = root()?;
     for (provider, prefix) in [("Codex", ".agents"), ("Claude", ".claude")] {
-        let address = read(&root, &format!("{prefix}/skills/address-review-comments/SKILL.md"))?;
+        let address = read(
+            &root,
+            &format!("{prefix}/skills/address-review-comments/SKILL.md"),
+        )?;
         let finish = read(&root, &format!("{prefix}/skills/finish-pr/SKILL.md"))?;
-        validate_review_wave(&address, &finish).map_err(|error| format!("{provider}: {error}"))?;
+        validate_review_wave(&address, &finish)
+            .map_err(|error| format!("{provider}: {error}"))?;
 
         let narrow = address.replacen(
             "materially false, misleading, unsafe, under-proven, incompatible with its accepted\ncontract, or outside its stated risk/rollback boundary",
@@ -280,8 +503,31 @@ fn provider_review_repair_convergence_is_bounded() -> Result<(), DynError> {
         assert_ne!(guessed, address);
         assert!(validate_review_wave(&guessed, &finish).is_err());
 
-        assert!(validate_review_wave(&format!("{address}\nCLASS_REPAIR_REQUIRED\n"), &finish).is_err());
-        let thaw = finish.replacen("bounded fresh merge-tree re-evaluation selected by", "ordinary behind-only update selected by", 1);
+        let claim_route = address.replacen(
+            "`candidate_changed=true`, `claim_changed=true`, or non-empty `stale_review_dimensions`",
+            "`candidate_changed=true` or non-empty `stale_review_dimensions`",
+            1,
+        );
+        assert_ne!(claim_route, address);
+        assert!(validate_review_wave(&claim_route, &finish).is_err());
+
+        let claim_procedure = address.replacen(
+            "When the candidate or claim changed or review dimensions became stale",
+            "When the candidate changed or review dimensions became stale",
+            1,
+        );
+        assert_ne!(claim_procedure, address);
+        assert!(validate_review_wave(&claim_procedure, &finish).is_err());
+
+        assert!(
+            validate_review_wave(&format!("{address}\nCLASS_REPAIR_REQUIRED\n"), &finish)
+                .is_err()
+        );
+        let thaw = finish.replacen(
+            "bounded fresh merge-tree re-evaluation selected by",
+            "ordinary behind-only update selected by",
+            1,
+        );
         assert_ne!(thaw, finish);
         assert!(validate_review_wave(&address, &thaw).is_err());
     }

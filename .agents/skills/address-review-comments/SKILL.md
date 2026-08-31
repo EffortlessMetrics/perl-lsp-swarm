@@ -172,7 +172,7 @@ activity.
 4. Admit a confirmed finding when leaving it unresolved would make the current candidate materially false, misleading, unsafe, under-proven, incompatible with its accepted contract, or outside its stated risk/rollback boundary, and the repair stays inside the same acceptance-and-rollback proposition. Route separately reversible work, missing authority, or an unsettled premise to its proper follow-up, prerequisite, blocker, or `NOT_PROVEN` state.
 5. Only for repeated instances of one mechanism, join findings into a failure class and enumerate that class across its bounded governed surface. An isolated finding remains isolated.
 6. Batch the admitted source/proof repairs and every promoted class repair through one integrating writer; do not publish per-comment pushes and do not create an empty repair commit when no candidate bytes need to change.
-7. Record `candidate_changed`, `claim_changed`, and `stale_review_dimensions`. When the candidate changed or review dimensions became stale, run affected focused proof and reread the complete governing semantic unit plus dependent claims. Run a class-level falsifier only when a failure class was promoted. When `candidate_changed=false`, `claim_changed=false`, and `stale_review_dimensions` is empty, preserve current proof/review conclusions and do not manufacture another challenge cycle.
+7. Record `candidate_changed`, `claim_changed`, and `stale_review_dimensions`. When the candidate or claim changed or review dimensions became stale, run affected focused proof and reread the complete governing semantic unit plus dependent claims. Run a class-level falsifier only when a failure class was promoted. When `candidate_changed=false`, `claim_changed=false`, and `stale_review_dimensions` is empty, preserve current proof/review conclusions and do not manufacture another challenge cycle.
 8. If the repair introduced substantial proof machinery, run `$simplify-candidate`; then update the PR synthesis to the current candidate rather than appending a repair diary.
 9. Write the canonical human reply under the **Reply quality** contract: keep the `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines and put the concise reasoned judgment between them. Pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
 10. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply, post it, and only then resolve the thread.
@@ -195,7 +195,7 @@ or resolve merely to make the thread count green.
 
 ## Routes
 
-- `FINDINGS_REPAIRED_OR_DISPOSITIONED` with `candidate_changed=true` or non-empty `stale_review_dimensions` → affected proof, then `$final-challenge`
+- `FINDINGS_REPAIRED_OR_DISPOSITIONED` with `candidate_changed=true`, `claim_changed=true`, or non-empty `stale_review_dimensions` → affected proof, then `$final-challenge`
 - `FINDINGS_REPAIRED_OR_DISPOSITIONED` with `candidate_changed=false`, `claim_changed=false`, and empty `stale_review_dimensions` → preserve current proof/review and continue at the earliest still-missing judgment
 - `MUTABLE_FINDINGS_OPEN` → complete one joined repair wave through the current writer
 - `MATERIAL_PREMISE_CHANGED` → `$prepare-issue`
