@@ -42,13 +42,21 @@
 (defun perl-lsp-root-probe--initialize-request-root-uri (server)
   "Extract the initialize request rootUri from this exact server's events."
   (let* ((events (ignore-errors (jsonrpc-events-buffer server)))
-         (text (and events (buffer-live-p events)
-                    (with-current-buffer events (buffer-string)))))
-    (when (and text (string-match "\\\"rootUri\\\"[[:space:]]*:[[:space:]]*\\\\(\\\"[^\\\"]*\\\"[[:space:]]*\\\\|null\\\\)" text))
+         (text (and events
+                    (buffer-live-p events)
+                    (with-current-buffer events
+                      (buffer-string)))))
+    (when (and text
+               (string-match "\"rootUri\"[[:space:]]*:[[:space:]]*\\(\"[^\"]*\"[[:space:]]*\\|null\\)"
+                             text))
       (let ((token (match-string 1 text)))
-        (if (and (> (length token) 1) (= (aref token 0) ?\")
-                 (= (aref token (1- (length token))) ?\"))
-            (substring token 1 -1) token)))))
+        (cond
+         ((string= token "null") nil)
+         ((and (> (length token) 1)
+               (= (aref token 0) ?\")
+               (= (aref token (1- (length token))) ?\"))
+          (substring token 1 -1))
+         (t token))))))
 
 (defun perl-lsp-root-probe--live-server-count (server)
   "Return one only when this case's exact server process is still live."
@@ -79,7 +87,7 @@
          ;; Captured while BUFFER is certainly live; the cleanup step below
          ;; may close it before the receipt is written.
          (opened-mode (symbol-name (buffer-local-value 'major-mode buffer))))
-    (let ((server nil)
+    (let* ((server nil)
           (session-result
            ;; Stock behavior ends here when no server program is supplied:
            ;; there is nothing to contact, so the receipt records the
