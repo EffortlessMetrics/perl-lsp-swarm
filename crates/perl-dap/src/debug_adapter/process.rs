@@ -392,6 +392,31 @@ impl DebugAdapter {
         .unwrap_or_else(|| "perl".to_string())
     }
 
+    /// Allocate the next execution-context id (#8294).
+    ///
+    /// Monotonic, exhaustion-aware, and poison-free by construction: the
+    /// counter never wraps, never issues zero or negative ids, and has no
+    /// failure path that can return an already-minted constant, so a replaced
+    /// session's id can never be revived. `None` means the id space is
+    /// exhausted and the caller must fail the launch.
+    fn allocate_thread_id(&self) -> Option<i32> {
+        let mut current = self.thread_counter.load(Ordering::Relaxed);
+        loop {
+            let Some(next) = current.checked_add(1).filter(|next| *next > 0) else {
+                return None;
+            };
+            match self.thread_counter.compare_exchange(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(next),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
     /// Launch the Perl debugger for the given script.
     ///
     /// Validates the program path and interpreter, runs a pre-launch `perl -c`
@@ -525,16 +550,21 @@ impl DebugAdapter {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        // Allocate the execution-context id BEFORE spawning: a launch that
+        // cannot mint a fresh id must fail without side effects.
+        let Some(thread_id) = self.allocate_thread_id() else {
+            return Err(
+                "Debugger could not be started: the execution-context id space is exhausted. \
+                 Restart the debug adapter to reset execution contexts."
+                    .to_string(),
+            );
+        };
+
         match cmd.spawn() {
             Ok(child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
                 // launch must leave the currently active reader valid for its existing session.
                 self.prepare_replacement_session();
-                // Monotonic and poison-free by construction: a poisoned-mutex
-                // fallback that returned an already-minted constant (e.g. `1`)
-                // would revive a stale execution context id after a session
-                // replacement, so allocation has no reuse path (#8294).
-                let thread_id = self.thread_counter.fetch_add(1, Ordering::Relaxed) + 1;
 
                 let session = DebugSession {
                     process: child,
@@ -2508,6 +2538,25 @@ mod tests {
         assert!(
             DebugAdapter::tcp_event_message(DapEvent::Terminated { reason: "exit".to_string() })
                 .is_none()
+        );
+    }
+
+    /// Allocation is monotonic from 1 and fails closed at exhaustion: an
+    /// unchecked fetch_add would panic (checked builds) or wrap into negative
+    /// ids (release) near `i32::MAX`, reviving the stale-id hazard the atomic
+    /// counter exists to remove (#8294).
+    #[test]
+    fn thread_id_allocation_is_monotonic_and_fails_closed_at_exhaustion() {
+        let adapter = DebugAdapter::new();
+        assert_eq!(adapter.allocate_thread_id(), Some(1));
+        assert_eq!(adapter.allocate_thread_id(), Some(2));
+
+        adapter.thread_counter.store(i32::MAX - 1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(adapter.allocate_thread_id(), Some(i32::MAX));
+        assert_eq!(
+            adapter.allocate_thread_id(),
+            None,
+            "exhaustion must fail closed, never wrap into negative or reused ids"
         );
     }
 

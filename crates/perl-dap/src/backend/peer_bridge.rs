@@ -148,16 +148,25 @@ impl DapPeerBridge {
             // is future work for cooperative mode; the v1 integration target does
             // not require peers to send it — see PTKDB_PEER_INTEGRATION_TARGET.md.)
             DebugEvent::Initialized => {}
-            DebugEvent::Stopped { reason, thread_id, .. } => {
+            DebugEvent::Stopped { reason, thread_id: _, .. } => {
+                // Same identity contract as `validate_thread_scoped`: the
+                // editor must only ever observe the advertised synthetic
+                // execution context, so a backend event reporting a foreign id
+                // is normalized here instead of being forwarded verbatim
+                // (#8294) — otherwise the editor would see an id that every
+                // thread-scoped request then rejects.
                 let body = json!({
                     "reason": dap_stop_reason(&reason),
-                    "threadId": thread_id.0,
+                    "threadId": Self::ADVERTISED_THREAD_ID,
                     "allThreadsStopped": true,
                 });
                 out.push(self.event("stopped", Some(body)));
             }
-            DebugEvent::Continued { thread_id } => {
-                let body = json!({ "threadId": thread_id.0, "allThreadsContinued": true });
+            DebugEvent::Continued { thread_id: _ } => {
+                // Normalized for the same identity contract as the stopped
+                // event above (#8294).
+                let body =
+                    json!({ "threadId": Self::ADVERTISED_THREAD_ID, "allThreadsContinued": true });
                 out.push(self.event("continued", Some(body)));
             }
             DebugEvent::Output { category, output } => {
@@ -1000,6 +1009,15 @@ mod tests {
             Ok(())
         }
         fn pause(&mut self, _t: ThreadId) -> BackendResult<()> {
+            // Deliberately reports a FOREIGN id (9 != the advertised synthetic
+            // context): `backend_events_normalize_foreign_thread_ids...` uses
+            // this to prove the bridge normalizes identity-bearing backend
+            // events instead of forwarding raw ids.
+            self.events.push(DebugEvent::Stopped {
+                reason: StopReason::Pause,
+                thread_id: ThreadId(9),
+                position: None,
+            });
             Ok(())
         }
         fn stack_trace(&mut self, _p: StackTraceParams) -> BackendResult<Vec<DebugStackFrame>> {
@@ -1218,6 +1236,32 @@ mod tests {
             // continued+stopped events, so a single-message out proves the
             // backend method never ran.
             assert_eq!(out.len(), 1, "no backend side effects may follow {command}: {out:?}");
+        }
+        Ok(())
+    }
+
+    /// Backend events carry identity too: a backend that reports a foreign
+    /// thread id still produces editor-visible stopped events named by the
+    /// advertised synthetic context, never by the backend's raw id — otherwise
+    /// the editor would observe an id that every thread-scoped request then
+    /// rejects (#8294).
+    #[test]
+    fn backend_events_normalize_foreign_thread_ids_to_the_advertised_context() -> Result<(), String>
+    {
+        let mut b = bridge();
+        // The mock backend queues a stopped event with foreign id 9 on pause;
+        // the pause itself must name the advertised id to be accepted.
+        let out = b.dispatch(11, "pause", Some(json!({ "threadId": 1 })));
+        let (cmd, ok, _) = as_response(&out[0])?;
+        assert_eq!(cmd, "pause");
+        assert!(ok);
+        let events: Vec<&str> = out[1..].iter().map(event_name).collect::<Result<_, _>>()?;
+        assert_eq!(events, vec!["stopped"]);
+        if let DapMessage::Event { body: Some(body), .. } = &out[1] {
+            assert_eq!(body["threadId"], 1, "the foreign backend id must be normalized");
+            assert_eq!(body["allThreadsStopped"], true);
+        } else {
+            return Err("expected a stopped event body".into());
         }
         Ok(())
     }
