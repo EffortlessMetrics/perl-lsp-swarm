@@ -94,7 +94,11 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
       }
       settled = true;
       cleanup();
-      if (!file || file.closed) {
+      // Only the native WriteStream has a close lifecycle that guarantees the
+      // file handle is gone. Test/injected streams may expose EventEmitter's
+      // `once` without ever emitting `close`, so they must not block failure
+      // settlement indefinitely.
+      if (!file || !(file instanceof fs.WriteStream) || file.closed) {
         file?.destroy();
         rejectAfterPartialCleanup(error);
         return;
