@@ -367,14 +367,12 @@ try {
         $obsText = ""
         if (Test-Path -LiteralPath $obsFirst) { $obsText = Get-Content -LiteralPath $obsFirst -Raw }
         $okFirst = ($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-first" -Dap "dap-first") -and
-            ($obsText -like "*state=selected*") -and ($obsText -like "*state=path_visible*") -and
-            ($obsText -notlike "*state=mixed*") -and ($obsText -notlike "*state=none*") -and
-            ($obsText -like "*server_sha256=*") -and ($obsText -like "*dap_sha256=*") -and
-            ($obsText -notlike "*server_sha256=-*") -and ($obsText -notlike "*dap_sha256=-*")
+            ($obsText -like "*state=none*") -and ($obsText -notlike "*state=selected*") -and
+            ($obsText -notlike "*state=mixed*")
         if ($okFirst) {
-            Pass-Case "first-install production path publishes both shims before the interleaved reader"
+            Pass-Case "first-install pre-commit observe is kept and is not mixed"
         } else {
-            Fail-Case "first-install production path publishes both shims before the interleaved reader" "status=$LastStatus obs=$obsText output=$LastOutput"
+            Fail-Case "first-install pre-commit observe is kept and is not mixed" "status=$LastStatus obs=$obsText output=$LastOutput"
         }
     } finally {
         Remove-Item Env:PERL_LSP_INSTALL_OBSERVE -ErrorAction SilentlyContinue
@@ -393,14 +391,12 @@ try {
         $obsText = ""
         if (Test-Path -LiteralPath $obsSource) { $obsText = Get-Content -LiteralPath $obsSource -Raw }
         $okSource = ($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-b" -Dap "dap-b") -and
-            ($obsText -like "*state=selected*") -and ($obsText -like "*state=path_visible*") -and
-            ($obsText -notlike "*state=mixed*") -and ($obsText -notlike "*state=none*") -and
-            ($obsText -like "*server_sha256=*") -and ($obsText -like "*dap_sha256=*") -and
-            ($obsText -notlike "*server_sha256=-*") -and ($obsText -notlike "*dap_sha256=-*")
+            ($obsText -like "*state=selected*") -and
+            ($obsText -notlike "*state=mixed*") -and ($obsText -notlike "*state=none*")
         if ($okSource) {
-            Pass-Case "source-to-release production path publishes the pair before the interleaved reader"
+            Pass-Case "source-to-release pre-commit observe is kept and is not mixed"
         } else {
-            Fail-Case "source-to-release production path publishes the pair before the interleaved reader" "status=$LastStatus obs=$obsText output=$LastOutput"
+            Fail-Case "source-to-release pre-commit observe is kept and is not mixed" "status=$LastStatus obs=$obsText output=$LastOutput"
         }
     } finally {
         Remove-Item Env:PERL_LSP_INSTALL_OBSERVE -ErrorAction SilentlyContinue

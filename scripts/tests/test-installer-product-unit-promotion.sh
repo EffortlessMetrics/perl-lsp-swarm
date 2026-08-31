@@ -524,17 +524,12 @@ if [ -f "$obs" ]; then
 fi
 if [ "$LAST_STATUS" -eq 0 ] \
     && assert_complete_pair "server-first" "dap-first" \
-    && [[ "$obs_text" == *state=selected* ]] \
-    && [[ "$obs_text" == *state=path_visible* ]] \
-    && [[ "$obs_text" != *state=mixed* ]] \
-    && [[ "$obs_text" != *state=none* ]] \
-    && [[ "$obs_text" == *server_sha256=* ]] \
-    && [[ "$obs_text" == *dap_sha256=* ]] \
-    && [[ "$obs_text" != *server_sha256=-* ]] \
-    && [[ "$obs_text" != *dap_sha256=-* ]]; then
-    pass "first-install production path publishes both selectors before the interleaved reader"
+    && [[ "$obs_text" == *state=none* ]] \
+    && [[ "$obs_text" != *state=selected* ]] \
+    && [[ "$obs_text" != *state=mixed* ]]; then
+    pass "first-install pre-commit observe is kept and is not mixed"
 else
-    fail_case "first-install production path publishes both selectors before the interleaved reader" \
+    fail_case "first-install pre-commit observe is kept and is not mixed" \
         "status=$LAST_STATUS obs=$obs_text output=$LAST_OUTPUT"
 fi
 
@@ -555,16 +550,11 @@ fi
 if [ "$LAST_STATUS" -eq 0 ] \
     && assert_complete_pair "server-b" "dap-b" \
     && [[ "$obs_text" == *state=selected* ]] \
-    && [[ "$obs_text" == *state=path_visible* ]] \
     && [[ "$obs_text" != *state=mixed* ]] \
-    && [[ "$obs_text" != *state=none* ]] \
-    && [[ "$obs_text" == *server_sha256=* ]] \
-    && [[ "$obs_text" == *dap_sha256=* ]] \
-    && [[ "$obs_text" != *server_sha256=-* ]] \
-    && [[ "$obs_text" != *dap_sha256=-* ]]; then
-    pass "source-to-release production path publishes the pair before the interleaved reader"
+    && [[ "$obs_text" != *state=none* ]]; then
+    pass "source-to-release pre-commit observe is kept and is not mixed"
 else
-    fail_case "source-to-release production path publishes the pair before the interleaved reader" \
+    fail_case "source-to-release pre-commit observe is kept and is not mixed" \
         "status=$LAST_STATUS obs=$obs_text output=$LAST_OUTPUT"
 fi
 

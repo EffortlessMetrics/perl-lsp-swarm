@@ -533,6 +533,11 @@ function Invoke-ProductUnitObserveIfRequested {
     }
     $cur = Get-StandaloneCurrentObservation -InstallDir $InstallDir
     $path = Get-StandalonePathVisibleObservation -InstallDir $InstallDir
+    # Keep the first hit. Post-commit selector repair must not overwrite the
+    # pre-commit between_path_members snapshot.
+    if (Test-Path -LiteralPath $file) {
+        return
+    }
     Set-Content -LiteralPath $file -Value ($cur + "`n" + $path) -Encoding ascii
     if ($path -like "state=mixed*") {
         throw "path-visible product unit became mixed at $Barrier"

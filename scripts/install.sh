@@ -949,6 +949,11 @@ maybe_observe_product_unit() {
     if [ -z "${PERL_LSP_INSTALL_OBSERVE_FILE:-}" ]; then
         err "PERL_LSP_INSTALL_OBSERVE_FILE is required for observation barrier $_barrier"
     fi
+    # Keep the first hit. Post-commit selector repair must not overwrite the
+    # pre-commit between_path_members snapshot.
+    if [ -e "$PERL_LSP_INSTALL_OBSERVE_FILE" ]; then
+        return 0
+    fi
     {
         observe_current_product_unit
         observe_path_visible_product_unit
