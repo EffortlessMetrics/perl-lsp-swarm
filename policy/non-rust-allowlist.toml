@@ -153,6 +153,21 @@ created = "2026-08-26"
 review_after = "2027-02-26"
 
 [[allow]]
+id = "non-rust-semantic-facts-dancer2-dsl-oracle-tsv"
+path = "crates/perl-semantic-facts/tests/data/dancer2_two_x_dsl_registry_oracle.tsv"
+kind = "test_fixture_data"
+language = "text"
+surface = "fixtures"
+classification = "test"
+owner = "semantic-facts/framework-adapters"
+reason = "Dancer2 2.x core-DSL keyword oracle generated from pinned upstream lib/Dancer2/Core/DSL.pm (2.0.0/2.0.1/2.1.0, byte-identical dsl_keywords map verified by direct diff); consumed by the dancer2_two_x_dsl_registry_oracle test to pin framework adapter keyword, scope, and deprecation coverage."
+covered_by = [
+  "cargo test -p perl-semantic-facts --all-targets --locked",
+]
+created = "2026-08-30"
+review_after = "2027-02-28"
+
+[[allow]]
 id = "non-rust-agent-review-packet-golden-markdown"
 glob = "fixtures/agent_review_packet/golden/*.md"
 kind = "test_fixture"

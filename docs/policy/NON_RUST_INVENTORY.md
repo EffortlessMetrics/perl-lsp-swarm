@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12529 |
-| Rust-family files | 3880 |
-| Non-Rust files | 8649 |
-| Allowlisted | 6411 |
-| Unclassified | 2238 |
+| Total tracked files | 12540 |
+| Rust-family files | 3889 |
+| Non-Rust files | 8651 |
+| Allowlisted | 6412 |
+| Unclassified | 2239 |
 
 ## Non-Rust files by category
 
@@ -20,9 +20,9 @@
 | documentation | 2821 |
 | generated | 2 |
 | production | 349 |
-| test | 2070 |
+| test | 2071 |
 | tooling | 672 |
-| unclassified | 2238 |
+| unclassified | 2239 |
 
 ## Unclassified files
 
@@ -83,6 +83,8 @@
 | `crates/perl-kwalitee/fixtures/legacy_receipt_v1.json` | `json` |
 | `crates/perl-kwalitee/legacy_indicator_migrations.toml` | `toml` |
 | `crates/perl-lexer/tests/fixtures/ripr_seam_proof_peek_char_unit.inc` | `inc` |
+| `crates/perl-lexer/tests/fixtures/simd_feature_includes/excluded/selector.inc` | `inc` |
+| `crates/perl-lexer/tests/fixtures/simd_feature_includes/payload.inc` | `inc` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/data_literal_preserve.expected-diagnostics.txt` | `txt` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/end_literal_preserve.expected-diagnostics.txt` | `txt` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/format_body_literal_preserve.expected-diagnostics.txt` | `txt` |
@@ -111,7 +113,6 @@
 | `crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json` | `json` |
 | `crates/perl-parser-core/libcheck_unwrap.rlib` | `rlib` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
-| `crates/perl-semantic-facts/tests/data/dancer2_two_x_dsl_registry_oracle.tsv` | `tsv` |
 | `crates/perl-workspace/tests/fixtures/semantic_scorecard/manifest.json` | `json` |
 | `distribution/build-packages.sh` | `sh` |
 | `distribution/chocolatey/perl-lsp.nuspec` | `nuspec` |
@@ -4253,6 +4254,7 @@
 | `crates/perl-semantic-analyzer/docs/dependency-boundary-audit.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-facts/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-semantic-facts/tests/data/dancer2_two_x_dsl_registry_oracle.tsv` | test | `non-rust-semantic-facts-dancer2-dsl-oracle-tsv` | semantic-facts/framework-adapters |
 | `crates/perl-source-identity/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-source-identity/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-subprocess-runtime/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
