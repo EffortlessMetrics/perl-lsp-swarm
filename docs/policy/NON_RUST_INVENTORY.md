@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12505 |
-| Rust-family files | 3870 |
-| Non-Rust files | 8635 |
-| Allowlisted | 6398 |
+| Total tracked files | 12539 |
+| Rust-family files | 3879 |
+| Non-Rust files | 8660 |
+| Allowlisted | 6423 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 497 |
-| documentation | 2817 |
+| config | 499 |
+| documentation | 2818 |
 | generated | 2 |
-| production | 348 |
-| test | 2067 |
+| production | 349 |
+| test | 2088 |
 | tooling | 667 |
 | unclassified | 2237 |
 
@@ -2910,6 +2910,7 @@
 | `.github/workflows/ci.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/composite-action-contracts.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/corpus-windows-reparse-proof.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/critic-rule-proof.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-editor-transport.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-protocol-authority.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-scorecard.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -5220,6 +5221,7 @@
 | `docs/project/status/compiler_backed_lsp_burndown.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/compiler_facts.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/coverage_and_ripr_enforcement.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/project/status/critic_rule_proof.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/dap-smoke-receipt.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/dap.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/development-moved-to-perl-lsp-swarm.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6216,6 +6218,27 @@
 | `fixtures/agent_review_packet/invalid/unverified_obligation.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/invalid/weak_discriminator.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/shuffled/challenger_service_marker_shuffled.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/critic-rule-proof/assignment_in_condition/boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/assignment_in_condition/near_miss.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/assignment_in_condition/positive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/assignment_in_condition/project_shaped.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/assignment_in_condition/suppression.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/capture_without_match/boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/capture_without_match/near_miss.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/capture_without_match/positive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/capture_without_match/project_shaped.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/capture_without_match/suppression.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/manifest.json` | test | `non-rust-critic-rule-proof-manifest` | native-critic |
+| `fixtures/critic-rule-proof/require_use_strict/boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/require_use_strict/near_miss.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/require_use_strict/positive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/require_use_strict/project_shaped.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/require_use_strict/suppression.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/string_eval/boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/string_eval/near_miss.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/string_eval/positive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/string_eval/project_shaped.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/string_eval/suppression.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fixtures/experience/standalone_candidate_selection/01_complete_archive_pair.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
@@ -6422,6 +6445,7 @@
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
 | `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
+| `schemas/critic_rule_proof.v1.schema.json` | config | `non-rust-critic-rule-proof-schema` | native-critic |
 | `schemas/import_cleanup_train.v1.schema.json` | config | `non-rust-import-cleanup-train-schema` | tooling/train-graph |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
@@ -8459,6 +8483,7 @@
 | `vscode-extension/src/serverDemand.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/startupDiagnosis.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/streamingCompletion.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/strictSemver.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommands.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportPacket.ts` | production | `non-rust-vscode-extension` | editor/vscode |
