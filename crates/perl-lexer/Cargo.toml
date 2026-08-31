@@ -36,9 +36,16 @@ perl-ast-v2 = { workspace = true }
 
 [features]
 default = []
-# Compatibility no-op retained for callers that already enable it. The current
-# lexer selects no distinct SIMD implementation; removal or implementation is
-# tracked by issue #6715.
+# Deprecated compatibility no-op (since 0.17.0): the lexer selects no distinct
+# No `simd` selector was found in checked-in Rust sources or literal include! output
+# under this package root. Top-level excluded package directories are not traversed
+# as source roots, while literal include! output from scanned sources is inspected.
+# Symlinks, build scripts, and out-of-tree or dynamically generated includes are
+# rejected closed because their resulting source is not inspectable by the contract.
+# Keeping the empty feature is required so `--all-features` stays meaningful while
+# #8229's deprecation window remains open. Removal is planned for a future semver
+# boundary under open issue #8749 and program #6715; no SIMD performance claim is
+# made or implied here.
 simd = []
 # Enable slow stress tests (regex fuzzing, etc.)
 slow_tests = []
