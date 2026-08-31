@@ -233,9 +233,10 @@ jobs:
           INPUT_SKIP_EXTENSION: ${{ github.event.inputs.skip_extension }}
           INPUT_SKIP_DOCKER: ${{ github.event.inputs.skip_docker }}
           EXPECTED_SHA: ${{ needs.validate.outputs.subject_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           TAG="${{ needs.validate.outputs.tag }}"
-          REF="${{ github.event.repository.default_branch }}"
+          REF="$DEFAULT_BRANCH"
           PRERELEASE="$INPUT_PRERELEASE"
 
           echo "Dispatching release workflow for ${TAG}"
