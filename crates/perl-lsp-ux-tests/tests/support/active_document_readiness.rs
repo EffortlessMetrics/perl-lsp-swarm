@@ -41,7 +41,10 @@ pub(crate) fn ready_generation(event: &LspEvent, uri: &str) -> Option<u64> {
     {
         return None;
     }
-    params.get("generation").and_then(Value::as_u64)
+    params
+        .get("generation")
+        .filter(|generation| generation.is_u64())
+        .and_then(Value::as_u64)
 }
 
 pub(crate) fn ready_generations(events: &[LspEvent], uri: &str) -> Vec<u64> {
@@ -70,14 +73,6 @@ pub(crate) fn generation_after(
     })
 }
 
-pub(crate) fn has_generation_after(
-    generations: &[u64],
-    already_seen: usize,
-    expected_generation: u64,
-) -> bool {
-    generation_after(generations, already_seen, expected_generation).is_some()
-}
-
 pub(crate) fn wait_for_generation_after(
     harness: &UxHarness,
     uri: &str,
@@ -88,6 +83,12 @@ pub(crate) fn wait_for_generation_after(
     let deadline = Instant::now() + timeout;
     loop {
         let generations = ready_generations(&harness.peek_notifications(), uri);
+        if already_seen > generations.len() {
+            bail!(
+                "readiness cursor {already_seen} exceeds the retained matching-event count {} for {uri}",
+                generations.len()
+            );
+        }
         if let Some(observation) =
             generation_after(&generations, already_seen, expected_generation)
         {
