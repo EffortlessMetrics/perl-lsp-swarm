@@ -1,0 +1,179 @@
+name: PR 13876 bounded repair
+
+on:
+  push:
+    branches:
+      - 'claude/gifted-edison-rbuhfr'
+    paths:
+      - '.github/workflows/pr-13876-repair.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr-13876-bounded-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout selected PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: 'claude/gifted-edison-rbuhfr'
+
+      - name: Merge current main without discarding either additive module
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git fetch --no-tags origin main
+
+          set +e
+          git merge --no-ff --no-commit origin/main
+          merge_status=$?
+          set -e
+
+          if [[ $merge_status -ne 0 ]]; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            printf 'conflicts:\n'
+            printf '  %s\n' "${conflicts[@]}"
+            for path in "${conflicts[@]}"; do
+              case "$path" in
+                docs/policy/NON_RUST_INVENTORY.md)
+                  git checkout --theirs -- "$path"
+                  ;;
+                xtask/src/lib.rs)
+                  git checkout --theirs -- "$path"
+                  ;;
+                xtask/src/compiler_profile_observation.rs)
+                  git checkout --theirs -- "$path"
+                  ;;
+                *)
+                  echo "unexpected conflict: $path" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+
+            python3 - <<'PY'
+          from pathlib import Path
+
+          lib = Path('xtask/src/lib.rs')
+          text = lib.read_text()
+          module = 'pub mod compiler_profile_oracle_adapter;\n'
+          if module not in text:
+              needle = 'pub mod compiler_profile_observation;\n'
+              if needle not in text:
+                  raise SystemExit('compiler profile observation module anchor missing')
+              text = text.replace(needle, needle + module, 1)
+          if 'pub mod parser_accuracy_legacy_population;\n' not in text:
+              raise SystemExit('current-main parser accuracy module was not preserved')
+          lib.write_text(text)
+
+          observation = Path('xtask/src/compiler_profile_observation.rs')
+          text = observation.read_text()
+          if 'pub fn ensure_private_safe_text' not in text:
+              needle = '/// Validate that a free-text field is non-empty and private-safe.\nfn ensure_private_safe'
+              wrapper = '''/// The envelope's private-safety predicate, for adapters that must reject a
+          /// source value before it reaches envelope text.
+          ///
+          /// Every free-text field in the envelope is already checked on construction,
+          /// but a receipt-family adapter (#12302 and its E02–E06 siblings) builds that
+          /// text out of source identifiers, and a deep failure inside a subject
+          /// dimension or a disposition reason is a poor account of what is wrong with
+          /// the receipt. Exposing the predicate lets an adapter fail closed early and
+          /// name the offending source field instead.
+          pub fn ensure_private_safe_text(field: &str, value: &str) -> Result<()> {
+              ensure_private_safe(field, value)
+          }
+
+          /// Validate that a free-text field is non-empty and private-safe.
+          fn ensure_private_safe'''
+              if needle not in text:
+                  raise SystemExit('private-safety helper anchor missing')
+              text = text.replace(needle, wrapper, 1)
+          observation.write_text(text)
+          PY
+
+            git add docs/policy/NON_RUST_INVENTORY.md xtask/src/lib.rs xtask/src/compiler_profile_observation.rs
+            if git diff --name-only --diff-filter=U | grep -q .; then
+              git diff --name-only --diff-filter=U
+              exit 1
+            fi
+          fi
+
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            git commit -m 'Merge current main into compiler-profile oracle adapter'
+          fi
+          echo "MERGED_MAIN_SHA=$(git rev-parse origin/main)" >> "$GITHUB_ENV"
+
+      - name: Narrow the adapter API and strengthen the privacy proof
+        shell: bash
+        env:
+          REPAIR_SCRIPT_GZIP_BASE64: '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'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import gzip
+          import os
+          from pathlib import Path
+
+          payload = base64.b64decode(os.environ['REPAIR_SCRIPT_GZIP_BASE64'])
+          Path('/tmp/pr-13876-repair.py').write_bytes(gzip.decompress(payload))
+          PY
+          python3 /tmp/pr-13876-repair.py
+          cargo fmt -p xtask
+          git diff --check
+
+          mapfile -t changed < <(git diff --name-only)
+          printf 'repair diff:\n'
+          printf '  %s\n' "${changed[@]}"
+          for path in "${changed[@]}"; do
+            case "$path" in
+              xtask/src/compiler_profile_oracle_adapter.rs|xtask/tests/compiler_operating_profile_oracle_adapter.rs)
+                ;;
+              *)
+                echo "repair changed an unowned path: $path" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Run focused combined-tree proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p xtask --locked compiler_operating_profile_oracle_adapter
+          cargo test -p xtask --locked oracle_receipt_schema
+          cargo test -p xtask --locked compiler_profile_observation
+          cargo test -p xtask --locked --lib
+          cargo clippy -p xtask --lib --locked -- -D warnings -A missing_docs
+          cargo fmt -p xtask -- --check
+          git diff --check
+
+          git rm -q .github/workflows/pr-13876-repair.yml
+          cargo xtask non-rust inventory --check
+          git restore --staged --worktree .github/workflows/pr-13876-repair.yml
+
+      - name: Commit and push the reviewed repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add xtask/src/compiler_profile_oracle_adapter.rs xtask/tests/compiler_operating_profile_oracle_adapter.rs
+          git commit -m 'refactor(compiler-profile): narrow oracle adapter API'
+          git status --short
+          git push origin HEAD:'claude/gifted-edison-rbuhfr'
+          echo "REPAIRED_HEAD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Emit repair receipt
+        shell: bash
+        run: |
+          printf 'merged_main=%s\nrepaired_head=%s\n' "$MERGED_MAIN_SHA" "$REPAIRED_HEAD_SHA"
