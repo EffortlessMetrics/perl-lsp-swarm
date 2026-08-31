@@ -62,6 +62,8 @@ pub struct UxClient {
     initialize_result: Value,
     /// Events buffered from the server's stdout (notifications, requests, etc.).
     events: Arc<Mutex<VecDeque<Value>>>,
+    /// Append-only server-request evidence, independent of drainable events.
+    server_requests: Arc<Mutex<Vec<Value>>>,
     /// Responses to requests (matched by id).
     responses: Arc<Mutex<VecDeque<Value>>>,
     /// Stderr lines captured from the server process.
@@ -110,6 +112,7 @@ impl UxClient {
 
         let stdin = Arc::new(Mutex::new(stdin));
         let events: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let server_requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let responses: Arc<Mutex<VecDeque<Value>>> = Arc::new(Mutex::new(VecDeque::new()));
         let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let transport_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -120,6 +123,7 @@ impl UxClient {
         // ── stdout reader thread ──────────────────────────────────────────────
         let stdin_clone = Arc::clone(&stdin);
         let ev_clone = Arc::clone(&events);
+        let server_requests_clone = Arc::clone(&server_requests);
         let resp_clone = Arc::clone(&responses);
         let transport_error_clone = Arc::clone(&transport_error);
         let capability_violations_clone = Arc::clone(&capability_violations);
@@ -134,6 +138,7 @@ impl UxClient {
                         &mut reader,
                         &stdin_clone,
                         &ev_clone,
+                        &server_requests_clone,
                         &resp_clone,
                         &capability_violations_clone,
                         &client_capabilities_clone,
@@ -172,6 +177,7 @@ impl UxClient {
             stdin,
             initialize_result: Value::Null,
             events,
+            server_requests,
             responses,
             stderr_lines,
             transport_error,
@@ -356,8 +362,7 @@ impl UxClient {
     /// Requests remain observable after the client has sent its deterministic
     /// response, allowing scenarios to assert method, id, and params together.
     pub fn peek_server_requests(&self) -> Vec<Value> {
-        let guard = self.events.lock().unwrap_or_else(|e| e.into_inner());
-        guard.iter().filter(|message| is_server_request(message)).cloned().collect()
+        self.server_requests.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Clone all stderr lines captured from the server process.
@@ -623,6 +628,7 @@ fn route_next_stdout_message<R, W>(
     reader: &mut R,
     stdin: &Arc<Mutex<W>>,
     events: &Arc<Mutex<VecDeque<Value>>>,
+    server_requests: &Arc<Mutex<Vec<Value>>>,
     responses: &Arc<Mutex<VecDeque<Value>>>,
     capability_violations: &Arc<Mutex<Vec<CapabilityViolation>>>,
     capabilities: &Value,
@@ -645,6 +651,12 @@ where
     let method_name = message.get("method").and_then(Value::as_str).unwrap_or("<missing>");
     let method = method_name.to_owned();
     let id = message.get("id").cloned().unwrap_or(Value::Null);
+    if is_server_request(&message) {
+        server_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(message.clone());
+    }
     events.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_back(message);
 
     if let Some(decision) = decision {
@@ -875,8 +887,21 @@ fn registration_capability_path(method: &str) -> Option<&'static str> {
             "workspace.didChangeConfiguration.dynamicRegistration"
         }
         "workspace/didChangeWatchedFiles" => "workspace.didChangeWatchedFiles.dynamicRegistration",
+        "workspace/didChangeWorkspaceFolders" => "workspace.workspaceFolders",
         "workspace/executeCommand" => "workspace.executeCommand.dynamicRegistration",
+        "workspace/symbol" => "workspace.symbol.dynamicRegistration",
+        "workspace/didCreateFiles" => "workspace.fileOperations.didCreate.dynamicRegistration",
+        "workspace/willCreateFiles" => "workspace.fileOperations.willCreate.dynamicRegistration",
+        "workspace/didRenameFiles" => "workspace.fileOperations.didRename.dynamicRegistration",
+        "workspace/willRenameFiles" => "workspace.fileOperations.willRename.dynamicRegistration",
+        "workspace/didDeleteFiles" => "workspace.fileOperations.didDelete.dynamicRegistration",
+        "workspace/willDeleteFiles" => "workspace.fileOperations.willDelete.dynamicRegistration",
         "textDocument/completion" => "textDocument.completion.dynamicRegistration",
+        "textDocument/didOpen"
+        | "textDocument/didChange"
+        | "textDocument/willSave"
+        | "textDocument/willSaveWaitUntil"
+        | "textDocument/didSave" => "textDocument.synchronization.dynamicRegistration",
         "textDocument/inlineCompletion" => "textDocument.inlineCompletion.dynamicRegistration",
         "textDocument/hover" => "textDocument.hover.dynamicRegistration",
         "textDocument/definition" => "textDocument.definition.dynamicRegistration",
@@ -1008,6 +1033,7 @@ mod tests {
             &mut reader,
             &stdin,
             &events,
+            &server_requests,
             &responses,
             &violations,
             &capabilities,
@@ -1016,6 +1042,7 @@ mod tests {
             &mut reader,
             &stdin,
             &events,
+            &server_requests,
             &responses,
             &violations,
             &capabilities,
@@ -1061,6 +1088,7 @@ mod tests {
             &mut reader,
             &stdin,
             &events,
+            &server_requests,
             &responses,
             &violations,
             &capabilities,
@@ -1351,6 +1379,39 @@ mod tests {
         let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
 
         assert_eq!(response["id"], "diagnostic-refresh");
+        assert_eq!(response["result"], Value::Null);
+        assert!(response.get("error").is_none());
+    }
+
+
+    #[test]
+    fn standard_dynamic_registration_paths_are_admitted() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "standard-registration",
+            "method": "client/registerCapability",
+            "params": {
+                "registrations": [
+                    { "id": "sync", "method": "textDocument/didChange" },
+                    { "id": "symbols", "method": "workspace/symbol" },
+                    { "id": "files", "method": "workspace/didCreateFiles" }
+                ]
+            }
+        });
+        let capabilities = capabilities_with(json!({
+            "textDocument": {
+                "synchronization": { "dynamicRegistration": true }
+            },
+            "workspace": {
+                "symbol": { "dynamicRegistration": true },
+                "fileOperations": {
+                    "didCreate": { "dynamicRegistration": true }
+                }
+            }
+        }));
+        let response = server_request_response(&request, &capabilities).unwrap_or(Value::Null);
+
+        assert_eq!(response["id"], "standard-registration");
         assert_eq!(response["result"], Value::Null);
         assert!(response.get("error").is_none());
     }

@@ -59,6 +59,8 @@ fn active_client_round_trips_two_gated_requests_through_a_child_process() -> Res
             },
         ]
     );
+    let _drained_events = client.drain_events();
+    assert_eq!(client.peek_server_requests().len(), 2);
     assert!(client.peek_transport_error().is_none());
 
     client.shutdown_and_wait(Duration::from_secs(2))?;
