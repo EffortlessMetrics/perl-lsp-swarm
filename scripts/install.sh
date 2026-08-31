@@ -1073,6 +1073,69 @@ The release archive may have an unexpected layout."
 
 # ── Source build ───────────────────────────────────────────────────────────────
 
+# #8367: validate an explicit source-mode VERSION before the value reaches
+# cargo's argv. A VERSION like `--target` must never be able to pose as a
+# cargo flag, and a two-component or non-numeric spec must be rejected with a
+# typed reason instead of a confusing cargo resolution error. Semver core is
+# X.Y.Z with numeric components; an optional prerelease/build suffix
+# (-alpha.1, +build.7) is accepted with its restricted alphabet.
+validate_source_version_spec() {
+    local _spec="$1"
+    case "$_spec" in
+        *[!0-9A-Za-z.+_-]*)
+            err "invalid VERSION=$_spec for source mode: expected 'latest' or a semver like v0.12.0 (allowed characters: digits, letters, '.', '+', '-', '_')"
+            ;;
+    esac
+    local _core="$_spec"
+    case "$_spec" in
+        *-*) _core="${_spec%%-*}" ;;
+        *+*) _core="${_spec%%+*}" ;;
+    esac
+    local _major="${_core%%.*}"
+    local _rest="${_core#*.}"
+    local _minor="${_rest%%.*}"
+    local _patch="${_rest#*.}"
+    if [ "$_minor" = "$_rest" ]; then
+        err "invalid VERSION=$_spec for source mode: expected a full X.Y.Z semver (v0.12.0), got fewer than three numeric components"
+    fi
+    case "$_major" in ""|*[!0-9]*) err "invalid VERSION=$_spec for source mode: major version component must be numeric" ;; esac
+    case "$_minor" in ""|*[!0-9]*) err "invalid VERSION=$_spec for source mode: minor version component must be numeric" ;; esac
+    case "$_patch" in ""|*[!0-9]*) err "invalid VERSION=$_spec for source mode: patch version component must be numeric" ;; esac
+}
+
+# #8367: bind the staged binary to the requested registry subject before any
+# promotion can observe EXTRACT_DIR. For an exact request the binary must
+# report exactly that version; for explicit-latest the binary must report some
+# parseable version and it is surfaced as the resolved registry subject. The
+# version token is extracted as a whole whitespace-separated field so a
+# requested 0.12.0 can never be satisfied by a binary reporting 10.12.03.
+verify_source_install_identity() {
+    local _bin="${TMPDIR}/install-root/bin/${BIN_NAME}"
+    if [ ! -f "$_bin" ]; then
+        err "source build reported success but staged no ${BIN_NAME} binary at ${TMPDIR}/install-root/bin"
+    fi
+    local _resolved _resolved_ver
+    if ! _resolved="$("$_bin" --version 2>/dev/null)"; then
+        err "source build staged ${BIN_NAME}, but it failed to report a version (--version exited non-zero)"
+    fi
+    _resolved_ver="$(printf '%s' "$_resolved" | tr ' \t' '\n' \
+        | grep -E '^[0-9]+(\.[0-9]+){1,3}([-+][0-9A-Za-z.-]+)?$' | tail -n 1 || true)"
+    if [ -z "$_resolved_ver" ]; then
+        err "source build staged ${BIN_NAME}, but its version output '${_resolved}' contains no parseable version token"
+    fi
+    case "$VERSION" in
+        latest|"")
+            info "resolved registry subject: ${BIN_NAME} ${_resolved_ver}"
+            ;;
+        *)
+            if [ "$_resolved_ver" != "$VERSION_NUM" ]; then
+                err "source build identity mismatch: requested ${BIN_NAME} ${VERSION_NUM} but the staged binary reports ${_resolved_ver}. Refusing to promote a different registry subject."
+            fi
+            info "staged ${BIN_NAME} identity verified: ${_resolved_ver}"
+            ;;
+    esac
+}
+
 build_from_source() {
     need_cmd cargo
 
@@ -1101,6 +1164,7 @@ build_from_source() {
     unset _guard_lib _guard_version _guard_major _guard_minor
 
     local _target_arg=()
+    local _version_arg=()
 
     if [ -n "${TARGET:-}" ]; then
         need_cmd rustup
@@ -1111,11 +1175,39 @@ build_from_source() {
         info "building from source for host target"
     fi
 
+    # #8367: an explicit VERSION request must resolve that exact registry
+    # subject or fail; only an explicit `latest` request may float. Earlier
+    # this path ran a bare `cargo install perllsp`, so a user pinning
+    # VERSION=v0.12.0 with BUILD_FROM_SOURCE=1 silently got the latest
+    # crates.io subject instead.
+    case "$VERSION" in
+        latest|"")
+            info "source mode: no version pin requested; the registry's latest perllsp will be resolved and its identity reported"
+            ;;
+        v[0-9]*|[0-9]*)
+            validate_source_version_spec "$VERSION_NUM"
+            _version_arg=(--version "$VERSION_NUM")
+            info "building from source for the exact registry subject: perllsp $VERSION_NUM"
+            ;;
+        *)
+            err "invalid VERSION='$VERSION' for source mode: expected 'latest' or a semver like v0.12.0"
+            ;;
+    esac
+
     # `${_target_arg[@]+"${_target_arg[@]}"}` — a bare `"${_target_arg[@]}"`
     # would abort under `set -u` on bash < 4.4 (macOS /bin/bash 3.2) whenever
     # TARGET is unset, which is the default host-target source build.
-    cargo install perllsp --locked ${_target_arg[@]+"${_target_arg[@]}"} \
-        --root "$TMPDIR/install-root"
+    if ! cargo install perllsp --locked \
+        ${_version_arg[@]+"${_version_arg[@]}"} \
+        ${_target_arg[@]+"${_target_arg[@]}"} \
+        --root "$TMPDIR/install-root"; then
+        if [ "${#_version_arg[@]}" -gt 0 ]; then
+            err "cargo could not build/install perllsp $VERSION_NUM from the registry (see the cargo output above: the exact requested version may not exist on crates.io, or its lockfile is incompatible). No existing installation was modified."
+        fi
+        err "cargo failed to build/install perllsp from source (see the cargo output above). No existing installation was modified."
+    fi
+
+    verify_source_install_identity
 
     EXTRACT_DIR="${TMPDIR}/install-root/bin"
 }
