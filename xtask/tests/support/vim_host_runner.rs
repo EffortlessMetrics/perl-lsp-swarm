@@ -950,8 +950,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::ExternalMutationApplied => {
-                validate_repeating_freshness_event(
+                validate_repeating_event(
                     event,
+                    "freshness",
                     "mutation_index",
                     EXTERNAL_MUTATION_CAP,
                     &mut freshness_mutation_index,
@@ -1058,8 +1059,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::ServerRestartApplied => {
-                validate_repeating_recovery_event(
+                validate_repeating_event(
                     event,
+                    "recovery",
                     "restart_index",
                     SERVER_RESTART_CAP,
                     &mut recovery_restart_index,
@@ -1515,10 +1517,10 @@ fn validate_repeating_index(
     Ok(())
 }
 
-/// Validate one repeating #11398 recovery event: same monotone, gap-free,
-/// capped index law as the freshness kinds, for the recovery tier.
-fn validate_repeating_recovery_event(
+/// Validate one repeating event with a monotone, gap-free, capped index.
+fn validate_repeating_event(
     event: &DriverEvent,
+    family: &str,
     index_key: &str,
     cap: u32,
     last_index: &mut u32,
@@ -1527,17 +1529,20 @@ fn validate_repeating_recovery_event(
         .details
         .get(index_key)
         .and_then(|value| value.parse::<u32>().ok())
-        .with_context(|| format!("recovery event omitted a numeric {index_key}"))?;
+        .with_context(|| format!("{family} event omitted a numeric {index_key}"))?;
     ensure!(
         index == *last_index + 1,
-        "recovery event {index_key} {} is not exactly one greater than the last seen {}",
-        index,
+        "{family} event {index_key} {index} is not exactly one greater than the last seen {}",
         *last_index
     );
-    ensure!(index <= cap, "recovery event {index_key} {index} exceeds the journey cap {cap}");
+    ensure!(
+        index <= cap,
+        "{family} event {index_key} {index} exceeds the journey cap {cap}"
+    );
     *last_index = index;
     Ok(())
 }
+
 
 /// Advance the observed lifecycle rank, rejecting any event that arrives out
 /// of order. Used by every dedicated match arm so no event kind can bypass
