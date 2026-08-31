@@ -29,6 +29,7 @@
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -89,6 +90,26 @@ pub struct FileRecord {
     pub allowlisted: bool,
     /// The first matching allowlist entry, if any.
     pub entry: Option<AllowEntry>,
+}
+
+/// Exact-tree policy comparison used by trusted CI. The evaluator is sourced
+/// from the trusted checkout; candidate trees are read only as Git objects.
+#[derive(Debug, Serialize)]
+pub struct ExactTreePolicyReceipt {
+    pub schema_version: u32,
+    pub base_sha: String,
+    pub base_tree_sha: String,
+    pub subject_sha: String,
+    pub subject_tree_sha: String,
+    pub pr_head_sha: Option<String>,
+    pub base_allowlist_blob_sha: String,
+    pub subject_allowlist_blob_sha: String,
+    pub base_unclassified_count: usize,
+    pub subject_unclassified_count: usize,
+    pub new_unclassified_paths: Vec<String>,
+    pub outcome: String,
+    pub evaluator_commit: String,
+    pub inventory_sha256: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +212,146 @@ pub fn list_tracked_files(root: &Path) -> Result<Vec<String>> {
     files.sort_unstable();
     files.dedup();
     Ok(files)
+}
+
+fn git_object(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(output.stdout)
+}
+
+fn tree_paths(root: &Path, sha: &str) -> Result<Vec<String>> {
+    let raw = git_object(root, &["ls-tree", "-r", "-z", "--name-only", sha])?;
+    let mut paths = raw
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8(p.to_vec()).context("tree contains a non-UTF-8 path"))
+        .collect::<Result<Vec<_>>>()?;
+    paths.sort();
+    if paths.windows(2).any(|pair| pair[0] == pair[1]) {
+        bail!("tree {sha} contains duplicate paths");
+    }
+    Ok(paths)
+}
+
+fn tree_file(root: &Path, sha: &str, path: &str) -> Result<(String, Vec<u8>)> {
+    let spec = format!("{sha}:{path}");
+    let bytes = git_object(root, &["show", &spec])?;
+    let listing = git_object(root, &["ls-tree", sha, "--", path])?;
+    let text = String::from_utf8(listing).context("tree listing is not UTF-8")?;
+    let object_sha = text
+        .split_whitespace()
+        .nth(2)
+        .ok_or_else(|| eyre!("tree {sha} does not contain {path}"))?;
+    Ok((object_sha.to_string(), bytes))
+}
+
+fn classify_tree(root: &Path, sha: &str) -> Result<(Vec<FileRecord>, String)> {
+    let (blob_sha, policy) = tree_file(root, sha, "policy/non-rust-allowlist.toml")?;
+    let allowlist: Allowlist =
+        toml::from_str(std::str::from_utf8(&policy).context("allowlist is not UTF-8")?)
+            .with_context(|| format!("parsing policy/non-rust-allowlist.toml from {sha}"))?;
+    let prepared = prepare_allow_entries(&allowlist.allow);
+    let records = tree_paths(root, sha)?
+        .iter()
+        .map(|path| classify_file_with_prepared(path, &prepared))
+        .collect::<Vec<_>>();
+    Ok((records, blob_sha))
+}
+
+/// Compare policy classification of two immutable Git trees and emit an
+/// exact-SHA receipt. Existing debt is preserved; only newly unclassified
+/// subject paths fail.
+pub fn non_rust_exact_tree(
+    root: &Path,
+    base_sha: &str,
+    subject_sha: &str,
+    pr_head_sha: Option<&str>,
+    receipt_path: &Path,
+) -> Result<()> {
+    let base_ref = format!("{base_sha}^{{commit}}");
+    let subject_ref = format!("{subject_sha}^{{commit}}");
+    let base_commit = String::from_utf8(git_object(root, &["rev-parse", "--verify", &base_ref])?)?
+        .trim()
+        .to_string();
+    let subject_commit =
+        String::from_utf8(git_object(root, &["rev-parse", "--verify", &subject_ref])?)?
+            .trim()
+            .to_string();
+    if let Some(pr_head) = pr_head_sha {
+        let ancestor = Command::new("git")
+            .args(["merge-base", "--is-ancestor", pr_head, &subject_commit])
+            .current_dir(root)
+            .status()
+            .context("checking PR head ancestry")?;
+        if !ancestor.success() {
+            bail!("subject {subject_commit} does not contain PR head {pr_head}");
+        }
+    }
+    let base_tree_ref = format!("{base_commit}^{{tree}}");
+    let subject_tree_ref = format!("{subject_commit}^{{tree}}");
+    let base_tree_sha =
+        String::from_utf8(git_object(root, &["rev-parse", &base_tree_ref])?)?.trim().to_string();
+    let subject_tree_sha =
+        String::from_utf8(git_object(root, &["rev-parse", &subject_tree_ref])?)?.trim().to_string();
+    let (base_records, base_allowlist_blob_sha) = classify_tree(root, &base_commit)?;
+    let (subject_records, subject_allowlist_blob_sha) = classify_tree(root, &subject_commit)?;
+    let base_unclassified = base_records
+        .iter()
+        .filter(|r| r.category == "unclassified")
+        .map(|r| r.path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let subject_unclassified = subject_records
+        .iter()
+        .filter(|r| r.category == "unclassified")
+        .map(|r| r.path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let new_unclassified_paths =
+        subject_unclassified.difference(&base_unclassified).cloned().collect::<Vec<_>>();
+    let markdown = render_markdown(&subject_records);
+    let output_dir = root.join("target/policy");
+    fs::create_dir_all(&output_dir).context("creating exact-tree output directory")?;
+    fs::write(output_dir.join("non-rust-inventory.md"), &markdown)
+        .context("writing exact-tree Markdown")?;
+    fs::write(
+        output_dir.join("non-rust-inventory.json"),
+        serde_json::to_vec_pretty(&subject_records)?,
+    )
+    .context("writing exact-tree JSON")?;
+    let inventory_sha256 = Sha256::digest(markdown.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let receipt = ExactTreePolicyReceipt {
+        schema_version: 1,
+        base_sha: base_commit,
+        base_tree_sha,
+        subject_sha: subject_commit,
+        subject_tree_sha,
+        pr_head_sha: pr_head_sha.map(str::to_string),
+        base_allowlist_blob_sha,
+        subject_allowlist_blob_sha,
+        base_unclassified_count: base_unclassified.len(),
+        subject_unclassified_count: subject_unclassified.len(),
+        outcome: if new_unclassified_paths.is_empty() { "pass" } else { "fail" }.to_string(),
+        new_unclassified_paths: new_unclassified_paths.clone(),
+        evaluator_commit: env!("CARGO_PKG_VERSION").to_string(),
+        inventory_sha256,
+    };
+    if let Some(parent) = receipt_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
+    if !new_unclassified_paths.is_empty() {
+        bail!("newly unclassified paths: {}", new_unclassified_paths.join(", "));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

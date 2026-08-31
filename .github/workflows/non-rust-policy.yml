@@ -1,0 +1,65 @@
+name: Non-Rust policy
+
+on:
+  pull_request_target:
+    branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group: {}
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        required: true
+        type: string
+      subject_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  exact-tree:
+    name: Non-Rust policy exact-tree
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
+      SUBJECT_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.sha }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
+    steps:
+      - name: Checkout trusted evaluator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch and bind subject Git object
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "pull_request_target" ]; then
+            git fetch --no-tags origin "+refs/pull/${{ github.event.pull_request.number }}/merge:$SUBJECT_SHA"
+          else
+            git fetch --no-tags origin "$SUBJECT_SHA"
+          fi
+          test "$(git rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA"
+          test "$(git rev-parse "$SUBJECT_SHA^{commit}")" = "$SUBJECT_SHA"
+          if [ -n "$PR_HEAD_SHA" ]; then
+            git merge-base --is-ancestor "$PR_HEAD_SHA" "$SUBJECT_SHA"
+            test "$(git rev-parse "$SUBJECT_SHA^1")" = "$BASE_SHA"
+          fi
+
+      - name: Run trusted exact-tree evaluator
+        run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --receipt target/policy/non-rust-policy-exact-tree.json
+
+      - name: Upload exact-tree receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: non-rust-policy-${{ env.SUBJECT_SHA }}
+          path: target/policy/
+          if-no-files-found: warn
+          retention-days: 14

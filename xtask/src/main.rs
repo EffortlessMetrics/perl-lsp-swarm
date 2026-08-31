@@ -2883,6 +2883,21 @@ enum VimEditorCompatCommand {
 
 #[derive(Subcommand)]
 enum NonRustCommand {
+    /// Compare immutable Git trees and enforce only newly introduced policy debt.
+    ExactTree {
+        /// Base commit object to compare against.
+        #[arg(long)]
+        base_sha: String,
+        /// Candidate or merge-group commit object to evaluate.
+        #[arg(long)]
+        subject_sha: String,
+        /// Optional pull-request head which must be contained by the subject.
+        #[arg(long)]
+        pr_head_sha: Option<String>,
+        /// Exact-tree JSON receipt path.
+        #[arg(long, default_value = "target/policy/non-rust-policy-exact-tree.json")]
+        receipt: PathBuf,
+    },
     /// Walk `git ls-files`, classify tracked files against the allowlist,
     /// and emit `target/policy/non-rust-inventory.{md,json}`.
     ///
@@ -6578,6 +6593,16 @@ fn run_cli(cli: Cli) -> Result<()> {
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
         },
         Commands::NonRust { command } => match command {
+            NonRustCommand::ExactTree { base_sha, subject_sha, pr_head_sha, receipt } => {
+                let root = utils::project_root()?;
+                tasks::file_policy::non_rust_exact_tree(
+                    &root,
+                    &base_sha,
+                    &subject_sha,
+                    pr_head_sha.as_deref(),
+                    &receipt,
+                )
+            }
             NonRustCommand::Inventory { check, write } => {
                 let root = utils::project_root()?;
                 if check {
