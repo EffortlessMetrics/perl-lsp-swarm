@@ -680,7 +680,11 @@ pub fn build_routed_result(
         instrument: PlaneOutcome { outcome: instrument_outcome, detail: instrument_detail },
         reporting,
         artifacts: observation.artifacts.clone(),
-        focused_reproduce_command: build_reproduce_command(&row.native_tier, gate_id),
+        focused_reproduce_command: build_reproduce_command(
+            &row.native_tier,
+            gate_id,
+            &plan.selection.base,
+        ),
         result_fingerprint: String::new(),
     };
     result.result_fingerprint = result.semantic_fingerprint_of()?;
@@ -759,9 +763,10 @@ fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
 /// `gates` CLI spells them kebab-case, so the command is emitted in the CLI
 /// spelling; `cargo xtask gates --tier <tier> --gate <gate>` re-runs exactly
 /// this row's gate.
-fn build_reproduce_command(native_tier: &str, gate_id: &str) -> String {
+fn build_reproduce_command(native_tier: &str, gate_id: &str, base: &str) -> String {
     let tier = native_tier.replace('_', "-");
-    format!("cargo xtask gates --tier {tier} --gate {gate_id}")
+    let staged = if tier == "commit" { " --staged" } else { "" };
+    format!("cargo xtask gates --tier {tier} --base {base} --gate {gate_id}{staged}")
 }
 
 // ---------------------------------------------------------------------------
@@ -876,12 +881,32 @@ fn validate_plane_honesty(result: &RoutedGateResultV1) -> Result<(), String> {
         return Err("never-started command carries a product verdict".to_string());
     }
 
+    let expected_instrument = match (result.prerequisites.state, result.command_started) {
+        (PrerequisiteState::Ready, true) => TerminalOutcome::Success,
+        (PrerequisiteState::Ready, false) => TerminalOutcome::InstrumentFailure,
+        (PrerequisiteState::Missing, _) => TerminalOutcome::Missing,
+        (PrerequisiteState::Failed, _) => TerminalOutcome::InstrumentFailure,
+        (PrerequisiteState::Stale, _) => TerminalOutcome::Stale,
+    };
+    if result.instrument.outcome != expected_instrument {
+        return Err(format!(
+            "instrument outcome {} disagrees with prerequisite/command state (expected {})",
+            result.instrument.outcome.as_str(),
+            expected_instrument.as_str()
+        ));
+    }
+
     match result.product.outcome {
         TerminalOutcome::Success => {
-            let clean_process = result.child.exit_code == Some(0) && result.child.signal.is_none();
+            let clean_process = result.child.exit_code == Some(0)
+                && result.child.signal.is_none()
+                && !result.child.timed_out
+                && !result.child.cancelled;
             let clean_in_process = result.child.in_process
                 && result.child.exit_code.is_none()
-                && result.child.signal.is_none();
+                && result.child.signal.is_none()
+                && !result.child.timed_out
+                && !result.child.cancelled;
             if !(clean_process || clean_in_process) {
                 return Err(
                     "success requires a clean zero exit (or an in-process execution with no \

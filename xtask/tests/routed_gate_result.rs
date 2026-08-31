@@ -609,9 +609,36 @@ fn focused_reproduce_command_is_invocable_cli() {
     let plan = compiled_plan();
     let result = build_success(&plan);
     assert_eq!(
-        result.focused_reproduce_command, "cargo xtask gates --tier pr-fast --gate fmt_gate",
+        result.focused_reproduce_command,
+        "cargo xtask gates --tier pr-fast --base merge_gate --gate fmt_gate",
         "reproduce command must match the real gates CLI syntax"
     );
+}
+
+#[test]
+fn validation_rejects_success_with_timeout_or_cancellation_flags() {
+    let plan = compiled_plan();
+    for (timed_out, cancelled) in [(true, false), (false, true)] {
+        let mut result = build_success(&plan);
+        result.child.timed_out = timed_out;
+        result.child.cancelled = cancelled;
+        result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
+        assert!(
+            result.validate().is_err(),
+            "success with timed_out={timed_out}, cancelled={cancelled} must fail closed"
+        );
+    }
+}
+
+#[test]
+fn validation_reconciles_instrument_outcome_with_prerequisites() {
+    let plan = compiled_plan();
+    let mut result = build_success(&plan);
+    result.instrument.outcome = xtask::routed_result::TerminalOutcome::Missing;
+    result.instrument.detail = "contradictory test payload".to_string();
+    result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
+    let error = result.validate().expect_err("invented instrument success must fail closed");
+    assert!(error.contains("instrument outcome"), "{error}");
 }
 
 #[test]
