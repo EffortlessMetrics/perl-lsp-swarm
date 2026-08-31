@@ -999,7 +999,14 @@ print "result: $final\n";
                 crate::feature_catalog::has_feature("dap.exceptions.die")
                     || crate::feature_catalog::has_feature("dap.exceptions.warn"),
             ),
-            ("supportsInlineValues", crate::feature_catalog::has_feature("dap.inline_values")),
+            // #9089: bound to the inline-values extension authority, not to
+            // `dap.inline_values`. The routed `inlineValues` request is a
+            // project extension, so the catalog row cannot decide this one
+            // while its negotiation contract is unproven.
+            (
+                "supportsInlineValues",
+                crate::backend::capabilities::advertises_inline_values_extension(),
+            ),
             ("supportsTerminateRequest", crate::feature_catalog::has_feature("dap.core")),
             ("supportsCompletionsRequest", crate::feature_catalog::has_feature("dap.completions")),
             ("supportsModulesRequest", crate::feature_catalog::has_feature("dap.modules")),
@@ -1862,9 +1869,13 @@ print "result: $final\n";
                 assert!(!success, "inlineValues with traversal path should fail");
                 assert_eq!(command, "inlineValues");
                 let msg = message.as_deref().unwrap_or("");
-                assert!(
-                    msg.contains("Path validation failed"),
-                    "should report path validation failure, got: {msg}"
+                // #9089: the negotiation gate refuses before path validation
+                // and any filesystem read, so even a traversal path receives
+                // the authority refusal rather than a path-validation error.
+                assert_eq!(
+                    msg,
+                    crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+                    "should report the negotiation refusal, got: {msg}"
                 );
             }
             _ => return Err("Expected response".into()),

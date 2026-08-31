@@ -60,7 +60,6 @@ impl DebugAdapter {
         let supports_hit_conditions = catalog_has_feature("dap.breakpoints.hit_condition");
         let supports_log_points = catalog_has_feature("dap.breakpoints.logpoints");
         let supports_exceptions = catalog_has_feature("dap.exceptions.die");
-        let supports_inline_values = catalog_has_feature("dap.inline_values");
         let supports_completions = catalog_has_feature("dap.completions");
         let supports_modules = catalog_has_feature("dap.modules");
         let supports_watchpoints = catalog_has_feature("dap.watchpoints");
@@ -136,7 +135,12 @@ impl DebugAdapter {
             "supportsSteppingGranularity": false,
             "supportsInstructionBreakpoints": false,
             "supportsExceptionFilterOptions": supports_any_exception,
-            "supportsInlineValues": supports_inline_values,
+            // #9089: not the `dap.inline_values` catalog row. The routed
+            // `inlineValues` request is a project extension, not standard DAP,
+            // so the standard capability cell comes from the single
+            // inline-values extension authority and no catalog row can widen
+            // it while the negotiation contract is unproven.
+            "supportsInlineValues": crate::backend::capabilities::advertises_inline_values_extension(),
             "exceptionBreakpointFilters": exception_breakpoint_filters
         });
 
