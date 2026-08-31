@@ -54,8 +54,8 @@ function makeController(stopTimeoutMs = 10): {
   return { controller, clients };
 }
 
-describe('LanguageClientLifecycle terminal settlement', () => {
-  test('does not start a replacement when stop times out', async () => {
+describe('LanguageClientLifecycle client cleanup admission', () => {
+  test('does not start a replacement when stop does not complete', async () => {
     jest.useFakeTimers();
     try {
       const { controller, clients } = makeController();
@@ -69,7 +69,7 @@ describe('LanguageClientLifecycle terminal settlement', () => {
       await jest.advanceTimersByTimeAsync(10);
 
       await expect(restart).rejects.toThrow(
-        'Language client cleanup is not terminal; replacement startup is blocked',
+        'Language client cleanup is incomplete; replacement startup is blocked',
       );
       expect(clients).toHaveLength(1);
       expect(first!.dispose).toHaveBeenCalledTimes(1);
@@ -97,7 +97,7 @@ describe('LanguageClientLifecycle terminal settlement', () => {
       await Promise.resolve();
 
       await expect(controller.start()).rejects.toThrow(
-        'Language client cleanup is not terminal; replacement startup is blocked',
+        'Language client cleanup is incomplete; replacement startup is blocked',
       );
       expect(clients).toHaveLength(1);
     } finally {
@@ -126,7 +126,7 @@ describe('LanguageClientLifecycle terminal settlement', () => {
     const restart = controller.restart();
 
     await expect(restart).rejects.toThrow(
-      'Language client cleanup is not terminal; replacement startup is blocked',
+      'Language client cleanup is incomplete; replacement startup is blocked',
     );
     expect(clients).toHaveLength(1);
     expect(clients[0]!.stop).toHaveBeenCalledTimes(1);
