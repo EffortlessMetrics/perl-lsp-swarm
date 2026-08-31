@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12547 |
+| Total tracked files | 12550 |
 | Rust-family files | 3892 |
-| Non-Rust files | 8655 |
-| Allowlisted | 6416 |
+| Non-Rust files | 8658 |
+| Allowlisted | 6419 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 498 |
-| documentation | 2828 |
+| documentation | 2831 |
 | generated | 2 |
 | production | 349 |
 | test | 2067 |
@@ -3151,6 +3151,9 @@
 | `.spec/10858-train-edge-contract/adaptations.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/10858-train-edge-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10858-train-edge-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10888-neovim-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10888-neovim-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10888-neovim-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/context.md` | documentation | `non-rust-root-governance-docs` | docs |
