@@ -324,7 +324,10 @@ fn include_unknown_rule_fails_profile_binding() -> TestResult {
     let mut manifest = canonical_manifest()?;
     case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["include"] =
         json!(["native.testing.require_use_strict", "native.typo"]);
-    expect_violation(&manifest, "include rule `native.typo` is not in the `recommended` profile roster")
+    expect_violation(
+        &manifest,
+        "include rule `native.typo` is not in the `recommended` profile roster",
+    )
 }
 
 #[test]
@@ -352,7 +355,12 @@ fn automatic_edit_identity_is_required() -> TestResult {
 #[test]
 fn automatic_edit_set_cannot_be_omitted() -> TestResult {
     let mut manifest = canonical_manifest()?;
-    manifest["cases"][0]["fix_round_trip"]["expected_edits"] = json!([]);
+    case_mut(&mut manifest, "CRP-STRICT-POS-001")
+        .expect("strict pos")
+        .get_mut("fix_round_trip")
+        .and_then(Value::as_object_mut)
+        .expect("round trip")
+        .remove("expected_edits");
     expect_violation(&manifest, "expected_edits")
 }
 

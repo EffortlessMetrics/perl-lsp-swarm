@@ -278,10 +278,11 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
                 case.case_id, case.rule_id
             ));
         }
-        let profile_catalog: BTreeSet<&str> = NativeCriticRegistry::for_profile(native_profile(case.profile))
-            .rule_ids()
-            .into_iter()
-            .collect();
+        let profile_catalog: BTreeSet<&str> =
+            NativeCriticRegistry::for_profile(native_profile(case.profile))
+                .rule_ids()
+                .into_iter()
+                .collect();
         for included in &case.include {
             if !profile_catalog.contains(included.as_str()) {
                 violations.push(format!(
