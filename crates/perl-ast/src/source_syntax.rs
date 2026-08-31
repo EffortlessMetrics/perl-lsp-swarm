@@ -1077,20 +1077,36 @@ impl StringSyntax {
             && self.content_range.is_some_and(|range| range.is_empty())
     }
 
-    /// Derived projection of the legacy `NodeKind::String::value` field.
+    /// The payload's cooked value, gated on proof.
     ///
     /// Computed from [`StringSyntax::cooked`] on every call; nothing stores it.
-    /// `None` where the legacy total field would have had to invent a value.
+    /// `None` where a total field would have had to invent a value.
     ///
     /// A proven value is published only when the payload's source is proven
     /// terminated and the payload is coherent, so an unterminated, recovered,
     /// or budgeted payload cannot present a value that looks complete even
     /// though its fields are individually settable.
     ///
-    /// This is the *legacy field's* meaning, which for a command form was the
-    /// command's source text rather than its output. Use
-    /// [`StringSyntax::proven_literal_value`] for the value a consumer may
-    /// present as this expression's own value.
+    /// # This is not byte-equal to the legacy field
+    ///
+    /// The legacy `NodeKind::String::value` held the *delimited source
+    /// spelling*, not a cooked value, and for the `q` family a canonicalized
+    /// one: `primary.rs` stores `token.text` whole (delimiters included), while
+    /// `quotes.rs` stores `q` as `'…'`, `qq` as `"…"`, and `qx` as
+    /// `` `…` `` regardless of the delimiter actually written.
+    ///
+    /// That spelling cannot be reconstructed here, and not merely because this
+    /// returns a borrow: escape processing does not run backwards. Source
+    /// `"a\nb"` is six bytes whose cooked value is three characters, so no
+    /// wrapper placed around the cooked value recovers the original. A consumer
+    /// that needs the legacy bytes must read `source[raw_range]`; this type
+    /// deliberately carries spans rather than text. Retiring the legacy field
+    /// (issue 8725) has to account for that.
+    ///
+    /// Use [`StringSyntax::proven_literal_value`] for the value a consumer may
+    /// present as this expression's own value; unlike this method it refuses a
+    /// command form, whose cooked text is the command's source and not its
+    /// output.
     #[must_use]
     pub fn compat_value(&self) -> Option<&str> {
         if !self.terminal.is_terminated() || !self.is_coherent() {
@@ -1281,13 +1297,19 @@ impl HeredocSyntax {
             && self.raw_body_range.is_some_and(|range| range.is_empty())
     }
 
-    /// Derived projection of the legacy `NodeKind::Heredoc::content` field.
+    /// The heredoc body's cooked value, gated on proof.
     ///
     /// Computed from [`HeredocSyntax::cooked`] on every call; nothing stores it.
     /// Gated exactly as [`StringSyntax::compat_value`] is, so an unterminated,
     /// budgeted, recovered, or contradictory heredoc cannot publish a body that
     /// looks complete. Use [`HeredocSyntax::proven_literal_value`] for the value
     /// a consumer may present as the heredoc's own value.
+    ///
+    /// The legacy `NodeKind::Heredoc::content` field is closer to this than the
+    /// string case is — `heredoc.rs` reifies the body's source bytes with line
+    /// breaks normalized, and carries no delimiters — but it is still source
+    /// rather than cooked text, so the two diverge wherever escapes were
+    /// processed. See [`StringSyntax::compat_value`] for the full note.
     #[must_use]
     pub fn compat_content(&self) -> Option<&str> {
         if !self.terminal.is_terminated() || !self.is_coherent() {
@@ -2015,6 +2037,34 @@ mod tests {
 
         // The `<<~` heredoc that really did strip stays coherent.
         assert!(indented_heredoc().is_coherent());
+    }
+
+    #[test]
+    fn the_cooked_projection_is_not_the_legacy_source_spelling() {
+        // `"a\nb"` is six source bytes; its cooked value is three characters.
+        // The legacy `NodeKind::String::value` held the delimited source text,
+        // so this projection cannot be byte-equal to it -- and no wrapper
+        // synthesized around the cooked value could recover it, because escape
+        // processing does not run backwards. Pinned as a test so the weaker
+        // claim cannot be quietly restored to the stronger one.
+        let mut string = plain_double_quoted_string();
+        string.raw_range = span(0, 6);
+        string.content_range = Some(span(1, 5));
+        string.segmentation = SourceSegmentation::Exact(vec![
+            literal_segment(1, 2, "a"),
+            escape_segment(2, 4, "\n"),
+            literal_segment(4, 5, "b"),
+        ]);
+        string.cooked = CookedValue::Proven("a\nb".to_string());
+        assert!(string.is_coherent(), "{:?}", string.contradictions());
+
+        // What it publishes is the cooked value.
+        assert_eq!(string.compat_value(), Some("a\nb"));
+
+        // Which is shorter than the source it was cooked from, and shorter
+        // still than the delimited spelling the legacy field carried.
+        assert_eq!(string.raw_range.len(), 6);
+        assert_eq!(string.compat_value().map(str::len), Some(3));
     }
 
     #[test]
