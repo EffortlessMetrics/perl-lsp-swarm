@@ -69,6 +69,19 @@ const PRIVATE_OR_WORKFLOW_MARKERS: [&str; 12] = [
     "pull/", "pr #", ".log",
 ];
 
+/// The envelope's private-safety predicate, for adapters that must reject a
+/// source value before it reaches envelope text.
+///
+/// Every free-text field in the envelope is already checked on construction,
+/// but a receipt-family adapter (#12302 and its E02–E06 siblings) builds that
+/// text out of source identifiers, and a deep failure inside a subject
+/// dimension or a disposition reason is a poor account of what is wrong with
+/// the receipt. Exposing the predicate lets an adapter fail closed early and
+/// name the offending source field instead.
+pub fn ensure_private_safe_text(field: &str, value: &str) -> Result<()> {
+    ensure_private_safe(field, value)
+}
+
 /// Validate that a free-text field is non-empty and private-safe.
 fn ensure_private_safe(field: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() {
