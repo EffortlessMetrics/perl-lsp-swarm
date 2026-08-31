@@ -179,6 +179,14 @@ const XTASK_FILE_POLICY_PACK: ProofPack = ProofPack {
     ],
 };
 
+const TAUTOLOGY_CHECK_PACK: ProofPack = ProofPack {
+    id: "tautology-check-focused",
+    commands: &[
+        "cargo test -p xtask --bin xtask --profile agent --locked check_tautology -- --nocapture",
+        "cargo run -p xtask --profile agent --locked -- check-tautology --check",
+    ],
+};
+
 const XTASK_PARSER_TDD_FACADE_GUARD_PACK: ProofPack = ProofPack {
     id: "xtask-parser-tdd-facade-guard",
     commands: &[
@@ -209,6 +217,13 @@ const CI_POLICY_PACK: ProofPack = ProofPack {
         "python -m unittest scripts/ci/test_docker_publish_topology.py",
         "cargo xtask workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json",
         "cargo test -p xtask --test quality_ci_wiring_policy --profile agent --locked -- --nocapture",
+        // The #5432 shadow measurement lane is manual-only, so ordinary CI
+        // never executes it. These three targets are the only thing standing
+        // between that lane and silent drift, and compiling them is not
+        // running them.
+        "cargo test -p xtask --test release_artifact_size_shadow_workflow --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test release_artifact_size_stage_script --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test release_artifact_size_smoke_script --profile agent --locked -- --nocapture",
     ],
 };
 
@@ -701,6 +716,15 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         return route.add_coverage_pack("patch-coverage-xtask-file-policy");
     }
 
+    if file == "xtask/src/tasks/check_tautology.rs"
+        || file.starts_with("xtask/src/tasks/check_tautology/")
+        || file == "policy/tautology-dispositions.toml"
+    {
+        route.add_surface("tautology-check");
+        route.add_pack(TAUTOLOGY_CHECK_PACK);
+        return route.add_coverage_pack("patch-coverage-tautology-check");
+    }
+
     if file == "xtask/tests/parser_tdd_facade_consumers.rs" {
         route.add_surface("xtask-parser-tdd-facade-guard");
         route.add_pack(XTASK_PARSER_TDD_FACADE_GUARD_PACK);
@@ -734,6 +758,16 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
             "xtask/tests/codecov_patch_gate_policy.rs"
                 | "xtask/tests/quality_ci_wiring_policy.rs"
                 | "xtask/tests/quality_gate_patch_coverage_cli_policy.rs"
+                // The #5432 shadow measurement lane: its adapters, the shared
+                // constants the lane and the instrument both read, and the
+                // contracts that bind them together.
+                | "scripts/ci/release_artifact_size_stage.sh"
+                | "scripts/ci/release_artifact_size_smoke.sh"
+                | "xtask/examples/release_artifact_size.rs"
+                | "xtask/src/bin/release_artifact_size/policy.rs"
+                | "xtask/tests/release_artifact_size_shadow_workflow.rs"
+                | "xtask/tests/release_artifact_size_stage_script.rs"
+                | "xtask/tests/release_artifact_size_smoke_script.rs"
         )
     {
         route.add_surface("ci-policy");
@@ -3350,6 +3384,7 @@ mod tests {
                 "patch-coverage-xtask-gates",
                 "patch-coverage-xtask-ci-explain",
                 "patch-coverage-xtask-file-policy",
+                "patch-coverage-tautology-check",
                 "patch-coverage-completion-core",
                 "patch-coverage-ux-scenario",
                 "patch-coverage-ci-policy",
@@ -3421,6 +3456,7 @@ mod tests {
             "patch-coverage-xtask-gates",
             "patch-coverage-xtask-ci-explain",
             "patch-coverage-xtask-file-policy",
+            "patch-coverage-tautology-check",
             "patch-coverage-completion-core",
             "patch-coverage-ux-scenario",
             "patch-coverage-ci-policy",
@@ -3951,6 +3987,30 @@ mod tests {
                 && pack.commands.iter().any(|command| {
                     command
                         == "cargo test -p xtask --bin xtask --profile agent --locked file_policy -- --nocapture"
+                })
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_tautology_checker_to_focused_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/src/tasks/check_tautology/mod.rs".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["tautology-check"]);
+        assert!(proof_pack_ids(&receipt).contains(&"tautology-check-focused"));
+        assert_eq!(receipt.coverage_pack_selector, vec!["patch-coverage-tautology-check"]);
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "tautology-check-focused"
+                && pack.commands.iter().any(|command| {
+                    command
+                        == "cargo test -p xtask --bin xtask --profile agent --locked check_tautology -- --nocapture"
+                })
+                && pack.commands.iter().any(|command| {
+                    command == "cargo run -p xtask --profile agent --locked -- check-tautology --check"
                 })
         }));
         Ok(())
