@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12506 |
-| Rust-family files | 3870 |
-| Non-Rust files | 8636 |
+| Total tracked files | 12521 |
+| Rust-family files | 3883 |
+| Non-Rust files | 8638 |
 | Allowlisted | 6399 |
-| Unclassified | 2237 |
+| Unclassified | 2239 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 349 |
 | test | 2067 |
 | tooling | 667 |
-| unclassified | 2237 |
+| unclassified | 2239 |
 
 ## Unclassified files
 
@@ -111,6 +111,8 @@
 | `crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json` | `json` |
 | `crates/perl-parser-core/libcheck_unwrap.rlib` | `rlib` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
+| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_no_diff.json` | `json` |
+| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_with_diff.json` | `json` |
 | `crates/perl-workspace/tests/fixtures/semantic_scorecard/manifest.json` | `json` |
 | `distribution/build-packages.sh` | `sh` |
 | `distribution/chocolatey/perl-lsp.nuspec` | `nuspec` |
