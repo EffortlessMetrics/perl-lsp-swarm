@@ -1090,6 +1090,14 @@ fn process_set_comparison_is_scoped_to_the_exact_candidate_needle() -> Result<()
             == 1,
         "a different runtime executable is a different identity"
     );
+    let prefix_sharing = emacs_host_runner::parse_process_snapshot(
+        "10 /usr/bin/ps\n40 /tmp/run/perllsp-helper --stdio\n",
+    )?;
+    ensure!(
+        emacs_host_runner::surviving_processes(&before, &prefix_sharing, "/tmp/run/perllsp")
+            .is_empty(),
+        "a prefix-sharing executable must not be this run's leak or timeout-kill target"
+    );
     Ok(())
 }
 

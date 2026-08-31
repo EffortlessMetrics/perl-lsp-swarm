@@ -700,6 +700,9 @@ pub fn parse_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
             .with_context(|| format!("process snapshot line is not `pid args`: {trimmed:?}"))?;
         lines.push(ProcessProbeLine { pid, args: args.to_string() });
     }
+    if lines.is_empty() {
+        bail!("process probe captured zero rows; an empty snapshot is instrument failure");
+    }
     lines.sort();
     Ok(lines)
 }
@@ -745,6 +748,9 @@ pub fn parse_windows_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine
             .with_context(|| format!("windows process snapshot pid is not numeric: {trimmed:?}"))?;
         lines.push(ProcessProbeLine { pid, args: image.to_string() });
     }
+    if lines.is_empty() {
+        bail!("windows process probe captured zero rows; an empty snapshot is instrument failure");
+    }
     lines.sort();
     Ok(lines)
 }
@@ -755,9 +761,11 @@ pub fn parse_windows_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine
 /// basename matches: every failure direction here is conservative (cleanup is
 /// `Fail` or `NotProven`, never a false `Pass`), and a match found in the
 /// before-probe fails the run closed via the pre-existing check in
-/// `run_owned_process`.
+/// `run_owned_process`. Matching is component-bounded: `/run/perllsp-helper`
+/// is not `/run/perllsp`, so timeout reap cannot kill a prefix-sharing
+/// unrelated executable.
 fn matching_candidates(lines: &[ProcessProbeLine], needle: &str) -> Vec<ProcessProbeLine> {
-    lines.iter().filter(|line| line.args.contains(needle)).cloned().collect()
+    lines.iter().filter(|line| matches_needle(&line.args, needle)).cloned().collect()
 }
 
 /// After-probe lines matching `needle` that were absent from the before-probe.
@@ -770,12 +778,52 @@ pub fn surviving_processes(
     needle: &str,
 ) -> Vec<ProcessProbeLine> {
     let before_matching: BTreeSet<&ProcessProbeLine> =
-        before.iter().filter(|line| line.args.contains(needle)).collect();
+        before.iter().filter(|line| matches_needle(&line.args, needle)).collect();
     after
         .iter()
-        .filter(|line| line.args.contains(needle) && !before_matching.contains(line))
+        .filter(|line| matches_needle(&line.args, needle) && !before_matching.contains(line))
         .cloned()
         .collect()
+}
+
+/// Whether one process description belongs to the candidate named by
+/// `needle`. Component-boundary matching: the needle must sit at a whitespace
+/// edge and must not continue into another token (`/run/perllsp-helper` is
+/// not `/run/perllsp`). On Windows, image names fold case and may continue
+/// into `.exe`. This is the same matching law as `editor_host`; the Emacs
+/// runner keeps its own copy so this claim does not absorb that supervisor.
+fn matches_needle(args: &str, needle: &str) -> bool {
+    matches_needle_with(args, needle, cfg!(windows))
+}
+
+fn matches_needle_with(args: &str, needle: &str, fold: bool) -> bool {
+    let haystack = if fold { args.to_lowercase() } else { args.to_string() };
+    let target = if fold { needle.to_lowercase() } else { needle.to_string() };
+    let bytes = haystack.as_bytes();
+    let mut search_from = 0;
+    while let Some(relative) = haystack[search_from..].find(&target) {
+        let start = search_from + relative;
+        let end = start + target.len();
+        let leading_ok = start == 0 || bytes.get(start - 1).is_some_and(u8::is_ascii_whitespace);
+        let trailing = bytes.get(end).copied();
+        let trailing_ok = match trailing {
+            None | Some(b' ') | Some(b'\t') => true,
+            Some(b'.') => fold,
+            _ => false,
+        };
+        if leading_ok && trailing_ok {
+            return true;
+        }
+        let mut next = start + 1;
+        while next < haystack.len() && !haystack.is_char_boundary(next) {
+            next += 1;
+        }
+        if next >= haystack.len() {
+            break;
+        }
+        search_from = next;
+    }
+    false
 }
 
 fn persist_text(path: &Path, text: &str) -> Result<()> {
@@ -889,6 +937,51 @@ mod process_tests {
             targets,
             vec![leaked],
             "timeout reap must kill this-run needle matches, never the host pid, pre-existing set, or a different executable"
+        );
+    }
+
+    #[test]
+    fn empty_process_snapshots_are_instrument_failure() -> Result<()> {
+        let unix = parse_process_snapshot("").err().context("empty unix snapshot must fail")?;
+        ensure!(
+            unix.to_string().contains("zero rows"),
+            "empty unix snapshot must name instrument failure, got {unix:#}"
+        );
+        let windows = parse_windows_process_snapshot(" \n")
+            .err()
+            .context("empty windows snapshot must fail")?;
+        ensure!(
+            windows.to_string().contains("zero rows"),
+            "empty windows snapshot must name instrument failure, got {windows:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_match_requires_a_component_boundary() {
+        assert!(
+            matches_needle_with("/tmp/run/perllsp --stdio", "/tmp/run/perllsp", false),
+            "the exact candidate path with arguments is this run"
+        );
+        assert!(
+            !matches_needle_with("/tmp/run/perllsp-helper --stdio", "/tmp/run/perllsp", false),
+            "a prefix-sharing executable is a different identity"
+        );
+        assert!(
+            !matches_needle_with("cat /tmp/run/perllsp", "/tmp/run/perllsp", false),
+            "a path appearing as a later argument is not the candidate image"
+        );
+        assert!(
+            matches_needle_with("PERLLSP-TAG.EXE", "perllsp-tag.exe", true),
+            "Windows image names fold case"
+        );
+        assert!(
+            matches_needle_with("perllsp-tag.exe", "perllsp-tag", true),
+            "Windows image names may continue into .exe"
+        );
+        assert!(
+            !matches_needle_with("perllsp-tag-extra.exe", "perllsp-tag", true),
+            "a different Windows image name is not this run"
         );
     }
 
