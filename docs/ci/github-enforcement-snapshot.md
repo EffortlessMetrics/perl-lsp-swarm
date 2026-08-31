@@ -167,7 +167,15 @@ operator                a maintainer running the command directly
 connector               a capture bundle imported as a typed observation
 ```
 
-`GET /repos/{owner}/{repo}/branches/{branch}/protection` and `GET /repos/{owner}/{repo}/rulesets` both require administration read access, which the ordinary Actions `GITHUB_TOKEN` does not carry. No repository workflow is wired to this observer, because widening a candidate PR's permissions to obtain that access is exactly the supply-chain hazard the policy train exists to avoid. **The hosted result is therefore `NOT_PROVEN` by construction until an explicitly managed read-only credential with administration read is provisioned.** The operator and connector shapes are usable today and produce the same contract.
+The two surfaces do not cost the same access. Observed against this repository with an ordinary repository-scoped token:
+
+```text
+GET /repos/{owner}/{repo}/rulesets                        readable
+GET /repos/{owner}/{repo}/rulesets/{id}                   readable
+GET /repos/{owner}/{repo}/branches/{branch}/protection     403 — administration read
+```
+
+A complete union needs both, so the ruleset surface alone cannot carry a verdict. No repository workflow is wired to this observer, because widening a candidate PR's permissions to obtain administration read is exactly the supply-chain hazard the policy train exists to avoid. **The hosted result is therefore `NOT_PROVEN` by construction until an explicitly managed read-only credential with administration read is provisioned.** The operator and connector shapes are usable today and produce the same contract; run them with a credential that carries administration read to reach `MATCH` or `DRIFT`.
 
 ### Limitations are a closed vocabulary
 
