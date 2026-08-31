@@ -1,27 +1,8 @@
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_tdd_support::must;
 use serde_json::json;
-use std::sync::LazyLock;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-/// Mirror of the production `is_valid_set_variable_name` validator so tests can
-/// predict the expected `verified` flag for an arbitrary data_id without
-/// depending on a private crate item.  Matches the production regex:
-/// `^[\$\@\%](?:[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*|\d+|_)$`
-/// with a 512-char length cap, plus the newline defense-in-depth check.
-static VALID_NAME_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    must(regex::Regex::new(
-        r"^[\$\@\%](?:[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*|\d+|_)$",
-    ))
-});
-
-fn is_valid_set_variable_name_helper(data_id: &str) -> bool {
-    if data_id.contains('\n') || data_id.contains('\r') {
-        return false;
-    }
-    data_id.trim().len() <= 512 && VALID_NAME_RE.is_match(data_id.trim())
-}
 
 /// Helper: send a dataBreakpointInfo request and return the response body.
 fn data_breakpoint_info_request(
@@ -57,60 +38,35 @@ fn set_data_breakpoints_request(
     }
 }
 
-// === dataBreakpointInfo tests ===
+// === dataBreakpointInfo tests (#9091: fail-closed, no name-only dataId) ===
 
+/// Every syntactically valid Perl variable spelling must receive an explicit
+/// `dataId: null` with the unsupported disposition — never a persistent
+/// name-only identity (#9091).
 #[test]
-fn test_data_breakpoint_info_valid_scalar() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
+fn test_data_breakpoint_info_valid_names_stay_fail_closed() -> TestResult {
+    for name in ["$x", "%ENV", "@ARGV", "$Foo::Bar::baz"] {
+        let mut adapter = DebugAdapter::new();
+        adapter.handle_request(1, "initialize", None);
 
-    let body = data_breakpoint_info_request(&mut adapter, "$x")?;
+        let body = data_breakpoint_info_request(&mut adapter, name)?;
 
-    let data_id = body.get("dataId").and_then(|v| v.as_str());
-    assert_eq!(data_id, Some("$x"), "Valid scalar should have a dataId");
+        let data_id = body.get("dataId").and_then(|v| v.as_str());
+        assert!(data_id.is_none(), "valid name {name} must not mint a dataId");
+        let raw = body.get("dataId").expect("dataId must be explicitly null");
+        assert!(raw.is_null(), "valid name {name} must carry explicit dataId: null");
 
-    let access_types = body.get("accessTypes").and_then(|v| v.as_array());
-    assert!(access_types.is_some(), "Should include access types");
-    assert!(
-        access_types.iter().flat_map(|a| a.iter()).any(|v| v.as_str() == Some("write")),
-        "Should support write access"
-    );
+        assert!(
+            body.get("accessTypes").is_none(),
+            "unsupported dataBreakpointInfo must not promise access types for {name}"
+        );
 
-    Ok(())
-}
-
-#[test]
-fn test_data_breakpoint_info_valid_hash() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
-
-    let body = data_breakpoint_info_request(&mut adapter, "%ENV")?;
-    let data_id = body.get("dataId").and_then(|v| v.as_str());
-    assert_eq!(data_id, Some("%ENV"), "Valid hash should have a dataId");
-
-    Ok(())
-}
-
-#[test]
-fn test_data_breakpoint_info_valid_array() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
-
-    let body = data_breakpoint_info_request(&mut adapter, "@ARGV")?;
-    let data_id = body.get("dataId").and_then(|v| v.as_str());
-    assert_eq!(data_id, Some("@ARGV"), "Valid array should have a dataId");
-
-    Ok(())
-}
-
-#[test]
-fn test_data_breakpoint_info_qualified_name() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
-
-    let body = data_breakpoint_info_request(&mut adapter, "$Foo::Bar::baz")?;
-    let data_id = body.get("dataId").and_then(|v| v.as_str());
-    assert_eq!(data_id, Some("$Foo::Bar::baz"), "Qualified name should be watchable");
+        let description = body.get("description").and_then(|v| v.as_str()).unwrap_or_default();
+        assert!(
+            description.contains("unsupported") && description.contains("#9091"),
+            "unsupported disposition must be explained for {name}: {description:?}"
+        );
+    }
 
     Ok(())
 }
@@ -193,7 +149,7 @@ fn test_set_data_breakpoints_empty_list() -> TestResult {
 }
 
 #[test]
-fn test_set_data_breakpoints_single() -> TestResult {
+fn test_set_data_breakpoints_single_is_unverified_without_mutation() -> TestResult {
     let mut adapter = DebugAdapter::new();
     adapter.handle_request(1, "initialize", None);
 
@@ -204,12 +160,17 @@ fn test_set_data_breakpoints_single() -> TestResult {
 
     let breakpoints =
         body.get("breakpoints").and_then(|v| v.as_array()).ok_or("missing breakpoints")?;
-    assert_eq!(breakpoints.len(), 1, "Should have one breakpoint");
+    assert_eq!(breakpoints.len(), 1, "Should have one response entry per input");
 
     let bp = &breakpoints[0];
     assert!(
-        bp.get("verified").and_then(|v| v.as_bool()).unwrap_or(false),
-        "Breakpoint should be verified"
+        !bp.get("verified").and_then(|v| v.as_bool()).unwrap_or(true),
+        "Unsupported native watchpoints must be reported verified:false (#9091)"
+    );
+    let message = bp.get("message").and_then(|v| v.as_str()).unwrap_or_default();
+    assert!(
+        message.contains("unsupported") && message.contains("#9091"),
+        "unverified entry must explain the unsupported disposition: {message:?}"
     );
 
     Ok(())
@@ -285,11 +246,12 @@ fn test_set_data_breakpoints_missing_arguments() {
     }
 }
 
-// === setDataBreakpoints data_id validation (Issue #4637) ===
+// === setDataBreakpoints data_id validation (Issue #4637, retired by #9091) ===
 //
-// A hostile dataId is interpolated raw into the Perl debugger `w {dataId}`
-// command.  Invalid or injection-laden dataIds must be reported as
-// verified:false rather than passed through to the debugger.
+// dataIds are no longer interpolated into any debugger command: native data
+// breakpoints are unsupported, so every entry is reported verified:false with
+// the deterministic unsupported message and no debugger I/O occurs. The
+// injection-shaped inputs below stay as negative controls for that contract.
 
 /// Helper: extract the verified flag and message for the n-th breakpoint.
 fn breakpoint_verified_at(
@@ -329,12 +291,14 @@ fn test_set_data_breakpoints_rejects_newline_data_id() -> TestResult {
         json!([{ "dataId": "$x\ndie('inject')", "accessType": "write" }]),
     )?;
 
+    // #9091: every entry is unverified and no debugger command is ever built,
+    // so an injection-shaped dataId cannot reach perl5db regardless of shape.
     let (verified, message) = breakpoint_verified_at(&body, 0)?;
     assert!(!verified, "newline dataId must be verified:false");
     let msg = message.unwrap_or_default();
     assert!(
-        msg.contains("newline"),
-        "newline rejection message should mention newlines, got: {msg:?}"
+        msg.contains("unsupported"),
+        "unsupported disposition should be deterministic for any dataId, got: {msg:?}"
     );
     Ok(())
 }
@@ -355,7 +319,7 @@ fn test_set_data_breakpoints_rejects_data_id_without_sigil() -> TestResult {
 }
 
 #[test]
-fn test_set_data_breakpoints_mixed_batch_partial_verification() -> TestResult {
+fn test_set_data_breakpoints_mixed_batch_is_uniformly_unverified() -> TestResult {
     let mut adapter = DebugAdapter::new();
     adapter.handle_request(1, "initialize", None);
 
@@ -367,8 +331,10 @@ fn test_set_data_breakpoints_mixed_batch_partial_verification() -> TestResult {
         ]),
     )?;
 
+    // #9091: no entry is distinguished as installable — the whole request is
+    // unsupported, so both entries are verified:false with the same message.
     let (verified_first, _) = breakpoint_verified_at(&body, 0)?;
-    assert!(verified_first, "legitimate first breakpoint must be verified:true");
+    assert!(!verified_first, "unsupported native watchpoint must be verified:false");
 
     let (verified_second, _) = breakpoint_verified_at(&body, 1)?;
     assert!(!verified_second, "injection second breakpoint must be verified:false");
@@ -376,7 +342,7 @@ fn test_set_data_breakpoints_mixed_batch_partial_verification() -> TestResult {
 }
 
 #[test]
-fn test_set_data_breakpoints_legitimate_batch_all_verified() -> TestResult {
+fn test_set_data_breakpoints_legitimate_batch_all_unverified_with_message() -> TestResult {
     let mut adapter = DebugAdapter::new();
     adapter.handle_request(1, "initialize", None);
 
@@ -391,8 +357,12 @@ fn test_set_data_breakpoints_legitimate_batch_all_verified() -> TestResult {
 
     for i in 0..3 {
         let (verified, message) = breakpoint_verified_at(&body, i)?;
-        assert!(verified, "legitimate breakpoint {i} must be verified:true");
-        assert!(message.is_none(), "verified breakpoint {i} should not carry a rejection message");
+        assert!(!verified, "unsupported native watchpoint {i} must be verified:false (#9091)");
+        let msg = message.unwrap_or_default();
+        assert!(
+            msg.contains("#9091"),
+            "unverified entry {i} must cite the unsupported disposition: {msg:?}"
+        );
     }
     Ok(())
 }
@@ -487,16 +457,14 @@ mod proptest_watchpoints {
                     breakpoint.get("id").and_then(|value| value.as_i64()),
                     Some((index as i64) + 1)
                 );
-                // Verification is per-breakpoint: valid Perl variable names are
-                // verified:true, anything else (including arbitrary strings that
-                // may contain injection payloads) is verified:false.
-                let data_id = &breakpoints[index].0;
-                let expected_verified = is_valid_set_variable_name_helper(data_id);
+                // #9091: native data breakpoints are unsupported, so every
+                // entry — valid name, injection payload, or arbitrary string —
+                // is deterministically verified:false.
                 prop_assert_eq!(
                     breakpoint.get("verified").and_then(|value| value.as_bool()),
-                    Some(expected_verified),
-                    "verified flag mismatch for dataId {:?}",
-                    data_id
+                    Some(false),
+                    "entry {:?} must be verified:false while unsupported",
+                    breakpoints[index].0
                 );
             }
         }
