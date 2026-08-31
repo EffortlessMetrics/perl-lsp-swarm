@@ -130,7 +130,9 @@ fn test_refactoring_engine_stays_retired() -> TestResult {
 fn contains_identifier(source: &str, identifier: &str) -> bool {
     source.match_indices(identifier).any(|(start, _)| {
         let end = start + identifier.len();
-        let is_ident = |byte: Option<u8>| byte.is_some_and(|value| value == b'_' || value.is_ascii_alphanumeric());
+        let is_ident = |byte: Option<u8>| {
+            byte.is_some_and(|value| value == b'_' || value.is_ascii_alphanumeric())
+        };
         !is_ident(source.as_bytes().get(start.wrapping_sub(1)).copied())
             && !is_ident(source.as_bytes().get(end).copied())
     })
