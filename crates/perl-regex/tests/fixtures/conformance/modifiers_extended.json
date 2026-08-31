@@ -22,6 +22,23 @@
       "oracle_disposition": "not_applicable"
     },
     {
+      "id": "modifiers.extended.xx-unknown-profile",
+      "family": "modifiers.extended",
+      "authority": "perl-regex profile contract: unknown version and feature state remain explicit",
+      "operator": "match",
+      "profile": { "perl_minor": null, "enhanced_xx": "unknown" },
+      "modifier_sequence": "xx",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "extended_mode": "extra_extended_unknown",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
       "id": "modifiers.extended.x-basic",
       "family": "modifiers.extended",
       "authority": "perlop(1) 'Modifiers': /x causes whitespace and comments to be ignored",
@@ -48,7 +65,7 @@
       "positive_source": null,
       "negative_source": null,
       "expected": {
-        "extended_mode": "extra_extended",
+        "extended_mode": "extra_extended_disabled",
         "diagnostic_codes": []
       },
       "completeness": "proven",
@@ -82,7 +99,7 @@
       "positive_source": null,
       "negative_source": null,
       "expected": {
-        "extended_mode": "extra_extended",
+        "extended_mode": "extra_extended_enabled",
         "diagnostic_codes": []
       },
       "completeness": "proven",
@@ -99,7 +116,7 @@
       "positive_source": null,
       "negative_source": null,
       "expected": {
-        "extended_mode": "extra_extended",
+        "extended_mode": "extra_extended_disabled",
         "diagnostic_codes": ["modifier_requires_feature"]
       },
       "completeness": "proven",

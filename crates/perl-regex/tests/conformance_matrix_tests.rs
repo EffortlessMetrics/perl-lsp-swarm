@@ -13,7 +13,7 @@
 //!   crisp failure messages if the analyzer diverges from the fixture.
 //! - Mutation guards verify that altering an expected fact actually breaks the test.
 //!
-//! # Covered fixture families (issue #7036 required initial fixtures)
+//! # Covered fixture families (the modifier slice of issue #7036)
 //!
 //! - `modifiers.extended` — `/x`, `/xx`, profile-qualified `enhanced_xx`
 //! - `modifiers.charset`  — `/a`, `/aa`, `/d`, `/l`, `/u`, conflict diagnostics
@@ -42,39 +42,60 @@ use serde::Deserialize;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FixtureProfile {
     perl_minor: Option<u16>,
     enhanced_xx: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ExpectedFacts {
+    #[serde(default)]
     extended_mode: Option<String>,
+    #[serde(default)]
     character_set_mode: Option<String>,
+    #[serde(default)]
     capture_mode: Option<String>,
+    #[serde(default)]
     case_insensitive: Option<bool>,
+    #[serde(default)]
     multiline: Option<bool>,
+    #[serde(default)]
     single_line: Option<bool>,
+    #[serde(default)]
     global: Option<bool>,
+    #[serde(default)]
     non_destructive: Option<bool>,
+    #[serde(default)]
     substitution_evaluation_depth: Option<usize>,
     diagnostic_codes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FixtureRow {
     id: String,
     family: String,
+    authority: String,
     operator: String,
     profile: FixtureProfile,
     modifier_sequence: String,
+    positive_source: Option<String>,
+    negative_source: Option<String>,
     expected: ExpectedFacts,
+    completeness: String,
+    owner_issue: u32,
+    oracle_disposition: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FixtureFile {
     schema_version: u32,
+    programme: String,
     family: String,
+    owner_issue: u32,
     rows: Vec<FixtureRow>,
 }
 
@@ -202,6 +223,45 @@ fn rows_belong_to_declared_file_family() {
     }
 }
 
+#[test]
+fn fixture_schema_is_load_bearing() {
+    for (file, fixture) in all_fixtures() {
+        assert_eq!(fixture.programme, "perl_regex_modifier_conformance", "fixture {file}");
+        assert_eq!(fixture.owner_issue, 7036, "fixture {file}");
+        assert!(!fixture.rows.is_empty(), "fixture {file} must contain rows");
+        for row in &fixture.rows {
+            assert!(!row.authority.trim().is_empty(), "fixture {file}/{} has no authority", row.id);
+            assert_eq!(row.owner_issue, 7036, "fixture {file}/{}", row.id);
+            assert_eq!(row.completeness, "proven", "fixture {file}/{}", row.id);
+            assert_eq!(row.oracle_disposition, "not_applicable", "fixture {file}/{}", row.id);
+            assert!(
+                row.positive_source.is_none(),
+                "fixture {file}/{} unexpectedly claims positive oracle source",
+                row.id
+            );
+            assert!(
+                row.negative_source.is_none(),
+                "fixture {file}/{} unexpectedly claims negative oracle source",
+                row.id
+            );
+            assert!(
+                row.expected.extended_mode.is_some()
+                    || row.expected.character_set_mode.is_some()
+                    || row.expected.capture_mode.is_some()
+                    || row.expected.case_insensitive.is_some()
+                    || row.expected.multiline.is_some()
+                    || row.expected.single_line.is_some()
+                    || row.expected.global.is_some()
+                    || row.expected.non_destructive.is_some()
+                    || row.expected.substitution_evaluation_depth.is_some()
+                    || row.expected.diagnostic_codes.is_some(),
+                "fixture {file}/{} has no expected fact",
+                row.id
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Per-row assertion helper
 // ---------------------------------------------------------------------------
@@ -283,20 +343,22 @@ fn assert_row_facts(row: &FixtureRow, file: &str) {
     }
 
     // --- Diagnostic codes (exact multiset match) ---
-    if let Some(ref expected_codes) = exp.diagnostic_codes {
-        // Collect actual codes as a sorted list of strings.
-        let mut actual_codes: Vec<&str> =
-            analysis.diagnostics.iter().map(|d| d.code.as_str()).collect();
-        actual_codes.sort_unstable();
-
-        let mut expected_sorted: Vec<&str> = expected_codes.iter().map(String::as_str).collect();
-        expected_sorted.sort_unstable();
-
-        assert_eq!(
-            actual_codes, expected_sorted,
-            "{ctx}: diagnostic_codes mismatch\n  expected: {expected_sorted:?}\n  actual:   {actual_codes:?}"
-        );
-    }
+    // Collect actual codes as a sorted list of strings.
+    let mut actual_codes: Vec<&str> =
+        analysis.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    actual_codes.sort_unstable();
+    let mut expected_sorted: Vec<&str> = exp
+        .diagnostic_codes
+        .as_ref()
+        .unwrap_or_else(|| panic!("{ctx}: diagnostic_codes field is required"))
+        .iter()
+        .map(String::as_str)
+        .collect();
+    expected_sorted.sort_unstable();
+    assert_eq!(
+        actual_codes, expected_sorted,
+        "{ctx}: diagnostic_codes mismatch\n  expected: {expected_sorted:?}\n  actual:   {actual_codes:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +422,21 @@ fn concept_xx_collapses_to_extended_below_526() {
             .count(),
         1
     );
+}
+
+#[test]
+fn concept_xx_with_unknown_version_stays_unresolved() {
+    let sequence = ModifierSequence::new("xx", 0).unwrap();
+    let result = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Match,
+        sequence,
+        RegexLanguageProfile::new(None, FeatureState::Unknown),
+    );
+    assert_eq!(result.effective.extended.as_str(), "extra_extended_unknown");
+    assert!(result.diagnostics.is_empty());
+    assert!(result.requirements.iter().any(|requirement| {
+        matches!(requirement.disposition, perl_regex::analyzer::RequirementDisposition::Unknown)
+    }));
 }
 
 #[test]
@@ -508,6 +585,12 @@ fn mutation_missing_diagnostic_detected() {
             // Wrong: the row SHOULD have a diagnostic code
             diagnostic_codes: Some(vec![]),
         },
+        authority: "mutation".to_owned(),
+        positive_source: None,
+        negative_source: None,
+        completeness: "proven".to_owned(),
+        owner_issue: 7036,
+        oracle_disposition: "not_applicable".to_owned(),
     };
     assert_row_facts(&row, "mutation-test");
 }

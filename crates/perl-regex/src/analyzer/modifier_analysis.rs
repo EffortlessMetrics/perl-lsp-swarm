@@ -130,14 +130,16 @@ pub enum ExtendedMode {
 
 impl ExtendedMode {
     /// Stable machine token for receipts, protocol adapters, and conformance
-    /// matrix fixtures.  The `enhanced` field of `ExtraExtended` is not
-    /// reflected here; callers that need the full distinction must pattern-match.
+    /// matrix fixtures. The feature state remains part of the token so a
+    /// serialized fact cannot erase a meaningful semantic distinction.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Extended => "extended",
-            Self::ExtraExtended { .. } => "extra_extended",
+            Self::ExtraExtended { enhanced: FeatureState::Enabled } => "extra_extended_enabled",
+            Self::ExtraExtended { enhanced: FeatureState::Disabled } => "extra_extended_disabled",
+            Self::ExtraExtended { enhanced: FeatureState::Unknown } => "extra_extended_unknown",
         }
     }
 }
