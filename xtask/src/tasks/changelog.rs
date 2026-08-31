@@ -44,7 +44,9 @@
 //! therefore never appear for the same run. Fragments deleted by the PR are
 //! excluded from the disposition itself before classification — an absent
 //! path cannot crash the renderer, owes no release note, and must not lend
-//! its Fragment disposition to unrelated changes in the same PR.
+//! its Fragment disposition to unrelated changes in the same PR. Deletions
+//! of non-fragment files are NOT excluded: they remain disposition-bearing
+//! changes, so a deletion-only PR still owes a release note or exemption.
 //!
 //! A malformed fragment is a *verdict-bearing* finding, symmetric with a
 //! missing disposition: past the blocking boundary it is a
@@ -801,23 +803,35 @@ fn check_inner(
     // set first — a PR mixing a feature change with the deletion of a stale
     // fragment would otherwise inherit the deletion's Fragment disposition
     // and pass even blocking enforcement without a release note (issue
-    // #13484 review). Deletion paths stay in `changed` for category hints
+    // #13484 review). Only deleted *fragments* are excluded: any other
+    // deleted file (production code, docs, tooling) stays a
+    // disposition-bearing change, so a deletion-only PR cannot bypass the
+    // policy. Deleted fragment paths stay in `changed` for category hints
     // and direct-edit handling. Soft-degraded `deleted_paths` (empty set)
     // preserves the pre-existing advisory behavior.
     let deleted = deleted_paths(&root, &base);
-    let deleted_changed: Vec<String> =
-        changed.iter().filter(|f| deleted.contains(*f)).cloned().collect();
-    if !deleted_changed.is_empty() {
+    let deleted_fragments: Vec<String> = changed
+        .iter()
+        .filter(|f| {
+            let norm = f.replace('\\', "/");
+            deleted.contains(*f)
+                && norm.starts_with(&format!("{UNRELEASED_DIR}/"))
+                && norm.ends_with(".yaml")
+        })
+        .cloned()
+        .collect();
+    if !deleted_fragments.is_empty() {
         report.info(format!(
-            "ignoring deleted path(s) for the changelog disposition: {} — an absent \
+            "ignoring deleted fragment(s) for the changelog disposition: {} — an absent \
              fragment cannot crash the renderer and owes no release note",
-            deleted_changed.join(", ")
+            deleted_fragments.join(", ")
         ));
     }
-    let active: Vec<String> = changed.iter().filter(|f| !deleted.contains(*f)).cloned().collect();
+    let active: Vec<String> =
+        changed.iter().filter(|f| !deleted_fragments.contains(f)).cloned().collect();
     if active.is_empty() {
         report.info(
-            "every changed file is a deletion — no fragment to validate, no \
+            "every changed file is a deleted fragment — no fragment to validate, no \
                      disposition owed",
         );
         return Ok((CheckOutcome::PolicySatisfied, report));
@@ -2180,12 +2194,80 @@ changelog = "vscode-extension/CHANGELOG.md"
         );
         let rendered = report.lines.join("\n");
         assert!(
-            rendered.contains("ignoring deleted path(s)"),
+            rendered.contains("ignoring deleted fragment(s)"),
             "the deletion must be reported as excluded from the disposition; got:\n{rendered}"
         );
         assert!(
             !rendered.contains("malformed"),
             "the deleted fragment must not be classified malformed; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A deletion-only PR (a production file removed, no fragment involved)
+    /// is NOT a free pass: the remaining disposition-bearing deletion still
+    /// owes a release note or exemption, so with the advisory soak armed the
+    /// outcome is AdvisoryFinding (issue #13484 review round 2: the deleted-
+    /// fragment exclusion must not swallow non-fragment deletions).
+    #[test]
+    fn check_deletion_only_production_change_still_owes_disposition_advisory()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&armed), None)?;
+        write_valid_changie(dir)?;
+        std::fs::remove_file(dir.join("seed.txt")).map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "remove production file"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let list = write_changed_files(dir, &["seed.txt"])?;
+        let (outcome, _) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "a deletion-only production change must still owe a disposition (advisory armed)"
+        );
+        Ok(())
+    }
+
+    /// Same shape at the blocking boundary: a deletion-only production change
+    /// is a BlockingViolation, never a pass.
+    #[test]
+    fn check_deletion_only_production_change_is_blocking_violation()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        std::fs::remove_file(dir.join("seed.txt")).map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "remove production file"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let list = write_changed_files(dir, &["seed.txt"])?;
+        let (outcome, _) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "a deletion-only production change past the blocking boundary must be a \
+             BlockingViolation"
         );
         Ok(())
     }
