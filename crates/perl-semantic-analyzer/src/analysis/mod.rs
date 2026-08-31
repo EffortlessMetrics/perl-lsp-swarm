@@ -34,6 +34,8 @@ pub mod import_extractor;
 pub mod index;
 /// Registry-backed Mojo::Base activation-site extraction (#9681).
 pub mod mojo_base_activation;
+/// Registry-backed Mojolicious::Lite activation-site extraction (#9688).
+pub mod mojolicious_activation;
 /// Package graph edge extraction from inheritance and role-composition patterns.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod package_graph_extractor;

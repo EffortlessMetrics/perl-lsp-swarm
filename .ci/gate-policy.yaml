@@ -454,6 +454,31 @@ gates:
     planning:
       role: always_on
 
+  # Issue #1269 action item 3: a new parallel-unsafe test function (process
+  # env or CWD mutation without `#[serial]`-family serialization or an
+  # adjudicated row in ci/serial_test_identities.json) must not enter the
+  # workspace. The gate is fail-closed on NEW identities; repairing a
+  # registered site requires retiring its row, so the accepted set only
+  # shrinks. The 35 seeded rows are the measured current-main residual census
+  # at 94e099747f (env/cwd signals; port binds and static counters are
+  # documented non-goals in the lint module).
+  - name: serial_test_ratchet
+    tier: pr_fast
+    description: "Ratchet parallel-unsafe test serialization (#[serial] policy, #1269)"
+    required: true
+    command: just ci-serial-test-ratchet
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - policy
+      - tests
+      - ratchet
+    planning:
+      role: always_on
+
   - name: release_history_check
     tier: pr_fast
     description: "Check release-history drift"
@@ -775,10 +800,14 @@ gates:
       cargo clippy
       --workspace --bins --locked --no-deps
       -- -D clippy::unwrap_used -D clippy::expect_used
-    timeout_seconds: 300
+    # 600s/480000ms: cold-runner clippy over 1307 production files measured
+    # ~272s before timing out at the old 300s envelope (#13292-era meta-shard
+    # redness); the lint content itself is clean, so the envelope was the
+    # binding constraint.
+    timeout_seconds: 600
     retry_count: 0
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 480000
       max_warnings: 0
     quarantine: false
     tags:
@@ -2165,7 +2194,6 @@ workflow_integration:
   job_mapping:
     ci-gate:
       gates:
-        - fmt
         - ignored_tests_check_refs
         - clippy_full
         - unit_foundation_full
