@@ -97,7 +97,7 @@ impl SerialSiteIdentity {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct EnvBindings {
     module_aliases: BTreeSet<String>,
     direct_aliases: BTreeMap<String, &'static str>,
@@ -331,6 +331,52 @@ fn pattern_names(pattern: &Pat) -> BTreeSet<String> {
     names.names
 }
 
+#[derive(Default)]
+struct InstantiatedTypes {
+    names: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for InstantiatedTypes {
+    fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
+        if expression.qself.is_none()
+            && expression.path.segments.len() == 1
+            && let Some(segment) = expression.path.segments.first()
+        {
+            self.names.insert(ident_name(&segment.ident));
+        }
+        visit::visit_expr_path(self, expression);
+    }
+
+    fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
+        if expression.qself.is_none()
+            && expression.path.segments.len() == 1
+            && let Some(segment) = expression.path.segments.first()
+        {
+            self.names.insert(ident_name(&segment.ident));
+        }
+        visit::visit_expr_struct(self, expression);
+    }
+
+    fn visit_expr_closure(&mut self, _closure: &'ast syn::ExprClosure) {}
+
+    fn visit_item(&mut self, _item: &'ast Item) {}
+}
+
+fn instantiated_types(block: &Block) -> BTreeSet<String> {
+    let mut visitor = InstantiatedTypes::default();
+    visitor.visit_block(block);
+    visitor.names
+}
+
+fn immediate_closure(expression: &Expr) -> Option<&syn::ExprClosure> {
+    match expression {
+        Expr::Closure(closure) => Some(closure),
+        Expr::Group(group) => immediate_closure(&group.expr),
+        Expr::Paren(paren) => immediate_closure(&paren.expr),
+        _ => None,
+    }
+}
+
 struct SignalVisitor {
     bindings: EnvBindings,
     signals: BTreeSet<&'static str>,
@@ -363,6 +409,7 @@ impl SignalVisitor {
     }
 
     fn scan_block(&mut self, block: &Block) {
+        let instantiated = instantiated_types(block);
         for statement in &block.stmts {
             if let Stmt::Item(Item::Use(item_use)) = statement {
                 self.bindings.install_env_glob(item_use);
@@ -399,7 +446,16 @@ impl SignalVisitor {
                         .trait_
                         .as_ref()
                         .and_then(|(_, path, _)| path.segments.last())
-                        .is_some_and(|segment| segment.ident == "Drop") =>
+                        .is_some_and(|segment| segment.ident == "Drop")
+                        && matches!(
+                            item_impl.self_ty.as_ref(),
+                            syn::Type::Path(path)
+                                if path.qself.is_none()
+                                    && path.path.segments.len() == 1
+                                    && path.path.segments.first().is_some_and(|segment| {
+                                        instantiated.contains(&ident_name(&segment.ident))
+                                    })
+                        ) =>
                 {
                     for item in &item_impl.items {
                         if let ImplItem::Fn(method) = item
@@ -439,6 +495,16 @@ impl<'ast> Visit<'ast> for SignalVisitor {
         if let Some(signal) = self.resolve_call(call) {
             self.signals.insert(signal);
         }
+        if let Some(closure) = immediate_closure(&call.func) {
+            let mut child = Self::new(self.bindings.clone());
+            for input in &closure.inputs {
+                for name in pattern_names(input) {
+                    child.bindings.shadow_value(&name);
+                }
+            }
+            child.visit_expr(&closure.body);
+            self.signals.extend(child.signals);
+        }
         visit::visit_expr_call(self, call);
     }
 
@@ -448,16 +514,7 @@ impl<'ast> Visit<'ast> for SignalVisitor {
         self.signals.extend(child.signals);
     }
 
-    fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
-        let mut child = Self::new(self.bindings.clone());
-        for input in &closure.inputs {
-            for name in pattern_names(input) {
-                child.bindings.shadow_value(&name);
-            }
-        }
-        child.visit_expr(&closure.body);
-        self.signals.extend(child.signals);
-    }
+    fn visit_expr_closure(&mut self, _closure: &'ast syn::ExprClosure) {}
 
     fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
         self.visit_expr(&expression.expr);
@@ -570,40 +627,29 @@ fn explicit_module_path(module: &syn::ItemMod) -> Option<PathBuf> {
 }
 
 fn external_module_path(
-    parent: &Path,
+    module_directory: &Path,
     module: &syn::ItemMod,
-    inline_modules: &[String],
     known: &BTreeMap<PathBuf, usize>,
 ) -> Option<PathBuf> {
-    let directory = parent.parent()?;
     if let Some(explicit) = explicit_module_path(module) {
-        let candidate = directory.join(explicit);
+        let candidate = module_directory.join(explicit);
         return known.contains_key(&candidate).then_some(candidate);
     }
 
     let name = ident_name(&module.ident);
-    let mut candidates = BTreeSet::new();
-    let inline_directory =
-        inline_modules.iter().fold(directory.to_path_buf(), |path, module| path.join(module));
-    candidates.insert(inline_directory.join(format!("{name}.rs")));
-    candidates.insert(inline_directory.join(&name).join("mod.rs"));
-    if let Some(stem) = parent.file_stem() {
-        let nested =
-            inline_modules.iter().fold(directory.join(stem), |path, module| path.join(module));
-        candidates.insert(nested.join(format!("{name}.rs")));
-        candidates.insert(nested.join(&name).join("mod.rs"));
+    let source = module_directory.join(format!("{name}.rs"));
+    if known.contains_key(&source) {
+        return Some(source);
     }
-    let matches = candidates
-        .into_iter()
-        .filter(|candidate| candidate != parent && known.contains_key(candidate))
-        .collect::<Vec<_>>();
-    (matches.len() == 1).then(|| matches[0].clone())
+    let legacy = module_directory.join(&name).join("mod.rs");
+    known.contains_key(&legacy).then_some(legacy)
 }
 
 struct ScanContext<'a> {
     parsed: &'a [ParsedRustFile],
     known: &'a BTreeMap<PathBuf, usize>,
-    visited: BTreeSet<usize>,
+    visited: BTreeSet<(usize, PathBuf, EnvBindings)>,
+    files_seen: BTreeSet<usize>,
     sites: Vec<SerialSiteIdentity>,
 }
 
@@ -613,6 +659,7 @@ impl ScanContext<'_> {
         file_index: usize,
         items: &[Item],
         inline_modules: &[String],
+        module_directory: &Path,
         parent: Option<&EnvBindings>,
     ) {
         let file = &self.parsed[file_index];
@@ -635,7 +682,11 @@ impl ScanContext<'_> {
                     if !visitor.signals.is_empty() {
                         self.sites.push(SerialSiteIdentity {
                             path: file.relative.clone(),
-                            test_function: function.sig.ident.to_string(),
+                            test_function: if inline_modules.is_empty() {
+                                function.sig.ident.to_string()
+                            } else {
+                                format!("{}::{}", inline_modules.join("::"), function.sig.ident)
+                            },
                             signals: visitor.signals.into_iter().collect(),
                             line: function.sig.fn_token.span.start().line,
                         });
@@ -644,13 +695,22 @@ impl ScanContext<'_> {
                 Item::Mod(module) => {
                     if let Some((_, child_items)) = &module.content {
                         let mut child_modules = inline_modules.to_vec();
-                        child_modules.push(ident_name(&module.ident));
-                        self.scan_scope(file_index, child_items, &child_modules, Some(&bindings));
+                        let module_name = ident_name(&module.ident);
+                        child_modules.push(module_name.clone());
+                        let child_directory = module_directory.join(module_name);
+                        self.scan_scope(
+                            file_index,
+                            child_items,
+                            &child_modules,
+                            &child_directory,
+                            Some(&bindings),
+                        );
                     } else if let Some(path) =
-                        external_module_path(&file.path, module, inline_modules, self.known)
+                        external_module_path(module_directory, module, self.known)
                         && let Some(child) = self.known.get(&path).copied()
                     {
-                        self.scan_file(child, Some(&bindings));
+                        let child_directory = module_directory.join(ident_name(&module.ident));
+                        self.scan_file(child, &child_directory, Some(&bindings));
                     }
                 }
                 _ => {}
@@ -658,29 +718,29 @@ impl ScanContext<'_> {
         }
     }
 
-    fn scan_file(&mut self, index: usize, parent: Option<&EnvBindings>) {
-        if !self.visited.insert(index) {
+    fn scan_file(&mut self, index: usize, module_directory: &Path, parent: Option<&EnvBindings>) {
+        let context = parent.cloned().unwrap_or_default();
+        if !self.visited.insert((index, module_directory.to_path_buf(), context)) {
             return;
         }
+        self.files_seen.insert(index);
         let items = self.parsed[index].syntax.items.clone();
-        self.scan_scope(index, &items, &[], parent);
+        self.scan_scope(index, &items, &[], module_directory, parent);
     }
 }
 
 fn collect_external_children(
-    file: &ParsedRustFile,
     items: &[Item],
-    inline_modules: &[String],
+    module_directory: &Path,
     known: &BTreeMap<PathBuf, usize>,
     children: &mut BTreeSet<usize>,
 ) {
     for item in items {
         let Item::Mod(module) = item else { continue };
         if let Some((_, child_items)) = &module.content {
-            let mut child_modules = inline_modules.to_vec();
-            child_modules.push(ident_name(&module.ident));
-            collect_external_children(file, child_items, &child_modules, known, children);
-        } else if let Some(path) = external_module_path(&file.path, module, inline_modules, known)
+            let child_directory = module_directory.join(ident_name(&module.ident));
+            collect_external_children(child_items, &child_directory, known, children);
+        } else if let Some(path) = external_module_path(module_directory, module, known)
             && let Some(child) = known.get(&path)
         {
             children.insert(*child);
@@ -702,20 +762,66 @@ fn complete_serial_site_inventory(repo_root: &Path) -> Result<Vec<SerialSiteIden
         .collect::<BTreeMap<_, _>>();
     let mut children = BTreeSet::new();
     for file in &parsed {
-        collect_external_children(file, &file.syntax.items, &[], &known, &mut children);
-    }
-
-    let mut scan =
-        ScanContext { parsed: &parsed, known: &known, visited: BTreeSet::new(), sites: Vec::new() };
-    for index in 0..parsed.len() {
-        if !children.contains(&index) {
-            scan.scan_file(index, None);
+        if let Some(directory) = file.path.parent() {
+            collect_external_children(&file.syntax.items, directory, &known, &mut children);
         }
     }
-    for index in 0..parsed.len() {
-        scan.scan_file(index, None);
+
+    let mut scan = ScanContext {
+        parsed: &parsed,
+        known: &known,
+        visited: BTreeSet::new(),
+        files_seen: BTreeSet::new(),
+        sites: Vec::new(),
+    };
+    for (index, file) in parsed.iter().enumerate() {
+        if !children.contains(&index)
+            && let Some(directory) = file.path.parent()
+        {
+            scan.scan_file(index, directory, None);
+        }
+    }
+    for (index, file) in parsed.iter().enumerate() {
+        if !scan.files_seen.contains(&index)
+            && let Some(directory) = file.path.parent()
+        {
+            scan.scan_file(index, directory, None);
+        }
     }
     scan.sites.sort();
+    scan.sites.dedup();
+    let identities = scan.sites.iter().fold(
+        BTreeMap::<(String, String), BTreeSet<String>>::new(),
+        |mut identities, site| {
+            let bare = site
+                .test_function
+                .rsplit("::")
+                .next()
+                .unwrap_or(site.test_function.as_str())
+                .to_owned();
+            identities
+                .entry((site.path.clone(), bare))
+                .or_default()
+                .insert(site.test_function.clone());
+            identities
+        },
+    );
+    for site in &mut scan.sites {
+        let bare = site
+            .test_function
+            .rsplit("::")
+            .next()
+            .unwrap_or(site.test_function.as_str())
+            .to_owned();
+        if identities
+            .get(&(site.path.clone(), bare.clone()))
+            .is_some_and(|qualified| qualified.len() == 1)
+        {
+            site.test_function = bare;
+        }
+    }
+    scan.sites.sort();
+    scan.sites.dedup();
     Ok(scan.sites)
 }
 
@@ -785,6 +891,14 @@ fn read_identity_registry(path: &Path) -> Result<BTreeMap<(String, String), Seri
         .map_err(|err| eyre!("reading serial identity registry {:?}: {err}", path))?;
     let document: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|err| eyre!("parsing serial identity registry {:?}: {err}", path))?;
+    let root = document
+        .as_object()
+        .ok_or_else(|| eyre!("serial identity registry root must be an object"))?;
+    if let Some(field) =
+        root.keys().find(|field| !["schema_version", "sites"].contains(&field.as_str()))
+    {
+        return Err(eyre!("serial identity registry has unknown root field {field:?}"));
+    }
     let schema_version = document
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
@@ -804,6 +918,15 @@ fn read_identity_registry(path: &Path) -> Result<BTreeMap<(String, String), Seri
         let object = value.as_object().ok_or_else(|| {
             eyre!("serial identity registry entry {} must be an object", index + 1)
         })?;
+        if let Some(field) = object.keys().find(|field| {
+            !["path", "test_function", "signals", "accepted_reason", "state"]
+                .contains(&field.as_str())
+        }) {
+            return Err(eyre!(
+                "serial identity registry entry {} has unknown field {field:?}",
+                index + 1
+            ));
+        }
         let required_string = |field: &str| {
             object.get(field).and_then(serde_json::Value::as_str).map(str::to_owned).ok_or_else(
                 || eyre!("serial identity registry entry {} requires string {field}", index + 1),
@@ -1146,6 +1269,52 @@ fn never_calls_helper_method() {
     }
 
     #[test]
+    fn uninstantiated_drop_impl_is_not_mutation_evidence() -> Result<()> {
+        let repo = TempRepo::new("unused-drop")?;
+        repo.write_test(
+            r#"
+#[test]
+fn never_constructs_guard() {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("A"); }
+        }
+    }
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert!(sites.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn only_immediately_invoked_closures_are_mutation_evidence() -> Result<()> {
+        let repo = TempRepo::new("closure-reachability")?;
+        repo.write_test(
+            r#"
+#[test]
+fn stores_unused_closure() {
+    let _later = || unsafe { std::env::set_var("A", "1"); };
+}
+
+#[test]
+fn invokes_closure_now() {
+    (|| unsafe { std::env::remove_var("B"); })();
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].test_function, "invokes_closure_now");
+        assert_eq!(sites[0].signals, vec!["env_remove"]);
+        Ok(())
+    }
+
+    #[test]
     fn method_call_set_var_is_not_process_env() -> Result<()> {
         let repo = TempRepo::new("method-call")?;
         repo.write_test(
@@ -1389,6 +1558,105 @@ fn nested_unrelated_helper() {
         assert_eq!(sites[0].path, "crates/demo/tests/parent/child.rs");
         assert_eq!(sites[0].test_function, "nested_inherited_environment_alias");
         assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn shared_external_module_is_scanned_in_each_relevant_parent_context() -> Result<()> {
+        let repo = TempRepo::new("shared-parent-contexts")?;
+        fs::write(
+            repo.path.join("crates/demo/tests/a.rs"),
+            r#"
+mod process_environment {
+    pub fn set_var(_key: &str, _value: &str) {}
+}
+#[path = "shared.rs"]
+mod shared;
+"#,
+        )?;
+        fs::write(
+            repo.path.join("crates/demo/tests/b.rs"),
+            r#"
+use std::env as process_environment;
+#[path = "shared.rs"]
+mod shared;
+"#,
+        )?;
+        fs::write(
+            repo.path.join("crates/demo/tests/shared.rs"),
+            r#"
+use super::*;
+#[test]
+fn inherited_from_one_parent() {
+    unsafe { process_environment::set_var("A", "1"); }
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/shared.rs");
+        assert_eq!(sites[0].test_function, "inherited_from_one_parent");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn root_child_path_is_not_ambiguous_with_stem_nested_file() -> Result<()> {
+        let repo = TempRepo::new("root-child-path")?;
+        repo.write_test(
+            r#"
+use std::env as process_environment;
+mod child;
+"#,
+        )?;
+        fs::write(
+            repo.path.join("crates/demo/tests/child.rs"),
+            r#"
+use super::*;
+#[test]
+fn root_child_inherits_alias() {
+    unsafe { process_environment::set_var("A", "1"); }
+}
+"#,
+        )?;
+        fs::create_dir_all(repo.path.join("crates/demo/tests/demo"))?;
+        fs::write(
+            repo.path.join("crates/demo/tests/demo/child.rs"),
+            "#[test]\nfn unrelated_file() {}\n",
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/child.rs");
+        assert_eq!(sites[0].test_function, "root_child_inherits_alias");
+        Ok(())
+    }
+
+    #[test]
+    fn same_named_tests_in_inline_modules_have_distinct_identities() -> Result<()> {
+        let repo = TempRepo::new("nested-identities")?;
+        repo.write_test(
+            r#"
+mod first {
+    #[test]
+    fn mutates_environment() {
+        unsafe { std::env::set_var("A", "1"); }
+    }
+}
+mod second {
+    #[test]
+    fn mutates_environment() {
+        unsafe { std::env::remove_var("B"); }
+    }
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 2);
+        assert_eq!(sites[0].test_function, "first::mutates_environment");
+        assert_eq!(sites[1].test_function, "second::mutates_environment");
         Ok(())
     }
 
@@ -1897,6 +2165,42 @@ fn mutates_after_every_lexical_class() {
             .ok_or_else(|| eyre!("registry with noncanonical signals unexpectedly parsed"))?
             .to_string();
         assert!(noncanonical_err.contains("sorted, unique canonical CSV"));
+        Ok(())
+    }
+
+    #[test]
+    fn registry_rejects_unknown_metadata() -> Result<()> {
+        let repo = TempRepo::new("registry-unknown-metadata")?;
+        let unknown_root = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [],
+            "ignored": true,
+        }))?;
+        let root_error = read_identity_registry(&unknown_root)
+            .err()
+            .ok_or_else(|| eyre!("registry with unknown root metadata unexpectedly parsed"))?
+            .to_string();
+        assert!(root_error.contains("unknown root field"));
+
+        let mut row = registry_row(
+            "crates/demo/tests/demo.rs",
+            "flips_toolchain_env",
+            "env_set",
+            "accepted baseline",
+            "active",
+        );
+        row.as_object_mut()
+            .ok_or_else(|| eyre!("registry test row was not an object"))?
+            .insert("ignored".to_owned(), serde_json::Value::Bool(true));
+        let unknown_row = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [row],
+        }))?;
+        let row_error = read_identity_registry(&unknown_row)
+            .err()
+            .ok_or_else(|| eyre!("registry row with unknown metadata unexpectedly parsed"))?
+            .to_string();
+        assert!(row_error.contains("unknown field"));
         Ok(())
     }
 
