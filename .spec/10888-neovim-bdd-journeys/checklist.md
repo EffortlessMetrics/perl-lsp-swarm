@@ -420,6 +420,21 @@ def main():
     if missing:
         fail(f"spec files absent from the candidate change set: {missing}")
 
+    # A newly tracked file needs an inventory row, so when this candidate ADDS
+    # the packet files the regenerated inventory must travel with them.
+    # Allowlisting it is not enough: omitting it would pass here and fail only
+    # in the policy shard's non_rust_inventory_check gate. Conditioned on an
+    # add rather than required unconditionally, so a later revision that only
+    # edits packet prose is not forced to touch generated output.
+    statuses = [line for line in
+                git("diff", "--name-status", f"{base}..{head}").splitlines()
+                if line.strip()]
+    adds_packet_file = any(
+        line.split("\t")[0].startswith("A") and line.split("\t")[-1] in set(FILES)
+        for line in statuses)
+    if adds_packet_file and INVENTORY not in changed:
+        fail(f"packet files are added but {INVENTORY} was not regenerated")
+
     print("SPEC_10888_STRUCTURAL_CHECK=PASS")
     print(f"scenario_ids={len(ids)} falsifiers={len(rows)}")
 
