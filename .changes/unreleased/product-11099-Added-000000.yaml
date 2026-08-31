@@ -1,0 +1,29 @@
+project: product
+component: Developer experience
+kind: Added
+body: >-
+  Add the pure standalone install transaction model (#10243 child 1, #11099):
+  an immutable StandaloneInstallIntent with closed route/mode/selector/
+  fallback/path vocabularies, a mode-specific ResolvedStandaloneInstallSubject
+  union (release archive, exact registry source, non-authoritative local
+  development) whose digest is recomputed over canonical key-sorted JSON with
+  domain separation, subject-bound StageReceipt envelopes with recomputed
+  predecessor chains and subject-bound integrity/provenance/toolchain policy
+  identities, a fail-closed StageDag validator (unique nodes, topological
+  declaration order, reversed/cyclic rejection, a positive mode/stage
+  applicability authorization map, and the canonical promotion floor:
+  mandatory required Promotion outside local development and PATH persistence,
+  fresh-process observation, and installed transition downstream of the
+  promoted candidate), an explicit fallback-branch seam that only ever creates
+  a new subject on a new attempt, a deterministic fan-in fold producing one
+  TerminalStandaloneInstallOutcome with current/previous candidate
+  disposition, and focused falsifiers covering ambiguous selectors, mixed
+  subjects/attempts, fabricated predecessor chains, unauthorized skips,
+  producer-declared completeness lies, success-after-terminal-evidence,
+  unknown receipt schemas, out-of-DAG receipts, privacy leakage, and
+  byte-identical regeneration.
+time: 2026-08-25T00:00:00Z
+custom:
+  PR: "12665"
+  Slug: standalone-install-transaction-model
+  Breaking: "no"
