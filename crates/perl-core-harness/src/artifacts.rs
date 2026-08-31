@@ -3,7 +3,8 @@ use perl_core_harness_types::BaselineViolation;
 use perl_core_harness_types::{
     HarnessMode, HarnessProfile, HarnessRunner, ObservedSemanticBoundary,
     RUN_REPORT_SCHEMA_VERSION, RUNNER_RECORD_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
-    RunnerRecord, RunnerStatus, SemanticBoundaryRecord,
+    RunnerRecord, RunnerStatus, SemanticBoundaryRecord, validate_execution_mechanism,
+    validate_file_result_mechanisms,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1308,6 +1309,7 @@ fn validate_report(report: &RunReport) -> Result<()> {
     if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
         bail!("unsupported run report schema: {}", report.schema_version);
     }
+    reject_inadmissible_report_mechanisms(report)?;
     for (label, value) in [
         ("commit", report.commit.as_str()),
         ("Perl ref", report.perl_ref.as_str()),
@@ -1418,10 +1420,25 @@ fn reject_violations(subject: &str, violations: &[BaselineViolation]) -> Result<
     bail!("{subject} is structurally invalid: {detail}")
 }
 
+/// Refuse a run report whose per-file execution-mechanism claims are not
+/// admissible for its mode.
+///
+/// Owned here as well as in `crate::read_run_report` because a report can reach
+/// derivation without passing through that reader (#14363).
+fn reject_inadmissible_report_mechanisms(report: &RunReport) -> Result<()> {
+    if let Err(violation) = validate_file_result_mechanisms(report.mode, &report.file_results) {
+        bail!("run report {violation}");
+    }
+    Ok(())
+}
+
 fn records_from_reports(reports: &[RunReport]) -> Result<Vec<RunnerRecord>> {
     let mut records = Vec::new();
     let mut keys = BTreeSet::new();
     for report in reports {
+        // Validate before any record is built, so a tampered report cannot be
+        // materialized on disk and only rejected by the later self-check.
+        reject_inadmissible_report_mechanisms(report)?;
         let failures = report
             .failures
             .iter()
@@ -1450,6 +1467,10 @@ fn records_from_reports(reports: &[RunReport]) -> Result<Vec<RunnerRecord>> {
                 assertions_total: result.assertions_total,
                 bucket: failure.map(|value| value.bucket.clone()),
                 first_diagnostic: failure.map(|value| value.first_diagnostic.clone()),
+                // Carried from the report rather than re-derived, so the
+                // mechanism survives the report -> record round trip instead
+                // of silently defaulting to absent (#8254).
+                mechanism: result.mechanism,
                 semantic_boundaries,
             });
         }
@@ -1526,6 +1547,9 @@ fn read_json_lines(path: &Path) -> Result<Vec<RunnerRecord>> {
         })?;
         if record.schema_version != RUNNER_RECORD_SCHEMA_VERSION {
             bail!("runner record has unsupported schema {}", record.schema_version);
+        }
+        if let Err(violation) = validate_execution_mechanism(&record.mode, record.mechanism) {
+            bail!("runner record line {} in {}: {violation}", index + 1, path.display());
         }
         validate_test_path(&record.path)?;
         records.push(record);
@@ -1798,7 +1822,7 @@ mod tests {
     use super::*;
     use perl_core_harness_types::SemanticBoundarySourceSpan;
     use perl_core_harness_types::{
-        RunSummary, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
+        ExecutionMechanism, RunSummary, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
         SemanticBoundaryLockScope,
     };
     use std::io::Cursor;
@@ -1907,6 +1931,37 @@ mod tests {
     }
 
     #[test]
+    fn report_validation_rejects_an_inadmissible_execution_mechanism() -> TestResult {
+        // `validate_report` gates `read_reports`, which feeds the
+        // derive-runner-records and check-runner-records CLI surfaces. It owns
+        // its own copy of the contract, so it needs its own control (#14363).
+        let mut mislabelled = sample_report(HarnessMode::Compile);
+        for result in &mut mislabelled.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let Err(error) = validate_report(&mislabelled) else {
+            bail!("a compile report claiming execution evidence must be rejected");
+        };
+        if !error.to_string().contains("only execution receipts may carry") {
+            bail!("unexpected mislabelling error: {error}");
+        }
+
+        let mut forged = sample_execute_report();
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let Err(error) = validate_report(&forged) else {
+            bail!("a report claiming an unsupported rail must be rejected");
+        };
+        if !error.to_string().contains("no current rail can supply") {
+            bail!("unexpected forgery error: {error}");
+        }
+
+        // Opposite-direction control: honest evidence still validates.
+        validate_report(&sample_execute_report())
+    }
+
+    #[test]
     fn report_validation_rejects_contradictory_source_lock() -> TestResult {
         let mut report = sample_report(HarnessMode::Compile);
         let mut boundary = sample_boundary();
@@ -1919,6 +1974,134 @@ mod tests {
         let text = error.to_string();
         if !text.contains("exact confidence") || !text.contains("must not block compilation") {
             bail!("unexpected boundary-invariant error: {error}");
+        }
+        Ok(())
+    }
+
+    /// An execute report shaped like the checked-in selected-base receipt.
+    fn sample_execute_report() -> RunReport {
+        let mut report = sample_report(HarnessMode::Execute);
+        for result in &mut report.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        report
+    }
+
+    #[test]
+    fn derived_records_preserve_the_execution_mechanism() -> TestResult {
+        let report = sample_execute_report();
+
+        let records = records_from_reports(std::slice::from_ref(&report))?;
+
+        if records.is_empty() {
+            bail!("expected derived execute records");
+        }
+        for record in &records {
+            if record.mechanism != Some(ExecutionMechanism::FixtureReplay) {
+                bail!(
+                    "report -> record derivation dropped the mechanism for {}: {:?}",
+                    record.path,
+                    record.mechanism
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn derived_execute_records_round_trip_through_the_artifact() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = sample_execute_report();
+        let records = records_from_reports(std::slice::from_ref(&report))?;
+        let records_path = temp.path().join("records.jsonl");
+        write_json_lines(&records_path, &records)?;
+
+        // The written artifact must state the mechanism, and reading it back
+        // must reproduce the derivation exactly.
+        let raw = fs::read_to_string(&records_path)?;
+        if !raw.contains(r#""mechanism":"fixture_replay""#) {
+            bail!("execute records did not publish their mechanism: {raw}");
+        }
+        validate_record_files(&[report], &records_path, None)
+    }
+
+    #[test]
+    fn ingestion_rejects_an_execute_record_without_a_mechanism() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = sample_execute_report();
+        let mut records = records_from_reports(std::slice::from_ref(&report))?;
+        for record in &mut records {
+            record.mechanism = None;
+        }
+        let records_path = temp.path().join("records.jsonl");
+        write_json_lines(&records_path, &records)?;
+
+        let Err(error) = read_json_lines(&records_path) else {
+            bail!("an execute record with no mechanism must not be ingested");
+        };
+        if !error.to_string().contains("does not declare an execution mechanism") {
+            bail!("unexpected ingestion error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ingestion_rejects_a_relabelled_execute_record() -> TestResult {
+        // Hand-editing a scaffold receipt into an EIR claim is the exact
+        // promotion path #8254 exists to close.
+        for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+            let temp = tempfile::tempdir()?;
+            let report = sample_execute_report();
+            let mut records = records_from_reports(std::slice::from_ref(&report))?;
+            for record in &mut records {
+                record.mechanism = Some(mechanism);
+            }
+            let records_path = temp.path().join("records.jsonl");
+            write_json_lines(&records_path, &records)?;
+
+            let Err(error) = read_json_lines(&records_path) else {
+                bail!("{mechanism} must not be ingestible from a replay receipt");
+            };
+            if !error.to_string().contains("no current rail can supply") {
+                bail!("unexpected relabelling error for {mechanism}: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ingestion_rejects_a_parse_record_claiming_execution_evidence() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = sample_report(HarnessMode::Parse);
+        let mut records = records_from_reports(std::slice::from_ref(&report))?;
+        for record in &mut records {
+            record.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let records_path = temp.path().join("records.jsonl");
+        write_json_lines(&records_path, &records)?;
+
+        let Err(error) = read_json_lines(&records_path) else {
+            bail!("a parse record must not carry an execution mechanism");
+        };
+        if !error.to_string().contains("only execution receipts may carry") {
+            bail!("unexpected mislabelling error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_and_compile_records_stay_free_of_mechanism_keys() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        for mode in [HarnessMode::Parse, HarnessMode::Compile] {
+            let report = sample_report(mode);
+            let records = records_from_reports(std::slice::from_ref(&report))?;
+            let records_path = temp.path().join(format!("{}.jsonl", mode.as_str()));
+            write_json_lines(&records_path, &records)?;
+
+            let raw = fs::read_to_string(&records_path)?;
+            if raw.contains("mechanism") {
+                bail!("{mode} records must keep their existing wire form: {raw}");
+            }
         }
         Ok(())
     }
@@ -2665,12 +2848,14 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![
                 RunFileResult {
+                    mechanism: None,
                     path: "base/ok.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
                     assertions_total: 1,
                 },
                 RunFileResult {
+                    mechanism: None,
                     path: "base/other.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
