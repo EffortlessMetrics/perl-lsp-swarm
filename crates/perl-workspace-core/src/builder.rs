@@ -137,9 +137,14 @@ pub fn build_project_model(
 }
 
 /// Extract distribution-metadata facts from a metadata file, dispatched by
-/// filename. Only `META.json` and `cpanfile` are read today (PR 7); other
-/// metadata formats (`Makefile.PL`, `Build.PL`, `dist.ini`, `META.yml`) are
-/// indexed as files but not yet content-parsed.
+/// filename. `META.json`, `META.yml`, and `cpanfile` are read today; other
+/// metadata formats (`Makefile.PL`, `Build.PL`, `dist.ini`) are indexed as
+/// files but not yet content-parsed.
+///
+/// A `META.yml` input that fails its bounded parse yields no facts: a
+/// malformed or unsupported stream can never become an empty successful fact
+/// set (#8458). The typed outcome surface lives on
+/// [`crate::meta_yml::parse_meta_yml`] for consumers that need the findings.
 fn extract_dist_metadata(
     file_id: &FileId,
     relative_path: &str,
@@ -148,6 +153,13 @@ fn extract_dist_metadata(
     let name = relative_path.rsplit('/').next().unwrap_or(relative_path);
     match name {
         "META.json" => crate::dist::parse_meta_json(file_id.clone(), content),
+        "META.yml" | "META.yaml" => {
+            let outcome = crate::meta_yml::parse_meta_yml(file_id.clone(), content);
+            match outcome.state {
+                crate::meta_yml::MetaYmlParseState::Parsed => outcome.facts,
+                _ => None,
+            }
+        }
         "cpanfile" => Some(crate::dist::parse_cpanfile(file_id.clone(), content)),
         _ => None,
     }
@@ -535,6 +547,55 @@ mod tests {
         let cpanfile = model.file_by_path("cpanfile").unwrap();
         assert_eq!(cpanfile.role, FileRole::DistMetadata);
         assert_eq!(cpanfile.parse_status, ParseStatus::NotParsed, "metadata is not parsed");
+    }
+
+    #[test]
+    fn meta_yml_facts_land_in_the_model_when_dist_is_requested() {
+        let model = model_for(
+            "meta-yml-facts",
+            &[
+                (
+                    "META.yml",
+                    "---\nname: App-Dist\nversion: 1.5\nabstract: wired\nlicense: perl_5\nrequires:\n  strict: 0\n",
+                ),
+                ("lib/App.pm", "package App;\n1;\n"),
+            ],
+            FactClasses::FILES | FactClasses::DIST,
+        );
+        let facts = model
+            .dist_metadata
+            .iter()
+            .find(|f| f.source == crate::dist::DistMetadataSource::MetaYml)
+            .unwrap_or_else(|| {
+                panic!("META.yml facts must reach the model: {:?}", model.dist_metadata)
+            });
+        assert_eq!(facts.name.as_deref(), Some("App-Dist"));
+        assert_eq!(facts.version.as_deref(), Some("1.5"));
+        assert_eq!(facts.licenses, vec!["perl_5"]);
+        assert!(facts.prereqs.iter().any(|p| p.module == "strict"));
+    }
+
+    #[test]
+    fn malformed_meta_yml_cannot_become_an_empty_successful_fact_set() {
+        // Duplicate keys are refused: no facts may be emitted for the file.
+        let model = model_for(
+            "meta-yml-malformed",
+            &[
+                ("META.yml", "---\nname: X\nname: Y\nversion: 1\n"),
+                ("lib/App.pm", "package App;\n1;\n"),
+            ],
+            FactClasses::FILES | FactClasses::DIST,
+        );
+        assert!(
+            model
+                .dist_metadata
+                .iter()
+                .all(|f| f.source != crate::dist::DistMetadataSource::MetaYml),
+            "a malformed META.yml must not yield facts, got {:?}",
+            model.dist_metadata
+        );
+        // The file itself is still indexed.
+        assert!(model.file_by_path("META.yml").is_some());
     }
 
     #[test]
