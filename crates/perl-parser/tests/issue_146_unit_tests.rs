@@ -108,11 +108,11 @@ mod lib_integration_tests {
         );
 
         // The unified refactoring engine export was retired (#5231); the
-        // operation-specific refactor submodules (import_optimizer, modernize,
-        // workspace_refactor) remain the exported refactoring surface.
+        // operation-specific refactor submodules remain the exported surface.
         assert!(
             content.contains("pub use refactor::import_optimizer")
-                && content.contains("pub use refactor::modernize"),
+                && content.contains("pub use refactor::modernize")
+                && content.contains("pub use refactor::workspace_refactor"),
             "Operation-specific refactor exports are missing from lib.rs"
         );
 
