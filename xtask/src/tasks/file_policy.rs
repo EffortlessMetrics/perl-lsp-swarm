@@ -237,6 +237,13 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
             bail!("allow entry {id} must set exactly one matcher");
         }
         let matcher = glob.or(path).unwrap();
+        if matcher.starts_with("./")
+            || matcher.starts_with('/')
+            || matcher.contains('\\')
+            || matcher.trim() != matcher
+        {
+            bail!("invalid repository-relative matcher in allow entry {id}");
+        }
         if !matchers.insert(matcher.to_string()) {
             bail!("duplicate matcher {matcher}");
         }
@@ -253,6 +260,16 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         if !KNOWN_CLASSIFICATIONS.contains(&classification) {
             bail!("unknown classification {classification} in allow entry {id}");
         }
+        let covered_by = table.get("covered_by");
+        let coverage = covered_by
+            .and_then(toml::Value::as_array)
+            .ok_or_else(|| eyre!("allow entry {id} covered_by must be a list of strings"))?;
+        if !coverage.iter().all(|item| item.as_str().is_some()) {
+            bail!("allow entry {id} covered_by must be a list of strings");
+        }
+        if COVERAGE_REQUIRING_CLASSIFICATIONS.contains(&classification) && coverage.is_empty() {
+            bail!("allow entry {id} requires at least one covered_by entry");
+        }
         let mut dates = BTreeMap::new();
         for field in ["created", "review_after", "expires"] {
             if let Some(date) = table.get(field).and_then(toml::Value::as_str) {
@@ -266,6 +283,11 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
             && created > review_after
         {
             bail!("created date is after review_after in allow entry {id}");
+        }
+        if let (Some(created), Some(expires)) = (dates.get("created"), dates.get("expires"))
+            && expires <= created
+        {
+            bail!("expires date is not after created in allow entry {id}");
         }
     }
     Ok(())
