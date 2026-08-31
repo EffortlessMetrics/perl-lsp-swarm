@@ -425,7 +425,12 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             // whichever timed span happens to run first, which may be an
             // initialize span or a later request entirely.
             triggers: &[Trigger::FirstUse],
-            exactly_once: false,
+            // The `OnceLock` *is* the operation here: the whole computation
+            // sits inside `get_or_init`, so it runs at most once. That is not
+            // true of every once-guard in this ledger — `check_perl_interpreter`
+            // guards only its warning while the discovery repeats — which is
+            // why this stays a declared fact rather than a derived one.
+            exactly_once: true,
             current_point: ExecutionPoint::OnDemand,
             phase: PhaseDisposition::ExistingExternalOwnerNoMove,
             migration_wave: MigrationWave::None,
@@ -455,7 +460,12 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             side_effects: &[],
             declared_exposure: &[Exposure::Filesystem],
             triggers: &[Trigger::FirstUse],
-            exactly_once: false,
+            // The `OnceLock` *is* the operation here: the whole computation
+            // sits inside `get_or_init`, so it runs at most once. That is not
+            // true of every once-guard in this ledger — `check_perl_interpreter`
+            // guards only its warning while the discovery repeats — which is
+            // why this stays a declared fact rather than a derived one.
+            exactly_once: true,
             current_point: ExecutionPoint::OnDemand,
             phase: PhaseDisposition::ExistingExternalOwnerNoMove,
             migration_wave: MigrationWave::None,
