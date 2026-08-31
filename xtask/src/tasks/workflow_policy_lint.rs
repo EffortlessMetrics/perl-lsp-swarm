@@ -46,6 +46,11 @@ const ALLOWLIST_WORKFLOW_LANE_MISSING: &[&str] = &[
     "winget-bump.yml",
     // Schedule/utility workflows tracked separately from the lane economics.
     "ci-gate-self-tests.yml",
+    // Manual-only, read-only macOS measurement lane (#5432). It never runs on a
+    // pull request or merge group, so it carries no per-PR cost and has no
+    // place on the lane economics map; its contract is proven by
+    // `xtask/tests/release_artifact_size_shadow_workflow.rs` instead.
+    "release-artifact-size-shadow.yml",
     // Advisory pull_request sentinel (#6238): payload-only head-name
     // classification alongside pr-plan.yml, deliberately outside the CI
     // economics map and outside `ci-lane-whitelist.toml`.
