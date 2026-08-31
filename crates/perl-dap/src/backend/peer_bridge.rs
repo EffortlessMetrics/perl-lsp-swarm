@@ -327,8 +327,18 @@ impl DapPeerBridge {
     /// One source for both `capabilities_body` and the hover request gate
     /// (#9573), so this bridge cannot advertise one thing and enforce another.
     fn advertised_evaluate_for_hovers(&self) -> bool {
-        intersect_dap_capabilities(&CatalogDapFlags::from_catalog(), &self.backend.capabilities())
-            .supports_evaluate_for_hovers
+        // Gated on the PEER authority, not the native one (#9573). Reading the
+        // native gate here would mean promoting native silently opened hover to
+        // a live external debugger's evaluator, which has no pure inspection of
+        // its own. Still intersected with catalog ∩ backend so that, if the peer
+        // gate is ever promoted, it cannot over-advertise against a peer that
+        // cannot evaluate at all.
+        crate::backend::capabilities::PEER_BRIDGE_ADVERTISES_EVALUATE_FOR_HOVERS
+            && intersect_dap_capabilities(
+                &CatalogDapFlags::from_catalog(),
+                &self.backend.capabilities(),
+            )
+            .supports_evaluate
     }
 
     fn capabilities_body(&self) -> Value {
@@ -346,7 +356,9 @@ impl DapPeerBridge {
             "supportsLogPoints": negotiated.supports_log_points,
             "supportsFunctionBreakpoints": negotiated.supports_function_breakpoints,
             "supportsDataBreakpoints": negotiated.supports_data_breakpoints,
-            "supportsEvaluateForHovers": negotiated.supports_evaluate_for_hovers,
+            // One source with the hover request gate (#9573), and gated on the
+            // peer authority rather than the native one.
+            "supportsEvaluateForHovers": self.advertised_evaluate_for_hovers(),
             "supportsSetVariable": negotiated.supports_set_variable,
         })
     }
@@ -1205,6 +1217,46 @@ mod tests {
             1,
             "watch must still reach the backend, or the zero above proves nothing"
         );
+        Ok(())
+    }
+
+    /// #9573: the peer bridge's hover gate is independent of the native gate.
+    ///
+    /// `ScriptBackend` reports `ptkdb_v1_defaults`, which has `evaluate: true`
+    /// — exactly the shape that would ride along if this mode read the native
+    /// authority. Both the advertised value and the admission decision must
+    /// stay closed here regardless of what the native gate says, because an
+    /// external peer runs its own evaluator with no pure inspection of its own.
+    ///
+    /// This is checked through the live negotiation path rather than by
+    /// asserting the constant, so promoting the native gate and re-running this
+    /// test is a real falsifier: if the coupling ever comes back, this fails.
+    #[test]
+    fn native_promotion_cannot_open_peer_hover() -> Result<(), String> {
+        let mut b = bridge();
+
+        let init = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
+        let caps = must_some(as_response(&init[0])?.2);
+
+        // Precondition: this peer *can* evaluate, so the assertion below is
+        // discriminating rather than trivially satisfied by an inert backend.
+        let evaluated =
+            b.dispatch(2, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
+        assert_eq!(
+            must_some(as_response(&evaluated[0])?.2)["result"],
+            "=$x",
+            "precondition: the peer backend can evaluate"
+        );
+
+        assert_eq!(
+            caps["supportsEvaluateForHovers"], false,
+            "an evaluate-capable peer must still not advertise hover, whatever the native gate says"
+        );
+
+        let hover =
+            b.dispatch(3, "evaluate", Some(json!({ "expression": "$x", "context": "hover" })));
+        let (_, ok, _) = as_response(&hover[0])?;
+        assert!(!ok, "an evaluate-capable peer must still refuse hover");
         Ok(())
     }
 

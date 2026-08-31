@@ -241,6 +241,19 @@ pub(crate) fn refuse_hover_evaluation(advertised_hover: bool, context: Option<&s
     !advertised_hover && is_hover_evaluate_context(context)
 }
 
+/// The `supportsEvaluateForHovers` value the external-peer bridge advertises.
+///
+/// Deliberately **independent of [`PURE_HOVER_INSPECTION_PROVEN`]**, which is
+/// the *native* proof gate. An external peer runs its own evaluator and has no
+/// pure selected-frame inspection of its own, so promoting the native gate must
+/// not silently open a path that routes hover text to a live external debugger.
+/// #9573 states this directly: "Keep processId attach, TCP, and external peer
+/// modes independently false unless they have their own pure hover
+/// implementation and proof."
+///
+/// Promoting this requires that separate peer-side proof.
+pub(crate) const PEER_BRIDGE_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
+
 /// The `supportsEvaluateForHovers` value the static mirror profile advertises.
 ///
 /// Mirror mode is conservative by construction and has no pure hover inspection
