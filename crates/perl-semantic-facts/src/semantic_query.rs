@@ -698,3 +698,11 @@ mod tests {
         )
         .expect("fixture requirement is valid");
         let mut registry = SemanticQueryRequirementRegistry::new();
+        assert!(registry.insert(requirement.clone()).is_ok());
+        assert!(registry.get("definitions", "semantic-query-v1").is_some());
+        assert_eq!(
+            registry.insert(requirement),
+            Err(SemanticQueryContractError::DuplicateRequirement)
+        );
+    }
+}
