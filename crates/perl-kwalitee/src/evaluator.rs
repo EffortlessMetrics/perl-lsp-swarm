@@ -285,12 +285,9 @@ fn obtain_outcome(spec: &IndicatorSpec, options: &KwaliteeOptions) -> Outcome {
 /// Resolve an external indicator from the supplied results, or fall back to a
 /// profile-aware unverified/failed default.
 fn external_outcome(spec: &IndicatorSpec, options: &KwaliteeOptions) -> Outcome {
-    if let Some(result) = options.external_results.get(spec.id) {
-        return result.clone().into();
-    }
-
-    // Release indicators under the release profile require a dist directory; if
-    // one was not provided the gate cannot even run, which is a hard fail.
+    // Release-scoped evidence is meaningful only when the evaluation is bound
+    // to a staged distribution input. Enforce that before accepting a supplied
+    // result so detached evidence cannot bypass the release input contract.
     if spec.is_release_only()
         && options.profile.requires_release_artifacts()
         && options.dist_dir.is_none()
@@ -299,6 +296,10 @@ fn external_outcome(spec: &IndicatorSpec, options: &KwaliteeOptions) -> Outcome 
             vec![EvidenceRef::command("cargo xtask release artifact-check --dist <dir>")],
             "The release profile requires --dist; supply a populated dist directory.",
         );
+    }
+
+    if let Some(result) = options.external_results.get(spec.id) {
+        return result.clone().into();
     }
 
     Outcome::unverified(
@@ -397,8 +398,46 @@ mod tests {
         opts.dist_dir = None;
         let receipt = evaluate(&opts);
         let release: Vec<_> = receipt.indicators.iter().filter(|i| i.area == "release").collect();
+        assert_eq!(release.len(), 3);
         assert!(release.iter().all(|i| i.status == IndicatorStatus::Fail));
         assert_eq!(receipt.verdict, crate::KwaliteeVerdict::Fail);
+    }
+
+    #[test]
+    fn release_external_pass_cannot_bypass_missing_dist() {
+        let dir = fixture_repo();
+        let mut opts = KwaliteeOptions::new(dir.path(), KwaliteeProfile::Release);
+        for id in [
+            "release.native_binaries_present",
+            "release.no_external_tooling",
+            "release.checksums_valid",
+        ] {
+            opts.external_results.insert(
+                id.to_string(),
+                ExternalResult::pass(vec![EvidenceRef::command("release artifact-check")]),
+            );
+        }
+        opts.external_results.insert(
+            "critic.run_critic_registry_parity".to_string(),
+            ExternalResult::pass(vec![EvidenceRef::command("critic parity")]),
+        );
+
+        let receipt = evaluate(&opts);
+        let release: Vec<_> = receipt.indicators.iter().filter(|i| i.area == "release").collect();
+        assert_eq!(release.len(), 3);
+        assert!(release.iter().all(|i| i.status == IndicatorStatus::Fail));
+        assert!(release.iter().all(|i| {
+            i.evidence.iter().any(|e| {
+                e.kind == "command" && e.value == "cargo xtask release artifact-check --dist <dir>"
+            })
+        }));
+        assert_eq!(receipt.verdict, crate::KwaliteeVerdict::Fail);
+        let critic = receipt
+            .indicators
+            .iter()
+            .find(|i| i.id == "critic.run_critic_registry_parity")
+            .expect("critic.run_critic_registry_parity");
+        assert_eq!(critic.status, IndicatorStatus::Pass);
     }
 
     #[test]
@@ -418,6 +457,7 @@ mod tests {
         }
         let receipt = evaluate(&opts);
         let release: Vec<_> = receipt.indicators.iter().filter(|i| i.area == "release").collect();
+        assert_eq!(release.len(), 3);
         assert!(release.iter().all(|i| i.status == IndicatorStatus::Pass));
     }
 
