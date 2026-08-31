@@ -184,6 +184,22 @@ impl UpstreamObservationSet {
         let mut observed = BTreeMap::<InvocationId, SettledInvocation>::new();
         let mut extras = Vec::<SettledInvocation>::new();
         for record in records {
+            // A record's mechanism is validated against the mode the record
+            // declares, but the published report takes its mode from the run
+            // config. A wrong or stale runner declaring `compile` during an
+            // execute run would therefore pass ingestion with no mechanism and
+            // still be published as execute evidence — a report this crate's
+            // own reader would refuse to reopen. Bind the two here, at the
+            // freeze boundary, so the observation cannot disagree with the run
+            // that produced it (#14363).
+            if record.mode != mode.as_str() {
+                bail!(
+                    "upstream runner record for {} declares {} mode during a {} run",
+                    record.path,
+                    record.mode,
+                    mode
+                );
+            }
             let normalized = normalize_test_path(&record.path).ok_or_else(|| {
                 color_eyre::eyre::eyre!(
                     "upstream runner record path did not normalize: {}",
@@ -735,10 +751,17 @@ mod tests {
     }
 
     fn record(assertions: usize) -> RunnerRecord {
+        record_for(HarnessMode::Parse, assertions)
+    }
+
+    /// A record that agrees with the mode of the run settling it. Execute-mode
+    /// records name their rail, as the contract requires.
+    fn record_for(mode: HarnessMode, assertions: usize) -> RunnerRecord {
         RunnerRecord {
-            mechanism: None,
+            mechanism: (mode == HarnessMode::Execute)
+                .then_some(perl_core_harness_types::ExecutionMechanism::FixtureReplay),
             schema_version: "perl_core_harness.runner_record.v1".into(),
-            mode: "parse".into(),
+            mode: mode.as_str().into(),
             path: "base/ok.t".into(),
             status: RunnerStatus::Pass,
             assertions_passed: assertions,
@@ -797,7 +820,7 @@ mod tests {
             HarnessMode::Execute,
             HarnessProfile::Base,
             &discovered(),
-            &[record(1)],
+            &[record_for(HarnessMode::Execute, 1)],
             Some(1),
         )?;
         let unproven = UpstreamObservationSet::settle(

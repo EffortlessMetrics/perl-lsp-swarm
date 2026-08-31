@@ -10749,6 +10749,64 @@ esac
         Ok(runner)
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_execute_refuses_a_runner_that_declares_the_wrong_mode() -> TestResult {
+        // A record's mechanism is checked against the mode the *record*
+        // declares, while the published report takes its mode from the run
+        // config. A stale runner declaring `compile` during an execute run
+        // would otherwise pass ingestion with no mechanism and be published as
+        // execute evidence — a report this crate's own reader would then
+        // refuse to reopen (#14363, reported in review on #14364).
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test(temp.path())?;
+        let runner = write_fake_wrong_mode_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        let error = match run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        }) {
+            Err(error) => error,
+            Ok(()) => bail!("a wrong-mode runner record must not produce a report"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("declares compile mode during a execute run") {
+            bail!("unexpected wrong-mode error: {text}");
+        }
+        if output.exists() {
+            bail!("no report should be published from a wrong-mode observation");
+        }
+        Ok(())
+    }
+
+    /// An execute runner whose record declares `compile` — the mode the run did
+    /// not select — and therefore carries no mechanism.
+    #[cfg(unix)]
+    fn write_fake_wrong_mode_execute_runner(root: &Path) -> TestResult<PathBuf> {
+        let runner = root.join("fake-runner-execute-wrong-mode.sh");
+        let body = r#"#!/bin/sh
+set -eu
+script="${1:-unknown.t}"
+mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
+printf '1..2\n'
+printf 'ok 1 - if eq\n'
+printf 'ok 2 - if ne\n'
+printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"compile","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+"#;
+        fs::write(&runner, body)?;
+        set_executable(&runner)?;
+        Ok(runner)
+    }
+
     /// An execute runner that produces TAP but hides which rail produced it.
     #[cfg(unix)]
     fn write_fake_unclassified_execute_runner(root: &Path) -> TestResult<PathBuf> {
