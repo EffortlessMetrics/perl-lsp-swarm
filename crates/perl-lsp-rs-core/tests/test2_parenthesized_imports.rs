@@ -23,19 +23,28 @@ fn complete(source_with_cursor: &str) -> Vec<CompletionItem> {
 fn test2_labels(items: &[CompletionItem]) -> Vec<&str> {
     items
         .iter()
-        .filter(|item| item.sort_text.as_deref().is_some_and(|sort| sort.starts_with("2_test2_")))
+        .filter(|item| {
+            item.sort_text
+                .as_deref()
+                .is_some_and(|sort| sort.starts_with("2_test2_"))
+        })
         .map(|item| item.label.as_ref())
         .collect()
 }
 
 #[test]
-fn parenthesized_explicit_selection_replaces_v0_defaults(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn parenthesized_explicit_selection_replaces_v0_defaults() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = resolve_v0("('ok')")?;
 
     assert!(resolved.symbols.contains("ok"));
-    assert!(!resolved.symbols.contains("is"), "nonempty parentheses must not restore defaults");
-    assert!(!resolved.symbols.contains("like"), "nonempty parentheses must not restore the compare defaults");
+    assert!(
+        !resolved.symbols.contains("is"),
+        "nonempty parentheses must not restore defaults"
+    );
+    assert!(
+        !resolved.symbols.contains("like"),
+        "nonempty parentheses must not restore the compare defaults"
+    );
     Ok(())
 }
 
@@ -44,7 +53,10 @@ fn parenthesized_exclusion_keeps_other_v0_defaults() -> Result<(), Box<dyn std::
     let resolved = resolve_v0("('!ok')")?;
 
     assert!(!resolved.symbols.contains("ok"));
-    assert!(resolved.symbols.contains("is"), "an exclusion alone retains other defaults");
+    assert!(
+        resolved.symbols.contains("is"),
+        "an exclusion alone retains other defaults"
+    );
     Ok(())
 }
 
@@ -54,7 +66,10 @@ fn parenthesized_qw_list_remains_explicit() -> Result<(), Box<dyn std::error::Er
 
     assert!(resolved.symbols.contains("ok"));
     assert!(resolved.symbols.contains("is"));
-    assert!(!resolved.symbols.contains("like"), "the outer list must not restore defaults");
+    assert!(
+        !resolved.symbols.contains("like"),
+        "the outer list must not restore defaults"
+    );
     Ok(())
 }
 
@@ -83,7 +98,10 @@ fn completion_projects_only_the_parenthesized_selection() {
 
     assert!(!labels.is_empty(), "expected Test2-owned completion rows");
     assert!(labels.contains(&"ok"));
-    assert!(!labels.contains(&"is"), "completion must not restore unselected V0 defaults");
+    assert!(
+        !labels.contains(&"is"),
+        "completion must not restore unselected V0 defaults"
+    );
 }
 
 #[test]
@@ -93,5 +111,8 @@ fn completion_honors_a_parenthesized_exclusion() {
 
     assert!(!labels.is_empty(), "expected Test2-owned completion rows");
     assert!(!labels.contains(&"ok"));
-    assert!(labels.contains(&"is"), "other reviewed V0 defaults remain available");
+    assert!(
+        labels.contains(&"is"),
+        "other reviewed V0 defaults remain available"
+    );
 }
