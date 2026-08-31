@@ -16,7 +16,7 @@
 //! document instance, a close/reopen consumer must pair this barrier with an
 //! independent post-reopen result discriminator.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use perl_lsp_ux_tests::{LspEvent, UxHarness};
 use serde_json::Value;
 use std::time::{Duration, Instant};
