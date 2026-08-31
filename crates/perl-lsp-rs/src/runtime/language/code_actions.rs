@@ -32,6 +32,7 @@ struct NativeCriticActionSubject {
     /// One sealed policy/root authority, shared by evaluation and final
     /// publication currentness.
     accepted_snapshot: perl_lsp_rs_core::config::AcceptedCriticSnapshot,
+    topology_generation: u32,
     /// Producer-declared core overlap observations (#11918) over this exact
     /// generation — the same set push and pull hand the service.
     overlap_observations: Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>,
@@ -44,6 +45,7 @@ struct StagedNativeCriticActions {
     document_instance: std::sync::Arc<std::sync::atomic::AtomicU32>,
     generation: u32,
     accepted_snapshot: perl_lsp_rs_core::config::AcceptedCriticSnapshot,
+    topology_generation: u32,
     actions: Vec<Value>,
 }
 
@@ -634,6 +636,7 @@ impl LspServer {
             &staged.document_instance,
             staged.generation,
             Some(&staged.accepted_snapshot),
+            Some(staged.topology_generation),
             || to_json_array(&with_native),
         ) {
             Ok(response) => response,
@@ -740,6 +743,8 @@ impl LspServer {
             // a torn split (stale engine + fresh policy) can never exist and
             // no consumer composes its own registry/policy pipeline.
             let accepted_snapshot = self.capture_accepted_critic(uri);
+            let topology_generation =
+                self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
             // The last live-document read the rest of this branch needs, hoisted
             // so the guard can be released before the native critic run.
             let doc_version = doc.version;
@@ -766,6 +771,7 @@ impl LspServer {
                 rope: doc.rope.clone(),
                 line_starts: doc.line_starts.clone(),
                 accepted_snapshot,
+                topology_generation,
                 overlap_observations:
                     perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations(
                         &diagnostics,
@@ -1220,6 +1226,7 @@ impl LspServer {
             &staged.document_instance,
             staged.generation,
             Some(&staged.accepted_snapshot),
+            Some(staged.topology_generation),
             || staged.actions,
         ) {
             Ok(actions) => actions,
@@ -1338,6 +1345,7 @@ impl LspServer {
             document_instance: subject.document_instance,
             generation: subject.generation,
             accepted_snapshot: subject.accepted_snapshot,
+            topology_generation: subject.topology_generation,
             actions,
         })
     }
@@ -1686,6 +1694,8 @@ print $x;
         let ast = parsed.ast().expect("document must have an AST");
         let generation = doc.current_generation();
         let accepted_snapshot = server.capture_accepted_critic(uri);
+        let topology_generation =
+            server.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
         NativeCriticActionSubject {
             ast: std::sync::Arc::clone(ast),
             text: std::sync::Arc::clone(&doc.text_arc),
@@ -1700,6 +1710,7 @@ print $x;
             rope: doc.rope.clone(),
             line_starts: doc.line_starts.clone(),
             accepted_snapshot,
+            topology_generation,
             overlap_observations: Vec::new(),
         }
     }
@@ -1802,6 +1813,40 @@ print $x;
         if !actions.is_empty() {
             return Err(format!(
                 "a workspace-root rebind after settlement must publish no native actions; got: {actions:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_actions_are_withheld_when_topology_moves_at_publication_boundary()
+    -> Result<(), String> {
+        let uri = "file:///workspace-a/action_topology_publication.pl";
+        let server = server_with_document(uri);
+        server.test_set_workspace_folder_uris(&["file:///workspace-a/"]);
+        let staged = server
+            .stage_native_critic_code_actions(uri, action_subject(&server, uri, false), None)
+            .ok_or_else(|| "current subject must stage native actions".to_string())?;
+        if staged.actions.is_empty() {
+            return Err("current subject must stage a non-empty native effect".to_string());
+        }
+        let base = vec![json!({ "title": "base action", "kind": "refactor" })];
+        let mut candidate = base.clone();
+        candidate.extend(staged.actions.iter().cloned());
+        let result = server.commit_staged_native_code_action_response(
+            uri,
+            staged,
+            candidate,
+            base.clone(),
+            || {
+                server
+                    .workspace_topology_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+        );
+        if result != to_json_array(&base) {
+            return Err(format!(
+                "a topology move after action staging must expose only the base response; got: {result:?}"
             ));
         }
         Ok(())

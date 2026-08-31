@@ -424,6 +424,8 @@ impl LspServer {
             return;
         };
 
+        let topology_at_snapshot = self.workspace_topology_generation.load(Ordering::SeqCst);
+
         #[cfg(test)]
         if let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref() {
             hook();
@@ -772,7 +774,8 @@ impl LspServer {
         // ABA) and left the send itself outside any currentness decision.
         let identity =
             PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot)
-                .with_accepted_critic_snapshot(accepted_critic_snapshot);
+                .with_accepted_critic_snapshot(accepted_critic_snapshot)
+                .with_accepted_topology_generation(topology_at_snapshot);
         let disposition = if lsp_diagnostics.is_empty() {
             PushDiagnosticsDisposition::Clear
         } else {

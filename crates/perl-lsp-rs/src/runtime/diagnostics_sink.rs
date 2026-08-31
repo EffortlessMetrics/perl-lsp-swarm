@@ -46,6 +46,10 @@ pub(crate) struct PushDiagnosticIdentity {
     /// is policy-independent: a clear, a syntax-only or fast parse-error
     /// publication, or a run that produced no publishable native rows.
     pub(crate) accepted_critic_snapshot: Option<AcceptedCriticSnapshot>,
+    /// Workspace topology generation at which the accepted Critic snapshot
+    /// was captured. A topology change can leave the same owning root selected
+    /// while still invalidating in-flight workspace-scoped rows.
+    pub(crate) accepted_topology_generation: Option<u32>,
 }
 
 impl PushDiagnosticIdentity {
@@ -59,6 +63,7 @@ impl PushDiagnosticIdentity {
             document_instance: Arc::clone(document_instance),
             generation,
             accepted_critic_snapshot: None,
+            accepted_topology_generation: None,
         }
     }
 
@@ -71,6 +76,14 @@ impl PushDiagnosticIdentity {
         snapshot: Option<AcceptedCriticSnapshot>,
     ) -> Self {
         self.accepted_critic_snapshot = snapshot;
+        self
+    }
+
+    /// Bind the workspace topology generation used by the accepted Critic
+    /// snapshot so the sink can reject rows after any folder membership move.
+    #[must_use]
+    pub(crate) fn with_accepted_topology_generation(mut self, generation: u32) -> Self {
+        self.accepted_topology_generation = Some(generation);
         self
     }
 }
@@ -159,6 +172,7 @@ impl LspServer {
         document_instance: &Arc<AtomicU32>,
         generation: u32,
         accepted_critic_snapshot: Option<&AcceptedCriticSnapshot>,
+        accepted_topology_generation: Option<u32>,
         commit: impl FnOnce() -> T,
     ) -> Result<T, DiagnosticSubjectRejection> {
         let normalized_uri = self.normalize_uri_key(uri);
@@ -177,6 +191,13 @@ impl LspServer {
             let workspace_folders = self.workspace_folders.lock();
             let root_path = self.root_path.lock();
             let config = self.config.lock();
+            if let Some(accepted_topology_generation) = accepted_topology_generation {
+                if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+                    != accepted_topology_generation
+                {
+                    return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
+                }
+            }
             let live_root =
                 super::best_workspace_folder_for_doc(&workspace_folders, &normalized_uri)
                     .and_then(|folder| {
@@ -233,6 +254,7 @@ impl LspServer {
             &identity.document_instance,
             identity.generation,
             identity.accepted_critic_snapshot.as_ref(),
+            identity.accepted_topology_generation,
             || {
                 self.enqueue_committed_push_diagnostic(
                     &mut committed,
@@ -803,6 +825,43 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         if frame_count(&buf) != settled_frames {
             return Err("a root rebound after staging must not enqueue a frame".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn topology_movement_after_staging_is_rejected_without_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server();
+        let uri = "file:///workspace-a/sink_topology_after_staging.pl";
+        server.test_set_workspace_folder_uris(&["file:///workspace-a/"]);
+        let identity = open_document(&server, uri, "my $x = 1;\n");
+        if !wait_for_frames(&buf, 1) {
+            return Err("didOpen publication must flush first".into());
+        }
+        let accepted = server.capture_accepted_critic(uri);
+        let accepted_topology_generation =
+            server.workspace_topology_generation.load(Ordering::SeqCst);
+        let bound = identity
+            .with_accepted_critic_snapshot(Some(accepted))
+            .with_accepted_topology_generation(accepted_topology_generation);
+        let settled_frames = frame_count(&buf);
+        let outcome = server.commit_push_diagnostics_after_staging(
+            &bound,
+            json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+            PushDiagnosticsDisposition::Replacement,
+            || {
+                server.workspace_topology_generation.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        if outcome != PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy {
+            return Err(
+                format!("topology movement must reject at final commit: {outcome:?}").into()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if frame_count(&buf) != settled_frames {
+            return Err("a topology move after staging must not enqueue a frame".into());
         }
         Ok(())
     }
