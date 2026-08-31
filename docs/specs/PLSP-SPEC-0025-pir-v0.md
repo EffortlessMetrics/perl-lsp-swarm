@@ -207,6 +207,9 @@ PIR v0 must model these contexts:
 
 Place access is not a value context: assignment targets are represented by
 `PirAccessMode`, while `PirContext` remains limited to value-context facts.
+`DefinednessTest` is reserved in this slice: the public vocabulary is stable,
+but flat HIR lowering does not yet identify the operand of `defined` or the
+definedness arm of `//`. Those activations require a separate lowering claim.
 Unknown context is allowed when the compiler substrate cannot prove context
 without executing Perl. Unknown context must be visible in receipts and must not
 be silently promoted to scalar or list.
