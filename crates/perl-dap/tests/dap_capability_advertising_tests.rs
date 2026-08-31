@@ -16,7 +16,9 @@
 mod capability_tests {
     use anyhow::Result;
     use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+    use perl_dap::types::{Source, StackFrame};
     use serde_json::Value;
+    use std::fs;
     use std::sync::mpsc::sync_channel;
 
     fn create_test_adapter() -> DebugAdapter {
@@ -139,6 +141,22 @@ mod capability_tests {
             capability(&caps, "supportsDataBreakpoints")?,
             "fail-closed targeted stepping must not downgrade watchpoint capability"
         );
+
+        let dir = tempfile::tempdir()?;
+        let script_path = dir.path().join("subroutine_calls.pl");
+        fs::write(
+            &script_path,
+            "use strict;\nuse warnings;\nmy $x = abs(sqrt(length('hello')));\nprint $x;\n",
+        )?;
+        let source_path = script_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("temporary source path is not valid UTF-8"))?;
+        adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+            1,
+            "main",
+            Source::new(source_path),
+            3,
+        )]);
 
         match adapter.handle_request(2, "stepInTargets", Some(serde_json::json!({"frameId": 1}))) {
             DapMessage::Response { success, command, body, message, .. } => {

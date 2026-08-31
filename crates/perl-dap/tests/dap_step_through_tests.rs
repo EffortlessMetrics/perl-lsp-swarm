@@ -16,6 +16,7 @@
 //! Run with: cargo test -p perl-dap --test dap_step_through_tests
 
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+use perl_dap::types::{Source, StackFrame};
 use serde_json::json;
 use std::fs;
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -316,6 +317,13 @@ fn test_step_in_targets_is_refused_without_source_scans() -> Result<(), Box<dyn 
     )?;
 
     let mut adapter = make_adapter();
+    let source_path = script_path.to_str().ok_or("temporary source path is not valid UTF-8")?;
+    adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+        1,
+        "main",
+        Source::new(source_path),
+        3,
+    )]);
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
 

@@ -535,7 +535,13 @@ fn assert_step_in_targets_unsupported(
             assert_eq!(command, "stepInTargets", "command name must match");
             assert!(!success, "stepInTargets must fail while unsupported (#9069)");
             assert!(body.is_none(), "unsupported stepInTargets must not publish target IDs");
-            Ok(message.unwrap_or_default())
+            message
+                .ok_or_else(|| {
+                    std::io::Error::other(
+                        "unsupported stepInTargets response must include an error message",
+                    )
+                })
+                .map_err(Into::into)
         }
         other => Err(format!("expected Response for stepInTargets, got {other:?}").into()),
     }
