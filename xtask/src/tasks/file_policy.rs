@@ -250,7 +250,10 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         if let Some(glob) = glob {
             Pattern::new(glob).with_context(|| format!("invalid glob in allow entry {id}"))?;
             if is_policy_broad_glob(glob)
-                && table.get("broad_glob_reason").and_then(toml::Value::as_str).is_none()
+                && table
+                    .get("broad_glob_reason")
+                    .and_then(toml::Value::as_str)
+                    .is_none_or(|reason| reason.trim().is_empty())
             {
                 bail!("broad glob in allow entry {id} lacks broad_glob_reason");
             }
@@ -280,7 +283,7 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         }
         if let (Some(created), Some(review_after)) =
             (dates.get("created"), dates.get("review_after"))
-            && created > review_after
+            && created >= review_after
         {
             bail!("created date is after review_after in allow entry {id}");
         }
