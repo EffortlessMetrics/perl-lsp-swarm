@@ -110,7 +110,7 @@ fn test_refactoring_engine_stays_retired() -> TestResult {
                 stack.push(path);
             } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
                 let content = fs::read_to_string(&path)?;
-                if content.contains("RefactoringEngine") {
+                if contains_identifier(&content, "RefactoringEngine") {
                     offenders.push(path.display().to_string());
                 }
             }
@@ -125,6 +125,15 @@ fn test_refactoring_engine_stays_retired() -> TestResult {
         .into());
     }
     Ok(())
+}
+
+fn contains_identifier(source: &str, identifier: &str) -> bool {
+    source.match_indices(identifier).any(|(start, _)| {
+        let end = start + identifier.len();
+        let is_ident = |byte: Option<u8>| byte.is_some_and(|value| value == b'_' || value.is_ascii_alphanumeric());
+        !is_ident(source.as_bytes().get(start.wrapping_sub(1)).copied())
+            && !is_ident(source.as_bytes().get(end).copied())
+    })
 }
 
 #[cfg(feature = "incremental")]
