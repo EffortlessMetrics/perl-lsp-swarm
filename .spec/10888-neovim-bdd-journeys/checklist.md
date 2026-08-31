@@ -258,7 +258,7 @@ ROW_DIGESTS = {
     "neovim.bdd.core.06": "3554602a0e868157",
     "neovim.bdd.core.07": "4f7218ff0f57ffe3",
     "neovim.bdd.core.08": "017f59ff8c2ea204",
-    "neovim.bdd.core.09": "16e3e514e05e4f72",
+    "neovim.bdd.core.09": "9e056e6cebdeb52e",
     "neovim.bdd.core.10": "3e7e2560e23ddd46",
     "neovim.bdd.sync.01": "37855bffcd9130f9",
     "neovim.bdd.sync.02": "8406cf4e14808f72",

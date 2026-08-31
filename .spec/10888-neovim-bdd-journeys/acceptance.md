@@ -40,7 +40,7 @@ belong to #10502 and the later host leaves. Profile column: membership in
 | `neovim.bdd.core.06` | References list contains the governed sites of this project and excludes wrong-root decoy matches | core; actual host required | same chain + #10502 decoys |
 | `neovim.bdd.core.07` | Server-native settings supplied through the documented native `settings.perl` table change an independent semantic result (include-path resolution), not merely the settings echo | core; actual host required; security-sensitive configuration | same chain; field admission owned by #6736 catalog |
 | `neovim.bdd.core.08` | Formatting brings the buffer to the canonical formatted bytes through client-applied edits, and a second format changes nothing further | core; actual host required | same chain |
-| `neovim.bdd.core.09` | Normal Neovim quit leaves no bound `perllsp` process behind | core; actual host required; cleanup observed independently | same chain; cleanup mechanics #10507 |
+| `neovim.bdd.core.09` | Normal Neovim quit leaves no bound `perllsp` process behind | core; actual host required; cleanup observed independently | same chain; graceful cleanup owned by the core slice `nv_core_slice_edit_requery_format_cleanup`, whose stated result includes it; #10507 is deep-only enrichment that never becomes unconditional for bounded core, so it never owns a core row |
 | `neovim.bdd.core.10` | Absolute or traversal include-path settings remain outside ordinary positive behavior: rejected or governed, never silently applied as a trusted channel | core (negative/guard); security-sensitive configuration | same chain; rejection semantics owned by #4998 |
 
 ## §Behavior — conditional text-sync envelope (`#8129` selects exactly one branch)
