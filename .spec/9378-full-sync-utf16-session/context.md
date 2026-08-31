@@ -1,103 +1,118 @@
 # Context — #9378 full-sync UTF-16 initialize/session contract
 
-Claim: the accepted initialized session contains one immutable text/position
+Claim: one accepted initialized session contains one immutable text/position
 contract — `sync_kind = full`, `position_encoding = utf-16` — and the
-initialize response, stored session state, and bounded evidence are all
-derived from that single accepted value.
+initialize response, stored state, serving boundary, and bounded evidence all
+derive from that accepted value.
 
 Parent: #8531. Decision gate: #8129 (`full_document_utf16`, recorded
-2026-08-29, `selected_for_implementation`). Train: #8686 B03.
-Feeds: #9380 (full-replacement transaction), #9383.
+2026-08-29, `selected_for_implementation`). First-RC controller: #13768.
+Downstream train: #9380 → #9382 → #9383 → #9386 → #9388 → #9389.
 
-## Current-main inventory (pinned a83ad9a027)
+## Current ruling
 
-Three independent authorities own the text/position contract today:
+The initialization contract is closed:
 
-1. `crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs`
-   — `handle_initialize` negotiates
-   `general.positionEncodings` by picking the first locally supported entry
-   from `["utf-8", "utf-16"]` and **falls back to UTF-16 when the client
-   offers no supported entry** (no-common silently accepted). The selected
-   value is stored on `ClientCapabilities.position_encoding`
-   (`crates/perl-lsp-rs/src/state/document.rs`) and may become `Utf8`.
-2. Same file — `let sync_kind = 1;` hard-coded local variable feeds
-   `TextDocumentSyncOptions::new` in the response.
-3. Same file — `capabilities["positionEncoding"] = "utf-16"` hard-pinned
-   string, pinned independently of the negotiated value because providers
-   still compute UTF-16 offsets.
+```text
+offer absent / null / empty
+→ accept immutable FULL + UTF-16
 
-Known wrong behavior on main (positively encoded by
-`initialize_falls_back_to_utf16_when_position_encodings_have_no_supported_values`,
-`crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs`):
-a no-common offer such as `["utf-32", "utf-7"]` is accepted with UTF-16
-despite the client explicitly excluding UTF-16.
+offer is a valid string list containing UTF-16
+→ accept immutable FULL + UTF-16
 
-Initialize atomicity on main: `initialize_requested` is CAS-set before any
-validation and `client_capabilities` is mutated incrementally while parsing;
-a late failure would leave partially published capability state with a
-consumed one-shot guard.
+offer is a valid string list omitting UTF-16
+→ accept immutable FULL + UTF-16
+→ retain mandatory-utf16-fallback evidence
 
-Consumers of the competing negotiated value:
+malformed capability shape or entry
+→ InvalidParams (-32602)
+→ no accepted session
 
-- `crates/perl-lsp-rs/src/runtime/diagnostics.rs` (pull-diagnostics
-  projection, two sites) reads `client_capabilities.position_encoding`;
-- `crates/perl-lsp-rs/src/runtime/lifecycle/effective_surface_parity_tests.rs`
-  feeds a free-standing `negotiated_encoding(params)` helper into the core
-  model input `client.negotiated_position_encoding`;
-- core model:
-  `crates/perl-lsp-rs-core/src/protocol/effective_surface.rs`
-  (`PositionEncodingContract.negotiated_preference`,
-  `DowngradeReason::PositionEncodingPin`).
+first initialize attempt, accepted or rejected
+→ consumes initialize-attempt authority
 
-Ledger/artifact surfaces describing this behavior:
+any later initialize, valid or malformed
+→ InvalidRequest (-32600)
+→ original accepted state unchanged or absent
+```
 
-- `crates/perl-lsp-rs-core/src/protocol/final_surface_inventory/rows.rs`
-  mutation row `mut.handle_initialize.positionEncodingPin`
-  ("negotiated, stored, NOT advertised") and compat row
-  `compat.protocol.positionEncodingUtf16Pin`;
-- generated artifact `docs/specs/lsp-final-surface-inventory.json`
-  (byte-checked against the ledger; regenerate via the crate's ignored
-  regeneration test);
-- census: `crates/perl-lsp-rs/src/runtime/lifecycle/final_surface_census.rs`
-  (structural pointer coverage only; no encoding-selection semantics).
+A valid `[`utf-8`]`, `[`utf-32`]`, or unknown-string-only list does not create
+`no-common-encoding`. The product still advertises and stores only UTF-16; it
+does not claim UTF-8 or UTF-32 wire support.
 
-Tests pinning current behavior that must move with the contract:
+## State authority
 
-- `capabilities.rs` unit tests: `initialize_prefers_first_supported_position_encoding`
-  (selects UTF-8), `initialize_accepts_utf16_when_it_is_first_supported_position_encoding`,
-  `initialize_falls_back_to_utf16_when_position_encodings_have_no_supported_values`;
-- `crates/perl-lsp-rs/tests/lsp_3_17_lifecycle_tests.rs`
-  `test_position_encoding_advertised_is_clamped_to_utf16_pending_phase_2`;
-- `effective_surface_parity_tests.rs`
-  `pull_diagnostic_client_with_refresh_supports_and_utf8_preference_matches`
-  (subject offers `["utf-32", "utf-8"]`).
+Attempted, accepted, and lifecycle-complete initialization are different facts:
 
-## Branch-selection gate
+```text
+initialize_attempted
+accepted_text_sync_session
+initialized
+```
 
-#8129 selected `full_document_utf16` for the v0.18 release candidate and
-stable 0.18.0 only. Production activation in this leaf is bounded to that
-selection: no negotiated UTF-8, no incremental/ranged sync, no provider
-migration, no VS Code packaging, no public support claims. The long-term
-atomic-incremental programme (#1690/#7409/#7417/#7713/#9282) remains open
-and is not blended here.
+The first request atomically owns `initialize_attempted` before its parameters
+are classified. Exactly one concurrent first attempt wins. Every loser returns
+`-32600` before parameter-specific validation.
 
-## Reviewed dispositions pinned by this leaf
+A malformed first attempt leaves:
 
-- **PresentEmpty** `general.positionEncodings: []` — selects UTF-16 by the
-  protocol default, recorded as its own selection reason (`EmptyOffer`),
-  distinct from `OfferAbsent`. Basis: the issue's selection rules fail only
-  "supplied nonempty list[s] with no UTF-16"; the accepted LSP
-  interpretation (rust-analyzer precedent) treats an empty list as no
-  expressed constraint rather than a constraint that cannot be satisfied.
-- **Absent and null** both mean "no offer" on the wire (JSON `null` for an
-  optional array is the absent spelling, not a malformed list) — UTF-16
-  default, recorded distinctly from a present-but-invalid value.
-- **PresentMalformed** (list present with non-string entries, or the value
-  is not an array) — typed initialize failure; `as_array` failure never
-  collapses into absence.
-- Unknown encoding strings are retained in the offer receipt and are not
-  fatal; unknown + UTF-16 still selects UTF-16.
-- A rejected initialize consumes the one-shot initialize guard (documented
-  latitude from the #9378 architecture review): it publishes no session
-  contract, no capability mutation, no workspace/config side effect, and
-  cannot be retried in the same process.
+```text
+initialize_attempted = true
+accepted_text_sync_session = None
+initialized = false
+ordinary request admission = false
+initialized-notification completion = false
+watcher/index/bootstrap/startup side effects = 0
+```
+
+The attempt guard is not serving authority. Ordinary requests, formatting
+interception, compatibility auto-initialize, initialized-notification
+completion, and startup activation require the accepted session through
+`initialization_accepted()`.
+
+## Offer dispositions
+
+- **Absent or null**: no client encoding constraint; select UTF-16 with
+  `offer-absent`.
+- **Present empty**: explicit empty list; select UTF-16 with `offer-empty`.
+- **Present valid containing UTF-16**: select UTF-16 with
+  `client-offered-utf16`.
+- **Present valid omitting UTF-16**: select UTF-16 with
+  `mandatory-utf16-fallback`; retain bounded offered entries and whether they
+  are recognized.
+- **Present malformed**: non-array value or any non-string entry; return typed
+  `-32602` and install no accepted session.
+
+Client name, offer order, duplicate entries, unknown strings, and later
+initialize parameters cannot select another contract.
+
+## Required falsifiers
+
+1. malformed first → `-32602`; valid second → `-32600`; no session, no serving;
+2. malformed first → `-32602`; malformed second → `-32600`;
+3. accepted first → valid or malformed second → `-32600`; original contract
+   byte-identical;
+4. valid UTF-8-only, UTF-32-only, and unknown-string-only offers → successful
+   FULL + UTF-16 with mandatory-fallback evidence;
+5. concurrent valid/malformed attempts → one attempt owner, every loser
+   `-32600`, no mixed accepted state;
+6. rejected first followed by `initialized`, hover, didOpen, formatting, or
+   compatibility preflight → remains non-serving with zero lifecycle effects;
+7. response/state divergence → typed internal failure before acceptance.
+
+The realistic red mutations are: classify before attempt ownership; restore a
+valid-list no-common rejection; gate serving on attempted state; classify a
+malformed second request before the one-shot guard; or let two concurrent
+attempts both install/classify as first.
+
+## Ownership boundary
+
+This leaf owns initialize/session authority only. It does not implement full
+source replacement, ranged-change refusal/desynchronization, outgoing range
+closure, exact-process lifecycle, installed VSIX behavior, or public claim
+projection. Those remain #9380, #9382, #9383, #9386, #9388, and #9389.
+
+PR #14159 overlaps PR #12067 in runtime/public-API/generated-inventory
+surfaces. Land #12067, restack #14159 once, regenerate only sanctioned outputs,
+rerun focused proof and exact-head review, then merge #9378 before admitting
+#9380.
