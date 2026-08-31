@@ -71,8 +71,8 @@ interface ActiveClient<TClient extends LifecycleClient<TEvent>, TEvent = unknown
 
 interface CleanupResult {
   readonly error: unknown | undefined;
-  /** True only when every lifecycle-owned cleanup operation completed successfully. */
-  readonly terminal: boolean;
+  /** True only when every lifecycle-owned client cleanup call completed successfully. */
+  readonly clientCleanupComplete: boolean;
 }
 
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
@@ -83,6 +83,10 @@ const DEFAULT_STOP_TIMEOUT_MS = 5_000;
  * A generation is invalidated before stopping or restarting. Any asynchronous
  * work that belongs to an older generation must finish its cleanup without
  * publishing a stale running state.
+ *
+ * This owner can establish completion of the client-facing listener/stop/
+ * dispose calls only. Exact child-process/resource terminality is a stronger
+ * external observation supplied by the process-lifecycle owner.
  */
 export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TEvent = unknown> {
   private readonly stopTimeoutMs: number;
@@ -272,9 +276,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     const cleanup = active
       ? await this.shutdown(active)
       : this.replacementBlockedError !== undefined
-        ? { error: this.replacementBlockedError, terminal: false }
-        : { error: undefined, terminal: true };
-    if (!cleanup.terminal) {
+        ? { error: this.replacementBlockedError, clientCleanupComplete: false }
+        : { error: undefined, clientCleanupComplete: true };
+    if (!cleanup.clientCleanupComplete) {
       this.recordCleanupResult(cleanup);
       this.error = cleanup.error ?? this.replacementBlockedFailure();
       this.transition('failed', stopGeneration);
@@ -361,13 +365,13 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     }
 
     let firstError: unknown = undefined;
-    let terminal = true;
+    let clientCleanupComplete = true;
     if (active.listener) {
       try {
         active.listener.dispose();
       } catch (error: unknown) {
         firstError = error;
-        terminal = false;
+        clientCleanupComplete = false;
       }
       active.listener = undefined;
     }
@@ -375,25 +379,27 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     const stopError = await this.runBounded('stop', () => active.client.stop());
     if (stopError !== undefined) {
       firstError ??= stopError;
-      terminal = false;
+      clientCleanupComplete = false;
     }
 
     const disposeError = await this.runBounded('dispose', () => active.client.dispose());
     if (disposeError !== undefined) {
       firstError ??= disposeError;
-      terminal = false;
+      clientCleanupComplete = false;
     }
 
-    return { error: firstError, terminal };
+    return { error: firstError, clientCleanupComplete };
   }
 
   private recordCleanupResult(cleanup: CleanupResult): void {
-    if (cleanup.terminal) {
+    if (cleanup.clientCleanupComplete) {
       return;
     }
-    this.replacementBlockedError = cleanup.error ?? new LanguageClientLifecycleError(
-      'Language client cleanup did not establish terminal state.',
-    );
+    this.replacementBlockedError =
+      cleanup.error ??
+      new LanguageClientLifecycleError(
+        'Language client cleanup calls did not complete successfully.',
+      );
   }
 
   private replacementBlockedFailure(): LanguageClientLifecycleError {
@@ -402,7 +408,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         ? `: ${this.replacementBlockedError.message}`
         : '';
     return new LanguageClientLifecycleError(
-      `Language client cleanup is not terminal; replacement startup is blocked${detail}`,
+      `Language client cleanup is incomplete; replacement startup is blocked${detail}`,
     );
   }
 
