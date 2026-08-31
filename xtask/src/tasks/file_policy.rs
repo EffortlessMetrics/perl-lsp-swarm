@@ -851,8 +851,16 @@ fn non_rust_exact_tree_inner(
         .collect::<std::collections::BTreeSet<_>>();
     let mut new_unclassified_paths =
         subject_unclassified.difference(&base_unclassified).cloned().collect::<Vec<_>>();
+    let base_expired_paths = expired_paths_in_tree(root, &base_commit, evaluation_date)?
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
     for path in expired_paths_in_tree(root, &subject_commit, evaluation_date)? {
-        if !new_unclassified_paths.contains(&path) {
+        // Preserve inherited expired debt, and do not flag paths that remain
+        // covered by another active entry (their subject record is classified).
+        if subject_unclassified.contains(&path)
+            && !base_expired_paths.contains(&path)
+            && !new_unclassified_paths.contains(&path)
+        {
             new_unclassified_paths.push(path);
         }
     }
