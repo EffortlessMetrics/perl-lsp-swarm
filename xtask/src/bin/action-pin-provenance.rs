@@ -63,7 +63,6 @@ enum BaseSource {
 struct Ledger {
     pin: Vec<LedgerPin>,
     source_path: String,
-    pin_lines: Vec<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,6 +76,8 @@ struct LedgerPin {
     sha: String,
     kind: ProjectionKind,
     value: String,
+    #[serde(skip)]
+    source_line: usize,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -370,13 +371,15 @@ fn load_ledger(path: &Path, source_path: &str) -> Result<Ledger> {
     let parsed: LedgerFile =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     let mut pin = Vec::with_capacity(parsed.pin.len());
-    let mut pin_lines = Vec::with_capacity(parsed.pin.len());
     for located in parsed.pin {
         let start = located.span().start.min(text.len());
-        pin_lines.push(text.as_bytes()[..start].iter().filter(|byte| **byte == b'\n').count() + 1);
-        pin.push(located.into_inner());
+        let source_line =
+            text.as_bytes()[..start].iter().filter(|byte| **byte == b'\n').count() + 1;
+        let mut located_pin = located.into_inner();
+        located_pin.source_line = source_line;
+        pin.push(located_pin);
     }
-    Ok(Ledger { pin, source_path: source_path.to_owned(), pin_lines })
+    Ok(Ledger { pin, source_path: source_path.to_owned() })
 }
 
 fn scan_worktree(root: &Path, pattern: &Regex) -> Result<Vec<Occurrence>> {
@@ -538,20 +541,20 @@ fn validate(
 }
 
 fn validate_ledger(ledger: &Ledger, issues: &mut Vec<Issue>) {
-    let mut values: BTreeMap<(&str, &str), Vec<(usize, &LedgerPin)>> = BTreeMap::new();
-    for (index, pin) in ledger.pin.iter().enumerate() {
-        values.entry((&pin.action, &pin.sha)).or_default().push((index, pin));
+    let mut values: BTreeMap<(&str, &str), Vec<&LedgerPin>> = BTreeMap::new();
+    for pin in &ledger.pin {
+        values.entry((&pin.action, &pin.sha)).or_default().push(pin);
     }
     for ((action, sha), rows) in values {
         let mut authoritative = BTreeSet::new();
         let mut first_line = None;
-        for (index, pin) in rows {
+        for pin in rows {
             if pin.kind == ProjectionKind::LegacyDebt
                 || !authoritative.insert((&pin.kind, pin.value.as_str()))
             {
                 continue;
             }
-            let line = ledger.pin_lines.get(index).copied().unwrap_or(1);
+            let line = pin.source_line;
             let Some(previous_line) = first_line else {
                 first_line = Some(line);
                 continue;
@@ -647,11 +650,16 @@ mod tests {
         scan_text(".github/workflows/test.yml", source, &uses_pattern()?)
     }
     fn ledger(pins: Vec<LedgerPin>) -> Ledger {
-        let pin_lines = (1..=pins.len()).collect();
-        Ledger { pin: pins, source_path: DEFAULT_LEDGER.into(), pin_lines }
+        Ledger { pin: pins, source_path: DEFAULT_LEDGER.into() }
     }
     fn row(action: &str, sha: &str, kind: ProjectionKind, value: &str) -> LedgerPin {
-        LedgerPin { action: action.into(), sha: sha.into(), kind, value: value.into() }
+        LedgerPin {
+            action: action.into(),
+            sha: sha.into(),
+            kind,
+            value: value.into(),
+            source_line: 1,
+        }
     }
     const SHA: &str = "1111111111111111111111111111111111111111";
     #[test]
