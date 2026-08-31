@@ -817,7 +817,15 @@ fn matches_needle_with(args: &str, needle: &str, fold: bool) -> bool {
         let trailing = bytes.get(end).copied();
         let trailing_ok = match trailing {
             None | Some(b' ') | Some(b'\t') => true,
-            Some(b'.') => fold,
+            Some(b'.') if fold => {
+                let rest = &haystack[end + 1..];
+                rest == "exe"
+                    || rest == "dll"
+                    || rest.starts_with("exe ")
+                    || rest.starts_with("dll ")
+                    || rest.starts_with("exe\t")
+                    || rest.starts_with("dll\t")
+            }
             _ => false,
         };
         if leading_ok && trailing_ok {
@@ -1002,6 +1010,10 @@ mod process_tests {
         assert!(
             matches_needle_with("perllsp-tag.exe", "perllsp-tag", true),
             "Windows image names may continue into .exe"
+        );
+        assert!(
+            !matches_needle_with("perllsp-tag.exe.bak", "perllsp-tag.exe", true),
+            "an extra suffix after .exe is a different Windows image"
         );
         assert!(
             !matches_needle_with("perllsp-tag-extra.exe", "perllsp-tag", true),
