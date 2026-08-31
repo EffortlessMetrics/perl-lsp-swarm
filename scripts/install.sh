@@ -1105,6 +1105,13 @@ observe_path_visible_product_unit() {
     _cur="$(observe_current_product_unit)"
     _cur_server="$(printf '%s\n' "$_cur" | sed -n 's/.*server_sha256=\([^ ]*\).*/\1/p')"
     _cur_dap="$(printf '%s\n' "$_cur" | sed -n 's/.*dap_sha256=\([^ ]*\).*/\1/p')"
+    if [ "$_cur_server" != "-" ] && [ "$_cur_dap" != "-" ]; then
+        if { [ "$_server" != "-" ] && [ "$_dap" = "-" ]; } \
+            || { [ "$_server" = "-" ] && [ "$_dap" != "-" ]; }; then
+            printf 'state=mixed server_sha256=%s dap_sha256=%s\n' "$_server" "$_dap"
+            return 0
+        fi
+    fi
     if [ "$_server" != "-" ] && [ "$_dap" != "-" ]; then
         if { [ "$_server" = "$_cur_server" ] && [ "$_dap" != "$_cur_dap" ]; } \
             || { [ "$_server" != "$_cur_server" ] && [ "$_dap" = "$_cur_dap" ]; }; then
@@ -1167,8 +1174,42 @@ Try one of:
     if [ "$_disposition" = "archive_pair_required" ]; then
         _incoming_pair=1
     fi
-    ensure_path_visible_selectors 1 "$_incoming_pair" 1 || return
-    commit_current_selection "$_id" || return
+    _plsp_rollback_server=""
+    _plsp_rollback_dap=""
+    if [ ! -e "${INSTALL_DIR}/${BIN_NAME}" ] && [ ! -L "${INSTALL_DIR}/${BIN_NAME}" ]; then
+        _plsp_rollback_server="${INSTALL_DIR}/${BIN_NAME}"
+    fi
+    if [ ! -e "${INSTALL_DIR}/${DAP_BIN_NAME}" ] && [ ! -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+        _plsp_rollback_dap="${INSTALL_DIR}/${DAP_BIN_NAME}"
+    fi
+    rollback_new_path_selectors() {
+        if [ -n "${_plsp_rollback_server:-}" ]; then
+            rm -f -- "$_plsp_rollback_server"
+        fi
+        if [ -n "${_plsp_rollback_dap:-}" ]; then
+            rm -f -- "$_plsp_rollback_dap"
+        fi
+        _plsp_rollback_server=""
+        _plsp_rollback_dap=""
+    }
+    # Pair selectors are created before current flips so the commit publishes
+    # both PATH names together. If commit fails closed, drop names this attempt
+    # created so a first install does not leave dangling commands. The EXIT trap
+    # covers err() (exit 1); explicit rollback covers function return.
+    trap rollback_new_path_selectors EXIT
+    if ! ensure_path_visible_selectors 1 "$_incoming_pair" 0; then
+        rollback_new_path_selectors
+        trap - EXIT
+        return 1
+    fi
+    if ! commit_current_selection "$_id"; then
+        rollback_new_path_selectors
+        trap - EXIT
+        return 1
+    fi
+    trap - EXIT
+    _plsp_rollback_server=""
+    _plsp_rollback_dap=""
     ensure_path_visible_selectors || return
 
     if [ -L "${_store}/previous" ]; then

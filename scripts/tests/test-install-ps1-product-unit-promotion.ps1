@@ -356,6 +356,56 @@ try {
         } else {
             Fail-Case "file pointer plus cmd shims keep complete pairs" "status=$LastStatus output=$LastOutput filePointer=$isFilePointer"
         }
+
+    Setup-Root
+    $obsFirst = Join-Path $TempRoot "observe-first.txt"
+    Stage-Pair -Dest $ExtractDir -Server "server-first" -Dap "dap-first"
+    $env:PERL_LSP_INSTALL_OBSERVE = "between_path_members"
+    $env:PERL_LSP_INSTALL_OBSERVE_FILE = $obsFirst
+    try {
+        Invoke-Promote
+        $obsText = ""
+        if (Test-Path -LiteralPath $obsFirst) { $obsText = Get-Content -LiteralPath $obsFirst -Raw }
+        $okFirst = ($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-first" -Dap "dap-first") -and
+            ($obsText -like "*state=selected*") -and ($obsText -like "*state=path_visible*") -and
+            ($obsText -notlike "*state=mixed*") -and ($obsText -notlike "*state=none*") -and
+            ($obsText -like "*server_sha256=*") -and ($obsText -like "*dap_sha256=*") -and
+            ($obsText -notlike "*server_sha256=-*") -and ($obsText -notlike "*dap_sha256=-*")
+        if ($okFirst) {
+            Pass-Case "first-install production path publishes both shims before the interleaved reader"
+        } else {
+            Fail-Case "first-install production path publishes both shims before the interleaved reader" "status=$LastStatus obs=$obsText output=$LastOutput"
+        }
+    } finally {
+        Remove-Item Env:PERL_LSP_INSTALL_OBSERVE -ErrorAction SilentlyContinue
+        Remove-Item Env:PERL_LSP_INSTALL_OBSERVE_FILE -ErrorAction SilentlyContinue
+    }
+
+    Setup-Root
+    $obsSource = Join-Path $TempRoot "observe-source-to-release.txt"
+    Stage-ServerOnly -Dest $ExtractDir -Server "source-server"
+    Invoke-Promote -Mode source
+    Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
+    $env:PERL_LSP_INSTALL_OBSERVE = "between_path_members"
+    $env:PERL_LSP_INSTALL_OBSERVE_FILE = $obsSource
+    try {
+        Invoke-Promote
+        $obsText = ""
+        if (Test-Path -LiteralPath $obsSource) { $obsText = Get-Content -LiteralPath $obsSource -Raw }
+        $okSource = ($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-b" -Dap "dap-b") -and
+            ($obsText -like "*state=selected*") -and ($obsText -like "*state=path_visible*") -and
+            ($obsText -notlike "*state=mixed*") -and ($obsText -notlike "*state=none*") -and
+            ($obsText -like "*server_sha256=*") -and ($obsText -like "*dap_sha256=*") -and
+            ($obsText -notlike "*server_sha256=-*") -and ($obsText -notlike "*dap_sha256=-*")
+        if ($okSource) {
+            Pass-Case "source-to-release production path publishes the pair before the interleaved reader"
+        } else {
+            Fail-Case "source-to-release production path publishes the pair before the interleaved reader" "status=$LastStatus obs=$obsText output=$LastOutput"
+        }
+    } finally {
+        Remove-Item Env:PERL_LSP_INSTALL_OBSERVE -ErrorAction SilentlyContinue
+        Remove-Item Env:PERL_LSP_INSTALL_OBSERVE_FILE -ErrorAction SilentlyContinue
+    }
 } finally {
     Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

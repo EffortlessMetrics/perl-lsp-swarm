@@ -882,6 +882,9 @@ function Get-StandalonePathVisibleObservation {
     if ($current -match 'dap_sha256=([0-9a-f]+|-)') { $curDap = $Matches[1] }
     $serverMatches = ($server -eq $curServer)
     $dapMatches = ($dap -eq $curDap)
+    if (($curServer -ne "-") -and ($curDap -ne "-") -and (($server -ne "-") -xor ($dap -ne "-"))) {
+        return "state=mixed server_sha256=$server dap_sha256=$dap"
+    }
     if (($server -ne "-") -and ($dap -ne "-") -and ($serverMatches -xor $dapMatches)) {
         return "state=mixed server_sha256=$server dap_sha256=$dap"
     }
@@ -932,8 +935,26 @@ function Install-StandaloneProductUnit {
     }
 
     $id = Publish-ImmutableStandaloneCandidate -SourceDir $ExtractDir -InstallDir $InstallDir -Disposition $disposition
-    Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -Disposition $disposition -ExistingOnly
-    Set-StandaloneCurrentSelection -InstallDir $InstallDir -CandidateId $id
+    $hadServer = Test-Path -LiteralPath (Join-Path $InstallDir "$Name.cmd")
+    $hadDap = Test-Path -LiteralPath (Join-Path $InstallDir "$DapName.cmd")
+    try {
+        Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -Disposition $disposition
+        Set-StandaloneCurrentSelection -InstallDir $InstallDir -CandidateId $id
+    } catch {
+        if (-not $hadServer) {
+            $serverDest = Join-Path $InstallDir "$Name.cmd"
+            if (Test-Path -LiteralPath $serverDest) {
+                Remove-Item -LiteralPath $serverDest -Force
+            }
+        }
+        if (-not $hadDap) {
+            $dapDest = Join-Path $InstallDir "$DapName.cmd"
+            if (Test-Path -LiteralPath $dapDest) {
+                Remove-Item -LiteralPath $dapDest -Force
+            }
+        }
+        throw
+    }
     Set-StandalonePathVisibleSelectors -InstallDir $InstallDir -Disposition $disposition -PermitStaleDapRemoval
 
     $previous = "none"
