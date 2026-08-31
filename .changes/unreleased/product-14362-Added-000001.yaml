@@ -3,10 +3,11 @@ component: Language intelligence
 kind: Added
 body: >-
   Write the lexer budget-stop recovery contract into the crate docs and pin
-  every over-budget token shape with executable tests: empty-text UnknownRest
-  over the degraded remainder through EOF for regex scan steps, regex bytes,
-  delimiter depth, and heredoc bytes, with the budget-bounded EOF-inside-budget
-  heredoc payload as the one documented exception.
+  every over-budget token shape with five executable contract tests: empty-text
+  UnknownRest over the degraded remainder through EOF for regex scan steps,
+  regex bytes, delimiter depth, and heredoc bytes, with the two bounded-payload
+  exceptions of EOF-inside-budget heredoc recovery and the MAX_HEREDOC_DEPTH
+  heredoc-header error.
 time: 2026-08-30T00:00:00Z
 custom:
   PR: "14362"
