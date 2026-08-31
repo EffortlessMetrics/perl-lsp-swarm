@@ -371,10 +371,12 @@ pub fn non_rust_exact_tree(
             inventory_json_size: None,
             inventory_json_sha256: None,
         };
-        if let Some(parent) = receipt_path.parent() {
-            fs::create_dir_all(parent)?;
+        if !receipt_path.exists() {
+            if let Some(parent) = receipt_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
         }
-        fs::write(receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
     }
     result
 }
