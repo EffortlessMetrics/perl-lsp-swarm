@@ -50,7 +50,7 @@ jobs:
           blobs = {
               ".github/workflows/non-rust-policy-shadow.yml": "cd6ea1c5a52f0803325b15b136ad5876b7aa6d7a",
               "scripts/ci/non_rust_policy_shadow.py": "e777d7bb723bac0e5506039086db05036e3b35ba",
-              "scripts/ci/test_non_rust_policy_shadow.py": "df3edc74a1054a139715da4d09dafe4ac95b86a4",
+              "scripts/ci/test_non_rust_policy_shadow.py": "03bbe6f3a81aa4298ee8cbd75c014c2c27161050",
               "docs/ci/non-rust-policy-shadow.md": "1e8c1f30016dae58a4428fad3a118f4f7bae69f5",
           }
           for raw_path, blob_sha in blobs.items():
@@ -69,29 +69,6 @@ jobs:
               path = Path(raw_path)
               path.parent.mkdir(parents=True, exist_ok=True)
               path.write_bytes(base64.b64decode(payload["content"]))
-
-          test_path = Path("scripts/ci/test_non_rust_policy_shadow.py")
-          test_text = test_path.read_text(encoding="utf-8")
-          old_healer_assertion = '''        healer = (
-              self.root / ".github/workflows/post-merge-status-update.yml"
-          ).read_text(encoding="utf-8")
-          self.assertIn("non-rust inventory --write", healer)
-          '''
-          new_healer_assertion = '''        workflows = [
-              path.read_text(encoding="utf-8")
-              for path in (self.root / ".github/workflows").glob("*.yml")
-          ]
-          self.assertTrue(
-              any("non-rust inventory --write" in workflow for workflow in workflows),
-              "existing post-merge inventory healer must remain present",
-          )
-          '''
-          if old_healer_assertion not in test_text:
-              raise SystemExit("expected healer assertion not found in test source")
-          test_path.write_text(
-              test_text.replace(old_healer_assertion, new_healer_assertion),
-              encoding="utf-8",
-          )
 
           def append_once(raw_path: str, marker: str, block: str) -> None:
               path = Path(raw_path)
