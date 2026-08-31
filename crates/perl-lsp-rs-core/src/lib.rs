@@ -95,7 +95,7 @@ pub(crate) mod test_support {
             let panic_result = std::panic::catch_unwind(|| {
                 let _snapshot = EnvSnapshot::capture(&["PERL_LSP_SNAPSHOT_EARLY"]);
                 unsafe { std::env::set_var("PERL_LSP_SNAPSHOT_EARLY", "panic") };
-                panic!("snapshot falsifier");
+                std::panic::resume_unwind(Box::new("snapshot falsifier"));
             });
             assert!(panic_result.is_err());
             assert_eq!(std::env::var_os("PERL_LSP_SNAPSHOT_EARLY"), Some(OsString::from("before")));
