@@ -7,6 +7,8 @@ import {
   prepareUserOwnedDemoProject,
 } from '../demoProject';
 
+const METADATA_FILE = '.perl-lsp-demo-template.json';
+
 function makeContext(extensionRoot: string, storageRoot: string): {
   context: vscode.ExtensionContext;
   update: jest.Mock;
@@ -47,10 +49,19 @@ test('creates a verified persistent copy outside the extension directory', async
   if (result.kind === 'failed') return;
   expect(path.relative(roots.extensionRoot, result.destination).startsWith('..')).toBe(true);
   expect(path.relative(roots.storageRoot, result.destination).startsWith('..')).toBe(false);
+  expect(result.destination.endsWith(result.templateDigest)).toBe(true);
   expect(fs.readFileSync(path.join(result.destination, 'main.pl'), 'utf8')).toContain('demo');
   expect(fs.readFileSync(path.join(result.destination, 'lib', 'Demo.pm'), 'utf8')).toContain(
     'package Demo',
   );
+  const metadata = JSON.parse(
+    fs.readFileSync(path.join(result.destination, METADATA_FILE), 'utf8'),
+  ) as Record<string, unknown>;
+  expect(metadata).toEqual({
+    schema: 'perl-lsp-demo-template.v1',
+    extensionVersion: '0.18.0',
+    templateDigest: result.templateDigest,
+  });
 });
 
 test('reopens an existing copy without overwriting user edits', async () => {
@@ -70,6 +81,49 @@ test('reopens an existing copy without overwriting user edits', async () => {
     templateDigest: first.templateDigest,
   });
   expect(fs.readFileSync(path.join(first.destination, 'main.pl'), 'utf8')).toBe(edited);
+});
+
+test('rejects a predictable existing directory without the immutable template marker', async () => {
+  const roots = makeTemplate();
+  const { context } = makeContext(roots.extensionRoot, roots.storageRoot);
+  const first = await prepareUserOwnedDemoProject(context);
+  expect(first.kind).toBe('created');
+  if (first.kind === 'failed') return;
+
+  fs.rmSync(first.destination, { recursive: true, force: true });
+  fs.mkdirSync(first.destination, { recursive: true });
+  fs.writeFileSync(path.join(first.destination, 'main.pl'), 'foreign content\n');
+
+  const second = await prepareUserOwnedDemoProject(context);
+
+  expect(second.kind).toBe('failed');
+  if (second.kind === 'failed') {
+    expect(second.reason).toContain('template metadata');
+  }
+});
+
+test('rejects an existing copy whose full template identity was changed', async () => {
+  const roots = makeTemplate();
+  const { context } = makeContext(roots.extensionRoot, roots.storageRoot);
+  const first = await prepareUserOwnedDemoProject(context);
+  expect(first.kind).toBe('created');
+  if (first.kind === 'failed') return;
+
+  fs.writeFileSync(
+    path.join(first.destination, METADATA_FILE),
+    `${JSON.stringify({
+      schema: 'perl-lsp-demo-template.v1',
+      extensionVersion: '0.18.0',
+      templateDigest: `${first.templateDigest.slice(0, 12)}${'0'.repeat(52)}`,
+    })}\n`,
+  );
+
+  const second = await prepareUserOwnedDemoProject(context);
+
+  expect(second.kind).toBe('failed');
+  if (second.kind === 'failed') {
+    expect(second.reason).toContain('another template identity');
+  }
 });
 
 test('rejects symbolic-link members in the packaged template', async () => {
