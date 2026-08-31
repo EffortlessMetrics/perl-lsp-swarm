@@ -307,6 +307,31 @@ fn classify_tree(root: &Path, sha: &str) -> Result<(Vec<FileRecord>, String)> {
     Ok((records, blob_sha))
 }
 
+fn validate_subject_workflow(root: &Path, sha: &str) -> Result<()> {
+    let listing =
+        git_object(root, &["ls-tree", sha, "--", ".github/workflows/non-rust-policy.yml"])?;
+    if listing.is_empty() {
+        return Ok(());
+    }
+    let (_, bytes) = tree_file(root, sha, ".github/workflows/non-rust-policy.yml")?;
+    let text = String::from_utf8(bytes).context("subject workflow is not UTF-8")?;
+    for required in [
+        "merge_group:",
+        "Non-Rust policy exact-tree",
+        "persist-credentials: false",
+        "if: always()",
+        "actions/upload-artifact@",
+    ] {
+        if !text.contains(required) {
+            bail!("subject workflow weakens trusted contract: missing {required}");
+        }
+    }
+    if text.contains("cargo run") && text.contains("pull_request.head") {
+        bail!("subject workflow must not execute candidate source");
+    }
+    Ok(())
+}
+
 /// Compare policy classification of two immutable Git trees and emit an
 /// exact-SHA receipt. Existing debt is preserved; only newly unclassified
 /// subject paths fail.
@@ -319,6 +344,9 @@ pub fn non_rust_exact_tree(
     event_name: Option<&str>,
     repository: Option<&str>,
 ) -> Result<()> {
+    if receipt_path.exists() {
+        fs::remove_file(receipt_path).context("removing stale exact-tree receipt")?;
+    }
     let result = non_rust_exact_tree_inner(
         root,
         base_sha,
@@ -432,6 +460,7 @@ fn non_rust_exact_tree_inner(
         String::from_utf8(git_object(root, &["rev-parse", &base_tree_ref])?)?.trim().to_string();
     let subject_tree_sha =
         String::from_utf8(git_object(root, &["rev-parse", &subject_tree_ref])?)?.trim().to_string();
+    validate_subject_workflow(root, &subject_commit)?;
     let (base_records, base_allowlist_blob_sha) = classify_tree(root, &base_commit)?;
     let (subject_records, subject_allowlist_blob_sha) = classify_tree(root, &subject_commit)?;
     let base_unclassified = base_records
