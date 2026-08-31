@@ -65,14 +65,14 @@ fn diagnostic_observations_after(
         .collect()
 }
 
-fn latest_at_or_after_version(
+fn latest_for_version(
     observations: &[DiagnosticObservation],
     minimum_version: i64,
 ) -> Option<&DiagnosticObservation> {
     observations.iter().rev().find(|observation| {
         observation
             .version
-            .is_some_and(|version| version >= minimum_version)
+            .is_some_and(|version| version == minimum_version)
     })
 }
 
@@ -90,13 +90,12 @@ fn wait_for_versioned_diagnostics_after(
             uri,
             already_seen,
         );
-        if latest_at_or_after_version(&observations, minimum_version).is_some() {
+        if latest_for_version(&observations, minimum_version).is_some() {
             return Ok(observations);
         }
         if Instant::now() >= deadline {
             bail!(
-                "timed out after {}ms waiting for diagnostics for {uri} with numeric version >= \
-                 {minimum_version} after {already_seen} prior URI-matched publications; observed: \
+                "timed out after {}ms waiting for diagnostics for {uri} with version {minimum_version} after {already_seen} prior URI-matched publications; observed: \
                  {observations:?}",
                 timeout.as_millis()
             );
@@ -134,7 +133,7 @@ fn scenario_19_diagnostics_clear_after_fix() -> Result<()> {
         BROKEN_VERSION,
         DIAGNOSTICS_TIMEOUT,
     )?;
-    let broken = latest_at_or_after_version(&broken_observations, BROKEN_VERSION)
+    let broken = latest_for_version(&broken_observations, BROKEN_VERSION)
         .ok_or_else(|| anyhow::anyhow!("version-1 diagnostics disappeared after the wait"))?;
     assert_eq!(
         broken.version,
@@ -168,7 +167,7 @@ fn scenario_19_diagnostics_clear_after_fix() -> Result<()> {
         FIXED_VERSION,
         DIAGNOSTICS_TIMEOUT,
     )?;
-    let repaired = latest_at_or_after_version(&repaired_observations, FIXED_VERSION)
+    let repaired = latest_for_version(&repaired_observations, FIXED_VERSION)
         .ok_or_else(|| anyhow::anyhow!("current diagnostics disappeared after the wait"))?;
     assert!(
         repaired.diagnostics.is_empty(),
@@ -190,7 +189,7 @@ fn scenario_19_diagnostics_clear_after_fix() -> Result<()> {
 
 #[cfg(test)]
 mod oracle_unit_tests {
-    use super::{DiagnosticObservation, latest_at_or_after_version};
+    use super::{DiagnosticObservation, latest_for_version};
     use serde_json::json;
 
     #[test]
@@ -205,7 +204,23 @@ mod oracle_unit_tests {
                 diagnostics: Vec::new(),
             },
         ];
-        assert_eq!(latest_at_or_after_version(&observations, 2), None);
+        assert_eq!(latest_for_version(&observations, 2), None);
+    }
+
+    #[test]
+    fn unrequested_future_publication_cannot_satisfy_repaired_version() {
+        let observations = vec![
+            DiagnosticObservation {
+                version: Some(1),
+                diagnostics: vec![json!({"message": "stale"})],
+            },
+            DiagnosticObservation {
+                version: Some(3),
+                diagnostics: Vec::new(),
+            },
+        ];
+
+        assert_eq!(latest_for_version(&observations, 2), None);
     }
 
     #[test]
@@ -220,7 +235,7 @@ mod oracle_unit_tests {
                 diagnostics: vec![json!({"message": "late current regression"})],
             },
         ];
-        let latest = latest_at_or_after_version(&observations, 2)
+        let latest = latest_for_version(&observations, 2)
             .expect("a current publication should be selected");
         assert_eq!(latest.version, Some(2));
         assert!(!latest.diagnostics.is_empty());
@@ -238,7 +253,7 @@ mod oracle_unit_tests {
                 diagnostics: Vec::new(),
             },
         ];
-        let latest = latest_at_or_after_version(&observations, 2)
+        let latest = latest_for_version(&observations, 2)
             .expect("a current empty publication should be selected");
         assert_eq!(latest.version, Some(2));
         assert!(latest.diagnostics.is_empty());
