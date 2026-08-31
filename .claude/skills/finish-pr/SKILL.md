@@ -77,7 +77,8 @@ draft with a real remote-proof, collaboration, or protected-experiment purpose
 
 substantive human/bot/CI findings or failed candidate proof
 → `address-review-comments`
-→ rerun affected proof
+→ one joined repair wave
+→ affected proof
 
 candidate is mutable and no useful current substantive review exists
 → `final-challenge`
@@ -86,12 +87,13 @@ candidate is mutable and no useful current substantive review exists
 
 `CHANGES_REQUIRED`
 → `address-review-comments`
-→ one writer repairs
+→ one writer publishes the joined repair wave once
 → affected proof
 → affected `final-challenge`
 → affected `review-pr`
 
 `REVIEW_CURRENT`
+→ establish `HEAD_STABILIZED_FOR_CI`
 → `verify-live-ci`
 
 `INTEGRATION_READY`
@@ -136,6 +138,28 @@ Review is cumulative and semantic:
 Do not compute a claim digest, require a review receipt tied to the current head, or
 restart a full deep review merely because another commit was pushed.
 
+## Repair waves and head stabilization
+
+When a review pass yields multiple findings, do not publish one commit per comment.
+`address-review-comments` first pins the current observation basis, joins the review
+wave, and promotes repeated mechanisms to bounded failure classes. One writer integrates
+the accepted wave, runs the class-level falsifier and affected proof, rereads the
+complete governing semantic units and dependent claims, and then publishes one candidate
+update.
+
+After the affected final challenge and substantive review return `REVIEW_CURRENT`,
+record `HEAD_STABILIZED_FOR_CI` and keep the candidate head stable while required checks
+evaluate it. Reopen mutation only for a current candidate defect, material claim
+contradiction, candidate-owned required-check failure, actual merge conflict, or
+demonstrated combined-tree interaction. A new material finding opens one new joined
+repair wave and the repaired candidate must earn `REVIEW_CURRENT` again before
+restabilizing.
+
+Do not mutate the stabilized head for duplicate corroboration, wording preference,
+reviewer quota or availability, optional stronger proof that cannot change the current
+verdict, or behind-only movement on `main`. Those are review context or remote-wait
+facts, not candidate defects.
+
 ## Candidate and integration boundary
 
 One writer mutates this candidate branch/worktree at a time. Read-only research,
@@ -154,18 +178,9 @@ remote integration wait does not make a still-current substantive review stale.
 
 An armed auto-merge that appears stalled is usually waiting on the slowest required
 context, not broken: `ripr+ New Gap Gate` is the tail of the required union. The
-manual probe merge (`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f
-merge_method=squash -f sha=<current-head-sha>`, the REST equivalent of
-`--match-head-commit` — never probe without the SHA, or a commit pushed after
-inspection can merge unreviewed) succeeds every time precisely because it is an
-administrator bypass of legacy branch-protection checks — it merges past a
-still-pending required context (#12357 was merged 22 minutes before `ripr+` reported;
-#12289's merged 42 minutes before it failed; #12565 confirmed the mechanism). Probe
-ONLY once the required union is green on the head SHA — `ripr+ New Gap Gate` is its
-last reporter — or an explicit waiver is recorded on the PR or issue naming every
-unmet requirement; before that, the armed merge remains the GitHub-owned wait
-(#12312's "stall" was exactly the ripr runtime — merged 13 seconds after `ripr+` went
-green).
+manual probe merge mechanism, its compare-and-swap SHA guard, and the waiver bar are
+single-sourced in `merge-reconcile` — follow that skill's text rather than a second
+copy here.
 
 ## Useful GitHub boundary
 
@@ -193,7 +208,8 @@ artifacts rather than copying them.
 ### Findings and challenge
 
 - `FINDINGS_REPAIRED_OR_DISPOSITIONED` → affected proof, then `final-challenge`
-- `MUTABLE_FINDINGS_OPEN` → `build-candidate`
+- `CLASS_REPAIR_REQUIRED` / `MUTABLE_FINDINGS_OPEN` → one joined repair wave through `address-review-comments`
+- `REPAIR_WAVE_NOT_PROVEN` → preserve the missing review, bounded denominator, authority, or proof
 - `PROOF_WEAKENED` / `PROOF_REVISE` → `prepare-proof`
 - `MATERIAL_PREMISE_CHANGED` / `SPLIT_CLAIM` → `prepare-issue`
 - `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up and continue
@@ -203,7 +219,7 @@ artifacts rather than copying them.
 
 - `CANDIDATE_READY_FOR_REVIEW` → `final-challenge`, `orchestrate-work`, then
   `review-pr`
-- `REVIEW_CURRENT` → `verify-live-ci`
+- `REVIEW_CURRENT` → establish `HEAD_STABILIZED_FOR_CI`, then `verify-live-ci`
 - `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` → `address-review-comments`
 - `REVIEW_SCOPE_CHANGED` → review the affected dimensions; use `prepare-issue` only
   when claim or owner changed

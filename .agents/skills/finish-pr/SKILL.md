@@ -80,7 +80,8 @@ draft with a real remote-proof, collaboration, or protected-experiment purpose
 
 substantive human/bot/CI findings or failed candidate proof
 → `$address-review-comments`
-→ rerun affected proof
+→ one joined repair wave
+→ affected proof
 
 candidate is mutable and no useful current substantive review exists
 → `$final-challenge`
@@ -89,12 +90,13 @@ candidate is mutable and no useful current substantive review exists
 
 `CHANGES_REQUIRED`
 → `$address-review-comments`
-→ one writer repairs
+→ one writer publishes the joined repair wave once
 → affected proof
 → affected `$final-challenge`
 → affected `$review-pr`
 
 `REVIEW_CURRENT`
+→ establish `HEAD_STABILIZED_FOR_CI`
 → `$verify-live-ci`
 
 `INTEGRATION_READY`
@@ -136,6 +138,28 @@ Review is cumulative and semantic:
 
 Do not compute a claim digest, require a review receipt tied to the current head, or
 restart a full deep review merely because another commit was pushed.
+
+## Repair waves and head stabilization
+
+When a review pass yields multiple findings, do not publish one commit per comment.
+`$address-review-comments` first pins the current observation basis, joins the review
+wave, and promotes repeated mechanisms to bounded failure classes. One writer integrates
+the accepted wave, runs the class-level falsifier and affected proof, rereads the
+complete governing semantic units and dependent claims, and then publishes one candidate
+update.
+
+After the affected final challenge and substantive review return `REVIEW_CURRENT`,
+record `HEAD_STABILIZED_FOR_CI` and keep the candidate head stable while required checks
+evaluate it. Reopen mutation only for a current candidate defect, material claim
+contradiction, candidate-owned required-check failure, actual merge conflict, or
+demonstrated combined-tree interaction. A new material finding opens one new joined
+repair wave and the repaired candidate must earn `REVIEW_CURRENT` again before
+restabilizing.
+
+Do not mutate the stabilized head for duplicate corroboration, wording preference,
+reviewer quota or availability, optional stronger proof that cannot change the current
+verdict, or behind-only movement on `main`. Those are review context or remote-wait
+facts, not candidate defects.
 
 ## Candidate and integration boundary
 
@@ -185,7 +209,8 @@ rather than copying them.
 ### Findings and challenge
 
 - `FINDINGS_REPAIRED_OR_DISPOSITIONED` → affected proof, then `$final-challenge`
-- `MUTABLE_FINDINGS_OPEN` → `$build-candidate`
+- `CLASS_REPAIR_REQUIRED` / `MUTABLE_FINDINGS_OPEN` → one joined repair wave through `$address-review-comments`
+- `REPAIR_WAVE_NOT_PROVEN` → preserve the missing review, bounded denominator, authority, or proof
 - `PROOF_WEAKENED` / `PROOF_REVISE` → `$prepare-proof`
 - `MATERIAL_PREMISE_CHANGED` / `SPLIT_CLAIM` → `$prepare-issue`
 - `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up and continue
@@ -195,7 +220,7 @@ rather than copying them.
 
 - `CANDIDATE_READY_FOR_REVIEW` → `$final-challenge`, `$orchestrate-work`, then
   `$review-pr`
-- `REVIEW_CURRENT` → `$verify-live-ci`
+- `REVIEW_CURRENT` → establish `HEAD_STABILIZED_FOR_CI`, then `$verify-live-ci`
 - `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` → `$address-review-comments`
 - `REVIEW_SCOPE_CHANGED` → review the affected dimensions; use `$prepare-issue` only
   when claim or owner changed

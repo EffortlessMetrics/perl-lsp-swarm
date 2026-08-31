@@ -48,12 +48,42 @@ or conflicting findings, verifies dispositions against current evidence, and dec
 which findings are repaired, refuted, superseded, followed up, blocked, or not proven.
 
 The join is complete only when every substantive finding has one supported visible
-disposition, accepted mutations have current affected proof, and material claim/owner
-changes have returned to the proper earlier route.
+disposition, every promoted failure class is closed across its bounded governed surface,
+accepted mutations have current affected proof, and material claim/owner changes have
+returned to the proper earlier route.
+
+### Repair-wave boundary
+
+Before the writer mutates, pin one review-wave observation basis: the current candidate
+head, complete thread and submitted-review inventory, and active requested reviewers. A
+useful review already reading that head should finish before the wave is published,
+unless a material defect requires immediate repair; in that case explicitly supersede
+the old review subject. A quota-limited, unavailable, or failed reviewer is missing
+evidence, not a clean conclusion and not a reason to wait indefinitely.
+
+Do not treat comments as independent patch instructions. When two findings share the
+same underlying mechanism, or one repair exposes another instance of that mechanism,
+promote them to one failure class. Name the governed surface, enumerate current
+instances inside that bounded surface, and repair the owning abstraction, rule, or
+section rather than only the commented line.
+
+A class repair is complete only when the writer:
+
+- fixes or dispositions every known instance in the bounded surface;
+- adds or updates a class-level falsifier that would catch the repeated mechanism;
+- rereads the complete governing semantic unit, not only the edited row, field, or line;
+- updates dependent claims, summaries, tables, and proof descriptions that derive from
+  the changed rule;
+- runs affected proof and identifies any review dimensions made stale.
+
+One writer integrates the full accepted wave and publishes it once. Do not push each
+verified finding separately while useful review or CI is still evaluating the previous
+head.
 
 ### Return packet
 
-Return candidate/head identity, complete substantive finding set, classifications and
+Return candidate/head identity, review-wave observation basis, complete substantive
+finding set, promoted failure classes and bounded surfaces, classifications and
 dispositions, evidence, commits/issues used by the helper, affected proof/review
 results, unresolved contradictions, limitations, and typed result.
 
@@ -101,8 +131,9 @@ activity.
 
 ## Procedure
 
-1. Enumerate the PR's review threads with `scripts/reviews/threads <pr> [owner/repo] [--unresolved-only] [--json]`. This is the sanctioned read-only enumerator and the source of the `<threadId>` that step 5 passes to `disposition --thread`; `scripts/reviews/state` returns an aggregate classification with no per-thread identity and cannot supply it. Do not hand-roll a `reviewThreads` GraphQL query.
-2. Verify each finding against current source and authority; do not patch comments literally.
+1. Enumerate the PR's review threads with `scripts/reviews/threads <pr> [owner/repo] [--unresolved-only] [--json]`. This is the sanctioned read-only enumerator and the source of the `<threadId>` that step 7 passes to `disposition --thread`; `scripts/reviews/state` returns an aggregate classification with no per-thread identity and cannot supply it. Do not hand-roll a `reviewThreads` GraphQL query.
+2. Pin the review-wave observation basis. Let useful reviews already reading that head finish, or explicitly supersede their subject when an immediate material repair is required. Record unavailable or rate-limited reviews as missing evidence rather than treating silence as clean.
+3. Verify each finding against current source and authority; do not patch comments literally. Join findings that share a mechanism into one failure class and enumerate that class across its bounded governed surface.
    A finding the currentness contract already answers is refuted, not complied with.
    Base staleness, "behind by N", head-SHA movement, and a demand to rebuild on current
    main for a conflict-free candidate are all answered by
@@ -125,12 +156,13 @@ activity.
      that signature observed at this PR's **merge base** — not at current main, and
      not a locally approximated command. Short of that it is `NOT_PROVEN`, not
      somebody else's.
-3. Batch accepted repairs through one writer on the selected candidate.
-4. Run affected focused proof.
-5. Write the canonical human reply under the **Reply quality** contract: keep the `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines and put the concise reasoned judgment between them. Pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and required class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
-6. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply, post it, and only then resolve the thread.
-7. Re-run the enumerator to confirm no substantive thread remains unresolved.
-8. If a reviewer applied a repair, treat the resulting head as a new authored candidate and invalidate affected review dimensions.
+4. Batch the accepted finding set and every promoted class repair through one integrating writer; do not publish per-comment pushes.
+5. Run affected focused proof, the class-level falsifier, and a reread of the complete governing semantic unit plus dependent claims.
+6. Verify that the repair wave is coherent and that every affected proof/review dimension is current or explicitly stale.
+7. Write the canonical human reply under the **Reply quality** contract: keep the `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines and put the concise reasoned judgment between them. Pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and required class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
+8. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply, post it, and only then resolve the thread.
+9. Re-run the enumerator to confirm no substantive thread or unclosed promoted failure class remains.
+10. If a reviewer applied a repair, treat the resulting head as a new authored candidate and invalidate affected review dimensions.
 
 Do not use raw thread-resolution APIs, resolve performatively, or use pr-responded or
 reviewer-persona labels as evidence.
@@ -149,6 +181,8 @@ per finding or resolve merely to make the thread count green.
 ## Routes
 
 - `FINDINGS_REPAIRED_OR_DISPOSITIONED` → `final-challenge`
+- `CLASS_REPAIR_REQUIRED` → complete the bounded failure-class sweep through the current writer
+- `REPAIR_WAVE_NOT_PROVEN` → preserve the missing reviewer, class denominator, authority, or proof
 - `MATERIAL_PREMISE_CHANGED` → `prepare-issue`
 - `PROOF_WEAKENED` → `prepare-proof`
 - `FOLLOW_UP_ACCEPTED` → create or link the bounded follow-up and continue within the current claim
