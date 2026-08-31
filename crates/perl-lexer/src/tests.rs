@@ -569,3 +569,43 @@ fn test_exponent_marker_without_digits_after_sign_only() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn budget_guard_delimiter_depth_arm_matches_the_geometry_only_contract() -> TestResult {
+    // The depth arm has no public-API driver (`parse_regex` passes `depth = 0`),
+    // so it is exercised here directly. It must produce the same recovery shape
+    // as every other budget stop: `tests/budget_recovery_contract.rs` pins the
+    // reachable paths end to end (#6717, #14158).
+    let source = "abc";
+    let mut lexer = PerlLexer::new(source);
+    lexer.restore(&LexerCheckpoint::at_position(1));
+
+    let Some(token) = lexer.budget_guard(1, MAX_DELIM_NEST + 1) else {
+        return Err("depth above MAX_DELIM_NEST must trip the budget guard".into());
+    };
+    if !matches!(token.token_type, TokenType::UnknownRest) {
+        return Err(
+            format!("budget recovery must be UnknownRest, got {:?}", token.token_type).into()
+        );
+    }
+    if !token.text.is_empty() {
+        return Err("budget recovery must not copy the source remainder".into());
+    }
+    if !token.token_type.is_recovery_token() {
+        return Err("budget recovery must classify as a recovery token".into());
+    }
+    if (token.start, token.end) != (1, source.len()) {
+        return Err(format!(
+            "budget recovery span must cover 1..{}, got {}..{}",
+            source.len(),
+            token.start,
+            token.end
+        )
+        .into());
+    }
+
+    if lexer.budget_guard(1, MAX_DELIM_NEST).is_some() {
+        return Err("depth at the limit must stay on the fast path".into());
+    }
+    Ok(())
+}

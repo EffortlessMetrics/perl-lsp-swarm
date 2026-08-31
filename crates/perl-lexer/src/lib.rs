@@ -101,8 +101,32 @@
 //! - **MAX_DELIM_NEST**: 128 levels maximum nesting depth for delimiters
 //! - **MAX_REGEX_PARSE_STEPS**: 32K maximum scan iterations for regex literals
 //!
-//! When limits are exceeded, the lexer emits an `UnknownRest` token preserving
-//! all previously parsed symbols, allowing continued analysis.
+//! # Budget-Stop Recovery Contract (#6717, #14158)
+//!
+//! When any per-token budget is exhausted — regex scan steps, regex bytes,
+//! delimiter nesting depth, or heredoc body bytes — every over-budget token is
+//! emitted in one uniform shape, regardless of which construct hit the limit:
+//!
+//! - **Kind**: [`TokenType::UnknownRest`], classified as a recovery token.
+//! - **Text**: empty. Over-budget recovery must never copy the unbounded
+//!   source remainder (which can span the rest of the file). Consumers that
+//!   need the payload reconstruct it from source they already hold at their
+//!   own seam — the parser's `TokenStream` conversion owns that step.
+//! - **Span**: `[token_start, input.len())`, the full degraded region, so
+//!   downstream trees can honestly mark the remainder as unparsed.
+//! - **Termination**: the next token is `EOF`, and nothing follows it.
+//! - **Determinism**: identical source and configuration produce identical
+//!   tokens (#6717).
+//!
+//! The single documented exception is a heredoc that reaches EOF *inside* its
+//! budget: that recovery retains its body payload (`text ==
+//! &input[body_start..]`) because the body is budget-bounded
+//! (`<= MAX_HEREDOC_BYTES`). Boundedness — not token kind — is the dividing
+//! line between payload-free and payload-carrying recovery.
+//!
+//! The contract is pinned for every budget stop by
+//! `tests/budget_recovery_contract.rs`, alongside #6717's heredoc threshold
+//! contract in `tests/heredoc_byte_budget_contract.rs`.
 //!
 //! # Integration with perl-parser
 //!
@@ -193,6 +217,11 @@ impl<'a> PerlLexer<'a> {
         self.mode = mode;
     }
 
+    /// Over-budget heredoc recovery (#6717): geometry-only `UnknownRest` with
+    /// empty text over `[body_start, input.len())`. The unbounded remainder is
+    /// deliberately not copied; the EOF-inside-budget arm in [`Self::next_token`]
+    /// is the only payload-carrying recovery, and only because its body stays
+    /// within `MAX_HEREDOC_BYTES`. Pinned by `tests/budget_recovery_contract.rs`.
     fn heredoc_budget_recovery(&mut self, body_start: usize) -> Token {
         self.pending_heredocs.remove(0);
         self.position = self.input.len();
@@ -402,6 +431,9 @@ impl<'a> PerlLexer<'a> {
 
                     // EOF inside the budget retains its bounded source payload.
                     // Over-budget recovery is geometry-only in the helper above.
+                    // Boundedness (body <= MAX_HEREDOC_BYTES) is what makes this
+                    // payload copy safe; see the budget-stop recovery contract
+                    // in the crate docs.
                     if !found_terminator {
                         self.pending_heredocs.remove(0);
                         self.position = self.input.len();
@@ -542,6 +574,10 @@ impl<'a> PerlLexer<'a> {
     /// - Jump to EOF to prevent further parsing of problematic region
     /// - LSP client can emit soft diagnostic about truncation
     /// - All previously parsed symbols remain valid
+    /// - Recovery is geometry-only: empty text over `[start, input.len())`,
+    ///   followed by terminal `EOF`. The unbounded source remainder is never
+    ///   copied; see the crate-level budget-stop recovery contract and
+    ///   `tests/budget_recovery_contract.rs` (#6717, #14158).
     ///
     /// **Performance**:
     /// - Fast path: inlined subtraction + comparison (~1-2 CPU cycles)
