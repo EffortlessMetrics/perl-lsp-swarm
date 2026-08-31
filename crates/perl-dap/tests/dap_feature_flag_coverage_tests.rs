@@ -608,55 +608,72 @@ fn test_feature_gate_dap_completions() {
     );
 }
 
-/// Capability test: initialize advertises completions support.
+/// Capability test: initialize keeps `supportsCompletionsRequest` false.
+///
+/// #9581 secondary-capability floor: the wire row is an explicit `false`,
+/// independent of the `dap.completions` catalog registration, until the
+/// completions re-enable gate passes.
 #[test]
 fn test_capability_dap_completions_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
 
-    if has_feature("dap.completions") {
-        let supports_completions =
-            body.get("supportsCompletionsRequest").and_then(|v| v.as_bool()).unwrap_or(false);
-        assert!(
-            supports_completions,
-            "supportsCompletionsRequest must be true when dap.completions is enabled"
-        );
-    }
-    Ok(())
-}
-
-/// Functional test: completions request returns a list of Perl keywords.
-#[test]
-fn test_functional_dap_completions_returns_keywords() -> TestResult {
-    let mut adapter = initialize_adapter();
-    let body = expect_success_body(
-        adapter.handle_request(2, "completions", Some(json!({ "text": "pri", "column": 3 }))),
-        "completions",
-    )?;
-
-    let targets = body.get("targets").and_then(|v| v.as_array()).ok_or("missing targets array")?;
-    assert!(!targets.is_empty(), "completions for 'pri' must return at least one target");
-
-    let labels: Vec<&str> =
-        targets.iter().filter_map(|t| t.get("label").and_then(|l| l.as_str())).collect();
+    let supports_completions =
+        body.get("supportsCompletionsRequest").and_then(|v| v.as_bool()).unwrap_or(false);
     assert!(
-        labels.contains(&"print"),
-        "completions for 'pri' must include 'print'; got: {labels:?}"
+        !supports_completions,
+        "supportsCompletionsRequest must be false while the #9581 completions floor holds"
     );
     Ok(())
 }
 
-/// Functional test: completions with empty prefix returns all Perl keywords.
+/// Functional test: completions rejects explicitly before any completion work.
+#[test]
+fn test_functional_dap_completions_returns_keywords() -> TestResult {
+    let mut adapter = initialize_adapter();
+    let response =
+        adapter.handle_request(2, "completions", Some(json!({ "text": "pri", "column": 3 })));
+
+    match response {
+        DapMessage::Response {
+            success: false,
+            command,
+            body: None,
+            message: Some(message),
+            ..
+        } if command == "completions" => {
+            assert!(
+                message.contains("unsupported") && message.contains("supportsCompletionsRequest"),
+                "expected the explicit #9581 unsupported disposition, got: {message}"
+            );
+            Ok(())
+        }
+        other => Err(format!("expected floored completions rejection, got {other:?}").into()),
+    }
+}
+
+/// Functional test: completions with any prefix keeps the floor disposition.
 #[test]
 fn test_functional_dap_completions_empty_prefix() -> TestResult {
     let mut adapter = initialize_adapter();
-    let body = expect_success_body(
-        adapter.handle_request(2, "completions", Some(json!({ "text": "", "column": 0 }))),
-        "completions",
-    )?;
+    let response =
+        adapter.handle_request(2, "completions", Some(json!({ "text": "", "column": 0 })));
 
-    let targets = body.get("targets").and_then(|v| v.as_array()).ok_or("missing targets array")?;
-    assert!(!targets.is_empty(), "completions with empty prefix must return some targets");
-    Ok(())
+    match response {
+        DapMessage::Response {
+            success: false,
+            command,
+            body: None,
+            message: Some(message),
+            ..
+        } if command == "completions" => {
+            assert!(
+                message.contains("unsupported"),
+                "expected the explicit #9581 unsupported disposition, got: {message}"
+            );
+            Ok(())
+        }
+        other => Err(format!("expected floored completions rejection, got {other:?}").into()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -936,65 +953,87 @@ fn test_feature_gate_dap_modules() {
     assert!(has_feature("dap.modules"), "dap.modules must be registered in the feature catalog");
 }
 
-/// Capability test: initialize advertises modules support.
+/// Capability test: initialize keeps `supportsModulesRequest` false.
+///
+/// #9581 secondary-capability floor: the wire row is an explicit `false`,
+/// independent of the `dap.modules` catalog registration, until the modules
+/// re-enable gate passes.
 #[test]
 fn test_capability_dap_modules_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
 
-    if has_feature("dap.modules") {
-        let supports_modules =
-            body.get("supportsModulesRequest").and_then(|v| v.as_bool()).unwrap_or(false);
-        assert!(
-            supports_modules,
-            "supportsModulesRequest must be true when dap.modules is enabled"
-        );
-    }
+    let supports_modules =
+        body.get("supportsModulesRequest").and_then(|v| v.as_bool()).unwrap_or(false);
+    assert!(
+        !supports_modules,
+        "supportsModulesRequest must be false while the #9581 modules floor holds"
+    );
     Ok(())
 }
 
-/// Functional test: modules request returns structured response (no active session returns empty).
+/// Functional test: modules with no session is an explicit unsupported, never
+/// a successful empty list (#9581 masquerade falsifier).
 #[test]
 fn test_functional_dap_modules_no_session() -> TestResult {
     let mut adapter = initialize_adapter();
-    let body = expect_success_body(
-        adapter.handle_request(2, "modules", Some(json!({ "startModule": 0 }))),
-        "modules",
-    )?;
+    let response = adapter.handle_request(2, "modules", Some(json!({ "startModule": 0 })));
 
-    let modules = body.get("modules").and_then(|v| v.as_array()).ok_or("missing modules array")?;
-    let total =
-        body.get("totalModules").and_then(|v| v.as_i64()).ok_or("missing totalModules field")?;
-
-    assert!(modules.is_empty(), "modules without active session must return empty array");
-    assert_eq!(total, 0, "totalModules without active session must be 0");
-    Ok(())
+    match response {
+        DapMessage::Response {
+            success: false,
+            command,
+            body: None,
+            message: Some(message),
+            ..
+        } if command == "modules" => {
+            assert!(
+                message.contains("unsupported") && message.contains("supportsModulesRequest"),
+                "expected the explicit #9581 unsupported disposition, got: {message}"
+            );
+            Ok(())
+        }
+        other => Err(format!("expected floored modules rejection, got {other:?}").into()),
+    }
 }
 
-/// Functional test: modules request with moduleCount limit is accepted.
+/// Functional test: pagination arguments are not processed while floored.
 #[test]
 fn test_functional_dap_modules_with_count_limit() -> TestResult {
     let mut adapter = initialize_adapter();
-    let body = expect_success_body(
-        adapter.handle_request(2, "modules", Some(json!({ "startModule": 0, "moduleCount": 10 }))),
-        "modules",
-    )?;
+    let response =
+        adapter.handle_request(2, "modules", Some(json!({ "startModule": 0, "moduleCount": 10 })));
 
-    let modules = body.get("modules").and_then(|v| v.as_array()).ok_or("missing modules array")?;
-    let _total = body.get("totalModules").ok_or("missing totalModules")?;
-
-    // Without an active debug session, no modules should be present
-    assert!(modules.len() <= 10, "modules must respect moduleCount limit");
-    Ok(())
+    match response {
+        DapMessage::Response { success, .. } => {
+            assert!(!success, "modules must be floored regardless of arguments (#9581)");
+            Ok(())
+        }
+        _ => Err("Expected modules response".into()),
+    }
 }
 
-/// Functional test: modules request without arguments uses defaults.
+/// Functional test: modules without arguments keeps the floor disposition.
 #[test]
 fn test_functional_dap_modules_without_arguments() -> TestResult {
     let mut adapter = initialize_adapter();
-    let body = expect_success_body(adapter.handle_request(2, "modules", None), "modules")?;
+    let response = adapter.handle_request(2, "modules", None);
 
-    let _modules = body.get("modules").and_then(|v| v.as_array()).ok_or("missing modules array")?;
-    Ok(())
+    match response {
+        DapMessage::Response {
+            success: false,
+            command,
+            body: None,
+            message: Some(message),
+            ..
+        } if command == "modules" => {
+            assert!(
+                message.contains("unsupported"),
+                "expected the explicit #9581 unsupported disposition, got: {message}"
+            );
+            Ok(())
+        }
+        other => Err(format!("expected floored modules rejection, got {other:?}").into()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1171,6 +1210,12 @@ fn test_all_dap_features_registered_in_catalog() {
 }
 
 /// The initialize response must not advertise capabilities for disabled features.
+///
+/// #9581: `supportsBreakpointLocationsRequest`, `supportsCompletionsRequest`,
+/// and `supportsModulesRequest` are excluded from the catalog-mirror table —
+/// they are explicit `false` floor rows that no catalog registration may
+/// widen (asserted in the capability tests above and in
+/// dap_capability_floor_9581_tests.rs).
 #[test]
 fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
     let body = get_initialize_body()?;
@@ -1178,21 +1223,15 @@ fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
     // Each capability must be false if its feature is disabled.
     // Derived from handle_initialize in debug_adapter/process.rs:
     //   supportsConditionalBreakpoints      = supports_basic_breakpoints
-    //   supportsBreakpointLocationsRequest  = supports_basic_breakpoints
     //   supportsHitConditionalBreakpoints   = supports_hit_conditions
     //   supportsLogPoints                   = supports_log_points
     //   supportsInlineValues                = supports_inline_values
-    //   supportsCompletionsRequest          = supports_completions
-    //   supportsModulesRequest              = supports_modules
     //   supportsDataBreakpoints             = supports_watchpoints
     let feature_to_cap = [
         ("dap.breakpoints.basic", "supportsConditionalBreakpoints"),
-        ("dap.breakpoints.basic", "supportsBreakpointLocationsRequest"),
         ("dap.breakpoints.hit_condition", "supportsHitConditionalBreakpoints"),
         ("dap.breakpoints.logpoints", "supportsLogPoints"),
         ("dap.inline_values", "supportsInlineValues"),
-        ("dap.completions", "supportsCompletionsRequest"),
-        ("dap.modules", "supportsModulesRequest"),
         ("dap.watchpoints", "supportsDataBreakpoints"),
     ];
 
@@ -1203,6 +1242,19 @@ fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
         assert_eq!(
             advertised, enabled,
             "Capability `{capability}` must mirror feature `{feature}`: enabled={enabled}, advertised={advertised}"
+        );
+    }
+
+    // #9581 floor rows: false regardless of catalog state.
+    for capability in [
+        "supportsBreakpointLocationsRequest",
+        "supportsCompletionsRequest",
+        "supportsModulesRequest",
+    ] {
+        let advertised = body.get(capability).and_then(|v| v.as_bool()).unwrap_or(false);
+        assert!(
+            !advertised,
+            "Capability `{capability}` must stay false under the #9581 secondary-capability floor"
         );
     }
     Ok(())

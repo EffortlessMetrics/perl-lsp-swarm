@@ -528,22 +528,23 @@ fn test_goto_missing_args_returns_failure() -> Result<(), Box<dyn std::error::Er
 // ---------------------------------------------------------------------------
 
 #[test]
-// AC:3535 / AC:898
+// AC:3535 / AC:898 — #9581: cancel is floored; it returns the explicit
+// unsupported disposition and touches no shared cancellation flag.
 fn test_cancel_during_stepping_sequence() -> Result<(), Box<dyn std::error::Error>> {
-    // cancel itself must succeed; subsequent step operations without a session must fail.
     let mut adapter = make_adapter();
 
     adapter.handle_request(1, "next", Some(json!({"threadId": 1})));
     adapter.handle_request(2, "stepIn", Some(json!({"threadId": 1})));
 
     let cancel_response = adapter.handle_request(3, "cancel", None);
-    assert_response(cancel_response, "cancel", true)?;
+    assert_response(cancel_response, "cancel", false)?;
 
-    // #898: next still fails without a session (cancel doesn't create a session).
+    // #898: next still fails without a session (a floored cancel never creates
+    // a session or changes step behavior).
     let response = adapter.handle_request(4, "next", Some(json!({"threadId": 1})));
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(!success, "next after cancel still fails without session");
+            assert!(!success, "next after floored cancel still fails without session");
             assert_eq!(command, "next");
             assert!(message.is_some(), "must include guidance message");
         }
@@ -553,13 +554,13 @@ fn test_cancel_during_stepping_sequence() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-// AC:3535
+// AC:3535 — #9581: cancel with a requestId keeps the floor disposition.
 fn test_cancel_with_request_id_argument() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
 
     let args = json!({ "requestId": 42 });
     let cancel_response = adapter.handle_request(1, "cancel", Some(args));
-    assert_response(cancel_response, "cancel", true)?;
+    assert_response(cancel_response, "cancel", false)?;
     Ok(())
 }
 

@@ -156,6 +156,42 @@ macro_rules! dap_request_table {
             ) -> DapMessage {
                 let seq = self.next_seq();
 
+                // #9581 secondary-capability floor. Requests whose `initialize`
+                // capability field is forced `false` are rejected here — before
+                // any handler runs — so the floored paths perform no debugger
+                // I/O, process action, or state mutation, and a missing session
+                // can never masquerade as a successful empty result.
+                if let Some(message) =
+                    crate::backend::capabilities::secondary_capability_floor_message(command)
+                {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: command.to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+                // #9581 ValueFormat floor: a non-default `format` option on an
+                // unproven family is refused before any debugger/value mutation;
+                // requests without one keep their independent contract.
+                if crate::backend::capabilities::unproven_value_format_requested(
+                    command,
+                    arguments.as_ref(),
+                ) {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: command.to_string(),
+                        body: None,
+                        message: Some(
+                            crate::backend::capabilities::value_format_unsupported_message(command),
+                        ),
+                    };
+                }
+
                 match command {
                     $(
                         $command => dap_dispatch_call!(

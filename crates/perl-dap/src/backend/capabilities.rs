@@ -6,6 +6,7 @@
 //! `perl-dap` to advertise control commands the peer never offered.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Who owns stepping/control in an external-peer session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -283,6 +284,77 @@ pub(crate) fn peer_bridge_hover_admission(
 /// profile cannot advertise one thing and enforce another.
 pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
 
+/// The #9581 secondary-capability floor: one explicit unsupported disposition
+/// per floored request.
+///
+/// Seven `initialize` capability fields — `supportsCompletionsRequest`,
+/// `supportsModulesRequest`, `supportsLoadedSourcesRequest`,
+/// `supportsRestartRequest`, `supportsValueFormattingOptions`,
+/// `supportsBreakpointLocationsRequest`, and `supportsCancelRequest` — are
+/// forced `false` in every mode (native launch, TCP attach, and both mirror
+/// peer surfaces) until that field's own exact-behavior receipt passes (#9581).
+/// Each row is independent: one field's gate evidence never widens another, and
+/// no row is derived from `supports_core`, catalog maturity, handler presence,
+/// or another mode's support.
+///
+/// While a field is floored, its request is rejected by the dispatcher *before*
+/// any handler runs, so the floored path can perform no debugger I/O, process
+/// action, or state mutation, and a missing/unavailable session can never
+/// masquerade as a successful empty result (#9581). Re-enable is per field,
+/// owned by the per-feature implementation/proof issues named in each message.
+pub(crate) fn secondary_capability_floor_message(command: &str) -> Option<String> {
+    let (capability, gate) = match command {
+        "completions" => {
+            ("supportsCompletionsRequest", "#9021 + #9046 + #9050 + #8581 + #9582 + #9584")
+        }
+        "modules" => ("supportsModulesRequest", "#8581 + #7667/#8668 + #9585 + #9586"),
+        "loadedSources" => ("supportsLoadedSourcesRequest", "#8581 + #7667/#8668 + #9585 + #9586"),
+        "restart" => {
+            ("supportsRestartRequest", "#9051 + #8691/#8703 + #8974 + #9587 + #8726 + #7568")
+        }
+        "breakpointLocations" => {
+            ("supportsBreakpointLocationsRequest", "#10524 + #2300 + #9021 + #7566")
+        }
+        "cancel" => ("supportsCancelRequest", "#9074 + #8712 + #7568"),
+        _ => return None,
+    };
+    Some(format!(
+        "`{command}` is unsupported: `{capability}` is false for this adapter \
+         (#9581 secondary-capability floor; exact semantics unproven, \
+         re-enable gate: {gate}). The request was rejected before any debugger \
+         interaction, so no state was read or changed."
+    ))
+}
+
+/// The `ValueFormat` families whose `format` option is floored (#9581):
+/// `variables`, `setVariable`, `evaluate`, and `setExpression`.
+///
+/// Requests without a `format` option (or with a default-equivalent one) keep
+/// their independently supported contract; only a *non-default* request
+/// (`hex: true`, the pinned schema's single property) is rejected, and it is
+/// rejected before any debugger/value mutation (#9581). Re-enable gate:
+/// #9050 + #8364 + #9070 + #7342/#7345 + #9588 + #9590.
+pub(crate) fn unproven_value_format_requested(command: &str, arguments: Option<&Value>) -> bool {
+    matches!(command, "variables" | "setVariable" | "evaluate" | "setExpression")
+        && arguments
+            .and_then(|arguments| arguments.get("format"))
+            .and_then(|format| format.get("hex"))
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
+/// The explicit unsupported disposition for a floored `format` option (#9581).
+pub(crate) fn value_format_unsupported_message(command: &str) -> String {
+    format!(
+        "`{command}` is unsupported: a non-default `format` option was sent while \
+         `supportsValueFormattingOptions` is false for this adapter (#9581 \
+         secondary-capability floor; re-enable gate: #9050 + #8364 + #9070 + \
+         #7342/#7345 + #9588 + #9590). The request was rejected before any \
+         debugger interaction; resend without `format` for the default \
+         presentation."
+    )
+}
+
 /// The negotiated DAP capability flags: catalog ∩ backend.
 ///
 /// Field names mirror the DAP `capabilities` payload keys the frontend emits in
@@ -552,6 +624,93 @@ mod tests {
             "closing hover must not disable general evaluate; watch/repl/clipboard depend on it"
         );
         assert!(!n.supports_evaluate_for_hovers);
+    }
+
+    /// #9581: every floored request names its own capability and its own gate,
+    /// and the floor never widens beyond the six secondary requests.
+    #[test]
+    fn secondary_capability_floor_rows_are_independent_and_explicit() {
+        let floored = [
+            ("completions", "supportsCompletionsRequest"),
+            ("modules", "supportsModulesRequest"),
+            ("loadedSources", "supportsLoadedSourcesRequest"),
+            ("restart", "supportsRestartRequest"),
+            ("breakpointLocations", "supportsBreakpointLocationsRequest"),
+            ("cancel", "supportsCancelRequest"),
+        ];
+        for (command, capability) in floored {
+            let message = secondary_capability_floor_message(command)
+                .unwrap_or_else(|| format!("`{command}` must be floored (#9581)"));
+            assert!(
+                message.contains(capability),
+                "`{command}` disposition must name its own capability row: {message}"
+            );
+            assert!(
+                message.contains("unsupported") && message.contains("#9581"),
+                "`{command}` disposition must be explicit unsupported: {message}"
+            );
+        }
+
+        // Core launch/breakpoint/stack/variable/control families stay outside
+        // the floor (#9581 scope).
+        for open in [
+            "initialize",
+            "launch",
+            "attach",
+            "setBreakpoints",
+            "setFunctionBreakpoints",
+            "threads",
+            "stackTrace",
+            "scopes",
+            "variables",
+            "setVariable",
+            "continue",
+            "next",
+            "stepIn",
+            "stepOut",
+            "pause",
+            "evaluate",
+            "configurationDone",
+            "disconnect",
+            "terminate",
+            "source",
+        ] {
+            assert!(
+                secondary_capability_floor_message(open).is_none(),
+                "`{open}` must not be floored by the secondary-capability floor"
+            );
+        }
+    }
+
+    /// #9581: only a non-default `format` on the four ValueFormat families is
+    /// floored; absent/default-equivalent formats keep the independent
+    /// contract, and other requests are never format-floored.
+    #[test]
+    fn value_format_floor_rejects_only_non_default_format_on_the_four_families() {
+        for command in ["variables", "setVariable", "evaluate", "setExpression"] {
+            assert!(unproven_value_format_requested(
+                command,
+                Some(&serde_json::json!({ "format": { "hex": true } }))
+            ));
+            assert!(!unproven_value_format_requested(command, None));
+            assert!(!unproven_value_format_requested(command, Some(&serde_json::json!({}))));
+            assert!(!unproven_value_format_requested(
+                command,
+                Some(&serde_json::json!({ "format": {} }))
+            ));
+            assert!(!unproven_value_format_requested(
+                command,
+                Some(&serde_json::json!({ "format": { "hex": false } }))
+            ));
+        }
+        assert!(!unproven_value_format_requested(
+            "stackTrace",
+            Some(&serde_json::json!({ "format": { "hex": true } }))
+        ));
+
+        let message = value_format_unsupported_message("variables");
+        assert!(message.contains("supportsValueFormattingOptions"));
+        assert!(message.contains("#9581"));
     }
 
     #[test]

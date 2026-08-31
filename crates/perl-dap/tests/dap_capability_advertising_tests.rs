@@ -11,6 +11,11 @@
 //! * a capability whose handler can never succeed must NOT be advertised, and
 //! * a capability that is advertised must be backed by the feature catalog, so
 //!   `features.toml` and the wire response can never drift apart.
+//!
+//! Exception (#9581): the seven secondary-capability rows are explicit `false`
+//! wire cells in every mode until each field's own exact-behavior receipt
+//! passes — they are deliberately NOT derived from catalog registration, so a
+//! catalog row advertising one of these families cannot widen the wire claim.
 
 #[cfg(feature = "dap-phase2")]
 mod capability_tests {
@@ -138,7 +143,10 @@ mod capability_tests {
     }
 
     /// Every capability that used to be hardcoded `true` in the initialize response
-    /// must now mirror its feature-catalog entry, in both directions.
+    /// must now mirror its feature-catalog entry, in both directions — except the
+    /// #9581 secondary-capability floor rows, which are explicit `false` wire
+    /// cells independent of their catalog registration until each field's own
+    /// exact-behavior receipt passes (#9581).
     #[tokio::test]
     async fn test_previously_hardcoded_capabilities_mirror_the_catalog() -> Result<()> {
         let mut adapter = create_test_adapter();
@@ -148,13 +156,20 @@ mod capability_tests {
             ("supportsRestartFrame", "dap.restart_frame"),
             ("supportsTerminateThreadsRequest", "dap.terminate_threads"),
             ("supportsStepInTargetsRequest", "dap.step_in_targets"),
-            ("supportsRestartRequest", "dap.restart"),
-            ("supportsLoadedSourcesRequest", "dap.loaded_sources"),
         ] {
             assert_eq!(
                 capability(&caps, flag)?,
                 perl_dap::feature_catalog::has_feature(feature_id),
                 "`{flag}` must mirror the `{feature_id}` catalog entry, not a hardcoded literal"
+            );
+        }
+
+        // #9581 floor rows: explicit `false` regardless of catalog registration;
+        // re-enable is per field through its own gate, never via the catalog.
+        for flag in ["supportsRestartRequest", "supportsLoadedSourcesRequest"] {
+            assert!(
+                !capability(&caps, flag)?,
+                "`{flag}` must stay false under the #9581 secondary-capability floor"
             );
         }
         Ok(())

@@ -52,13 +52,14 @@ fn assert_failure_response(
 
 #[test]
 fn test_breakpoint_locations_missing_arguments() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — missing arguments must return error
+    // AC:2783 — #9581: breakpointLocations is floored; every request gets the
+    // explicit unsupported rejection before argument parsing.
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "breakpointLocations", None);
     let err = assert_failure_response(msg, "breakpointLocations")?;
     assert!(
-        err.to_lowercase().contains("missing") || err.to_lowercase().contains("invalid"),
-        "error should describe missing/invalid arguments: {err}"
+        err.contains("unsupported") && err.contains("supportsBreakpointLocationsRequest"),
+        "expected the #9581 floor rejection, got: {err}"
     );
     Ok(())
 }
@@ -66,22 +67,25 @@ fn test_breakpoint_locations_missing_arguments() -> Result<(), Box<dyn std::erro
 #[test]
 fn test_breakpoint_locations_no_source_path_returns_empty() -> Result<(), Box<dyn std::error::Error>>
 {
-    // AC:2783 — source without path returns successful empty list
+    // AC:2783 — #9581: a source without a path is floored-rejected, never an
+    // empty success (no masquerade).
     let mut adapter = DebugAdapter::new();
     let args = json!({
         "source": {},
         "line": 1
     });
     let msg = adapter.handle_request(1, "breakpointLocations", Some(args));
-    let (success, _) = assert_response(msg, "breakpointLocations")?;
-    assert!(success, "missing source.path should succeed with empty breakpoint list");
+    let (success, message) = assert_response(msg, "breakpointLocations")?;
+    assert!(!success, "missing source.path must be floored-rejected (#9581)");
+    assert!(message.is_some_and(|m| m.contains("unsupported")));
     Ok(())
 }
 
 #[test]
 fn test_breakpoint_locations_nonexistent_file_returns_empty()
 -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — nonexistent file returns successful empty list (not an error)
+    // AC:2783 — #9581: the floored rejection happens before any file read, so
+    // a nonexistent path gets the same explicit unsupported disposition.
     let mut adapter = DebugAdapter::new();
     let args = json!({
         "source": { "path": "/nonexistent/path/to/file.pl" },
@@ -89,7 +93,7 @@ fn test_breakpoint_locations_nonexistent_file_returns_empty()
     });
     let msg = adapter.handle_request(1, "breakpointLocations", Some(args));
     let (success, _) = assert_response(msg, "breakpointLocations")?;
-    assert!(success, "nonexistent file should return success with empty list");
+    assert!(!success, "breakpointLocations is floored (#9581) and must fail");
     Ok(())
 }
 
@@ -142,30 +146,36 @@ fn test_breakpoint_locations_path_traversal_does_not_panic()
 
 #[test]
 fn test_cancel_succeeds_without_session() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — cancel must succeed and set the cancel flag
+    // AC:2783 — #9581: cancel is floored; the disposition is an explicit
+    // unsupported that never sets the shared cancellation flag.
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "cancel", None);
-    assert_success_response(msg, "cancel")?;
+    let err = assert_failure_response(msg, "cancel")?;
+    assert!(
+        err.contains("unsupported") && err.contains("supportsCancelRequest"),
+        "expected the #9581 floor rejection, got: {err}"
+    );
     Ok(())
 }
 
 #[test]
 fn test_cancel_with_arguments_succeeds() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — cancel accepts optional progressId / requestId arguments
+    // AC:2783 — #9581: cancel with optional arguments keeps the floor disposition.
     let mut adapter = DebugAdapter::new();
     let args = json!({ "requestId": 42 });
     let msg = adapter.handle_request(2, "cancel", Some(args));
-    assert_success_response(msg, "cancel")?;
+    assert_failure_response(msg, "cancel")?;
     Ok(())
 }
 
 #[test]
 fn test_cancel_has_no_body() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — cancel response body should be empty per DAP spec
+    // AC:2783 — the floored cancel rejection carries no body
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "cancel", None);
     match msg {
-        DapMessage::Response { body, .. } => {
+        DapMessage::Response { success, body, .. } => {
+            assert!(!success, "cancel is floored (#9581)");
             assert!(body.is_none(), "cancel response must have no body");
         }
         other => return Err(format!("expected Response, got {other:?}").into()),
@@ -175,12 +185,12 @@ fn test_cancel_has_no_body() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_cancel_idempotent() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — calling cancel twice must not panic
+    // AC:2783 — calling cancel twice must not panic and must not mutate state
     let mut adapter = DebugAdapter::new();
     let first = adapter.handle_request(1, "cancel", None);
     let second = adapter.handle_request(2, "cancel", None);
-    assert!(matches!(first, DapMessage::Response { success: true, .. }));
-    assert!(matches!(second, DapMessage::Response { success: true, .. }));
+    assert!(matches!(first, DapMessage::Response { success: false, .. }));
+    assert!(matches!(second, DapMessage::Response { success: false, .. }));
     Ok(())
 }
 
@@ -354,26 +364,27 @@ fn test_goto_targets_body_has_targets_array() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn test_loaded_sources_succeeds_without_session() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — loadedSources always succeeds; without session returns empty list
+    // AC:2783 — #9581: loadedSources is floored; a no-session request returns
+    // the explicit unsupported disposition, never a successful empty list.
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "loadedSources", None);
-    assert_success_response(msg, "loadedSources")?;
+    let err = assert_failure_response(msg, "loadedSources")?;
+    assert!(
+        err.contains("unsupported") && err.contains("supportsLoadedSourcesRequest"),
+        "expected the #9581 floor rejection, got: {err}"
+    );
     Ok(())
 }
 
 #[test]
 fn test_loaded_sources_body_has_sources_array() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — response body must contain a "sources" array
+    // AC:2783 — #9581: the floored rejection carries no sources body.
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "loadedSources", None);
     match msg {
         DapMessage::Response { body, success, .. } => {
-            assert!(success);
-            let body = body.ok_or("loadedSources must have response body")?;
-            assert!(
-                body.get("sources").is_some(),
-                "body must contain 'sources' array, got: {body}"
-            );
+            assert!(!success, "loadedSources is floored (#9581)");
+            assert!(body.is_none(), "floored loadedSources must not carry a body");
         }
         other => return Err(format!("expected Response, got {other:?}").into()),
     }
@@ -382,14 +393,14 @@ fn test_loaded_sources_body_has_sources_array() -> Result<(), Box<dyn std::error
 
 #[test]
 fn test_loaded_sources_no_session_returns_empty_list() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — without an active debug session, sources must be an empty array
+    // AC:2783 — #9581 masquerade falsifier: a missing session must not become
+    // an unexplained successful empty list.
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "loadedSources", None);
     match msg {
-        DapMessage::Response { body, .. } => {
-            let body = body.ok_or("must have body")?;
-            let sources = body["sources"].as_array().ok_or("sources must be an array")?;
-            assert!(sources.is_empty(), "no session means no loaded sources");
+        DapMessage::Response { success, body, .. } => {
+            assert!(!success, "no session must be an explicit unsupported, not an empty success");
+            assert!(body.is_none());
         }
         other => return Err(format!("expected Response, got {other:?}").into()),
     }
@@ -398,10 +409,10 @@ fn test_loaded_sources_no_session_returns_empty_list() -> Result<(), Box<dyn std
 
 #[test]
 fn test_loaded_sources_accepts_ignored_arguments() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — loadedSources ignores any arguments (per DAP spec it has none)
+    // AC:2783 — #9581: arguments do not change the floored disposition.
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "loadedSources", Some(json!({})));
-    assert_success_response(msg, "loadedSources")?;
+    assert_failure_response(msg, "loadedSources")?;
     Ok(())
 }
 

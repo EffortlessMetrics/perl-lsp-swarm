@@ -1,51 +1,50 @@
-//! Exact public stdio proof for the DAP `ValueFormat` family (#9590).
+//! Exact public stdio proof for the #9581 `ValueFormat` capability floor.
 //!
-//! #9588's typed presentation policy (`ValueFormatPolicy`, landed as #12066)
-//! is proven here through the **exact public adapter boundary**: this test
-//! spawns the real `perl-dap` binary (`CARGO_BIN_EXE_perl-dap`, or
+//! #9581 forces `supportsValueFormattingOptions` to an explicit `false` wire
+//! row until the value-format re-enable gate passes (#9050 + #8364 + #9070 +
+//! #7342/#7345 + #9588 + #9590). While it is false, a non-default `format`
+//! request (`hex: true`, the pinned schema's single property) must be rejected
+//! with the explicit unsupported disposition *before* any debugger/value
+//! interaction, and must never be silently ignored (#9581). The #9588 typed
+//! presentation policy (`ValueFormatPolicy`) stays unit-proven in
+//! `src/value_format.rs`, ready for the re-enable PR to re-invert these rows.
+//!
+//! This suite proves the floor through the **exact public adapter boundary**:
+//! it spawns the real `perl-dap` binary (`CARGO_BIN_EXE_perl-dap`, or
 //! `PERL_DAP_TEST_BINARY` for an explicitly extracted candidate), drives one
 //! real `perl -d` session over `Content-Length` framed stdio with a real Perl
-//! fixture, and asserts the formatted behavior of every advertised
-//! `ValueFormat` request family: `variables`, `setVariable`, `evaluate`, and
-//! `setExpression`.
-//!
-//! Handler-level and seeded-cache unit tests cannot satisfy #9590; none are
-//! used here. Every row is driven through framed stdio requests against the
-//! spawned binary.
+//! fixture, and asserts the floored behavior of every `ValueFormat` request
+//! family: `variables`, `setVariable`, `evaluate`, and `setExpression`.
 //!
 //! # What is proven
 //!
 //! - capability-set identity: the same session that serves the rows
-//!   advertises `supportsValueFormattingOptions: true` (an advertised option
-//!   must be honored, never ignored);
-//! - exact hex projection from typed integer authority retained at
-//!   acquisition (locals rows for `255`, `-42`, `0`, `i64::MAX`, `i64::MIN`),
-//!   including the full-width and sign-magnitude edges;
-//! - presentation-only change: for every row, `name`, `type`,
-//!   `variablesReference`, `evaluateName`, and the response's
-//!   `totalVariables` are byte-identical between default and `hex` requests;
-//! - no policy leak: the same scope reference serves hex → decimal → hex with
-//!   each response matching its own request;
-//! - unsupported options fail honestly in all four families
-//!   (`Invalid arguments` naming the unknown field) and perform no hidden
-//!   evaluation or mutation (side-effect canary stays empty);
-//! - correlated-literal `evaluate`/read-back results are never reparsed as
-//!   numeric authority: `0  255` stays `0  255` under `hex: true`;
-//! - mutation admission stays client-value-bound: `setVariable`/
-//!   `setExpression` with `format: { "hex": true }` assigns the admitted
-//!   client value (read-back proves `66`/`77` decimal), never the formatted
-//!   display text;
-//! - formatting and inspection execute no user callbacks: tied `FETCH`/
-//!   `STORE`, overload stringification, and object-method canaries stay
-//!   empty for the whole session, including failed unsupported-option
-//!   requests (this proof caught the locals B-walk executing tied/overload
-//!   hooks on current main; the walk now reads raw slots only);
-//! - `cancel` is accepted mid-session and formatted requests remain exact
-//!   afterwards;
+//!   advertises `supportsValueFormattingOptions: false` and
+//!   `supportsCancelRequest: false` while the core mutation cells
+//!   (`supportsSetVariable`, `supportsSetExpression`) stay `true`;
+//! - every family rejects `format: { "hex": true }` with the explicit #9581
+//!   unsupported message, and the rejection carries no result body;
+//! - rejection is pre-effect: after every rejected request the side-effect
+//!   canary stays empty (no tied `FETCH`/`STORE`, no overload stringification,
+//!   no user callbacks) and the suspended state is unchanged (the next
+//!   no-format row is byte-identical to its baseline);
+//! - default-equivalent formats keep the independent contract:
+//!   `format: { "hex": false }` and `format: {}` are byte-identical to the
+//!   no-format baseline, exactly as before the floor;
+//! - no state leak: a default request after a floor-rejected hex request on
+//!   the same reference still renders the exact decimal baseline;
+//! - unsupported option properties still fail deserialization naming the
+//!   unknown field (`Invalid arguments`), the single documented compatibility
+//!   behavior for wire-unknown options;
+//! - unformatted mutation stays client-value-bound: `setVariable` and
+//!   `setExpression` without `format` assign the admitted client value
+//!   (read-back proves `66`/`77` decimal);
+//! - `cancel` is floored too (#9581): it returns the explicit unsupported
+//!   disposition and a following no-format request stays exact;
 //! - stale handles: an evaluate-result reference minted before a resume
-//!   serves an honest empty page after the later stop, even under `hex`;
-//! - later stops: the second suspension serves fresh values under both
-//!   policies;
+//!   serves an honest empty page after the later stop;
+//! - later stops: the second suspension serves fresh values under the
+//!   unchanged default presentation;
 //! - cleanup: `disconnect` produces the `terminated` event and the adapter
 //!   process exits.
 //!
@@ -53,27 +52,20 @@
 //!
 //! - the locals acquisition dump (`B` pad introspection) emits pad PV text
 //!   unquoted, so a numeric-looking string (`'42'`) is acquired as
-//!   `Integer(42)` and renders `0x2a` under hex — indistinguishable from an
-//!   integer already under decimal. This is an acquisition-fidelity boundary
-//!   owned by the value-graph family; the *format layer* provably never
-//!   reparses display text (the correlated-literal rows above are the
-//!   discriminating control);
-//! - aggregate lexicals surface as quoted opaque previews
-//!   (`"ARRAY(0x0)"`/`"HASH(0x0)"`) with no expandable children over this
-//!   boundary, so nested-child projection stays proven at the unit layer by
-//!   #12066 and is out of this adapter boundary's reach;
-//! - the fixture's lexical set is minimal on purpose: the locals dump is
-//!   captured under the adapter's bounded acquisition window, and slow hosts
-//!   (Windows-local pipes) need the dump to finish well inside that budget.
-//!   Every #9590 value class keeps at least one row.
+//!   `Integer(42)`; while the floor holds, no hex rendering exists to
+//!   distinguish acquisition fidelity, and that boundary stays owned by the
+//!   value-graph family (#9050);
+//! - hex projection of typed integer authority is proven at the unit layer
+//!   (`src/value_format.rs` tests) and is deliberately NOT exercised through
+//!   this adapter boundary while the capability is floored.
 //!
 //! # Receipt
 //!
 //! Setting `PERL_DAP_VALUE_FORMAT_RECEIPT=<path>` writes a typed receipt
 //! binding the exact binary/perl/fixture identity, the capability set, every
 //! row verdict, transcript counts + digest, and the cleanup disposition
-//! (schema `perl_dap_value_format_stdio_proof.v1`). The receipt is written
-//! only after every row passed and the canary stayed empty; a missing,
+//! (schema `perl_dap_value_format_stdio_floor_proof.v1`). The receipt is
+//! written only after every row passed and the canary stayed empty; a missing,
 //! skipped, or failed run never writes one (fail-closed).
 
 use perl_dap::DapMessage;
@@ -95,7 +87,7 @@ type ProofResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 const EXPLICIT_DAP_BINARY_ENV: &str = "PERL_DAP_TEST_BINARY";
 const RECEIPT_ENV: &str = "PERL_DAP_VALUE_FORMAT_RECEIPT";
-const RECEIPT_SCHEMA: &str = "perl_dap_value_format_stdio_proof.v1";
+const RECEIPT_SCHEMA: &str = "perl_dap_value_format_stdio_floor_proof.v1";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(25);
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -103,7 +95,7 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Every matrix row this proof must record. A run that records fewer rows
 /// (for example because an early return skipped a cluster) fails closed
 /// instead of passing silently.
-const EXPECTED_ROW_COUNT: usize = 29;
+const EXPECTED_ROW_COUNT: usize = 21;
 
 // ---------------------------------------------------------------------------
 // Subject identity
@@ -368,16 +360,20 @@ impl StdioSession {
         else {
             return Err("initialize over framed stdio failed".into());
         };
-        for capability in [
-            "supportsValueFormattingOptions",
-            "supportsSetVariable",
-            "supportsSetExpression",
-            "supportsCancelRequest",
+        // #9581 capability-set identity, in the same session that serves the
+        // rows: the format and cancel cells are floored false while the core
+        // mutation cells stay true. A wire row that drifted from the floor
+        // fails here, before any row is recorded.
+        for (capability, expected) in [
+            ("supportsValueFormattingOptions", false),
+            ("supportsCancelRequest", false),
+            ("supportsSetVariable", true),
+            ("supportsSetExpression", true),
         ] {
-            if body.get(capability).and_then(Value::as_bool) != Some(true) {
+            if body.get(capability).and_then(Value::as_bool) != Some(expected) {
                 return Err(format!(
-                    "capability-set identity: `{capability}` must be advertised true in the \
-                     same session that serves the ValueFormat rows"
+                    "capability-set identity: `{capability}` must be advertised {expected} in \
+                     the same session that serves the #9581 ValueFormat floor rows"
                 )
                 .into());
             }
@@ -665,84 +661,6 @@ fn row_by_name<'a>(body: &'a Value, name: &str) -> ProofResult<&'a Value> {
         })
 }
 
-/// Asserts that formatting changed presentation only: every identity field is
-/// byte-identical between the default and formatted renderings of one row.
-fn assert_identity_preserved(
-    default_row: &Value,
-    formatted_row: &Value,
-    context: &str,
-) -> ProofResult<()> {
-    for field in
-        ["name", "type", "variablesReference", "evaluateName", "namedVariables", "indexedVariables"]
-    {
-        let default_field = default_row.get(field).cloned().unwrap_or(Value::Null);
-        let formatted_field = formatted_row.get(field).cloned().unwrap_or(Value::Null);
-        if default_field != formatted_field {
-            return Err(format!(
-                "{context}: identity field `{field}` changed under format: {default_field} -> {formatted_field}"
-            )
-            .into());
-        }
-    }
-    Ok(())
-}
-
-fn assert_value(
-    default_row: &Value,
-    formatted_row: &Value,
-    expected_hex: &str,
-    context: &str,
-) -> ProofResult<()> {
-    let default_value = default_row.get("value").and_then(Value::as_str).unwrap_or("");
-    let formatted_value = formatted_row.get("value").and_then(Value::as_str).unwrap_or("");
-    if formatted_value != expected_hex {
-        return Err(format!(
-            "{context}: expected hex rendering `{expected_hex}`, got `{formatted_value}` (decimal `{default_value}`)"
-        )
-        .into());
-    }
-    assert_identity_preserved(default_row, formatted_row, context)
-}
-
-fn assert_unchanged(default_row: &Value, formatted_row: &Value, context: &str) -> ProofResult<()> {
-    let default_value = default_row.get("value").and_then(Value::as_str).unwrap_or("");
-    let formatted_value = formatted_row.get("value").and_then(Value::as_str).unwrap_or("");
-    if default_value != formatted_value {
-        return Err(format!(
-            "{context}: non-numeric class changed under hex: `{default_value}` -> `{formatted_value}`"
-        )
-        .into());
-    }
-    assert_identity_preserved(default_row, formatted_row, context)
-}
-
-/// Asserts a reference-class row renders a hexadecimal address under `hex`
-/// (address value is host-specific; only the shape and identity are exact).
-fn assert_hex_address(
-    default_row: &Value,
-    formatted_row: &Value,
-    context: &str,
-) -> ProofResult<()> {
-    let default_value = default_row.get("value").and_then(Value::as_str).unwrap_or("");
-    let formatted_value = formatted_row.get("value").and_then(Value::as_str).unwrap_or("");
-    let valid_shape = formatted_value.starts_with("0x")
-        && formatted_value.len() > 2
-        && formatted_value[2..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
-    if !valid_shape {
-        return Err(format!(
-            "{context}: reference row must render a lowercase hex address under hex, got `{formatted_value}` (decimal `{default_value}`)"
-        )
-        .into());
-    }
-    if default_value == formatted_value {
-        return Err(format!(
-            "{context}: decimal and hex renderings must differ for a reference row"
-        )
-        .into());
-    }
-    assert_identity_preserved(default_row, formatted_row, context)
-}
-
 fn assert_canary_empty(canary_path: &Path, context: &str) -> ProofResult<()> {
     let empty = if !canary_path.exists() {
         true
@@ -802,10 +720,10 @@ fn write_receipt_to(
                 "sha256": identity.fixture_sha256,
             },
             "capabilities": {
-                "supportsValueFormattingOptions": true,
+                "supportsValueFormattingOptions": false,
                 "supportsSetVariable": true,
                 "supportsSetExpression": true,
-                "supportsCancelRequest": true,
+                "supportsCancelRequest": false,
             },
         },
         "rows": matrix.rows,
@@ -905,89 +823,69 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
     let baseline =
         dap.expect_success("variables", Some(json!({ "variablesReference": locals_ref })))?;
     let baseline_total = baseline.get("totalVariables").and_then(Value::as_i64);
-    let hex = dap.expect_success(
-        "variables",
-        Some(json!({ "variablesReference": locals_ref, "format": { "hex": true } })),
-    )?;
-    let hex_total = hex.get("totalVariables").and_then(Value::as_i64);
-    if baseline_total != hex_total {
-        return Err(format!(
-            "totalVariables changed under hex: {baseline_total:?} -> {hex_total:?}"
-        )
-        .into());
+    if baseline.get("variables").and_then(Value::as_array).is_none() {
+        return Err("baseline variables response must carry the variables array".into());
     }
+    matrix.pass("variables-default-baseline", "variables", "default", "no-format contract intact");
 
-    // Integer authority: exact hex from typed i64 facts.
-    assert_value(row_by_name(&baseline, "$pos")?, row_by_name(&hex, "$pos")?, "0xff", "$pos")?;
-    matrix.pass("variables-hex-positive-integer", "variables", "hex", "255 -> 0xff");
-    assert_value(row_by_name(&baseline, "$neg")?, row_by_name(&hex, "$neg")?, "-0x2a", "$neg")?;
-    matrix.pass(
-        "variables-hex-negative-integer",
-        "variables",
-        "hex",
-        "-42 -> -0x2a (sign-magnitude)",
-    );
-    assert_value(row_by_name(&baseline, "$zero")?, row_by_name(&hex, "$zero")?, "0x0", "$zero")?;
-    matrix.pass("variables-hex-zero", "variables", "hex", "0 -> 0x0");
-    assert_value(
-        row_by_name(&baseline, "$i_max")?,
-        row_by_name(&hex, "$i_max")?,
-        "0x7fffffffffffffff",
-        "$i_max",
-    )?;
-    matrix.pass("variables-hex-i64-max", "variables", "hex", "i64::MAX full-width exact");
-    assert_value(
-        row_by_name(&baseline, "$i_min")?,
-        row_by_name(&hex, "$i_min")?,
-        "-0x8000000000000000",
-        "$i_min",
-    )?;
-    matrix.pass("variables-hex-i64-min", "variables", "hex", "i64::MIN via unsigned_abs magnitude");
+    // --- the #9581 floor: hex requests are rejected in all four families ----
+    {
+        let hex_cells: [(&str, Value); 4] = [
+            ("variables", json!({ "variablesReference": locals_ref, "format": { "hex": true } })),
+            (
+                "setVariable",
+                json!({ "variablesReference": locals_ref, "name": "$pos", "value": "1", "format": { "hex": true } }),
+            ),
+            (
+                "evaluate",
+                json!({ "expression": "$pos", "frameId": frame_id, "format": { "hex": true } }),
+            ),
+            (
+                "setExpression",
+                json!({ "expression": "$pos", "value": "1", "frameId": frame_id, "format": { "hex": true } }),
+            ),
+        ];
+        for (command, arguments) in hex_cells {
+            let message = dap.expect_failure(command, Some(arguments))?;
+            if !message.contains("unsupported")
+                || !message.contains("supportsValueFormattingOptions")
+                || !message.contains("#9581")
+            {
+                return Err(format!(
+                    "`{command}` with `hex: true` must get the explicit #9581 unsupported \
+                     disposition before any debugger interaction, got: {message}"
+                )
+                .into());
+            }
+            // Rejection is pre-effect: no user callback can have run.
+            assert_canary_empty(&canary_path, &format!("after floored hex {command}"))?;
+            matrix.pass(
+                "value-format-floor-hex-rejected",
+                command,
+                "hex",
+                "explicit #9581 unsupported; no debugger/value interaction",
+            );
+        }
 
-    // Non-integer and non-numeric classes: byte-identical under hex.
-    for (name, note) in [
-        ("$float", "NV scalar renders 2.5 decimal; a float is not an integer authority"),
-        ("$u", "undef unchanged"),
-        ("$uni", "Unicode string unchanged, byte-safe"),
-        ("@arr", "aggregate preview unchanged"),
-        ("%hash", "aggregate preview unchanged"),
-        ("$tied", "tied scalar row unchanged without invoking FETCH"),
-    ] {
-        assert_unchanged(row_by_name(&baseline, name)?, row_by_name(&hex, name)?, name)?;
-        matrix.pass("variables-hex-unchanged", "variables", "hex", format!("{name}: {note}"));
+        // The floored rejection left the suspension untouched: the default
+        // rendering of the same reference is byte-identical to the baseline.
+        let after_floor =
+            dap.expect_success("variables", Some(json!({ "variablesReference": locals_ref })))?;
+        if after_floor.get("variables") != baseline.get("variables") {
+            return Err(
+                "default variables after floored hex requests must stay byte-identical".into()
+            );
+        }
+        if after_floor.get("totalVariables").and_then(Value::as_i64) != baseline_total {
+            return Err("totalVariables changed after floored hex requests".into());
+        }
+        matrix.pass(
+            "variables-unchanged-after-floor-rejections",
+            "variables",
+            "default",
+            "floor rejections performed no state mutation",
+        );
     }
-
-    // Numeric-looking string boundary: acquired as Integer at the dump
-    // boundary, so hex renders from that typed authority. Presentation-only.
-    assert_value(
-        row_by_name(&baseline, "$looks")?,
-        row_by_name(&hex, "$looks")?,
-        "0x2a",
-        "$looks",
-    )?;
-    matrix.pass(
-        "variables-hex-numeric-looking-string-boundary",
-        "variables",
-        "hex",
-        "'42' acquired as Integer at the B-dump boundary renders 0x2a; identity fields preserved",
-    );
-
-    // Reference-class rows: decimal address renders as hex address.
-    assert_hex_address(row_by_name(&baseline, "$ref")?, row_by_name(&hex, "$ref")?, "$ref")?;
-    matrix.pass(
-        "variables-hex-reference-address",
-        "variables",
-        "hex",
-        "reference address rendered as 0x…",
-    );
-    assert_hex_address(row_by_name(&baseline, "$over")?, row_by_name(&hex, "$over")?, "$over")?;
-    matrix.pass(
-        "variables-hex-overloaded-object-address",
-        "variables",
-        "hex",
-        "overloaded object rendered as address without invoking \"\"",
-    );
-    assert_canary_empty(&canary_path, "after formatted variables requests")?;
 
     // --- variables: hex:false and {} behave exactly as default -------------
     let hex_false = dap.expect_success(
@@ -1003,7 +901,7 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
         "variables-hex-false-is-default",
         "variables",
         "hex:false",
-        "byte-identical to no-format",
+        "default-equivalent format keeps the independent no-format contract",
     );
     let empty_format = dap.expect_success(
         "variables",
@@ -1016,69 +914,70 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
         "variables-empty-format-is-default",
         "variables",
         "format:{}",
-        "byte-identical to no-format",
+        "default-equivalent format keeps the independent no-format contract",
     );
 
-    // --- no policy leak across requests sharing one reference --------------
+    // --- no state leak across requests sharing one reference ---------------
     {
-        let again_hex = dap.expect_success(
+        // Another hex request on the same reference is floored-rejected...
+        let floor_message = dap.expect_failure(
             "variables",
             Some(json!({ "variablesReference": locals_ref, "format": { "hex": true } })),
         )?;
-        if row_by_name(&again_hex, "$pos")?.get("value") != Some(&Value::String("0xff".to_string()))
-        {
-            return Err("hex after decimal on the same reference must still be hex".into());
+        if !floor_message.contains("unsupported") {
+            return Err("hex on a served reference must stay floored (#9581)".into());
         }
+        // ...and the same reference still serves the exact decimal baseline.
         let again_default =
             dap.expect_success("variables", Some(json!({ "variablesReference": locals_ref })))?;
         if row_by_name(&again_default, "$pos")?.get("value")
             != Some(&Value::String("255".to_string()))
         {
-            return Err("decimal after hex on the same reference must be decimal (no leak)".into());
+            return Err("decimal after floored hex on the same reference must be exact".into());
         }
         matrix.pass(
             "variables-no-format-leak",
             "variables",
-            "hex->default->hex",
-            "each response matches its own request",
+            "default",
+            "each response matches its own request; no floor state leaks",
         );
     }
 
-    // --- evaluate: correlated-literal results are never reparsed -----------
+    // --- evaluate: the default contract is untouched ------------------------
     {
         let default_eval = dap.expect_success(
             "evaluate",
             Some(json!({ "expression": "$pos", "frameId": frame_id })),
         )?;
         let default_result = default_eval.get("result").and_then(Value::as_str).unwrap_or("");
-        let hex_eval = dap.expect_success(
+        if default_result.is_empty() {
+            return Err("default evaluate must still serve its result".into());
+        }
+        matrix.pass(
+            "evaluate-default-contract-intact",
+            "evaluate",
+            "default",
+            format!("`{default_result}` served under the unchanged no-format contract"),
+        );
+
+        // A hex evaluate on the same expression is floored-rejected.
+        let hex_eval_message = dap.expect_failure(
             "evaluate",
             Some(json!({ "expression": "$pos", "frameId": frame_id, "format": { "hex": true } })),
         )?;
-        let hex_result = hex_eval.get("result").and_then(Value::as_str).unwrap_or("");
-        // `x $pos` yields the correlated literal `0  255`; it carries no typed
-        // facts, so hex must NOT reparse it as numeric authority.
-        if hex_result != default_result {
-            return Err(format!(
-                "evaluate correlated literal must stay unchanged under hex: `{default_result}` -> `{hex_result}`"
-            )
-            .into());
+        if !hex_eval_message.contains("unsupported") {
+            return Err("hex evaluate must be floored-rejected (#9581)".into());
         }
         matrix.pass(
-            "evaluate-literal-never-reparsed",
+            "evaluate-hex-floored",
             "evaluate",
             "hex",
-            format!("`{default_result}` unchanged: display text is never numeric authority"),
+            "explicit #9581 unsupported; no hidden evaluation",
         );
-        // The result reference is part of identity too: same expression, same ref.
-        if default_eval.get("variablesReference") != hex_eval.get("variablesReference") {
-            return Err("evaluate variablesReference changed under hex".into());
-        }
-        matrix.pass("evaluate-graph-identity", "evaluate", "hex", "variablesReference unchanged");
     }
     assert_canary_empty(&canary_path, "after evaluate rows")?;
 
-    // --- evaluate: rejected user code never executes (canary control) ------
+    // --- rejected user code never executes (canary control) ----------------
     {
         // A policy-rejected expression (dangerous op name) must fail BEFORE any
         // debugger command: the canary proves the debuggee never ran it. The
@@ -1086,11 +985,7 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
         // Watch/hover policy family (#7567), not by ValueFormat.
         let message = dap.expect_failure(
             "evaluate",
-            Some(json!({
-                "expression": "$over->print",
-                "frameId": frame_id,
-                "format": { "hex": true }
-            })),
+            Some(json!({ "expression": "$over->print", "frameId": frame_id })),
         )?;
         if message.contains("Invalid arguments") {
             return Err(format!(
@@ -1102,7 +997,7 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
         matrix.pass(
             "evaluate-user-code-never-executed",
             "evaluate",
-            "hex",
+            "default",
             "policy-rejected method call refused before any debugger command; canary empty",
         );
     }
@@ -1158,7 +1053,7 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
         );
     }
 
-    // --- setVariable: response rendering only; assignment stays client-bound
+    // --- setVariable: unformatted mutation stays client-value-bound --------
     let mutation_ref: i64;
     {
         let body = dap.expect_success(
@@ -1166,13 +1061,9 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             Some(json!({
                 "variablesReference": locals_ref,
                 "name": "$pos",
-                "value": "66",
-                "format": { "hex": true }
+                "value": "66"
             })),
         )?;
-        // The read-back is a correlated literal (no typed facts over this
-        // boundary), so the response renders the honest decimal read-back —
-        // proving the formatted text is never used as the assigned value.
         let response_value = body.get("value").and_then(Value::as_str).unwrap_or("");
         if response_value != "66" {
             return Err(format!(
@@ -1193,23 +1084,22 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             .into());
         }
         matrix.pass(
-            "setVariable-formatted-text-not-mutation-input",
+            "setVariable-client-value-binding",
             "setVariable",
-            "hex",
-            "assigned 66 (not 0x42); read-back proves client-value binding",
+            "default",
+            "unformatted mutation assigns 66; read-back proves client-value binding",
         );
         assert_canary_empty(&canary_path, "after setVariable rows")?;
     }
 
-    // --- setExpression: same response-only contract ------------------------
+    // --- setExpression: same unformatted contract ---------------------------
     {
         let body = dap.expect_success(
             "setExpression",
             Some(json!({
                 "expression": "$pos",
                 "value": "77",
-                "frameId": frame_id,
-                "format": { "hex": true }
+                "frameId": frame_id
             })),
         )?;
         let response_value = body.get("value").and_then(Value::as_str).unwrap_or("");
@@ -1231,10 +1121,10 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             .into());
         }
         matrix.pass(
-            "setExpression-formatted-text-not-mutation-input",
+            "setExpression-client-value-binding",
             "setExpression",
-            "hex",
-            "assigned 77 (not 0x4d); read-back proves client-value binding",
+            "default",
+            "unformatted mutation assigns 77; read-back proves client-value binding",
         );
         // Restore for the later-stop rows.
         let restore = dap.expect_success(
@@ -1248,34 +1138,38 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
         assert_canary_empty(&canary_path, "after setExpression rows")?;
     }
 
-    // --- cancellation leaves the policy path coherent ----------------------
+    // --- cancellation stays floored and leaves the session coherent ---------
     {
-        dap.expect_success("cancel", Some(json!({ "requestId": 1 })))?;
-        let after_cancel = dap.expect_success(
-            "variables",
-            Some(json!({ "variablesReference": locals_ref, "format": { "hex": true } })),
-        )?;
-        if row_by_name(&after_cancel, "$pos")?.get("value")
-            != Some(&Value::String("0xff".to_string()))
+        let cancel_message = dap.expect_failure("cancel", Some(json!({ "requestId": 1 })))?;
+        if !cancel_message.contains("unsupported")
+            || !cancel_message.contains("supportsCancelRequest")
         {
-            return Err("formatted variables request after cancel must remain exact".into());
+            return Err(format!(
+                "cancel must be floored-rejected without touching shared state, got: {cancel_message}"
+            )
+            .into());
+        }
+        let after_cancel =
+            dap.expect_success("variables", Some(json!({ "variablesReference": locals_ref })))?;
+        if row_by_name(&after_cancel, "$pos")?.get("value")
+            != Some(&Value::String("255".to_string()))
+        {
+            return Err("default variables after floored cancel must remain exact".into());
         }
         matrix.pass(
-            "cancel-then-formatted-request-exact",
+            "cancel-floored-then-default-exact",
             "variables",
-            "hex",
-            "cancel accepted; policy path unaffected",
+            "default",
+            "cancel explicitly unsupported; policy path and session state unaffected",
         );
     }
 
-    // --- resume: stale handles cannot be revived by a format ---------------
+    // --- resume: stale handles cannot be revived ----------------------------
     dap.expect_success("continue", Some(json!({ "threadId": 1 })))?;
     dap.wait_event("stopped")?;
     {
-        let stale = dap.expect_success(
-            "variables",
-            Some(json!({ "variablesReference": mutation_ref, "format": { "hex": true } })),
-        )?;
+        let stale =
+            dap.expect_success("variables", Some(json!({ "variablesReference": mutation_ref })))?;
         let rows = stale
             .get("variables")
             .and_then(Value::as_array)
@@ -1288,14 +1182,14 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             .into());
         }
         matrix.pass(
-            "stale-handle-honest-empty-under-format",
+            "stale-handle-honest-empty",
             "variables",
-            "hex",
+            "default",
             "pre-resume EvalResult ref empty after later stop",
         );
     }
 
-    // --- later stop: fresh suspension, fresh values, both policies ---------
+    // --- later stop: fresh suspension, fresh values, default presentation ---
     {
         let (frame2_id, frame2_line) = stack_trace_until_line(&mut dap, stop2_line)?;
         let scopes2 = dap.expect_success("scopes", Some(json!({ "frameId": frame2_id })))?;
@@ -1309,33 +1203,23 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
 
         let baseline2 =
             dap.expect_success("variables", Some(json!({ "variablesReference": locals2 })))?;
-        let hex2 = dap.expect_success(
-            "variables",
-            Some(json!({ "variablesReference": locals2, "format": { "hex": true } })),
-        )?;
-        assert_value(
-            row_by_name(&baseline2, "$later")?,
-            row_by_name(&hex2, "$later")?,
-            "0x1000",
-            "$later@STOP2",
-        )?;
-        assert_value(
-            row_by_name(&baseline2, "$pos")?,
-            row_by_name(&hex2, "$pos")?,
-            "0xff",
-            "$pos@STOP2",
-        )?;
-        assert_value(
-            row_by_name(&baseline2, "$i_min")?,
-            row_by_name(&hex2, "$i_min")?,
-            "-0x8000000000000000",
-            "$i_min@STOP2",
-        )?;
+        let later_value =
+            row_by_name(&baseline2, "$later")?.get("value").and_then(Value::as_str).unwrap_or("");
+        if later_value != "4096" {
+            return Err(
+                format!("$later at STOP2 must render 4096 decimal, got `{later_value}`").into()
+            );
+        }
+        let pos_value =
+            row_by_name(&baseline2, "$pos")?.get("value").and_then(Value::as_str).unwrap_or("");
+        if pos_value != "255" {
+            return Err(format!("$pos at STOP2 must render 255 decimal, got `{pos_value}`").into());
+        }
         matrix.pass(
             "later-stop-fresh-values",
             "variables",
-            "hex",
-            "$later 4096 -> 0x1000, restored $pos -> 0xff, $i_min exact at the new suspension",
+            "default",
+            "$later 4096 and restored $pos 255 exact at the new suspension",
         );
         // Session/frame identity: the second stop is a distinct suspension.
         if frame2_id == frame_id && frame2_line == frame_line {
@@ -1447,9 +1331,11 @@ fn receipt_binds_subject_identity_and_row_verdicts() -> ProofResult<()> {
         return Err("receipt must distinguish observed and requested Perl paths".into());
     }
     if receipt.pointer("/subject/capabilities/supportsValueFormattingOptions")
-        != Some(&Value::Bool(true))
+        != Some(&Value::Bool(false))
+        || receipt.pointer("/subject/capabilities/supportsCancelRequest")
+            != Some(&Value::Bool(false))
     {
-        return Err("receipt must bind the capability-set identity".into());
+        return Err("receipt must bind the #9581 capability-floor identity".into());
     }
     let rows = receipt.get("rows").and_then(Value::as_array).ok_or("receipt missing rows")?;
     if rows.len() != 1 || rows[0].get("row_id").and_then(Value::as_str) != Some("sample-row") {

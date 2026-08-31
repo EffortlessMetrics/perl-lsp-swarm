@@ -309,17 +309,31 @@ fn mint_session_token() -> std::io::Result<String> {
 ///
 /// The peer's runtime capabilities (learned at `peer/hello`) only ever *narrow*
 /// behavior internally; they never require the editor to renegotiate, so the
-/// editor-facing capabilities are fixed and conservative. `breakpointLocations`
-/// is answered locally from the AST oracle, so it is always available;
-/// conditional and function breakpoints are within the ptkdb v1 floor;
+/// editor-facing capabilities are fixed and conservative. Conditional and
+/// function breakpoints are within the ptkdb v1 floor;
 /// hovers/hit-conditions/logpoints/data-breakpoints are conservatively off.
+///
+/// The seven #9581 secondary-capability fields are explicit `false` rows here,
+/// independently of the native surface: the mirror peer has no exact receipt
+/// for completions, modules, loaded sources, restart, ValueFormat options,
+/// breakpoint locations, or cancel, so each request is rejected explicitly
+/// (no AST-oracle source reads, no peer I/O, no state mutation) while its row
+/// is false. A gate receipt for one field never widens another.
 #[must_use]
 pub fn static_mirror_capabilities() -> Value {
     json!({
         "supportsConfigurationDoneRequest": true,
         "supportsConditionalBreakpoints": true,
         "supportsFunctionBreakpoints": true,
-        "supportsBreakpointLocationsRequest": true,
+        // #9581 secondary-capability floor (mirror surface): each row is an
+        // independent literal `false`; re-enable gates are per field.
+        "supportsCompletionsRequest": false,
+        "supportsModulesRequest": false,
+        "supportsLoadedSourcesRequest": false,
+        "supportsRestartRequest": false,
+        "supportsValueFormattingOptions": false,
+        "supportsBreakpointLocationsRequest": false,
+        "supportsCancelRequest": false,
         "supportsEvaluateForHovers": crate::backend::capabilities::MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS,
         "supportsHitConditionalBreakpoints": false,
         "supportsLogPoints": false,
@@ -596,6 +610,17 @@ impl MirrorPeerBridge {
         arguments: Option<Value>,
     ) -> Vec<DapMessage> {
         let mut out = Vec::new();
+        // #9581 secondary-capability floor (mirror surface). Resolved before the
+        // route match so floored requests perform no AST-oracle source read, no
+        // peer I/O, and no state mutation; the disposition mirrors the
+        // `false` rows in [`static_mirror_capabilities`].
+        if let Some(response) =
+            self.secondary_floor_response(request_seq, command, arguments.as_ref())
+        {
+            out.push(response);
+            out.extend(self.poll_events());
+            return out;
+        }
         match DapRequestRoute::from_command(command)
             .filter(DapRequestRoute::available_in_peer_frontends)
         {
@@ -621,10 +646,9 @@ impl MirrorPeerBridge {
                 let body = json!({ "threads": [{ "id": 1, "name": "main" }] });
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
-            Some(DapRequestRoute::BreakpointLocations) => {
-                let body = handle_breakpoint_locations(arguments.as_ref());
-                out.push(self.response(request_seq, command, true, Some(body), None));
-            }
+            // `BreakpointLocations` has no arm: the #9581 floor gate above
+            // intercepts it before this match, so the AST oracle is unreachable
+            // while `supportsBreakpointLocationsRequest` is false.
             Some(DapRequestRoute::SetBreakpoints) => {
                 let msg = self.handle_set_breakpoints(request_seq, arguments.as_ref());
                 out.push(msg);
@@ -695,6 +719,30 @@ impl MirrorPeerBridge {
         }
         out.extend(self.poll_events());
         out
+    }
+
+    /// The #9581 floor disposition for this request, if it is floored.
+    ///
+    /// One authority for both floored families: the six secondary requests and
+    /// a non-default `format` option on the four ValueFormat families. Returns
+    /// the explicit unsupported response the bridge must send instead of
+    /// dispatching.
+    fn secondary_floor_response(
+        &mut self,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<&Value>,
+    ) -> Option<DapMessage> {
+        if let Some(message) =
+            crate::backend::capabilities::secondary_capability_floor_message(command)
+        {
+            return Some(self.response(request_seq, command, false, None, Some(message)));
+        }
+        if crate::backend::capabilities::unproven_value_format_requested(command, arguments) {
+            let message = crate::backend::capabilities::value_format_unsupported_message(command);
+            return Some(self.response(request_seq, command, false, None, Some(message)));
+        }
+        None
     }
 
     /// Reject an editor-initiated control request in mirror mode.
@@ -1357,6 +1405,12 @@ fn dap_stop_reason(reason: &StopReason) -> String {
 
 /// Answer a DAP `breakpointLocations` request from the local AST oracle (the
 /// source is on the same host as `perl-dap`), independent of the peer.
+///
+/// Retained (unit-proven) as the lower oracle helper for the #9581 re-enable
+/// gate (#10524 + #2300 + #9021 + #7566). The dispatch path is floored while
+/// `supportsBreakpointLocationsRequest` is `false`, so this is unreachable in
+/// production until that gate passes.
+#[allow(dead_code)]
 fn handle_breakpoint_locations(args: Option<&Value>) -> Value {
     let empty = json!({ "breakpoints": [] });
     let Some(args) = args else { return empty };
@@ -1618,7 +1672,15 @@ mod tests {
         assert_eq!(caps["supportsConfigurationDoneRequest"], true);
         assert_eq!(caps["supportsConditionalBreakpoints"], true);
         assert_eq!(caps["supportsFunctionBreakpoints"], true);
-        assert_eq!(caps["supportsBreakpointLocationsRequest"], true);
+        // #9581: breakpointLocations (and the rest of the secondary rows) are
+        // explicit false floor rows on the mirror surface.
+        assert_eq!(caps["supportsBreakpointLocationsRequest"], false);
+        assert_eq!(caps["supportsCompletionsRequest"], false);
+        assert_eq!(caps["supportsModulesRequest"], false);
+        assert_eq!(caps["supportsLoadedSourcesRequest"], false);
+        assert_eq!(caps["supportsRestartRequest"], false);
+        assert_eq!(caps["supportsValueFormattingOptions"], false);
+        assert_eq!(caps["supportsCancelRequest"], false);
         assert_eq!(caps["supportsEvaluateForHovers"], false);
         assert_eq!(caps["supportsHitConditionalBreakpoints"], false);
         assert_eq!(caps["supportsLogPoints"], false);
@@ -1637,6 +1699,15 @@ mod tests {
         let caps = body.ok_or_else(|| "initialize response missing capabilities".to_string())?;
         assert_eq!(caps["supportsConditionalBreakpoints"], true);
         assert_eq!(caps["supportsLogPoints"], false);
+        // #9581: the secondary-capability rows are explicit false on the mirror
+        // surface, before any peer connects.
+        assert_eq!(caps["supportsCompletionsRequest"], false);
+        assert_eq!(caps["supportsModulesRequest"], false);
+        assert_eq!(caps["supportsLoadedSourcesRequest"], false);
+        assert_eq!(caps["supportsRestartRequest"], false);
+        assert_eq!(caps["supportsValueFormattingOptions"], false);
+        assert_eq!(caps["supportsBreakpointLocationsRequest"], false);
+        assert_eq!(caps["supportsCancelRequest"], false);
         let initialized = out
             .get(1)
             .ok_or_else(|| "initialize response missing initialized event".to_string())?;
