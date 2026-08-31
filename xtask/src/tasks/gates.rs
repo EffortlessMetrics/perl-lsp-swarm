@@ -1567,7 +1567,7 @@ fn run_gate_plan(
                 subject_path,
                 &root,
             )?;
-            let tracked_status = cmd!("git", "status", "--porcelain=v1", "--untracked-files=no")
+            let tracked_status = cmd!("git", "status", "--porcelain=v1")
                 .dir(&root)
                 .read()
                 .map_err(|error| {

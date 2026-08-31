@@ -103,13 +103,16 @@ pub(super) fn route_disposition_inputs(
 
 /// Project the runner gate rows into executable identities for the domain.
 #[allow(dead_code)] // consumer seam: #10179 CLI publication
-pub(super) fn route_execution_identities(policy: &GatePolicy) -> Vec<RouteExecutionIdentity> {
+pub(super) fn route_execution_identities(
+    policy: &GatePolicy,
+    package_args: &[String],
+) -> Vec<RouteExecutionIdentity> {
     policy
         .gates
         .iter()
         .map(|gate| RouteExecutionIdentity {
             gate_id: gate.name.clone(),
-            command: gate.command.clone(),
+            command: gate.command.replace("{package_args}", &package_args.join(" ")),
             timeout_seconds: gate.timeout_seconds,
         })
         .collect()
@@ -364,6 +367,18 @@ mod route_plan_seam_tests {
         }
     }
 
+    #[test]
+    fn route_execution_identity_renders_scoped_package_arguments() {
+        let mut scoped = gate("clippy_scoped", "pr_fast", true, false);
+        scoped.command = "cargo clippy {package_args}".to_string();
+        let policy = policy(vec![scoped]);
+        let package_args = vec!["-p".to_string(), "perl-lsp-rs".to_string()];
+
+        let identities = route_execution_identities(&policy, &package_args);
+        assert_eq!(identities[0].command, "cargo clippy -p perl-lsp-rs");
+        assert!(!identities[0].command.contains("{package_args}"));
+    }
+
     fn ledger_row(
         name: &str,
         owner: Option<&str>,
@@ -412,7 +427,7 @@ mod route_plan_seam_tests {
                 scope: None,
                 selector_digest: DIGEST.to_string(),
             },
-            execution: route_execution_identities(policy),
+            execution: route_execution_identities(policy, &[]),
         }
     }
 
@@ -828,7 +843,7 @@ mod route_plan_canonical_seam_tests {
                 scope: None,
                 selector_digest: DIGEST.to_string(),
             },
-            execution: route_execution_identities(&policy),
+            execution: route_execution_identities(&policy, &[]),
         }
     }
 
