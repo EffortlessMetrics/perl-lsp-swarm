@@ -283,7 +283,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 
 | Command                       | Description                                                                                                        |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file                                                                    |
+| **Perl: Check Syntax**        | Run PATH `perl -c` on the saved active file (executes compile-phase code; not a native `perllsp --check`) |
 | **Perl: Run Critic**          | Run the critic over the active file — native by default                                                            |
 | **Perl: Set Critic Severity** | Choose the minimum critic severity to report — `5` reports only the most severe violations, `1` reports everything |
 
