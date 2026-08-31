@@ -195,6 +195,12 @@ copy_doc "$DOCS_DIR/reference/CONFIGURATION_SCHEMA.md" "$BOOK_SRC/reference/conf
 copy_doc "$DOCS_DIR/how-to/UPGRADING.md" "$BOOK_SRC/reference/upgrading.md"
 copy_doc "$DOCS_DIR/reference/ERROR_HANDLING_API_CONTRACTS.md" "$BOOK_SRC/reference/error-handling-contracts.md"
 copy_doc "$DOCS_DIR/reference/LSP_MISSING_FEATURES_REPORT.md" "$BOOK_SRC/reference/lsp-missing-features.md"
+if [ -f "$REPO_ROOT/target/policy/non-rust-inventory.md" ]; then
+    copy_doc "$REPO_ROOT/target/policy/non-rust-inventory.md" "$BOOK_SRC/reference/non-rust-inventory.md"
+else
+    echo "  Warning: Generated non-Rust inventory not found; using the committed reference copy"
+    copy_doc "$DOCS_DIR/policy/NON_RUST_INVENTORY.md" "$BOOK_SRC/reference/non-rust-inventory.md"
+fi
 
 # DAP section
 echo "Setting up DAP..."

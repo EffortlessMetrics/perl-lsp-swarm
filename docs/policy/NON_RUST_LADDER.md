@@ -129,4 +129,4 @@ Tightening stream:
 - Doctrine: [FILE_POLICY.md](FILE_POLICY.md)
 - Schema: [NON_RUST_POLICY.md](NON_RUST_POLICY.md)
 - Catalog: [POLICY_ALLOWLISTS.md](POLICY_ALLOWLISTS.md)
-- Live inventory: [NON_RUST_INVENTORY.md](NON_RUST_INVENTORY.md) (regenerable)
+- Reference snapshot: [NON_RUST_INVENTORY.md](NON_RUST_INVENTORY.md); live candidate-tree output is generated at `target/policy/non-rust-inventory.{md,json}` and published by CI/docs builds.

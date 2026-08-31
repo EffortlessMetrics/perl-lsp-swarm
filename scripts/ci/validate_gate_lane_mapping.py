@@ -102,7 +102,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "workflow_audit": {"lanes": ["pr_smoke"]},
     "nested_lock_check": {"lanes": ["pr_smoke"]},
     "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
-    "non_rust_inventory_check": {"lanes": ["merge_gate_shards"]},
+    "non_rust_inventory_check": {"lanes": ["non_rust_policy"]},
     "lint_policy": {"lanes": ["merge_gate_shards"]},
     "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},

@@ -1514,7 +1514,7 @@ gates:
 
   - name: non_rust_inventory_check
     tier: merge_gate
-    description: "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
+    description: "Validate current-tree non-Rust classification and emit reviewable inventory artifacts"
     required: true
     command: cargo xtask non-rust inventory --check
     timeout_seconds: 300
@@ -2181,13 +2181,16 @@ workflow_integration:
         - common_corpus_clean
         - lsp_smoke
         - docs_build
-        - non_rust_inventory_check
         - v2_bundle_sync
         - nested_lock_check
         - published_crate_count_pr_fast
       # Note: PR Smoke owns clippy_core/unit_core/parser stack. Parser audit,
       # v2 parity, workflow audit, and full policy closeout remain defined but
       # are too long for the bounded merge-blocking workflow shard.
+
+    non-rust-policy:
+      gates:
+        - non_rust_inventory_check
 
     release-gate:
       gates:

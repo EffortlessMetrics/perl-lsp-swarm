@@ -86,6 +86,7 @@
 - [Upgrade Guides](./reference/upgrading.md)
 - [Error Handling Contracts](./reference/error-handling-contracts.md)
 - [LSP Missing Features](./reference/lsp-missing-features.md)
+- [Non-Rust File Inventory](./reference/non-rust-inventory.md)
 
 ---
 

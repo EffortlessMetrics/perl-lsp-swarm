@@ -10,6 +10,9 @@ on:
       - 'book/**'
       - 'scripts/populate-book.sh'
       - 'scripts/tests/test-populate-book-roadmap-links.sh'
+      - 'policy/non-rust-allowlist.toml'
+      - 'xtask/src/tasks/file_policy.rs'
+      - 'xtask/src/main.rs'
       # The Helix drift check must run when the checker itself changes, not
       # only when the documents it governs change -- otherwise the check is not
       # load-bearing on its own subject file (same rule as #5425).
@@ -66,6 +69,9 @@ jobs:
         run: |
           cargo install mdbook --version 0.4.40 --locked || true
           mdbook --version
+
+      - name: Validate and generate current-tree non-Rust inventory
+        run: cargo run --locked -p xtask -- non-rust inventory --check
 
       - name: Populate documentation
         run: |

@@ -278,6 +278,31 @@ review_after = "2026-06-07"
 expires = "2026-11-07"
 
 [[lane]]
+id = "non_rust_policy"
+workflow = ".github/workflows/ci.yml"
+job = "non-rust-policy"
+tier = "merge_gate"
+kind = "policy"
+blocking = true
+default_pr = true
+runner = "ubuntu_24_04"
+base_lem = 3
+owner = "release/ci"
+intent = "Validate the exact candidate tree against non-Rust classification policy and publish attributable evidence."
+failure_mode = "A candidate adds an unclassified non-Rust path or the policy instrument cannot classify the exact merge subject."
+proof_obligation = "Bind subject and base SHAs, run non_rust_inventory_check, and publish Markdown, JSON, and an exact-tree receipt."
+evidence = [
+  "target/policy/non-rust-inventory.md",
+  "target/policy/non-rust-inventory.json",
+  "target/policy/non-rust-policy-exact-tree.json",
+]
+allowed_triggers = ["pull_request", "push", "merge_group", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-11-30"
+expires = "2027-02-28"
+
+[[lane]]
 id = "merge_gate_aggregate"
 workflow = ".github/workflows/ci.yml"
 job = "merge-gate"
