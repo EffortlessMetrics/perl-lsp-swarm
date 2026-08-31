@@ -1011,6 +1011,21 @@ local function apply_selected_completion(item, rstate)
       apply_edit(item.data.server, dv.doc, edit, false, false)
     end
   end
+  -- Local patch (#11189): a colliding label's internal menu key carries the
+  -- "#N" disambiguation suffix, and the autocomplete plugin's plain fallback
+  -- inserts the key text verbatim. For suffix-carrying rows only, the exact
+  -- pre-suffix insert target is applied here instead, so the internal
+  -- identity encoding can never leak into the document. Unsuffixed rows keep
+  -- the legacy plugin fallback byte-for-byte (key equals insert target).
+  if
+    not edit_applied
+    and dv
+    and item.data.insert_text
+    and item.data.insert_text ~= item.text
+  then
+    dv.doc:text_input(item.data.insert_text)
+    edit_applied = true
+  end
   if edit_applied then
     rstate.applied = true
   end
@@ -2454,7 +2469,27 @@ function lsp.request_completion(doc, line, col, forced)
             desc = desc:gsub("[%s\n]+$", "")
               :gsub("\n\n\n+", "\n\n")
 
-            symbols.items[label] = {
+            -- Local patch (#11189): display labels are presentation, not
+            -- identity. The completion menu is a label-keyed map, so two
+            -- valid items sharing one label used to collide and the later
+            -- item silently overwrote the earlier one. The first occurrence
+            -- of a label keeps it as the internal key (its key equals the
+            -- text the plugin always inserted, so plain items are unchanged);
+            -- later occurrences gain a deterministic source-order "#N"
+            -- suffix. The suffix lives in the internal key only: every row
+            -- keeps its own exact protocol item in data.completion_item, and
+            -- data.insert_text preserves the pre-suffix insert target so
+            -- selection below never leaks the disambiguator into the buffer.
+            local key = label
+            if symbols.items[key] then
+              local occurrence = 2
+              while symbols.items[label .. "#" .. occurrence] do
+                occurrence = occurrence + 1
+              end
+              key = label .. "#" .. occurrence
+            end
+
+            symbols.items[key] = {
               info = info,
               desc = desc,
               data = {
@@ -2463,7 +2498,10 @@ function lsp.request_completion(doc, line, col, forced)
                 server = server, completion_item = symbol, subject = subject,
                 -- Local patch (#11188): one structured pre-apply resolve
                 -- state per item; selection and hover share it.
-                resolve = new_completion_resolve_state(server, symbol, subject)
+                resolve = new_completion_resolve_state(server, symbol, subject),
+                -- Local patch (#11189): exact plain-insert target for
+                -- suffix-carrying keys (see the select-time fallback).
+                insert_text = label
               },
               onselect = autocomplete_onselect
             }
@@ -2473,7 +2511,7 @@ function lsp.request_completion(doc, line, col, forced)
               and
               not symbol.documentation
             then
-              symbols.items[label].onhover = autocomplete_onhover
+              symbols.items[key].onhover = autocomplete_onhover
             end
 
             symbol_count = symbol_count + 1
