@@ -57,6 +57,13 @@ RULESET_LIST_TRUNCATED = "ruleset_list_truncated"
 # request per surface keeps the response digest single-valued.
 RULESET_PAGE_SIZE = 100
 
+# Classic branch protection uses -1 on a required check to mean "any source"
+# rather than a specific app. It is a sentinel, not an app identity, so it is
+# carried as an absent binding: the reconciler then reports a mismatch against
+# any declared `classic_app_id`, which is the correct verdict — "any source"
+# does not satisfy "must be app N".
+ANY_SOURCE_APP_ID = -1
+
 
 class ObserverError(RuntimeError):
     """Capture could not produce a well-formed observation."""
@@ -107,8 +114,23 @@ class ApiResult:
 Transport = Callable[[str], ApiResult]
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect.
+
+    The default opener copies request headers onto a redirected request
+    without checking that the host is unchanged, which would forward the
+    bearer token to whatever host a 3xx names. These are idempotent GETs
+    against a fixed API root and gain nothing from following redirects, so a
+    3xx is surfaced as its own status and read as an unreadable surface.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def http_transport(token: str | None) -> Transport:
     """Build a read-only HTTPS transport. The token is used, never retained."""
+    opener = urllib.request.build_opener(NoRedirect)
 
     def get(path: str) -> ApiResult:
         request = urllib.request.Request(  # noqa: S310 - fixed https API root
@@ -117,7 +139,7 @@ def http_transport(token: str | None) -> Transport:
             headers=headers(token),
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with opener.open(request, timeout=30) as response:
                 return ApiResult(
                     response.status,
                     response.read(),
@@ -218,9 +240,24 @@ class Capture:
             if not isinstance(key, str) or not key.strip():
                 raise ObserverError("capture bundle entry key must be a string")
             status = entry["status"]
-            if status is not None and not isinstance(status, int):
+            if status is not None and (
+                not isinstance(status, int) or isinstance(status, bool)
+            ):
                 raise ObserverError(
                     "capture bundle entry status must be an integer or null"
+                )
+            failed = entry.get("transport_failed", False)
+            if not isinstance(failed, bool):
+                raise ObserverError(
+                    "capture bundle entry transport_failed must be a boolean"
+                )
+            # The live transport emits a status or a transport failure, never
+            # both and never neither. Imported evidence may not represent a
+            # state the observer itself cannot produce.
+            if failed != (status is None):
+                raise ObserverError(
+                    "capture bundle entry must carry a status exactly when it "
+                    "did not fail in transport"
                 )
             try:
                 body = base64.b64decode(entry["body_base64"], validate=True)
@@ -233,12 +270,7 @@ class Capture:
                 raise ObserverError("capture bundle entry link must be a string")
             capture.record(
                 key,
-                ApiResult(
-                    status,
-                    body,
-                    transport_failed=bool(entry.get("transport_failed", False)),
-                    link=link,
-                ),
+                ApiResult(status, body, transport_failed=failed, link=link),
             )
         return capture
 
@@ -247,29 +279,59 @@ def ruleset_key(ruleset_id: int) -> str:
     return f"ruleset:{ruleset_id}"
 
 
+def encode_segment(value: str, field: str) -> str:
+    """Percent-encode one path segment.
+
+    A branch name may legally contain characters that are reserved in a URL
+    path or query. Interpolating them raw would let a valid branch address a
+    different endpoint entirely.
+    """
+    if not isinstance(value, str) or not value:
+        raise ObserverError(f"{field} must be a non-empty string")
+    return urllib.parse.quote(value, safe="")
+
+
+def encode_repository(repository: str) -> str:
+    """Encode `owner/name`, rejecting anything that is not exactly two parts."""
+    if not isinstance(repository, str):
+        raise ObserverError("repository must be a string")
+    parts = repository.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise ObserverError("repository must be exactly owner/name")
+    owner, name = parts
+    return f"{encode_segment(owner, 'repository owner')}/{encode_segment(name, 'repository name')}"
+
+
 def capture_live(repository: str, branch: str, transport: Transport) -> Capture:
     """Perform the bounded read-only GET sequence against the live API."""
+    repo = encode_repository(repository)
+    ref = encode_segment(branch, "branch")
     capture = Capture()
-    capture.record("repository", transport(f"repos/{repository}"))
-    capture.record(
-        "branch_head", transport(f"repos/{repository}/git/ref/heads/{branch}")
-    )
+    capture.record("repository", transport(f"repos/{repo}"))
+    capture.record("branch_head", transport(f"repos/{repo}/git/ref/heads/{ref}"))
     capture.record(
         "classic_branch_protection",
-        transport(f"repos/{repository}/branches/{branch}/protection"),
+        transport(f"repos/{repo}/branches/{ref}/protection"),
     )
     listing = capture.record(
         "ruleset_list",
         transport(
-            f"repos/{repository}/rulesets"
+            f"repos/{repo}/rulesets"
             f"?includes_parents=true&per_page={RULESET_PAGE_SIZE}"
         ),
     )
     if listing.ok:
-        for ruleset_id in branch_ruleset_ids(listing):
+        try:
+            listed = branch_ruleset_ids(listing)
+        except ObserverError:
+            # A malformed listing is an unreadable ruleset surface, decided in
+            # `ruleset_surface`. Capture must not abort: the identity already
+            # captured is still bindable evidence.
+            listed = []
+        for ruleset_id in listed:
             capture.record(
                 ruleset_key(ruleset_id),
-                transport(f"repos/{repository}/rulesets/{ruleset_id}"),
+                transport(f"repos/{repo}/rulesets/{ruleset_id}"),
             )
     return capture
 
@@ -426,21 +488,31 @@ def classic_surface(
         "required_status_checks": [],
     }
     if result.ok:
-        payload = result.json("classic_branch_protection")
-        if not isinstance(payload, dict):
-            raise ObserverError("classic protection response must be an object")
-        checks = payload.get("required_status_checks")
-        if checks is not None and not isinstance(checks, dict):
-            raise ObserverError(
-                "classic protection required_status_checks must be an object"
-            )
+        try:
+            payload = result.json("classic_branch_protection")
+            if not isinstance(payload, dict):
+                raise ObserverError(
+                    "classic protection response must be an object"
+                )
+            checks = payload.get("required_status_checks")
+            if checks is not None and not isinstance(checks, dict):
+                raise ObserverError(
+                    "classic protection required_status_checks must be an object"
+                )
+            strict = (checks or {}).get("strict")
+            if strict is not None and not isinstance(strict, bool):
+                raise ObserverError("classic protection strict must be a boolean")
+            rows = classic_checks(checks or {})
+        except ObserverError:
+            # A 200 we cannot parse is an unreadable instrument, not an absent
+            # one. Reporting it keeps the rest of the observation bindable
+            # while still forcing NOT_PROVEN downstream.
+            surface["instrument_state"] = "unreadable"
+            limitations.append(CLASSIC_UNREADABLE)
+            return surface
         surface["response_sha256"] = result.sha256()
-        surface["strict"] = (checks or {}).get("strict")
-        if surface["strict"] is not None and not isinstance(
-            surface["strict"], bool
-        ):
-            raise ObserverError("classic protection strict must be a boolean")
-        surface["required_status_checks"] = classic_checks(checks or {})
+        surface["strict"] = strict
+        surface["required_status_checks"] = rows
         return surface
 
     if result.status == 404 and not result.transport_failed:
@@ -481,7 +553,10 @@ def classic_checks(required: dict[str, Any]) -> list[dict[str, Any]]:
             context = check.get("context")
             if not isinstance(context, str) or not context:
                 raise ObserverError("classic protection check is missing context")
-            rows[context] = app_identity(check.get("app_id"), "classic app_id")
+            raw = check.get("app_id")
+            if raw == ANY_SOURCE_APP_ID:
+                raw = None
+            rows[context] = app_identity(raw, "classic app_id")
     return [
         {"context": context, "app_id": rows[context]} for context in sorted(rows)
     ]
@@ -513,13 +588,20 @@ def ruleset_surface(capture: Capture, limitations: list[str]) -> dict[str, Any]:
         limitations.append(RULESET_LIST_UNREADABLE)
         return surface
 
+    try:
+        listed = branch_ruleset_ids(result)
+    except ObserverError:
+        surface["instrument_state"] = "unreadable"
+        limitations.append(RULESET_LIST_UNREADABLE)
+        return surface
+
     surface["list_response_sha256"] = result.sha256()
     if result.has_next_page:
         # A second page exists that this bounded capture did not read, so the
         # observed ruleset set is a subset of live enforcement.
         limitations.append(RULESET_LIST_TRUNCATED)
     items: list[dict[str, Any]] = []
-    for ruleset_id in branch_ruleset_ids(result):
+    for ruleset_id in listed:
         key = ruleset_key(ruleset_id)
         if key not in capture.entries:
             limitations.append(f"{RULESET_LIST_INCOMPLETE}:{ruleset_id}")
@@ -533,7 +615,13 @@ def ruleset_surface(capture: Capture, limitations: list[str]) -> dict[str, Any]:
             )
             limitations.append(f"{code}:{ruleset_id}")
             continue
-        item = ruleset_item(ruleset_id, detail)
+        try:
+            item = ruleset_item(ruleset_id, detail)
+        except ObserverError:
+            # A detail response we cannot parse leaves this ruleset's
+            # contribution unknown; it is reported, never assumed empty.
+            limitations.append(f"{RULESET_DETAIL_UNREADABLE}:{ruleset_id}")
+            continue
         if item is None:
             limitations.append(f"{RULESET_DETAIL_UNREPRESENTABLE}:{ruleset_id}")
             continue
@@ -632,8 +720,15 @@ def bypass_actors(payload: dict[str, Any], ruleset_id: int) -> list[dict[str, An
                 "bypass_mode": bypass_mode,
             }
         )
+    # Identical rows carry no additional information, and the reconciler
+    # rejects a duplicate bypass identity outright, so collapse them here
+    # rather than losing the whole snapshot to a repeated row.
+    unique = {
+        (row["actor_type"], row["actor_id"], row["bypass_mode"]): row
+        for row in rows
+    }
     return sorted(
-        rows,
+        unique.values(),
         key=lambda row: (
             row["actor_type"],
             -1 if row["actor_id"] is None else row["actor_id"],
@@ -758,27 +853,40 @@ def enforce_no_empty_surface_claim(snapshot: dict[str, Any]) -> None:
 
 
 def build_authority(
-    snapshot: dict[str, Any],
     *,
     producer: str,
+    declared_repository: str,
+    declared_repository_id: int,
+    declared_branch: str,
     max_age_seconds: int,
     max_future_skew_seconds: int,
     evaluated_at: str | None = None,
 ) -> dict[str, Any]:
-    """Emit the independent reconciliation authority for this observation.
+    """Emit the reconciliation authority from OPERATOR-DECLARED identity.
 
-    The authority restates repository identity and freshness policy so a
-    snapshot cannot authenticate itself. It is written separately so an
-    operator can supply their own instead.
+    The authority exists so a snapshot cannot authenticate itself, which means
+    it must never be derived from the observation. Every identity value here
+    comes from what the caller declared up front; the reconciler is what
+    compares those declarations against what was actually observed, and a
+    disagreement is its to report.
     """
-    repository = snapshot["repository"]
+    if not isinstance(declared_repository_id, int) or isinstance(
+        declared_repository_id, bool
+    ):
+        raise ObserverError("declared repository id must be an integer")
+    if declared_repository_id <= 0:
+        raise ObserverError("declared repository id must be positive")
+    if len(declared_repository.split("/")) != 2 or not all(
+        declared_repository.split("/")
+    ):
+        raise ObserverError("declared repository must be exactly owner/name")
     return {
         "schema_version": 1,
         "producer": producer,
         "repository": {
-            "full_name": repository["full_name"],
-            "repository_id": repository["repository_id"],
-            "default_branch": repository["default_branch"],
+            "full_name": declared_repository,
+            "repository_id": declared_repository_id,
+            "default_branch": declared_branch,
         },
         "evaluated_at": evaluated_at or utc_now(),
         "max_observation_age_seconds": max_age_seconds,
@@ -818,11 +926,19 @@ def emit(args: argparse.Namespace, capture: Capture) -> int:
     )
     write_json(args.snapshot, snapshot)
     if args.authority:
+        if args.authority_repository_id is None:
+            raise ObserverError(
+                "--authority requires --authority-repository-id: the authority "
+                "must state repository identity independently of the "
+                "observation, so it cannot be taken from the capture"
+            )
         write_json(
             args.authority,
             build_authority(
-                snapshot,
                 producer=args.producer,
+                declared_repository=args.repository,
+                declared_repository_id=args.authority_repository_id,
+                declared_branch=args.branch,
                 max_age_seconds=args.max_observation_age_seconds,
                 max_future_skew_seconds=args.max_future_skew_seconds,
             ),
@@ -848,6 +964,10 @@ def emit(args: argparse.Namespace, capture: Capture) -> int:
 
 
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
+    # Declared by the operator, never derived from the observation: these are
+    # what the reconciliation authority states independently.
+    parser.add_argument("--repository", required=True)
+    parser.add_argument("--authority-repository-id", type=int)
     parser.add_argument("--branch", default="main")
     parser.add_argument("--source", choices=list(LIVE_SOURCES), required=True)
     parser.add_argument("--static-receipt", type=Path, required=True)
@@ -866,7 +986,6 @@ def main(argv: Iterable[str] | None = None) -> int:
     capture = commands.add_parser(
         "capture", help="read both live surfaces and emit a snapshot"
     )
-    capture.add_argument("--repository", required=True)
     add_common_arguments(capture)
 
     assemble = commands.add_parser(

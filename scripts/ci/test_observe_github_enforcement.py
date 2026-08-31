@@ -222,9 +222,12 @@ def static_receipt() -> dict:
 
 
 def authority(snapshot: dict, evaluated_at: str = "2026-08-16T00:05:00Z") -> dict:
+    """Operator-declared identity, deliberately not read from the snapshot."""
     return observer.build_authority(
-        snapshot,
         producer="github-enforcement-observer",
+        declared_repository=REPOSITORY,
+        declared_repository_id=REPOSITORY_ID,
+        declared_branch="main",
         max_age_seconds=3600,
         max_future_skew_seconds=300,
         evaluated_at=evaluated_at,
@@ -549,6 +552,58 @@ class ClassicObservation(unittest.TestCase):
             [{"context": "Legacy Context", "app_id": None}],
         )
 
+    def test_any_source_sentinel_is_not_an_app_identity(self) -> None:
+        """Classic protection uses app_id -1 for "any source".
+
+        Rejecting it as a non-positive integer would make the classic surface
+        unreadable for a common, legitimate configuration; carrying it through
+        as -1 would invent an app binding that does not exist.
+        """
+        payload = {
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["Classic Required"],
+                "checks": [{"context": "Classic Required", "app_id": -1}],
+            }
+        }
+        snapshot = observe(transport(classic=(200, body(payload))))
+        classic = snapshot["classic_branch_protection"]
+        self.assertEqual(classic["instrument_state"], "observed")
+        self.assertEqual(
+            classic["required_status_checks"],
+            [{"context": "Classic Required", "app_id": None}],
+        )
+
+    def test_any_source_against_a_declared_app_binding_is_drift(self) -> None:
+        """The mapping must not launder a real disagreement into a match."""
+        payload = {
+            "required_status_checks": {
+                "strict": True,
+                "checks": [
+                    {"context": "Classic Required", "app_id": -1},
+                    {"context": "Both Required", "app_id": APP_ID},
+                ],
+            }
+        }
+        snapshot = observe(transport(classic=(200, body(payload))))
+        result = model.reconcile(snapshot, static_receipt(), authority(snapshot))
+        self.assertEqual(result["status"], "DRIFT")
+        self.assertIn(
+            "classic_app_identity_mismatch",
+            {row["code"] for row in result["differences"]},
+        )
+
+    def test_duplicate_bypass_actors_do_not_invalidate_the_snapshot(self) -> None:
+        """The reconciler rejects a duplicate bypass identity outright."""
+        detail = json.loads(ruleset_detail_response())
+        detail["bypass_actors"] = [
+            {"actor_id": None, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
+            {"actor_id": None, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
+        ]
+        snapshot = observe(transport(detail=(200, body(detail))))
+        self.assertEqual(len(snapshot["rulesets"]["items"][0]["bypass_actors"]), 1)
+        model.validate_snapshot(snapshot)
+
     def test_protection_without_status_checks_is_observed_and_empty(self) -> None:
         snapshot = observe(transport(classic=(200, body({"allow_forks": True}))))
         classic = snapshot["classic_branch_protection"]
@@ -657,6 +712,78 @@ class CaptureBundle(unittest.TestCase):
             with self.assertRaises(observer.ObserverError):
                 observer.Capture.from_bundle(bundle)
 
+    def test_bundle_cannot_represent_a_state_the_transport_never_emits(
+        self,
+    ) -> None:
+        """Imported evidence must be a state the live observer could produce.
+
+        A status alongside a transport failure, or neither, describes an
+        outcome no real capture can reach; admitting it would let connector
+        evidence claim something the observer never saw.
+        """
+        for status, failed in ((200, True), (None, False), (403, True)):
+            with self.assertRaises(observer.ObserverError):
+                observer.Capture.from_bundle(
+                    {
+                        "schema_version": 1,
+                        "entries": [
+                            {
+                                "key": "repository",
+                                "status": status,
+                                "transport_failed": failed,
+                                "body_base64": "",
+                            }
+                        ],
+                    }
+                )
+
+    def test_bundle_missing_a_listed_ruleset_detail_is_reported(self) -> None:
+        """A bundle can name a ruleset it never captured.
+
+        Without this the `ruleset_list_incomplete` branch is unreachable in
+        the suite: an implementation that raised, or that dropped the ruleset
+        with no limitation at all, would still pass.
+        """
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        bundle = capture.to_bundle()
+        bundle["entries"] = [
+            entry
+            for entry in bundle["entries"]
+            if entry["key"] != observer.ruleset_key(RULESET_ID)
+        ]
+        restored = observer.Capture.from_bundle(bundle)
+        snapshot = observer.build_snapshot(
+            restored,
+            source="connector",
+            branch="main",
+            static_receipt=static_receipt(),
+            observed_at="2026-08-16T00:00:00Z",
+        )
+        self.assertEqual(snapshot["rulesets"]["items"], [])
+        self.assertIn(
+            f"{observer.RULESET_LIST_INCOMPLETE}:{RULESET_ID}",
+            snapshot["observation"]["limitations"],
+        )
+        self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+        result = model.reconcile(snapshot, static_receipt(), authority(snapshot))
+        self.assertEqual(result["status"], "NOT_PROVEN")
+
+    def test_bundle_transport_failed_must_be_a_boolean(self) -> None:
+        with self.assertRaises(observer.ObserverError):
+            observer.Capture.from_bundle(
+                {
+                    "schema_version": 1,
+                    "entries": [
+                        {
+                            "key": "repository",
+                            "status": None,
+                            "transport_failed": "yes",
+                            "body_base64": "",
+                        }
+                    ],
+                }
+            )
+
 
 class FreshnessBinding(unittest.TestCase):
     def test_stale_observation_is_rejected_by_the_authority(self) -> None:
@@ -691,6 +818,10 @@ class CommandLine(unittest.TestCase):
                     "assemble",
                     "--capture",
                     str(bundle),
+                    "--repository",
+                    REPOSITORY,
+                    "--authority-repository-id",
+                    str(REPOSITORY_ID),
                     "--source",
                     "connector",
                     "--branch",
@@ -730,6 +861,8 @@ class CommandLine(unittest.TestCase):
                     "assemble",
                     "--capture",
                     str(bundle),
+                    "--repository",
+                    REPOSITORY,
                     "--source",
                     "operator",
                     "--static-receipt",
@@ -751,6 +884,8 @@ class CommandLine(unittest.TestCase):
                     "assemble",
                     "--capture",
                     str(bundle),
+                    "--repository",
+                    REPOSITORY,
                     "--source",
                     "operator",
                     "--static-receipt",
@@ -785,26 +920,53 @@ class HttpTransport(unittest.TestCase):
         def __exit__(self, *exc) -> bool:
             return False
 
+    class FakeOpener:
+        def __init__(self, fake, captured) -> None:
+            self.fake = fake
+            self.captured = captured
+
+        def open(self, request, timeout=None):
+            self.captured["url"] = request.full_url
+            self.captured["method"] = request.get_method()
+            self.captured["headers"] = dict(request.header_items())
+            if isinstance(self.fake, Exception):
+                raise self.fake
+            return self.fake
+
     def run_with(self, fake, path: str = "repos/o/r"):
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = urllib.request.build_opener
         captured = {}
+        captured["handlers"] = ()
 
-        def fake_urlopen(request, timeout=None):
-            captured["url"] = request.full_url
-            captured["method"] = request.get_method()
-            captured["headers"] = dict(request.header_items())
-            if isinstance(fake, Exception):
-                raise fake
-            return fake
+        def fake_build_opener(*handlers):
+            captured["handlers"] = handlers
+            return self.FakeOpener(fake, captured)
 
-        urllib.request.urlopen = fake_urlopen
+        urllib.request.build_opener = fake_build_opener
         try:
             result = observer.http_transport("secret-token")(path)
         finally:
-            urllib.request.urlopen = original
+            urllib.request.build_opener = original
         return result, captured
+
+    def test_transport_is_built_with_the_no_redirect_handler(self) -> None:
+        """A redirect would forward the bearer token to another host.
+
+        urllib's default opener copies request headers onto the redirected
+        request without checking the host, so the handler must be installed.
+        """
+        _, captured = self.run_with(self.FakeResponse(200, b"[]"))
+        self.assertIn(observer.NoRedirect, captured["handlers"])
+
+    def test_no_redirect_handler_refuses_to_follow(self) -> None:
+        handler = observer.NoRedirect()
+        self.assertIsNone(
+            handler.redirect_request(
+                None, None, 302, "Found", {}, "https://evil.example/x"
+            )
+        )
 
     def test_link_header_reaches_the_result(self) -> None:
         link = '<https://api.github.com/x?page=2>; rel="next"'
@@ -845,6 +1007,179 @@ class HttpTransport(unittest.TestCase):
         self.assertTrue(result.transport_failed)
         self.assertIsNone(result.status)
         self.assertEqual(result.body, b"")
+
+
+class PathEncoding(unittest.TestCase):
+    """A branch name is not a safe path fragment."""
+
+    def test_reserved_characters_in_a_branch_are_encoded(self) -> None:
+        recorder = RecordingTransport({})
+        observer.capture_live(REPOSITORY, "feature/a?b#c", recorder)
+        self.assertIn(
+            f"repos/{REPOSITORY}/branches/feature%2Fa%3Fb%23c/protection",
+            recorder.requested,
+        )
+        self.assertIn(
+            f"repos/{REPOSITORY}/git/ref/heads/feature%2Fa%3Fb%23c",
+            recorder.requested,
+        )
+        for path in recorder.requested:
+            self.assertNotIn("#", path)
+
+    def test_a_branch_cannot_inject_extra_path_segments(self) -> None:
+        recorder = RecordingTransport({})
+        observer.capture_live(REPOSITORY, "../../rulesets", recorder)
+        self.assertIn(
+            "repos/EffortlessMetrics/perl-lsp-swarm"
+            "/branches/..%2F..%2Frulesets/protection",
+            recorder.requested,
+        )
+
+    def test_repository_must_be_exactly_owner_and_name(self) -> None:
+        for bad in ("owner", "owner/name/extra", "/name", "owner/"):
+            with self.assertRaises(observer.ObserverError):
+                observer.capture_live(bad, "main", RecordingTransport({}))
+
+
+class MalformedSurfaces(unittest.TestCase):
+    """A 200 we cannot parse is an unreadable surface, not a lost capture.
+
+    Aborting would discard identity and branch-head evidence that is still
+    bindable, and would leave the reconciler with nothing to judge.
+    """
+
+    def test_malformed_classic_body_is_unreadable_not_fatal(self) -> None:
+        snapshot = observe(transport(classic=(200, b"{not json")))
+        classic = snapshot["classic_branch_protection"]
+        self.assertEqual(classic["instrument_state"], "unreadable")
+        self.assertEqual(classic["required_status_checks"], [])
+        self.assertIsNone(classic["response_sha256"])
+        self.assertIn(
+            observer.CLASSIC_UNREADABLE, snapshot["observation"]["limitations"]
+        )
+        result = model.reconcile(snapshot, static_receipt(), authority(snapshot))
+        self.assertEqual(result["status"], "NOT_PROVEN")
+
+    def test_classic_body_of_the_wrong_shape_is_unreadable(self) -> None:
+        snapshot = observe(transport(classic=(200, body(["not", "an", "object"]))))
+        self.assertEqual(
+            snapshot["classic_branch_protection"]["instrument_state"], "unreadable"
+        )
+
+    def test_malformed_ruleset_listing_is_unreadable_not_fatal(self) -> None:
+        snapshot = observe(transport(rulesets=(200, b"[[[")))
+        rulesets = snapshot["rulesets"]
+        self.assertEqual(rulesets["instrument_state"], "unreadable")
+        self.assertEqual(rulesets["items"], [])
+        self.assertIsNone(rulesets["list_response_sha256"])
+        self.assertIn(
+            observer.RULESET_LIST_UNREADABLE, snapshot["observation"]["limitations"]
+        )
+
+    def test_malformed_ruleset_detail_is_reported_per_ruleset(self) -> None:
+        snapshot = observe(transport(detail=(200, b"{broken")))
+        self.assertEqual(snapshot["rulesets"]["items"], [])
+        self.assertIn(
+            f"{observer.RULESET_DETAIL_UNREADABLE}:{RULESET_ID}",
+            snapshot["observation"]["limitations"],
+        )
+        self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+
+    def test_identity_failure_still_fails_closed_with_no_snapshot(self) -> None:
+        """Unlike a surface, a missing subject leaves nothing to bind."""
+        capture = observer.capture_live(REPOSITORY, "main", RecordingTransport({}))
+        with self.assertRaises(observer.ObserverError):
+            observer.build_snapshot(
+                capture,
+                source="operator",
+                branch="main",
+                static_receipt=static_receipt(),
+            )
+
+
+class AuthorityIndependence(unittest.TestCase):
+    """The authority must not be derived from the thing it authenticates."""
+
+    def test_authority_uses_declared_identity_not_the_observation(self) -> None:
+        snapshot = observe()
+        built = observer.build_authority(
+            producer="p",
+            declared_repository="Other/repo",
+            declared_repository_id=99,
+            declared_branch="release",
+            max_age_seconds=3600,
+            max_future_skew_seconds=300,
+            evaluated_at="2026-08-16T00:05:00Z",
+        )
+        self.assertEqual(built["repository"]["full_name"], "Other/repo")
+        self.assertEqual(built["repository"]["repository_id"], 99)
+        self.assertEqual(built["repository"]["default_branch"], "release")
+
+    def test_a_mismatched_declaration_is_caught_by_the_reconciler(self) -> None:
+        """This is the whole point: disagreement must surface, not be erased.
+
+        An implementation that copied identity out of the snapshot could never
+        produce this mismatch, so this test fails against it.
+        """
+        snapshot = observe()
+        built = observer.build_authority(
+            producer="p",
+            declared_repository="Other/repo",
+            declared_repository_id=99,
+            declared_branch="main",
+            max_age_seconds=3600,
+            max_future_skew_seconds=300,
+            evaluated_at="2026-08-16T00:05:00Z",
+        )
+        result = model.reconcile(snapshot, static_receipt(), built)
+        self.assertEqual(result["status"], "NOT_PROVEN")
+        self.assertIn("repository_name_mismatch", codes(result))
+
+    def test_declared_identity_is_validated(self) -> None:
+        for repository, identifier in (
+            ("owner", 1),
+            ("owner/name/extra", 1),
+            ("owner/name", 0),
+            ("owner/name", -1),
+            ("owner/name", True),
+        ):
+            with self.assertRaises(observer.ObserverError):
+                observer.build_authority(
+                    producer="p",
+                    declared_repository=repository,
+                    declared_repository_id=identifier,
+                    declared_branch="main",
+                    max_age_seconds=3600,
+                    max_future_skew_seconds=300,
+                )
+
+    def test_cli_refuses_to_write_an_authority_without_declared_id(self) -> None:
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle = root / "capture.json"
+            receipt = root / "static.json"
+            bundle.write_text(json.dumps(capture.to_bundle()), encoding="utf-8")
+            receipt.write_text(json.dumps(static_receipt()), encoding="utf-8")
+            code = observer.main(
+                [
+                    "assemble",
+                    "--capture",
+                    str(bundle),
+                    "--repository",
+                    REPOSITORY,
+                    "--source",
+                    "operator",
+                    "--static-receipt",
+                    str(receipt),
+                    "--snapshot",
+                    str(root / "snapshot.json"),
+                    "--authority",
+                    str(root / "authority.json"),
+                ]
+            )
+            self.assertEqual(code, 1)
+            self.assertFalse((root / "authority.json").exists())
 
 
 class Privacy(unittest.TestCase):

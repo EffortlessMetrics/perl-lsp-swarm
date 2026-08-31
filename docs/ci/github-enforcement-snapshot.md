@@ -145,6 +145,7 @@ GITHUB_TOKEN=... python3 scripts/ci/observe_github_enforcement.py capture \
   --static-receipt target/receipts/gate-enforcement-contract.json \
   --snapshot target/receipts/github-enforcement-observation.json \
   --authority target/receipts/github-enforcement-authority.json \
+  --authority-repository-id 1244101844 \
   --capture-bundle target/receipts/github-enforcement-capture.json
 
 python3 scripts/ci/reconcile_github_enforcement_snapshot.py \
@@ -154,6 +155,12 @@ python3 scripts/ci/reconcile_github_enforcement_snapshot.py \
   --authority target/receipts/github-enforcement-authority.json \
   --receipt target/receipts/github-enforcement-union.json
 ```
+
+The authority is written from what the caller **declared** — `--repository`, `--branch`, and `--authority-repository-id` — never from the observation, because an authority derived from the snapshot would let the snapshot authenticate itself. `--authority` without `--authority-repository-id` is refused. A declaration that disagrees with what was observed is the reconciler's to report, not the observer's to reconcile away.
+
+Requests never follow redirects: the default opener would forward the bearer token to whatever host a `3xx` names, and these are idempotent `GET`s against a fixed API root. A redirect is surfaced as its own status and read as an unreadable surface.
+
+Branch and repository names are percent-encoded per path segment, so a branch containing characters reserved in a URL cannot address a different endpoint.
 
 `capture` exits `0` on a complete observation, `2` when a surface could not be read to a definitive answer, and `1` when no bindable snapshot exists at all. A `--capture-bundle` records the exact response bytes so `assemble` can re-derive the identical snapshot offline — that is the `connector` shape, and it is what makes the capture reviewable after the fact.
 
