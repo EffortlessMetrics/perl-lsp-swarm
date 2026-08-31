@@ -479,6 +479,36 @@ pub enum PayloadContradiction {
     /// value, since an empty region leaves nothing to interpolate.
     /// [`CookedValue::Unavailable`] stays legitimate: it claims nothing.
     EmptyTerminalWithContradictoryValue,
+    /// A malformed range on an interpolation segment's own expression node.
+    ///
+    /// Distinct from [`PayloadContradiction::MalformedSegmentRange`]: the
+    /// segment's range may be perfectly wellformed while the child expression
+    /// it carries is not, and naming the segment would send a reader to the
+    /// wrong field.
+    MalformedInterpolationExpressionRange {
+        /// Index of the offending segment in recorded order.
+        index: usize,
+    },
+    /// An interpolation segment inside a payload whose form does not
+    /// interpolate.
+    ///
+    /// `'...'`, `q{...}`, and the single-quoted and backslash-quoted heredoc
+    /// forms take their content literally, so an interpolated child is not a
+    /// state their source can produce. This is the checked counterpart of the
+    /// `'$name'` versus `"$name"` distinction.
+    InterpolationInNonInterpolatingPayload {
+        /// Index of the offending segment in recorded order.
+        index: usize,
+    },
+    /// A normalization segment applying a rule its payload cannot perform.
+    ///
+    /// [`NormalizationRule::HeredocIndentStrip`] belongs to a `<<~` heredoc
+    /// alone: a string has no indentation to strip, and a heredoc that did not
+    /// record `indented` did not strip any.
+    NormalizationRuleNotAvailableToPayload {
+        /// Index of the offending segment in recorded order.
+        index: usize,
+    },
     /// A terminated string whose content leaves no room for its own syntax.
     ///
     /// A string's `raw_range` spans the quote operator and both delimiters, so
@@ -497,6 +527,19 @@ pub enum PayloadContradiction {
     TerminatedStringWithoutDelimiterBytes,
 }
 
+/// What a payload's written form permits its segments to be.
+///
+/// The geometry checker is shared by strings and heredocs, so form-specific
+/// permissions are passed in rather than inspected: the checker stays
+/// owner-neutral and each payload type answers for its own spelling.
+#[derive(Debug, Clone, Copy)]
+struct SegmentCapabilities {
+    /// Whether the form interpolates expressions in its content.
+    interpolates: bool,
+    /// Whether the form strips a leading indentation run from each body line.
+    strips_heredoc_indent: bool,
+}
+
 /// Check one payload's geometry and disposition agreement.
 ///
 /// `content_range` is the region the segments must tile: a string's content
@@ -507,6 +550,7 @@ fn payload_contradictions(
     segmentation: &SourceSegmentation,
     cooked: &CookedValue,
     terminal: PayloadTerminal,
+    capabilities: SegmentCapabilities,
 ) -> Vec<PayloadContradiction> {
     let mut found = Vec::new();
 
@@ -593,9 +637,24 @@ fn payload_contradictions(
             // hole inside the recorded run contradicts either name.
             found.push(PayloadContradiction::SegmentGap { index });
         }
+        match &segment.payload {
+            SourceSegmentPayload::Interpolation { .. } if !capabilities.interpolates => {
+                found.push(PayloadContradiction::InterpolationInNonInterpolatingPayload { index });
+            }
+            SourceSegmentPayload::Normalization { rule: NormalizationRule::HeredocIndentStrip }
+                if !capabilities.strips_heredoc_indent =>
+            {
+                found.push(PayloadContradiction::NormalizationRuleNotAvailableToPayload { index });
+            }
+            SourceSegmentPayload::Literal
+            | SourceSegmentPayload::Escape
+            | SourceSegmentPayload::Normalization { .. }
+            | SourceSegmentPayload::Interpolation { .. }
+            | SourceSegmentPayload::Recovery { .. } => {}
+        }
         if let SourceSegmentPayload::Interpolation { expression } = &segment.payload {
             if is_malformed(expression.location) {
-                found.push(PayloadContradiction::MalformedSegmentRange { index });
+                found.push(PayloadContradiction::MalformedInterpolationExpressionRange { index });
             }
             if expression.location != range {
                 found.push(PayloadContradiction::InterpolationRangeMismatch { index });
@@ -923,6 +982,11 @@ impl StringSyntax {
             &self.segmentation,
             &self.cooked,
             self.terminal,
+            SegmentCapabilities {
+                interpolates: self.form.interpolates(),
+                // No string form strips heredoc indentation.
+                strips_heredoc_indent: false,
+            },
         );
         if !self.form.admits_delimiter(self.delimiter) {
             found.push(PayloadContradiction::FormDelimiterMismatch);
@@ -1142,6 +1206,11 @@ impl HeredocSyntax {
             &self.segmentation,
             &self.cooked,
             self.terminal,
+            SegmentCapabilities {
+                interpolates: self.declaration.form.interpolates(),
+                // `<<~` is what strips; `declaration.indented` records it.
+                strips_heredoc_indent: self.declaration.indented,
+            },
         );
         found.extend(heredoc_geometry_contradictions(self));
         found
@@ -1886,6 +1955,96 @@ mod tests {
         assert_eq!(stripped.map(|segment| segment.raw_range.len()), Some(4));
         assert_eq!(stripped.and_then(|segment| segment.cooked_fragment.proven_text()), Some(""));
         assert_eq!(doc.compat_content(), Some("text\n"));
+    }
+
+    #[test]
+    fn a_payload_may_not_carry_segments_its_form_cannot_produce() {
+        // `'$name'` is the same visible characters as `"$name"` with a
+        // different fact attached. The form already answers whether it
+        // interpolates; until now nothing checked the segments against it.
+        let mut single_quoted = interpolated_string();
+        single_quoted.form = StringForm::SingleQuoted;
+        single_quoted.delimiter = StringDelimiter::Same { delimiter: '\'' };
+        assert!(
+            single_quoted.contradictions().contains(
+                &PayloadContradiction::InterpolationInNonInterpolatingPayload { index: 3 }
+            )
+        );
+        assert_eq!(single_quoted.proven_segments(), None);
+
+        // The identical segmentation under a form that does interpolate is
+        // coherent, so the rule keys on the form and not on the segment.
+        assert!(interpolated_string().is_coherent());
+
+        // Heredocs answer the same question with their own form.
+        let mut quoted_doc = heredoc(HeredocForm::SingleQuoted, PayloadTerminal::Complete);
+        quoted_doc.segmentation = SourceSegmentation::Exact(vec![interpolation_segment(8, 14)]);
+        quoted_doc.cooked = CookedValue::Dynamic;
+        assert!(
+            quoted_doc.contradictions().contains(
+                &PayloadContradiction::InterpolationInNonInterpolatingPayload { index: 0 }
+            )
+        );
+
+        let mut bare_doc = quoted_doc.clone();
+        bare_doc.declaration.form = HeredocForm::Bare;
+        assert!(bare_doc.is_coherent(), "{:?}", bare_doc.contradictions());
+
+        // `<<~` indent stripping is a heredoc's normalization. A string has no
+        // indentation to strip.
+        let mut striping_string = plain_double_quoted_string();
+        striping_string.segmentation = SourceSegmentation::Exact(vec![
+            normalization_segment(1, 2),
+            literal_segment(2, 4, "ab"),
+        ]);
+        striping_string.cooked = CookedValue::Proven("ab".to_string());
+        assert!(
+            striping_string.contradictions().contains(
+                &PayloadContradiction::NormalizationRuleNotAvailableToPayload { index: 0 }
+            )
+        );
+
+        // Nor has a heredoc that never recorded `<<~`.
+        let mut not_indented = indented_heredoc();
+        not_indented.declaration.indented = false;
+        assert!(
+            not_indented.contradictions().contains(
+                &PayloadContradiction::NormalizationRuleNotAvailableToPayload { index: 0 }
+            )
+        );
+
+        // The `<<~` heredoc that really did strip stays coherent.
+        assert!(indented_heredoc().is_coherent());
+    }
+
+    #[test]
+    fn a_malformed_child_range_is_not_blamed_on_its_segment() {
+        // The segment's own range is wellformed; its expression node's is not.
+        // Reporting `MalformedSegmentRange` would send a reader to the wrong
+        // field, so the child gets its own variant.
+        let mut string = interpolated_string();
+        let mut broken = interpolation_segment(5, 10);
+        broken.payload = SourceSegmentPayload::Interpolation {
+            expression: Box::new(Node::new(
+                NodeKind::Variable { sigil: "$".to_string(), name: "name".to_string() },
+                span(10, 5),
+            )),
+        };
+        string.segmentation = SourceSegmentation::Exact(vec![
+            literal_segment(1, 2, "a"),
+            escape_segment(2, 4, "\n"),
+            literal_segment(4, 5, "b"),
+            broken,
+        ]);
+
+        let found = string.contradictions();
+        assert!(
+            found.contains(&PayloadContradiction::MalformedInterpolationExpressionRange {
+                index: 3
+            })
+        );
+        assert!(!found.contains(&PayloadContradiction::MalformedSegmentRange { index: 3 }));
+        assert_eq!(string.proven_segments(), None);
     }
 
     #[test]
