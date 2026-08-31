@@ -413,10 +413,16 @@ impl std::fmt::Display for SemanticQueryContractError {
                 "exact semantic query outcome lacks complete evidence".to_owned()
             }
             Self::DuplicateRequirement => "semantic query requirement is duplicated".to_owned(),
-            Self::MissingLimitation => "non-exact semantic query outcome lacks a limitation".to_owned(),
+            Self::MissingLimitation => {
+                "non-exact semantic query outcome lacks a limitation".to_owned()
+            }
             Self::EmptyReason => "semantic query outcome reason is empty".to_owned(),
-            Self::MatchingGenerations => "stale semantic query generations unexpectedly match".to_owned(),
-            Self::InsufficientCandidates => "ambiguous semantic query outcome lacks multiple candidates".to_owned(),
+            Self::MatchingGenerations => {
+                "stale semantic query generations unexpectedly match".to_owned()
+            }
+            Self::InsufficientCandidates => {
+                "ambiguous semantic query outcome lacks multiple candidates".to_owned()
+            }
             Self::MissingBoundaryLimitation => {
                 "dynamic semantic query outcome lacks its boundary limitation".to_owned()
             }
@@ -467,9 +473,7 @@ mod tests {
         .expect("fixture evidence is valid")
     }
 
-    fn evidence_with_limitation(
-        limitation: SemanticQueryLimitation,
-    ) -> SemanticQueryEvidence {
+    fn evidence_with_limitation(limitation: SemanticQueryLimitation) -> SemanticQueryEvidence {
         let mut evidence = evidence(true);
         evidence.limitations.push(limitation);
         evidence
@@ -533,9 +537,9 @@ mod tests {
             vec![SemanticFactFamily::ScopeLocalDeclaration],
         )
         .expect("fixture requirement is valid");
-        assert!(states.iter().all(|state| {
-            state.validate().is_ok() && !state.is_exact(&requirement)
-        }));
+        assert!(states
+            .iter()
+            .all(|state| { state.validate().is_ok() && !state.is_exact(&requirement) }));
     }
 
     #[test]
@@ -555,10 +559,7 @@ mod tests {
         let requirement = SemanticQueryRequirement::new(
             "definitions",
             "semantic-query-v1",
-            vec![
-                SemanticFactFamily::ScopeLocalDeclaration,
-                SemanticFactFamily::PackageFact,
-            ],
+            vec![SemanticFactFamily::ScopeLocalDeclaration, SemanticFactFamily::PackageFact],
         )
         .expect("fixture requirement is valid");
         let valid = SemanticQueryEvidence::new(
@@ -571,14 +572,8 @@ mod tests {
             crate::SemanticProducer::SemanticAnalyzer,
             crate::SemanticProvenance::Known(crate::Provenance::SemanticAnalyzer),
             crate::SemanticConfidence::Known(crate::Confidence::High),
-            vec![
-                SemanticFactFamily::PackageFact,
-                SemanticFactFamily::ScopeLocalDeclaration,
-            ],
-            vec![
-                SemanticFactFamily::ScopeLocalDeclaration,
-                SemanticFactFamily::PackageFact,
-            ],
+            vec![SemanticFactFamily::PackageFact, SemanticFactFamily::ScopeLocalDeclaration],
+            vec![SemanticFactFamily::ScopeLocalDeclaration, SemanticFactFamily::PackageFact],
             vec![FactId(1)],
             vec![],
         )
@@ -608,11 +603,8 @@ mod tests {
     fn typed_variants_reject_contradictory_payloads() {
         let e = evidence(true);
         assert_eq!(
-            (SemanticQueryOutcome::<u8>::NotReady {
-                reason: "  ".into(),
-                evidence: e.clone(),
-            })
-            .validate(),
+            (SemanticQueryOutcome::<u8>::NotReady { reason: "  ".into(), evidence: e.clone() })
+                .validate(),
             Err(SemanticQueryContractError::EmptyReason)
         );
         assert_eq!(
@@ -678,11 +670,13 @@ mod tests {
             vec![SemanticFactFamily::ScopeLocalDeclaration],
         )
         .expect("fixture requirement is valid");
-        assert!(!SemanticQueryOutcome::<u8>::Dynamic {
-            boundary: BoundaryKind::DynamicValue,
-            evidence: evidence(true),
-        }
-        .is_exact(&requirement));
+        assert!(
+            !SemanticQueryOutcome::<u8>::Dynamic {
+                boundary: BoundaryKind::DynamicValue,
+                evidence: evidence(true),
+            }
+            .is_exact(&requirement)
+        );
         assert!(
             !SemanticQueryOutcome::<u8>::InstrumentFailure { reason: "probe unavailable".into() }
                 .is_exact(&requirement)
