@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 SNAPSHOT_VERSION = 1
-CAPTURE_VERSION = 1
+CAPTURE_VERSION = 2
 API_ROOT = "https://api.github.com"
 API_VERSION = "2022-11-28"
 LIVE_SOURCES = ("trusted_default_branch", "operator", "connector")
@@ -175,6 +175,16 @@ def resolve_token(environ: dict[str, str] | None = None) -> str | None:
     return None
 
 
+def normalize_timestamp(value: str, field: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ObserverError(f"{field} must be an ISO-8601 timestamp") from error
+    if parsed.tzinfo is None:
+        raise ObserverError(f"{field} must carry a timezone")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
@@ -187,10 +197,24 @@ def utc_now() -> str:
 
 
 class Capture:
-    """The exact response evidence backing one observation."""
+    """The exact response evidence backing one observation.
 
-    def __init__(self) -> None:
+    A capture is bound to the repository, branch, and acquisition time it was
+    taken with. Those travel inside the bundle so an imported capture cannot
+    be relabelled onto another branch or re-dated as fresh evidence.
+    """
+
+    def __init__(
+        self,
+        *,
+        repository: str = "",
+        branch: str = "",
+        captured_at: str = "",
+    ) -> None:
         self.entries: dict[str, ApiResult] = {}
+        self.repository = repository
+        self.branch = branch
+        self.captured_at = captured_at
 
     def record(self, key: str, result: ApiResult) -> ApiResult:
         self.entries[key] = result
@@ -204,6 +228,9 @@ class Capture:
     def to_bundle(self) -> dict[str, Any]:
         return {
             "schema_version": CAPTURE_VERSION,
+            "repository": self.repository,
+            "branch": self.branch,
+            "captured_at": self.captured_at,
             "entries": [
                 {
                     "key": key,
@@ -227,7 +254,23 @@ class Capture:
         entries = bundle.get("entries")
         if not isinstance(entries, list):
             raise ObserverError("capture bundle entries must be a list")
-        capture = cls()
+        # Acquisition identity is required. A bundle without it could be
+        # relabelled onto another branch or re-dated as fresh evidence, so a
+        # legacy bundle fails closed rather than being adopted.
+        repository = bundle.get("repository")
+        branch = bundle.get("branch")
+        captured_at = bundle.get("captured_at")
+        for field, value in (
+            ("repository", repository),
+            ("branch", branch),
+            ("captured_at", captured_at),
+        ):
+            if not isinstance(value, str) or not value:
+                raise ObserverError(f"capture bundle is missing {field}")
+        normalize_timestamp(captured_at, "capture bundle captured_at")
+        capture = cls(
+            repository=repository, branch=branch, captured_at=captured_at
+        )
         for entry in entries:
             if not isinstance(entry, dict):
                 raise ObserverError("capture bundle entry must be an object")
@@ -306,7 +349,9 @@ def capture_live(repository: str, branch: str, transport: Transport) -> Capture:
     """Perform the bounded read-only GET sequence against the live API."""
     repo = encode_repository(repository)
     ref = encode_segment(branch, "branch")
-    capture = Capture()
+    # Stamped before the first request: a long capture must never make its
+    # earliest responses look newer than they are.
+    capture = Capture(repository=repository, branch=branch, captured_at=utc_now())
     capture.record("repository", transport(f"repos/{repo}"))
     capture.record("branch_head", transport(f"repos/{repo}/git/ref/heads/{ref}"))
     capture.record(
@@ -365,16 +410,25 @@ def build_snapshot(
     capture: Capture,
     *,
     source: str,
-    branch: str,
     static_receipt: dict[str, Any],
     observed_at: str | None = None,
 ) -> dict[str, Any]:
-    """Assemble github_enforcement_snapshot.v1 from captured evidence."""
+    """Assemble github_enforcement_snapshot.v1 from captured evidence.
+
+    The branch and observation time come from the capture itself, never from a
+    caller argument: an imported bundle must not be relabelled onto another
+    branch or presented as freshly observed.
+    """
     if source not in LIVE_SOURCES:
         raise ObserverError(
             f"source must be one of {sorted(LIVE_SOURCES)}; "
             "the observer never emits a fixture observation"
         )
+    branch = capture.branch
+    if not branch:
+        raise ObserverError("capture is not bound to a branch")
+    if not capture.captured_at:
+        raise ObserverError("capture is not bound to an acquisition time")
 
     static_contract = static_binding(static_receipt)
     identity = repository_identity(capture)
@@ -390,7 +444,9 @@ def build_snapshot(
             "repository_id": identity["repository_id"],
             "default_branch": identity["default_branch"],
             "branch_sha": branch_head_sha(capture),
-            "observed_at": observed_at or utc_now(),
+            "observed_at": observed_at or normalize_timestamp(
+                capture.captured_at, "capture captured_at"
+            ),
         },
         "observation": {
             "source": source,
@@ -470,6 +526,15 @@ def branch_head_sha(capture: Capture) -> str:
     payload = result.json("branch_head")
     if not isinstance(payload, dict):
         raise ObserverError("branch head response must be an object")
+    # The captured ref must be the branch this capture claims. Otherwise one
+    # branch's protection could be assembled under another branch's name, and
+    # two branches sharing a commit would reconcile without complaint.
+    ref = payload.get("ref")
+    expected = f"refs/heads/{capture.branch}"
+    if ref != expected:
+        raise ObserverError(
+            f"branch head response is for {ref!r}, not {expected!r}"
+        )
     sha = (payload.get("object") or {}).get("sha")
     if not isinstance(sha, str) or len(sha) != 40:
         raise ObserverError("branch head response is missing object.sha")
@@ -921,7 +986,6 @@ def emit(args: argparse.Namespace, capture: Capture) -> int:
     snapshot = build_snapshot(
         capture,
         source=args.source,
-        branch=args.branch,
         static_receipt=static_receipt,
     )
     write_json(args.snapshot, snapshot)

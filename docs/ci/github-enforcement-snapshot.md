@@ -164,6 +164,8 @@ Branch and repository names are percent-encoded per path segment, so a branch co
 
 `capture` exits `0` on a complete observation, `2` when a surface could not be read to a definitive answer, and `1` when no bindable snapshot exists at all. A `--capture-bundle` records the exact response bytes so `assemble` can re-derive the identical snapshot offline — that is the `connector` shape, and it is what makes the capture reviewable after the fact.
 
+A bundle is bound to the repository, branch, and acquisition time it was taken with, and `assemble` reads all three from the bundle rather than from the command line. An imported capture therefore keeps its original `observed_at` — it cannot become fresh evidence by being assembled later — and cannot be relabelled onto another branch, which two branches sharing a commit would otherwise reconcile without complaint. The acquisition time is stamped before the first request, so a long capture never makes its earliest responses look newer than they are, and the captured `refs/heads/...` ref is checked against the bundled branch. A bundle missing any of the three fails closed.
+
 ### Execution shapes
 
 The observer supports the least-privileged shape that can actually read both surfaces:

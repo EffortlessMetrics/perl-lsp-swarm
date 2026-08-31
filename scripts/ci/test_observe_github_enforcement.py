@@ -246,7 +246,6 @@ def observe(
     return observer.build_snapshot(
         capture,
         source=source,
-        branch="main",
         static_receipt=static_receipt(),
         observed_at=observed_at,
     )
@@ -344,7 +343,6 @@ class PartialAccessIsNotProven(unittest.TestCase):
         snapshot = observer.build_snapshot(
             capture,
             source="operator",
-            branch="main",
             static_receipt=static_receipt(),
             observed_at="2026-08-16T00:00:00Z",
         )
@@ -491,7 +489,6 @@ class RulesetObservation(unittest.TestCase):
         snapshot = observer.build_snapshot(
             capture,
             source="operator",
-            branch="main",
             static_receipt=static_receipt(),
             observed_at="2026-08-16T00:00:00Z",
         )
@@ -507,7 +504,6 @@ class RulesetObservation(unittest.TestCase):
         imported = observer.build_snapshot(
             restored,
             source="connector",
-            branch="main",
             static_receipt=static_receipt(),
             observed_at="2026-08-16T00:00:00Z",
         )
@@ -634,7 +630,6 @@ class EvidenceBinding(unittest.TestCase):
             observer.build_snapshot(
                 capture,
                 source="operator",
-                branch="main",
                 static_receipt=receipt,
             )
 
@@ -659,7 +654,6 @@ class EvidenceBinding(unittest.TestCase):
             observer.build_snapshot(
                 capture,
                 source="operator",
-                branch="main",
                 static_receipt=static_receipt(),
             )
 
@@ -670,7 +664,6 @@ class EvidenceBinding(unittest.TestCase):
             observer.build_snapshot(
                 capture,
                 source="fixture",
-                branch="main",
                 static_receipt=static_receipt(),
             )
 
@@ -683,14 +676,12 @@ class CaptureBundle(unittest.TestCase):
         direct = observer.build_snapshot(
             capture,
             source="operator",
-            branch="main",
             static_receipt=static_receipt(),
             observed_at="2026-08-16T00:00:00Z",
         )
         imported = observer.build_snapshot(
             restored,
             source="connector",
-            branch="main",
             static_receipt=static_receipt(),
             observed_at="2026-08-16T00:00:00Z",
         )
@@ -755,7 +746,6 @@ class CaptureBundle(unittest.TestCase):
         snapshot = observer.build_snapshot(
             restored,
             source="connector",
-            branch="main",
             static_receipt=static_receipt(),
             observed_at="2026-08-16T00:00:00Z",
         )
@@ -783,6 +773,76 @@ class CaptureBundle(unittest.TestCase):
                     ],
                 }
             )
+
+
+class AcquisitionBinding(unittest.TestCase):
+    """A bundle carries when and where it was taken, not when it was imported."""
+
+    def test_imported_capture_keeps_its_acquisition_time(self) -> None:
+        """An old bundle must not become fresh evidence by being assembled.
+
+        Minting `observed_at` at import time would defeat the authority's
+        staleness bound entirely: any stale capture could produce a current
+        live verdict.
+        """
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        bundle = capture.to_bundle()
+        bundle["captured_at"] = "2020-01-01T00:00:00Z"
+        restored = observer.Capture.from_bundle(bundle)
+        snapshot = observer.build_snapshot(
+            restored, source="connector", static_receipt=static_receipt()
+        )
+        self.assertEqual(
+            snapshot["repository"]["observed_at"], "2020-01-01T00:00:00Z"
+        )
+        result = model.reconcile(snapshot, static_receipt(), authority(snapshot))
+        self.assertEqual(result["status"], "NOT_PROVEN")
+        self.assertIn("observation_stale", codes(result))
+
+    def test_capture_time_is_stamped_before_the_requests(self) -> None:
+        stamps = []
+
+        def recording(path: str):
+            stamps.append(observer.utc_now())
+            return transport()(path)
+
+        capture = observer.capture_live(REPOSITORY, "main", recording)
+        self.assertTrue(capture.captured_at <= stamps[0])
+
+    def test_a_bundle_cannot_be_relabelled_onto_another_branch(self) -> None:
+        """Two branches at the same SHA would otherwise reconcile silently."""
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        bundle = capture.to_bundle()
+        bundle["branch"] = "release"
+        restored = observer.Capture.from_bundle(bundle)
+        with self.assertRaises(observer.ObserverError):
+            observer.build_snapshot(
+                restored, source="connector", static_receipt=static_receipt()
+            )
+
+    def test_snapshot_branch_comes_from_the_capture(self) -> None:
+        capture = observer.capture_live(REPOSITORY, "release", transport())
+        # The fixture only answers for main, so a release capture cannot bind.
+        with self.assertRaises(observer.ObserverError):
+            observer.build_snapshot(
+                capture, source="operator", static_receipt=static_receipt()
+            )
+
+    def test_bundle_without_acquisition_identity_fails_closed(self) -> None:
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        for missing in ("repository", "branch", "captured_at"):
+            bundle = capture.to_bundle()
+            del bundle[missing]
+            with self.assertRaises(observer.ObserverError):
+                observer.Capture.from_bundle(bundle)
+
+    def test_bundle_captured_at_must_be_a_real_timestamp(self) -> None:
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        for stamp in ("not-a-time", "2026-08-16T00:00:00"):
+            bundle = capture.to_bundle()
+            bundle["captured_at"] = stamp
+            with self.assertRaises(observer.ObserverError):
+                observer.Capture.from_bundle(bundle)
 
 
 class FreshnessBinding(unittest.TestCase):
@@ -1092,7 +1152,6 @@ class MalformedSurfaces(unittest.TestCase):
             observer.build_snapshot(
                 capture,
                 source="operator",
-                branch="main",
                 static_receipt=static_receipt(),
             )
 
