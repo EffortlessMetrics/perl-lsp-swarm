@@ -131,6 +131,14 @@ mod capability_tests {
             !capability(&caps, "supportsStepInTargetsRequest")?,
             "supportsStepInTargetsRequest must be false while targetId has no runtime effect (#9069)"
         );
+        assert!(
+            perl_dap::feature_catalog::has_feature("dap.watchpoints"),
+            "regenerating the catalog must preserve the independently advertised watchpoints row"
+        );
+        assert!(
+            capability(&caps, "supportsDataBreakpoints")?,
+            "fail-closed targeted stepping must not downgrade watchpoint capability"
+        );
 
         match adapter.handle_request(2, "stepInTargets", Some(serde_json::json!({"frameId": 1}))) {
             DapMessage::Response { success, command, body, message, .. } => {

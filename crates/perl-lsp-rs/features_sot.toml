@@ -1606,7 +1606,7 @@ spec = "DAP 1.0"
 area = "debug"
 policy_class = "cancellation_progress"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
 capability_gate = "dap capabilities advertisement"
@@ -1624,7 +1624,8 @@ evidence = [
   { class = "integration_test", id = "crates/perl-dap/tests/dap_capability_advertising_tests.rs" },
 ]
 limitations = [
-  "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
+  "Targeted stepping is fail-closed (#9069): native stepIn always issues the same perl5db `s` command, so a selected stepInTargets ID cannot influence execution. stepInTargets is unadvertised and every request is refused before source reads or target allocation.",
+  "Re-enable requires the #9069 gate: two distinct callable candidates on one line, selection of A vs B entering A vs B through the public exact binary, stale/wrong-session ID rejection, and basic stepIn preserved independently.",
 ]
 description = "List callable step-in targets for the current frame (stepInTargets)"
 

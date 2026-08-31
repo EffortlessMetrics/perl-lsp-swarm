@@ -52,7 +52,6 @@ catalog:
   - dap.restart
   - dap.set_expression
   - dap.source
-  - dap.step_in_targets
   - dap.threads
   - dap.watchpoints
   - experimental.perlInlineCompletionStream
@@ -141,7 +140,6 @@ catalog:
   - lsp.will_delete_files
   - lsp.will_rename_files
   - lsp.will_save
-  - lsp.will_save_wait_until
   - lsp.work_done_progress
   - lsp.work_done_progress_cancel
   - lsp.work_done_progress_create

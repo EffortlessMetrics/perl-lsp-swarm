@@ -595,10 +595,7 @@ fn test_step_in_targets_unsupported_response_has_no_targets_body()
     )?;
     assert!(!success, "stepInTargets must fail while unsupported (#9069)");
     assert!(body.is_none(), "unsupported stepInTargets must not publish a targets body");
-    assert!(
-        message.is_some(),
-        "unsupported stepInTargets must explain its disposition"
-    );
+    assert!(message.is_some(), "unsupported stepInTargets must explain its disposition");
     Ok(())
 }
 
