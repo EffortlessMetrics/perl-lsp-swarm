@@ -82,6 +82,12 @@ impl DebugAdapter {
     ///   missing, negative, out-of-range, unknown, or stale `threadId`. The
     ///   rejection must be returned before any backend command is sent or any
     ///   session state is mutated.
+    ///
+    /// Validation and the subsequent backend action acquire the session lock
+    /// separately, so the validate-then-act pairing rests on requests being
+    /// dispatched serially through the single request loop: no replacement
+    /// session can interleave. If dispatch ever becomes concurrent, the lock
+    /// must span validation and action together.
     pub(super) fn validated_live_thread_id(
         &self,
         command: &str,

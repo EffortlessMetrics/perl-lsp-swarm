@@ -66,7 +66,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -136,7 +136,12 @@ pub struct DebugAdapter {
     /// Breakpoints store
     breakpoints: BreakpointStore,
     /// Thread ID counter
-    thread_counter: Arc<Mutex<i32>>,
+    ///
+    /// Atomic rather than lock-based: a poisoned-mutex fallback that returned
+    /// a previously minted constant (e.g. `1`) could revive a stale execution
+    /// context id after a session replacement (#8294). Allocation must have
+    /// no failure path that reuses an id.
+    thread_counter: Arc<AtomicI32>,
     /// Bounded output channel for sending events to client
     event_sender: Option<SyncSender<DapMessage>>,
     /// Ensures competing session shutdown paths emit one terminal event per session.
@@ -242,7 +247,7 @@ impl DebugAdapter {
             attached_pid: Arc::new(Mutex::new(None)),
             tcp_session: Arc::new(Mutex::new(None)),
             breakpoints: BreakpointStore::new(),
-            thread_counter: Arc::new(Mutex::new(0)),
+            thread_counter: Arc::new(AtomicI32::new(0)),
             event_sender: None,
             termination_state: Arc::new(Mutex::new(TerminationState::default())),
             recent_output: Arc::new(Mutex::new(RecentOutputBuffer::new())),

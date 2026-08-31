@@ -49,10 +49,51 @@ pub struct DapPeerBridge {
 }
 
 impl DapPeerBridge {
+    /// The one synthetic execution context this peer frontend advertises:
+    /// `threads` reports id 1 and runtime context discovery across the peer
+    /// bridge is not proven (#8294).
+    const ADVERTISED_THREAD_ID: i64 = 1;
+
     /// Create a bridge over `backend`.
     #[must_use]
     pub fn new(backend: Box<dyn DebugBackend>) -> Self {
         Self { backend, seq: 0, terminated_emitted: false }
+    }
+
+    /// Strict identity gate for every thread-scoped request (#8294): the
+    /// request must name the advertised synthetic execution context. A
+    /// missing, unknown, or stale id fails the request before any backend
+    /// method runs; the failed response is pushed onto `out` and `None`
+    /// returned.
+    fn validate_thread_scoped(
+        &mut self,
+        command: &str,
+        request_seq: i64,
+        args: Option<&Value>,
+        out: &mut Vec<DapMessage>,
+    ) -> Option<ThreadId> {
+        let reported = args.and_then(|a| a.get("threadId")).and_then(Value::as_i64);
+        if reported != Some(Self::ADVERTISED_THREAD_ID) {
+            let detail = match reported {
+                Some(id) => {
+                    format!("unknown or stale `threadId` {id}")
+                }
+                None => "missing `threadId`".to_string(),
+            };
+            out.push(self.response(
+                request_seq,
+                command,
+                false,
+                None,
+                Some(format!(
+                    "{detail}; this peer frontend advertises only the synthetic execution \
+                     context {}. Re-request `threads` to obtain the current id.",
+                    Self::ADVERTISED_THREAD_ID
+                )),
+            ));
+            return None;
+        }
+        Some(ThreadId(reported.unwrap_or(Self::ADVERTISED_THREAD_ID)))
     }
 
     fn next_seq(&mut self) -> i64 {
@@ -209,13 +250,16 @@ impl DapPeerBridge {
                 }
             }
             Some(DapRequestRoute::Continue) => {
-                let tid = thread_id_arg(arguments.as_ref());
-                match self.backend.continue_thread(tid) {
-                    Ok(r) => {
-                        let body = json!({ "allThreadsContinued": r.all_threads_continued });
-                        out.push(self.response(request_seq, command, true, Some(body), None));
+                if let Some(tid) =
+                    self.validate_thread_scoped(command, request_seq, arguments.as_ref(), &mut out)
+                {
+                    match self.backend.continue_thread(tid) {
+                        Ok(r) => {
+                            let body = json!({ "allThreadsContinued": r.all_threads_continued });
+                            out.push(self.response(request_seq, command, true, Some(body), None));
+                        }
+                        Err(e) => out.push(self.error(request_seq, command, e)),
                     }
-                    Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
             Some(DapRequestRoute::Next) => {
@@ -228,18 +272,25 @@ impl DapPeerBridge {
                 self.step(request_seq, command, arguments.as_ref(), Step::Out, &mut out)
             }
             Some(DapRequestRoute::Pause) => {
-                let tid = thread_id_arg(arguments.as_ref());
-                match self.backend.pause(tid) {
-                    Ok(()) => out.push(self.response(request_seq, command, true, None, None)),
-                    Err(e) => out.push(self.error(request_seq, command, e)),
+                if let Some(tid) =
+                    self.validate_thread_scoped(command, request_seq, arguments.as_ref(), &mut out)
+                {
+                    match self.backend.pause(tid) {
+                        Ok(()) => out.push(self.response(request_seq, command, true, None, None)),
+                        Err(e) => out.push(self.error(request_seq, command, e)),
+                    }
                 }
             }
             Some(DapRequestRoute::StackTrace) => {
-                match self.handle_stack_trace(arguments.as_ref()) {
-                    Ok(body) => {
-                        out.push(self.response(request_seq, command, true, Some(body), None))
+                if let Some(thread_id) =
+                    self.validate_thread_scoped(command, request_seq, arguments.as_ref(), &mut out)
+                {
+                    match self.handle_stack_trace(thread_id, arguments.as_ref()) {
+                        Ok(body) => {
+                            out.push(self.response(request_seq, command, true, Some(body), None))
+                        }
+                        Err(e) => out.push(self.error(request_seq, command, e)),
                     }
-                    Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
             Some(DapRequestRoute::Scopes) => match self.handle_scopes(arguments.as_ref()) {
@@ -322,7 +373,9 @@ impl DapPeerBridge {
         which: Step,
         out: &mut Vec<DapMessage>,
     ) {
-        let tid = thread_id_arg(args);
+        let Some(tid) = self.validate_thread_scoped(command, request_seq, args, out) else {
+            return;
+        };
         let result = match which {
             Step::Next => self.backend.next(tid),
             Step::In => self.backend.step_in(tid),
@@ -470,9 +523,13 @@ impl DapPeerBridge {
         Ok(json!({ "breakpoints": bps }))
     }
 
-    fn handle_stack_trace(&mut self, args: Option<&Value>) -> super::BackendResult<Value> {
+    fn handle_stack_trace(
+        &mut self,
+        thread_id: ThreadId,
+        args: Option<&Value>,
+    ) -> super::BackendResult<Value> {
         let params = StackTraceParams {
-            thread_id: thread_id_arg(args),
+            thread_id,
             start_frame: args
                 .and_then(|a| a.get("startFrame"))
                 .and_then(Value::as_u64)
@@ -781,10 +838,6 @@ fn parse_attach(args: Option<&Value>) -> AttachBackendParams {
             .to_string(),
         port: args.and_then(|a| a.get("port")).and_then(Value::as_u64).unwrap_or(0) as u16,
     }
-}
-
-fn thread_id_arg(args: Option<&Value>) -> ThreadId {
-    ThreadId(args.and_then(|a| a.get("threadId")).and_then(Value::as_i64).unwrap_or(1))
 }
 
 fn dap_source(v: Option<&Value>) -> DebugSource {
@@ -1128,6 +1181,43 @@ mod tests {
             assert_eq!(b["allThreadsStopped"], true);
         } else {
             return Err("expected stopped event body".into());
+        }
+        Ok(())
+    }
+
+    /// Thread-scoped requests that do not name the advertised synthetic
+    /// execution context fail before any backend method runs (#8294): the
+    /// failed response is the only emitted message and no backend event is
+    /// queued.
+    #[test]
+    fn thread_scoped_requests_reject_unknown_or_missing_ids_before_the_backend_runs()
+    -> Result<(), String> {
+        let mut b = bridge();
+        for (command, args) in [
+            ("continue", Some(json!({ "threadId": 7 }))),
+            ("continue", None),
+            ("pause", Some(json!({ "threadId": 0 }))),
+            ("next", Some(json!({ "threadId": -1 }))),
+            ("stepIn", Some(json!({}))),
+            ("stackTrace", Some(json!({ "threadId": 2 }))),
+        ] {
+            let out = b.dispatch(9, command, args);
+            match &out[0] {
+                DapMessage::Response { command: cmd, success, message, .. } => {
+                    assert_eq!(cmd, command);
+                    assert!(!success, "a non-advertised threadId must fail {command}: {out:?}");
+                    let message = message.as_deref().unwrap_or_default();
+                    assert!(
+                        message.contains("synthetic execution context"),
+                        "the rejection must name the advertised synthetic context: {message}"
+                    );
+                }
+                other => return Err(format!("expected a response for {command}, got {other:?}")),
+            }
+            // `continue` is load-bearing here: its backend mock queues
+            // continued+stopped events, so a single-message out proves the
+            // backend method never ran.
+            assert_eq!(out.len(), 1, "no backend side effects may follow {command}: {out:?}");
         }
         Ok(())
     }

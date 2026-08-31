@@ -17,6 +17,7 @@ use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 // The internal TCP-attach DapEvent fan-in channel is still unbounded (non-goal of #5149).
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 
 mod perl_info;
@@ -529,15 +530,11 @@ impl DebugAdapter {
                 // Only advance the session generation once spawning has succeeded. A rejected
                 // launch must leave the currently active reader valid for its existing session.
                 self.prepare_replacement_session();
-                let thread_id = {
-                    if let Ok(mut counter) = self.thread_counter.lock() {
-                        *counter += 1;
-                        *counter
-                    } else {
-                        tracing::warn!("Failed to lock thread counter, using 1");
-                        1
-                    }
-                };
+                // Monotonic and poison-free by construction: a poisoned-mutex
+                // fallback that returned an already-minted constant (e.g. `1`)
+                // would revive a stale execution context id after a session
+                // replacement, so allocation has no reuse path (#8294).
+                let thread_id = self.thread_counter.fetch_add(1, Ordering::Relaxed) + 1;
 
                 let session = DebugSession {
                     process: child,
@@ -1774,46 +1771,6 @@ impl DebugAdapter {
                         thread::spawn(move || {
                             while let Ok(event) = rx.recv() {
                                 match event {
-                                    DapEvent::Output { category, output } => {
-                                        if let Some(ref sender) = event_sender {
-                                            dispatch_event(
-                                                sender,
-                                                &seq_counter,
-                                                "output",
-                                                Some(json!({
-                                                    "category": category,
-                                                    "output": output
-                                                })),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Stopped { reason, thread_id } => {
-                                        if let Some(ref sender) = event_sender {
-                                            dispatch_event(
-                                                sender,
-                                                &seq_counter,
-                                                "stopped",
-                                                Some(json!({
-                                                    "reason": reason,
-                                                    "threadId": thread_id,
-                                                    "allThreadsStopped": true
-                                                })),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Continued { thread_id } => {
-                                        if let Some(ref sender) = event_sender {
-                                            dispatch_event(
-                                                sender,
-                                                &seq_counter,
-                                                "continued",
-                                                Some(json!({
-                                                    "threadId": thread_id,
-                                                    "allThreadsContinued": true
-                                                })),
-                                            );
-                                        }
-                                    }
                                     DapEvent::Terminated { reason } => {
                                         if let Some(ref sender) = event_sender {
                                             emit_terminated_event(
@@ -1827,6 +1784,19 @@ impl DebugAdapter {
                                     }
                                     DapEvent::Error { message } => {
                                         tracing::error!(message, "TCP attach error");
+                                    }
+                                    identity_event => {
+                                        // The editor must only ever observe the
+                                        // advertised synthetic context: `threads`, every
+                                        // thread-scoped request, and `stopped`/`continued`
+                                        // events all carry the same id on the TCP-attach
+                                        // path (#8294).
+                                        if let Some((name, body)) =
+                                            Self::tcp_event_message(identity_event)
+                                            && let Some(ref sender) = event_sender
+                                        {
+                                            dispatch_event(sender, &seq_counter, name, body);
+                                        }
                                     }
                                 }
                             }
@@ -2157,6 +2127,39 @@ impl DebugAdapter {
         }
     }
 
+    /// Translate an identity-carrying inbound TCP-attach debuggee event into
+    /// the DAP event name and body dispatched to the editor.
+    ///
+    /// The remote peer's raw thread id is never forwarded: the adapter
+    /// advertises exactly one synthetic execution context, so `threads`,
+    /// every thread-scoped request, and `stopped`/`continued` events all
+    /// carry [`Self::TCP_ATTACH_SYNTHETIC_THREAD_ID`] (#8294). `Terminated`
+    /// and `Error` carry no execution-context identity and are handled at
+    /// the pump; this translation returns `None` for them.
+    fn tcp_event_message(event: DapEvent) -> Option<(&'static str, Option<Value>)> {
+        match event {
+            DapEvent::Output { category, output } => {
+                Some(("output", Some(json!({ "category": category, "output": output }))))
+            }
+            DapEvent::Stopped { reason, thread_id: _ } => Some((
+                "stopped",
+                Some(json!({
+                    "reason": reason,
+                    "threadId": Self::TCP_ATTACH_SYNTHETIC_THREAD_ID,
+                    "allThreadsStopped": true
+                })),
+            )),
+            DapEvent::Continued { thread_id: _ } => Some((
+                "continued",
+                Some(json!({
+                    "threadId": Self::TCP_ATTACH_SYNTHETIC_THREAD_ID,
+                    "allThreadsContinued": true
+                })),
+            )),
+            DapEvent::Terminated { .. } | DapEvent::Error { .. } => None,
+        }
+    }
+
     /// Handle threads request
     pub(super) fn handle_threads(&self, seq: i64, request_seq: i64) -> DapMessage {
         let threads = if let Some(ref session) =
@@ -2407,6 +2410,7 @@ mod tests {
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
         reserve_terminated_event, terminated_delivery_is_current,
     };
+    use crate::tcp_attach::DapEvent;
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
@@ -2464,6 +2468,47 @@ mod tests {
             return Err(format!("exhausted generation revived a scope frame: {still_exhausted}"));
         }
         Ok(())
+    }
+
+    /// A remote TCP peer's raw thread id must never reach the editor: a peer
+    /// that reports a non-1 id still produces `stopped`/`continued` events
+    /// carrying the advertised synthetic execution context, so `threads`,
+    /// thread-scoped requests, and events cannot disagree (#8294).
+    #[test]
+    fn tcp_events_normalize_foreign_thread_ids_to_the_advertised_context() {
+        let (stopped_name, stopped_body) = DebugAdapter::tcp_event_message(DapEvent::Stopped {
+            reason: "breakpoint".to_string(),
+            thread_id: 9,
+        })
+        .expect("stopped events translate");
+        assert_eq!(stopped_name, "stopped");
+        let stopped_body = stopped_body.expect("stopped events carry a body");
+        assert_eq!(stopped_body["threadId"], DebugAdapter::TCP_ATTACH_SYNTHETIC_THREAD_ID);
+        assert_eq!(stopped_body["threadId"], 1);
+        assert_eq!(stopped_body["reason"], "breakpoint");
+        assert_eq!(stopped_body["allThreadsStopped"], true);
+
+        let (continued_name, continued_body) =
+            DebugAdapter::tcp_event_message(DapEvent::Continued { thread_id: 9 })
+                .expect("continued events translate");
+        assert_eq!(continued_name, "continued");
+        let continued_body = continued_body.expect("continued events carry a body");
+        assert_eq!(continued_body["threadId"], DebugAdapter::TCP_ATTACH_SYNTHETIC_THREAD_ID);
+        assert_eq!(continued_body["allThreadsContinued"], true);
+
+        // Non-identity events keep their shape and stay decoupled from the
+        // execution-context contract.
+        let (output_name, output_body) = DebugAdapter::tcp_event_message(DapEvent::Output {
+            category: "stdout".to_string(),
+            output: "hi".to_string(),
+        })
+        .expect("output events translate");
+        assert_eq!(output_name, "output");
+        assert!(output_body.expect("output events carry a body")["threadId"].is_null());
+        assert!(
+            DebugAdapter::tcp_event_message(DapEvent::Terminated { reason: "exit".to_string() })
+                .is_none()
+        );
     }
 
     #[test]
