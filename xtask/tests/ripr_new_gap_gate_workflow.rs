@@ -23,6 +23,17 @@ fn project_root() -> Result<PathBuf> {
         .to_path_buf())
 }
 
+fn require_real_jq() -> Result<()> {
+    let output = Command::new("jq")
+        .arg("--version")
+        .output()
+        .context("checking for the real jq executable")?;
+    if !output.status.success() {
+        bail!("the RIPR workflow contract tests require a working jq executable");
+    }
+    Ok(())
+}
+
 fn evaluate_run_block() -> Result<String> {
     workflow_run_block("ripr", "Evaluate routed result")
 }
@@ -54,6 +65,21 @@ fn workflow_job_if(job_name: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("{job_name} if expression is missing"))
+}
+
+fn workflow_step_value(job_name: &str, step_name: &str) -> Result<Value> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    yaml.get("jobs")
+        .and_then(|jobs| jobs.get(job_name))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find(|step| step.get("name").and_then(Value::as_str) == Some(step_name))
+        })
+        .cloned()
+        .ok_or_else(|| anyhow!("{job_name} step {step_name} is missing"))
 }
 
 #[derive(Clone, Copy)]
@@ -123,13 +149,16 @@ fn run_gate_with_fake_gh_logs(
     let lookup_calls = sandbox.path().join("job-lookup-calls");
     let fetch_calls = sandbox.path().join("log-fetch-calls");
     let fetch_urls = sandbox.path().join("log-fetch-urls");
+    let jobs_response = sandbox.path().join("jobs.json");
     let classification = sandbox.path().join("ripr-gate-classification.env");
+    require_real_jq()?;
     let run = evaluate_run_block()?;
     let (job_name, job_id) = gate_lane_identity(route);
     let fake = r#"
 sleep() { :; }
 gh() {
   [ "$1" = "api" ] || return 1
+  [ -n "${GH_TOKEN:-}" ] || return 1
   shift
   local url="$1"
   shift
@@ -152,11 +181,12 @@ gh() {
         printf 'unexpected job selector: %s\n' "$jq_selector" >&2
         return 1
       fi
-      # A stale job appears first in the response. The fake applies the
-      # workflow's exact selector and returns only the selected lane ID.
-      printf '{"jobs":[{"name":"ripr+ stale job","id":11111},{"name":"%s","id":%s}]}\n' "$FAKE_JOB_NAME" "$FAKE_JOB_ID" >/dev/null
-      printf '%s\n' "$FAKE_JOB_ID"
-      return
+      # A stale job appears first in the response. Let the real jq executable
+      # evaluate the workflow's selector against this JSON; a canned ID or
+      # discarded response would make the wrong-job negative control vacuous.
+      printf '{"jobs":[{"name":"ripr+ stale job","id":11111},{"name":"%s","id":%s}]}\n' "$FAKE_JOB_NAME" "$FAKE_JOB_ID" > "$FAKE_JOBS_RESPONSE"
+      jq "$jq_selector" "$FAKE_JOBS_RESPONSE"
+      return $?
       ;;
     */actions/jobs/*/logs)
       local requested_job_id="${url%/logs}"
@@ -197,6 +227,7 @@ gh() {
         .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
         .env("GITHUB_RUN_ID", "4242")
         .env("GITHUB_SHA", "0123456789abcdef0123456789abcdef01234567")
+        .env("GH_TOKEN", "gate-token")
         .env("GITHUB_STEP_SUMMARY", &summary)
         .env("FAKE_FETCH", if log.is_some() { "success" } else { "fail" })
         .env("FAKE_LOOKUP_FAILURES", lookup_failures.to_string())
@@ -206,6 +237,7 @@ gh() {
         .env("FAKE_LOOKUP_CALLS", &lookup_calls)
         .env("FAKE_FETCH_CALLS", &fetch_calls)
         .env("FAKE_FETCH_URLS", &fetch_urls)
+        .env("FAKE_JOBS_RESPONSE", &jobs_response)
         .env("FAKE_JOB_NAME", job_name)
         .env("FAKE_JOB_ID", job_id)
         .stdin(Stdio::piped())
@@ -286,95 +318,50 @@ fn run_router_case(
     let sandbox = tempfile::tempdir().context("creating router sandbox")?;
     let output_file = sandbox.path().join("router-output");
     let summary = sandbox.path().join("summary.md");
+    let curl_request = sandbox.path().join("curl-request");
     let run = workflow_run_block("route-ripr", "Decide target runner")?;
     let runner_json = runner_response(runner_fixture)?;
+    require_real_jq()?;
     let fake = r#"
 curl() {
   local output=""
+  local status_format=""
+  local endpoint=""
+  local accept=""
+  local authorization=""
+  local api_version=""
   while [ "$#" -gt 0 ]; do
-    if [ "$1" = "-o" ]; then
-      output="$2"
-      shift 2
-    else
-      shift
-    fi
-  done
-  printf '%s\n' "$FAKE_RUNNERS_JSON" > "$output"
-  printf '%s' "$FAKE_CURL_STATUS"
-}
-jq() {
-  if [ "$1" = "--arg" ]; then
-    [ "$2" = "runner_label" ] && [ "$#" -eq 5 ] || return 1
-    local runner_label="$3"
-    local jq_selector="$4"
-    local response="$5"
-    [ -f "$response" ] || return 1
-    [ "$(cat "$response")" = "$FAKE_RUNNERS_JSON" ] || return 1
-    for selector_fragment in \
-      'select(.status == "online")' \
-      'select(.busy == false)' \
-      'index("em-ci")' \
-      'index($runner_label)' \
-      'index("rust-small")' \
-      'index("trusted-pr")'; do
-      case "$jq_selector" in
-        *"$selector_fragment"*) ;;
-        *) printf 'missing selector fragment: %s\n' "$selector_fragment" >&2; return 1 ;;
-      esac
-    done
-
-    # Evaluate the fixture objects rather than returning a canned count. This
-    # keeps the fake independent of the expected answer and makes busy,
-    # offline, and missing-label regressions observable.
-    local runners
-    runners=$(sed -n 's/^{"runners":\[\(.*\)\]}$/\1/p' "$response" | sed 's/},{"id"/\n{"id"/g')
-    local count=0
-    while IFS= read -r runner; do
-      [ -n "$runner" ] || continue
-      local normalized labels
-      normalized=$(printf '%s' "$runner" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-      labels=$(printf '%s' "$normalized" | sed -n 's/.*"labels":\[\(.*\)\].*/\1/p')
-      case "$normalized" in
-        *'"status":"online"'*'"busy":false'*) ;;
-        *) continue ;;
-      esac
-      for required_label in em-ci "$runner_label" rust-small trusted-pr; do
-        case "$labels" in
-          *"\"name\":\"$required_label\""*) ;;
-          *) continue 2 ;;
+    case "$1" in
+      -sS) shift ;;
+      -w) status_format="$2"; shift 2 ;;
+      -o) output="$2"; shift 2 ;;
+      -H)
+        case "$2" in
+          Accept:*) accept="$2" ;;
+          Authorization:*) authorization="$2" ;;
+          X-GitHub-Api-Version:*) api_version="$2" ;;
+          *) printf 'unexpected curl header: %s\n' "$2" >&2; return 1 ;;
         esac
-      done
-      count=$((count + 1))
-    done <<EOF
-$runners
-EOF
-    printf '%s\n' "$count"
-    return 0
-  fi
-
-  [ "$#" -eq 2 ] || return 1
-  local jq_selector="$1"
-  local response="$2"
-  [ -f "$response" ] || return 1
-  [ "$jq_selector" = '.artifacts[] | select(.name == "ripr-gate-classification") | .id' ] || {
-    printf 'unexpected artifact selector: %s\n' "$jq_selector" >&2
+        shift 2
+        ;;
+      https://*) endpoint="$1"; shift ;;
+      *) printf 'unexpected curl argument: %s\n' "$1" >&2; return 1 ;;
+    esac
+  done
+  [ "$status_format" = "%{http_code}" ] || return 1
+  [ "$output" != "" ] || return 1
+  [ "$endpoint" = "https://api.github.com/orgs/$ORG/actions/runners?per_page=100" ] || {
+    printf 'unexpected curl endpoint: %s\n' "$endpoint" >&2
     return 1
   }
-  local artifacts
-  artifacts=$(sed -n 's/^{"total_count":[0-9]*,"artifacts":\[\(.*\)\]}$/\1/p' "$response" | sed 's/},{"id"/\n{"id"/g')
-  while IFS= read -r artifact; do
-    [ -n "$artifact" ] || continue
-    local name id
-    name=$(printf '%s' "$artifact" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')
-    id=$(printf '%s' "$artifact" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-    if [ "$name" = "ripr-gate-classification" ]; then
-      printf '%s\n' "$id"
-      return 0
-    fi
-  done <<EOF
-$artifacts
-EOF
-  return 0
+  [ "$accept" = "Accept: application/vnd.github+json" ] || return 1
+  [ "$authorization" = "Authorization: Bearer $GH_TOKEN" ] || return 1
+  [ -n "$GH_TOKEN" ] || return 1
+  [ "$api_version" = "X-GitHub-Api-Version: 2022-11-28" ] || return 1
+  printf 'endpoint=%s\naccept=%s\nauthorization=%s\napi_version=%s\noutput=%s\n' \
+    "$endpoint" "$accept" "$authorization" "$api_version" "$output" > "$FAKE_CURL_REQUEST"
+  printf '%s\n' "$FAKE_RUNNERS_JSON" > "$output"
+  printf '%s' "$FAKE_CURL_STATUS"
 }
 "#;
     let script = format!("{fake}\n{run}");
@@ -389,6 +376,7 @@ EOF
         .env("FAKE_RUNNER_FIXTURE", runner_fixture)
         .env("FAKE_RUNNERS_JSON", runner_json)
         .env("FAKE_CURL_STATUS", curl_status)
+        .env("FAKE_CURL_REQUEST", &curl_request)
         .env("GITHUB_OUTPUT", &output_file)
         .env("GITHUB_STEP_SUMMARY", &summary)
         .stdin(Stdio::piped())
@@ -409,7 +397,9 @@ EOF
     );
     let route_output = fs::read_to_string(&output_file)
         .with_context(|| format!("reading router output {}", output_file.display()))?;
-    Ok((output, format!("{combined}\n{route_output}")))
+    let curl_request_text = fs::read_to_string(&curl_request)
+        .with_context(|| format!("reading fake curl request {}", curl_request.display()))?;
+    Ok((output, format!("{combined}\n{route_output}\n{curl_request_text}")))
 }
 
 fn run_preflight_case(
@@ -525,6 +515,199 @@ fn run_fallback_condition(
     Ok((output, format!("{combined}\n{summary_text}")))
 }
 
+fn run_fallback_path() -> Result<(std::process::Output, String)> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    let steps = yaml
+        .get("jobs")
+        .and_then(|jobs| jobs.get("ripr-fallback"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_sequence)
+        .ok_or_else(|| anyhow!("ripr-fallback steps are missing"))?;
+    let step_names = steps
+        .iter()
+        .filter_map(|step| step.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    let checkout_index = step_names
+        .iter()
+        .position(|name| *name == "Checkout")
+        .ok_or_else(|| anyhow!("ripr-fallback checkout step is missing"))?;
+    let evidence_index = step_names
+        .iter()
+        .position(|name| *name == "Generate PR evidence")
+        .ok_or_else(|| anyhow!("ripr-fallback evidence step is missing"))?;
+    let quality_index = step_names
+        .iter()
+        .position(|name| *name == "Enforce new RIPR gap quality gate")
+        .ok_or_else(|| anyhow!("ripr-fallback quality-gate step is missing"))?;
+    if checkout_index >= evidence_index || evidence_index >= quality_index {
+        bail!("ripr-fallback must checkout before evidence and quality-gate steps");
+    }
+
+    let checkout = workflow_step_value("ripr-fallback", "Checkout")?;
+    if checkout.get("uses").and_then(Value::as_str)
+        != Some("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
+        || checkout.get("with").and_then(|with| with.get("fetch-depth")).and_then(Value::as_i64)
+            != Some(0)
+    {
+        bail!("ripr-fallback checkout must use the pinned action with fetch-depth: 0");
+    }
+
+    let upload = workflow_step_value("ripr-fallback", "Upload ripr PR evidence")?;
+    let upload_paths = upload
+        .get("with")
+        .and_then(|with| with.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("ripr-fallback evidence upload paths are missing"))?;
+    for path in [
+        "target/ripr/pr/**",
+        "target/ripr/review/**",
+        "target/receipts/quality/ripr-plus.json",
+        "target/receipts/quality/quality-gate-ripr.json",
+    ] {
+        if !upload_paths.contains(path) {
+            bail!("ripr-fallback upload must include {path}");
+        }
+    }
+
+    let sandbox = tempfile::tempdir().context("creating fallback path sandbox")?;
+    let calls = sandbox.path().join("fallback-calls");
+    let checkout_marker = sandbox.path().join("checkout-marker");
+    let github_env = sandbox.path().join("github-env");
+    let summary = sandbox.path().join("summary.md");
+    let annotation = workflow_run_block("ripr-fallback", "Annotate failover reason")?
+        .replace("${{ needs.route-ripr.outputs.target }}", "cx53");
+    let normalize = workflow_run_block("ripr-fallback", "Normalize base ref")?;
+    let executable_steps = [
+        "Toolchain (rust-toolchain.toml pins 1.95.0)",
+        "Install ripr",
+        "Run ripr doctor",
+        "Generate PR evidence",
+        "Generate repo-wide RIPR+ baseline receipt",
+        "Record exact RIPR badge producer",
+        "Generate review guidance",
+        "Generate impacted evidence",
+        "Generate PR evidence summary",
+        "Generate warning annotations",
+        "Validate PR evidence contracts",
+        "Enforce new RIPR gap quality gate",
+        "Append PR evidence summary",
+    ];
+    let mut script = String::from(
+        r#"set -euo pipefail
+checkout_action() {
+  printf 'uses=%s fetch-depth=%s\n' "$FAKE_CHECKOUT_USES" "$FAKE_CHECKOUT_DEPTH" > "$FAKE_CHECKOUT_MARKER"
+  mkdir -p checkout
+}
+rustc() {
+  printf 'rustc %s\n' "$*" >> "$FAKE_CALLS"
+}
+ripr() {
+  printf 'ripr %s\n' "$*" >> "$FAKE_CALLS"
+}
+git() {
+  [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ] || return 1
+  printf '%s\n' "$FAKE_HEAD"
+}
+cargo() {
+  printf 'cargo %s\n' "$*" >> "$FAKE_CALLS"
+  [ "$1" = "xtask" ] || return 0
+  case "$2" in
+    ripr-pr)
+      mkdir -p target/ripr/pr
+      printf '{"kind":"ripr-pr"}\n' > target/ripr/pr/repo-exposure.json
+      ;;
+    ripr-plus)
+      mkdir -p target/receipts/quality
+      printf '{"kind":"ripr-plus"}\n' > target/receipts/quality/ripr-plus.json
+      ;;
+    ripr-review-comments)
+      mkdir -p target/ripr/review
+      printf '{"kind":"review"}\n' > target/ripr/review/comments.json
+      ;;
+    impacted-evidence)
+      mkdir -p target/xtask/impacted-evidence
+      printf '{"kind":"impacted"}\n' > target/xtask/impacted-evidence/receipt.json
+      ;;
+    ripr-pr-summary)
+      mkdir -p target/ripr/pr
+      printf 'fallback PR evidence summary\n' > target/ripr/pr/summary.md
+      ;;
+    ripr-annotations)
+      mkdir -p target/ripr/review
+      printf 'fallback warning annotation\n' > target/ripr/review/annotations.txt
+      ;;
+    quality-gate)
+      mkdir -p target/receipts/quality
+      printf '{"kind":"quality-gate"}\n' > target/receipts/quality/quality-gate-ripr.json
+      printf 'fallback quality gate summary\n' > target/receipts/quality/quality-gate-ripr.md
+      ;;
+  esac
+}
+checkout_action
+"#,
+    );
+    script.push_str(&annotation);
+    script.push_str("\n");
+    script.push_str(&normalize);
+    // GITHUB_ENV is applied between Actions steps. The harness runs the real
+    // run blocks in one shell, so apply the same step boundary explicitly.
+    script.push_str("\nBASE_REF=main\n");
+    for step_name in executable_steps {
+        script.push_str("\n");
+        script.push_str(&workflow_run_block("ripr-fallback", step_name)?);
+        script.push_str("\n");
+    }
+
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("BASE_REF", "refs/heads/main")
+        .env("PR_HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
+        .env("PR_LABELS", "ci")
+        .env("RIPR_VERSION", "0.9.0")
+        .env("GITHUB_ENV", &github_env)
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .env("FAKE_CALLS", &calls)
+        .env("FAKE_CHECKOUT_MARKER", &checkout_marker)
+        .env(
+            "FAKE_CHECKOUT_USES",
+            checkout
+                .get("uses")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("fallback checkout action is missing"))?,
+        )
+        .env("FAKE_CHECKOUT_DEPTH", "0")
+        .env("FAKE_HEAD", "0123456789abcdef0123456789abcdef01234567")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("executing the real ripr fallback run blocks")?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("fallback bash stdin is unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output().context("waiting for fallback run blocks")?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let checkout_text = fs::read_to_string(&checkout_marker)?;
+    let calls_text = fs::read_to_string(&calls)?;
+    let summary_text = fs::read_to_string(&summary)?;
+    let env_text = fs::read_to_string(&github_env)?;
+    Ok((
+        output,
+        format!(
+            "{combined}\ncheckout={checkout_text}calls={calls_text}summary={summary_text}env={env_text}"
+        ),
+    ))
+}
+
 fn retry_run_block() -> Result<String> {
     let root = project_root()?;
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr-infra-retry.yml"))?;
@@ -590,6 +773,7 @@ fn run_retry_case(
     let fake = r#"
 gh() {
   [ "$1" = "api" ] || return 1
+  [ -n "${GH_TOKEN:-}" ] || return 1
   shift
   local method="GET"
   if [ "$1" = "-X" ]; then
@@ -641,6 +825,7 @@ gh() {
         .args(["--noprofile", "--norc", "-s"])
         .current_dir(sandbox.path())
         .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
+        .env("GH_TOKEN", "retry-token")
         .env("GITHUB_STEP_SUMMARY", &summary)
         .env("RUN_ID", "4242")
         .env("RUN_ATTEMPT", run_attempt)
@@ -812,6 +997,12 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         || !self_hosted_output.contains("reason=cx53_idle")
         || !self_hosted_output.contains("idle_cx53=1")
         || !self_hosted_output.contains("idle_cx43=1")
+        || !self_hosted_output.contains(
+            "endpoint=https://api.github.com/orgs/EffortlessMetrics/actions/runners?per_page=100",
+        )
+        || !self_hosted_output.contains("accept=Accept: application/vnd.github+json")
+        || !self_hosted_output.contains("authorization=Authorization: Bearer runner-token")
+        || !self_hosted_output.contains("api_version=X-GitHub-Api-Version: 2022-11-28")
     {
         bail!(
             "router must select the eligible runner from a realistic response through its real run block:\n{self_hosted_output}"
@@ -868,6 +1059,26 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     {
         bail!(
             "the production ripr-fallback condition must start the fallback after preflight_ok=false:\n{fallback_output}"
+        );
+    }
+    let (fallback_path, fallback_path_output) = run_fallback_path()?;
+    if !fallback_path.status.success()
+        || !fallback_path_output.contains(
+            "checkout=uses=actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 fetch-depth=0",
+        )
+        || !fallback_path_output.contains(
+            "cargo xtask ripr-pr --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567",
+        )
+        || !fallback_path_output.contains(
+            "cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json",
+        )
+        || !fallback_path_output.contains("fallback PR evidence summary")
+        || !fallback_path_output.contains("fallback quality gate summary")
+        || !fallback_path_output.contains("fallback warning annotation")
+        || !fallback_path_output.contains("env=BASE_REF=main")
+    {
+        bail!(
+            "the fallback must execute its checkout boundary, evidence generation, and quality-gate wiring:\n{fallback_path_output}"
         );
     }
     let (preflight_passed, preflight_passed_output) =
