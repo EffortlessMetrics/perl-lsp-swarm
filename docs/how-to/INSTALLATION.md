@@ -112,9 +112,9 @@ Those installers now promote a verified `perllsp` + `perl-dap` product unit as
 one current selection
 ([#8359](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8359)):
 readers observe the previous complete unit or the new complete unit, never a
-mixed or partial pair. The POSIX promotion suite proves that behavior; the
-PowerShell promotion is implemented but is not yet proven by hosted Windows
-execution. Publisher provenance, health-driven rollback, PATH
+mixed or partial pair. POSIX local promotion tests and the GitHub-hosted
+PowerShell checksum, archive safety, and product-unit promotion job both prove
+the clone-local installer path. Publisher provenance, health-driven rollback, PATH
 persistence, and hosted install-transition proof remain separate under
 [#6097](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6097),
 [#7832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7832),
@@ -167,8 +167,9 @@ through an immutable candidate directory and an atomic current pointer.
 Windows uses a file `current` pointer replaced with `MoveFileEx` and PATH-visible
 `perllsp.cmd` / `perl-dap.cmd` shims that follow that pointer, so unelevated
 accounts never need a privileged file symlink and never publish independent
-PATH copies. That PowerShell promotion is implemented but is not yet proven by
-hosted Windows execution; only the POSIX promotion carries a passing suite.
+PATH copies. Clone-local PowerShell product-unit promotion is proven by the
+hosted Windows installer-powershell-checksum-contract job on
+[#12815](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/12815).
 POSIX PATH names remain relative links into `.perl-lsp/current`.
 The script installs into `%USERPROFILE%\.local\bin` by default.
 
