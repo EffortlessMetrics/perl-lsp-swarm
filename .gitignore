@@ -259,28 +259,6 @@ test_corpus/workspaces/xlarge/bin/
 # Machine-local Cargo policy
 /.cargo/config.local.toml
 
-# Local build/cache plane aliases
-/.devplane/
-/.cache/
-
-# Agent/test scratch
-/.tmp/
-/test-results/
-/coverage/
-/lcov.info
-/*.profraw
-/*.profdata
-
-# Nextest local output
-/.nextest/
-
-# Devplane-routed build output (not repo-local)
-/build/
-
-# Windows reserved device name — accidental redirect creates this file
-# on Windows; it cannot be opened or deleted normally (#5000).
-/nul
-
-# Staged Zed extension fixture builds locally (never committed).
-.ci/fixtures/zed-perl-upstream/zed-perl/Cargo.lock
-.ci/fixtures/zed-perl-upstream/zed-perl/target/
+# Local compatibility export only. Live inventory evidence is generated under
+# target/policy/ and published by CI/docs; never recreate merge authority here.
+/docs/policy/NON_RUST_INVENTORY.md

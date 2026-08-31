@@ -60,7 +60,7 @@ copy_lsp_doc() {
             -e 's#../../features.toml#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/features.toml#g' \
             -e 's#../project/CURRENT_STATUS.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md#g' \
             -e 's#../reference/LSP_FEATURES.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/LSP_FEATURES.md#g' \
-            -e 's#../project/protocols/verification.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/protocols/verification.md#g' 
+            -e 's#../project/protocols/verification.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/protocols/verification.md#g'
     fi
 }
 
@@ -195,12 +195,14 @@ copy_doc "$DOCS_DIR/reference/CONFIGURATION_SCHEMA.md" "$BOOK_SRC/reference/conf
 copy_doc "$DOCS_DIR/how-to/UPGRADING.md" "$BOOK_SRC/reference/upgrading.md"
 copy_doc "$DOCS_DIR/reference/ERROR_HANDLING_API_CONTRACTS.md" "$BOOK_SRC/reference/error-handling-contracts.md"
 copy_doc "$DOCS_DIR/reference/LSP_MISSING_FEATURES_REPORT.md" "$BOOK_SRC/reference/lsp-missing-features.md"
-if [ -f "$REPO_ROOT/target/policy/non-rust-inventory.md" ]; then
-    copy_doc "$REPO_ROOT/target/policy/non-rust-inventory.md" "$BOOK_SRC/reference/non-rust-inventory.md"
-else
-    echo "  Warning: Generated non-Rust inventory not found; using the committed reference copy"
-    copy_doc "$DOCS_DIR/policy/NON_RUST_INVENTORY.md" "$BOOK_SRC/reference/non-rust-inventory.md"
+GENERATED_NON_RUST_INVENTORY="$REPO_ROOT/target/policy/non-rust-inventory.md"
+if [ ! -f "$GENERATED_NON_RUST_INVENTORY" ]; then
+    echo "  Error: Generated non-Rust inventory is required for documentation publication." >&2
+    echo "  Missing: $GENERATED_NON_RUST_INVENTORY" >&2
+    echo "  Run: cargo xtask non-rust inventory --check" >&2
+    exit 1
 fi
+copy_doc "$GENERATED_NON_RUST_INVENTORY" "$BOOK_SRC/reference/non-rust-inventory.md"
 
 # DAP section
 echo "Setting up DAP..."

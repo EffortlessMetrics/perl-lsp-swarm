@@ -39,6 +39,6 @@ Broad globs should also include `broad_glob_reason`.
 
 Enforcement belongs to the file-policy checker and the authoritative ledger at
 `policy/non-rust-allowlist.toml`. The exact candidate-tree inventory is generated
-under `target/policy/` and published by CI/docs builds; the committed
-[`docs/policy/NON_RUST_INVENTORY.md`](policy/NON_RUST_INVENTORY.md) copy is a
-reference snapshot, not byte-fresh merge authority.
+under `target/policy/` and published by CI and documentation builds. No full-tree
+inventory is committed: whole-repository counters and sorted path rows are
+observations of a tree, not merge authority.
