@@ -327,7 +327,7 @@ fn validate_template(template: &str) -> Result<(), String> {
 fn validate_provider_skill(provider: &str, skill: &str) -> Result<(), String> {
     validate_ordered_headings(skill, provider, REVIEW_INDEX_HEADINGS)?;
     require_phrases(
-        skill,
+        section(skill, "## PR review index")?,
         provider,
         &[
             "the order is load bearing",
@@ -452,6 +452,23 @@ fn ratchet_rejects_weakened_proof_and_provider_drift() -> Result<(), Box<dyn std
     assert!(
         validate_provider_skill("Codex", &drifted).is_err(),
         "restoring a retired provider-only boundary heading must fail"
+    );
+
+    let relocated = codex
+        .replacen(
+            "trace the changed production path",
+            "trace the changed runtime path",
+            1,
+        )
+        .replacen(
+            "## PR review index",
+            "trace the changed production path\\n\\n## PR review index",
+            1,
+        );
+    assert_ne!(relocated, codex, "provider-marker relocation fixture must apply");
+    assert!(
+        validate_provider_skill("Codex", &relocated).is_err(),
+        "moving a provider marker outside the PR review-index section must fail"
     );
     Ok(())
 }
