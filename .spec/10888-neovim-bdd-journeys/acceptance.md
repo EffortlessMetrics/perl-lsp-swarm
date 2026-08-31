@@ -171,7 +171,7 @@ built-in LSP receipts satisfy `neovim.bdd.*`.
 | Include-path security | #4998 | core.07 positive shape workspace-contained relative; core.10 guard row |
 | Generic receipt semantics | #10527/#7777; generic `editor_client_compat.v1` cells | receipt stage consumed as boundary owner; no Neovim-local receipt ontology |
 | Typed edge/profile vocabulary | #10858 | the six #11392-governed programme profiles consumed with membership rules, ceilings, `consumes_if_available` class |
-| Host reliability/cleanup | #10894 (generic), #10507 downstream | core.09/lifecycle.07 require independent cleanup observation |
+| Host reliability/cleanup | #10894 (generic); core graceful cleanup owned by the core slice `nv_core_slice_edit_requery_format_cleanup`; deep shutdown/retention owned by #10507 | core.09 and lifecycle.07 each require independent cleanup observation from their own profile's owner; #10507 never owns a core row |
 | Text-sync envelope selection | #8129 | sync.* published as two conditional groups; neither asserted current |
 | Support registry tiers | `policy/lsp-client-support.toml` registered `neovim` tier (`configuration_documented`, `requires_actual_client_receipt = true`) | tags reuse registered vocabulary; no tier change here |
 | Programme topology | #7739 product controller, #10501 train controller, `.spec/11392-native-neovim-train-graph/` | consumed by reference; no manifest node added or renamed |

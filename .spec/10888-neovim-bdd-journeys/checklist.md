@@ -91,8 +91,9 @@ an entry cannot be dropped to retire a row's binding while the checker still
 reports every row as bound; that no foreign rail ID appears as a ledger row; all
 twenty-five falsifiers with exact scenario/kind/verdict text in fixed order;
 a digest of each named prose invariant (subject law, profile laws, claim
-boundary, three-subject law, evidence vocabulary, and the claim-profile
-membership table), so a boundary claim cannot be reversed while a
+boundary, three-subject law, evidence vocabulary, the claim-profile membership
+table, the branch-selection law, and the §Hazards and §Contracts tables), so a
+boundary claim cannot be reversed while a
 bare required token survives elsewhere in the file, together with the same
 exact-coverage requirement over the named invariant set; `git diff --check` over the
 candidate range, work tree, and index, with a nonzero status failing the check
@@ -112,6 +113,17 @@ generator, which would break the checker's read-only, no-build contract and
 duplicate `non_rust_inventory_check`, whose job it already is. The boundary is
 deliberate: the checker catches an omitted or hand-faked packet refresh; the
 gate owns whole-file equivalence.
+
+What is bound and what is not: every `neovim.bdd.*` ledger row, and every
+normative table or law block -- claim-profile membership, the branch-selection
+law, §Hazards, §Contracts, the evidence-stage vocabulary, the subject law, the
+profile laws, the claim boundary, and the three-subject law. Deliberately
+unbound: narrative prose, the §Coverage-Map cross-references, and §Blast-Radius,
+none of which assign ownership or state a law. The rule that produced this list
+is simple and was learned the hard way here: **anything that assigns an owner or
+states a law gets a digest, whether it is a table or a paragraph.** Five separate
+findings in this packet's review were unbound normative content contradicting
+bound content.
 
 Stated limitation, owner chains: the checker digests each row's owner-chain cell,
 so a chain cannot change silently — but it cannot judge whether the cited owner
@@ -215,6 +227,15 @@ INVARIANT_BLOCKS = {
     # leave the per-branch ownership statements unprotected.
     "branch_selection_law": ("acceptance",
                              r"(?ms)^Both branch groups are published.*?(?=^### Branch A)"),
+    # The two remaining normative tables. Neither is a `neovim.bdd.*` row, so
+    # ROW_DIGESTS never covered them, and §Contracts carries the downstream
+    # ownership assignments -- which is how it came to contradict a row's own
+    # owner chain while every check passed. Normative tables get bound like
+    # normative prose.
+    "hazards_table": ("acceptance",
+                      r"(?ms)^## §Hazards.*?(?=^## §Contracts)"),
+    "contracts_table": ("acceptance",
+                        r"(?ms)^## §Contracts.*?(?=^## §API-Shape)"),
     "profile_membership": ("acceptance",
                            r"(?ms)^## Claim profiles \(ledger membership\).*?(?=^Laws: a stronger profile)"),
 }
@@ -231,6 +252,8 @@ EXPECTED_INVARIANTS = {
     "evidence_vocabulary",
     "profile_membership",
     "branch_selection_law",
+    "hazards_table",
+    "contracts_table",
 }
 
 INVARIANT_DIGESTS = {
@@ -239,6 +262,8 @@ INVARIANT_DIGESTS = {
     "claim_boundary": "3d6755e631a9c99f",
     "three_subject_law": "e53af321800e90fb",
     "branch_selection_law": "8cc5566b0f27acdb",
+    "hazards_table": "b23ecc7dc31924ab",
+    "contracts_table": "64a91be0447830a9",
     "profile_membership": "f4de26e57133c176",
     "evidence_vocabulary": "d78c020224e6bc3d",
 }

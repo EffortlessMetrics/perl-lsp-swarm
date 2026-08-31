@@ -255,7 +255,8 @@ Neovim.
 BDD scenario ID (this packet)
   → #10502 fixture/expectation + activation-root cell
   → #10504 core-loop / #10505 sync-branch / #10506 parser-artifact /
-    #10507 concurrency-and-cleanup host observation
+    #10507 concurrency / deep shutdown-retention host observation
+    (core graceful cleanup is the core slice's, not #10507's)
   → generic `editor_client_compat.v1` cell within #10527/#7777 bounds
   → #10508 version/platform rows and #10516/#10518/#10520 channel rows
   → #10522 / #7122 support projection
