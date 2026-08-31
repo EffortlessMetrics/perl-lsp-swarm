@@ -13,6 +13,23 @@
 //! with no such evidence fails the check instead of rendering an optimistic
 //! table.
 //!
+//! # Instrument boundary
+//!
+//! Evidence discovery is a **lexical scan**, not a Rust parse: a code mask over
+//! comments and literals, plus per-item attribute inspection. That is the same
+//! instrument, and the same boundary, that `compat_inventory` accepted in #8880
+//! and that #14332 is rebuilding on `syn`.
+//!
+//! The boundary is stated rather than hidden because its failure mode is quiet:
+//! a construct the scan misreads becomes a fixture that is counted without
+//! running, which is the exact dishonesty this check exists to prevent. Where
+//! the scan cannot establish reachability — a fixture inside a suppressed
+//! module — extraction refuses instead of guessing.
+//!
+//! Further lexical edge cases belong in the follow-up rebuild (#14346), not in
+//! another round of individual patches: patching them one at a time is how the
+//! sibling scanner grew (#14332).
+//!
 //! What this check does and does not establish, stated exactly: it proves the
 //! citation is real and reachable — the fixture exists in the corpus as running
 //! code, is not commented out, quoted, `#[ignore]`d, or disabled by `cfg`, and
