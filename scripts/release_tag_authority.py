@@ -10,8 +10,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-RULESET_ID = 21821148
-REPOSITORY = "EffortlessMetrics/perl-lsp-swarm"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -29,14 +27,13 @@ def load(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def validate_ruleset(value: dict[str, Any]) -> None:
+def validate_ruleset(value: dict[str, Any], repository: str | None = None) -> None:
     if (
-        value.get("id") != RULESET_ID
-        or value.get("name") != "release-tags"
+        value.get("name") != "release-tags"
         or value.get("target") != "tag"
         or value.get("source_type") != "Repository"
-        or value.get("source") != REPOSITORY
         or value.get("enforcement") != "active"
+        or (repository is not None and value.get("source") != repository)
     ):
         raise TagAuthorityError("NOT_PROVEN: release-tag ruleset identity is inactive or changed")
     conditions = value.get("conditions")
@@ -69,9 +66,10 @@ def validate_ref(value: dict[str, Any], tag: str, source_sha: str) -> None:
 
 
 def validate(
-    ruleset: dict[str, Any], ref: dict[str, Any] | None, tag: str, source_sha: str
+    ruleset: dict[str, Any], ref: dict[str, Any] | None, tag: str, source_sha: str,
+    repository: str | None = None,
 ) -> None:
-    validate_ruleset(ruleset)
+    validate_ruleset(ruleset, repository)
     if ref is not None:
         validate_ref(ref, tag, source_sha)
 
@@ -82,6 +80,7 @@ def main() -> int:
     parser.add_argument("--ref", type=Path)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--repository")
     args = parser.parse_args()
     try:
         validate(
@@ -89,6 +88,7 @@ def main() -> int:
             load(args.ref, "release-tag ref") if args.ref else None,
             args.tag,
             args.source_sha,
+            args.repository,
         )
     except TagAuthorityError as error:
         print(f"release tag authority: {error}", file=sys.stderr)

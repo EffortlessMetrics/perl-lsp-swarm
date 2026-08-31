@@ -74,6 +74,12 @@ fn validate_release_graph(document: &Value) -> Result<()> {
     );
 
     let candidate_text = rendered(candidate)?;
+    let producer_text = std::fs::read_to_string(root()?.join("scripts/release_terminal_manifest.py"))
+        .context("reading terminal manifest producer")?;
+    ensure!(
+        producer_text.contains("output = candidate / \"dist\" / \"release-terminal-manifest.json\""),
+        "terminal manifest producer does not declare the canonical output path"
+    );
     for required in [
         "release artifact-check",
         "Duplicate archive filename",
@@ -320,6 +326,11 @@ fn downstream_publishers_require_the_exact_eligibility_handoff() -> Result<()> {
             "release-terminal-candidate",
             "dist/release-terminal-manifest.json",
             "actual_manifest_sha256",
+            "gh run view",
+            "workflowName",
+            "headSha",
+            "conclusion",
+            ".source_sha",
         ] {
             ensure!(
                 text.contains(required),
@@ -327,6 +338,17 @@ fn downstream_publishers_require_the_exact_eligibility_handoff() -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn occupied_tag_probe_fails_closed_on_transport_error() -> Result<()> {
+    let text = rendered(&workflow("release.yml")?)?;
+    ensure!(
+        text.contains("refs=\"$(git ls-remote --tags origin")
+            && !text.contains("git ls-remote --exit-code --tags origin"),
+        "occupied-tag probe must distinguish transport failure from an absent tag"
+    );
     Ok(())
 }
 
