@@ -97,7 +97,7 @@ def select_new_exact_run(
         if run.run_id not in prior_ids
         and run.event == "workflow_dispatch"
         and run.head_sha == expected_sha
-        and _parse_time(run.created_at) >= dispatch_started - dt.timedelta(seconds=5)
+        and _parse_time(run.created_at) >= dispatch_started - dt.timedelta(seconds=60)
     ]
     if len(eligible) > 1:
         identities = ", ".join(str(run.run_id) for run in eligible)
@@ -160,6 +160,8 @@ def _runs(repo: str, workflow_id: int) -> list[RunIdentity]:
     raw = _run_gh(
         [
             "api",
+            "--method",
+            "GET",
             f"repos/{repo}/actions/workflows/{workflow_id}/runs",
             "-f",
             "event=workflow_dispatch",
