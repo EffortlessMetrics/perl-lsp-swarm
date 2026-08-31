@@ -1,8 +1,3 @@
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-
 use perl_lsp::{JsonRpcRequest, LspServer};
 use perl_tdd_support::must;
 use serde_json::json;
@@ -162,12 +157,13 @@ fn test_completion_advertises_insert_text_modes() -> Result<(), Box<dyn std::err
         "completionProvider.completionItem.insertTextModes must be an array"
     );
 
-    let modes: Vec<u32> = insert_text_modes
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|v| v.as_u64().map(|u| u as u32))
-        .collect();
+    let modes: Vec<u32> = perl_test_must::must_some_with(
+        insert_text_modes.as_array(),
+        "insertTextModes must be an array after the is_array guard",
+    )
+    .iter()
+    .filter_map(|v| v.as_u64().map(|u| u as u32))
+    .collect();
     assert!(!modes.is_empty(), "insertTextModes array must not be empty");
     // Per LSP 3.17 spec and issue #1712 acceptance criteria, both PlainText (1)
     // and Snippet (2) must be advertised — not just one or the other.

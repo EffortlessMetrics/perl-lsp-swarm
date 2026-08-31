@@ -3,11 +3,6 @@
 //! These checks read the checked-in template material against the canonical generic
 //! `perl.*` settings schema. Host behavior is out of scope and owned by #7985.
 
-// Tests are permitted to use `.expect()` and `panic!` on Result/Option per the repo's
-// coding standards (unlike production code, where they are banned). Fixture parsing and
-// schema lookups here fail the test with a specific diagnostic rather than propagating.
-#![allow(clippy::panic, clippy::expect_used)]
-
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 
@@ -20,7 +15,7 @@ const LSP4IJ_INIT_OPTIONS: &str =
 const LSP4IJ_TEMPLATE: &str = include_str!("../../../integrations/lsp4ij/perl-lsp/template.json");
 
 fn parse(input: &str) -> Value {
-    serde_json::from_str(input).expect("checked JSON fixture must parse")
+    perl_test_must::must_with(serde_json::from_str(input), "checked JSON fixture must parse")
 }
 
 fn canonical_property<'a>(schema: &'a Value, dotted_key: &str) -> Option<&'a Value> {
@@ -52,12 +47,13 @@ fn server_invocation(command: &str) -> &str {
         return command;
     };
 
-    rest.strip_prefix('"').and_then(|inner| inner.strip_suffix('"')).unwrap_or_else(|| {
-        panic!(
+    perl_test_must::must_some_with(
+        rest.strip_prefix('"').and_then(|inner| inner.strip_suffix('"')),
+        format!(
             "`sh -c` command must quote the whole server invocation so every argument survives \
              shell tokenization: {command}"
-        )
-    })
+        ),
+    )
 }
 
 fn expand_one_dotted_key(key: &str, value: Value) -> Value {
@@ -74,10 +70,10 @@ fn expand_one_dotted_key(key: &str, value: Value) -> Value {
 fn lsp4ij_projection_is_a_checked_subset_of_the_generic_perl_schema() {
     let canonical = parse(CANONICAL_SCHEMA);
     let projection = parse(LSP4IJ_SCHEMA);
-    let properties = projection
-        .get("properties")
-        .and_then(Value::as_object)
-        .expect("LSP4IJ schema must expose flat dotted properties");
+    let properties = perl_test_must::must_some_with(
+        projection.get("properties").and_then(Value::as_object),
+        "LSP4IJ schema must expose flat dotted properties",
+    );
 
     assert!(!properties.is_empty(), "projection must expose at least one useful setting");
 
@@ -93,9 +89,10 @@ fn lsp4ij_projection_is_a_checked_subset_of_the_generic_perl_schema() {
         );
         assert!(key.contains('.'), "LSP4IJ server setting must be a dotted perl.* key: {key}");
 
-        let canonical_property = canonical_property(&canonical, key).unwrap_or_else(|| {
-            panic!("projected field is absent from canonical generic schema: {key}")
-        });
+        let canonical_property = perl_test_must::must_some_with(
+            canonical_property(&canonical, key),
+            format!("projected field is absent from canonical generic schema: {key}"),
+        );
 
         for facet in ["type", "items", "default", "enum", "minimum", "maximum", "exclusiveMinimum"]
         {
@@ -111,8 +108,10 @@ fn lsp4ij_projection_is_a_checked_subset_of_the_generic_perl_schema() {
 #[test]
 fn lsp4ij_projection_excludes_non_server_and_unproven_controls() {
     let projection = parse(LSP4IJ_SCHEMA);
-    let properties =
-        projection.get("properties").and_then(Value::as_object).expect("projection properties");
+    let properties = perl_test_must::must_some_with(
+        projection.get("properties").and_then(Value::as_object),
+        "projection properties",
+    );
 
     let forbidden_suffixes = [
         "serverPath",
@@ -149,12 +148,16 @@ fn lsp4ij_projection_excludes_non_server_and_unproven_controls() {
 fn lsp4ij_projection_never_gains_authority_the_server_denies() {
     let canonical = parse(CANONICAL_SCHEMA);
     let projection = parse(LSP4IJ_SCHEMA);
-    let properties =
-        projection.get("properties").and_then(Value::as_object).expect("projection properties");
+    let properties = perl_test_must::must_some_with(
+        projection.get("properties").and_then(Value::as_object),
+        "projection properties",
+    );
 
     for key in properties.keys() {
-        let canonical_property = canonical_property(&canonical, key)
-            .unwrap_or_else(|| panic!("projected field is absent from canonical schema: {key}"));
+        let canonical_property = perl_test_must::must_some_with(
+            canonical_property(&canonical, key),
+            format!("projected field is absent from canonical schema: {key}"),
+        );
 
         if let Some(scope) = canonical_property.get("x-perllsp-scope").and_then(Value::as_str) {
             assert_eq!(
@@ -220,14 +223,17 @@ fn lsp4ij_template_is_bounded_to_proven_perl_files_and_canonical_stdio_identity(
     let template = parse(LSP4IJ_TEMPLATE);
     assert_eq!(template.get("expandConfiguration"), Some(&json!(true)));
 
-    let program_args =
-        template.get("programArgs").and_then(Value::as_object).expect("template programArgs");
+    let program_args = perl_test_must::must_some_with(
+        template.get("programArgs").and_then(Value::as_object),
+        "template programArgs",
+    );
     assert!(!program_args.is_empty(), "template must declare at least one platform command");
 
     for (platform, value) in program_args {
-        let command = value
-            .as_str()
-            .unwrap_or_else(|| panic!("{platform} command must be a string: {value}"));
+        let command = perl_test_must::must_some_with(
+            value.as_str(),
+            format!("{platform} command must be a string: {value}"),
+        );
         let invocation = server_invocation(command);
 
         assert!(
@@ -240,12 +246,12 @@ fn lsp4ij_template_is_bounded_to_proven_perl_files_and_canonical_stdio_identity(
         );
     }
 
-    let patterns: BTreeSet<_> = template
-        .pointer("/fileTypeMappings/0/fileType/patterns")
-        .and_then(Value::as_array)
-        .expect("Perl file patterns")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
+    let patterns: BTreeSet<_> = perl_test_must::must_some_with(
+        template.pointer("/fileTypeMappings/0/fileType/patterns").and_then(Value::as_array),
+        "Perl file patterns",
+    )
+    .iter()
+    .filter_map(Value::as_str)
+    .collect();
     assert_eq!(patterns, BTreeSet::from(["*.pl", "*.pm", "*.t"]));
 }

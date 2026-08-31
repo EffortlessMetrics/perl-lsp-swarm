@@ -4,10 +4,6 @@
 //! while the full diagnostic set follows after the debounce (slow path).
 //! The fast path publishes ONLY parse-error-coded diagnostics (PL001).
 
-// Tests are permitted to use `.expect()`/`.expect_err()` on Result/Option per
-// the repo's coding standards (unlike production code, where they are banned).
-#![allow(clippy::expect_used)]
-
 mod support;
 
 use serde_json::json;
@@ -22,24 +18,28 @@ use support::lsp_harness::LspHarness;
 #[test]
 fn test_fast_path_contains_only_parse_errors() {
     let mut harness = LspHarness::new();
-    harness
-        .initialize(Some(json!({
+    perl_test_must::must_with(
+        harness.initialize(Some(json!({
             "textDocument": {
                 // No pull-diagnostics capability: force push path
             }
-        })))
-        .expect("initialize should succeed");
+        }))),
+        "initialize should succeed",
+    );
 
     let uri = "file:///fast_slow_test.pl";
 
     // Open a clean document first
-    harness.open(uri, "my $x = 1;\n").expect("open should succeed");
+    perl_test_must::must_with(harness.open(uri, "my $x = 1;\n"), "open should succeed");
 
     // Drain any existing notifications (from didOpen)
     let _ = harness.drain_notifications(Some("textDocument/publishDiagnostics"), 400);
 
     // Now change to a document with a parse error
-    harness.change_full(uri, 2, "my $broken = ;\n").expect("change should succeed");
+    perl_test_must::must_with(
+        harness.change_full(uri, 2, "my $broken = ;\n"),
+        "change should succeed",
+    );
 
     // Wait for notifications to arrive
     let all_notifications =
@@ -76,21 +76,25 @@ fn test_fast_path_contains_only_parse_errors() {
 #[test]
 fn test_two_phase_diagnostic_delivery_on_change() {
     let mut harness = LspHarness::new();
-    harness
-        .initialize(Some(json!({
+    perl_test_must::must_with(
+        harness.initialize(Some(json!({
             "textDocument": {}
-        })))
-        .expect("initialize should succeed");
+        }))),
+        "initialize should succeed",
+    );
 
     let uri = "file:///two_phase_test.pl";
 
-    harness.open(uri, "my $x = 1;\n").expect("open should succeed");
+    perl_test_must::must_with(harness.open(uri, "my $x = 1;\n"), "open should succeed");
 
     // Drain didOpen notifications
     let _ = harness.drain_notifications(Some("textDocument/publishDiagnostics"), 400);
 
     // Change to a document with a parse error
-    harness.change_full(uri, 2, "my $broken = ;\n").expect("change should succeed");
+    perl_test_must::must_with(
+        harness.change_full(uri, 2, "my $broken = ;\n"),
+        "change should succeed",
+    );
 
     // Collect all notifications that arrive within a generous window
     let all_notifications =
@@ -115,7 +119,8 @@ fn test_two_phase_diagnostic_delivery_on_change() {
     );
 
     // Last notification: full set — must include non-parse-error diagnostics
-    let last = all_notifications.last().expect("at least two notifications");
+    let last =
+        perl_test_must::must_some_with(all_notifications.last(), "at least two notifications");
     let last_diags = last["params"]["diagnostics"].as_array().cloned().unwrap_or_default();
     assert!(
         last_diags.iter().any(|d| d["code"].as_str() != Some("PL001")),

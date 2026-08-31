@@ -1,7 +1,4 @@
-// Integration test: `expect()`/`panic!` carry the assertion message when a
-// checked-in fixture is malformed. The workspace-wide deny is a
-// production-code rule.
-#![allow(clippy::expect_used, clippy::panic)]
+// Integration tests use perl-test-must helpers; panic-family Clippy stays denied.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -12,11 +9,11 @@ const DAP_INSTALLER: &str = include_str!("../../../integrations/lsp4ij/perl-dap/
 const RELEASE_WORKFLOW: &str = include_str!("../../../.github/workflows/release.yml");
 
 fn parse(input: &str) -> Value {
-    serde_json::from_str(input).expect("checked JSON fixture must parse")
+    perl_test_must::must_with(serde_json::from_str(input), "checked JSON fixture must parse")
 }
 
 fn download(installer: &Value) -> &Value {
-    installer.pointer("/run/download").expect("installer run.download")
+    perl_test_must::must_some_with(installer.pointer("/run/download"), "installer run.download")
 }
 
 fn collect_asset_patterns(value: &Value, output: &mut BTreeSet<String>) {
@@ -29,7 +26,12 @@ fn collect_asset_patterns(value: &Value, output: &mut BTreeSet<String>) {
                 collect_asset_patterns(child, output);
             }
         }
-        _ => panic!("installer asset selector must contain only nested objects and strings"),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => {
+            let () = perl_test_must::must_some_with(
+                None,
+                "installer asset selector must contain only nested objects and strings",
+            );
+        }
     }
 }
 
@@ -37,29 +39,31 @@ fn collect_asset_patterns(value: &Value, output: &mut BTreeSet<String>) {
 /// expected LSP4IJ pattern is derived from that authority rather than restated here.
 /// A wildcard replaces `{version}` because LSP4IJ selects the current release asset.
 fn expected_pattern(downstream: &Value, triple: &str) -> String {
-    let name_pattern = downstream
-        .get("archive_name_pattern")
-        .and_then(Value::as_str)
-        .expect("downstream archive_name_pattern");
+    let name_pattern = perl_test_must::must_some_with(
+        downstream.get("archive_name_pattern").and_then(Value::as_str),
+        "downstream archive_name_pattern",
+    );
     let platform = downstream_platform(downstream, triple);
-    let extension = downstream
-        .pointer(&format!("/platforms/{platform}/ext"))
-        .and_then(Value::as_str)
-        .expect("downstream platform ext");
+    let extension = perl_test_must::must_some_with(
+        downstream.pointer(&format!("/platforms/{platform}/ext")).and_then(Value::as_str),
+        "downstream platform ext",
+    );
 
     name_pattern.replace("{version}", "*").replace("{triple}", triple).replace("{ext}", extension)
 }
 
 fn downstream_platform<'a>(downstream: &'a Value, triple: &str) -> &'a str {
-    downstream
-        .get("targets")
-        .and_then(Value::as_array)
-        .expect("downstream targets")
+    perl_test_must::must_some_with(
+        perl_test_must::must_some_with(
+            downstream.get("targets").and_then(Value::as_array),
+            "downstream targets",
+        )
         .iter()
         .find(|entry| entry.get("triple").and_then(Value::as_str) == Some(triple))
         .and_then(|entry| entry.get("platform"))
-        .and_then(Value::as_str)
-        .expect("every managed target must exist in the release contract")
+        .and_then(Value::as_str),
+        "every managed target must exist in the release contract",
+    )
 }
 
 /// LSP4IJ selects an asset by its own OS and CPU keys, so each slot must resolve to the
@@ -93,31 +97,31 @@ fn managed_installer_targets_partition_the_release_contract_without_gaps() {
     let downstream = parse(DOWNSTREAM);
     let policy = parse(INSTALLER_POLICY);
 
-    let release_targets: BTreeSet<_> = downstream
-        .get("targets")
-        .and_then(Value::as_array)
-        .expect("downstream targets")
-        .iter()
-        .filter_map(|entry| entry.get("triple").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-        .collect();
+    let release_targets: BTreeSet<_> = perl_test_must::must_some_with(
+        downstream.get("targets").and_then(Value::as_array),
+        "downstream targets",
+    )
+    .iter()
+    .filter_map(|entry| entry.get("triple").and_then(Value::as_str))
+    .map(ToOwned::to_owned)
+    .collect();
 
-    let managed: BTreeSet<_> = policy
-        .get("managed_targets")
-        .and_then(Value::as_array)
-        .expect("managed targets")
-        .iter()
-        .filter_map(Value::as_str)
-        .map(ToOwned::to_owned)
-        .collect();
-    let external: BTreeSet<_> = policy
-        .get("external_binary_targets")
-        .and_then(Value::as_array)
-        .expect("external targets")
-        .iter()
-        .filter_map(|entry| entry.get("triple").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-        .collect();
+    let managed: BTreeSet<_> = perl_test_must::must_some_with(
+        policy.get("managed_targets").and_then(Value::as_array),
+        "managed targets",
+    )
+    .iter()
+    .filter_map(Value::as_str)
+    .map(ToOwned::to_owned)
+    .collect();
+    let external: BTreeSet<_> = perl_test_must::must_some_with(
+        policy.get("external_binary_targets").and_then(Value::as_array),
+        "external targets",
+    )
+    .iter()
+    .filter_map(|entry| entry.get("triple").and_then(Value::as_str))
+    .map(ToOwned::to_owned)
+    .collect();
 
     assert!(managed.is_disjoint(&external), "a target cannot be both managed and external-only");
     assert_eq!(
@@ -148,13 +152,13 @@ fn every_release_contract_target_is_produced_by_the_release_workflow() {
         "release workflow target matrix must be readable; the parser or the workflow shape drifted"
     );
 
-    let contract_targets: BTreeSet<&str> = downstream
-        .get("targets")
-        .and_then(Value::as_array)
-        .expect("downstream targets")
-        .iter()
-        .filter_map(|entry| entry.get("triple").and_then(Value::as_str))
-        .collect();
+    let contract_targets: BTreeSet<&str> = perl_test_must::must_some_with(
+        downstream.get("targets").and_then(Value::as_array),
+        "downstream targets",
+    )
+    .iter()
+    .filter_map(|entry| entry.get("triple").and_then(Value::as_str))
+    .collect();
 
     assert_eq!(
         contract_targets, workflow_targets,
@@ -168,20 +172,23 @@ fn installer_asset_patterns_match_exactly_the_managed_release_targets() {
     let policy = parse(INSTALLER_POLICY);
     let lsp = parse(LSP_INSTALLER);
 
-    let managed: BTreeSet<_> = policy
-        .get("managed_targets")
-        .and_then(Value::as_array)
-        .expect("managed targets")
-        .iter()
-        .filter_map(Value::as_str)
-        .map(ToOwned::to_owned)
-        .collect();
+    let managed: BTreeSet<_> = perl_test_must::must_some_with(
+        policy.get("managed_targets").and_then(Value::as_array),
+        "managed targets",
+    )
+    .iter()
+    .filter_map(Value::as_str)
+    .map(ToOwned::to_owned)
+    .collect();
 
     let expected: BTreeSet<_> =
         managed.iter().map(|triple| expected_pattern(&downstream, triple)).collect();
     let mut actual = BTreeSet::new();
     collect_asset_patterns(
-        download(&lsp).pointer("/github/asset").expect("github asset selector"),
+        perl_test_must::must_some_with(
+            download(&lsp).pointer("/github/asset"),
+            "github asset selector",
+        ),
         &mut actual,
     );
 
@@ -199,14 +206,14 @@ fn each_selector_slot_resolves_to_its_own_native_release_target() {
     let lsp = parse(LSP_INSTALLER);
     let dap = parse(DAP_INSTALLER);
 
-    let managed: BTreeSet<_> = policy
-        .get("managed_targets")
-        .and_then(Value::as_array)
-        .expect("managed targets")
-        .iter()
-        .filter_map(Value::as_str)
-        .map(ToOwned::to_owned)
-        .collect();
+    let managed: BTreeSet<_> = perl_test_must::must_some_with(
+        policy.get("managed_targets").and_then(Value::as_array),
+        "managed targets",
+    )
+    .iter()
+    .filter_map(Value::as_str)
+    .map(ToOwned::to_owned)
+    .collect();
 
     for (os, arch, triple) in selector_slot_triples() {
         assert!(
@@ -229,7 +236,8 @@ fn each_selector_slot_resolves_to_its_own_native_release_target() {
 #[test]
 fn installers_resolve_assets_from_the_public_release_repository() {
     for (installer, label) in [(parse(LSP_INSTALLER), "LSP"), (parse(DAP_INSTALLER), "DAP")] {
-        let github = download(&installer).get("github").expect("github selector");
+        let github =
+            perl_test_must::must_some_with(download(&installer).get("github"), "github selector");
         assert_eq!(
             github.get("owner").and_then(Value::as_str),
             Some("EffortlessMetrics"),
@@ -320,18 +328,18 @@ fn installed_binary_names_and_stdio_command_match_release_members() {
         "LSP and DAP share one archive and must not extract the same member"
     );
 
-    let lsp_command = download(&lsp)
-        .pointer("/onSuccess/configureServer/command")
-        .and_then(Value::as_str)
-        .expect("configured LSP command");
+    let lsp_command = perl_test_must::must_some_with(
+        download(&lsp).pointer("/onSuccess/configureServer/command").and_then(Value::as_str),
+        "configured LSP command",
+    );
     assert!(lsp_command.contains("${output.file.name}") && lsp_command.ends_with(" --stdio"));
 
     // The DAP adapter speaks DAP over stdio without the LSP `--stdio` flag; asserting the
     // absence keeps a copied LSP command from silently reaching the debugger surface.
-    let dap_command = download(&dap)
-        .pointer("/onSuccess/configureServer/command")
-        .and_then(Value::as_str)
-        .expect("configured DAP command");
+    let dap_command = perl_test_must::must_some_with(
+        download(&dap).pointer("/onSuccess/configureServer/command").and_then(Value::as_str),
+        "configured DAP command",
+    );
     assert!(
         dap_command.contains("${output.file.name}") && !dap_command.contains("--stdio"),
         "DAP command must launch the extracted adapter without the LSP stdio flag"

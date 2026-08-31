@@ -476,10 +476,6 @@ impl Drop for LspServer {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
     use serde_json::json;
     use std::io::{self, Cursor};
@@ -510,7 +506,7 @@ mod tests {
         let writer = SlowVecWriter { inner: Arc::clone(&output), pause: Duration::from_millis(60) };
         let server = LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(writer));
 
-        server.notify("window/logMessage", json!({"type": 4, "message": "flush me"})).unwrap();
+        crate::must(server.notify("window/logMessage", json!({"type": 4, "message": "flush me"})));
 
         let start = Instant::now();
         drop(server);
@@ -521,7 +517,7 @@ mod tests {
         );
 
         let bytes = output.lock().clone();
-        let text = String::from_utf8(bytes).unwrap();
+        let text = crate::must(String::from_utf8(bytes));
         assert!(text.contains("window/logMessage"));
         assert!(text.contains("flush me"));
     }

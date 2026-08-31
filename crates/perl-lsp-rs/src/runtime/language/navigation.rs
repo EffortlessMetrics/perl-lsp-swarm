@@ -3321,7 +3321,11 @@ mod tests {
     /// every access site already recovers poison correctly, so this is
     /// hygiene, not a correctness requirement.
     #[test]
-    #[allow(clippy::panic, clippy::expect_used)]
+    #[expect(
+        clippy::panic,
+        clippy::expect_used,
+        reason = "deliberate panic/poison path is the test subject"
+    )]
     fn test_wait_at_same_doc_fallback_gap_recovers_from_poisoned_mutex() {
         let _serial = same_doc_fallback_gap_test_lock();
 

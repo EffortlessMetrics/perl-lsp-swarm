@@ -2,9 +2,6 @@
 // not the LSP server's stdio transport, so print_stdout/print_stderr don't
 // apply the way they do to production code.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
-// Tests are permitted to use `.expect()` on Result/Option per the repo's
-// coding standards (unlike production code, where it is banned).
-#![allow(clippy::expect_used)]
 
 use parking_lot::Mutex;
 use perl_lsp::{JsonRpcId, JsonRpcRequest, LspServer};
@@ -294,11 +291,14 @@ fn test_double_initialize_is_rejected_per_lsp_spec() {
         })),
     });
 
-    let first_response = first.expect("first initialize should return a response");
+    let first_response =
+        perl_test_must::must_some_with(first, "first initialize should return a response");
     assert!(first_response.error.is_none(), "first initialize should succeed");
 
-    let second_response = second.expect("second initialize should return an error response");
-    let error = second_response.error.expect("second initialize should error");
+    let second_response =
+        perl_test_must::must_some_with(second, "second initialize should return an error response");
+    let error =
+        perl_test_must::must_some_with(second_response.error, "second initialize should error");
     assert_eq!(error.code, -32600, "second initialize must be InvalidRequest");
     assert_eq!(error.message, "initialize may only be sent once");
 }

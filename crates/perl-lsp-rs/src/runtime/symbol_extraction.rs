@@ -616,10 +616,6 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
     use perl_parser::ast::{Node, NodeKind, SourceLocation};
     use std::io::Cursor;
@@ -926,7 +922,7 @@ mod tests {
         let idx = names.iter().position(|n| *n == "test_sub");
         assert!(idx.is_some(), "Subroutine 'test_sub' should produce a symbol; got: {names:?}");
         assert_eq!(
-            symbols.get(idx.unwrap()).map(|s| s.kind),
+            symbols.get(crate::must_some(idx)).map(|s| s.kind),
             Some(12),
             "Subroutine should have LSP kind 12 (Function)"
         );
@@ -957,7 +953,7 @@ mod tests {
         let idx = names.iter().position(|n| *n == "Foo");
         assert!(idx.is_some(), "Package 'Foo' should produce a symbol; got: {names:?}");
         assert_eq!(
-            symbols.get(idx.unwrap()).map(|s| s.kind),
+            symbols.get(crate::must_some(idx)).map(|s| s.kind),
             Some(2),
             "Package should have LSP kind 2 (Module)"
         );
@@ -986,7 +982,7 @@ mod tests {
         let idx = names.iter().position(|n| *n == "MyClass");
         assert!(idx.is_some(), "Class 'MyClass' should produce a symbol; got: {names:?}");
         assert_eq!(
-            symbols.get(idx.unwrap()).map(|s| s.kind),
+            symbols.get(crate::must_some(idx)).map(|s| s.kind),
             Some(5),
             "Class should have LSP kind 5 (Class)"
         );
@@ -1016,7 +1012,7 @@ mod tests {
         let idx = names.iter().position(|n| *n == "my_method");
         assert!(idx.is_some(), "Method 'my_method' should produce a symbol; got: {names:?}");
         assert_eq!(
-            symbols.get(idx.unwrap()).map(|s| s.kind),
+            symbols.get(crate::must_some(idx)).map(|s| s.kind),
             Some(6),
             "Method should have LSP kind 6 (Method)"
         );
@@ -1051,7 +1047,7 @@ mod tests {
         let idx = names.iter().position(|n| *n == "$VERSION");
         assert!(idx.is_some(), "our $VERSION should produce a symbol; got: {names:?}");
         assert_eq!(
-            symbols.get(idx.unwrap()).map(|s| s.kind),
+            symbols.get(crate::must_some(idx)).map(|s| s.kind),
             Some(13),
             "our variable should have LSP kind 13 (Variable)"
         );
@@ -1081,7 +1077,7 @@ mod tests {
         let idx = names.iter().position(|n| *n == "attr_name");
         assert!(idx.is_some(), "has 'attr_name' should produce a Property symbol; got: {names:?}");
         assert_eq!(
-            symbols.get(idx.unwrap()).map(|s| s.kind),
+            symbols.get(crate::must_some(idx)).map(|s| s.kind),
             Some(7),
             "has attribute should have LSP kind 7 (Property)"
         );

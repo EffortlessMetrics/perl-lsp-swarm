@@ -1,9 +1,6 @@
 //! Edge case tests for built-in function signatures
 //! Tests special cases, error conditions, and unusual usage patterns
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
+#![allow(clippy::collapsible_if)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout/print_stderr don't
 // apply the way they do to production code.
@@ -520,7 +517,7 @@ fn test_socket_functions_coverage() -> Result<(), Box<dyn std::error::Error>> {
         let sig = provider.get_builtin_signature(func);
         assert!(sig.is_some(), "Missing signature for socket function: {}", func);
 
-        let sig = sig.unwrap();
+        let sig = perl_test_must::must_some(sig);
         assert!(
             !sig.documentation.is_empty(),
             "Missing documentation for socket function: {}",
@@ -551,7 +548,7 @@ fn test_deprecated_functions_coverage() -> Result<(), Box<dyn std::error::Error>
         let sig = provider.get_builtin_signature(func);
         assert!(sig.is_some(), "Missing signature for deprecated function: {}", func);
 
-        let sig = sig.unwrap();
+        let sig = perl_test_must::must_some(sig);
         assert!(
             !sig.documentation.is_empty(),
             "Missing documentation for deprecated function: {}",

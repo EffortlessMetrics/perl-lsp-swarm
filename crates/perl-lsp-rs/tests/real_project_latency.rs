@@ -24,7 +24,7 @@
 //!
 //! Output is written to `.ci/metrics/real_project_latency.json`.
 
-#![allow(clippy::panic)] // Test file: panics in assertion helpers are intentional
+// Test file: panics in assertion helpers are intentional
 #![allow(clippy::manual_is_multiple_of)]
 // `% 4 == 0` is clearer than `.is_multiple_of(4)` for calendar math
 

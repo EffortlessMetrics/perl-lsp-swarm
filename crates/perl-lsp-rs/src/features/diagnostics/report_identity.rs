@@ -371,8 +371,6 @@ fn push_str(output: &mut String, name: &str, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use super::{DiagnosticProjectionFragment, PullPositionEncoding, *};
     use crate::features::diagnostics::PullDiagnosticsContext;
     use perl_lsp_rs_core::config::CriticEngine;
@@ -395,8 +393,10 @@ mod tests {
         uri: &str,
         content: &str,
     ) -> PullReportSubject {
-        pull_report_subject(uri, content, Some(3), context)
-            .expect("test context must form a complete subject")
+        crate::must_with(
+            pull_report_subject(uri, content, Some(3), context),
+            "test context must form a complete subject",
+        )
     }
 
     const URI_A: &str = "file:///ws-a/lib/Mod.pm";
@@ -405,15 +405,15 @@ mod tests {
     #[test]
     fn identical_subjects_compose_identical_ids() {
         let context = context_with(Some("/tmp/ws-a"));
-        let first = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
-        let second = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        let first = crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok());
+        let second = crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok());
         assert_eq!(first, second);
     }
 
     #[test]
     fn composed_ids_parse_under_current_schema_only() {
         let context = context_with(Some("/tmp/ws-a"));
-        let id = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        let id = crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok());
         assert_eq!(PullReportResultId::from_wire(id.as_str()), Some(id));
 
         assert!(PullReportResultId::from_wire("d34db33f").is_none(), "bare md5-style ID");
@@ -447,80 +447,112 @@ mod tests {
     #[test]
     fn every_load_bearing_fragment_moves_the_id() {
         let baseline_context = context_with(Some("/tmp/ws-a"));
-        let baseline = subject_for(&baseline_context, URI_A, CONTENT).compose().ok().unwrap();
+        let baseline =
+            crate::must_some(subject_for(&baseline_context, URI_A, CONTENT).compose().ok());
 
         // Owning root authority.
-        let moved =
-            subject_for(&context_with(Some("/tmp/ws-b")), URI_A, CONTENT).compose().ok().unwrap();
+        let moved = crate::must_some(
+            subject_for(&context_with(Some("/tmp/ws-b")), URI_A, CONTENT).compose().ok(),
+        );
         assert_ne!(baseline, moved, "two roots with equal bytes must not share an ID");
 
         // Content revision.
-        let moved = subject_for(&baseline_context, URI_A, "my $x = 2;\n").compose().ok().unwrap();
+        let moved =
+            crate::must_some(subject_for(&baseline_context, URI_A, "my $x = 2;\n").compose().ok());
         assert_ne!(baseline, moved, "source edit must move the ID");
 
         // Document generation (same bytes, later instance).
         let later_instance =
-            pull_report_subject(URI_A, CONTENT, Some(4), &baseline_context).ok().unwrap();
-        assert_ne!(baseline, later_instance.compose().ok().unwrap());
+            crate::must_some(pull_report_subject(URI_A, CONTENT, Some(4), &baseline_context).ok());
+        assert_ne!(baseline, crate::must_some(later_instance.compose().ok()));
 
         // Engine selection.
         let mut context = baseline_context.clone();
         context.critic_engine = CriticEngine::Legacy;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+        assert_ne!(
+            baseline,
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok())
+        );
 
         // Severity.
         let mut context = baseline_context.clone();
         context.perlcritic_severity = 4;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+        assert_ne!(
+            baseline,
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok())
+        );
 
         // Native profile spelling.
         let mut context = baseline_context.clone();
         context.native_critic_profile = "strict".to_string();
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+        assert_ne!(
+            baseline,
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok())
+        );
 
         // Include/exclude rule sets.
         let mut context = baseline_context.clone();
         context.native_critic_include = vec!["native.testing.require_use_strict".to_string()];
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+        assert_ne!(
+            baseline,
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok())
+        );
 
         // Fact-store availability and generation.
         let mut context = baseline_context.clone();
         context.facts_generation = None;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+        assert_ne!(
+            baseline,
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok())
+        );
         let mut context = baseline_context.clone();
         context.facts_generation = Some(9);
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+        assert_ne!(
+            baseline,
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok())
+        );
 
         // Resolver environment.
         let mut context = baseline_context.clone();
         context.include_paths = vec!["/tmp/ws-a/lib".to_string(), "/opt/perl5lib".to_string()];
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+        assert_ne!(
+            baseline,
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok())
+        );
         let mut reordered = baseline_context.clone();
         reordered.include_paths = vec!["/opt/perl5lib".to_string(), "/tmp/ws-a/lib".to_string()];
         assert_eq!(
-            subject_for(&context, URI_A, CONTENT).compose().ok().unwrap(),
-            subject_for(&reordered, URI_A, CONTENT).compose().ok().unwrap(),
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok()),
+            crate::must_some(subject_for(&reordered, URI_A, CONTENT).compose().ok()),
             "resolver roots are a set: order must not matter"
         );
 
         // Projection profile: position encoding and markup support.
         let mut context = baseline_context.clone();
         context.projection = projection(PullPositionEncoding::Utf8, false);
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+        assert_ne!(
+            baseline,
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok())
+        );
         let mut context = baseline_context.clone();
         context.projection = projection(PullPositionEncoding::Utf16, true);
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+        assert_ne!(
+            baseline,
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok())
+        );
 
         // External-critic admission state.
         let mut context = baseline_context.clone();
         context.perlcritic_enabled = false;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
+        assert_ne!(
+            baseline,
+            crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok())
+        );
 
         // Logical document identity: equal bytes and counters, different path.
-        let moved = subject_for(&baseline_context, "file:///ws-a/lib/Other.pm", CONTENT)
-            .compose()
-            .ok()
-            .unwrap();
+        let moved = crate::must_some(
+            subject_for(&baseline_context, "file:///ws-a/lib/Other.pm", CONTENT).compose().ok(),
+        );
         assert_ne!(baseline, moved);
     }
 
@@ -536,13 +568,12 @@ mod tests {
     #[test]
     fn public_id_is_bounded_and_path_free() {
         let context = context_with(Some("/tmp/ws-a/private-root-name"));
-        let id = pull_report_subject(URI_A, CONTENT, Some(1), &context)
-            .ok()
-            .unwrap()
-            .compose()
-            .ok()
-            .unwrap()
-            .into_string();
+        let id = crate::must_some(
+            crate::must_some(pull_report_subject(URI_A, CONTENT, Some(1), &context).ok())
+                .compose()
+                .ok(),
+        )
+        .into_string();
 
         assert!(id.len() < 128, "public ID must stay bounded: {id}");
         assert!(!id.contains("private-root-name"), "root key must not leak: {id}");
@@ -558,13 +589,13 @@ mod tests {
     fn legacy_engine_pins_native_profile_but_carries_policy_digest() {
         let mut context = context_with(Some("/tmp/ws-a"));
         context.critic_engine = CriticEngine::Legacy;
-        let baseline = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        let baseline = crate::must_some(subject_for(&context, URI_A, CONTENT).compose().ok());
 
         let mut profile_moved = context.clone();
         profile_moved.native_critic_profile = "strict".to_string();
         assert_eq!(
             baseline,
-            subject_for(&profile_moved, URI_A, CONTENT).compose().ok().unwrap(),
+            crate::must_some(subject_for(&profile_moved, URI_A, CONTENT).compose().ok()),
             "the native profile is inert under the legacy engine"
         );
 

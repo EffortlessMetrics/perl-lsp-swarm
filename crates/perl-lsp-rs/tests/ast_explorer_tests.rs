@@ -11,14 +11,6 @@
 //! - Server not initialized returns ServerNotInitialized error
 //! - Missing URI parameter returns INVALID_PARAMS error
 //! - Empty Perl file returns null (no AST) gracefully
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-#![expect(
-    clippy::expect_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
 
 use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::json;
@@ -101,7 +93,7 @@ fn show_ast_returns_string_for_valid_perl() {
     let result = show_ast(&server, uri);
     assert!(result.is_some(), "perl/showAst should return a response");
 
-    let value = result.unwrap();
+    let value = perl_test_must::must_some(result);
     assert!(!value.is_null(), "perl/showAst should return a non-null AST string for a valid file");
     assert!(value.is_string(), "perl/showAst result should be a JSON string, got: {:?}", value);
 }
@@ -117,8 +109,8 @@ fn show_ast_contains_expected_constructs() {
         "use strict;\nuse warnings;\nsub greet { my ($name) = @_; return \"Hello, $name\"; }\n",
     );
 
-    let result = show_ast(&server, uri).expect("should return a result");
-    let ast_str = result.as_str().expect("result must be a string");
+    let result = perl_test_must::must_some_with(show_ast(&server, uri), "should return a result");
+    let ast_str = perl_test_must::must_some_with(result.as_str(), "result must be a string");
 
     // The S-expression wraps the whole file in source_file (or program)
     assert!(
@@ -138,7 +130,7 @@ fn show_ast_returns_error_for_unknown_document() {
     assert!(err.is_some(), "perl/showAst should return an error for an unopened document");
     // Error code -32602 (INVALID_PARAMS) is the spec-compliant choice for
     // "document not found" in a custom request with a URI parameter.
-    let code = err.unwrap().code;
+    let code = perl_test_must::must_some(err).code;
     assert_eq!(code, -32602, "Expected INVALID_PARAMS (-32602) for unknown document, got {code}");
 }
 
@@ -149,7 +141,7 @@ fn show_ast_before_init_returns_server_not_initialized() {
 
     let err = show_ast_error(&server, Some(json!({ "uri": "file:///foo.pl" })));
     assert!(err.is_some(), "Should return an error before initialization");
-    let code = err.unwrap().code;
+    let code = perl_test_must::must_some(err).code;
     assert_eq!(code, -32002, "Expected ServerNotInitialized (-32002), got {code}");
 }
 
@@ -160,7 +152,7 @@ fn show_ast_missing_uri_returns_invalid_params() {
 
     let err = show_ast_error(&server, Some(json!({ "other": "value" })));
     assert!(err.is_some(), "Should return an error when uri is missing");
-    let code = err.unwrap().code;
+    let code = perl_test_must::must_some(err).code;
     assert_eq!(code, -32602, "Expected INVALID_PARAMS (-32602) for missing uri, got {code}");
 }
 
@@ -171,6 +163,6 @@ fn show_ast_null_params_returns_invalid_params() {
 
     let err = show_ast_error(&server, None);
     assert!(err.is_some(), "Should return an error for null params");
-    let code = err.unwrap().code;
+    let code = perl_test_must::must_some(err).code;
     assert_eq!(code, -32602, "Expected INVALID_PARAMS (-32602) for null params, got {code}");
 }

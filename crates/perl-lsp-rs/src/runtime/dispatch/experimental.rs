@@ -77,10 +77,6 @@ mod slow_operation_timeout_tests {
     //! Each test moves exactly one term of that condition, so a wrong
     //! implementation of either half fails a different test.
 
-    // Test assertions carry their failure message; the workspace-wide deny on
-    // `expect` is a production-code rule.
-    #![allow(clippy::expect_used)]
-
     use super::*;
 
     /// `SERVER_CANCELLED` from the LSP error table, pinned literally so the
@@ -95,9 +91,13 @@ mod slow_operation_timeout_tests {
     fn elapsed_past_the_timeout_returns_exactly_server_cancelled() {
         let server = LspServer::new();
 
-        let error = server
-            .handle_slow_operation_dispatch(&Some(json!(1)), Some(json!({"serverTimeoutMs": 1})))
-            .expect_err("a 1ms server timeout must abort the slow operation");
+        let error = crate::must_err_with(
+            server.handle_slow_operation_dispatch(
+                &Some(json!(1)),
+                Some(json!({"serverTimeoutMs": 1})),
+            ),
+            "a 1ms server timeout must abort the slow operation",
+        );
 
         assert_eq!(error.code, SERVER_CANCELLED, "timeout must not report a different error code");
         assert_eq!(error.message, "Server cancelled the request");
@@ -110,9 +110,10 @@ mod slow_operation_timeout_tests {
         // alone: an implementation that timed out unconditionally fails here.
         let server = LspServer::new();
 
-        let result = server
-            .handle_slow_operation_dispatch(&Some(json!(1)), None)
-            .expect("no serverTimeoutMs means the operation must finish normally");
+        let result = crate::must_with(
+            server.handle_slow_operation_dispatch(&Some(json!(1)), None),
+            "no serverTimeoutMs means the operation must finish normally",
+        );
 
         assert_eq!(result, completed());
     }
@@ -125,12 +126,13 @@ mod slow_operation_timeout_tests {
         // passes.
         let server = LspServer::new();
 
-        let result = server
-            .handle_slow_operation_dispatch(
+        let result = crate::must_with(
+            server.handle_slow_operation_dispatch(
                 &Some(json!(1)),
                 Some(json!({"serverTimeoutMs": 60_000})),
-            )
-            .expect("a timeout far beyond the operation's runtime must not fire");
+            ),
+            "a timeout far beyond the operation's runtime must not fire",
+        );
 
         assert_eq!(result, completed());
     }
@@ -142,9 +144,10 @@ mod slow_operation_timeout_tests {
         // This pins current behavior rather than endorsing it.
         let server = LspServer::new();
 
-        let result = server
-            .handle_slow_operation_dispatch(&None, Some(json!({"serverTimeoutMs": 1})))
-            .expect("an id-less request is not cancellable and must complete");
+        let result = crate::must_with(
+            server.handle_slow_operation_dispatch(&None, Some(json!({"serverTimeoutMs": 1}))),
+            "an id-less request is not cancellable and must complete",
+        );
 
         assert_eq!(result, completed());
     }
@@ -160,9 +163,13 @@ mod slow_operation_timeout_tests {
     fn handle_slow_operation_dispatch_exact_error_variant() {
         let server = LspServer::new();
 
-        let err = server
-            .handle_slow_operation_dispatch(&Some(json!(1)), Some(json!({"serverTimeoutMs": 0})))
-            .expect_err("a zero server timeout must abort the slow operation");
+        let err = crate::must_err_with(
+            server.handle_slow_operation_dispatch(
+                &Some(json!(1)),
+                Some(json!({"serverTimeoutMs": 0})),
+            ),
+            "a zero server timeout must abort the slow operation",
+        );
 
         assert!(
             matches!(err, JsonRpcError { code: SERVER_CANCELLED, .. }),
@@ -187,9 +194,13 @@ mod slow_operation_timeout_tests {
 
         // Boundary true: a zero budget is always expired, so the dispatch
         // must abort with SERVER_CANCELLED rather than complete.
-        let err = server
-            .handle_slow_operation_dispatch(&Some(json!(1)), Some(json!({"serverTimeoutMs": 0})))
-            .expect_err("a zero server timeout must hit the elapsed >= to boundary");
+        let err = crate::must_err_with(
+            server.handle_slow_operation_dispatch(
+                &Some(json!(1)),
+                Some(json!({"serverTimeoutMs": 0})),
+            ),
+            "a zero server timeout must hit the elapsed >= to boundary",
+        );
 
         assert_eq!(err.code, SERVER_CANCELLED, "boundary hit must surface the timeout error");
     }

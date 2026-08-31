@@ -1,12 +1,4 @@
 //! Integration-style unit tests for execute-command provider behaviors.
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-#![expect(
-    clippy::expect_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
 
 use super::get_supported_commands;
 use super::provider::{ExecuteCommandProvider, TestRunner, select_test_runner};
@@ -959,7 +951,7 @@ fn test_execute_command_invalid_command() {
     let provider = ExecuteCommandProvider::new();
     let result = provider.execute_command("perl.invalidCommand", vec![]);
     assert!(result.is_err(), "Invalid command should return error");
-    assert!(result.unwrap_err().contains("Unknown command"), "Should indicate unknown command");
+    assert!(crate::must_err(result).contains("Unknown command"), "Should indicate unknown command");
 }
 
 #[test]
@@ -1122,18 +1114,18 @@ fn test_parameter_validation_missing_file_path() {
     // Test with no arguments
     let result = provider.execute_command("perl.runTests", vec![]);
     assert!(result.is_err(), "Should fail with missing file path");
-    assert!(result.unwrap_err().contains("Missing file path argument"));
+    assert!(crate::must_err(result).contains("Missing file path argument"));
 
     // Test with null argument
     let result = provider.execute_command("perl.runTests", vec![Value::Null]);
     assert!(result.is_err(), "Should fail with null argument");
-    assert!(result.unwrap_err().contains("Missing file path argument"));
+    assert!(crate::must_err(result).contains("Missing file path argument"));
 
     // Test with number instead of string
     let result = provider
         .execute_command("perl.runTests", vec![Value::Number(serde_json::Number::from(123))]);
     assert!(result.is_err(), "Should fail with non-string argument");
-    assert!(result.unwrap_err().contains("Missing file path argument"));
+    assert!(crate::must_err(result).contains("Missing file path argument"));
 }
 
 #[test]
@@ -1272,7 +1264,7 @@ not ok 2 - email matches\n\
     assert_eq!(result["tap"]["passed"], 1);
     assert_eq!(result["tap"]["failed"], 1);
 
-    let failures = result["failures"].as_array().expect("failures array");
+    let failures = crate::must_some_with(result["failures"].as_array(), "failures array");
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0]["number"], 2);
     assert_eq!(failures[0]["description"], "email matches");
@@ -2411,23 +2403,23 @@ fn test_command_exists_ignores_planted_cwd_binary() {
     let unique = format!("rce_exists_{}", std::process::id());
     let workspace = std::env::temp_dir().join(unique);
     let _ = std::fs::remove_dir_all(&workspace);
-    std::fs::create_dir_all(&workspace).expect("create temp workspace");
+    crate::must_with(std::fs::create_dir_all(&workspace), "create temp workspace");
 
     // Plant a batch file — only copy of this tool; never on PATH.
     let planted = workspace.join("definitely_not_real_3028.bat");
     {
-        let mut f = std::fs::File::create(&planted).expect("create planted bat");
-        writeln!(f, "@echo off").expect("write bat");
-        writeln!(f, "echo PWNED").expect("write bat");
+        let mut f = crate::must_with(std::fs::File::create(&planted), "create planted bat");
+        crate::must_with(writeln!(f, "@echo off"), "write bat");
+        crate::must_with(writeln!(f, "echo PWNED"), "write bat");
     }
 
-    let original_cwd = std::env::current_dir().expect("capture cwd");
-    std::env::set_current_dir(&workspace).expect("enter temp workspace");
+    let original_cwd = crate::must_with(std::env::current_dir(), "capture cwd");
+    crate::must_with(std::env::set_current_dir(&workspace), "enter temp workspace");
 
     let provider = ExecuteCommandProvider::new();
     let exists = provider.command_exists("definitely_not_real_3028.bat");
 
-    std::env::set_current_dir(&original_cwd).expect("restore cwd");
+    crate::must_with(std::env::set_current_dir(&original_cwd), "restore cwd");
     let _ = std::fs::remove_dir_all(&workspace);
 
     assert!(
@@ -2454,29 +2446,32 @@ fn test_run_test_command_does_not_execute_planted_cwd_binary() {
     let unique = format!("rce_run_{}", std::process::id());
     let workspace = std::env::temp_dir().join(&unique);
     let _ = std::fs::remove_dir_all(&workspace);
-    std::fs::create_dir_all(&workspace).expect("create temp workspace");
+    crate::must_with(std::fs::create_dir_all(&workspace), "create temp workspace");
 
     let marker = workspace.join("PWNED_3028.txt");
     let planted = workspace.join("pwned_3028.bat");
     {
-        let mut f = std::fs::File::create(&planted).expect("create planted bat");
-        writeln!(f, "@echo off").expect("write bat");
-        writeln!(f, "echo pwned> \"{}\"", marker.display()).expect("write bat");
+        let mut f = crate::must_with(std::fs::File::create(&planted), "create planted bat");
+        crate::must_with(writeln!(f, "@echo off"), "write bat");
+        crate::must_with(writeln!(f, "echo pwned> \"{}\"", marker.display()), "write bat");
     }
 
     // A dummy test file — content doesn't matter; command resolution fails first.
     let dummy_t = workspace.join("dummy.t");
-    std::fs::write(&dummy_t, "use Test::More;\ndone_testing;\n").expect("create dummy test");
+    crate::must_with(
+        std::fs::write(&dummy_t, "use Test::More;\ndone_testing;\n"),
+        "create dummy test",
+    );
 
-    let original_cwd = std::env::current_dir().expect("capture cwd");
-    std::env::set_current_dir(&workspace).expect("enter temp workspace");
+    let original_cwd = crate::must_with(std::env::current_dir(), "capture cwd");
+    crate::must_with(std::env::set_current_dir(&workspace), "enter temp workspace");
 
     let provider = ExecuteCommandProvider::with_workspace_roots(vec![workspace.clone()]);
     // Drive run_test_command with the bare name of the planted batch file.
     // The resolver must fail closed before spawning anything.
     let result = provider.run_test_command("pwned_3028.bat", &dummy_t);
 
-    std::env::set_current_dir(&original_cwd).expect("restore cwd");
+    crate::must_with(std::env::set_current_dir(&original_cwd), "restore cwd");
     let marker_exists = marker.exists();
     let _ = std::fs::remove_dir_all(&workspace);
 

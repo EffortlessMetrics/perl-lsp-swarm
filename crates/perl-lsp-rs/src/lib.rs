@@ -35,6 +35,15 @@
     clippy::if_same_then_else
 )]
 
+#[cfg(test)]
+mod all_target_clippy_tests;
+#[cfg(test)]
+mod source_scan;
+#[cfg(test)]
+pub(crate) use perl_test_must::{
+    must, must_err, must_err_with, must_some, must_some_with, must_with,
+};
+
 // Module declarations - migrated from perl-parser
 pub mod cancellation;
 pub mod cli;

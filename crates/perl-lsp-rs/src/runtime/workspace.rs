@@ -2931,9 +2931,6 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    // Test assertions favor `expect_err()` with a descriptive message over
-    // silent unwraps; the workspace-wide deny is a production-code rule.
-    #![allow(clippy::expect_used)]
     #[cfg(feature = "workspace")]
     use super::WORKSPACE_INDEX_PROGRESS_TOKEN;
     use super::{BackingFileTransition, LspServer, module_name_appears_in_text};
@@ -2955,9 +2952,10 @@ mod tests {
 
     #[test]
     fn workspace_symbol_resolve_missing_params_name_method_and_field() {
-        let err = LspServer::new()
-            .handle_workspace_symbol_resolve(None)
-            .expect_err("missing workspace symbol params must be rejected");
+        let err = crate::must_err_with(
+            LspServer::new().handle_workspace_symbol_resolve(None),
+            "missing workspace symbol params must be rejected",
+        );
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(err.message, "workspace/symbol/resolve: missing required parameter 'params'");
@@ -3558,7 +3556,8 @@ mod tests {
         })));
 
         assert!(server.config.lock().telemetry_enabled);
-        let serialized = serde_json::to_value(&*server.config.lock()).expect("serialize config");
+        let serialized =
+            crate::must_with(serde_json::to_value(&*server.config.lock()), "serialize config");
         assert!(serialized.get("testRunner").is_none());
         assert!(serialized.to_string().find("CANARY").is_none());
     }

@@ -75,16 +75,14 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
-    // Test assertions favor `expect_err()` with a descriptive message over
-    // silent unwraps; the workspace-wide deny is a production-code rule.
-    #![allow(clippy::expect_used)]
     use super::*;
 
     #[test]
     fn show_ast_missing_params_names_method_and_field() {
-        let err = LspServer::new()
-            .handle_show_ast_dispatch(None)
-            .expect_err("missing showAst params must be rejected");
+        let err = crate::must_err_with(
+            LspServer::new().handle_show_ast_dispatch(None),
+            "missing showAst params must be rejected",
+        );
 
         assert_eq!(err.code, INVALID_PARAMS);
         assert_eq!(err.message, "perl/showAst: missing required parameter 'params'");
@@ -92,9 +90,10 @@ mod tests {
 
     #[test]
     fn show_ast_missing_uri_names_method_and_field() {
-        let err = LspServer::new()
-            .handle_show_ast_dispatch(Some(json!({})))
-            .expect_err("missing showAst URI must be rejected");
+        let err = crate::must_err_with(
+            LspServer::new().handle_show_ast_dispatch(Some(json!({}))),
+            "missing showAst URI must be rejected",
+        );
 
         assert_eq!(err.code, INVALID_PARAMS);
         assert_eq!(err.message, "perl/showAst: missing required parameter 'uri'");
