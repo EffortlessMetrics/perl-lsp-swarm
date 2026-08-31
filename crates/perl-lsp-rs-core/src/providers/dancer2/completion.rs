@@ -39,6 +39,17 @@ pub struct Dancer2CompletionCandidate {
     pub rank_penalty: u32,
     /// One-line detail: provider, version, and scope.
     pub detail: String,
+    /// Where this keyword is available, phrased for the position that offered
+    /// it — "global", or the request-context wording naming the owning route
+    /// or hook handler.
+    ///
+    /// Renderers must use this rather than re-deriving availability from
+    /// [`Self::scope`]. The `RouteHandlerOnly` discriminant records the
+    /// reviewed *contract* scope, which since #13604 is satisfied by an
+    /// admitted hook handler as well as a route handler; a renderer that
+    /// matches on it directly will say "route handler only" inside a hook and
+    /// contradict [`Self::detail`].
+    pub availability: &'static str,
     /// Versioned DSL contract provenance.
     pub dsl_contract_version: &'static str,
 }
@@ -119,6 +130,7 @@ pub fn keyword_completion_candidates(
                 "Dancer2 {} keyword ({} — {})",
                 &version, scope_detail, DANCER2_DSL_CONTRACT_VERSION
             ),
+            availability: scope_detail,
             dsl_contract_version: DANCER2_DSL_CONTRACT_VERSION,
         });
     }
@@ -230,6 +242,23 @@ mod tests {
             !request.detail.contains("route handler only"),
             "stale scope wording: {}",
             request.detail
+        );
+        // Every renderer of this candidate must be able to reach the same
+        // wording. `availability` is what a renderer reads instead of
+        // re-deriving from `scope`, so it has to agree with `detail` and carry
+        // the hook phrasing itself — otherwise a second surface (the runtime's
+        // `documentation` string) can contradict the first.
+        assert!(
+            request.detail.contains(request.availability),
+            "detail must be built from availability: {} vs {}",
+            request.detail,
+            request.availability
+        );
+        assert!(
+            request.availability.contains("hook handler")
+                && !request.availability.contains("route handler only"),
+            "availability must name the hook position: {}",
+            request.availability
         );
 
         // A route handler still says route, so the wording tracks the owning
