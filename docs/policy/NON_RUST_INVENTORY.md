@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12505 |
+| Total tracked files | 12506 |
 | Rust-family files | 3870 |
-| Non-Rust files | 8635 |
-| Allowlisted | 6398 |
+| Non-Rust files | 8636 |
+| Allowlisted | 6399 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
@@ -19,7 +19,7 @@
 | config | 497 |
 | documentation | 2817 |
 | generated | 2 |
-| production | 348 |
+| production | 349 |
 | test | 2067 |
 | tooling | 667 |
 | unclassified | 2237 |
@@ -8459,6 +8459,7 @@
 | `vscode-extension/src/serverDemand.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/startupDiagnosis.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/streamingCompletion.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/strictSemver.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommands.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportPacket.ts` | production | `non-rust-vscode-extension` | editor/vscode |
