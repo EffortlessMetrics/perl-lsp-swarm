@@ -309,6 +309,34 @@ fn child_write_stdout(line: &str) -> Result<()> {
     Ok(())
 }
 
+fn child_write_oversized_file(path: &Path) -> Result<()> {
+    let mut file = fs::File::create(path)
+        .with_context(|| format!("creating oversized fixture {}", path.display()))?;
+    child_write_oversized_bytes(&mut file, path)
+}
+
+fn child_append_oversized_file(path: &Path) -> Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("opening oversized fixture {}", path.display()))?;
+    child_write_oversized_bytes(&mut file, path)
+}
+
+fn child_write_oversized_bytes(file: &mut fs::File, path: &Path) -> Result<()> {
+    let filler = [b'x'; 4096];
+    let total = MAX_CAPTURE_BYTES + 4096;
+    let mut written = 0_usize;
+    while written < total {
+        let chunk = usize::min(filler.len(), total - written);
+        file.write_all(&filler[..chunk])
+            .with_context(|| format!("writing oversized fixture {}", path.display()))?;
+        written += chunk;
+    }
+    Ok(())
+}
+
 fn child_write_stderr(line: &str) -> Result<()> {
     let mut stderr = io::stderr().lock();
     writeln!(stderr, "{line}").context("writing fake-host stderr")?;
@@ -453,6 +481,14 @@ fn run_fake_host_mode(mode: &str) -> Result<i32> {
             let mut file = fs::OpenOptions::new().create(true).append(true).open(&event_file)?;
             write!(file, "{{\"schema_version\":\"{DRIVER_SCHEMA_VERSION}\",\"sequence\":")?;
             drop(file);
+            Ok(0)
+        }
+        "oversize_host_files" => {
+            child_write_oversized_file(&child_required_env("PERL_LSP_EMACS_CLIENT_LOG")?)?;
+            child_write_oversized_file(&child_required_env("PERL_LSP_EMACS_SERVER_STDERR")?)?;
+            child_write_oversized_file(&child_required_env("PERL_LSP_EMACS_CAPABILITY_SNAPSHOT")?)?;
+            child_emit_lifecycle(&event_file, &mut sequence, None)?;
+            child_append_oversized_file(&event_file)?;
             Ok(0)
         }
         other => bail!("unknown supervision fixture mode: {other}"),

@@ -1377,6 +1377,19 @@ fn timeout_records_last_completed_barrier_and_stays_not_proven() -> Result<()> {
         "timeout can never be credited as a passing cleanup"
     );
     ensure!(!observation.passed_process_boundary());
+    let ledger: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/process-ledger.json")?)
+            .context("timeout ledger must be readable JSON")?;
+    ensure!(
+        ledger["schema_version"] == "editor_host.process_ledger.v1",
+        "the process ledger must keep the shared schema id, got {:?}",
+        ledger["schema_version"]
+    );
+    ensure!(
+        ledger["exit_class"] == "timed_out",
+        "a deadline kill must record exit_class timed_out, got {:?}",
+        ledger["exit_class"]
+    );
     supervision_receipt(&plan, &observation, ObservationResult::NotProven)
         .validate()
         .context("the timed-out receipt must still validate honestly")?;
@@ -1692,9 +1705,85 @@ fn separate_streams_remain_separate_artifacts() -> Result<()> {
             .context("ledger must be readable JSON")?;
     ensure!(ledger["pid"].is_u64(), "the ledger records the supervised host pid");
     ensure!(
+        ledger["schema_version"] == "editor_host.process_ledger.v1",
+        "the process ledger must keep the shared schema id, got {:?}",
+        ledger["schema_version"]
+    );
+    ensure!(
+        ledger["exit_class"] == "success",
+        "a status-0 host must record exit_class success, got {:?}",
+        ledger["exit_class"]
+    );
+    ensure!(
         ledger["last_completed_barrier"] == serde_json::json!("shutdown_completed"),
         "the ledger records the final completed barrier"
     );
+    Ok(())
+}
+
+#[test]
+fn oversized_host_file_artifacts_bound_memory_and_fail_closed() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) =
+        run_fake_scenario(root.path(), "oversize_host_files", "filebounds", 30_000)?;
+    ensure!(observation.status_code == Some(0));
+    ensure!(!observation.driver_complete, "an oversized event stream cannot certify completeness");
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("shutdown_completed"),
+        "the valid prefix still records the last barrier, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(
+        !observation.passed_process_boundary(),
+        "truncated host files cannot pass the process boundary"
+    );
+    let bounds: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/capture-bounds.json")?)
+            .context("capture bounds must be structured JSON")?;
+    let rows = bounds["captures"].as_array().context("bounds enumerate every retained capture")?;
+    let ledger: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/process-ledger.json")?)
+            .context("ledger must be readable JSON")?;
+    ensure!(
+        ledger["event_stream"] == "truncated",
+        "the ledger must name event-stream truncation, got {:?}",
+        ledger["event_stream"]
+    );
+    ensure!(
+        ledger["schema_version"] == "editor_host.process_ledger.v1",
+        "oversized runs still emit the shared ledger schema"
+    );
+    for id in [
+        "emacs/driver-events.jsonl",
+        "emacs/client.log",
+        "emacs/perllsp.stderr",
+        "emacs/initialize.json",
+    ] {
+        let row = rows.iter().find(|row| row["id"] == id).with_context(|| {
+            format!("{id} must have a bounds row when the host file exceeds the capture window")
+        })?;
+        ensure!(row["truncated"] == true, "{id} must declare truncation");
+        let original = row["original_byte_count"].as_u64().context("original size")?;
+        let retained = row["retained_byte_count"].as_u64().context("retained size")?;
+        ensure!(original > retained, "{id} original stream was larger than the retention bound");
+        let identity = row["full_stream_sha256"].as_str().context("full-stream identity")?;
+        let retained_bytes = durable_artifact(root.path(), id)?;
+        ensure!(
+            retained_bytes.len() as u64 == retained,
+            "{id} retained artifact size must match the bounds row"
+        );
+        use sha2::Digest as _;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&retained_bytes);
+        let retained_identity = format!(
+            "sha256:{}",
+            hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+        );
+        ensure!(
+            identity != retained_identity,
+            "{id} full-stream identity must not be the hash of the retained window"
+        );
+    }
     Ok(())
 }
 

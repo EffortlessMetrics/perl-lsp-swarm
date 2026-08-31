@@ -17,26 +17,30 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::{self, Read};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 use xtask::editor_client_compat::{ArtifactKind, CleanupResult, EvidenceArtifact};
+use xtask::editor_host::PROCESS_LEDGER_SCHEMA_VERSION;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ProcessLedger {
+    schema_version: String,
     pid: u32,
+    exit_code: Option<i32>,
     timed_out: bool,
     kill_requested: bool,
-    exit_code: Option<i32>,
-    cleanup: CleanupResult,
-    cleanup_detail: String,
-    process_probe: String,
-    last_completed_barrier: Option<String>,
-    surviving_processes: Vec<LedgerSurvivor>,
+    exit_class: String,
     event_count: usize,
     driver_complete: bool,
+    process_probe: String,
+    cleanup: CleanupResult,
+    cleanup_detail: String,
+    surviving_processes: Vec<LedgerSurvivor>,
+    last_completed_barrier: Option<String>,
     snapshot_persist: String,
     event_stream: String,
 }
@@ -314,15 +318,23 @@ pub fn run_owned_process(
         snapshot_persist_errors.join("; ")
     };
 
-    let (event_bytes, event_stream) = match fs::read(layout.event_file()) {
-        Ok(bytes) => (bytes, "ok".to_string()),
-        Err(error) => (Vec::new(), format!("read failed: {error}")),
-    };
+    let file_sanitizer = StreamSanitizer::for_run(plan, layout);
+    let (event_capture, event_stream) =
+        match capture_bounded_file(layout.event_file(), &file_sanitizer) {
+            Ok(captured) => {
+                let status = if captured.truncated() { "truncated" } else { "ok" };
+                (captured, status.to_string())
+            }
+            Err(error) => (empty_captured_stream(), format!("read failed: {error}")),
+        };
     // Keep the valid JSONL prefix for last_completed_barrier. Completeness
     // still requires the entire stream to parse and validate; trailing
-    // garbage after a complete ladder cannot pass.
-    let events = parse_driver_event_prefix(&event_bytes);
-    let driver_complete = parse_driver_events(&event_bytes, true).is_ok();
+    // garbage after a complete ladder cannot pass. An oversized stream is
+    // also incomplete: the runner never held the bytes past the retention
+    // window, so it cannot certify the unseen suffix.
+    let events = parse_driver_event_prefix(&event_capture.retained);
+    let driver_complete =
+        event_stream == "ok" && parse_driver_events(&event_capture.retained, true).is_ok();
     let last_barrier = last_completed_barrier(&events);
 
     let mut bounds: BTreeMap<String, CaptureBoundsRow> = BTreeMap::new();
@@ -341,13 +353,11 @@ pub fn run_owned_process(
         &stderr_capture,
         &mut bounds,
     )?);
-    artifacts.push(write_sanitized_artifact(
+    artifacts.push(write_captured_stream_artifact(
         &layout.artifact_directory,
         "emacs/driver-events.jsonl",
         ArtifactKind::DriverOutput,
-        &event_bytes,
-        plan,
-        layout,
+        &event_capture,
         &mut bounds,
     )?);
 
@@ -357,39 +367,39 @@ pub fn run_owned_process(
         (layout.capability_snapshot(), "emacs/initialize.json", ArtifactKind::CapabilitySnapshot),
     ] {
         if path.is_file() {
-            let bytes = fs::read(&path)
-                .with_context(|| format!("reading host artifact {}", path.display()))?;
-            artifacts.push(write_sanitized_artifact(
+            let captured = capture_bounded_file(&path, &file_sanitizer)?;
+            artifacts.push(write_captured_stream_artifact(
                 &layout.artifact_directory,
                 id,
                 kind,
-                &bytes,
-                plan,
-                layout,
+                &captured,
                 &mut bounds,
             )?);
         }
     }
 
+    let exit_code = status.code();
     let ledger = ProcessLedger {
+        schema_version: PROCESS_LEDGER_SCHEMA_VERSION.to_string(),
         pid,
+        exit_code,
         timed_out,
         kill_requested,
-        exit_code: status.code(),
-        cleanup,
-        cleanup_detail: cleanup_detail.clone(),
+        exit_class: ledger_exit_class(timed_out, kill_requested, exit_code).to_string(),
+        event_count: events.len(),
+        driver_complete,
         process_probe: if matches!((&probe_before, &probe_after), (Some(Ok(_)), Some(Ok(_)))) {
             "available".to_string()
         } else {
             "unavailable".to_string()
         },
-        last_completed_barrier: last_barrier.clone(),
+        cleanup,
+        cleanup_detail: cleanup_detail.clone(),
         surviving_processes: survivors
             .iter()
             .map(|line| LedgerSurvivor { pid: line.pid, args: line.args.clone() })
             .collect(),
-        event_count: events.len(),
-        driver_complete,
+        last_completed_barrier: last_barrier.clone(),
         snapshot_persist,
         event_stream,
     };
@@ -448,6 +458,38 @@ struct CapturedStream {
     full_sha256: String,
 }
 
+impl CapturedStream {
+    fn truncated(&self) -> bool {
+        self.total_bytes > self.retained.len() as u64
+    }
+}
+
+fn ledger_exit_class(
+    timed_out: bool,
+    kill_requested: bool,
+    exit_code: Option<i32>,
+) -> &'static str {
+    if timed_out || kill_requested {
+        "timed_out"
+    } else if exit_code == Some(0) {
+        "success"
+    } else {
+        "non_zero_exit"
+    }
+}
+
+fn empty_captured_stream() -> CapturedStream {
+    match drain_bounded_read(io::Cursor::new([]), &StreamSanitizer { replacements: Vec::new() }) {
+        Ok(captured) => captured,
+        Err(_) => CapturedStream {
+            retained: Vec::new(),
+            total_bytes: 0,
+            full_sha256: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                .to_string(),
+        },
+    }
+}
+
 /// Resolved per-run sanitization for streaming captures. Every replacement
 /// target is a path or path-like token and the redaction patterns exclude
 /// newlines, so sanitizing line-by-line is byte-identical to sanitizing the
@@ -504,21 +546,31 @@ impl StreamSanitizer {
 /// retention window is flushed incrementally so no host output can grow the
 /// reader's memory without bound.
 fn spawn_bounded_reader(
-    mut stream: impl std::io::Read + Send + 'static,
+    stream: impl Read + Send + 'static,
     sanitizer: StreamSanitizer,
-) -> thread::JoinHandle<std::io::Result<CapturedStream>> {
-    thread::spawn(move || {
-        use sha2::Digest as _;
-        let mut hasher = sha2::Sha256::new();
-        let mut retained = Vec::new();
-        let mut total_bytes = 0u64;
-        let mut line: Vec<u8> = Vec::new();
-        let mut chunk = [0u8; 8192];
-        let absorb = |bytes: &[u8],
-                      retained: &mut Vec<u8>,
-                      total_bytes: &mut u64,
-                      hasher: &mut sha2::Sha256|
-         -> std::io::Result<()> {
+) -> thread::JoinHandle<io::Result<CapturedStream>> {
+    thread::spawn(move || drain_bounded_read(stream, &sanitizer))
+}
+
+fn capture_bounded_file(path: &Path, sanitizer: &StreamSanitizer) -> Result<CapturedStream> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("opening host artifact {}", path.display()))?;
+    drain_bounded_read(file, sanitizer)
+        .with_context(|| format!("reading host artifact {}", path.display()))
+}
+
+fn drain_bounded_read(
+    mut stream: impl Read,
+    sanitizer: &StreamSanitizer,
+) -> io::Result<CapturedStream> {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    let mut retained = Vec::new();
+    let mut total_bytes = 0u64;
+    let mut line: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let absorb =
+        |bytes: &[u8], retained: &mut Vec<u8>, total_bytes: &mut u64, hasher: &mut sha2::Sha256| {
             let sanitized = sanitizer.sanitize_line(&String::from_utf8_lossy(bytes));
             let sanitized = sanitized.as_bytes();
             hasher.update(sanitized);
@@ -527,41 +579,37 @@ fn spawn_bounded_reader(
                 let take = usize::min(MAX_CAPTURE_BYTES - retained.len(), sanitized.len());
                 retained.extend_from_slice(&sanitized[..take]);
             }
-            Ok(())
         };
-        loop {
-            let read = stream.read(&mut chunk)?;
-            if read == 0 {
-                break;
-            }
-            for byte in &chunk[..read] {
-                if *byte == b'\n' {
-                    line.push(b'\n');
-                    absorb(&line, &mut retained, &mut total_bytes, &mut hasher)?;
+    loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        for byte in &chunk[..read] {
+            if *byte == b'\n' {
+                line.push(b'\n');
+                absorb(&line, &mut retained, &mut total_bytes, &mut hasher);
+                line.clear();
+            } else {
+                line.push(*byte);
+                if line.len() >= MAX_CAPTURE_BYTES {
+                    absorb(&line, &mut retained, &mut total_bytes, &mut hasher);
                     line.clear();
-                } else {
-                    line.push(*byte);
-                    if line.len() >= MAX_CAPTURE_BYTES {
-                        absorb(&line, &mut retained, &mut total_bytes, &mut hasher)?;
-                        line.clear();
-                    }
                 }
             }
         }
-        if !line.is_empty() {
-            absorb(&line, &mut retained, &mut total_bytes, &mut hasher)?;
-        }
-        let digest = hasher.finalize();
-        let full_sha256 = format!(
-            "sha256:{}",
-            digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
-        );
-        Ok(CapturedStream { retained, total_bytes, full_sha256 })
-    })
+    }
+    if !line.is_empty() {
+        absorb(&line, &mut retained, &mut total_bytes, &mut hasher);
+    }
+    let digest = hasher.finalize();
+    let full_sha256 =
+        format!("sha256:{}", digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+    Ok(CapturedStream { retained, total_bytes, full_sha256 })
 }
 
 fn join_capture(
-    handle: thread::JoinHandle<std::io::Result<CapturedStream>>,
+    handle: thread::JoinHandle<io::Result<CapturedStream>>,
     label: &str,
 ) -> Result<CapturedStream> {
     handle
@@ -599,7 +647,7 @@ fn write_captured_stream_artifact(
             full_stream_sha256: captured.full_sha256.clone(),
             original_byte_count: captured.total_bytes,
             retained_byte_count: captured.retained.len() as u64,
-            truncated: captured.total_bytes > captured.retained.len() as u64,
+            truncated: captured.truncated(),
         },
     );
     Ok(EvidenceArtifact { kind, id: id.to_string(), sha256 })
@@ -1080,6 +1128,25 @@ mod process_tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn drain_bounded_read_retains_a_window_and_hashes_the_full_stream() -> Result<()> {
+        let sanitizer = StreamSanitizer { replacements: Vec::new() };
+        let mut data = vec![b'x'; super::MAX_CAPTURE_BYTES + 128];
+        data.push(b'\n');
+        let captured = drain_bounded_read(std::io::Cursor::new(data), &sanitizer)?;
+        ensure!(
+            captured.retained.len() == super::MAX_CAPTURE_BYTES,
+            "the diagnostic window must stop at MAX_CAPTURE_BYTES, got {}",
+            captured.retained.len()
+        );
+        ensure!(captured.truncated(), "bytes past the window must be counted as truncation");
+        ensure!(
+            captured.full_sha256 != super::bytes_sha256(&captured.retained)?,
+            "full-stream identity must not be the hash of the retained window"
+        );
         Ok(())
     }
 }
