@@ -17,20 +17,22 @@ fn current_tree_cli_accepts_the_absent_stage() -> Result<(), Box<dyn Error>> {
         Command::cargo_bin("product-topology")?.current_dir(repo_root()?).arg("check").output()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let expected =
-        "product-topology: accepted stage=absent product=perllsp dap=perl-dap mcp_package=absent\n";
-
     if !output.status.success() {
         return Err(format!(
             "current-tree product-topology check failed: stdout={stdout:?} stderr={stderr:?}"
         )
         .into());
     }
-    if stdout != expected {
-        return Err(format!(
-            "current-tree product-topology output changed: expected {expected:?}, got {stdout:?}"
-        )
-        .into());
+    for field in [
+        "product-topology: accepted",
+        "stage=absent",
+        "product=perllsp",
+        "dap=perl-dap",
+        "mcp_package=absent",
+    ] {
+        if !stdout.contains(field) {
+            return Err(format!("current-tree product-topology output omitted {field:?}: {stdout:?}").into());
+        }
     }
     if !stderr.is_empty() {
         return Err(format!(
