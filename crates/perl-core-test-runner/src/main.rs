@@ -3750,8 +3750,13 @@ mod tests {
 
     #[test]
     fn compile_comp_form_scope_end_reference_boundary_passes() -> TestResult {
+        let source = "#!./perl\nBEGIN { \\&END }\n".to_string();
+        let effects = compile_effects_for_source(&source)?;
+        if !effects.is_empty() {
+            bail!("pure BEGIN {{ \\&END }} should not emit compile effects: {effects:?}");
+        }
         let invocation = Invocation {
-            source: SourceInput::Inline("#!./perl\nBEGIN { \\&END }\n".to_string()),
+            source: SourceInput::Inline(source),
             display_path: "comp/form_scope.t".to_string(),
         };
 
@@ -3764,8 +3769,10 @@ mod tests {
 
     #[test]
     fn compile_comp_form_scope_end_reference_other_file_stays_bucketed() -> TestResult {
+        let source = comp_form_scope_end_reference_effect_source(r"\&END");
+        assert_phase_block_effect(&source)?;
         let invocation = Invocation {
-            source: SourceInput::Inline("#!./perl\nBEGIN { \\&END }\n".to_string()),
+            source: SourceInput::Inline(source),
             display_path: "comp/hints.t".to_string(),
         };
 
@@ -3778,8 +3785,10 @@ mod tests {
 
     #[test]
     fn compile_comp_form_scope_end_reference_changed_block_stays_bucketed() -> TestResult {
+        let source = comp_form_scope_end_reference_effect_source(r"\&CHECK");
+        assert_phase_block_effect(&source)?;
         let invocation = Invocation {
-            source: SourceInput::Inline("#!./perl\nBEGIN { \\&CHECK }\n".to_string()),
+            source: SourceInput::Inline(source),
             display_path: "comp/form_scope.t".to_string(),
         };
 
@@ -6010,6 +6019,36 @@ $test
 }
 "#
         .to_string()
+    }
+
+    /// Keep the negative controls on a real PhaseBlock effect. A bare `\&END`
+    /// code reference is pure and intentionally emits no compile boundary;
+    /// assigning `$^H` makes the sibling's compile-time execution observable
+    /// without changing the path or phase being tested.
+    fn comp_form_scope_end_reference_effect_source(reference: &str) -> String {
+        format!("#!./perl\nBEGIN {{ {reference}; $^H = 1 }}\n")
+    }
+
+    fn compile_effects_for_source(source: &str) -> Result<Vec<CompileEffect>> {
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        if !output.diagnostics.is_empty() {
+            bail!("fixture produced parse diagnostics: {:?}", output.diagnostics);
+        }
+        Ok(lower_ast(&output.ast).compile_effects())
+    }
+
+    fn assert_phase_block_effect(source: &str) -> TestResult {
+        let effects = compile_effects_for_source(source)?;
+        if !effects.iter().any(|effect| {
+            effect.kind == CompileEffectKind::EmitDynamicBoundary
+                && effect.source_kind == CompileEffectSourceKind::PhaseBlock
+                && effect.dynamic_reason.as_deref()
+                    == Some("phase block compile-time execution is recorded but not evaluated")
+        }) {
+            bail!("expected a PhaseBlock compile effect, got {effects:?}");
+        }
+        Ok(())
     }
 
     fn comp_require_setup_source() -> String {
