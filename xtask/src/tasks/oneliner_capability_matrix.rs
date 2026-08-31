@@ -598,21 +598,50 @@ fn subject_switches(subject: &str) -> Vec<&str> {
 /// substring scan, so without this mask a deleted fixture could still be cited
 /// to earn support.
 fn code_mask(source: &str) -> Vec<bool> {
+    classify_spans(source).into_iter().map(|span| span == Span::Code).collect()
+}
+
+/// What a byte belongs to.
+///
+/// Comments and literals are both "not code", but they are not interchangeable:
+/// a literal's *delimiters* are the structure macro-argument parsing reads,
+/// while a comment may contain any text at all, including a convincing
+/// imitation of that structure. Collapsing the two into one boolean let a
+/// quoted comment supply a fixture's switch bundle. One classifier keeps the
+/// distinction available to the callers that need it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Span {
+    Code,
+    Comment,
+    Literal,
+}
+
+/// Classify every byte of `source` as code, comment, or literal.
+fn classify_spans(source: &str) -> Vec<Span> {
     let bytes = source.as_bytes();
-    let mut mask = vec![false; bytes.len()];
+    let mut spans = vec![Span::Code; bytes.len()];
     let mut i = 0usize;
+
+    let mut fill = |spans: &mut Vec<Span>, from: usize, to: usize, span: Span| {
+        for slot in spans.iter_mut().take(to.min(bytes.len())).skip(from) {
+            *slot = span;
+        }
+    };
 
     while i < bytes.len() {
         let byte = bytes[i];
 
         if byte == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            let start = i;
             while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
             }
+            fill(&mut spans, start, i, Span::Comment);
             continue;
         }
 
         if byte == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            let start = i;
             let mut depth = 1usize;
             i += 2;
             while i < bytes.len() && depth > 0 {
@@ -626,37 +655,44 @@ fn code_mask(source: &str) -> Vec<bool> {
                     i += 1;
                 }
             }
+            fill(&mut spans, start, i, Span::Comment);
             continue;
         }
 
-        // Raw string: `r`, then any number of `#`, then `"`. The `r` must start
-        // a token, or it is just the tail of an identifier.
-        if byte == b'r' && !bytes.get(i.wrapping_sub(1)).is_some_and(|b| is_identifier_byte(*b)) {
-            let mut cursor = i + 1;
+        // String literals, including the `b`, `c`, and raw forms: `"`, `b"`,
+        // `c"`, `r"`, `br"`, `cr"`, and any of the raw ones with `#` padding.
+        // The prefix must start a token, or it is the tail of an identifier.
+        if matches!(byte, b'r' | b'b' | b'c') && starts_token(bytes, i) {
+            let mut cursor = i;
+            if matches!(bytes[cursor], b'b' | b'c') {
+                cursor += 1;
+            }
+            let raw = bytes.get(cursor) == Some(&b'r');
+            if raw {
+                cursor += 1;
+            }
             let mut hashes = 0usize;
             while bytes.get(cursor) == Some(&b'#') {
                 hashes += 1;
                 cursor += 1;
             }
-            if bytes.get(cursor) == Some(&b'"') {
-                i = skip_raw_string(bytes, cursor + 1, hashes);
+            // `#` padding belongs to the raw forms only.
+            if bytes.get(cursor) == Some(&b'"') && (raw || hashes == 0) {
+                let start = i;
+                i = if raw {
+                    skip_raw_string(bytes, cursor + 1, hashes)
+                } else {
+                    skip_quoted_string(bytes, cursor + 1)
+                };
+                fill(&mut spans, start, i, Span::Literal);
                 continue;
             }
         }
 
         if byte == b'"' {
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if bytes[i] == b'"' {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
+            let start = i;
+            i = skip_quoted_string(bytes, i + 1);
+            fill(&mut spans, start, i, Span::Literal);
             continue;
         }
 
@@ -664,15 +700,50 @@ fn code_mask(source: &str) -> Vec<bool> {
         if byte == b'\''
             && let Some(end) = char_literal_end(source, i)
         {
+            fill(&mut spans, i, end, Span::Literal);
             i = end;
             continue;
         }
 
-        mask[i] = true;
         i += 1;
     }
 
-    mask
+    spans
+}
+
+/// Byte index just past an ordinary quoted string whose body starts at `start`.
+fn skip_quoted_string(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            return i + 1;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+/// `source` with comment bytes replaced by spaces, leaving literals intact.
+///
+/// Macro-argument parsing needs the literal delimiters it is looking for to be
+/// real, while ignoring any imitation of them inside a comment.
+fn blank_comments(source: &str) -> String {
+    let spans = classify_spans(source);
+    let mut blanked = String::with_capacity(source.len());
+    for (index, character) in source.char_indices() {
+        if character == '\n' || spans.get(index) != Some(&Span::Comment) {
+            blanked.push(character);
+        } else {
+            for _ in 0..character.len_utf8() {
+                blanked.push(' ');
+            }
+        }
+    }
+    blanked
 }
 
 /// Whether `byte` can appear inside a Rust identifier.
@@ -888,8 +959,14 @@ fn item_start_before(source: &str, index: usize) -> usize {
 /// Attributes are consumed as bracket-balanced groups rather than as lines,
 /// because a `cfg_attr` may be wrapped across several lines. A line-based walk
 /// stops at the continuation line and misses the suppression entirely.
+///
+/// The walk is not capped at a fixed number of attributes. A cap returns a
+/// *partial* set, which reads to the caller exactly like "no suppression here"
+/// — so a `cfg` sitting one attribute beyond the limit silently revived a
+/// disabled fixture. The loop is bounded by the source instead: it stops at the
+/// first thing above that is not an attribute, and a group that fails to
+/// consume any bytes ends it rather than spinning.
 fn preceding_attributes(source: &str, index: usize) -> String {
-    const MAX_ATTRIBUTES: usize = 12;
     let Some(head) = source.get(..index) else {
         return String::new();
     };
@@ -897,7 +974,7 @@ fn preceding_attributes(source: &str, index: usize) -> String {
     let mut end = head.len();
     let mut collected: Vec<&str> = Vec::new();
 
-    for _ in 0..MAX_ATTRIBUTES {
+    loop {
         // Step back over whitespace between the item and the attribute above.
         while end > 0 && bytes[end - 1].is_ascii_whitespace() {
             end -= 1;
@@ -933,6 +1010,11 @@ fn preceding_attributes(source: &str, index: usize) -> String {
         let Some(text) = head.get(marker..end) else {
             break;
         };
+        // Without a fixed cap, termination rests on the walk moving left every
+        // iteration. Make that explicit rather than assumed.
+        if marker >= end {
+            break;
+        }
         collected.push(text);
         end = marker;
     }
@@ -1028,6 +1110,7 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
     let mut evidence = CorpusEvidence::default();
     let code = evidence_mask(source);
     let scan = blank_non_code(source, &code);
+    let arguments = blank_comments(source);
 
     for (index, _) in source.match_indices("command_line_oneliner!(") {
         // `helper_command_line_oneliner!(..)` is a different macro whose name
@@ -1038,31 +1121,38 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
         if suppresses_execution(&preceding_attributes(&scan, item_start_before(&scan, index))) {
             continue;
         }
-        let Some(rest) = source.get(index + "command_line_oneliner!(".len()..) else {
+        // Read from the comment-blanked view throughout, so neither a comma
+        // nor a quote inside a comment can stand in for a real argument
+        // delimiter. That view keeps literals intact, so the bundle text is
+        // still the real one.
+        let start = index + "command_line_oneliner!(".len();
+        let Some(rest) = arguments.get(start..) else {
             continue;
         };
         let Some(comma) = rest.find(',') else {
             continue;
         };
-        let Some(name) = rest.get(..comma).map(str::trim) else {
+        let Some(name) = arguments.get(start..start + comma).map(str::trim) else {
             continue;
         };
         if name.is_empty() || !is_identifier(name) {
             continue;
         }
-        let Some(after_name) = rest.get(comma + 1..) else {
+        let after_name = start + comma + 1;
+        let Some(after) = arguments.get(after_name..) else {
             continue;
         };
-        let Some(open) = after_name.find('"') else {
+        let Some(open) = after.find('"') else {
             continue;
         };
-        let Some(tail) = after_name.get(open + 1..) else {
+        let body = after_name + open + 1;
+        let Some(tail) = arguments.get(body..) else {
             continue;
         };
         let Some(close) = tail.find('"') else {
             continue;
         };
-        let Some(bundle) = tail.get(..close) else {
+        let Some(bundle) = arguments.get(body..body + close) else {
             continue;
         };
         evidence.switch_cases.insert(name.to_string(), bundle.to_string());
@@ -2103,6 +2193,63 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             reject_suppressed_modules(form)
                 .unwrap_or_else(|error| panic!("`mod` matched inside a word: {error}"));
         }
+    }
+
+    /// Non-code must not be able to imitate the structure evidence extraction
+    /// reads: argument delimiters, literal boundaries, or an attribute run.
+    ///
+    /// All three routes below over-claim — they let a switch, or a fixture,
+    /// gain evidence it has not earned — which is the direction this check
+    /// exists to prevent.
+    #[test]
+    fn non_code_cannot_imitate_evidence_structure() {
+        // A quoted comment before the real literal must not supply the bundle.
+        let quoted_comment = "command_line_oneliner!(case_a, /* \"-Z\" */ \"-e\", \"print 1;\");\n";
+        let evidence = extract_corpus_evidence(quoted_comment);
+        assert_eq!(
+            evidence.switch_cases.get("case_a").map(String::as_str),
+            Some("-e"),
+            "a comment supplied the switch bundle: {:?}",
+            evidence.switch_cases
+        );
+
+        // A line comment carrying a comma must not end the name either.
+        let comma_comment = "command_line_oneliner!(case_b // , \"-Z\"\n, \"-ne\", \"print;\");\n";
+        assert_eq!(
+            extract_corpus_evidence(comma_comment).switch_cases.get("case_b").map(String::as_str),
+            Some("-ne"),
+        );
+
+        // Raw byte and C strings hide their contents like any other literal, so
+        // an embedded quote cannot expose fixture-shaped text as code.
+        for source in [
+            "const S: &[u8] = br#\"q \" command_line_oneliner!(ghost, \"-e\", \"x\");\"#;\n",
+            "const S: &[u8] = b\"q command_line_oneliner!(ghost, \\\"-e\\\", \\\"x\\\");\";\n",
+            "const S: &core::ffi::CStr = cr#\"q \" command_line_oneliner!(ghost, \"-e\", \"x\");\"#;\n",
+        ] {
+            let evidence = extract_corpus_evidence(source);
+            assert!(
+                evidence.switch_cases.is_empty(),
+                "a literal exposed fixture text in {source:?}: {:?}",
+                evidence.switch_cases
+            );
+        }
+
+        // …while the prefixes as ordinary identifiers stay code.
+        let identifiers = "let br = 1; let b = 2; let cr = 3;\ncommand_line_oneliner!(live, \"-e\", \"print 1;\");\n";
+        assert!(extract_corpus_evidence(identifiers).switch_cases.contains_key("live"));
+
+        // A suppressing attribute stays visible however many follow it.
+        let mut many = String::from("#[cfg(feature = \"x\")]\n");
+        for index in 0..20 {
+            many.push_str(&format!("#[allow(dead_code)] // {index}\n"));
+        }
+        many.push_str("command_line_oneliner!(ghost_c, \"-e\", \"print 1;\");\n");
+        assert!(
+            extract_corpus_evidence(&many).switch_cases.is_empty(),
+            "an attribute run hid the suppression: {:?}",
+            extract_corpus_evidence(&many).switch_cases
+        );
     }
 
     /// Blanking preserves byte offsets, so indices stay interchangeable with
