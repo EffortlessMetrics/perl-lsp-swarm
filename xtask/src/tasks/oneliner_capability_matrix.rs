@@ -8,10 +8,17 @@
 //!
 //! The declared rows in [`ROWS`] are the *claim*. They are not self-certifying:
 //! every row that claims `supported` or `partial` must name fixture evidence
-//! that actually exists in the command-line conformance corpus, and the corpus
-//! is parsed from source rather than restated here. A row that claims a
-//! behavior with no passing fixture evidence fails the check instead of
-//! rendering an optimistic table.
+//! that is live in the command-line conformance corpus, and the corpus is
+//! parsed from source rather than restated here. A row that claims a behavior
+//! with no such evidence fails the check instead of rendering an optimistic
+//! table.
+//!
+//! What this check does and does not establish, stated exactly: it proves the
+//! citation is real and reachable — the fixture exists in the corpus as running
+//! code, is not commented out, quoted, or `#[ignore]`d, and declares the switch
+//! the row claims. It does **not** execute the fixture; whether it passes is
+//! established by running [`CORPUS_COMMAND`], which every earned row names so a
+//! reader can run it. The two together are the guarantee; neither alone is.
 
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
@@ -139,9 +146,6 @@ struct CapabilityRow {
     layer: Layer,
     /// The switch or command-line form this row classifies.
     subject: &'static str,
-    /// The bare switch token bound to corpus evidence, or `""` when the subject
-    /// is not a single switch (a form, an adapter, or a whole-layer row).
-    switch: &'static str,
     status: Support,
     /// Corpus fixture identifiers proving the capability is earned.
     evidence: &'static [&'static str],
@@ -177,12 +181,20 @@ const REQUIRED_SUBJECTS: &[&str] = &[
 /// Shell adapters that must each be classified independently.
 const REQUIRED_SHELL_ADAPTERS: &[&str] = &["POSIX shell", "PowerShell", "cmd.exe"];
 
+/// Subjects allowed to be `not_applicable`, because another surface owns them.
+///
+/// Every other status is anchored to the corpus: an earned row must cite
+/// evidence, and an unearned one may cite boundary controls. `not_applicable`
+/// is anchored to nothing, so without this list it would be the cheapest way to
+/// retire an inconvenient gap. Adding a subject here is a deliberate edit that
+/// has to name its real owner in the row's note.
+const NOT_APPLICABLE_SUBJECTS: &[&str] = &["explicit script file"];
+
 const ROWS: &[CapabilityRow] = &[
     // ---- Layer 1: parser-body acceptance -------------------------------
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-e",
-        switch: "-e",
         status: Support::Supported,
         evidence: &[
             "e_print_literal",
@@ -202,7 +214,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-n",
-        switch: "-n",
         status: Support::Supported,
         evidence: &[
             "ne_implicit_topic_match",
@@ -220,7 +231,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-p",
-        switch: "-p",
         status: Support::Supported,
         evidence: &[
             "pe_implicit_topic_substitution",
@@ -236,29 +246,26 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-a",
-        switch: "-a",
         status: Support::Supported,
         evidence: &["lane_first_autosplit_field", "lane_join_autosplit_fields"],
         boundary_controls: &[],
         missing_layer: "",
         invocable: CORPUS_COMMAND,
-        notes: "Autosplit inserts no source text, so `@F` bodies are ordinary Perl to the parser. Whether `@F` is actually populated is layer 4.",
+        notes: "Both cited bodies read `@F`, the variable autosplit populates, so the evidence is specific to this switch rather than incidental. Autosplit inserts no source text; whether `@F` is actually populated is layer 4.",
     },
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-l",
-        switch: "-l",
-        status: Support::Supported,
+        status: Support::Partial,
         evidence: &["lane_first_autosplit_field", "lane_join_autosplit_fields"],
         boundary_controls: &[],
-        missing_layer: "",
+        missing_layer: "switch-specific evidence: no cited body contains anything `-l` changes, so acceptance here is incidental to the `-lane` bundle rather than proof about record separators",
         invocable: CORPUS_COMMAND,
-        notes: "Record-separator handling inserts no source text. The body parses; the output-record behavior is layer 4.",
+        notes: "The cited bodies arrive through the `-lane` bundle and parse, but unlike `-a` and its `@F`, nothing in them is specific to record-separator handling. Promoting this row needs a body whose parse depends on `-l`.",
     },
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-E",
-        switch: "-E",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -269,7 +276,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-F",
-        switch: "-F",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -280,7 +286,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-0 / -g",
-        switch: "-0",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -291,7 +296,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-I",
-        switch: "-I",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -302,7 +306,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-M",
-        switch: "-M",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -313,7 +316,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "-m",
-        switch: "-m",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -324,7 +326,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "repeated source fragments",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &["negative_controls_keep_context_errors_and_boundaries_visible"],
@@ -335,7 +336,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "--",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &["negative_controls_keep_context_errors_and_boundaries_visible"],
@@ -346,7 +346,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "explicit script file",
-        switch: "",
         status: Support::NotApplicable,
         evidence: &[],
         boundary_controls: &[],
@@ -357,7 +356,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ParserBody,
         subject: "stdin program",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -369,7 +367,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::StructuredArgv,
         subject: "whole layer",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &["negative_controls_keep_context_errors_and_boundaries_visible"],
@@ -381,7 +378,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::SourceComposition,
         subject: "whole layer",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &["negative_controls_keep_context_errors_and_boundaries_visible"],
@@ -393,7 +389,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ImplicitRuntime,
         subject: "whole layer",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &["negative_controls_keep_context_errors_and_boundaries_visible"],
@@ -405,7 +400,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::CompileTimeContext,
         subject: "whole layer",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -417,7 +411,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::EditorOperations,
         subject: "whole layer",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -429,7 +422,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ShellAdapters,
         subject: "POSIX shell",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -440,7 +432,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ShellAdapters,
         subject: "PowerShell",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -451,7 +442,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::ShellAdapters,
         subject: "cmd.exe",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -463,7 +453,6 @@ const ROWS: &[CapabilityRow] = &[
     CapabilityRow {
         layer: Layer::DifferentialOracle,
         subject: "whole layer",
-        switch: "",
         status: Support::Unsupported,
         evidence: &[],
         boundary_controls: &[],
@@ -499,22 +488,190 @@ impl CorpusEvidence {
 
 /// Whether a switch bundle such as `-lane` declares a switch such as `-l`.
 fn bundle_declares(bundle: &str, switch: &str) -> bool {
-    let Some(flags) = bundle.strip_prefix('-') else {
-        return false;
-    };
     let Some(wanted) = switch.strip_prefix('-') else {
         return false;
     };
-    // A cluster is a sequence of single-character flags; a bundle declares a
-    // switch when every character of the requested switch appears in it.
-    !wanted.is_empty() && wanted.chars().all(|flag| flags.contains(flag))
+    let mut chars = wanted.chars();
+    let (Some(flag), None) = (chars.next(), chars.next()) else {
+        // Only single-flag switches are addressable in a cluster.
+        return false;
+    };
+    bundle_flags(bundle).contains(&flag)
+}
+
+/// Perl switches whose value is attached directly to the flag, so everything
+/// after them in a cluster is that value rather than further flags.
+const VALUE_ATTACHED_FLAGS: &[char] = &['M', 'm', 'I', 'F', '0', 'i', 'D'];
+
+/// The flags a switch bundle actually declares.
+///
+/// Substring membership would be wrong: `-Mfeature` would "declare" `-e` and
+/// `-a` because those letters occur in the module name. A value-attached flag
+/// therefore ends the cluster and swallows the rest.
+fn bundle_flags(bundle: &str) -> Vec<char> {
+    let Some(cluster) = bundle.strip_prefix('-') else {
+        return Vec::new();
+    };
+    let mut flags = Vec::new();
+    for flag in cluster.chars() {
+        flags.push(flag);
+        if VALUE_ATTACHED_FLAGS.contains(&flag) {
+            break;
+        }
+    }
+    flags
+}
+
+/// The switch tokens a row subject names, derived from the subject itself.
+///
+/// The subject is the single source of truth for which switch a row is about.
+/// A separate declared field would be a bypass: leaving it blank would silently
+/// skip the evidence binding while the row still reads as a switch claim.
+///
+/// `"-e"` yields `["-e"]` and `"-0 / -g"` yields `["-0", "-g"]`. Subjects that
+/// name no switch — `"--"`, `"whole layer"`, `"PowerShell"`, `"stdin program"` —
+/// yield nothing.
+fn subject_switches(subject: &str) -> Vec<&str> {
+    subject
+        .split('/')
+        .map(str::trim)
+        .filter(|token| {
+            // A switch token is a dash plus exactly one flag character. `--` is
+            // the argv terminator, not a flag.
+            token.starts_with('-')
+                && token.chars().count() == 2
+                && token.chars().nth(1).is_some_and(|flag| flag != '-')
+        })
+        .collect()
+}
+
+/// A byte mask over `source` marking bytes that are real code — outside line
+/// and block comments, string and raw-string literals, and character literals.
+///
+/// Evidence must come from fixtures that actually run. A commented-out or
+/// quoted `command_line_oneliner!` reads exactly like a live one to a plain
+/// substring scan, so without this mask a deleted fixture could still be cited
+/// to earn support.
+fn code_mask(source: &str) -> Vec<bool> {
+    let bytes = source.as_bytes();
+    let mut mask = vec![false; bytes.len()];
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
+
+        if byte == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        if byte == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            let mut depth = 1usize;
+            i += 2;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Raw string: `r`, then any number of `#`, then `"`. The `r` must start
+        // a token, or it is just the tail of an identifier.
+        if byte == b'r' && !bytes.get(i.wrapping_sub(1)).is_some_and(|b| is_identifier_byte(*b)) {
+            let mut cursor = i + 1;
+            let mut hashes = 0usize;
+            while bytes.get(cursor) == Some(&b'#') {
+                hashes += 1;
+                cursor += 1;
+            }
+            if bytes.get(cursor) == Some(&b'"') {
+                i = skip_raw_string(bytes, cursor + 1, hashes);
+                continue;
+            }
+        }
+
+        if byte == b'"' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        if byte == b'\'' {
+            if let Some(end) = char_literal_end(source, i) {
+                i = end;
+                continue;
+            }
+            // A lifetime, not a literal: ordinary code.
+        }
+
+        mask[i] = true;
+        i += 1;
+    }
+
+    mask
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// Byte index just past a raw string whose body starts at `start`.
+fn skip_raw_string(bytes: &[u8], start: usize, hashes: usize) -> usize {
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            let closing = i + 1 + hashes;
+            if bytes.get(i + 1..closing).is_some_and(|tail| tail.iter().all(|b| *b == b'#')) {
+                return closing;
+            }
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+/// Byte index just past a character literal starting at `quote`, or `None` when
+/// the quote opens a lifetime instead.
+fn char_literal_end(source: &str, quote: usize) -> Option<usize> {
+    let rest = source.get(quote + 1..)?;
+    if rest.starts_with('\\') {
+        // Escaped: the literal ends at the next quote.
+        let close = rest.find('\'')?;
+        return Some(quote + 1 + close + 1);
+    }
+    let first = rest.chars().next()?;
+    let after = quote + 1 + first.len_utf8();
+    if source.as_bytes().get(after) == Some(&b'\'') { Some(after + 1) } else { None }
 }
 
 /// Extract corpus evidence from the conformance corpus source text.
 fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
     let mut evidence = CorpusEvidence::default();
+    let code = code_mask(source);
 
     for (index, _) in source.match_indices("command_line_oneliner!(") {
+        if !code.get(index).copied().unwrap_or(false) {
+            continue;
+        }
         let Some(rest) = source.get(index + "command_line_oneliner!(".len()..) else {
             continue;
         };
@@ -548,6 +705,9 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
     // Free `#[test]` functions: the corpus's typed-proof and negative-control
     // targets. Macro-generated cases are already captured above.
     for (index, _) in source.match_indices("#[test]") {
+        if !code.get(index).copied().unwrap_or(false) {
+            continue;
+        }
         let Some(rest) = source.get(index..) else {
             continue;
         };
@@ -562,6 +722,10 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
             continue;
         };
         if gap.contains(['{', '}', ';']) {
+            continue;
+        }
+        // An ignored test does not run, so it cannot evidence anything.
+        if gap.contains("#[ignore") {
             continue;
         }
         let Some(after_fn) = rest.get(fn_offset + "fn ".len()..) else {
@@ -648,6 +812,13 @@ fn validate(rows: &[CapabilityRow], evidence: &CorpusEvidence) -> Result<()> {
             bail!("{layer} / {subject} has no boundary note");
         }
 
+        if row.status == Support::NotApplicable && !NOT_APPLICABLE_SUBJECTS.contains(&subject) {
+            bail!(
+                "{layer} / {subject} is `not_applicable` but is not a declared out-of-lane \
+                 subject; an unowned gap is `unsupported`"
+            );
+        }
+
         // Parser-body evidence is the only evidence this corpus can supply.
         // Refusing it elsewhere is what stops parser-only proof from being
         // promoted into an end-to-end support claim.
@@ -658,14 +829,25 @@ fn validate(rows: &[CapabilityRow], evidence: &CorpusEvidence) -> Result<()> {
             );
         }
 
-        // An earned switch row must cite a case that actually declares it.
-        if row.layer == Layer::ParserBody && row.status.is_earned() && !row.switch.is_empty() {
-            let bound = row.evidence.iter().any(|id| evidence.case_declares_switch(id, row.switch));
+        // The corpus can only evidence switch-shaped subjects, so an earned
+        // parser-body row must name a switch and cite a case declaring it.
+        // Deriving the switch from the subject leaves no field to blank out.
+        if row.layer == Layer::ParserBody && row.status.is_earned() {
+            let switches = subject_switches(subject);
+            if switches.is_empty() {
+                bail!(
+                    "{layer} / {subject} claims `{}` but its subject names no switch the corpus can evidence",
+                    row.status.as_str()
+                );
+            }
+            let bound = switches.iter().any(|switch| {
+                row.evidence.iter().any(|id| evidence.case_declares_switch(id, switch))
+            });
             if !bound {
                 bail!(
                     "{layer} / {subject} claims `{}` but no cited corpus case declares `{}`",
                     row.status.as_str(),
-                    row.switch
+                    switches.join("` or `")
                 );
             }
         }
@@ -748,7 +930,8 @@ fn render_matrix(rows: &[CapabilityRow], evidence: &CorpusEvidence) -> String {
     output.push_str("Check: `cargo xtask oneliner-capability-matrix --check`\n");
     output.push_str(&format!("Evidence source: [`{CORPUS_PATH}`](../../../{CORPUS_PATH})\n\n"));
 
-    output.push_str("\"One-liner support\" is not one capability. This matrix separates it into eight layers so that accepting a program body is never reported as understanding a command line. Each row carries its own evidence: a row claiming `supported` or `partial` must cite fixtures that exist in the conformance corpus, and the generator fails instead of rendering a claim that has none.\n\n");
+    output.push_str("\"One-liner support\" is not one capability. This matrix separates it into eight layers so that accepting a program body is never reported as understanding a command line. Each row carries its own evidence: a row claiming `supported` or `partial` must cite fixtures that are live in the conformance corpus, and the generator fails instead of rendering a claim that has none.\n\n");
+    output.push_str(&format!("Scope of the check, exactly: it proves each citation is real and reachable — present in the corpus as running code, not commented out, quoted, or `#[ignore]`d, and declaring the switch the row claims. It does not run the fixtures. Execution is `{CORPUS_COMMAND}`, which every earned row names.\n\n"));
 
     output.push_str("Support vocabulary:\n\n");
     output.push_str("- `supported`: earned for this layer, with cited fixture evidence and an invocable command.\n");
@@ -886,7 +1069,6 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         CapabilityRow {
             layer: Layer::ParserBody,
             subject: "-e",
-            switch: "-e",
             status: Support::Supported,
             evidence: &["e_print_literal"],
             boundary_controls: &[],
@@ -904,7 +1086,6 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             rows.push(CapabilityRow {
                 layer: Layer::ParserBody,
                 subject,
-                switch: "",
                 status: Support::Unsupported,
                 evidence: &[],
                 boundary_controls: &[],
@@ -917,7 +1098,6 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             rows.push(CapabilityRow {
                 layer: Layer::ShellAdapters,
                 subject: adapter,
-                switch: "",
                 status: Support::Unsupported,
                 evidence: &[],
                 boundary_controls: &[],
@@ -933,7 +1113,6 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             rows.push(CapabilityRow {
                 layer: *layer,
                 subject: "whole layer",
-                switch: "",
                 status: Support::Unsupported,
                 evidence: &[],
                 boundary_controls: &[],
@@ -943,11 +1122,12 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             });
         }
         // The scaffold must cite every corpus case or the drift rule fires for
-        // an unrelated reason.
+        // an unrelated reason. `-e` carries that anchor because every sample
+        // bundle (`-e`, `-ne`, `-lane`) declares the `e` flag.
+        rows.retain(|row| !(row.layer == Layer::ParserBody && row.subject == "-e"));
         rows.push(CapabilityRow {
             layer: Layer::ParserBody,
-            subject: "corpus anchor",
-            switch: "",
+            subject: "-e",
             status: Support::Supported,
             evidence: &["e_print_literal", "ne_implicit_topic_match", "lane_first_autosplit_field"],
             boundary_controls: &[],
@@ -1029,8 +1209,9 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
             evidence.proof_tests
         );
 
-        // The ordinary attached form still resolves.
-        let attached = "#[test]\n#[ignore = \"slow\"]\nfn real_case() {}\n";
+        // The ordinary attached form still resolves, including through an
+        // intervening attribute that does not suppress the run.
+        let attached = "#[test]\n#[allow(clippy::needless_range_loop)]\nfn real_case() {}\n";
         let evidence = extract_corpus_evidence(attached);
         assert!(evidence.proof_tests.contains("real_case"));
     }
@@ -1146,9 +1327,68 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
     fn switch_claim_unbacked_by_a_declaring_case_is_rejected() {
         let mut row = base_row();
         row.subject = "-M";
-        row.switch = "-M";
         // `e_print_literal` is a real fixture, but it declares `-e`, not `-M`.
         expect_rejected(&scaffold_with(row), "no cited corpus case declares");
+    }
+
+    /// The binding rule used to be gated on a separate declared `switch` field,
+    /// so blanking that field let a switch-shaped row claim support on
+    /// unrelated evidence. The subject is now the only source of truth, and a
+    /// subject naming no switch cannot be earned at all.
+    #[test]
+    fn earned_parser_row_whose_subject_names_no_switch_is_rejected() {
+        for subject in ["--", "whole layer", "repeated source fragments", "stdin program", ""] {
+            let mut row = base_row();
+            row.subject = subject;
+            expect_rejected(&scaffold_with(row), "names no switch");
+        }
+    }
+
+    /// An ignored test does not run, so citing it must not earn support.
+    #[test]
+    fn ignored_test_fn_is_not_evidence() {
+        let source = "#[test]\n#[ignore = \"flaky\"]\nfn broken_but_ignored() {}\n";
+        let evidence = extract_corpus_evidence(source);
+        assert!(
+            evidence.proof_tests.is_empty(),
+            "an ignored test was captured as evidence: {:?}",
+            evidence.proof_tests
+        );
+    }
+
+    /// Substring membership would let a switch value masquerade as flags.
+    #[test]
+    fn value_attached_switches_do_not_declare_letters_of_their_value() {
+        assert!(bundle_declares("-Mfeature", "-M"));
+        assert!(!bundle_declares("-Mfeature", "-e"), "module name letters became flags");
+        assert!(!bundle_declares("-Mfeature", "-a"));
+        assert!(bundle_declares("-Ilib", "-I"));
+        assert!(!bundle_declares("-Ilib", "-l"), "include path letters became flags");
+        assert!(!bundle_declares("-0777", "-7"));
+        // Pure clusters are unaffected.
+        assert_eq!(bundle_flags("-lane"), vec!['l', 'a', 'n', 'e']);
+        assert_eq!(bundle_flags("-Mfeature"), vec!['M']);
+    }
+
+    #[test]
+    fn undeclared_not_applicable_subject_is_rejected() {
+        let mut row = base_row();
+        row.subject = "-M";
+        row.status = Support::NotApplicable;
+        row.evidence = &[];
+        row.invocable = "";
+        expect_rejected(&scaffold_with(row), "not a declared out-of-lane subject");
+    }
+
+    #[test]
+    fn subject_is_the_only_switch_authority() {
+        assert_eq!(subject_switches("-e"), vec!["-e"]);
+        assert_eq!(subject_switches("-0 / -g"), vec!["-0", "-g"]);
+        assert!(subject_switches("--").is_empty());
+        assert!(subject_switches("whole layer").is_empty());
+        assert!(subject_switches("PowerShell").is_empty());
+        assert!(subject_switches("stdin program").is_empty());
+        assert!(subject_switches("").is_empty());
     }
 
     #[test]
@@ -1177,9 +1417,12 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
 
     #[test]
     fn uncited_corpus_case_is_rejected() {
-        let rows: Vec<CapabilityRow> =
-            scaffold().into_iter().filter(|row| row.subject != "corpus anchor").collect();
-        expect_rejected(&rows, "not cited by any capability row");
+        // Drop the anchor's evidence so no row accounts for the corpus cases.
+        let mut row = base_row();
+        row.status = Support::Unsupported;
+        row.evidence = &[];
+        row.invocable = "";
+        expect_rejected(&scaffold_with(row), "not cited by any capability row");
     }
 
     #[test]
@@ -1212,5 +1455,93 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
     #[test]
     fn table_cells_escape_pipe_characters() {
         assert_eq!(escape_cell("a|b"), "a\\|b");
+    }
+
+    // ---- PROBE: commented-out fixtures should not become evidence ---------
+
+    #[test]
+    fn commented_out_macro_call_is_not_evidence() {
+        let source = "// command_line_oneliner!(ghost_case, \"-e\", \"print 1;\");\n";
+        let evidence = extract_corpus_evidence(source);
+        assert!(
+            evidence.switch_cases.is_empty(),
+            "commented-out macro call was captured: {:?}",
+            evidence.switch_cases
+        );
+    }
+
+    #[test]
+    fn block_commented_macro_call_is_not_evidence() {
+        let source = "/* command_line_oneliner!(ghost_case, \"-e\", \"x\"); */\n";
+        let evidence = extract_corpus_evidence(source);
+        assert!(
+            evidence.switch_cases.is_empty(),
+            "block-commented macro call was captured: {:?}",
+            evidence.switch_cases
+        );
+    }
+
+    #[test]
+    fn commented_out_test_fn_is_not_evidence() {
+        let source = "// #[test]\n// fn ghost_proof_test() {}\n";
+        let evidence = extract_corpus_evidence(source);
+        assert!(
+            evidence.proof_tests.is_empty(),
+            "commented-out #[test] fn was captured: {:?}",
+            evidence.proof_tests
+        );
+    }
+
+    #[test]
+    fn string_literal_macro_call_is_not_evidence() {
+        let source = "let s = \"command_line_oneliner!(ghost2, \\\"-e\\\", \\\"x\\\");\";\n";
+        let evidence = extract_corpus_evidence(source);
+        assert!(
+            evidence.switch_cases.is_empty(),
+            "string-literal macro call was captured: {:?}",
+            evidence.switch_cases
+        );
+    }
+
+    #[test]
+    fn raw_string_macro_call_is_not_evidence() {
+        let source = "let s = r##\"command_line_oneliner!(ghost3, \"-e\", \"x\");\"##;\n";
+        let evidence = extract_corpus_evidence(source);
+        assert!(
+            evidence.switch_cases.is_empty(),
+            "raw-string macro call was captured: {:?}",
+            evidence.switch_cases
+        );
+    }
+
+    /// A commented-out fixture must not merely be uncounted: citing it has to
+    /// fail, because a deleted fixture proves nothing.
+    #[test]
+    fn citing_a_commented_out_fixture_is_rejected() {
+        let corpus = format!(
+            "{CORPUS_SAMPLE}\n// command_line_oneliner!(ghost_case, \"-e\", \"print 1;\");\n"
+        );
+        let evidence = extract_corpus_evidence(&corpus);
+        assert!(!evidence.contains("ghost_case"));
+
+        let mut row = base_row();
+        row.evidence = &["ghost_case"];
+        match validate(&scaffold_with(row), &evidence) {
+            Ok(()) => panic!("a commented-out fixture earned support"),
+            Err(error) => assert!(error.to_string().contains("does not exist")),
+        }
+    }
+
+    /// Code context must not be over-trimmed: the live corpus still resolves,
+    /// including its raw-string bodies and character literals.
+    #[test]
+    fn code_mask_keeps_the_live_corpus_visible() {
+        let evidence = real_evidence();
+        assert!(evidence.switch_cases.len() >= 18, "live cases lost: {:?}", evidence.switch_cases);
+        assert!(
+            evidence
+                .proof_tests
+                .contains("positive_idioms_have_typed_ast_hir_and_source_range_proof")
+        );
     }
 }
