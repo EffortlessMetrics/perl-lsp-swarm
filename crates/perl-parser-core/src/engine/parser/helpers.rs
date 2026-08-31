@@ -478,12 +478,11 @@ impl<'a> Parser<'a> {
             return Ok(expr);
         }
 
-        let Some(op) = self.peek_kind().and_then(Self::assignment_operator_text) else {
+        let Some((op, op_start)) = self.consume_assignment_operator()? else {
             return Ok(expr);
         };
 
-        let op_token = self.tokens.next()?;
-        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
             missing
         } else {
             self.parse_assignment()?
