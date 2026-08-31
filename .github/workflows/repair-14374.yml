@@ -31,6 +31,11 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt
 
+      - name: Adapt the one-shot repair to the current lane registries
+        run: |
+          python3 scripts/maintenance/patch_integrator_14161.py
+          rm scripts/maintenance/patch_integrator_14161.py
+
       - name: Rebuild, regenerate, verify, and push the integrated candidate
         env:
           SOURCE_HEAD: 93c5830bf1767c8e7fab638f7622378a3906ce29
