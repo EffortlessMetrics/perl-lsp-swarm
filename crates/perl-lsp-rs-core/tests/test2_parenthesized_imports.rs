@@ -2,6 +2,7 @@ use perl_lsp_rs_core::providers::completion::{CompletionItem, CompletionProvider
 use perl_lsp_rs_core::providers::testing::test2::{ResolvedImport, Test2Facts, resolve_import};
 use perl_parser_core::Parser;
 use perl_tdd_support::must;
+use std::io;
 
 fn resolve_v0(args: &str) -> Result<ResolvedImport, Box<dyn std::error::Error>> {
     resolve_import("Test2::V0", args).ok_or_else(|| io::Error::other("Test2::V0 must be recognized").into())
