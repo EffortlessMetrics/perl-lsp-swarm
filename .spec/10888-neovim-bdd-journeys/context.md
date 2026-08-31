@@ -189,9 +189,10 @@ neovim.bdd.lifecycle.01–07  non-BMP ranges land on the intended target;
 ```text
 neovim.bdd.support.01–08  0.11 floor ≠ current stable (#10508);
                           Linux/macOS/Windows separate (#10508); manual vs
-                          nvim-lspconfig vs Mason separate (#10516/#10518/
-                          #10520); archive vs Cargo vs Homebrew vs Mason
-                          separate; exact-source ≠ public-installed; prepared ≠
+                          nvim-lspconfig vs Mason registry separate (#10511/
+                          #10514, independence law #7730); stable vs nightly vs
+                          dev-pin channels separate and never satisfied by an
+                          aggregate receipt (#10516/#10518/#10520, #7770); exact-source ≠ public-installed; prepared ≠
                           submitted ≠ accepted ≠ released ≠ public (#10511/
                           #10514); virtual documents may stay upstream-dependent
                           without failing core; DAP is a nonblocking sidecar
@@ -223,9 +224,11 @@ native_neovim_configuration       documented native setup only; substrate; prove
                                   behavior; aligns with the registered `neovim` tier in
                                   policy/lsp-client-support.toml
 native_neovim_core                exactly attach.01–06 + core.01–10 (16 rows)
-release_v0_18_bounded             the sync branch qualifying under nv_release_scope_decision
-                                  plus only the cells the bounded public claim requires
-native_neovim_deep_lifecycle      core + lifecycle.01–07 + the selected sync branch
+release_v0_18_bounded             the full-document branch sync.06–10, which qualifies under
+                                  nv_release_scope_decision, plus only the cells the bounded
+                                  public claim requires
+native_neovim_deep_lifecycle      core + lifecycle.01–07 + the atomic branch sync.01–05
+                                  (nv_deep_atomic_branch); never the full-document branch
 native_neovim_first_class         deep + support.01–08 stage laws
 native_neovim_programme_closeout  fan-in over terminal child propositions
 ```

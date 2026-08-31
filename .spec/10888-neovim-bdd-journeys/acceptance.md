@@ -54,21 +54,21 @@ ruling. Neither group is current until #8129 selects it and #10505 observes it.
 
 | Scenario ID | User-visible behavior | Profile / evidence tag | Evidence boundary (owner chain) |
 | --- | --- | --- | --- |
-| `neovim.bdd.sync.01` | The advertised position encoding and change-sync kind match the selected atomic-incremental envelope | deep; conditional on #8129 selecting branch A | #8129 ruling → #10505 branch observation → `editor_client_compat.v1` cell |
-| `neovim.bdd.sync.02` | Actual ranged change traffic from the built-in client is observed, not merely advertised | deep; conditional branch A | same chain |
-| `neovim.bdd.sync.03` | Sequential multi-change edits apply in order and leave the server on the intended final text | deep; conditional branch A | same chain |
-| `neovim.bdd.sync.04` | An invalid change notification desynchronizes explicitly instead of silently accepting partial state | deep; conditional branch A | same chain |
-| `neovim.bdd.sync.05` | Explicit full-source resend or document reopen recovers a desynchronized document | deep; conditional branch A | same chain |
+| `neovim.bdd.sync.01` | The advertised position encoding and change-sync kind match the selected atomic-incremental envelope | deep (atomic branch); active only while #8129 selects branch A | #8129 ruling → #10505 branch observation → `editor_client_compat.v1` cell |
+| `neovim.bdd.sync.02` | Actual ranged change traffic from the built-in client is observed, not merely advertised | deep (atomic branch); conditional branch A | same chain |
+| `neovim.bdd.sync.03` | Sequential multi-change edits apply in order and leave the server on the intended final text | deep (atomic branch); conditional branch A | same chain |
+| `neovim.bdd.sync.04` | An invalid change notification desynchronizes explicitly instead of silently accepting partial state | deep (atomic branch); conditional branch A | same chain |
+| `neovim.bdd.sync.05` | Explicit full-source resend or document reopen recovers a desynchronized document | deep (atomic branch); conditional branch A | same chain |
 
 ### Branch B — `full_document_utf16`
 
 | Scenario ID | User-visible behavior | Profile / evidence tag | Evidence boundary (owner chain) |
 | --- | --- | --- | --- |
-| `neovim.bdd.sync.06` | The advertised position encoding is UTF-16 and the change-sync kind matches the selected full-document envelope | deep; conditional on #8129 selecting branch B | #8129 ruling → #10505 branch observation → `editor_client_compat.v1` cell |
-| `neovim.bdd.sync.07` | Actual full-document change traffic from the built-in client is observed, not merely advertised | deep; conditional branch B | same chain |
-| `neovim.bdd.sync.08` | A ranged change notification is refused under the full-document envelope rather than partially applied | deep; conditional branch B | same chain |
-| `neovim.bdd.sync.09` | A refused notification leaves no partial mutation of server document state | deep; conditional branch B | same chain |
-| `neovim.bdd.sync.10` | Explicit full-source resend or document reopen recovers a desynchronized document | deep; conditional branch B | same chain |
+| `neovim.bdd.sync.06` | The advertised position encoding is UTF-16 and the change-sync kind matches the selected full-document envelope | bounded release (full-document branch); active only while #8129 selects branch B | #8129 ruling → #10505 branch observation → `editor_client_compat.v1` cell |
+| `neovim.bdd.sync.07` | Actual full-document change traffic from the built-in client is observed, not merely advertised | bounded release (full-document branch); conditional branch B | same chain |
+| `neovim.bdd.sync.08` | A ranged change notification is refused under the full-document envelope rather than partially applied | bounded release (full-document branch); conditional branch B | same chain |
+| `neovim.bdd.sync.09` | A refused notification leaves no partial mutation of server document state | bounded release (full-document branch); conditional branch B | same chain |
+| `neovim.bdd.sync.10` | Explicit full-source resend or document reopen recovers a desynchronized document | bounded release (full-document branch); conditional branch B | same chain |
 
 ## §Behavior — deep lifecycle truth (`native_neovim_deep_lifecycle`)
 
@@ -91,8 +91,8 @@ any downstream projection must preserve.
 | --- | --- | --- | --- |
 | `neovim.bdd.support.01` | The maintained support floor (Neovim 0.11.3, per `docs/EDITORS/NEOVIM_SETUP.md`) and the current stable Neovim version are separate rows; neither substitutes for the other, and no receipt certifies a broad `0.11+` matrix | distribution; stage law | #10508 version/platform rows; exact version cells owned by #7716 |
 | `neovim.bdd.support.02` | Linux, macOS, and Windows remain separate rows | distribution; stage law | #10508 |
-| `neovim.bdd.support.03` | Manual native configuration, upstream `nvim-lspconfig` registration, and Mason availability remain separate rows | distribution; stage law | #10516/#10518/#10520 install channels |
-| `neovim.bdd.support.04` | Release-archive, Cargo, Homebrew, and Mason installations remain separate rows | distribution; stage law | #10516/#10518/#10520 |
+| `neovim.bdd.support.03` | Manual native configuration, upstream `nvim-lspconfig` registration, and Mason registry availability remain separate rows | distribution; stage law | manual route is `native_neovim_configuration` substrate; #10511 nvim-lspconfig track; #10514 Mason registry track; independence law #7730 |
+| `neovim.bdd.support.04` | The stable, nightly, and dev-pin public install channels remain separate rows, and an aggregate installed-binary receipt never substitutes for a per-channel one | distribution; stage law | #7730 channel contract; #10516/#10518/#10520 per channel; #7770 first-mile aggregate |
 | `neovim.bdd.support.05` | Exact-source behavior is never public-installed proof | distribution; stage law | #10508 + #10522/#7122 projection |
 | `neovim.bdd.support.06` | A prepared external packet is not submitted, accepted, released, or publicly available; each remains its own stage | distribution; stage law | #10511/#10514 external packet stages |
 | `neovim.bdd.support.07` | Virtual-document behavior may remain upstream-dependent without failing core support | distribution; optional-dependency law | #10522/#7122; never a core blocker |
@@ -102,8 +102,8 @@ any downstream projection must preserve.
 
 | Scenario ID | Proposition | Profile relation | Boundary note |
 | --- | --- | --- | --- |
-| `neovim.bdd.opt.01` | Upstream `nvim-lspconfig` ships the registration | external checkpoint input | submission/acceptance stages owned by #10511/#10514; internal merge cannot satisfy them |
-| `neovim.bdd.opt.02` | Mason publishes an installable package | external channel input | owner #10520; availability never a core floor |
+| `neovim.bdd.opt.01` | Upstream `nvim-lspconfig` ships the registration | external checkpoint input | submission/acceptance stages owned by #10511; internal merge cannot satisfy them |
+| `neovim.bdd.opt.02` | Mason publishes an installable package | external channel input | owner #10514 Mason registry track; availability never a core floor |
 | `neovim.bdd.opt.03` | Public release archive replay reproduces the journeys | stronger-profile input | direct stage owner #10508; local evidence never relabels upward |
 | `neovim.bdd.opt.04` | Maintained version/platform matrix rows hold beyond the support floor | stronger-profile input | rows owned by #10508 |
 | `neovim.bdd.opt.05` | Virtual-document / upstream-dependent features work end-to-end | `consumes_if_available` input | existence cannot block or satisfy the core |
@@ -115,9 +115,9 @@ any downstream projection must preserve.
 | --- | --- | --- |
 | `native_neovim_configuration` | documented native setup only (`docs/EDITORS/NEOVIM_SETUP.md`) | substrate only; proves no behavior; matches the registered `neovim` tier |
 | `native_neovim_core` | exactly the 16 rows of `attach.*` + `core.*` | bounded core; nothing else blocks or widens it |
-| `native_neovim_deep_lifecycle` | core + `lifecycle.01–07` + the one `sync.*` branch selected by #8129 | never a prerequisite of core |
+| `native_neovim_deep_lifecycle` | core + `lifecycle.01–07` + the atomic branch `sync.01–05` (`nv_deep_atomic_branch`, #10505); the full-document branch never enters this profile, whatever #8129 selects | never a prerequisite of core |
 | `native_neovim_first_class` | deep + `support.01–08` stage laws | public stages require their own direct evidence |
-| `release_v0_18_bounded` | the one `sync.*` branch that qualifies under `nv_release_scope_decision` plus only the cells the bounded public claim requires | no current selection is recorded by that authority; the qualifying value on a gate is not a ruling, and a stale selection fails closed |
+| `release_v0_18_bounded` | the full-document branch `sync.06–10`, which is the branch qualifying under `nv_release_scope_decision`, plus only the cells the bounded public claim requires | no current selection is recorded by that authority; the qualifying value on a gate is not a ruling, and a stale selection fails closed |
 | `native_neovim_programme_closeout` | fan-in over independently terminal child propositions | composes child results only; manufactures none |
 
 Laws: a stronger profile never erases a narrower valid one; optional rows are
@@ -172,8 +172,8 @@ No Rust or public API is introduced. Semantic contract terms defined here:
 | `neovim.bdd.<family>.<nn>` | stable scenario ID namespace | 47 IDs, fixed families/order, immutable once published | none found on main; this packet |
 | `native_neovim_configuration` | claim profile ID | documented native setup substrate | **governed by #11392**; consumed verbatim, not declared here |
 | `native_neovim_core` | claim profile ID | membership = the 16 attach/core rows | **governed by #11392**; consumed verbatim |
-| `release_v0_18_bounded` | claim profile ID | the sync branch qualifying under `nv_release_scope_decision` plus the cells the bounded public claim requires | **governed by #11392**; consumed verbatim |
-| `native_neovim_deep_lifecycle` | claim profile ID | core + lifecycle + the qualifying sync branch | **governed by #11392**; consumed verbatim |
+| `release_v0_18_bounded` | claim profile ID | the full-document sync branch, which qualifies under `nv_release_scope_decision`, plus the cells the bounded public claim requires | **governed by #11392**; consumed verbatim |
+| `native_neovim_deep_lifecycle` | claim profile ID | core + lifecycle + the atomic sync branch | **governed by #11392**; consumed verbatim |
 | `native_neovim_first_class` | claim profile ID | deep + support stage laws | **governed by #11392**; consumed verbatim |
 | `native_neovim_programme_closeout` | claim profile ID | programme fan-in | **governed by #11392**; consumed verbatim |
 

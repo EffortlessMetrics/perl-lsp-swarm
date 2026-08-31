@@ -86,11 +86,14 @@ a real heading line rather than a cross-reference; required contract terms
 shape); the exact forty-seven scenario IDs bound to their §Behavior ledger rows
 in fixed family order; **a digest of every complete normative row, so a
 published ID cannot be silently rebound to a different behavior, profile tag,
-or owner chain**; that no foreign rail ID appears as a ledger row; all
+or owner chain**; that the digest map covers **exactly** the stable ID set, so
+an entry cannot be dropped to retire a row's binding while the checker still
+reports every row as bound; that no foreign rail ID appears as a ledger row; all
 twenty-five falsifiers with exact scenario/kind/verdict text in fixed order;
 a digest of each named prose invariant (subject law, profile laws, claim
 boundary, three-subject law), so a boundary claim cannot be reversed while a
-bare required token survives elsewhere in the file; `git diff --check` over the
+bare required token survives elsewhere in the file, together with the same
+exact-coverage requirement over the named invariant set; `git diff --check` over the
 candidate range, work tree, and index, with a nonzero status failing the check
 rather than being discarded; and a fail-closed changed-path union restricted to
 exactly this packet.
@@ -181,6 +184,18 @@ INVARIANT_BLOCKS = {
                             r"(?ms)^### Evidence-stage vocabulary.*?(?=^## §Test-Grid)"),
 }
 
+# The set of invariants that must be bound, stated independently of the maps
+# above. Iterating a map only visits the keys it still has, so deleting an
+# entry from both maps would silently retire an invariant while the checker
+# went on reporting success.
+EXPECTED_INVARIANTS = {
+    "subject_law",
+    "profile_laws",
+    "claim_boundary",
+    "three_subject_law",
+    "evidence_vocabulary",
+}
+
 INVARIANT_DIGESTS = {
     "subject_law": "a48b4d92cad52534",
     "profile_laws": "60e532ff4fcc0274",
@@ -206,16 +221,16 @@ ROW_DIGESTS = {
     "neovim.bdd.core.08": "017f59ff8c2ea204",
     "neovim.bdd.core.09": "16e3e514e05e4f72",
     "neovim.bdd.core.10": "3e7e2560e23ddd46",
-    "neovim.bdd.sync.01": "ce355803bdafb023",
-    "neovim.bdd.sync.02": "8d49977e2907ff3e",
-    "neovim.bdd.sync.03": "a5c7662893a99d0d",
-    "neovim.bdd.sync.04": "4ff9e5dc406f452c",
-    "neovim.bdd.sync.05": "9bdfb454cb275425",
-    "neovim.bdd.sync.06": "0b626995740ae34c",
-    "neovim.bdd.sync.07": "1f12e3511014e612",
-    "neovim.bdd.sync.08": "3f672dca2e5b4115",
-    "neovim.bdd.sync.09": "7a0cc843b267b0ae",
-    "neovim.bdd.sync.10": "1bbb96fa8d412193",
+    "neovim.bdd.sync.01": "37855bffcd9130f9",
+    "neovim.bdd.sync.02": "8406cf4e14808f72",
+    "neovim.bdd.sync.03": "087df18f02c9c85d",
+    "neovim.bdd.sync.04": "516bc97b5338f5f2",
+    "neovim.bdd.sync.05": "dfc3b58949b3feff",
+    "neovim.bdd.sync.06": "00407249caafabc7",
+    "neovim.bdd.sync.07": "79a7596f55c251eb",
+    "neovim.bdd.sync.08": "e8c26b53507658ff",
+    "neovim.bdd.sync.09": "0946b2febe0e2d75",
+    "neovim.bdd.sync.10": "2608d744f1fd042d",
     "neovim.bdd.lifecycle.01": "eb7a2d0f3d283ac1",
     "neovim.bdd.lifecycle.02": "dedecd133898cce7",
     "neovim.bdd.lifecycle.03": "5b222faae72d315f",
@@ -225,14 +240,14 @@ ROW_DIGESTS = {
     "neovim.bdd.lifecycle.07": "78da30c0d117d88c",
     "neovim.bdd.support.01": "b97c19e0b19b003a",
     "neovim.bdd.support.02": "a1ca4b3c6cac015b",
-    "neovim.bdd.support.03": "a22b75e60ed6ca3b",
-    "neovim.bdd.support.04": "db4db9ac7e555029",
+    "neovim.bdd.support.03": "0c128b4e7684f657",
+    "neovim.bdd.support.04": "9280e2dc24e5c1e2",
     "neovim.bdd.support.05": "854b07f5a63fa7c5",
     "neovim.bdd.support.06": "20a4e683cc554e48",
     "neovim.bdd.support.07": "871a2bd1e6d5bd3f",
     "neovim.bdd.support.08": "5411a6c538655928",
-    "neovim.bdd.opt.01": "9fd025ec4f3020e5",
-    "neovim.bdd.opt.02": "8c4b577b783155cd",
+    "neovim.bdd.opt.01": "173e8e7968d16764",
+    "neovim.bdd.opt.02": "5751ab966cce4258",
     "neovim.bdd.opt.03": "4e7d57f9874537a3",
     "neovim.bdd.opt.04": "e11adc269e551f73",
     "neovim.bdd.opt.05": "66c897131a0d5185",
@@ -362,6 +377,15 @@ def main():
             canonical = " ".join(line.split())
             rows_by_id[m.group(1)] = hashlib.sha256(
                 canonical.encode("utf-8")).hexdigest()[:16]
+    # Binding the values is not enough: the loop below visits only the keys
+    # the map still has, so deleting an entry would unbind that row's meaning
+    # while the ID check above still found all 47 rows present. Require the
+    # digest map to cover exactly the stable ID set before trusting it.
+    if set(ROW_DIGESTS) != set(EXPECTED_IDS):
+        missing = sorted(set(EXPECTED_IDS) - set(ROW_DIGESTS))
+        extra = sorted(set(ROW_DIGESTS) - set(EXPECTED_IDS))
+        fail(f"row digest map does not cover the stable ID set: "
+             f"unbound={missing} unknown={extra}")
     for scenario_id, digest in ROW_DIGESTS.items():
         actual = rows_by_id.get(scenario_id)
         if actual is None:
@@ -375,6 +399,9 @@ def main():
     # while a bare token survived elsewhere and the checker still passed.
     # Digest each named invariant block so reversing one fails closed.
     sources = {"acceptance": acceptance, "context": context}
+    if set(INVARIANT_BLOCKS) != EXPECTED_INVARIANTS or \
+            set(INVARIANT_DIGESTS) != EXPECTED_INVARIANTS:
+        fail("invariant maps do not cover exactly the named invariant set")
     for name, (which, pattern) in INVARIANT_BLOCKS.items():
         m = re.search(pattern, sources[which])
         if not m:
