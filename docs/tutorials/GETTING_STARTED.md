@@ -396,7 +396,7 @@ After reloading, `perllsp --version` should print the version number.
 The editor must be able to find and launch the `perllsp` binary. Symptoms include "server failed to start" messages or LSP features simply not appearing.
 
 1. **Verify the binary path** in the same shell your editor uses:
-   - POSIX-compatible shells: `which perllsp`
+   - POSIX-compatible shells: `command -v perllsp`
    - PowerShell: `Get-Command perllsp`
    - Windows Command Prompt: `where.exe perllsp`
 
