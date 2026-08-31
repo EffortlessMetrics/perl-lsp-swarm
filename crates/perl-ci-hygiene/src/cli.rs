@@ -139,6 +139,13 @@ pub(crate) enum CliCommand {
         #[arg(long, value_name = "PATH", conflicts_with = "inventory")]
         identity_registry: Option<PathBuf>,
     },
+    /// Enforce that a `.expect("…")` migrated to a `must*` helper keeps its assertion context.
+    CheckMustContext {
+        /// Base ref to diff `HEAD` against. Defaults to `$CI_SCOPE_BASE`,
+        /// `$GITHUB_BASE_REF`, `origin/main`, `main`, then `HEAD~1`.
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+    },
     /// Enforce no raw print macros in library source (println!/eprintln! belong in tracing).
     CheckPrintInLib,
     /// Enforce regex constructors live in LazyLock/OnceLock statics, never per-call.

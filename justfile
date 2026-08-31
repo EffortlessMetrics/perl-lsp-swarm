@@ -1106,6 +1106,12 @@ ci-unsafe-ratchet:
     @cargo xtask ci-hygiene check-unsafe-prod
     @echo "✅ Unsafe syntax ratchet passed"
 
+# Assertion-context guard: a `.expect("…")` must not migrate to a bare must* helper
+ci-must-context:
+    @echo "🧾 Checking must* migrations preserve assertion context..."
+    @cargo xtask ci-hygiene check-must-context
+    @echo "✅ No assertion context dropped by a must* migration"
+
 # Print-macro ratchet: no raw println!/eprintln! in library source (use tracing)
 ci-print-in-lib-ratchet:
     @echo "🖨️  Checking print-macro ratchet (library source only)..."

@@ -132,6 +132,9 @@ fn run() -> Result<i32> {
                 check_panic_test(&repo_root)?
             }
         }
+        CliCommand::CheckMustContext { base } => {
+            commands::must_context::check(&repo_root, base.as_deref())?
+        }
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
         CliCommand::CheckRegexStatic => check_regex_static(&repo_root)?,
         CliCommand::QuickCheck => cmd_quick_check(&repo_root)?,

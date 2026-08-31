@@ -146,6 +146,13 @@ Production code must not introduce `unwrap`, `expect`, `panic!`, `todo!`,
 `unimplemented!`, `abort`, or `dbg!` outside a documented narrow exception. Prefer
 `Result`, `Option`, explicit invariants, and actionable errors.
 
+When a test's `.expect("…")` moves onto the `perl-test-must` helpers, use the
+context-preserving variant — `must_with`, `must_some_with`, `must_err_with` — so the
+explanation still reaches the panic diagnostic. The bare `must`, `must_some`, and
+`must_err` are only correct when the call site carried no explanation to begin with.
+`cargo xtask ci-hygiene check-must-context` reports a change that removes an
+`.expect("…")` and adds a bare helper in its place.
+
 ### 4. Run focused proof first
 
 Use the cheapest command that can falsify the claim:
