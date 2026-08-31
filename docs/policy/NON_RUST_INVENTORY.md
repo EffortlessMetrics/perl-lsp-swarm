@@ -6,20 +6,20 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12502 |
-| Rust-family files | 3870 |
-| Non-Rust files | 8632 |
-| Allowlisted | 6395 |
+| Total tracked files | 12508 |
+| Rust-family files | 3872 |
+| Non-Rust files | 8636 |
+| Allowlisted | 6399 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 496 |
-| documentation | 2815 |
+| config | 497 |
+| documentation | 2817 |
 | generated | 2 |
-| production | 348 |
+| production | 349 |
 | test | 2067 |
 | tooling | 667 |
 | unclassified | 2237 |
@@ -4460,6 +4460,7 @@
 | `docs/adr/0045-noncurrent-frame-mutation-disposition.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0046-loaded-module-reload-semantics.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0047-dap-stdio-only-editor-transport.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/adr/0048-source-line-contract.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_001_AGENT_ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_003_MISSING_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
@@ -4515,6 +4516,7 @@
 | `docs/architecture/perl-oracle-subprocess-contract.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/perl-subprocess-seams.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/architecture/repository-topology.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/architecture/tree-sitter-compat-inventory.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/archive/DAP_0_9_SHIM_DESIGN.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/articles/AGGREGATOR_ABSORPTION_PATTERN.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/articles/AI_NATIVE_OPERATIONS.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6405,6 +6407,7 @@
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/skill-provider-parity.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/standalone-archive-safety.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/tree-sitter-compat-inventory.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/trust-lanes.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ub-review.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/workflow-contracts.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -8456,6 +8459,7 @@
 | `vscode-extension/src/serverDemand.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/startupDiagnosis.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/streamingCompletion.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/strictSemver.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommands.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportPacket.ts` | production | `non-rust-vscode-extension` | editor/vscode |
