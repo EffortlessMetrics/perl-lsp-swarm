@@ -1070,11 +1070,47 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      # Start the evaluator's clock before checkout/setup so those steps cannot
+      # consume the verdict, summary, and artifact-upload reserve.
+      RIPR_GATE_TIMEOUT_SECONDS: 300
+      RIPR_GATE_FINALIZATION_RESERVE_SECONDS: 60
     permissions:
       contents: read
       # #6807: read the failed lane's job log to classify runner evictions.
       actions: read
     steps:
+      - name: Establish gate deadline
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          finalize_setup_failure() {
+            echo "RIPR_GATE_VERDICT=ripr-failure"
+            echo "::error::ripr gate deadline setup was interrupted; failing closed"
+            {
+              echo ""
+              echo "### ripr+ New Gap Gate Finalization"
+              echo "- verdict: ripr-failure"
+              echo "- reason: deadline setup was interrupted before evaluation"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+          trap 'finalize_setup_failure; exit 1' TERM INT
+
+          started_at="$(date +%s)"
+          gate_deadline=$((started_at + RIPR_GATE_TIMEOUT_SECONDS - RIPR_GATE_FINALIZATION_RESERVE_SECONDS))
+          if [ "$gate_deadline" -le "$started_at" ]; then
+            finalize_setup_failure
+            exit 1
+          fi
+          {
+            echo "RIPR_GATE_DEADLINE_EPOCH=$gate_deadline"
+            echo "RIPR_GATE_FINALIZATION_RESERVE_SECONDS=$RIPR_GATE_FINALIZATION_RESERVE_SECONDS"
+          } >> "$GITHUB_ENV"
+          echo "ripr_gate_deadline_epoch=$gate_deadline"
+          echo "ripr_gate_finalization_reserve_seconds=$RIPR_GATE_FINALIZATION_RESERVE_SECONDS"
+
       # The aggregator classifies lane termination through the shared,
       # unit-tested classifier in scripts/ci/ (#6807, #12563, complementing
       # #12771's bounded auto-retry handoff).
@@ -1098,6 +1134,35 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          gate_finalized=false
+          finalize_on_termination() {
+            if [ "$gate_finalized" = "true" ]; then
+              return
+            fi
+            gate_finalized=true
+            echo "RIPR_GATE_VERDICT=ripr-failure"
+            echo "::error::ripr gate evaluator received TERM/INT before a terminal verdict; failing closed"
+            {
+              echo ""
+              echo "### ripr+ New Gap Gate Finalization"
+              echo "- verdict: ripr-failure"
+              echo "- reason: evaluator termination before verdict completion"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+          trap 'finalize_on_termination; exit 1' TERM INT
+
+          gate_deadline="${RIPR_GATE_DEADLINE_EPOCH:-}"
+          if ! [[ "$gate_deadline" =~ ^[0-9]+$ ]]; then
+            finalize_on_termination
+            exit 1
+          fi
+          now="$(date +%s)"
+          if [ "$now" -ge "$gate_deadline" ]; then
+            echo "::warning::ripr gate setup consumed the evaluator deadline; no retrieval was attempted"
+            finalize_on_termination
+            exit 1
+          fi
 
           echo "route_result=${ROUTE_RESULT:-}"
           echo "router_target=${ROUTER_TARGET:-}"
@@ -1138,6 +1203,12 @@ jobs:
             echo "::error::ripr router did not complete successfully: $ROUTE_RESULT"
             exit 1
           fi
+
+          remaining_until_deadline() {
+            local now
+            now="$(date +%s)"
+            echo $((gate_deadline - now))
+          }
 
           # A cancelled lane is the ABSENCE of evidence, not negative evidence.
           # The gate stays blocking — no proof was produced for this SHA — but it
@@ -1182,15 +1253,12 @@ jobs:
           lane_class="ripr-failure"
           lane_job_id=""
           if [ -n "$lane_name" ] && [ "$lane_result" != "success" ]; then
-            # Keep both retrieval phases inside the five-minute aggregator job.
-            # The reserve covers classifier, summary, and artifact-upload work;
-            # the per-request timeout is capped by the same deadline rather than
-            # allowing two independent retry budgets to add up past it.
-            retrieval_budget_seconds=240
-            retrieval_started_at=$SECONDS
-            retrieval_deadline=$((retrieval_started_at + retrieval_budget_seconds))
+            # Keep both retrieval phases inside the one job-level deadline.
+            # The deadline was established before checkout/setup, reserving the
+            # finalization interval for the verdict, summary, and artifact upload.
             bounded_gh_api() {
-              local remaining=$((retrieval_deadline - SECONDS))
+              local remaining
+              remaining="$(remaining_until_deadline)"
               if [ "$remaining" -le 0 ]; then
                 return 124
               fi
@@ -1202,7 +1270,8 @@ jobs:
             }
             bounded_sleep() {
               local delay="$1"
-              local remaining=$((retrieval_deadline - SECONDS))
+              local remaining
+              remaining="$(remaining_until_deadline)"
               if [ "$remaining" -le 0 ] || [ "$delay" -gt "$remaining" ]; then
                 return 124
               fi
@@ -1269,8 +1338,8 @@ jobs:
                 # emit an explicit machine-readable classification and
                 # diagnostic instead of silently skipping the classifier.
                 printf '%s\n' "classification=ripr-failure"
-                if [ "$SECONDS" -ge "$retrieval_deadline" ]; then
-                  echo "::warning::lane log for ${lane_name} (job ${lane_job_id}) exceeded the ${retrieval_budget_seconds}s aggregate retrieval budget; eviction classification skipped and the gate will fail closed"
+                if [ "$(remaining_until_deadline)" -le 0 ]; then
+                  echo "::warning::lane log for ${lane_name} (job ${lane_job_id}) reached the job-level retrieval deadline; eviction classification skipped and the gate will fail closed"
                 else
                   echo "::warning::lane log for ${lane_name} (job ${lane_job_id}) was not retrievable after 5 attempts; eviction classification skipped and the gate will fail closed"
                 fi
@@ -1278,8 +1347,8 @@ jobs:
               rm -f "$lane_log"
             else
               printf '%s\n' "classification=ripr-failure"
-              if [ "$SECONDS" -ge "$retrieval_deadline" ]; then
-                echo "::warning::job id for ${lane_name} exceeded the ${retrieval_budget_seconds}s aggregate retrieval budget; eviction classification skipped and the gate will fail closed"
+              if [ "$(remaining_until_deadline)" -le 0 ]; then
+                echo "::warning::job id for ${lane_name} reached the job-level retrieval deadline; eviction classification skipped and the gate will fail closed"
               else
                 echo "::warning::job id for ${lane_name} was not retrievable after 5 attempts; eviction classification skipped and the gate will fail closed"
               fi

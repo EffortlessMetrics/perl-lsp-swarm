@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value;
 use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -121,6 +122,73 @@ struct GateRoute<'a> {
     fallback_result: &'a str,
 }
 
+fn validated_fallback_decision(
+    receipt_text: Option<&str>,
+    summary_text: &str,
+    expected_head: &str,
+) -> Result<&'static str> {
+    let receipt_text =
+        receipt_text.ok_or_else(|| anyhow!("fallback quality-gate receipt is missing"))?;
+    let receipt: JsonValue = serde_json::from_str(receipt_text)
+        .context("fallback quality-gate receipt is not valid JSON")?;
+    if receipt.get("schema_version").and_then(JsonValue::as_u64) != Some(1)
+        || receipt.get("kind").and_then(JsonValue::as_str) != Some("quality_gate")
+        || receipt.get("mode").and_then(JsonValue::as_str) != Some("enforce-new-ripr")
+        || receipt.get("head").and_then(JsonValue::as_str) != Some(expected_head)
+    {
+        bail!("fallback quality-gate receipt is stale or has an invalid identity: {receipt}");
+    }
+    let decision = receipt
+        .get("decision")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| anyhow!("fallback quality-gate receipt has no decision"))?;
+    if !matches!(decision, "pass" | "fail") {
+        bail!("fallback quality-gate receipt has an invalid decision: {decision}");
+    }
+    if !summary_text.contains(&format!("decision: {decision}"))
+        || !summary_text.contains(&format!("head: {expected_head}"))
+    {
+        bail!("fallback quality-gate summary does not match its validated receipt");
+    }
+    Ok(if decision == "pass" { "success" } else { "failure" })
+}
+
+struct FallbackPathEvidence {
+    output: std::process::Output,
+    transcript: String,
+    receipt: Option<String>,
+    summary: String,
+    head: String,
+}
+
+impl FallbackPathEvidence {
+    fn decision(&self) -> Result<&'static str> {
+        validated_fallback_decision(self.receipt.as_deref(), &self.summary, &self.head)
+    }
+}
+
+#[test]
+fn fallback_decision_rejects_missing_stale_and_invalid_artifacts() -> Result<()> {
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let valid_receipt = format!(
+        "{{\"schema_version\":1,\"kind\":\"quality_gate\",\"mode\":\"enforce-new-ripr\",\"decision\":\"pass\",\"head\":\"{head}\"}}"
+    );
+    let valid_summary = format!("decision: pass\nhead: {head}\n");
+    if validated_fallback_decision(Some(&valid_receipt), &valid_summary, head)? != "success" {
+        bail!("a fresh valid fallback artifact must produce the success route result");
+    }
+
+    let stale_receipt = valid_receipt.replace(head, "stale-fallback-head");
+    for (name, receipt) in
+        [("missing", None), ("stale", Some(stale_receipt.as_str())), ("invalid", Some("not-json"))]
+    {
+        if validated_fallback_decision(receipt, &valid_summary, head).is_ok() {
+            bail!("{name} fallback artifact must not determine a route result");
+        }
+    }
+    Ok(())
+}
+
 impl<'a> GateRoute<'a> {
     fn github_failure() -> Self {
         Self {
@@ -164,6 +232,24 @@ fn run_gate_with_fake_gh(
         route,
         GhApiControl::Valid,
         Some("gate-token"),
+        0,
+    )
+}
+
+fn run_gate_after_delayed_setup(
+    log: Option<&str>,
+    route: GateRoute<'_>,
+    initial_now: u64,
+) -> Result<(std::process::Output, String, Option<String>)> {
+    run_gate_with_fake_gh_logs(
+        log,
+        "##[error]The runner has received a shutdown signal.\n",
+        0,
+        0,
+        route,
+        GhApiControl::Valid,
+        Some("gate-token"),
+        initial_now,
     )
 }
 
@@ -184,6 +270,7 @@ fn run_gate_with_fake_gh_logs(
     route: GateRoute<'_>,
     api_control: GhApiControl,
     token: Option<&str>,
+    initial_now: u64,
 ) -> Result<(std::process::Output, String, Option<String>)> {
     let root = project_root()?;
     let sandbox = tempfile::tempdir().context("creating gate workflow sandbox")?;
@@ -220,16 +307,20 @@ fn run_gate_with_fake_gh_logs(
     }
     let (job_name, job_id) = gate_lane_identity(route);
     let fake = r#"
+date() {
+  [ "$1" = "+%s" ] || return 1
+  printf '%s\n' "$FAKE_NOW"
+}
 sleep() {
   local delay="$1"
-  local remaining=$((retrieval_deadline - SECONDS))
+  local remaining=$((RIPR_GATE_DEADLINE_EPOCH - FAKE_NOW))
   if [ "$remaining" -le 0 ] || [ "$delay" -gt "$remaining" ]; then
-    SECONDS="$retrieval_deadline"
-    printf '%s\n' "$SECONDS" > "$FAKE_ELAPSED_SECONDS"
+    FAKE_NOW="$RIPR_GATE_DEADLINE_EPOCH"
+    printf '%s\n' "$FAKE_NOW" > "$FAKE_ELAPSED_SECONDS"
     return 124
   fi
-  SECONDS=$((SECONDS + delay))
-  printf '%s\n' "$SECONDS" > "$FAKE_ELAPSED_SECONDS"
+  FAKE_NOW=$((FAKE_NOW + delay))
+  printf '%s\n' "$FAKE_NOW" > "$FAKE_ELAPSED_SECONDS"
 }
 timeout() {
   printf 'timeout %s\n' "$*" >> "$FAKE_TIMEOUT_CALLS"
@@ -237,7 +328,7 @@ timeout() {
   [ "$2" = "--kill-after=5s" ] || return 125
   [[ "$3" =~ ^[0-9]+s$ ]] || return 125
   local request_timeout="${3%s}"
-  local remaining=$((retrieval_deadline - SECONDS))
+  local remaining=$((RIPR_GATE_DEADLINE_EPOCH - FAKE_NOW))
   if [ "$remaining" -le 0 ]; then
     return 124
   fi
@@ -245,12 +336,12 @@ timeout() {
     request_timeout="$remaining"
   fi
   if [ "${FAKE_REQUEST_SECONDS:-30}" -gt "$request_timeout" ]; then
-    SECONDS=$((SECONDS + request_timeout))
-    printf '%s\n' "$SECONDS" > "$FAKE_ELAPSED_SECONDS"
+    FAKE_NOW=$((FAKE_NOW + request_timeout))
+    printf '%s\n' "$FAKE_NOW" > "$FAKE_ELAPSED_SECONDS"
     return 124
   fi
-  SECONDS=$((SECONDS + FAKE_REQUEST_SECONDS))
-  printf '%s\n' "$SECONDS" > "$FAKE_ELAPSED_SECONDS"
+  FAKE_NOW=$((FAKE_NOW + FAKE_REQUEST_SECONDS))
+  printf '%s\n' "$FAKE_NOW" > "$FAKE_ELAPSED_SECONDS"
   shift 3
   "$@"
 }
@@ -318,7 +409,7 @@ gh() {
   return 1
 }
 "#;
-    let script = format!("{fake}\nSECONDS=0\n{run}");
+    let script = format!("{fake}\nFAKE_NOW={initial_now}\n{run}");
     let mut child = Command::new(bash_executable())
         .args(["--noprofile", "--norc", "-s"])
         .current_dir(sandbox.path())
@@ -346,6 +437,8 @@ gh() {
         .env("FAKE_TIMEOUT_CALLS", &timeout_calls)
         .env("FAKE_ELAPSED_SECONDS", &elapsed_seconds)
         .env("FAKE_REQUEST_SECONDS", "30")
+        .env("RIPR_GATE_DEADLINE_EPOCH", "240")
+        .env("RIPR_GATE_FINALIZATION_RESERVE_SECONDS", "60")
         .env("FAKE_JOBS_RESPONSE", &jobs_response)
         .env("FAKE_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
         .env("FAKE_RUN_ID", "4242")
@@ -638,11 +731,10 @@ fn run_fallback_condition(
     Ok((output, format!("{combined}\n{summary_text}")))
 }
 
-fn run_fallback_path(quality_gate_fails: bool) -> Result<(std::process::Output, String)> {
-    // This is deliberately a wiring proof, not a fallback quality proof. The
-    // checkout, Cargo, ripr, and quality-gate commands are controlled shims;
-    // they record exact arguments and may fail, but they must never fabricate a
-    // quality receipt that could make a successful shim look like real evidence.
+fn run_fallback_path(quality_gate_fails: bool) -> Result<FallbackPathEvidence> {
+    // The checkout, Cargo, ripr, and quality-gate commands remain controlled
+    // shims, but the result is accepted only after the quality-gate artifact and
+    // summary have been validated for identity, schema, and decision.
     let root = project_root()?;
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
     let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
@@ -704,6 +796,7 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<(std::process::Output, 
     let github_env = sandbox.path().join("github-env");
     let summary = sandbox.path().join("summary.md");
     let quality_receipt = sandbox.path().join("target/receipts/quality/quality-gate-ripr.json");
+    let quality_summary = sandbox.path().join("target/receipts/quality/quality-gate-ripr.md");
     let annotation = workflow_run_block("ripr-fallback", "Annotate failover reason")?
         .replace("${{ needs.route-ripr.outputs.target }}", "cx53");
     let normalize = workflow_run_block("ripr-fallback", "Normalize base ref")?;
@@ -785,7 +878,16 @@ git() {
           [ "${15}" = "--receipt" ] && [ "${16}" = "target/receipts/quality/quality-gate-ripr.json" ] || return 1
           [ "${17}" = "--summary" ] && [ "${18}" = "target/receipts/quality/quality-gate-ripr.md" ] || return 1
           if [ "$#" -eq 19 ]; then [ "${19}" = "--check" ] || return 1; elif [ "$#" -ne 18 ]; then return 1; fi
-          if [ "${FAKE_QUALITY_GATE:-pass}" = "fail" ]; then
+          mkdir -p target/receipts/quality
+          decision=pass
+          if [ "${FAKE_QUALITY_GATE:-pass}" = "fail" ]; then decision=fail; fi
+          if [ "$#" -eq 18 ]; then
+            printf '{"schema_version":1,"kind":"quality_gate","mode":"enforce-new-ripr","decision":"%s","head":"%s"}\n' "$decision" "$FAKE_HEAD" > target/receipts/quality/quality-gate-ripr.json
+            printf 'decision: %s\nhead: %s\n' "$decision" "$FAKE_HEAD" > target/receipts/quality/quality-gate-ripr.md
+          else
+            [ -f target/receipts/quality/quality-gate-ripr.json ] || return 1
+          fi
+          if [ "$decision" = "fail" ]; then
             return 1
           fi
       ;;
@@ -848,17 +950,22 @@ checkout_action
     let calls_text = fs::read_to_string(&calls)?;
     let summary_text = fs::read_to_string(&summary)?;
     let env_text = fs::read_to_string(&github_env)?;
+    let quality_summary_text =
+        fs::read_to_string(&quality_summary).context("reading fallback quality-gate summary")?;
     let quality_receipt_text = match fs::read_to_string(&quality_receipt) {
         Ok(text) => Some(text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error).context("reading fallback quality-gate receipt"),
     };
-    Ok((
+    Ok(FallbackPathEvidence {
         output,
-        format!(
-            "{combined}\ncheckout={checkout_text}calls={calls_text}summary={summary_text}env={env_text}quality_receipt={quality_receipt_text:?}"
+        transcript: format!(
+            "{combined}\ncheckout={checkout_text}calls={calls_text}summary={summary_text}quality_summary={quality_summary_text}env={env_text}quality_receipt={quality_receipt_text:?}"
         ),
-    ))
+        receipt: quality_receipt_text,
+        summary: quality_summary_text,
+        head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+    })
 }
 
 fn retry_run_block() -> Result<String> {
@@ -1290,10 +1397,14 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
             "the production ripr-fallback condition must start the fallback after preflight_ok=false:\n{fallback_output}"
         );
     }
-    let (fallback_path, fallback_path_output) = run_fallback_path(false)?;
+    let fallback_path = run_fallback_path(false)?;
+    let fallback_path_output = &fallback_path.transcript;
+    if fallback_path.decision()? != "success" {
+        bail!("a passing fallback must publish a pass decision in its quality-gate artifact");
+    }
     let expected_quality_gate = fallback_quality_gate_command(false);
     let expected_quality_gate_check = fallback_quality_gate_command(true);
-    if !fallback_path.status.success()
+    if !fallback_path.output.status.success()
         || !fallback_path_output.contains(
             "checkout=uses=actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 fetch-depth=0",
         )
@@ -1305,10 +1416,10 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         || !fallback_path_output.contains("fallback PR evidence summary")
         || !fallback_path_output.contains("fallback warning annotation")
         || !fallback_path_output.contains("env=BASE_REF=main")
-        || !fallback_path_output.contains("quality_receipt=None")
+        || !fallback_path_output.contains("quality_receipt=Some(")
     {
         bail!(
-            "the fallback must exercise its checkout boundary and exact evidence/quality-gate wiring without fabricating a quality receipt:\n{fallback_path_output}"
+            "the fallback must exercise its checkout boundary and exact evidence/quality-gate wiring and publish a validated quality receipt:\n{fallback_path_output}"
         );
     }
     for expected_command in [
@@ -1791,14 +1902,29 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
 #[test]
 fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Result<()> {
     let run = evaluate_run_block()?;
+    let deadline_setup = workflow_step_value("ripr", "Establish gate deadline")?;
+    let deadline_setup_run = deadline_setup
+        .get("run")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("gate deadline setup run block is missing"))?;
+    if !deadline_setup_run.contains("RIPR_GATE_TIMEOUT_SECONDS")
+        || !deadline_setup_run.contains("RIPR_GATE_FINALIZATION_RESERVE_SECONDS")
+        || !deadline_setup_run.contains("RIPR_GATE_DEADLINE_EPOCH")
+        || !deadline_setup_run.contains("GITHUB_ENV")
+    {
+        bail!(
+            "the gate must establish one pre-checkout deadline with an explicit finalization reserve"
+        );
+    }
     let timeout_prefix = "timeout --signal=TERM --kill-after=5s";
     if run.matches("bounded_gh_api ").count() != 2
         || run.matches(timeout_prefix).count() != 1
-        || !run.contains("retrieval_budget_seconds=240")
-        || !run.contains("retrieval_deadline=$((retrieval_started_at + retrieval_budget_seconds))")
+        || !run.contains("gate_deadline=\"${RIPR_GATE_DEADLINE_EPOCH:-}\"")
+        || !run.contains("remaining_until_deadline")
+        || !run.contains("trap 'finalize_on_termination; exit 1' TERM INT")
     {
         bail!(
-            "both production GitHub API calls must share one elapsed retrieval budget and bounded timeout helper"
+            "both production GitHub API calls must share one job-level deadline and bounded timeout helper"
         );
     }
     let evicted_log = concat!(
@@ -1882,7 +2008,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         run_gate_with_fake_gh(Some(evicted_log), 4, 4, GateRoute::github_failure())?;
     if budget_exhausted.status.success()
         || budget_classification.is_some()
-        || !budget_output.contains("retrieval budget")
+        || !budget_output.contains("job-level retrieval deadline")
         || !budget_output.contains("RIPR_GATE_VERDICT=ripr-failure")
         || !budget_output.contains("lookup=Some(\"5\")")
         || !budget_output.contains("fetch=Some(\"1\")")
@@ -1911,6 +2037,24 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         bail!("retried successful evidence must produce an infra classification artifact");
     }
 
+    // Model setup consuming most of the pre-reserved retrieval interval and a
+    // non-cooperative request being terminated by TERM/kill-after. The gate must
+    // still emit its fail-closed verdict without creating an eviction artifact.
+    let (delayed, delayed_output, delayed_classification) =
+        run_gate_after_delayed_setup(Some(evicted_log), GateRoute::github_failure(), 190)?;
+    if delayed.status.success()
+        || delayed_classification.is_some()
+        || !delayed_output.contains("job-level retrieval deadline")
+        || !delayed_output.contains("RIPR_GATE_VERDICT=ripr-failure")
+        || !delayed_output.contains("fetch=None")
+        || !delayed_output.contains(" 20s gh api")
+        || delayed_output.matches(timeout_prefix).count() != 2
+    {
+        bail!(
+            "delayed setup and a terminated non-cooperative request must preserve the fail-closed terminal verdict:\n{delayed_output}"
+        );
+    }
+
     let partial_teardown = "##[error]The runner has received a shutdown signal.\n";
     let genuine_after_partial =
         "quality gate failed; see receipt target/receipts/quality/quality-gate-ripr.json\n";
@@ -1922,6 +2066,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         GateRoute::github_failure(),
         GhApiControl::Valid,
         Some("gate-token"),
+        0,
     )?;
     if reused.status.success()
         || !reused_output.contains("classification=ripr-failure")
@@ -1976,19 +2121,19 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         }
     }
 
-    let (fallback_execution, fallback_execution_output) = run_fallback_path(false)?;
-    if !fallback_execution.status.success()
+    let fallback_execution = run_fallback_path(false)?;
+    let fallback_execution_output = &fallback_execution.transcript;
+    let fallback_result = fallback_execution.decision()?;
+    if !fallback_execution.output.status.success()
+        || fallback_result != "success"
         || !fallback_execution_output.contains(&fallback_quality_gate_command(false))
         || !fallback_execution_output.contains(&fallback_quality_gate_command(true))
-        || !fallback_execution_output.contains("quality_receipt=None")
+        || !fallback_execution_output.contains("quality_receipt=Some(")
     {
         bail!(
             "fallback wiring must bind checkout/evidence/quality-gate commands exactly without turning shim success into proof:\n{fallback_execution_output}"
         );
     }
-    // The route branch below uses an explicit result fixture. It is not derived
-    // from the wiring shim's exit status or from a fabricated receipt.
-    let fallback_result = "success";
     let fallback_route = GateRoute {
         router_target: "cx53",
         cx53_result: "failure",
@@ -2008,17 +2153,18 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
 
-    let (fallback_failure_execution, fallback_failure_execution_output) = run_fallback_path(true)?;
-    if fallback_failure_execution.status.success()
+    let fallback_failure_execution = run_fallback_path(true)?;
+    let fallback_failure_execution_output = &fallback_failure_execution.transcript;
+    let fallback_failure_result = fallback_failure_execution.decision()?;
+    if fallback_failure_execution.output.status.success()
+        || fallback_failure_result != "failure"
         || !fallback_failure_execution_output.contains(&fallback_quality_gate_command(false))
-        || fallback_failure_execution_output.contains("quality_receipt=Some(")
-        || !fallback_failure_execution_output.contains("quality_receipt=None")
+        || !fallback_failure_execution_output.contains("quality_receipt=Some(")
     {
         bail!(
             "fallback failure result must come from the executed quality-gate path:\n{fallback_failure_execution_output}"
         );
     }
-    let fallback_failure_result = "failure";
     let fallback_failure_route = GateRoute {
         router_target: "cx53",
         cx53_result: "failure",
@@ -2055,6 +2201,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
             GateRoute::github_failure(),
             control,
             token,
+            0,
         )?;
         if negative.status.success() || artifact.is_some() {
             bail!(
