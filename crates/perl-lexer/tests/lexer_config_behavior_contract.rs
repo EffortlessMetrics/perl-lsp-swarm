@@ -10,7 +10,7 @@
 
 #![allow(deprecated)]
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use perl_lexer::{
     Checkpointable, LexerConfig, LocalSymbolTable, PerlLexer, StringPart, Token, TokenType,
@@ -368,6 +368,7 @@ fn collect_rust_sources(
     root: &std::path::Path,
     excluded_directories: &[&str],
     sources: &mut Vec<std::path::PathBuf>,
+    is_package_root: bool,
 ) -> R {
     let metadata = std::fs::symlink_metadata(root)?;
     if metadata.file_type().is_symlink() {
@@ -380,7 +381,17 @@ fn collect_rust_sources(
         for entry in std::fs::read_dir(root)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir()
+            // Inspect metadata before applying exclusions so a symlink named
+            // `target`, even under `src`, cannot disappear from the scan.
+            let entry_metadata = std::fs::symlink_metadata(&path)?;
+            if entry_metadata.file_type().is_symlink() {
+                return Err(missing(format!(
+                    "cannot verify Rust source through symlink {}; keep the simd gate closed",
+                    path.display()
+                )));
+            }
+            if is_package_root
+                && entry_metadata.is_dir()
                 && path
                     .file_name()
                     .and_then(std::ffi::OsStr::to_str)
@@ -388,7 +399,7 @@ fn collect_rust_sources(
             {
                 continue;
             }
-            collect_rust_sources(&path, excluded_directories, sources)?;
+            collect_rust_sources(&path, excluded_directories, sources, false)?;
         }
     } else if metadata.is_file() && root.extension().is_some_and(|ext| ext == "rs") {
         sources.push(root.to_path_buf());
@@ -407,31 +418,66 @@ fn simd_selection_sources(
 ) -> R<Vec<std::path::PathBuf>> {
     let canonical_root = std::fs::canonicalize(root)?;
     let mut sources = Vec::new();
-    collect_rust_sources(root, excluded_directories, &mut sources)?;
+    collect_rust_sources(root, excluded_directories, &mut sources, true)?;
     let mut offenders = Vec::new();
+    let mut inspected = HashSet::new();
     for path in sources {
-        let canonical_path = std::fs::canonicalize(&path)?;
-        if !canonical_path.starts_with(&canonical_root) {
-            return Err(missing(format!(
-                "Rust source {} escapes the checked-in package root {}; keep the simd gate closed",
-                path.display(),
-                root.display()
-            )));
-        }
-        let contents = std::fs::read_to_string(&path)?;
-        if path.file_name().and_then(std::ffi::OsStr::to_str) == Some("build.rs") {
-            return Err(missing(format!(
-                "cannot verify OUT_DIR-generated Rust from build script {}; keep the simd gate closed until generated output is inspectable",
-                path.display()
-            )));
-        }
-        if contains_uninspectable_source(&contents, &path, root)?
-            || contains_simd_selection(&contents)?
-        {
-            offenders.push(path);
-        }
+        inspect_source(&path, &canonical_root, &mut inspected, &mut offenders)?;
     }
     Ok(offenders)
+}
+
+fn inspect_source(
+    path: &std::path::Path,
+    canonical_root: &std::path::Path,
+    inspected: &mut HashSet<std::path::PathBuf>,
+    offenders: &mut Vec<std::path::PathBuf>,
+) -> R {
+    let canonical_path = std::fs::canonicalize(path)?;
+    if !canonical_path.starts_with(canonical_root) {
+        return Err(missing(format!(
+            "Rust source {} escapes the checked-in package root {}; keep the simd gate closed",
+            path.display(),
+            canonical_root.display()
+        )));
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(missing(format!(
+            "cannot verify included Rust source through symlink {}; keep the simd gate closed",
+            path.display()
+        )));
+    }
+    if !metadata.is_file() {
+        return Err(missing(format!(
+            "cannot verify non-regular included source {}; keep the simd gate closed",
+            path.display()
+        )));
+    }
+    if !inspected.insert(canonical_path) {
+        return Ok(());
+    }
+
+    if path.file_name().and_then(std::ffi::OsStr::to_str) == Some("build.rs") {
+        return Err(missing(format!(
+            "cannot verify OUT_DIR-generated Rust from build script {}; keep the simd gate closed until generated output is inspectable",
+            path.display()
+        )));
+    }
+    let contents = std::fs::read_to_string(path)?;
+    if contents.contains("CARGO_FEATURE_SIMD") {
+        return Err(missing(format!(
+            "cannot verify custom build-script feature handling in {}; CARGO_FEATURE_SIMD must remain unused",
+            path.display()
+        )));
+    }
+    if contains_simd_selection(&contents)? {
+        offenders.push(path.to_path_buf());
+    }
+    for included in literal_include_sources(&contents, path, canonical_root)? {
+        inspect_source(&included, canonical_root, inspected, offenders)?;
+    }
+    Ok(())
 }
 
 fn contains_simd_selection(source: &str) -> R<bool> {
@@ -458,20 +504,21 @@ fn contains_simd_selection(source: &str) -> R<bool> {
         let Some(value_start) = skip_rust_whitespace_and_comments(bytes, equal_start + 1) else {
             continue;
         };
-        if is_simd_string_literal(bytes, value_start) {
+        if is_simd_string_literal(bytes, value_start)? {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-fn contains_uninspectable_source(
+fn literal_include_sources(
     source: &str,
     source_path: &std::path::Path,
-    package_root: &std::path::Path,
-) -> R<bool> {
+    canonical_root: &std::path::Path,
+) -> R<Vec<std::path::PathBuf>> {
     let original = source;
     let source = sanitize_rust_source(source)?;
+    let mut included_sources = Vec::new();
     for (start, _) in source.match_indices("include!") {
         let before_is_identifier = start
             .checked_sub(1)
@@ -494,18 +541,40 @@ fn contains_uninspectable_source(
                 "cannot inspect dynamically generated include! in {}; keep the simd gate closed",
                 source_path.display()
             )))?;
-        let included =
-            std::fs::canonicalize(source_path.parent().unwrap_or(package_root).join(literal))?;
-        let canonical_root = std::fs::canonicalize(package_root)?;
+        if literal.contains('\\') {
+            return Err(missing(format!(
+                "cannot inspect escaped include! path in {}; keep the simd gate closed",
+                source_path.display()
+            )));
+        }
+        let parent = source_path.parent().ok_or_else(|| {
+            missing(format!("cannot resolve include! in {}", source_path.display()))
+        })?;
+        let candidate = parent.join(literal);
+        let metadata = std::fs::symlink_metadata(&candidate)?;
+        if metadata.file_type().is_symlink() {
+            return Err(missing(format!(
+                "cannot verify include! source through symlink {}; keep the simd gate closed",
+                candidate.display()
+            )));
+        }
+        if !metadata.is_file() {
+            return Err(missing(format!(
+                "cannot verify non-regular include! source {}; keep the simd gate closed",
+                candidate.display()
+            )));
+        }
+        let included = std::fs::canonicalize(candidate)?;
         if !included.starts_with(canonical_root) {
             return Err(missing(format!(
                 "include! source {} escapes the checked-in package root {}; keep the simd gate closed",
                 included.display(),
-                package_root.display()
+                canonical_root.display()
             )));
         }
+        included_sources.push(included);
     }
-    Ok(false)
+    Ok(included_sources)
 }
 
 fn sanitize_rust_source(source: &str) -> R<String> {
@@ -569,7 +638,13 @@ fn sanitize_rust_source(source: &str) -> R<String> {
             if !closed {
                 return Err(missing("unterminated Rust string or character literal"));
             }
-            if quote != b'"' || &source[start + 1..index - 1] != "simd" {
+            let is_simd = quote == b'"'
+                && ordinary_string_is_simd(
+                    source
+                        .get(start + 1..index - 1)
+                        .ok_or_else(|| missing("invalid Rust string literal boundaries"))?,
+                )?;
+            if !is_simd {
                 for character in &mut sanitized[start..index] {
                     *character = b' ';
                 }
@@ -616,12 +691,29 @@ fn sanitize_rust_source(source: &str) -> R<String> {
         .map_err(|error| missing(format!("Rust source was not UTF-8: {error}")))
 }
 
-fn is_simd_string_literal(bytes: &[u8], start: usize) -> bool {
-    if bytes.get(start..start + 6) == Some(b"\"simd\"") {
-        return true;
+fn is_simd_string_literal(bytes: &[u8], start: usize) -> R<bool> {
+    if bytes.get(start) == Some(&b'"') {
+        let mut cursor = start + 1;
+        let mut escaped = false;
+        while let Some(&character) = bytes.get(cursor) {
+            cursor += 1;
+            if escaped {
+                escaped = false;
+            } else if character == b'\\' {
+                escaped = true;
+            } else if character == b'"' {
+                let contents = std::str::from_utf8(
+                    bytes
+                        .get(start + 1..cursor - 1)
+                        .ok_or_else(|| missing("invalid Rust string literal boundaries"))?,
+                )?;
+                return ordinary_string_is_simd(contents);
+            }
+        }
+        return Err(missing("unterminated Rust string literal"));
     }
     if bytes.get(start) != Some(&b'r') {
-        return false;
+        return Ok(false);
     }
 
     let mut cursor = start + 1;
@@ -631,22 +723,100 @@ fn is_simd_string_literal(bytes: &[u8], start: usize) -> bool {
         cursor += 1;
     }
     if bytes.get(cursor) != Some(&b'"') {
-        return false;
+        return Ok(false);
     }
     cursor += 1;
     if bytes.get(cursor..cursor + 4) != Some(b"simd") {
-        return false;
+        return Ok(false);
     }
     cursor += 4;
     if bytes.get(cursor) != Some(&b'"') {
-        return false;
+        return Ok(false);
     }
     cursor += 1;
-    (0..hashes).all(|_| {
+    Ok((0..hashes).all(|_| {
         let matches = bytes.get(cursor) == Some(&b'#');
         cursor += usize::from(matches);
         matches
-    })
+    }))
+}
+
+fn ordinary_string_is_simd(contents: &str) -> R<bool> {
+    let mut decoded = String::new();
+    let mut characters = contents.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            decoded.push(character);
+            continue;
+        }
+        let escape = characters.next().ok_or_else(|| missing("unterminated Rust string escape"))?;
+        match escape {
+            '"' | '\\' | '\'' => decoded.push(escape),
+            'n' => decoded.push('\n'),
+            'r' => decoded.push('\r'),
+            't' => decoded.push('\t'),
+            '0' => decoded.push('\0'),
+            '\n' => {
+                while characters.peek().is_some_and(|character| character.is_whitespace()) {
+                    characters.next();
+                }
+            }
+            '\r' => {
+                if characters.peek() == Some(&'\n') {
+                    characters.next();
+                }
+                while characters.peek().is_some_and(|character| character.is_whitespace()) {
+                    characters.next();
+                }
+            }
+            'x' => {
+                let high = characters
+                    .next()
+                    .and_then(hex_digit)
+                    .ok_or_else(|| missing("invalid Rust hex string escape"))?;
+                let low = characters
+                    .next()
+                    .and_then(hex_digit)
+                    .ok_or_else(|| missing("invalid Rust hex string escape"))?;
+                decoded.push(char::from((high << 4) | low));
+            }
+            'u' => {
+                if characters.next() != Some('{') {
+                    return Err(missing("invalid Rust unicode string escape"));
+                }
+                let mut value = 0u32;
+                let mut digits = 0usize;
+                loop {
+                    let next = characters
+                        .next()
+                        .ok_or_else(|| missing("unterminated Rust unicode string escape"))?;
+                    if next == '}' {
+                        break;
+                    }
+                    let digit = hex_digit(next)
+                        .ok_or_else(|| missing("invalid Rust unicode string escape"))?;
+                    digits += 1;
+                    value = value
+                        .checked_mul(16)
+                        .and_then(|value| value.checked_add(u32::from(digit)))
+                        .ok_or_else(|| missing("overflowing Rust unicode string escape"))?;
+                }
+                if digits == 0 {
+                    return Err(missing("empty Rust unicode string escape"));
+                }
+                decoded.push(
+                    char::from_u32(value)
+                        .ok_or_else(|| missing("invalid Rust unicode string escape"))?,
+                );
+            }
+            _ => return Err(missing(format!("unsupported Rust string escape \\{escape}"))),
+        }
+    }
+    Ok(decoded == "simd")
+}
+
+fn hex_digit(character: char) -> Option<u8> {
+    character.to_digit(16).and_then(|digit| u8::try_from(digit).ok())
 }
 
 fn skip_rust_whitespace_and_comments(bytes: &[u8], mut index: usize) -> Option<usize> {
@@ -691,8 +861,9 @@ fn validate_simd_readme_contract(readme: &str) -> R {
         "**Deprecated**",
         "Compatibility no-op",
         "no `simd` selector was found",
-        "checked-in Rust source scan",
-        "Build scripts and source includes are rejected closed",
+        "checked-in Rust sources or literal `include!` output",
+        "Top-level excluded package directories are not traversed as source roots, while literal `include!` output from scanned sources is inspected",
+        "Symlinks, build scripts, and dynamic or out-of-tree includes are rejected closed",
         "No SIMD performance claim is made",
         "#8749",
     ] {
@@ -780,9 +951,56 @@ fn simd_gate_detects_selection_in_build_surface_fixture() -> R {
 }
 
 #[test]
+fn simd_gate_does_not_hide_nested_excluded_directory_sources() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_selection");
+    let offenders = simd_selection_sources(&fixture_root, &["target"])?;
+    assert!(
+        offenders.contains(&fixture_root.join("generated").join("selector.rs")),
+        "the generated fixture must remain a detected simd selector"
+    );
+    assert!(
+        offenders.contains(&fixture_root.join("nested").join("target").join("hidden.rs")),
+        "a nested directory named target must not hide a checked-in Rust source"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_gate_inspects_literal_non_rust_include_fixture() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_includes");
+    let offenders = simd_selection_sources(&fixture_root, &[])?;
+    assert!(
+        offenders.contains(&std::fs::canonicalize(fixture_root.join("payload.inc"))?),
+        "literal non-Rust include output must be inspected for simd selectors"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_gate_rejects_literal_include_under_excluded_directory() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_includes");
+    let offenders = simd_selection_sources(&fixture_root, &["excluded"])?;
+    assert!(
+        offenders.contains(&std::fs::canonicalize(fixture_root.join("excluded/selector.inc"))?),
+        "literal include! output under an excluded directory must still be inspected"
+    );
+    Ok(())
+}
+
+#[test]
 fn simd_gate_detects_raw_string_feature_selection() -> R {
     assert!(contains_simd_selection(r##"#[cfg(feature = r#"simd"#)]"##)?);
     assert!(contains_simd_selection(r###"cfg!(feature = r##"simd"##)"###)?);
+    assert!(contains_simd_selection(r##"#[cfg(feature = "\x73imd")]"##)?);
     assert!(!contains_simd_selection("// cfg(feature = \"simd\")")?);
     assert!(!contains_simd_selection("const TEXT: &str = \"cfg(feature = \\\"simd\\\")\";")?);
     Ok(())
@@ -810,11 +1028,27 @@ fn simd_gate_rejects_uninspectable_out_dir_generation_fixture() -> R {
 }
 
 #[test]
+fn simd_gate_rejects_custom_build_feature_environment_fixture() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_custom_build");
+    let error = simd_selection_sources(&fixture_root, &[])
+        .err()
+        .ok_or_else(|| missing("custom build-script feature environment unexpectedly passed"))?;
+    assert!(
+        error.to_string().contains("CARGO_FEATURE_SIMD"),
+        "custom build-script feature handling must fail closed: {error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn simd_readme_guard_rejects_contradictory_capability_claim() -> R {
     let readme = include_str!("../README.md");
     let contradictory = readme.replace(
-        "checked-in Rust source scan",
-        "checked-in Rust source scan; SIMD is used by the lexer.",
+        "checked-in Rust sources or literal `include!` output",
+        "checked-in Rust sources or literal `include!` output; SIMD is used by the lexer.",
     );
     let error = validate_simd_readme_contract(&contradictory)
         .err()
