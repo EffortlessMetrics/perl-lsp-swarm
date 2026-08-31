@@ -67,10 +67,9 @@ describe('typed LSP provider call settlement', () => {
     });
   });
 
-  test('compatibility adapter reports a failure and exposes the same typed settlement', async () => {
+  test('compatibility adapter reports failure while preserving the required wire fallback', async () => {
     const error = new Error('definition failed');
     const onFailure = jest.fn();
-    const onSettlement = jest.fn();
 
     const result = await settleLspProviderCall(
       async () => {
@@ -78,18 +77,15 @@ describe('typed LSP provider call settlement', () => {
       },
       null,
       onFailure,
-      onSettlement,
     );
 
     expect(result).toBeNull();
     expect(onFailure).toHaveBeenCalledWith(error);
-    expect(onSettlement).toHaveBeenCalledWith({ kind: 'failed', error, wireValue: null });
   });
 
   test('compatibility adapter does not report cancellation as a product failure', async () => {
     const error = { code: -32800 };
     const onFailure = jest.fn();
-    const onSettlement = jest.fn();
 
     const result = await settleLspProviderCall(
       async () => {
@@ -97,11 +93,26 @@ describe('typed LSP provider call settlement', () => {
       },
       [] as string[],
       onFailure,
-      onSettlement,
     );
 
     expect(result).toEqual([]);
     expect(onFailure).not.toHaveBeenCalled();
-    expect(onSettlement).toHaveBeenCalledWith({ kind: 'cancelled', error, wireValue: [] });
+  });
+
+  test('typed callers retain disposition before choosing the wire projection', async () => {
+    const error = new Error('hover failed');
+    const settlement = await settleLspProviderCallWithDisposition(
+      async () => {
+        throw error;
+      },
+      null,
+    );
+    const observed: string[] = [];
+
+    observed.push(settlement.kind);
+    const wireValue = settlement.wireValue;
+
+    expect(observed).toEqual(['failed']);
+    expect(wireValue).toBeNull();
   });
 });
