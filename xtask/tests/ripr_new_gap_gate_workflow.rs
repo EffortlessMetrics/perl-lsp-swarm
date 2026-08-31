@@ -44,6 +44,18 @@ fn workflow_run_block(job_name: &str, step_name: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("{job_name} {step_name} run block is missing"))
 }
 
+fn workflow_job_if(job_name: &str) -> Result<String> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    yaml.get("jobs")
+        .and_then(|jobs| jobs.get(job_name))
+        .and_then(|job| job.get("if"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("{job_name} if expression is missing"))
+}
+
 #[derive(Clone, Copy)]
 struct GateRoute<'a> {
     router_target: &'a str,
@@ -256,6 +268,15 @@ fn runner_response(fixture: &str) -> Result<&'static str> {
     }
 }
 
+fn artifact_response(fixture: &str) -> &'static str {
+    match fixture {
+        "missing" => r#"{"total_count":1,"artifacts":[{"id":99000,"name":"ripr-pr-evidence"}]}"#,
+        _ => {
+            r#"{"total_count":2,"artifacts":[{"id":99000,"name":"ripr-pr-evidence"},{"id":99001,"name":"ripr-gate-classification"}]}"#
+        }
+    }
+}
+
 fn run_router_case(
     is_fork_pr: &str,
     gh_token: &str,
@@ -282,42 +303,78 @@ curl() {
   printf '%s' "$FAKE_CURL_STATUS"
 }
 jq() {
-  [ "$1" = "--arg" ] && [ "$2" = "runner_label" ] || return 1
-  [ "$#" -eq 5 ] || return 1
-  local runner_label="$3"
-  local jq_selector="$4"
-  local response="$5"
+  if [ "$1" = "--arg" ]; then
+    [ "$2" = "runner_label" ] && [ "$#" -eq 5 ] || return 1
+    local runner_label="$3"
+    local jq_selector="$4"
+    local response="$5"
+    [ -f "$response" ] || return 1
+    [ "$(cat "$response")" = "$FAKE_RUNNERS_JSON" ] || return 1
+    for selector_fragment in \
+      'select(.status == "online")' \
+      'select(.busy == false)' \
+      'index("em-ci")' \
+      'index($runner_label)' \
+      'index("rust-small")' \
+      'index("trusted-pr")'; do
+      case "$jq_selector" in
+        *"$selector_fragment"*) ;;
+        *) printf 'missing selector fragment: %s\n' "$selector_fragment" >&2; return 1 ;;
+      esac
+    done
+
+    # Evaluate the fixture objects rather than returning a canned count. This
+    # keeps the fake independent of the expected answer and makes busy,
+    # offline, and missing-label regressions observable.
+    local runners
+    runners=$(sed -n 's/^{"runners":\[\(.*\)\]}$/\1/p' "$response" | sed 's/},{"id"/\n{"id"/g')
+    local count=0
+    while IFS= read -r runner; do
+      [ -n "$runner" ] || continue
+      local normalized labels
+      normalized=$(printf '%s' "$runner" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+      labels=$(printf '%s' "$normalized" | sed -n 's/.*"labels":\[\(.*\)\].*/\1/p')
+      case "$normalized" in
+        *'"status":"online"'*'"busy":false'*) ;;
+        *) continue ;;
+      esac
+      for required_label in em-ci "$runner_label" rust-small trusted-pr; do
+        case "$labels" in
+          *"\"name\":\"$required_label\""*) ;;
+          *) continue 2 ;;
+        esac
+      done
+      count=$((count + 1))
+    done <<EOF
+$runners
+EOF
+    printf '%s\n' "$count"
+    return 0
+  fi
+
+  [ "$#" -eq 2 ] || return 1
+  local jq_selector="$1"
+  local response="$2"
   [ -f "$response" ] || return 1
-  [ "$(cat "$response")" = "$FAKE_RUNNERS_JSON" ] || return 1
-  for selector_fragment in \
-    'select(.status == "online")' \
-    'select(.busy == false)' \
-    'index("em-ci")' \
-    'index($runner_label)' \
-    'index("rust-small")' \
-    'index("trusted-pr")'; do
-    case "$jq_selector" in
-      *"$selector_fragment"*) ;;
-      *) printf 'missing selector fragment: %s\n' "$selector_fragment" >&2; return 1 ;;
-    esac
-  done
-  local ready_runner='"status":"online","busy":false,"labels":[{"name":"EM-CI"},{"name":"CX53"},{"name":"rust-small"},{"name":"trusted-pr"}]'
-  local ready_cx43='"status":"online","busy":false,"labels":[{"name":"em-ci"},{"name":"cx43"},{"name":"rust-small"},{"name":"trusted-pr"}]'
-  case "$runner_label" in
-    cx53)
-      case "$(cat "$response")" in
-        *"$ready_runner"*) printf '1\n' ;;
-        *) printf '0\n' ;;
-      esac
-      ;;
-    cx43)
-      case "$(cat "$response")" in
-        *"$ready_cx43"*) printf '1\n' ;;
-        *) printf '0\n' ;;
-      esac
-      ;;
-    *) return 1 ;;
-  esac
+  [ "$jq_selector" = '.artifacts[] | select(.name == "ripr-gate-classification") | .id' ] || {
+    printf 'unexpected artifact selector: %s\n' "$jq_selector" >&2
+    return 1
+  }
+  local artifacts
+  artifacts=$(sed -n 's/^{"total_count":[0-9]*,"artifacts":\[\(.*\)\]}$/\1/p' "$response" | sed 's/},{"id"/\n{"id"/g')
+  while IFS= read -r artifact; do
+    [ -n "$artifact" ] || continue
+    local name id
+    name=$(printf '%s' "$artifact" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')
+    id=$(printf '%s' "$artifact" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+    if [ "$name" = "ripr-gate-classification" ]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+  done <<EOF
+$artifacts
+EOF
+  return 0
 }
 "#;
     let script = format!("{fake}\n{run}");
@@ -413,6 +470,61 @@ ci-disk-guard() {
     Ok((output, format!("{combined}\n{preflight_output}")))
 }
 
+fn run_fallback_condition(
+    router_target: &str,
+    cx53_result: &str,
+    cx43_result: &str,
+    cx53_preflight_ok: &str,
+) -> Result<(std::process::Output, String)> {
+    let sandbox = tempfile::tempdir().context("creating fallback-condition sandbox")?;
+    let summary = sandbox.path().join("summary.md");
+    let condition = workflow_job_if("ripr-fallback")?
+        .replace("always()", "true")
+        .replace("needs.route-ripr.result", "\"$ROUTE_RESULT\"")
+        .replace("needs.route-ripr.outputs.target", "\"$ROUTER_TARGET\"")
+        .replace("needs.ripr-cx53.result", "\"$CX53_RESULT\"")
+        .replace("needs.ripr-cx53.outputs.preflight_ok", "\"$CX53_PREFLIGHT_OK\"")
+        .replace("needs.ripr-cx43.result", "\"$CX43_RESULT\"")
+        .replace("needs.ripr-cx43.outputs.preflight_ok", "\"$CX43_PREFLIGHT_OK\"");
+    let run = workflow_run_block("ripr-fallback", "Annotate failover reason")?
+        .replace("${{ needs.route-ripr.outputs.target }}", router_target);
+    let script = format!(
+        "if [[ {condition} ]]; then\n  fallback_started=true\n{run}\nelse\n  fallback_started=false\nfi\necho \"fallback_started=$fallback_started\""
+    );
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("ROUTE_RESULT", "success")
+        .env("ROUTER_TARGET", router_target)
+        .env("CX53_RESULT", cx53_result)
+        .env("CX43_RESULT", cx43_result)
+        .env("CX53_PREFLIGHT_OK", cx53_preflight_ok)
+        .env("CX43_PREFLIGHT_OK", "")
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("executing the real ripr fallback condition and first step")?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("fallback condition bash stdin is unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output().context("waiting for fallback condition")?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let summary_text = match fs::read_to_string(&summary) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).context("reading fallback summary"),
+    };
+    Ok((output, format!("{combined}\n{summary_text}")))
+}
+
 fn retry_run_block() -> Result<String> {
     let root = project_root()?;
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr-infra-retry.yml"))?;
@@ -472,6 +584,7 @@ fn run_retry_case(
     let post_called = sandbox.path().join("retry-post-called");
     let download_called = sandbox.path().join("artifact-download-called");
     let zip_payload = sandbox.path().join("classification-payload.zip");
+    let artifact_response_file = sandbox.path().join("artifacts.json");
     write_retry_artifact(&zip_payload, artifact_mode)?;
     let run = retry_run_block()?;
     let fake = r#"
@@ -496,17 +609,8 @@ gh() {
   done
   case "$url" in
     */artifacts?per_page=100)
-      if [ "$jq_selector" != '.artifacts[] | select(.name == "ripr-gate-classification") | .id' ]; then
-        printf 'unexpected artifact selector: %s\n' "$jq_selector" >&2
-        return 1
-      fi
-      if [ "$FAKE_ARTIFACT_MODE" = "missing" ]; then
-        # A different artifact exists, but the requested selector must not
-        # accidentally return its ID.
-        printf '%s\n' ''
-      else
-        printf '99001\n'
-      fi
+      printf '%s\n' "$FAKE_ARTIFACTS_JSON" > "$FAKE_ARTIFACT_RESPONSE"
+      jq "$jq_selector" "$FAKE_ARTIFACT_RESPONSE"
       ;;
     */actions/artifacts/99001/zip)
       : > "$FAKE_DOWNLOAD_CALLED"
@@ -542,6 +646,8 @@ gh() {
         .env("RUN_ATTEMPT", run_attempt)
         .env("HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
         .env("FAKE_ARTIFACT_MODE", artifact_mode)
+        .env("FAKE_ARTIFACTS_JSON", artifact_response(artifact_mode))
+        .env("FAKE_ARTIFACT_RESPONSE", &artifact_response_file)
         .env("FAKE_DOWNLOAD_CALLED", &download_called)
         .env("FAKE_ZIP_PAYLOAD", &zip_payload)
         .env("FAKE_LIVE_ATTEMPT", "1")
@@ -747,6 +853,39 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     {
         bail!(
             "missing Docker image must fail the real preflight and record false:\n{missing_image_output}"
+        );
+    }
+    let missing_image_preflight = if missing_image_output.contains("preflight_ok=false") {
+        "false"
+    } else {
+        bail!("missing-image preflight did not produce the expected false output")
+    };
+    let (fallback_started, fallback_output) =
+        run_fallback_condition("cx53", "failure", "skipped", missing_image_preflight)?;
+    if !fallback_started.status.success()
+        || !fallback_output.contains("fallback_started=true")
+        || !fallback_output.contains("### ripr Disk-Full Failover")
+    {
+        bail!(
+            "the production ripr-fallback condition must start the fallback after preflight_ok=false:\n{fallback_output}"
+        );
+    }
+    let (preflight_passed, preflight_passed_output) =
+        run_fallback_condition("cx53", "failure", "skipped", "true")?;
+    if !preflight_passed.status.success()
+        || !preflight_passed_output.contains("fallback_started=false")
+        || preflight_passed_output.contains("### ripr Disk-Full Failover")
+    {
+        bail!("a successful preflight must not start ripr-fallback:\n{preflight_passed_output}");
+    }
+    let (primary_succeeded, primary_succeeded_output) =
+        run_fallback_condition("cx53", "success", "skipped", "false")?;
+    if !primary_succeeded.status.success()
+        || !primary_succeeded_output.contains("fallback_started=false")
+        || primary_succeeded_output.contains("### ripr Disk-Full Failover")
+    {
+        bail!(
+            "a successful primary lane must not start ripr-fallback even when its preflight output is false:\n{primary_succeeded_output}"
         );
     }
     let (ready_image, ready_image_output) = run_preflight_case(true, false)?;
