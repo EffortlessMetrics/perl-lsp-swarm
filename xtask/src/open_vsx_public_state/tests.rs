@@ -904,11 +904,42 @@ fn a_request_url_cannot_carry_a_credential_into_the_receipt() -> Result<()> {
         bail!("a credential-shaped request URL reached the durable receipt");
     }
 
-    // The rule must not be "redact every URL": a planned, safe URL still travels
+    // Raised in review: the userinfo check cannot see a credential smuggled as
+    // a query parameter or a fragment, and both shapes would otherwise ride an
+    // off-plan URL into the per-surface record and the `unplanned_request_url`
+    // blocker verbatim.
+    let smuggled_shapes: [(&str, &str); 2] = [
+        ("query string", "https://evil.example/vsix?token=hunter2"),
+        ("fragment", "https://evil.example/vsix#access_token=hunter2"),
+    ];
+    for (label, smuggled_url) in smuggled_shapes {
+        let smuggled_receipt = receipt_with(AVAILABLE_EXACT, |document| {
+            document["cells"]["listing"]["transport"]["url"] = json!(smuggled_url);
+        })?;
+
+        expect_state(&smuggled_receipt, PublicState::Invalid, "off-plan credential URL")?;
+        expect_blocker(&smuggled_receipt, "unplanned_request_url")?;
+        let serialized = serde_json::to_string(&smuggled_receipt)?;
+        if serialized.contains("hunter2") {
+            bail!("a credential in a URL {label} reached the durable receipt");
+        }
+        if serialized.contains("evil.example/vsix?") || serialized.contains("evil.example/vsix#") {
+            bail!("an off-plan URL kept its {label} in the durable receipt");
+        }
+    }
+
+    // The rule must not be "redact every URL": a planned, safe URL still
+    // travels — query included, because the sanctioned search request has one —
     // so the receipt keeps describing the requests it is a receipt for.
     let intact = receipt(AVAILABLE_EXACT)?;
     if !serde_json::to_string(&intact)?.contains("https://open-vsx.org/") {
         bail!("redaction swallowed the planned request URLs");
+    }
+    let Some(search) = intact.cells.iter().find(|cell| cell.cell == "search") else {
+        bail!("the receipt has no search surface");
+    };
+    if !search.url.contains("?query=") || !search.url.contains("&size=") {
+        bail!("the planned search URL lost its sanctioned query: {}", search.url);
     }
     Ok(())
 }
@@ -942,8 +973,59 @@ fn a_namespace_denial_beside_live_extension_surfaces_is_a_contradiction() -> Res
         expect_blocker(&denied, "contradictory_registry_scope")?;
     }
 
+    // Raised in review: the predicate took only the three-surface conjunction,
+    // so a registry that denied the namespace while cleanly serving the subject
+    // package — the exact versioned-file request returning a parsed subject
+    // version, digest and byte length — was reported as the narrower publisher
+    // diagnosis even though it was simultaneously serving that namespace's
+    // package. A package-only affirmation is identity evidence, so both denial
+    // shapes must still classify as contradictions when every other extension
+    // surface is absent.
+    let absent_surface = |document: &mut Value, surface: &str| {
+        document["cells"][surface]["transport"]["status"] = json!(404);
+    };
+    // A 404 alone is enough to break each conjunct; the identity payloads are
+    // also cleared so no surface both denies and affirms in the same document.
+    let clear_identity = |document: &mut Value, surface: &str, field: &str| {
+        document["cells"][surface][field] = Value::Null;
+    };
+    let package_only: Vec<LabelledPatch> = vec![
+        (
+            "namespace 404 beside a retrieved package",
+            Box::new(move |document: &mut Value| {
+                document["cells"]["namespace_metadata"]["transport"]["status"] = json!(404);
+                document["cells"]["namespace_metadata"]["namespace_present"] = Value::Null;
+                for surface in ["listing", "extension_metadata", "version_rows"] {
+                    absent_surface(document, surface);
+                }
+                clear_identity(document, "extension_metadata", "identity_matches");
+                clear_identity(document, "extension_metadata", "versions");
+                clear_identity(document, "version_rows", "versions");
+            }),
+        ),
+        (
+            "namespace unconfirmed beside a retrieved package",
+            Box::new(move |document: &mut Value| {
+                document["cells"]["namespace_metadata"]["namespace_present"] = json!(false);
+                for surface in ["listing", "extension_metadata", "version_rows"] {
+                    absent_surface(document, surface);
+                }
+                clear_identity(document, "extension_metadata", "identity_matches");
+                clear_identity(document, "extension_metadata", "versions");
+                clear_identity(document, "version_rows", "versions");
+            }),
+        ),
+    ];
+    for (label, patch) in package_only {
+        let denied = receipt_with(AVAILABLE_EXACT, |document| patch(document))?;
+        expect_state(&denied, PublicState::ProviderNotProven, label)?;
+        expect_blocker(&denied, "contradictory_registry_scope")?;
+    }
+
     // Positive control: a namespace denial with nothing contradicting it is
     // still the narrower diagnosis, which is the whole reason that state exists.
+    // The absent-namespace fixture retrieved no package, so no surface
+    // contradicts the denial.
     let uncontradicted = receipt(NAMESPACE_ABSENT)?;
     expect_state(&uncontradicted, PublicState::NamespaceOrPublisherProblem, "clean denial")?;
     expect_blocker(&uncontradicted, "namespace_absent")?;

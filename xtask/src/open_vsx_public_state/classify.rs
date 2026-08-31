@@ -49,7 +49,7 @@ pub(crate) fn classify(observation: Observation) -> Receipt {
     let mut structural =
         structural_findings(&observation, plan.as_ref(), subject_version.as_deref());
 
-    let cells = build_cells(&observation);
+    let cells = build_cells(&observation, plan.as_ref());
     // Raised in review: this was derived from the *classified* observation, and
     // `observe` maps any reported `error_kind` to `ProviderFailed` before it
     // looks at the outcome — so a cell saying "not attempted" while carrying an
@@ -159,14 +159,22 @@ pub(crate) fn invalidate(receipt: &mut Receipt, code: &str, message: impl Into<S
     receipt.state = PublicState::Invalid;
 }
 
-/// Whether the extension-level surfaces affirmatively report this identity live.
+/// Whether the registry affirmatively reports this identity live.
 ///
-/// Deliberately strict: it takes the gallery listing answering, the extension
-/// record confirming the identity, and the versions endpoint publishing the
-/// subject version. Anything weaker — a bare `2xx`, an unparsed body — is not an
-/// affirmation and must not be able to override a namespace answer, or a
-/// provider hiccup on these surfaces would start masking real publisher
-/// problems. The point is to detect a genuine contradiction, not to outvote.
+/// Deliberately strict. It takes either
+///
+/// - the gallery listing answering, the extension record confirming the
+///   identity, and the versions endpoint publishing the subject version
+///   together, or
+/// - the exact versioned-file request returning a clean retrieval whose parsed
+///   subject version, digest and byte length are on record — an individually
+///   identity-bearing surface, because the plan addresses that request at this
+///   namespace and extension alone.
+///
+/// Anything weaker — a bare `2xx`, an unparsed body — is not an affirmation and
+/// must not be able to override a namespace answer, or a provider hiccup on
+/// these surfaces would start masking real publisher problems. The point is to
+/// detect a genuine contradiction, not to outvote.
 fn extension_surfaces_affirm_presence(
     observation: &Observation,
     subject_version: Option<&str>,
@@ -184,7 +192,23 @@ fn extension_surfaces_affirm_presence(
             _ => false,
         };
 
-    listing_live && record_live && rows_live
+    if listing_live && record_live && rows_live {
+        return true;
+    }
+
+    // A namespace denial beside a cleanly retrieved, fully parsed subject
+    // package is the same contradiction the three-surface conjunction catches:
+    // the registry cannot both lack the namespace and serve its package. The
+    // identity claim is in the parsed payload (subject version, digest, byte
+    // length), not in the bare status.
+    let file = &cells.versioned_file;
+    present(Cell::VersionedFile)
+        && file.sha256.is_some()
+        && file.byte_length.is_some()
+        && match (file.version.as_deref(), subject_version) {
+            (Some(retrieved), Some(expected)) => retrieved == expected,
+            _ => false,
+        }
 }
 
 /// Surfaces whose transport reported an affirmative `404` while their own parsed
@@ -384,10 +408,12 @@ fn structural_findings(
                 format!(
                     "{} addressed {:?} instead of the planned {:?}",
                     cell.key(),
-                    // The observed URL is producer-supplied and this blocker is
-                    // durable, so it goes through the same boundary as every
-                    // other free-text value. The planned URL is derived here.
-                    publishable_url(&transport.url),
+                    // The observed URL is producer-supplied, off-plan by
+                    // construction, and this blocker is durable, so it goes
+                    // through the same boundary as every other free-text
+                    // value — with no planned match, its query and fragment
+                    // are stripped. The planned URL is derived here.
+                    publishable_url(&transport.url, Some(planned.url.as_str())),
                     planned.url
                 ),
             ));
@@ -917,14 +943,15 @@ fn retrievable_public_bytes(observation: &Observation) -> Option<PublicBytes> {
 /// The URL reported is the one the observation addressed, never the one the plan
 /// wanted: on an `invalid` receipt the discrepancy is the finding, and
 /// substituting the planned URL would hide it.
-fn build_cells(observation: &Observation) -> Vec<CellResult> {
+fn build_cells(observation: &Observation, plan: Option<&ProbePlan>) -> Vec<CellResult> {
     Cell::ALL
         .into_iter()
         .map(|cell| {
             let transport = transport_for(observation, cell);
+            let planned = plan.and_then(|plan| plan.request(cell));
             CellResult {
                 cell: cell.key(),
-                url: publishable_url(&transport.url),
+                url: publishable_url(&transport.url, planned.map(|request| request.url.as_str())),
                 method: "GET",
                 observation: observe(transport),
                 status: transport.status,
@@ -991,10 +1018,20 @@ const REDACTED: &str = "<redacted>";
 /// left the sanctioned plan — exactly the case where the value is least
 /// trustworthy — was published unexamined. It now crosses the same boundary as
 /// `instrument` and `publication_refs`.
-fn publishable_url(url: &str) -> String {
+///
+/// A URL that matches the sanctioned plan exactly is plan-derived and is
+/// published verbatim, query included: the planned search request legitimately
+/// carries one. A producer-supplied URL that differs from the plan is off-plan
+/// evidence, so beyond the `unsafe_reference` redaction its query and fragment
+/// are stripped — `?token=…` and `#access_token=…` carry credentials that the
+/// userinfo check cannot see, and a durable receipt must never publish them.
+fn publishable_url(url: &str, planned: Option<&str>) -> String {
+    if planned == Some(url) {
+        return url.to_owned();
+    }
     match unsafe_reference(url) {
         Some(_) => REDACTED.to_owned(),
-        None => url.to_owned(),
+        None => url.split(['?', '#']).next().unwrap_or(url).to_owned(),
     }
 }
 
