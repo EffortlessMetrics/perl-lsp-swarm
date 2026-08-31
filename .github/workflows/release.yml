@@ -1,7 +1,8 @@
 name: Release
 
-# Build and release perl-lsp binaries for all platforms
-# Cost: ~$0.50 per release (across all platforms)
+# Build and release perl-lsp binaries for all platforms.
+# The public GitHub Release is created only after archives, checksums, curated
+# notes, and a non-empty SBOM have all succeeded (#6231/#14406).
 
 on:
   release:
@@ -17,8 +18,12 @@ on:
         required: false
         type: boolean
         default: false
+      fail_before_publish:
+        description: 'No-publish proof only: fail after artifact validation and before Release creation'
+        required: false
+        type: boolean
+        default: false
 
-# Cancel in-flight runs on concurrent release dispatches
 concurrency:
   group: release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
@@ -66,10 +71,6 @@ jobs:
           fi
 
           VERSION="${TAG#v}"
-          # SemVer prerelease tags (hyphenated) are never package-channel
-          # stable. The boolean workflow_dispatch input defaults to false, so
-          # empty-input inference alone would miss vX.Y.Z-rc.N and still fan
-          # out Scoop/Chocolatey/WinGet stable refreshes.
           if [[ "$VERSION" == *-* ]]; then
             PRERELEASE="true"
           elif [ -z "$PRERELEASE_INPUT" ]; then
@@ -82,10 +83,6 @@ jobs:
           printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
           printf 'prerelease=%s\n' "$PRERELEASE" >> "$GITHUB_OUTPUT"
 
-          printf 'Resolved release tag: %s\n' "$TAG"
-          printf 'Resolved version: %s\n' "$VERSION"
-          printf 'Resolved prerelease: %s\n' "$PRERELEASE"
-
   build:
     name: Build ${{ matrix.target }}
     needs: release-metadata
@@ -95,33 +92,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux GNU
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             use_cross: false
-          # Linux aarch64 GNU
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04
             use_cross: true
-          # Linux musl (static)
           - target: x86_64-unknown-linux-musl
             os: ubuntu-22.04
             use_cross: true
           - target: aarch64-unknown-linux-musl
             os: ubuntu-22.04
             use_cross: true
-          # macOS
           - target: x86_64-apple-darwin
             os: macos-15-intel
             use_cross: false
           - target: aarch64-apple-darwin
             os: macos-14
             use_cross: false
-          # Windows
           - target: x86_64-pc-windows-msvc
             os: windows-2022
             use_cross: false
-          # Windows ARM64 — native build on windows-11-arm runner (#5208)
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
             use_cross: false
@@ -141,10 +132,6 @@ jobs:
       - name: Install cross
         if: matrix.use_cross
         run: |
-          # Immutable pin of the commit that tag v0.2.5 dereferences to, so the
-          # build cannot change if the tag is ever re-pointed upstream. This is
-          # the same code the previous `--tag v0.2.5` resolved to — a pinning
-          # change with no version move.
           cargo install cross --locked --git https://github.com/cross-rs/cross --rev 88f49ff79e777bef6d3564531636ee4d3cc2f8d2
 
       - name: Cache cargo dependencies
@@ -194,9 +181,6 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          # Keep these literal `$BUILD_CMD build` command shapes: the
-          # repository-owned dist-shadow contract parses them to prove that the
-          # shadow manifest exactly matches the live release binaries.
           $BUILD_CMD build --locked --release --target "$TARGET" -p perllsp --bin perllsp
           $BUILD_CMD build --locked --release --target "$TARGET" -p perl-dap --bin perl-dap
 
@@ -231,7 +215,6 @@ jobs:
 
           PKG_NAME="${NAME}-${VERSION}-${TARGET}"
           mkdir -p "$PKG_NAME"
-
           cp "target/${TARGET}/release/${BIN}" "$PKG_NAME/"
           cp "target/${TARGET}/release/${DAP_BIN}" "$PKG_NAME/"
 
@@ -240,7 +223,6 @@ jobs:
             strip "${PKG_NAME}/${DAP_BIN}" 2>/dev/null || true
           fi
 
-          # Copy additional files
           cp README.md LICENSE-APACHE LICENSE-MIT "$PKG_NAME/" 2>/dev/null || true
 
           cd "$PKG_NAME"
@@ -279,10 +261,10 @@ jobs:
           retention-days: 90
 
   release:
-    name: Create Release
+    name: Validate complete release set and create Release
     needs: [build, release-metadata]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       actions: write
       contents: write
@@ -304,9 +286,6 @@ jobs:
           pattern: perllsp-*
           path: artifacts
 
-      - name: Display structure of downloaded files
-        run: ls -R artifacts
-
       - name: Generate consolidated SHA256SUMS
         run: |
           set -euo pipefail
@@ -316,76 +295,75 @@ jobs:
             xargs -0 sha256sum | \
             sed 's|  \./[^/]*/|  |' > ../SHA256SUMS
           cd ..
-          cat SHA256SUMS
+          test -s SHA256SUMS
 
       - name: Verify release archives ship the DAP binary
         env:
           VERSION: ${{ needs.release-metadata.outputs.version }}
         run: |
           set -euo pipefail
-          # Flatten the per-artifact download tree into a single dist/ dir that
-          # holds every archive plus the consolidated SHA256SUMS, then enforce
-          # the downstream DAP contract (perl-dap present in every archive).
           mkdir -p dist
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/ \;
           cp SHA256SUMS dist/
-          cargo xtask release artifact-check \
-            --dist dist \
-            --version "$VERSION"
+          cargo xtask release artifact-check --dist dist --version "$VERSION"
 
       - name: Verify curated release notes exist
-        id: release_notes_preflight
         env:
           TAG: ${{ needs.release-metadata.outputs.tag }}
         run: |
           set -euo pipefail
           NOTE_FILE="docs/releases/${TAG}.md"
           if [ ! -f "$NOTE_FILE" ]; then
-            printf '::error file=%s::Curated release notes missing for %s. See RELEASE.md "Release History Updates" — every release must ship docs/releases/%s.md before tagging.\n' "$NOTE_FILE" "$TAG" "$TAG"
+            printf '::error file=%s::Curated release notes missing for %s\n' "$NOTE_FILE" "$TAG"
             exit 1
           fi
-          printf 'note_file=%s\n' "$NOTE_FILE" >> "$GITHUB_OUTPUT"
-          printf 'Found curated release notes: %s\n' "$NOTE_FILE"
 
-      - name: Generate release notes from docs/releases/<tag>.md
-        id: release_notes
+      - name: Generate release notes
         env:
           TAG: ${{ needs.release-metadata.outputs.tag }}
         run: |
           set -euo pipefail
-          # xtask strips YAML frontmatter and emits the curated body. The
-          # command fails hard if the note file is missing — the earlier
-          # preflight step makes that a clearer error message in the UI.
           cargo xtask release-notes --tag "$TAG" --output release_notes.md
-          echo "--- release_notes.md ---"
-          cat release_notes.md
-          echo "--- /release_notes.md ---"
+          test -s release_notes.md
 
-      # Preflight before anything irreversible. Installing cargo-sbom is the
-      # part that can fail on a transient registry error, and the SBOM step now
-      # fails hard rather than warning. Running the install before the Release
-      # is created means such a failure aborts the job while nothing has been
-      # published yet, instead of leaving a public Release with no SBOM asset
-      # and a red job that cannot be cleanly re-run.
-      #
-      # Intentionally ungated, unlike the Release steps below which are gated on
-      # `workflow_dispatch`. The previous combined "Generate SBOM" step already
-      # ran this install unconditionally on every trigger, so leaving it ungated
-      # keeps `release: published` behaviour identical and changes only the
-      # ordering on `workflow_dispatch`. Gating it here would break SBOM
-      # generation on the `release: published` path.
-      - name: Install cargo-sbom (preflight)
+      - name: Install cargo-sbom before public mutation
         run: |
           set -euo pipefail
           cargo install cargo-sbom --version 0.9.1 --locked
 
-      - name: Create GitHub Release
+      - name: Generate and validate SBOM before public mutation
+        run: |
+          set -euo pipefail
+          cargo sbom --output-format spdx_json_2_3 > sbom-spdx.json
+          test -s sbom-spdx.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("sbom-spdx.json").read_text(encoding="utf-8"))
+          if not isinstance(payload, dict):
+              raise SystemExit("SBOM root must be an object")
+          if payload.get("spdxVersion") != "SPDX-2.3":
+              raise SystemExit("SBOM must declare SPDX-2.3")
+          packages = payload.get("packages")
+          if not isinstance(packages, list) or not packages:
+              raise SystemExit("SBOM contains no package subjects")
+          PY
+
+      - name: Inject deterministic no-publish predecessor failure
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.fail_before_publish == 'true' }}
+        run: |
+          echo "::error::Injected predecessor failure after complete artifact validation; public Release creation remains unreachable."
+          exit 1
+
+      - name: Create one complete GitHub Release
         if: github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: |
             artifacts/*/*
             SHA256SUMS
+            sbom-spdx.json
           body_path: release_notes.md
           draft: false
           prerelease: ${{ needs.release-metadata.outputs.prerelease == 'true' }}
@@ -394,22 +372,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate SBOM
-        run: |
-          set -euo pipefail
-          cargo sbom --output-format spdx_json_2_3 > sbom-spdx.json
-          test -s sbom-spdx.json
-
-      - name: Upload SBOM as release asset
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
-        with:
-          files: sbom-spdx.json
-          tag_name: ${{ needs.release-metadata.outputs.tag }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Dispatch downstream package refresh workflows
+      - name: Dispatch downstream stable package refresh workflows
         if: github.event_name == 'workflow_dispatch' && needs.release-metadata.outputs.prerelease != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -417,14 +380,8 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          workflows=(
-            brew-bump.yml
-            scoop-bump.yml
-            chocolatey-bump.yml
-            winget-bump.yml
-          )
+          workflows=(brew-bump.yml scoop-bump.yml chocolatey-bump.yml winget-bump.yml)
           for workflow in "${workflows[@]}"; do
-            printf 'Dispatching %s for %s\n' "$workflow" "$RELEASE_TAG"
             gh workflow run "$workflow" \
               --repo "$GITHUB_REPOSITORY" \
               --ref "$DEFAULT_BRANCH" \
