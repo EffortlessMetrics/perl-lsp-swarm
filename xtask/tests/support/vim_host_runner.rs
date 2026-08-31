@@ -1105,8 +1105,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::RecoveryStimulusApplied => {
-                validate_repeating_recovery_event(
+                validate_repeating_event(
                     event,
+                    "recovery",
                     "stimulus_index",
                     RECOVERY_STIMULUS_CAP,
                     &mut recovery_stimulus_index,
@@ -1123,8 +1124,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::RecoveryDispositionObserved => {
-                validate_repeating_recovery_event(
+                validate_repeating_event(
                     event,
+                    "recovery",
                     "disposition_index",
                     RECOVERY_DISPOSITION_CAP,
                     &mut recovery_disposition_index,
@@ -1167,8 +1169,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::GenerationReplayObserved => {
-                validate_repeating_recovery_event(
+                validate_repeating_event(
                     event,
+                    "recovery",
                     "replay_index",
                     GENERATION_REPLAY_CAP,
                     &mut recovery_replay_index,
@@ -1207,8 +1210,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::OldGenerationRejected => {
-                validate_repeating_recovery_event(
+                validate_repeating_event(
                     event,
+                    "recovery",
                     "rejection_index",
                     OLD_GENERATION_REJECTION_CAP,
                     &mut recovery_rejection_index,
