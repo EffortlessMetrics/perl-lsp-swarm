@@ -87,7 +87,12 @@ impl LspServer {
     }
 
     fn fetch_workspace_perldoc(&self, target: &PerlDocumentationTarget) -> Option<String> {
-        if self.root_path.lock().is_none() && self.workspace_folders.lock().is_empty() {
+        // Sample each authority independently; never hold `root_path` while
+        // acquiring `workspace_folders` (diagnostic publication uses the
+        // opposite order while validating an accepted subject).
+        let has_root = self.root_path.lock().is_some();
+        let has_workspace_folders = self.workspace_folders.lock().is_empty();
+        if !has_root && has_workspace_folders {
             return None;
         }
 

@@ -4,8 +4,8 @@
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
 use super::{
-    Arc, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap, HashSet,
-    IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
+    Arc, AtomicBool, AtomicI32, AtomicU32, BufReader, ClientCapabilities, FeatureProfile, HashMap,
+    HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
     WorkspaceConfig, Write, io, notebook, outbound, refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
@@ -65,6 +65,7 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(AtomicU32::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -244,6 +245,7 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(AtomicU32::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -364,6 +366,7 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(AtomicU32::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),

@@ -212,6 +212,10 @@ pub struct LspServer {
     /// workspaces with per-folder configuration. The old string-based approach
     /// is maintained via `workspace_folder_uris()` for backward compatibility.
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
+    /// Monotonic workspace-topology generation.  Any folder add/remove
+    /// invalidates in-flight diagnostic subjects, even when the selected root
+    /// string happens to remain unchanged.
+    pub(crate) workspace_topology_generation: Arc<AtomicU32>,
     /// Root path for module resolution
     root_path: Arc<Mutex<Option<PathBuf>>>,
     /// `.perltidyrc` profile path discovered from the workspace root during

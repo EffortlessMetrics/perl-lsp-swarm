@@ -2152,18 +2152,29 @@ impl LspServer {
             }
 
             if !change.removed.is_empty() {
-                let mut workspace_folders = self.workspace_folders.lock();
                 let removed_uris: std::collections::HashSet<String> =
                     change.removed.iter().cloned().collect();
+
+                // Apply the topology transition while holding only the
+                // workspace-folder authority.  Eviction acquires `documents`
+                // (and subordinate caches), so calling it while this guard is
+                // live would invert the established publication order
+                // (`documents` -> `workspace_folders`) and can deadlock a
+                // concurrent diagnostic commit.  Capture the exact removed
+                // identities, release the topology guard, then retire their
+                // document/index state in a second phase.
+                self.apply_workspace_folder_removal(&removed_uris);
 
                 for uri in &change.removed {
                     tracing::debug!(uri, "Removed workspace folder");
                     self.evict_workspace_folder_state(uri);
                 }
-
-                // Retain only folders that are not in the removed list
-                workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
             }
+
+            // Invalidate any in-flight diagnostic subject captured before this
+            // topology transition, including subjects whose root string still
+            // resolves to the same fallback path.
+            self.workspace_topology_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
             // Workspace folder membership changed, so any in-flight reverse
             // request now has stale per-folder scoping. Drop pending entries
@@ -2198,6 +2209,18 @@ impl LspServer {
         }
 
         Ok(())
+    }
+
+    /// Apply the topology half of a workspace-folder removal.
+    ///
+    /// This helper deliberately touches only the workspace-folder authority.
+    /// Document and cache retirement belongs to the subsequent phase after the
+    /// guard returned here has been dropped; keeping that separation prevents
+    /// a `workspace_folders -> documents` lock inversion with diagnostic
+    /// publication.
+    fn apply_workspace_folder_removal(&self, removed_uris: &std::collections::HashSet<String>) {
+        let mut workspace_folders = self.workspace_folders.lock();
+        workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
     }
 
     /// Start a background workspace indexing scan
@@ -4002,6 +4025,45 @@ mod tests {
                 .all(|folder| { folder.uri != removed_folder_uri.to_string() })
         );
 
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_removal_releases_topology_before_document_eviction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::{Arc, Barrier, mpsc};
+
+        let server = Arc::new(LspServer::new());
+        let folder_uri = "file:///removed".to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri.clone()));
+        let removed = std::collections::HashSet::from([folder_uri.clone()]);
+        let ready = Arc::new(Barrier::new(2));
+        let (phase_a_tx, phase_a_rx) = mpsc::channel();
+        let worker_server = Arc::clone(&server);
+        let worker_ready = Arc::clone(&ready);
+        let worker = std::thread::spawn(move || {
+            worker_ready.wait();
+            worker_server.apply_workspace_folder_removal(&removed);
+            phase_a_tx.send(()).expect("phase-A signal");
+            worker_server.evict_workspace_folder_state(&folder_uri);
+        });
+
+        // Hold `documents` across the topology phase.  The worker must still
+        // complete phase A and release `workspace_folders`; otherwise this
+        // assertion would observe the lock inversion directly.
+        let documents_guard = server.documents.lock();
+        ready.wait();
+        phase_a_rx.recv().expect("phase-A completion");
+        assert!(
+            server.workspace_folders.try_lock().is_some(),
+            "workspace topology guard must be released before document eviction"
+        );
+        drop(documents_guard);
+        worker.join().map_err(|_| "workspace eviction worker panicked")?;
         Ok(())
     }
 

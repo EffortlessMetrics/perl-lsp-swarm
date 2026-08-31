@@ -208,6 +208,9 @@ impl PullDiagnosticsOrchestrator {
             let config = std::sync::Arc::clone(&server.config);
             let workspace_folders = std::sync::Arc::clone(&server.workspace_folders);
             let root_path = std::sync::Arc::clone(&server.root_path);
+            let topology_generation = std::sync::Arc::clone(&server.workspace_topology_generation);
+            let accepted_topology_generation =
+                topology_generation.load(std::sync::atomic::Ordering::SeqCst);
             let currentness_uri = uri.to_string();
             PullAcceptedStateCurrentness::new(std::sync::Arc::new(move || {
                 let live_root = {
@@ -218,6 +221,8 @@ impl PullDiagnosticsOrchestrator {
                 .or_else(|| root_path.lock().clone())
                 .map(|path| path.to_string_lossy().into_owned());
                 live_root.as_deref() == accepted_snapshot.owning_root()
+                    && topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+                        == accepted_topology_generation
                     && accepted_snapshot.is_current(&config.lock())
             }))
         };
@@ -1942,6 +1947,9 @@ impl LspServer {
         let workspace_folders = std::sync::Arc::clone(&self.workspace_folders);
         let root_path = std::sync::Arc::clone(&self.root_path);
         let config = std::sync::Arc::clone(&self.config);
+        let topology_generation = std::sync::Arc::clone(&self.workspace_topology_generation);
+        let accepted_topology_generation =
+            topology_generation.load(std::sync::atomic::Ordering::SeqCst);
         let gate_subject = subject.to_string();
         let gate_snapshot = snapshot.clone();
         let snapshot_is_current = move || {
@@ -1953,6 +1961,8 @@ impl LspServer {
             .or_else(|| root_path.lock().clone())
             .map(|path| path.to_string_lossy().into_owned());
             live_root.as_deref() == gate_snapshot.owning_root()
+                && topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+                    == accepted_topology_generation
                 && gate_snapshot.is_current(&config.lock())
         };
 
