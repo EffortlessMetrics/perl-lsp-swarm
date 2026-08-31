@@ -576,10 +576,12 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     if !evaluator_run.contains("cargo run --locked -p xtask -- non-rust exact-tree") {
         bail!("trusted evaluator step must execute the exact-tree command");
     }
-    if let Some(condition) = evaluator.get(key("if")).and_then(serde_yaml_ng::Value::as_str)
-        && !condition.contains("steps.bind.outcome == 'success'")
-    {
-        bail!("trusted evaluator step must not be independently disabled");
+    let condition = evaluator
+        .get(key("if"))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .ok_or_else(|| eyre!("trusted evaluator step must gate on identity binding"))?;
+    if condition.trim() != "steps.bind.outcome == 'success'" {
+        bail!("trusted evaluator step must use the exact identity-binding condition");
     }
     if !steps.iter().any(|step| {
         let Some(map) = step.as_mapping() else { return false };
