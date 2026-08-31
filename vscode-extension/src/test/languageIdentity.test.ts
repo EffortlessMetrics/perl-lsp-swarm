@@ -223,8 +223,13 @@ describe('language-ID manifest contract (#7699)', () => {
   });
 
   test('production sources route language identity through the authority (no scattered equality)', () => {
+    // Strict (===/!==) and loose (==/!=) comparisons are both contract
+    // violations: loose equality additionally coerces, so `languageId == 'perl'`
+    // drift must not survive either form. Cross-line or renamed-local shapes
+    // remain inherent blind spots of a textual scan; the authority's export
+    // surface (`isPerlLanguageId`/`perlDocumentSelector`) is the durable guard.
     const scattered =
-      /\.languageId\s*(===|!==)\s*'(?:perl5?)'|'(?:perl5?)'\s*(===|!==)\s*[\w.]*languageId/;
+      /\.languageId\s*(===|!==|==|!=)\s*'(?:perl5?)'|'(?:perl5?)'\s*(===|!==|==|!=)\s*[\w.]*languageId/;
     const offenders: string[] = [];
     for (const file of listProductionSourceFiles(SRC_ROOT)) {
       if (path.basename(file) === 'languageIdentity.ts') {

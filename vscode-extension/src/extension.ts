@@ -18,7 +18,11 @@ import type {
 import { PerlTestAdapter } from './testAdapter';
 import { activateDebugger, rewriteTestLensCommand } from './debugAdapter';
 import { BinaryDownloader, parseLocalVersion } from './downloader';
-import { isPerlLanguageId, perlDocumentSelector } from './languageIdentity';
+import {
+  isPerlLanguageId,
+  isSupportedPerlUriScheme,
+  perlDocumentSelector,
+} from './languageIdentity';
 import {
   acquireLaunchManagedCandidateReference,
   mayReleaseManagedCandidateReferences,
@@ -2032,8 +2036,7 @@ async function finalizeStartedLanguageClient(
     const openPerlDocuments = vscode.workspace.textDocuments
       .filter(
         (document) =>
-          isPerlLanguageId(document.languageId) &&
-          (document.uri.scheme === 'file' || document.uri.scheme === 'untitled'),
+          isPerlLanguageId(document.languageId) && isSupportedPerlUriScheme(document.uri.scheme),
       )
       .map((document) => ({
         uri: document.uri.toString(),
