@@ -21,7 +21,7 @@ belong to #10502 and the later host leaves. Profile column: membership in
 
 | Scenario ID | User-visible behavior | Profile / evidence tag | Evidence boundary (owner chain) |
 | --- | --- | --- | --- |
-| `neovim.bdd.attach.01` | An ordinary Perl buffer activates the Perl language server through Neovim's native Perl filetype detection, before any user override applies | core; actual host required; subject = Neovim built-in LSP | #10502 cell → #10504 observation → `editor_client_compat.v1` cell → #10508 rows → #10522/#7122 support |
+| `neovim.bdd.attach.01` | An ordinary Perl buffer activates the Perl language server through Neovim's native Perl filetype detection, before any user override applies | core; actual host required; subject = Neovim built-in LSP | #10502 cell → core slice observation, executed by #10503 `nv_thin_native_host_adapter` → #10504 `nv_core_fanin_exact_subject_receipts` composition (composes terminal children; manufactures nothing) → `editor_client_compat.v1` cell → #10508 rows → #10522/#7122 support |
 | `neovim.bdd.attach.02` | The attached client is exactly Neovim's built-in LSP client, enabled by the documented native configuration; a plugin-provided Perl client does not satisfy attachment | core; actual host required; exact-subject binding | same chain; subject pin owned by #10502 (no artifact on main today) |
 | `neovim.bdd.attach.03` | The session runs the Perl language server as exactly `perllsp --stdio` | core; actual host required; executable identity law #7691 | same chain |
 | `neovim.bdd.attach.04` | The project root the server answers from is the root selected by the governed root contract for the opened buffer's project | core; actual host required | same chain; root authority #7762/#10502 |
@@ -48,9 +48,14 @@ belong to #10502 and the later host leaves. Profile column: membership in
 Both branch groups are published as stable IDs so the selected branch has an
 owner the moment #8129 rules. Publishing both does **not** claim both: exactly
 one group becomes applicable, the other becomes `not_applicable` by that
-ruling. Neither group is current until #8129 selects it **and that branch's own
-owner observes it**: #10505 `nv_deep_atomic_branch` for branch A, #8531
-`nv_release_bounded_process_evidence` for branch B. Neither observes the other.
+ruling. Branch A has a governed behavior owner, #10505 `nv_deep_atomic_branch`,
+and is current once #8129 selects it and #10505 observes it. Branch B has **no
+governed behavior-observation owner in #11392**: #8531
+`nv_release_bounded_process_evidence` assembles process/host evidence and by its
+own ceiling never flips behavior propositions, and
+`nv_release_bounded_v0_18_envelope` composes already-typed cells only. Branch B
+is therefore permanently `not_proven` as behavior until such an owner exists,
+selection notwithstanding. Neither branch's owner observes the other.
 
 ### Branch A — `atomic_incremental`
 
@@ -66,7 +71,7 @@ owner observes it**: #10505 `nv_deep_atomic_branch` for branch A, #8531
 
 | Scenario ID | User-visible behavior | Profile / evidence tag | Evidence boundary (owner chain) |
 | --- | --- | --- | --- |
-| `neovim.bdd.sync.06` | The advertised position encoding is UTF-16 and the change-sync kind matches the selected full-document envelope | bounded release (full-document branch); active only while #8129 selects branch B | #8129 ruling → #8531 `nv_release_bounded_process_evidence` → `editor_client_compat.v1` cell → `nv_release_bounded_v0_18_envelope` composition over already-typed cells, which adds no behavior cell of its own; #10505 owns the atomic branch and never observes this one |
+| `neovim.bdd.sync.06` | The advertised position encoding is UTF-16 and the change-sync kind matches the selected full-document envelope | bounded release (full-document branch); active only while #8129 selects branch B | #8129 ruling → #8531 `nv_release_bounded_process_evidence` supplies process/host evidence only → **no governed behavior-observation owner exists for this branch**, so the `editor_client_compat.v1` behavior cell has no producer and the row is permanently `not_proven` until #11392 adds one → `nv_release_bounded_v0_18_envelope` would compose already-typed cells, adding no behavior cell of its own; #10505 owns the atomic branch and never observes this one |
 | `neovim.bdd.sync.07` | Actual full-document change traffic from the built-in client is observed, not merely advertised | bounded release (full-document branch); conditional branch B | same chain |
 | `neovim.bdd.sync.08` | A ranged change notification is refused under the full-document envelope rather than partially applied | bounded release (full-document branch); conditional branch B | same chain |
 | `neovim.bdd.sync.09` | A refused notification leaves no partial mutation of server document state | bounded release (full-document branch); conditional branch B | same chain |

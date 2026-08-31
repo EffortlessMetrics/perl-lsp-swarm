@@ -235,13 +235,13 @@ INVARIANT_DIGESTS = {
     "profile_laws": "60e532ff4fcc0274",
     "claim_boundary": "3d6755e631a9c99f",
     "three_subject_law": "e53af321800e90fb",
-    "branch_selection_law": "d553244690ec9bd4",
+    "branch_selection_law": "071dc68e5f3c72b9",
     "profile_membership": "f4de26e57133c176",
     "evidence_vocabulary": "d78c020224e6bc3d",
 }
 
 ROW_DIGESTS = {
-    "neovim.bdd.attach.01": "3f5b7d942c7cb158",
+    "neovim.bdd.attach.01": "80663894f0883292",
     "neovim.bdd.attach.02": "e1dea4aedff52388",
     "neovim.bdd.attach.03": "7f9a2da986de1c22",
     "neovim.bdd.attach.04": "2ec42d3754a59bb5",
@@ -262,7 +262,7 @@ ROW_DIGESTS = {
     "neovim.bdd.sync.03": "087df18f02c9c85d",
     "neovim.bdd.sync.04": "516bc97b5338f5f2",
     "neovim.bdd.sync.05": "dfc3b58949b3feff",
-    "neovim.bdd.sync.06": "06c9aac01c93d6ef",
+    "neovim.bdd.sync.06": "09e6a4e47f2466f4",
     "neovim.bdd.sync.07": "79a7596f55c251eb",
     "neovim.bdd.sync.08": "e8c26b53507658ff",
     "neovim.bdd.sync.09": "0946b2febe0e2d75",
