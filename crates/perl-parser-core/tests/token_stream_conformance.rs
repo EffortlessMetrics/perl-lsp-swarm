@@ -191,3 +191,50 @@ fn hash_and_sub_sigils_as_identifier_tokens_keep_sigil_kind() {
         "bare %/& as Identifier tokens must map to sigil kinds, not operator kinds"
     );
 }
+
+/// A payload-free, geometry-only lexer token: empty text over a non-empty
+/// span (`PerlLexer::with_body_tokens` emits `HeredocBody` this way, and the
+/// budget recoveries emit `UnknownRest` this way — #6717 keeps those
+/// payloads out of lexer tokens).
+fn geometry_only_token(token_type: TokenType, start: usize, end: usize) -> LexerToken {
+    LexerToken { token_type, text: Arc::from(""), start, end }
+}
+
+#[test]
+fn geometry_only_heredoc_body_survives_conversion_with_source() {
+    // `with_body_tokens` heredoc bodies are payload-free; the source-aware
+    // conversion must reconstruct the covered bytes so the typed
+    // `HeredocBody` token survives instead of silently degrading to `Eof`
+    // through the `unknown_or_eof` fallback chain (#14158 class sweep).
+    let source = "my $x = <<'END';\nbody\n";
+    // Span 17..21 covers "body" in the source above.
+    assert_eq!(&source[17..21], "body");
+    let converted = TokenStream::lexer_tokens_to_parser_tokens_from_source(
+        vec![geometry_only_token(TokenType::HeredocBody(Arc::from("")), 17, 21)],
+        source,
+    );
+    assert_eq!(converted.len(), 1);
+    assert_eq!(converted[0].kind(), TokenKind::HeredocBody);
+    assert_eq!(&*converted[0].text, "body");
+    assert_eq!(converted[0].start(), 17);
+    assert_eq!(converted[0].end(), 21);
+}
+
+#[test]
+fn geometry_only_unknown_rest_survives_conversion_with_source() {
+    // Budget-degraded `UnknownRest` (#14158): the typed token — and the
+    // `lexer_budget_exhausted` stop cause downstream — must survive
+    // source-aware conversion instead of collapsing to a silent `Eof`.
+    let source = "my $x = 1;\nunterminated regex trailing";
+    // Span 11..38 covers the remaining source after the budget cut.
+    assert_eq!(&source[11..38], "unterminated regex trailing");
+    let converted = TokenStream::lexer_tokens_to_parser_tokens_from_source(
+        vec![geometry_only_token(TokenType::UnknownRest, 11, 38)],
+        source,
+    );
+    assert_eq!(converted.len(), 1);
+    assert_eq!(converted[0].kind(), TokenKind::UnknownRest);
+    assert_eq!(&*converted[0].text, "unterminated regex trailing");
+    assert_eq!(converted[0].start(), 11);
+    assert_eq!(converted[0].end(), 38);
+}

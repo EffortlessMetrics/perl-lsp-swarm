@@ -172,10 +172,12 @@ impl<'a> TokenStream<'a> {
     /// Source-aware conversion of raw [`LexerToken`]s to parser [`Token`]s.
     ///
     /// Identical to [`Self::lexer_tokens_to_parser_tokens`] except that
-    /// budget-degraded `UnknownRest` tokens (geometry-only, empty text) have
-    /// their covered bytes reconstructed from `source`, so the typed token —
-    /// and the `lexer_budget_exhausted` stop cause downstream — survives
-    /// conversion in pre-lexed (incremental) pipelines too (#14158).
+    /// payload-free geometry-only tokens (empty text over a non-empty span —
+    /// e.g. budget-degraded `UnknownRest`, or `HeredocBody` emitted for
+    /// folding consumers) have their covered bytes reconstructed from
+    /// `source`, so the typed token — and the `lexer_budget_exhausted` stop
+    /// cause downstream — survives conversion in pre-lexed (incremental)
+    /// pipelines too (#14158, class sweep).
     pub fn lexer_tokens_to_parser_tokens_from_source(
         tokens: Vec<LexerToken>,
         source: &str,
@@ -389,7 +391,7 @@ impl<'a> TokenStream<'a> {
     /// Extracted from `next_token_from_lexer` to keep the match arm readable.
     ///
     /// `source` is the text the live lexer is consuming; it reconstructs the
-    /// payload of budget-degraded `UnknownRest` tokens (see the tail of this
+    /// payload of payload-free geometry-only tokens (see the tail of this
     /// function). Pass `""` when no source is available (legacy conversion).
     fn convert_lexer_token(token: LexerToken, source: &str) -> Token {
         let kind = match &token.token_type {
@@ -516,15 +518,20 @@ impl<'a> TokenStream<'a> {
 
         let start = token.start;
         let end = token.end;
-        // Budget-degraded tokens (#14158): the lexer emits `UnknownRest` as a
-        // geometry-only event — empty text over the remaining source span — to
-        // keep recovery payload-free (#6717). The parser `Token` invariant
-        // requires text == span, so reconstruct the covered bytes from the
-        // source this stream already owns. Without the reconstruction the
-        // typed token cannot be constructed and silently degrades to `Eof`,
-        // erasing the `lexer_budget_exhausted` stop cause downstream.
-        let text = if matches!(kind, TokenKind::UnknownRest)
-            && token.text.is_empty()
+        // Payload-free geometry-only tokens (#14158 class): the lexer emits
+        // some tokens as geometry-only events — empty text over a non-empty
+        // source span — to keep recovery and streaming bodies payload-free
+        // (#6717). Known producers are the `UnknownRest` budget recoveries
+        // (regex, global, heredoc) and the `HeredocBody` emission for folding
+        // consumers, but the shape is not kind-specific: the parser `Token`
+        // invariant requires text == span, so any empty-text token over a
+        // non-empty span fails `token_from_lexer_parts` validation and its
+        // fallback chain silently synthesizes `Eof`, erasing the typed token —
+        // and with it the `lexer_budget_exhausted` stop cause downstream.
+        // Reconstruct the covered bytes from the source this stream already
+        // owns; restoring the real bytes is strictly more faithful than any
+        // synthetic fallback.
+        let text = if token.text.is_empty()
             && start < end
             && let Some(covered) = source.get(start..end)
         {
