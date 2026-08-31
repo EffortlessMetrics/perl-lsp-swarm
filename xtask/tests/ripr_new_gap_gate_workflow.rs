@@ -47,6 +47,27 @@ fn evaluate_gh_token_binding() -> Result<String> {
         .ok_or_else(|| anyhow!("Evaluate routed result GH_TOKEN binding is missing"))
 }
 
+fn retry_gh_token_binding() -> Result<String> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr-infra-retry.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    yaml.get("jobs")
+        .and_then(|jobs| jobs.get("retry-on-eviction"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find(|step| {
+                step.get("name").and_then(Value::as_str)
+                    == Some("Retry once when the gate classified the failure as infra-no-proof")
+            })
+        })
+        .and_then(|step| step.get("env"))
+        .and_then(|env| env.get("GH_TOKEN"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("retry workflow GH_TOKEN binding is missing"))
+}
+
 fn workflow_run_block(job_name: &str, step_name: &str) -> Result<String> {
     let root = project_root()?;
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
@@ -347,12 +368,14 @@ fn runner_response(fixture: &str) -> Result<&'static str> {
     }
 }
 
-fn artifact_response(fixture: &str) -> &'static str {
+fn artifact_response_with_id(fixture: &str, artifact_id: &str) -> String {
     match fixture {
-        "missing" => r#"{"total_count":1,"artifacts":[{"id":99000,"name":"ripr-pr-evidence"}]}"#,
-        _ => {
-            r#"{"total_count":2,"artifacts":[{"id":99000,"name":"ripr-pr-evidence"},{"id":99001,"name":"ripr-gate-classification"}]}"#
+        "missing" => {
+            r#"{"total_count":1,"artifacts":[{"id":99000,"name":"ripr-pr-evidence"}]}"#.to_owned()
         }
+        _ => format!(
+            r#"{{"total_count":2,"artifacts":[{{"id":99000,"name":"ripr-pr-evidence"}},{{"id":{artifact_id},"name":"ripr-gate-classification"}}]}}"#
+        ),
     }
 }
 
@@ -813,18 +836,49 @@ fn run_retry_case(
     artifact_mode: &str,
     run_attempt: &str,
 ) -> Result<(std::process::Output, String, bool)> {
+    run_retry_case_with(
+        artifact_mode,
+        run_attempt,
+        "99001",
+        Some("retry-token"),
+        "retry-token",
+        false,
+    )
+}
+
+fn run_retry_case_with(
+    artifact_mode: &str,
+    run_attempt: &str,
+    artifact_id: &str,
+    gh_token: Option<&str>,
+    expected_token: &str,
+    hardcode_artifact_id: bool,
+) -> Result<(std::process::Output, String, bool)> {
     let sandbox = tempfile::tempdir().context("creating retry sandbox")?;
     let summary = sandbox.path().join("summary.md");
     let post_called = sandbox.path().join("retry-post-called");
     let download_called = sandbox.path().join("artifact-download-called");
+    let api_calls = sandbox.path().join("api-calls");
     let zip_payload = sandbox.path().join("classification-payload.zip");
     let artifact_response_file = sandbox.path().join("artifacts.json");
     write_retry_artifact(&zip_payload, artifact_mode)?;
-    let run = retry_run_block()?;
+    let mut run = retry_run_block()?;
+    if hardcode_artifact_id {
+        let production_url = "actions/artifacts/${artifact_id}/zip";
+        let replacement_count = run.matches(production_url).count();
+        if replacement_count != 1 {
+            bail!(
+                "hardcoded-artifact negative control expected one production artifact ID binding, found {replacement_count}"
+            );
+        }
+        run = run.replace(production_url, "actions/artifacts/99001/zip");
+    }
+    require_real_jq()?;
     let fake = r#"
 gh() {
   [ "$1" = "api" ] || return 1
   [ -n "${GH_TOKEN:-}" ] || return 1
+  [ "$GH_TOKEN" = "${GITHUB_TOKEN:-}" ] || return 1
   shift
   local method="GET"
   if [ "$1" = "-X" ]; then
@@ -842,33 +896,40 @@ gh() {
       shift
     fi
   done
-  case "$url" in
-    */artifacts?per_page=100)
+  local expected_artifacts_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/artifacts?per_page=100"
+  local expected_artifact_zip_url="repos/${FAKE_REPOSITORY}/actions/artifacts/${FAKE_ARTIFACT_ID}/zip"
+  local expected_run_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}"
+  local expected_rerun_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/rerun-failed-jobs"
+  printf '%s %s\n' "$method" "$url" >> "$FAKE_API_CALLS"
+  if [ "$url" = "$expected_artifacts_url" ]; then
+      [ "$method" = "GET" ] || return 1
+      if [ "$jq_selector" != '.artifacts[] | select(.name == "ripr-gate-classification") | .id' ]; then
+        printf 'unexpected artifact selector: %s\n' "$jq_selector" >&2
+        return 1
+      fi
       printf '%s\n' "$FAKE_ARTIFACTS_JSON" > "$FAKE_ARTIFACT_RESPONSE"
       jq "$jq_selector" "$FAKE_ARTIFACT_RESPONSE"
-      ;;
-    */actions/artifacts/99001/zip)
+  elif [ "$url" = "$expected_artifact_zip_url" ]; then
+      [ "$method" = "GET" ] || return 1
       : > "$FAKE_DOWNLOAD_CALLED"
       if [ "$FAKE_ARTIFACT_MODE" = "download-failure" ]; then
         return 1
       fi
       cat "$FAKE_ZIP_PAYLOAD"
-      ;;
-    */actions/runs/4242)
+  elif [ "$url" = "$expected_run_url" ]; then
+      [ "$method" = "GET" ] || return 1
       if [ "$jq_selector" != '"\(.run_attempt) \(.status)"' ]; then
         printf 'unexpected run selector: %s\n' "$jq_selector" >&2
         return 1
       fi
       printf '%s completed\n' "$FAKE_LIVE_ATTEMPT"
-      ;;
-    */actions/runs/4242/rerun-failed-jobs)
+  elif [ "$url" = "$expected_rerun_url" ]; then
       [ "$method" = "POST" ] || return 1
       : > "$FAKE_POST_CALLED"
-      ;;
-    *)
+  else
+      printf 'unexpected gh API URL: %s\n' "$url" >&2
       return 1
-      ;;
-  esac
+  fi
 }
 "#;
     let script = format!("{fake}\n{run}");
@@ -876,18 +937,23 @@ gh() {
         .args(["--noprofile", "--norc", "-s"])
         .current_dir(sandbox.path())
         .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
-        .env("GH_TOKEN", "retry-token")
+        .env("GITHUB_TOKEN", expected_token)
+        .env("GH_TOKEN", gh_token.unwrap_or(""))
         .env("GITHUB_STEP_SUMMARY", &summary)
         .env("RUN_ID", "4242")
         .env("RUN_ATTEMPT", run_attempt)
         .env("HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
         .env("FAKE_ARTIFACT_MODE", artifact_mode)
-        .env("FAKE_ARTIFACTS_JSON", artifact_response(artifact_mode))
+        .env("FAKE_ARTIFACTS_JSON", artifact_response_with_id(artifact_mode, artifact_id))
         .env("FAKE_ARTIFACT_RESPONSE", &artifact_response_file)
         .env("FAKE_DOWNLOAD_CALLED", &download_called)
+        .env("FAKE_API_CALLS", &api_calls)
         .env("FAKE_ZIP_PAYLOAD", &zip_payload)
         .env("FAKE_LIVE_ATTEMPT", "1")
         .env("FAKE_POST_CALLED", &post_called)
+        .env("FAKE_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
+        .env("FAKE_RUN_ID", "4242")
+        .env("FAKE_ARTIFACT_ID", artifact_id)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -906,7 +972,16 @@ gh() {
     );
     let downloaded = download_called.is_file();
     let posted = post_called.is_file();
-    Ok((output, format!("{combined}\ndownload_called={downloaded}"), posted))
+    let api_calls_text = match fs::read_to_string(&api_calls) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).context("reading fake retry API calls"),
+    };
+    Ok((
+        output,
+        format!("{combined}\ndownload_called={downloaded}\napi_calls={api_calls_text}"),
+        posted,
+    ))
 }
 
 #[test]
@@ -1322,6 +1397,11 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
         retry.contains("[ \"${gate_run_id}\" != \"${RUN_ID}\" ]"),
         "ripr-infra-retry must verify the classification run id matches the event run"
     );
+    assert_eq!(
+        retry_gh_token_binding()?,
+        "${{ github.token }}",
+        "ripr-infra-retry must bind GH_TOKEN to the production workflow token"
+    );
     assert!(
         !retry.contains("[ \"${gate_head}\" != \"${HEAD_SHA}\" ]"),
         "ripr-infra-retry must not gate the retry on a head-SHA comparison (merge ref vs branch tip)"
@@ -1378,6 +1458,39 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
         || !valid_posted
     {
         bail!("valid classification data must reach the bounded rerun API:\n{valid_output}");
+    }
+    for expected_call in [
+        "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242/artifacts?per_page=100",
+        "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/artifacts/99001/zip",
+        "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242",
+        "POST repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242/rerun-failed-jobs",
+    ] {
+        if !valid_output.contains(expected_call) {
+            bail!(
+                "valid retry fixture did not replace and exercise production API call `{expected_call}`:\n{valid_output}"
+            );
+        }
+    }
+
+    let (hardcoded_id, hardcoded_id_output, hardcoded_id_posted) =
+        run_retry_case_with("valid", "1", "99002", Some("retry-token"), "retry-token", true)?;
+    if hardcoded_id.status.success()
+        || hardcoded_id_posted
+        || !hardcoded_id_output.contains("unexpected gh API URL")
+    {
+        bail!(
+            "a hardcoded fixture artifact ID must fail against the exact production URL binding:\n{hardcoded_id_output}"
+        );
+    }
+    let (arbitrary_token, arbitrary_token_output, arbitrary_token_posted) =
+        run_retry_case_with("valid", "1", "99001", Some("arbitrary-token"), "retry-token", false)?;
+    if arbitrary_token.status.success()
+        || arbitrary_token_posted
+        || arbitrary_token_output.contains("re-queued failed jobs")
+    {
+        bail!(
+            "a nonempty arbitrary token must not satisfy the production token binding:\n{arbitrary_token_output}"
+        );
     }
     let (exhausted, exhausted_output, exhausted_posted) = run_retry_case("valid", "2")?;
     if !exhausted.status.success()
