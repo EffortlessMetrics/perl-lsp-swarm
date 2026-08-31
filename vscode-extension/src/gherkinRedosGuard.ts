@@ -292,7 +292,7 @@ function hasBoundedAtomShape(atom: string): boolean {
 
 export function normalizeGherkinRegexFlags(flags: string): string | null {
   let normalized = '';
-  for (const flag of flags.toLowerCase()) {
+  for (const flag of flags) {
     if (flag !== 'i' && flag !== 'm' && flag !== 's') {
       // Perl flags such as x have no equivalent in this JavaScript matching
       // path. Silently dropping them can turn a non-match into a false match.

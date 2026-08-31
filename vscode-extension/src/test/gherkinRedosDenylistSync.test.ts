@@ -1,6 +1,18 @@
-import { isPotentiallyExpensiveRegex, isSafeGherkinStepMatch } from '../gherkinRedosGuard';
+import {
+  isPotentiallyExpensiveRegex,
+  isSafeGherkinStepMatch,
+  normalizeGherkinRegexFlags,
+} from '../gherkinRedosGuard';
 
 describe('gherkin ReDoS guard (#6154)', () => {
+  test.each(['i', 'm', 's'])('accepts lowercase Perl regex flag %s', (flag) => {
+    expect(normalizeGherkinRegexFlags(flag)).toBe(flag);
+  });
+
+  test.each(['I', 'M', 'S'])('rejects uppercase Perl regex modifier %s', (flag) => {
+    expect(normalizeGherkinRegexFlags(flag)).toBeNull();
+  });
+
   test.each(['^(a|aa)+$', '^(a|a)*$', '(x|xy)+z'])(
     'rejects quantified alternation %s',
     (pattern) => {
