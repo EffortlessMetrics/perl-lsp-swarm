@@ -143,6 +143,52 @@ pub(super) fn ensure_plan_subject_matches_invocation(
     Ok(())
 }
 
+/// Bind the route plan to the immutable subject receipt that supplied its
+/// digest. Checking only `HEAD` is insufficient: a caller can keep the same
+/// commit while changing the index or working tree that a gate actually
+/// inspects. The subject loader re-resolves the receipt's tree inputs against
+/// this checkout, so a same-HEAD/different-tree invocation is refused before
+/// execution rather than publishing a result for the wrong bytes.
+pub(super) fn ensure_plan_subject_matches_receipt(
+    plan: &CiRoutePlanV1,
+    subject_path: &Path,
+    root: &Path,
+) -> Result<()> {
+    let subject = crate::tasks::ci_subject::load_and_resolve(subject_path, root)
+        .with_context(|| format!("loading route-plan subject {}", subject_path.display()))?;
+    if subject.receipt.subject_digest != plan.subject.subject_digest {
+        bail!(
+            "route plan subject digest {} does not match immutable subject receipt {}; \
+             refusing to execute against a foreign subject",
+            plan.subject.subject_digest,
+            subject.receipt.subject_digest
+        );
+    }
+    if subject.receipt.head_sha != plan.subject.head_sha {
+        bail!(
+            "route plan subject head {} does not match immutable subject receipt {}; \
+             refusing to execute against a foreign subject",
+            plan.subject.head_sha,
+            subject.receipt.head_sha
+        );
+    }
+    Ok(())
+}
+
+/// A route plan is a committed-subject contract. Refuse tracked staged or
+/// working-tree changes before any gate runs; otherwise the plan can name the
+/// current commit while the command observes different source bytes.
+pub(super) fn ensure_execution_tree_is_clean(status: &str) -> Result<()> {
+    if !status.trim().is_empty() {
+        bail!(
+            "route plan requires a clean tracked index and working tree; \
+             refusing to execute against an unbound tree (git status: {})",
+            status.trim()
+        );
+    }
+    Ok(())
+}
+
 /// Hosted CI identity from the ambient GitHub Actions environment; `None`
 /// only when no GitHub environment exists at all (offline). A partial
 /// environment (some variables present, the claimed identity set incomplete)
@@ -180,7 +226,12 @@ pub(super) fn collect_hosted_identity_from(
         )
     })?;
     let run_attempt: u64 = run_attempt
-        .unwrap_or_default()
+        .ok_or_else(|| {
+            eyre!(
+                "partial hosted identity environment: GITHUB_RUN_ATTEMPT missing while other \
+                 GitHub variables are present; refusing to normalize an unbound hosted result"
+            )
+        })?
         .parse()
         .map_err(|error| eyre!("GITHUB_RUN_ATTEMPT is not a real attempt identity: {error}"))?;
     if run_attempt == 0 {
@@ -601,6 +652,15 @@ mod fixtures {
         let refused = collect_hosted_identity_from(|name| partial.get(name).cloned());
         assert!(refused.is_err(), "run id without job must refuse");
 
+        let mut missing_attempt = full.clone();
+        missing_attempt.remove("GITHUB_RUN_ATTEMPT");
+        let refused = collect_hosted_identity_from(|name| missing_attempt.get(name).cloned())
+            .expect_err("run id without attempt must refuse");
+        assert!(
+            refused.to_string().contains("GITHUB_RUN_ATTEMPT missing"),
+            "missing and malformed attempt identities must remain distinguishable: {refused}"
+        );
+
         let offline = collect_hosted_identity_from(|_| None).expect("offline lookup");
         assert!(offline.is_none(), "no GitHub environment means no hosted identity");
     }
@@ -652,6 +712,16 @@ mod fixtures {
         stale_timeout.timeout_seconds = 61;
         let refused_timeout = ensure_plan_covers_selection(&plan, &[&stale_timeout]);
         assert!(refused_timeout.is_err(), "a timeout-policy disagreement must refuse");
+    }
+
+    #[test]
+    fn route_plan_refuses_a_dirty_execution_tree() {
+        assert!(ensure_execution_tree_is_clean("").is_ok());
+        for status in [" M tracked.rs", "M  staged.rs", "?? untracked.rs"] {
+            let refused = ensure_execution_tree_is_clean(status)
+                .expect_err("a route plan must not run against an unbound tree");
+            assert!(refused.to_string().contains("clean tracked index"));
+        }
     }
 
     #[test]
