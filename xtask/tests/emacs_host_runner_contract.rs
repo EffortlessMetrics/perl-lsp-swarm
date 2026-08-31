@@ -1165,6 +1165,54 @@ fn clean_exit_with_leaked_candidate_descendant_fails_cleanup() -> Result<()> {
     Ok(())
 }
 
+/// A candidate process already alive before `run_owned_process` must fail
+/// cleanup closed as `NotProven`. The survivor diff excludes baseline
+/// matches, so only this pre-launch check prevents a leaked prior run from
+/// looking clean.
+#[test]
+fn pre_existing_candidate_makes_cleanup_not_proven() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, layout) = emacs_host_runner::supervision_plan(root.path(), "preexist", 30_000)?;
+    let ready_marker = layout.temp_directory.join("preexist-descendant-ready");
+    let leaked_pid = emacs_host_runner::spawn_preexisting_candidate(
+        &plan.paths.candidate_executable,
+        &ready_marker,
+        FAKE_HOST_ENTRY_TEST,
+    )?;
+    let _guard = LeakGuard { pids: vec![leaked_pid] };
+    let host_executable =
+        std::env::current_exe().context("locating this test binary for fake-host re-entry")?;
+    let mut command = emacs_host_runner::supervision_command(
+        &host_executable,
+        FAKE_HOST_ENTRY_TEST,
+        &plan,
+        &layout,
+        "clean",
+    )?;
+    let observation = emacs_host_runner::run_owned_process(&mut command, &plan, &layout)?;
+    ensure!(
+        observation.status_code == Some(0),
+        "the clean host must still exit zero; cleanup fail-closed is the discriminator, got {:?}",
+        observation.status_code
+    );
+    ensure!(
+        observation.cleanup == CleanupResult::NotProven,
+        "a pre-existing candidate must make cleanup not_proven, got {:?} ({})",
+        observation.cleanup,
+        observation.cleanup_detail
+    );
+    ensure!(
+        observation.cleanup_detail.contains("already present"),
+        "the ledger must name the pre-existing attribution failure, got {}",
+        observation.cleanup_detail
+    );
+    ensure!(
+        !observation.passed_process_boundary(),
+        "a pre-existing candidate must never satisfy the passing boundary"
+    );
+    Ok(())
+}
+
 #[test]
 fn timeout_records_last_completed_barrier_and_stays_not_proven() -> Result<()> {
     let root = tempfile::tempdir()?;

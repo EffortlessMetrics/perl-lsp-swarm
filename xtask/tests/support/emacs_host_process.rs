@@ -160,8 +160,8 @@ pub fn run_owned_process(
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().context("spawning Emacs host subject")?;
     let pid = child.id();
-    let mut stdout = child.stdout.take().context("capturing host stdout")?;
-    let mut stderr = child.stderr.take().context("capturing host stderr")?;
+    let stdout = child.stdout.take().context("capturing host stdout")?;
+    let stderr = child.stderr.take().context("capturing host stderr")?;
     let stdout_reader = spawn_bounded_reader(stdout, StreamSanitizer::for_run(plan, layout));
     let stderr_reader = spawn_bounded_reader(stderr, StreamSanitizer::for_run(plan, layout));
 
@@ -457,10 +457,10 @@ fn spawn_bounded_reader(
         let mut total_bytes = 0u64;
         let mut line: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 8192];
-        let mut absorb = |bytes: &[u8],
-                          retained: &mut Vec<u8>,
-                          total_bytes: &mut u64,
-                          hasher: &mut sha2::Sha256|
+        let absorb = |bytes: &[u8],
+                      retained: &mut Vec<u8>,
+                      total_bytes: &mut u64,
+                      hasher: &mut sha2::Sha256|
          -> std::io::Result<()> {
             let sanitized = sanitizer.sanitize_line(&String::from_utf8_lossy(bytes));
             let sanitized = sanitized.as_bytes();

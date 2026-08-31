@@ -221,6 +221,50 @@ fn child_emit_lifecycle(
     Ok(())
 }
 
+/// Copy this test binary onto the unique candidate path and spawn a
+/// descendant that stays alive under `descendant_sleep`. Callers must
+/// reap it (`stop_test_descendant`). Used by the leak-while-host-runs
+/// scenario and by the pre-existing-before-launch discriminator so both
+/// drive the same spawn path.
+pub fn spawn_preexisting_candidate(
+    candidate: &Path,
+    ready_marker: &Path,
+    entry_test: &str,
+) -> Result<u32> {
+    let self_exe = std::env::current_exe().context("locating supervision fixture exe")?;
+    fs::copy(&self_exe, candidate)
+        .with_context(|| format!("staging descendant image at {}", candidate.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(candidate)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(candidate, permissions)?;
+    }
+    if let Some(parent) = ready_marker.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let mut descendant = Command::new(candidate);
+    descendant
+        .args(["--exact", entry_test, "--test-threads=1"])
+        .env(FAKE_HOST_MODE_ENV, "descendant_sleep")
+        .env(FAKE_HOST_DESCENDANT_READY_ENV, ready_marker)
+        .env(FAKE_HOST_ENTRY_ENV, entry_test);
+    let descendant_pid = spawn_surviving_descendant(descendant)?;
+    let mut became_ready = ready_marker.is_file();
+    for _ in 0..400 {
+        if became_ready {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+        became_ready = ready_marker.is_file();
+    }
+    if !became_ready {
+        bail!("leak-scenario descendant {descendant_pid} never signaled readiness");
+    }
+    Ok(descendant_pid)
+}
+
 fn spawn_surviving_descendant(mut command: Command) -> Result<u32> {
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
@@ -342,40 +386,14 @@ fn run_fake_host_mode(mode: &str) -> Result<i32> {
         }
         "leak_descendant_clean_exit" => {
             let candidate = child_required_env("PERL_LSP_EMACS_CANDIDATE")?;
-            let self_exe = std::env::current_exe().context("locating supervision fixture exe")?;
-            fs::copy(&self_exe, &candidate)
-                .with_context(|| format!("staging descendant image at {}", candidate.display()))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut permissions = fs::metadata(&candidate)?.permissions();
-                permissions.set_mode(0o755);
-                fs::set_permissions(&candidate, permissions)?;
-            }
             let ready_marker = event_file
                 .parent()
                 .context("event file must have a parent directory")?
                 .join(format!("descendant-ready-{}", std::process::id()));
             let entry_test = std::env::var(FAKE_HOST_ENTRY_ENV)
                 .context("supervision child missing entry test name")?;
-            let mut descendant = Command::new(&candidate);
-            descendant
-                .args(["--exact", &entry_test, "--test-threads=1"])
-                .env(FAKE_HOST_MODE_ENV, "descendant_sleep")
-                .env(FAKE_HOST_DESCENDANT_READY_ENV, &ready_marker)
-                .env(FAKE_HOST_ENTRY_ENV, &entry_test);
-            let descendant_pid = spawn_surviving_descendant(descendant)?;
-            let mut became_ready = ready_marker.is_file();
-            for _ in 0..400 {
-                if became_ready {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(50));
-                became_ready = ready_marker.is_file();
-            }
-            if !became_ready {
-                bail!("leak-scenario descendant {descendant_pid} never signaled readiness");
-            }
+            let _descendant_pid =
+                spawn_preexisting_candidate(&candidate, &ready_marker, &entry_test)?;
             child_emit_lifecycle(&event_file, &mut sequence, None)?;
             Ok(0)
         }

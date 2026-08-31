@@ -29,8 +29,8 @@ mod process;
 
 #[cfg(test)]
 pub use fake_host::{
-    FAKE_HOST_MODE_ENV, run_fake_host_entry, stop_test_descendant, supervision_command,
-    supervision_plan,
+    FAKE_HOST_MODE_ENV, run_fake_host_entry, spawn_preexisting_candidate, stop_test_descendant,
+    supervision_command, supervision_plan,
 };
 pub use process::{
     ProcessObservation, parse_process_snapshot, parse_windows_process_snapshot, run_owned_process,
