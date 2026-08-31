@@ -12,7 +12,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fs;
     use std::path::Path;
-    use std::process::{Child, Command, Output, Stdio};
+    use std::process::{Child, Command, ExitStatus, Output, Stdio};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -240,6 +240,15 @@ for my $sub (qw(Oracle::Demo::proto)) {
         timeout: Duration,
         operation: &str,
     ) -> Result<Output> {
+        run_bounded_command_with_poll(command, timeout, operation, |child| child.try_wait())
+    }
+
+    fn run_bounded_command_with_poll(
+        command: &mut Command,
+        timeout: Duration,
+        operation: &str,
+        mut poll: impl FnMut(&mut Child) -> std::io::Result<Option<ExitStatus>>,
+    ) -> Result<Output> {
         let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -248,7 +257,7 @@ for my $sub (qw(Oracle::Demo::proto)) {
         let started = Instant::now();
 
         loop {
-            let status = match child.try_wait() {
+            let status = match poll(&mut child) {
                 Ok(status) => status,
                 Err(error) => {
                     return Err(cleanup_after_poll_error(child, error, operation));
@@ -418,6 +427,36 @@ for my $sub (qw(Oracle::Demo::proto)) {
         assert!(
             message.contains("compiler-oracle-timeout-sentinel"),
             "timeout should retain child stderr: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compiler_oracle_poll_failure_cleans_up_child() -> Result<()> {
+        let mut command = isolated_perl_command();
+        command
+            .arg("-e")
+            .arg(r#"select undef, undef, undef, 2;"#);
+
+        let error = run_bounded_command_with_poll(
+            &mut command,
+            Duration::from_secs(1),
+            "compiler-oracle poll failure falsifier",
+            |_| Err(std::io::Error::other("synthetic poll failure")),
+        )
+        .err()
+        .context("synthetic poll failure should be surfaced")?;
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("compiler-oracle poll failure falsifier polling failed")
+                && message.contains("synthetic poll failure"),
+            "the original polling error must remain visible: {message}"
+        );
+        assert!(
+            message.contains("child kill requested")
+                && message.contains("child reap attempted"),
+            "poll failure must attempt direct-child cleanup: {message}"
         );
         Ok(())
     }
