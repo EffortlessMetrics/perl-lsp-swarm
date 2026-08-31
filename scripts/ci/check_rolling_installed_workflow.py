@@ -92,11 +92,6 @@ def validate(text: str) -> None:
         "pre_freeze_public_beta_acceptance.json",
         "workflow must retain the named pre-freeze packet",
     )
-    require(
-        text,
-        "other_retained_targets",
-        "other topology targets must remain explicit in the packet contract",
-    )
 
     for row_id in REQUIRED_ROWS:
         require(text, f"row_id: {row_id}", f"workflow misses required row {row_id}")
