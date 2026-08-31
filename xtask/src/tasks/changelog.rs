@@ -42,7 +42,9 @@
 //! would bury the named findings under an exit-2 instrument failure that names
 //! nothing. "Fragment X is malformed" (above) and "render crashed" (exit 2)
 //! therefore never appear for the same run. Fragments deleted by the PR are
-//! excluded from validation: an absent path cannot crash the renderer.
+//! excluded from the disposition itself before classification — an absent
+//! path cannot crash the renderer, owes no release note, and must not lend
+//! its Fragment disposition to unrelated changes in the same PR.
 //!
 //! A malformed fragment is a *verdict-bearing* finding, symmetric with a
 //! missing disposition: past the blocking boundary it is a
@@ -793,25 +795,39 @@ fn check_inner(
     }
 
     let changelog_paths = policy.changelog_paths();
-    let disposition = detect_disposition(&changed, &pr_body, &policy);
+    // Deletion status is derived BEFORE disposition detection: `detect_
+    // disposition` classifies every changed unreleased fragment path as a
+    // Fragment disposition, so a deleted fragment must be removed from that
+    // set first — a PR mixing a feature change with the deletion of a stale
+    // fragment would otherwise inherit the deletion's Fragment disposition
+    // and pass even blocking enforcement without a release note (issue
+    // #13484 review). Deletion paths stay in `changed` for category hints
+    // and direct-edit handling. Soft-degraded `deleted_paths` (empty set)
+    // preserves the pre-existing advisory behavior.
+    let deleted = deleted_paths(&root, &base);
+    let deleted_changed: Vec<String> =
+        changed.iter().filter(|f| deleted.contains(*f)).cloned().collect();
+    if !deleted_changed.is_empty() {
+        report.info(format!(
+            "ignoring deleted path(s) for the changelog disposition: {} — an absent \
+             fragment cannot crash the renderer and owes no release note",
+            deleted_changed.join(", ")
+        ));
+    }
+    let active: Vec<String> = changed.iter().filter(|f| !deleted.contains(*f)).cloned().collect();
+    if active.is_empty() {
+        report.info(
+            "every changed file is a deletion — no fragment to validate, no \
+                     disposition owed",
+        );
+        return Ok((CheckOutcome::PolicySatisfied, report));
+    }
+    let disposition = detect_disposition(&active, &pr_body, &policy);
     let outcome = match &disposition {
         Disposition::Fragment(frags) => {
             report.ok(format!("disposition: {} Changie fragment(s) added", frags.len()));
-            let deleted = deleted_paths(&root, &base);
             let mut malformed = Vec::new();
             for rel in frags {
-                // A fragment deleted by this PR is absent on disk and cannot
-                // crash the renderer: exclude it from validation instead of
-                // counting the deletion as a malformed fragment (issue
-                // #13484 review). Soft-degraded `deleted_paths` (empty set)
-                // preserves the pre-existing advisory behavior.
-                if deleted.contains(rel) {
-                    report.info(format!(
-                        "fragment {rel} is deleted by this PR — nothing to validate, the \
-                         renderer cannot crash on an absent path"
-                    ));
-                    continue;
-                }
                 if check_fragment_file(&root, rel, &cfg, &mut report) {
                     malformed.push(rel.clone());
                 }
@@ -2110,6 +2126,66 @@ changelog = "vscode-extension/CHANGELOG.md"
         assert!(
             !rendered.contains("malformed"),
             "a deleted fragment must not be classified malformed; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A PR mixing a real change with the deletion of a stale unreleased
+    /// fragment must NOT inherit the deleted path's Fragment disposition:
+    /// deletions are excluded before disposition detection, so the remaining
+    /// change still owes a release note or exemption (issue #13484 review:
+    /// deleted fragments must not bypass changelog enforcement). The
+    /// changed-file list is supplied explicitly — as the changelog-advisory
+    /// workflow does — because xtask's own git path already filters
+    /// deletions.
+    #[test]
+    fn check_feature_change_plus_deleted_fragment_still_owes_a_disposition()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&armed), None)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-stale-Added-111111.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add stale fragment"])?;
+        std::fs::remove_file(dir.join(fragment_path)).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("feature.txt"), "unrelated feature change")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete fragment, land feature"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let list = write_changed_files(dir, &[fragment_path, "feature.txt"])?;
+        let (outcome, report) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "the surviving feature change must still owe a disposition (advisory armed), \
+             not ride the deleted fragment's Fragment disposition"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            rendered.contains("ignoring deleted path(s)"),
+            "the deletion must be reported as excluded from the disposition; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("malformed"),
+            "the deleted fragment must not be classified malformed; got:\n{rendered}"
         );
         Ok(())
     }
