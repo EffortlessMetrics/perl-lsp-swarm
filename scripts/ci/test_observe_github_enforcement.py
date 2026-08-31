@@ -698,20 +698,46 @@ class CaptureBundle(unittest.TestCase):
         direct["observation"]["source"] = "connector"
         self.assertEqual(direct, imported)
 
+    def valid_bundle(self) -> dict:
+        """A bundle the observer itself produced, for one-thing-at-a-time edits.
+
+        Hand-written literals rot: when the capture schema version moved, the
+        old literals started failing at the version gate instead of at the
+        check under test, and the suite stayed green either way. Deriving each
+        case from a real bundle keeps every rejection attributable.
+        """
+        return observer.capture_live(REPOSITORY, "main", transport()).to_bundle()
+
+    def test_the_unmutated_bundle_is_accepted(self) -> None:
+        """Positive control: every rejection below must be the edit's doing."""
+        restored = observer.Capture.from_bundle(self.valid_bundle())
+        self.assertEqual(restored.repository, REPOSITORY)
+        self.assertEqual(restored.branch, "main")
+
     def test_malformed_bundle_is_rejected(self) -> None:
-        for bundle in (
-            {"schema_version": 2, "entries": []},
-            {"schema_version": 1, "entries": {}},
-            {"schema_version": 1, "entries": [{"key": "repository"}]},
-            {
-                "schema_version": 1,
-                "entries": [
-                    {"key": "repository", "status": 200, "body_base64": "!!!"}
-                ],
-            },
+        def wrong_version(bundle: dict) -> None:
+            bundle["schema_version"] = observer.CAPTURE_VERSION + 1
+
+        def entries_not_a_list(bundle: dict) -> None:
+            bundle["entries"] = {}
+
+        def entry_missing_fields(bundle: dict) -> None:
+            bundle["entries"] = [{"key": "repository"}]
+
+        def body_not_base64(bundle: dict) -> None:
+            bundle["entries"][0]["body_base64"] = "!!!"
+
+        for label, mutate in (
+            ("wrong schema version", wrong_version),
+            ("entries not a list", entries_not_a_list),
+            ("entry missing fields", entry_missing_fields),
+            ("body not base64", body_not_base64),
         ):
-            with self.assertRaises(observer.ObserverError):
-                observer.Capture.from_bundle(bundle)
+            bundle = self.valid_bundle()
+            mutate(bundle)
+            with self.subTest(label=label):
+                with self.assertRaises(observer.ObserverError):
+                    observer.Capture.from_bundle(bundle)
 
     def test_bundle_cannot_represent_a_state_the_transport_never_emits(
         self,
@@ -723,20 +749,12 @@ class CaptureBundle(unittest.TestCase):
         evidence claim something the observer never saw.
         """
         for status, failed in ((200, True), (None, False), (403, True)):
-            with self.assertRaises(observer.ObserverError):
-                observer.Capture.from_bundle(
-                    {
-                        "schema_version": 1,
-                        "entries": [
-                            {
-                                "key": "repository",
-                                "status": status,
-                                "transport_failed": failed,
-                                "body_base64": "",
-                            }
-                        ],
-                    }
-                )
+            bundle = self.valid_bundle()
+            bundle["entries"][0]["status"] = status
+            bundle["entries"][0]["transport_failed"] = failed
+            with self.subTest(status=status, transport_failed=failed):
+                with self.assertRaises(observer.ObserverError):
+                    observer.Capture.from_bundle(bundle)
 
     def test_bundle_missing_a_listed_ruleset_detail_is_reported(self) -> None:
         """A bundle can name a ruleset it never captured.
@@ -768,20 +786,19 @@ class CaptureBundle(unittest.TestCase):
         self.assertEqual(result["status"], "NOT_PROVEN")
 
     def test_bundle_transport_failed_must_be_a_boolean(self) -> None:
-        with self.assertRaises(observer.ObserverError):
-            observer.Capture.from_bundle(
-                {
-                    "schema_version": 1,
-                    "entries": [
-                        {
-                            "key": "repository",
-                            "status": None,
-                            "transport_failed": "yes",
-                            "body_base64": "",
-                        }
-                    ],
-                }
-            )
+        """Cases chosen to slip past the status/transport_failed pairing check.
+
+        `1 == True` and `0 == False` in Python, so these agree with the
+        pairing rule and are rejected only by the type check itself. A string
+        would be caught by the pairing check instead, proving nothing here.
+        """
+        for status, failed in ((None, 1), (200, 0)):
+            bundle = self.valid_bundle()
+            bundle["entries"][0]["status"] = status
+            bundle["entries"][0]["transport_failed"] = failed
+            with self.subTest(status=status, transport_failed=failed):
+                with self.assertRaises(observer.ObserverError):
+                    observer.Capture.from_bundle(bundle)
 
 
 class AcquisitionBinding(unittest.TestCase):
