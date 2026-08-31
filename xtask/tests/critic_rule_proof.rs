@@ -140,7 +140,8 @@ fn suggested_edit_cannot_be_marked_automatic() -> TestResult {
         "apply": "automatic",
         "expect_reparse": "ok",
         "expect_target_removed": true,
-        "expect_no_new_governed": true
+        "expect_no_new_governed": true,
+        "expected_edits": [{"start_byte": 0, "end_byte": 0, "new_text": "use strict;\n"}]
     });
     expect_violation(&manifest, "automatic_fix_round_trip is impossible")
 }
@@ -316,6 +317,43 @@ fn include_missing_governed_rule_fails_check() -> TestResult {
     case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["include"] =
         json!(["native.security.string_eval"]);
     expect_violation(&manifest, "include must contain the governed rule")
+}
+
+#[test]
+fn include_unknown_rule_fails_profile_binding() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["include"] =
+        json!(["native.testing.require_use_strict", "native.typo"]);
+    expect_violation(&manifest, "include rule `native.typo` is not in the `recommended` profile roster")
+}
+
+#[test]
+fn strict_only_rule_cannot_be_included_in_recommended_case() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["include"] =
+        json!(["native.testing.require_use_strict", "native.regex.capture_without_match"]);
+    expect_violation(&manifest, "is not in the `recommended` profile roster")
+}
+
+#[test]
+fn automatic_edit_identity_is_required() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    manifest["cases"][0]["fix_round_trip"]["expected_edits"] = json!([
+        {"start_byte": 0, "end_byte": 0, "new_text": "use warnings;\n"}
+    ]);
+    let typed = validate_manifest_value(&repo_root(), &manifest)?;
+    let error = proof::execute_manifest(&repo_root(), &typed)
+        .expect_err("wrong automatic edit must fail")
+        .to_string();
+    assert!(error.contains("automatic edit set does not match the manifest exactly"));
+    Ok(())
+}
+
+#[test]
+fn automatic_edit_set_cannot_be_omitted() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    manifest["cases"][0]["fix_round_trip"]["expected_edits"] = json!([]);
+    expect_violation(&manifest, "expected_edits")
 }
 
 #[test]

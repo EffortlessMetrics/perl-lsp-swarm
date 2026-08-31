@@ -204,7 +204,10 @@
         "apply": "automatic",
         "expect_reparse": "ok",
         "expect_target_removed": true,
-        "expect_no_new_governed": true
+        "expect_no_new_governed": true,
+        "expected_edits": [
+          { "start_byte": 0, "end_byte": 0, "new_text": "use strict;\n" }
+        ]
       },
       "proposition": "A file without use strict emits one insertion-range finding with a Safe automatic-candidate edit; applying it reparses and removes the target diagnostic."
     },

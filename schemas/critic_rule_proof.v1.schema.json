@@ -172,13 +172,29 @@
         "apply",
         "expect_reparse",
         "expect_target_removed",
-        "expect_no_new_governed"
+        "expect_no_new_governed",
+        "expected_edits"
       ],
       "properties": {
         "apply": { "type": "string", "enum": ["automatic", "forbidden"] },
         "expect_reparse": { "$ref": "#/$defs/parse_expectation" },
         "expect_target_removed": { "type": "boolean" },
         "expect_no_new_governed": { "type": "boolean" }
+        ,"expected_edits": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/expected_edit" }
+        }
+      }
+    },
+    "expected_edit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_byte", "end_byte", "new_text"],
+      "properties": {
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 0 },
+        "new_text": { "type": "string" }
       }
     },
     "case_record": {

@@ -261,6 +261,16 @@ pub struct FixRoundTrip {
     pub expect_reparse: ParseExpectation,
     pub expect_target_removed: bool,
     pub expect_no_new_governed: bool,
+    pub expected_edits: Vec<ExpectedEdit>,
+}
+
+/// Exact edit identity required by an automatic-fix proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedEdit {
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub new_text: String,
 }
 
 /// One proof case bound to a fixture and proposition.

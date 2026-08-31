@@ -171,6 +171,15 @@ fn prove_automatic_round_trip(
     if proof_remediation(fix.remediation_eligibility()) != ProofRemediation::AutomaticCandidate {
         return Err(ProofError::new("automatic round trip cannot apply a non-automatic edit"));
     }
+    if fix.edits.len() != round_trip.expected_edits.len()
+        || fix.edits.iter().zip(&round_trip.expected_edits).any(|(actual, expected)| {
+            actual.range.start.byte != expected.start_byte
+                || actual.range.end.byte != expected.end_byte
+                || actual.new_text != expected.new_text
+        })
+    {
+        return Err(ProofError::new("automatic edit set does not match the manifest exactly"));
+    }
     let applied = apply_edits(source, &fix.edits)?;
     let reparsed = Parser::new(&applied).parse();
     match (round_trip.expect_reparse, reparsed) {

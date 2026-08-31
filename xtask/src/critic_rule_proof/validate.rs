@@ -13,7 +13,8 @@ use super::digest::file_digest;
 use super::error::ProofError;
 use super::model::{
     EvidenceClass, FIXTURE_ROOT, FixApply, ISSUE, MANIFEST_NAME, MANIFEST_PATH, ParseExpectation,
-    ProofRemediation, RuleProofManifest, SCHEMA_PATH, SCHEMA_VERSION, resolve_fixture_path,
+    ProofProfile, ProofRemediation, RuleProofManifest, SCHEMA_PATH, SCHEMA_VERSION,
+    resolve_fixture_path,
 };
 
 /// Pilot rules that must carry a complete applicable evidence set.
@@ -277,6 +278,19 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
                 case.case_id, case.rule_id
             ));
         }
+        let profile_catalog: BTreeSet<&str> = NativeCriticRegistry::for_profile(native_profile(case.profile))
+            .rule_ids()
+            .into_iter()
+            .collect();
+        for included in &case.include {
+            if !profile_catalog.contains(included.as_str()) {
+                violations.push(format!(
+                    "case `{}`: include rule `{included}` is not in the `{}` profile roster",
+                    case.case_id,
+                    case.profile.as_str()
+                ));
+            }
+        }
         if matches!(case.parse_expectation, ParseExpectation::Error) {
             for class in &case.evidence_classes {
                 if !class.allowed_on_parse_error() {
@@ -366,6 +380,12 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
                             case.case_id
                         ));
                     }
+                    if round_trip.expected_edits.is_empty() {
+                        violations.push(format!(
+                            "case `{}`: automatic success must record at least one expected edit",
+                            case.case_id
+                        ));
+                    }
                 }
             }
         } else if case.fix_round_trip.is_some() {
@@ -428,6 +448,13 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
                 rule.declared_remediation.as_str()
             ));
         }
+    }
+}
+
+fn native_profile(profile: ProofProfile) -> NativeCriticProfile {
+    match profile {
+        ProofProfile::Recommended => NativeCriticProfile::Recommended,
+        ProofProfile::Strict => NativeCriticProfile::Strict,
     }
 }
 
