@@ -90,9 +90,11 @@ impl LspServer {
         // Sample each authority independently; never hold `root_path` while
         // acquiring `workspace_folders` (diagnostic publication uses the
         // opposite order while validating an accepted subject).
+        let topology_generation =
+            self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
         let has_root = self.root_path.lock().is_some();
-        let has_workspace_folders = self.workspace_folders.lock().is_empty();
-        if !has_root && has_workspace_folders {
+        let workspace_folders_empty = self.workspace_folders.lock().is_empty();
+        if !has_root && workspace_folders_empty {
             return None;
         }
 
@@ -105,6 +107,15 @@ impl LspServer {
                 return None;
             }
         };
+        if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+            != topology_generation
+        {
+            tracing::debug!(
+                module = module_name,
+                "Discarding virtual content after workspace topology change"
+            );
+            return None;
+        }
         let pod = perl_pod::extract_pod(&source);
         let related_links = workspace_pod_related_perldoc_uris(module_name, &source);
 

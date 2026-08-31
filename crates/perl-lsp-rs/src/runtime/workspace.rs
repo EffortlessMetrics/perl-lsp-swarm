@@ -2171,11 +2171,6 @@ impl LspServer {
                 }
             }
 
-            // Invalidate any in-flight diagnostic subject captured before this
-            // topology transition, including subjects whose root string still
-            // resolves to the same fallback path.
-            self.workspace_topology_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
             // Workspace folder membership changed, so any in-flight reverse
             // request now has stale per-folder scoping. Drop pending entries
             // before issuing a fresh `workspace/configuration` pull.
@@ -2221,6 +2216,11 @@ impl LspServer {
     fn apply_workspace_folder_removal(&self, removed_uris: &std::collections::HashSet<String>) {
         let mut workspace_folders = self.workspace_folders.lock();
         workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
+        // Advance the topology identity while the membership mutation is
+        // still protected.  Any diagnostic or virtual-content reader that
+        // captured the previous generation must now fail its final
+        // currentness check, even before document eviction completes.
+        self.workspace_topology_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Start a background workspace indexing scan
@@ -4057,13 +4057,15 @@ mod tests {
         // assertion would observe the lock inversion directly.
         let documents_guard = server.documents.lock();
         ready.wait();
-        phase_a_rx.recv().expect("phase-A completion");
-        assert!(
-            server.workspace_folders.try_lock().is_some(),
-            "workspace topology guard must be released before document eviction"
-        );
+        let phase_a = phase_a_rx.recv_timeout(std::time::Duration::from_secs(2));
+        let topology_released = server.workspace_folders.try_lock().is_some();
         drop(documents_guard);
         worker.join().map_err(|_| "workspace eviction worker panicked")?;
+        phase_a.map_err(|error| format!("phase-A completion timed out: {error}"))?;
+        assert!(
+            topology_released,
+            "workspace topology guard must be released before document eviction"
+        );
         Ok(())
     }
 
