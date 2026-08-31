@@ -191,6 +191,9 @@ commands = [
 ]
 coverage_filters = [
   "parser_workspace_index_facade_consumers",
+]
+
+[[pack]]
 id = "patch-coverage-xtask-parser-tdd-facade-guard"
 lcov = false
 files = [
