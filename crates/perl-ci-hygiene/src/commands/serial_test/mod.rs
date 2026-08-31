@@ -139,21 +139,29 @@ impl EnvBindings {
         }
     }
 
-    fn install_parent_use(&mut self, item_use: &ItemUse, parent: &Self) {
+    fn install_ancestor_use(&mut self, item_use: &ItemUse, ancestors: &[Self]) {
         let mut paths = Vec::new();
         flatten_use_tree(&item_use.tree, &mut Vec::new(), &mut paths);
         for (path, alias, glob) in paths {
-            if path.first().is_none_or(|segment| segment != "super") {
-                continue;
-            }
-            if glob && path == ["super"] {
-                self.module_aliases.extend(parent.module_aliases.iter().cloned());
+            let (authority, inherited) = if path.first().is_some_and(|segment| segment == "crate") {
+                let Some(root) = ancestors.last() else { continue };
+                (root, &path[1..])
+            } else {
+                let super_count = path.iter().take_while(|segment| *segment == "super").count();
+                if super_count == 0 {
+                    continue;
+                }
+                let Some(parent) = ancestors.get(super_count - 1) else { continue };
+                (parent, &path[super_count..])
+            };
+            if glob && inherited.is_empty() {
+                self.module_aliases.extend(authority.module_aliases.iter().cloned());
                 self.direct_aliases.extend(
-                    parent.direct_aliases.iter().map(|(name, signal)| (name.clone(), *signal)),
+                    authority.direct_aliases.iter().map(|(name, signal)| (name.clone(), *signal)),
                 );
                 continue;
             }
-            if glob && path.len() == 2 && parent.module_aliases.contains(&path[1]) {
+            if glob && inherited.len() == 1 && authority.module_aliases.contains(&inherited[0]) {
                 for function in ["set_var", "remove_var", "set_current_dir"] {
                     if let Some(signal) = signal_category(function) {
                         self.direct_aliases.insert(function.to_owned(), signal);
@@ -161,15 +169,15 @@ impl EnvBindings {
                 }
                 continue;
             }
-            if glob || path.len() != 2 {
+            if glob || inherited.len() != 1 {
                 continue;
             }
-            let source = &path[1];
+            let source = &inherited[0];
             let target = alias.unwrap_or_else(|| source.clone());
-            if parent.module_aliases.contains(source) {
+            if authority.module_aliases.contains(source) {
                 self.module_aliases.insert(target.clone());
             }
-            if let Some(signal) = parent.direct_aliases.get(source) {
+            if let Some(signal) = authority.direct_aliases.get(source) {
                 self.direct_aliases.insert(target, *signal);
             }
         }
@@ -357,6 +365,19 @@ impl<'ast> Visit<'ast> for InstantiatedTypes {
         visit::visit_expr_struct(self, expression);
     }
 
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        if local.init.is_some()
+            && let Pat::Type(typed) = &local.pat
+            && let syn::Type::Path(path) = typed.ty.as_ref()
+            && path.qself.is_none()
+            && path.path.segments.len() == 1
+            && let Some(segment) = path.path.segments.first()
+        {
+            self.names.insert(ident_name(&segment.ident));
+        }
+        visit::visit_local(self, local);
+    }
+
     fn visit_expr_closure(&mut self, _closure: &'ast syn::ExprClosure) {}
 
     fn visit_item(&mut self, _item: &'ast Item) {}
@@ -373,6 +394,10 @@ fn immediate_closure(expression: &Expr) -> Option<&syn::ExprClosure> {
         Expr::Closure(closure) => Some(closure),
         Expr::Group(group) => immediate_closure(&group.expr),
         Expr::Paren(paren) => immediate_closure(&paren.expr),
+        Expr::Block(block) if block.block.stmts.len() == 1 => match &block.block.stmts[0] {
+            Stmt::Expr(expression, None) => immediate_closure(expression),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -564,14 +589,12 @@ impl<'ast> Visit<'ast> for SignalVisitor {
     fn visit_item_fn(&mut self, _function: &'ast syn::ItemFn) {}
 }
 
-fn module_bindings(items: &[Item], parent: Option<&EnvBindings>) -> EnvBindings {
+fn module_bindings(items: &[Item], ancestors: &[EnvBindings]) -> EnvBindings {
     let mut bindings = EnvBindings::default();
     for item in items {
         if let Item::Use(item_use) = item {
             bindings.install_env_glob(item_use);
-            if let Some(parent) = parent {
-                bindings.install_parent_use(item_use, parent);
-            }
+            bindings.install_ancestor_use(item_use, ancestors);
         }
     }
     for item in items {
@@ -580,9 +603,7 @@ fn module_bindings(items: &[Item], parent: Option<&EnvBindings>) -> EnvBindings 
     for item in items {
         if let Item::Use(item_use) = item {
             bindings.install_explicit_env_use(item_use);
-            if let Some(parent) = parent {
-                bindings.install_parent_use(item_use, parent);
-            }
+            bindings.install_ancestor_use(item_use, ancestors);
         }
     }
     bindings
@@ -648,7 +669,7 @@ fn external_module_path(
 struct ScanContext<'a> {
     parsed: &'a [ParsedRustFile],
     known: &'a BTreeMap<PathBuf, usize>,
-    visited: BTreeSet<(usize, PathBuf, EnvBindings)>,
+    visited: BTreeSet<(usize, PathBuf, Vec<EnvBindings>)>,
     files_seen: BTreeSet<usize>,
     sites: Vec<SerialSiteIdentity>,
 }
@@ -660,10 +681,10 @@ impl ScanContext<'_> {
         items: &[Item],
         inline_modules: &[String],
         module_directory: &Path,
-        parent: Option<&EnvBindings>,
+        ancestors: &[EnvBindings],
     ) {
         let file = &self.parsed[file_index];
-        let bindings = module_bindings(items, parent);
+        let bindings = module_bindings(items, ancestors);
         for item in items {
             match item {
                 Item::Fn(function) if is_test_function(&function.attrs) => {
@@ -698,19 +719,25 @@ impl ScanContext<'_> {
                         let module_name = ident_name(&module.ident);
                         child_modules.push(module_name.clone());
                         let child_directory = module_directory.join(module_name);
+                        let mut child_ancestors = Vec::with_capacity(ancestors.len() + 1);
+                        child_ancestors.push(bindings.clone());
+                        child_ancestors.extend_from_slice(ancestors);
                         self.scan_scope(
                             file_index,
                             child_items,
                             &child_modules,
                             &child_directory,
-                            Some(&bindings),
+                            &child_ancestors,
                         );
                     } else if let Some(path) =
                         external_module_path(module_directory, module, self.known)
                         && let Some(child) = self.known.get(&path).copied()
                     {
                         let child_directory = module_directory.join(ident_name(&module.ident));
-                        self.scan_file(child, &child_directory, Some(&bindings));
+                        let mut child_ancestors = Vec::with_capacity(ancestors.len() + 1);
+                        child_ancestors.push(bindings.clone());
+                        child_ancestors.extend_from_slice(ancestors);
+                        self.scan_file(child, &child_directory, &child_ancestors);
                     }
                 }
                 _ => {}
@@ -718,14 +745,13 @@ impl ScanContext<'_> {
         }
     }
 
-    fn scan_file(&mut self, index: usize, module_directory: &Path, parent: Option<&EnvBindings>) {
-        let context = parent.cloned().unwrap_or_default();
-        if !self.visited.insert((index, module_directory.to_path_buf(), context)) {
+    fn scan_file(&mut self, index: usize, module_directory: &Path, ancestors: &[EnvBindings]) {
+        if !self.visited.insert((index, module_directory.to_path_buf(), ancestors.to_vec())) {
             return;
         }
         self.files_seen.insert(index);
         let items = self.parsed[index].syntax.items.clone();
-        self.scan_scope(index, &items, &[], module_directory, parent);
+        self.scan_scope(index, &items, &[], module_directory, ancestors);
     }
 }
 
@@ -778,14 +804,14 @@ fn complete_serial_site_inventory(repo_root: &Path) -> Result<Vec<SerialSiteIden
         if !children.contains(&index)
             && let Some(directory) = file.path.parent()
         {
-            scan.scan_file(index, directory, None);
+            scan.scan_file(index, directory, &[]);
         }
     }
     for (index, file) in parsed.iter().enumerate() {
         if !scan.files_seen.contains(&index)
             && let Some(directory) = file.path.parent()
         {
-            scan.scan_file(index, directory, None);
+            scan.scan_file(index, directory, &[]);
         }
     }
     scan.sites.sort();
@@ -1302,7 +1328,7 @@ fn stores_unused_closure() {
 
 #[test]
 fn invokes_closure_now() {
-    (|| unsafe { std::env::remove_var("B"); })();
+    ({ || unsafe { std::env::remove_var("B"); } })();
 }
 "#,
         )?;
@@ -1310,6 +1336,34 @@ fn invokes_closure_now() {
         let sites = complete_serial_site_inventory(&repo.path)?;
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].test_function, "invokes_closure_now");
+        assert_eq!(sites[0].signals, vec!["env_remove"]);
+        Ok(())
+    }
+
+    #[test]
+    fn typed_default_construction_instantiates_drop_guard() -> Result<()> {
+        let repo = TempRepo::new("typed-drop")?;
+        repo.write_test(
+            r#"
+#[test]
+fn constructs_typed_guard() {
+    struct Guard;
+    impl Default for Guard {
+        fn default() -> Self { Guard }
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("A"); }
+        }
+    }
+    let _guard: Guard = Default::default();
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].test_function, "constructs_typed_guard");
         assert_eq!(sites[0].signals, vec!["env_remove"]);
         Ok(())
     }
@@ -1520,6 +1574,74 @@ fn unrelated_inherited_function() {
         assert_eq!(sites[0].path, "crates/demo/tests/inherited_environment.rs");
         assert_eq!(sites[0].test_function, "inherited_environment_function");
         assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn crate_and_multi_super_imports_use_only_proven_environment_authority() -> Result<()> {
+        let repo = TempRepo::new("ancestor-imports")?;
+        repo.write_test(
+            r#"
+use std::env as root_environment;
+use std::env::remove_var as root_remove;
+
+mod unrelated_environment {
+    pub fn set_var(_key: &str, _value: &str) {}
+}
+
+mod outer {
+    mod via_crate {
+        use crate::{root_environment as process_environment, root_remove as clear_environment};
+
+        #[test]
+        fn crate_module_alias() {
+            unsafe { process_environment::set_var("A", "1"); }
+        }
+
+        #[test]
+        fn crate_direct_alias() {
+            unsafe { clear_environment("B"); }
+        }
+    }
+
+    mod via_super_super {
+        use super::super::{root_environment as process_environment, root_remove as clear_environment};
+
+        #[test]
+        fn ancestor_module_alias() {
+            unsafe { process_environment::set_var("C", "1"); }
+        }
+
+        #[test]
+        fn ancestor_direct_alias() {
+            unsafe { clear_environment("D"); }
+        }
+    }
+
+    mod unrelated {
+        use crate::unrelated_environment as process_environment;
+
+        #[test]
+        fn similar_unrelated_module_stays_clean() {
+            process_environment::set_var("E", "1");
+        }
+    }
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        let actual = sites
+            .iter()
+            .map(|site| (site.test_function.as_str(), site.signals.as_slice()))
+            .collect::<BTreeMap<_, _>>();
+        let expected = BTreeMap::from([
+            ("ancestor_direct_alias", ["env_remove"].as_slice()),
+            ("ancestor_module_alias", ["env_set"].as_slice()),
+            ("crate_direct_alias", ["env_remove"].as_slice()),
+            ("crate_module_alias", ["env_set"].as_slice()),
+        ]);
+        assert_eq!(actual, expected);
         Ok(())
     }
 
