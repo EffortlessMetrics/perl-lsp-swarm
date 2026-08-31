@@ -180,8 +180,8 @@ fn is_ci_config_file(file: &str) -> bool {
 /// This is intentionally path-based. `ci-scope` must remain a cheap, stable
 /// planner and does not read arbitrary file contents while classifying a diff.
 /// The selected paths are the repository's known portability seams: shell
-/// hooks/scripts, process helpers, URI and workspace-index code, and explicitly
-/// named Windows implementations.
+/// hooks/scripts, the `perl-ci-hygiene` process-helper seam, URI and
+/// workspace-index code, and explicitly named Windows implementations.
 pub fn requires_windows_runner(files: &[String]) -> bool {
     files.iter().any(|file| {
         let normalized = file.replace('\\', "/").to_ascii_lowercase();
@@ -1498,7 +1498,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_process_helpers_select_the_changed_crate_for_windows_smoke() -> Result<()> {
+    fn classify_process_helper_sources_select_ci_hygiene_for_windows_smoke() -> Result<()> {
         let metadata = fake_metadata(&[("perl-ci-hygiene", "crates/perl-ci-hygiene")]);
         let files = vec!["crates/perl-ci-hygiene/src/process/tests.rs".to_string()];
         let output = classify_files(&files, &metadata, "/workspace")?;
@@ -1509,6 +1509,17 @@ mod tests {
             output.direct_crates.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
             ["perl-ci-hygiene"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn classify_ci_hygiene_sibling_sources_do_not_widen_process_routing() -> Result<()> {
+        let metadata = fake_metadata(&[("perl-ci-hygiene", "crates/perl-ci-hygiene")]);
+        let files = vec!["crates/perl-ci-hygiene/src/main.rs".to_string()];
+        let output = classify_files(&files, &metadata, "/workspace")?;
+
+        assert!(!output.platform_overrides.windows_runner);
+        assert!(output.platform_overrides.windows_test_crates.is_empty());
         Ok(())
     }
 

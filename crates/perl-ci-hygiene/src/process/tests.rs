@@ -62,10 +62,13 @@ fn joined_path(paths: &[&Path]) -> TestResult<OsString> {
 }
 
 fn fixture_command() -> TestResult<String> {
-    env::current_exe()?.into_os_string().into_string().map_err(|_| {
+    env::current_exe()?.into_os_string().into_string().map_err(|path| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            "process fixture executable path is not valid UTF-8",
+            format!(
+                "process fixture executable path is not valid UTF-8: {}",
+                path.to_string_lossy()
+            ),
         )
         .into()
     })
@@ -301,8 +304,13 @@ fn timed_status_returns_nonzero_child_status() -> TestResult {
 
 #[test]
 fn output_lines_trim_blanks_and_preserve_order() {
-    let lines = command_output_lines("  first  \n\n\tsecond\t\n   \nthird\n");
-    assert_eq!(lines, vec!["first".to_owned(), "second".to_owned(), "third".to_owned()]);
+    let expected = vec!["first".to_owned(), "second".to_owned(), "third".to_owned()];
+
+    let lf_lines = command_output_lines("  first  \n\n\tsecond\t\n   \nthird\n");
+    assert_eq!(lf_lines, expected);
+
+    let crlf_lines = command_output_lines("  first  \r\n\r\n\tsecond\t\r\n   \r\nthird\r\n");
+    assert_eq!(crlf_lines, expected);
 }
 
 #[test]
