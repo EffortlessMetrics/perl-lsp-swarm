@@ -542,6 +542,11 @@ impl<'a> Parser<'a> {
                                     self.peek_kind(),
                                     Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                 ) {
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                    }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if self.is_at_statement_end() {
                                         break;
@@ -617,6 +622,11 @@ impl<'a> Parser<'a> {
                                             self.peek_kind(),
                                             Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                         ) {
+                                            if self.peek_kind() == Some(TokenKind::FatArrow)
+                                                && let Some(arg) = args.last_mut()
+                                            {
+                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                            }
                                             self.consume_token()?;
                                         }
                                         if self.is_implicit_arg_terminator() {
@@ -1122,6 +1132,11 @@ impl<'a> Parser<'a> {
                                         self.peek_kind(),
                                         Some(TokenKind::Comma) | Some(TokenKind::FatArrow)
                                     ) {
+                                        if self.peek_kind() == Some(TokenKind::FatArrow)
+                                            && let Some(arg) = args.last_mut()
+                                        {
+                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                        }
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
                                             break;
