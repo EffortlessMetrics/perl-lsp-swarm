@@ -49,19 +49,20 @@ use tasks::{
     intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
     memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
     native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
-    oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep,
-    parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
-    prep_crates_io_launch, product_health_rail_contract, product_health_status,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, receipts, release,
-    release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
-    repository_topology, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
-    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
-    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
-    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
-    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
-    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
+    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
+    perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
+    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
+    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
+    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
+    release_notes, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -287,6 +288,17 @@ enum Commands {
     /// Generate or check the selected LSP 3.18 conformance matrix.
     #[command(name = "generate-lsp-318-matrix")]
     GenerateLsp318Matrix {
+        /// Check that the checked-in matrix matches generated content.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Generate or check the Perl command-line analysis capability matrix.
+    ///
+    /// Fails when a declared capability row claims support without fixture
+    /// evidence in the command-line conformance corpus.
+    #[command(name = "oneliner-capability-matrix")]
+    OnelinerCapabilityMatrix {
         /// Check that the checked-in matrix matches generated content.
         #[arg(long)]
         check: bool,
@@ -5156,6 +5168,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
         Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
+        Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
