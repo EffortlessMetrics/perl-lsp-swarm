@@ -86,8 +86,15 @@ class RustfmtCheckTests(unittest.TestCase):
                 if attempt + 1 < self.CLEANUP_ATTEMPTS:
                     time.sleep(self.CLEANUP_RETRY_SECONDS * (attempt + 1))
 
-        residual_paths = self._residual_paths()
-        process_evidence = self._process_evidence()
+        try:
+            residual_paths: list[str] | str = self._residual_paths()
+        # Diagnostic probes must never mask the original cleanup failure.
+        except Exception as diagnostic_error:  # noqa: BLE001
+            residual_paths = f"<unavailable: {diagnostic_error!r}>"
+        try:
+            process_evidence = self._process_evidence()
+        except Exception as diagnostic_error:  # noqa: BLE001
+            process_evidence = f"<unavailable: {diagnostic_error!r}>"
         raise AssertionError(
             f"fixture cleanup failed after {self.CLEANUP_ATTEMPTS} attempts: "
             f"{last_error!r}; residual_paths={residual_paths}; "
@@ -559,6 +566,43 @@ raise SystemExit(64)
                             "residual_paths=.*workspace/.git.*process_evidence=.*pid=123",
                         ):
                             self._cleanup_temp()
+        cleanup()
+
+    def test_cleanup_failure_survives_failing_diagnostic_probes(self) -> None:
+        cleanup = self.temp.cleanup
+        for failed_probe, expected_pattern in (
+            ("_residual_paths", "unavailable.*process evidence retained"),
+            ("_process_evidence", "workspace/.git.*unavailable"),
+        ):
+            with self.subTest(failed_probe=failed_probe):
+                residual = (
+                    mock.Mock(side_effect=OSError("diagnostic walk failure"))
+                    if failed_probe == "_residual_paths"
+                    else mock.Mock(return_value=["workspace/.git"])
+                )
+                processes = (
+                    mock.Mock(side_effect=OSError("process probe failure"))
+                    if failed_probe == "_process_evidence"
+                    else mock.Mock(return_value="process evidence retained")
+                )
+                with mock.patch.object(
+                    self.temp,
+                    "cleanup",
+                    side_effect=OSError("primary cleanup failure"),
+                ):
+                    with mock.patch.object(time, "sleep"):
+                        with mock.patch.object(self, "_residual_paths", residual):
+                            with mock.patch.object(self, "_process_evidence", processes):
+                                with self.assertRaisesRegex(
+                                    AssertionError,
+                                    expected_pattern,
+                                ) as failure:
+                                    self._cleanup_temp()
+
+                self.assertIsInstance(failure.exception.__cause__, OSError)
+                self.assertEqual(str(failure.exception.__cause__), "primary cleanup failure")
+                residual.assert_called_once_with()
+                processes.assert_called_once_with()
         cleanup()
 
     def test_producer_rejects_changed_file_narrowing_flags(self) -> None:
