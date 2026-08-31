@@ -94,7 +94,7 @@ entrypoints:
 
 | Surface | Path | Role |
 | --- | --- | --- |
-| Parser | `crates/perl-parser/` | Native Perl parser and recovery behavior |
+| Parser | `crates/perl-parser/` | Public parser facade; see `docs/reference/ARCHITECTURE.md` for syntax, parsing, and recovery ownership |
 | Compiler and semantic facts | `crates/perl-semantic-analyzer/`, `crates/perl-semantic-facts/` | Semantic analysis and compiler-facing facts |
 | LSP core | `crates/perl-lsp-rs-core/` | Protocol, runtime, workspace, and provider implementation |
 | LSP integration | `crates/perl-lsp-rs/` | Server integration and higher-level behavior |
