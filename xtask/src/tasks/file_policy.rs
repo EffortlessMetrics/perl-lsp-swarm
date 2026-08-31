@@ -420,14 +420,6 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             .parse::<u64>()
             .context("trusted workflow contract-version must be an integer")
     };
-    if !base_listing.is_empty() {
-        let (_, base_bytes) = tree_file(root, base_sha, ".github/workflows/non-rust-policy.yml")?;
-        if base_bytes != bytes {
-            bail!(
-                "subject workflow changes are blocked after bootstrap; update it only from trusted main"
-            );
-        }
-    }
     let text = String::from_utf8(bytes).context("subject workflow is not UTF-8")?;
     if !base_listing.is_empty() {
         let (_, base_bytes) = tree_file(root, base_sha, ".github/workflows/non-rust-policy.yml")?;
