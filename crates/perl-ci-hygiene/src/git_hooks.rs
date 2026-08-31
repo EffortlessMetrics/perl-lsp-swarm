@@ -57,9 +57,11 @@ cargo xtask fmt --staged || echo "⚠️  staged formatting did not run; the com
 # separately edited allowlist or overwrite a separately edited snapshot; the
 # contributor can stage or discard those edits explicitly before retrying.
 # The refresh also runs the working-tree xtask binary, so it is refused when
-# xtask/ carries unstaged edits: a partially staged generator edit would
-# otherwise execute implementation the commit does not stage, and `git add`
-# would commit its output beside a different staged generator.
+# xtask/ carries unstaged or untracked generator files: a partially staged
+# generator edit would execute implementation the commit does not stage, an
+# untracked source referenced by staged code is compiled from the working
+# tree all the same, and `git add` would commit the generated output beside
+# a generator the commit does not contain.
 STAGED_INVENTORY_CHANGE=0
 STAGED_INVENTORY_PATHS=()
 while IFS= read -r -d '' staged_path; do
@@ -79,6 +81,13 @@ if [ "$STAGED_INVENTORY_CHANGE" -eq 1 ]; then
         echo "   The refresh runs the working-tree generator, so unstaged xtask"
         echo "   edits would generate the snapshot with code the commit does not"
         echo "   stage. Stage or discard those xtask edits, then retry the commit."
+        exit 1
+    fi
+    if [ -n "$(git ls-files --others --exclude-standard -- xtask)" ]; then
+        echo "❌ Cannot refresh non-Rust inventory: xtask/ has untracked generator files"
+        echo "   The refresh compiles the working tree, so untracked xtask sources"
+        echo "   would execute code the commit does not stage. Stage or remove"
+        echo "   those files, then retry the commit."
         exit 1
     fi
     if ! git diff --quiet -- policy/non-rust-allowlist.toml; then
@@ -585,6 +594,9 @@ mod tests {
         let generator_guard = hook
             .find("xtask/ has unstaged edits")
             .ok_or_else(|| color_eyre::eyre::eyre!("unstaged generator guard missing"))?;
+        let untracked_guard = hook
+            .find("xtask/ has untracked generator files")
+            .ok_or_else(|| color_eyre::eyre::eyre!("untracked generator guard missing"))?;
         let write = hook
             .find("cargo xtask non-rust inventory --write")
             .ok_or_else(|| color_eyre::eyre::eyre!("inventory refresh missing"))?;
@@ -595,7 +607,8 @@ mod tests {
             .find("cargo xtask precommit")
             .ok_or_else(|| color_eyre::eyre::eyre!("staged gate missing"))?;
         assert!(refresh < generator_guard);
-        assert!(generator_guard < write, "the generator-closure guard must precede the refresh");
+        assert!(generator_guard < untracked_guard);
+        assert!(untracked_guard < write, "both generator-closure guards must precede the refresh");
         assert!(write < stage);
         assert!(stage < gate);
         assert!(hook.contains("has unstaged edits"));
@@ -896,6 +909,95 @@ mod tests {
         assert!(
             !calls.contains("non-rust inventory --write"),
             "the refresh must not run while the generator is partially staged"
+        );
+        fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    /// Untracked sources under xtask/ are compiled from the working tree even
+    /// though the commit does not stage them, so they must also block the
+    /// inventory refresh until staged or removed.
+    #[test]
+    fn pre_commit_refuses_untracked_generator_files_before_refresh() -> Result<()> {
+        use color_eyre::eyre::ensure;
+
+        let repo = temp_repo()?;
+        run_git(&repo, &["config", "user.email", "test@example.com"])?;
+        run_git(&repo, &["config", "user.name", "hook test"])?;
+        fs::write(repo.join("README.md"), "baseline\n")?;
+        fs::create_dir_all(repo.join("docs/policy"))?;
+        fs::write(repo.join("docs/policy/NON_RUST_INVENTORY.md"), "# baseline inventory\n")?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(repo.join("policy/non-rust-allowlist.toml"), "# baseline allowlist\n")?;
+        fs::create_dir_all(repo.join("xtask/src/tasks"))?;
+        fs::write(repo.join("xtask/src/tasks/file_policy.rs"), "//! inventory generator\n")?;
+        run_git(&repo, &["add", "."])?;
+        run_git(&repo, &["commit", "-qm", "baseline"])?;
+
+        let bin = repo.join("fake-bin");
+        fs::create_dir_all(&bin)?;
+        let log = repo.join("cargo.log");
+        fs::write(
+            bin.join("cargo"),
+            "#!/usr/bin/env bash\n\
+             printf '%s\\n' \"$*\" >> \"$FAKE_CARGO_LOG\"\n\
+             if [ \"$2\" = non-rust ]; then\n\
+               printf '# refreshed\\n' > docs/policy/NON_RUST_INVENTORY.md\n\
+             fi\n",
+        )?;
+        #[cfg(unix)]
+        fs::set_permissions(&bin.join("cargo"), fs::Permissions::from_mode(0o755))?;
+        let hook = repo.join("pre-commit");
+        fs::write(&hook, pre_commit_hook_script())?;
+        #[cfg(unix)]
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
+
+        // A tracked-file change triggers the refresh path; an untracked
+        // generator file would be compiled from the working tree.
+        fs::write(repo.join("docs/new.md"), "new tracked file\n")?;
+        run_git(&repo, &["add", "--", "docs/new.md"])?;
+        fs::write(
+            repo.join("xtask/src/tasks/scratch_helper.rs"),
+            "//! untracked generator input\n",
+        )?;
+
+        let bash = [
+            PathBuf::from("bash"),
+            PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+            PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        ]
+        .into_iter()
+        .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!("bash is required for staged hook semantics test")
+        })?;
+        let path_var = if cfg!(windows) {
+            format!("{};{}", bin.display(), std::env::var("PATH")?)
+        } else {
+            format!("{}:{}", bin.display(), std::env::var("PATH")?)
+        };
+        let rejected = Command::new(&bash)
+            .arg(&hook)
+            .current_dir(&repo)
+            .env("PATH", &path_var)
+            .env("FAKE_CARGO_LOG", &log)
+            .output()?;
+        ensure!(
+            !rejected.status.success(),
+            "untracked generator file must block the inventory refresh"
+        );
+        assert!(
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&rejected.stdout),
+                String::from_utf8_lossy(&rejected.stderr)
+            )
+            .contains("xtask/ has untracked generator files")
+        );
+        let calls = fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            !calls.contains("non-rust inventory --write"),
+            "the refresh must not run while an untracked generator file exists"
         );
         fs::remove_dir_all(repo)?;
         Ok(())
