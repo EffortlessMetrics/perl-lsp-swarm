@@ -109,11 +109,18 @@ fn expected_symbol_set_present(symbols: &[Value]) -> bool {
     EXPECTED_SYMBOLS.iter().all(|expected| names.iter().any(|name| name == expected))
 }
 
-fn document_symbols_with_retry(harness: &UxHarness, path: &str) -> Result<Vec<Value>> {
+fn document_symbols_with_retry<F>(
+    harness: &UxHarness,
+    path: &str,
+    is_settled: F,
+) -> Result<Vec<Value>>
+where
+    F: Fn(&[Value]) -> bool,
+{
     let mut last = Vec::new();
     for attempt in 1..=SYMBOL_ATTEMPTS {
         let symbols = harness.document_symbols(path)?;
-        if expected_symbol_set_present(&symbols) {
+        if is_settled(&symbols) {
             return Ok(symbols);
         }
         last = symbols;
@@ -135,25 +142,6 @@ fn find_document_symbol<'a>(symbols: &'a [Value], expected_name: &str) -> Option
             .and_then(Value::as_array)
             .and_then(|children| find_document_symbol(children, expected_name))
     })
-}
-
-fn document_symbols_containing_with_retry(
-    harness: &UxHarness,
-    path: &str,
-    expected_name: &str,
-) -> Result<Vec<Value>> {
-    let mut last = Vec::new();
-    for attempt in 1..=SYMBOL_ATTEMPTS {
-        let symbols = harness.document_symbols(path)?;
-        if find_document_symbol(&symbols, expected_name).is_some() {
-            return Ok(symbols);
-        }
-        last = symbols;
-        if attempt < SYMBOL_ATTEMPTS {
-            std::thread::sleep(SYMBOL_RETRY_DELAY);
-        }
-    }
-    Ok(last)
 }
 
 fn ready_generation(event: &LspEvent, uri: &str) -> Option<u64> {
@@ -289,7 +277,7 @@ fn scenario_13_rich_file_returns_all_known_symbols() -> Result<()> {
     )?;
 
     harness.open_file("Greeter.pm", SYMBOLS_SOURCE)?;
-    let symbols = document_symbols_with_retry(&harness, "Greeter.pm")?;
+    let symbols = document_symbols_with_retry(&harness, "Greeter.pm", expected_symbol_set_present)?;
 
     assert!(
         expected_symbol_set_present(&symbols),
@@ -319,6 +307,9 @@ fn scenario_13_astral_prefix_preserves_utf16_selection_range() -> Result<()> {
                     "documentSymbol": {
                         "hierarchicalDocumentSymbolSupport": true
                     }
+                },
+                "general": {
+                    "positionEncodings": ["utf-16"]
                 }
             }),
             ..Default::default()
@@ -327,7 +318,9 @@ fn scenario_13_astral_prefix_preserves_utf16_selection_range() -> Result<()> {
     )?;
 
     harness.open_file("unicode_symbols.pl", source)?;
-    let symbols = document_symbols_containing_with_retry(&harness, "unicode_symbols.pl", "target")?;
+    let symbols = document_symbols_with_retry(&harness, "unicode_symbols.pl", |symbols| {
+        find_document_symbol(symbols, "target").is_some()
+    })?;
     assert_symbol_shapes(&symbols);
 
     let target = find_document_symbol(&symbols, "target").unwrap_or_else(|| {
@@ -375,11 +368,25 @@ fn scenario_13_astral_prefix_preserves_utf16_selection_range() -> Result<()> {
         Some(expected_start),
         "`target` selection start must use negotiated UTF-16 coordinates: {target:?}"
     );
+    for off_by_one in [expected_start - 1, expected_start + 1] {
+        assert_ne!(
+            selection.pointer("/start/character").and_then(Value::as_u64),
+            Some(off_by_one),
+            "`target` selection start must not be shifted by one wire code unit: {target:?}"
+        );
+    }
     assert_eq!(
         selection.pointer("/end/character").and_then(Value::as_u64),
         Some(expected_end),
         "`target` selection end must cover only the symbol name: {target:?}"
     );
+    for off_by_one in [expected_end - 1, expected_end + 1] {
+        assert_ne!(
+            selection.pointer("/end/character").and_then(Value::as_u64),
+            Some(off_by_one),
+            "`target` selection end must not be shifted by one wire code unit: {target:?}"
+        );
+    }
 
     harness.assert_no_crash();
     Ok(())
