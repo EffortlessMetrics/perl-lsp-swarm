@@ -1591,7 +1591,10 @@ class HttpTransport(unittest.TestCase):
         error = urllib.error.HTTPError(
             "https://api.github.com/repos/o/r", 403, "Forbidden", {}, None
         )
-        error.read = lambda: b'{"message":"Forbidden"}'
+        forbidden = b'{"message":"Forbidden"}'
+        # The observer reads error bodies under the same size bound as a
+        # success, so the fake must accept the requested size.
+        error.read = lambda size=-1: forbidden[:size] if size >= 0 else forbidden
         result, _ = self.run_with(error)
         self.assertEqual(result.status, 403)
         self.assertTrue(result.forbidden)
@@ -1610,6 +1613,39 @@ class HttpTransport(unittest.TestCase):
         result, _ = self.run_with(self.FakeResponse(200, payload))
         self.assertFalse(result.transport_failed)
         self.assertEqual(len(result.body), observer.MAX_RESPONSE_BYTES)
+
+    def test_an_oversized_error_body_is_also_bounded(self) -> None:
+        """The bound must cover the error path, not only the success path.
+
+        A non-2xx response is read to classify the surface, so an unbounded
+        read there terminates the observer just as surely — and an error
+        status is exactly where a misbehaving host is most likely to send
+        something enormous.
+        """
+        import urllib.error
+
+        error = urllib.error.HTTPError(
+            "https://api.github.com/repos/o/r", 500, "Server Error", {}, None
+        )
+        oversized = b"x" * (observer.MAX_RESPONSE_BYTES + 10)
+        error.read = lambda size=-1: oversized[:size] if size >= 0 else oversized
+        result, _ = self.run_with(error)
+        self.assertTrue(result.transport_failed)
+        self.assertEqual(result.body, b"")
+
+    def test_an_error_body_at_the_bound_is_still_retained(self) -> None:
+        """Negative control: the bound must not discard ordinary error text."""
+        import urllib.error
+
+        error = urllib.error.HTTPError(
+            "https://api.github.com/repos/o/r", 403, "Forbidden", {}, None
+        )
+        payload = b'{"message":"Forbidden"}'
+        error.read = lambda size=-1: payload[:size] if size >= 0 else payload
+        result, _ = self.run_with(error)
+        self.assertEqual(result.status, 403)
+        self.assertTrue(result.forbidden)
+        self.assertEqual(result.body, payload)
 
     def test_host_error_is_a_transport_failure_with_no_retained_text(self) -> None:
         import urllib.error
@@ -1681,6 +1717,44 @@ class MalformedSurfaces(unittest.TestCase):
                 f"{malformed!r} was accepted as an empty parameter set",
             )
             self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+
+    def test_identity_must_satisfy_the_reconcilers_own_contract(self) -> None:
+        """A snapshot the reconciler calls invalid must never be written.
+
+        The reconciler requires `owner/name` exactly, a positive repository
+        id, and a hexadecimal branch SHA. Emitting anything else produces a
+        document it rejects as malformed input — which destroys every other
+        surface's evidence with it, rather than reporting one unreadable
+        surface. The observer must refuse at capture time instead.
+        """
+        for full_name in ("owner/name/extra", "/name", "owner/", "/"):
+            payload = json.loads(repository_response())
+            payload["full_name"] = full_name
+            with self.assertRaises(observer.ObserverError, msg=full_name):
+                observe(self.with_repository(payload))
+
+        for repository_id in (0, -1):
+            payload = json.loads(repository_response())
+            payload["id"] = repository_id
+            with self.assertRaises(observer.ObserverError, msg=str(repository_id)):
+                observe(self.with_repository(payload))
+
+        # 40 characters, but not a commit SHA.
+        head = json.loads(branch_head_response())
+        head["object"]["sha"] = "z" * 40
+        broken = transport()
+        broken.responses[f"repos/{REPOSITORY}/git/ref/heads/main"] = (
+            200,
+            body(head),
+        )
+        with self.assertRaises(observer.ObserverError):
+            observe(broken)
+
+    @staticmethod
+    def with_repository(payload: dict) -> "RecordingTransport":
+        which = transport()
+        which.responses[f"repos/{REPOSITORY}"] = (200, body(payload))
+        return which
 
     def test_non_object_containers_raise_typed_errors(self) -> None:
         """A truthy non-object must not reach `.get` and raise AttributeError.

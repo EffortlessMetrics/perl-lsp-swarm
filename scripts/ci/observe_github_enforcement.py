@@ -149,6 +149,30 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def is_hex(value: str, length: int) -> bool:
+    """Exactly `length` lowercase-or-uppercase hexadecimal characters.
+
+    `len(value) == 40` is not the same test: a forty-character string of
+    non-hex characters is not a commit id, and the reconciler would reject
+    the whole snapshot as malformed rather than reading it as one bad field.
+    """
+    return len(value) == length and all(c in "0123456789abcdefABCDEF" for c in value)
+
+
+def bounded_read(stream: Any) -> bytes | None:
+    """Read one response body, or None when it exceeds the size bound.
+
+    Reading one byte past the bound is what distinguishes "exactly at the
+    limit" from "too large", and every read path uses this so the bound
+    cannot be enforced on some responses and not others.
+    """
+    payload = stream.read(MAX_RESPONSE_BYTES + 1)
+    if len(payload) > MAX_RESPONSE_BYTES:
+        # Oversized: not evidence, and not worth holding in memory.
+        return None
+    return payload
+
+
 def http_transport(token: str | None) -> Transport:
     """Build a read-only HTTPS transport. The token is used, never retained."""
     opener = urllib.request.build_opener(NoRedirect)
@@ -161,9 +185,8 @@ def http_transport(token: str | None) -> Transport:
         )
         try:
             with opener.open(request, timeout=30) as response:
-                payload = response.read(MAX_RESPONSE_BYTES + 1)
-                if len(payload) > MAX_RESPONSE_BYTES:
-                    # Oversized: not evidence, and not worth holding in memory.
+                payload = bounded_read(response)
+                if payload is None:
                     return ApiResult(None, b"", transport_failed=True)
                 return ApiResult(
                     response.status,
@@ -171,7 +194,13 @@ def http_transport(token: str | None) -> Transport:
                     link=response.headers.get("Link", "") or "",
                 )
         except urllib.error.HTTPError as error:
-            return ApiResult(error.code, error.read())
+            # The error body is read to classify the surface, so it needs the
+            # same bound as a success: an error status is exactly where a
+            # misbehaving host is most likely to send something enormous.
+            payload = bounded_read(error)
+            if payload is None:
+                return ApiResult(None, b"", transport_failed=True)
+            return ApiResult(error.code, payload)
         except (urllib.error.URLError, OSError, ValueError):
             # Host errors are deliberately not retained: an unreachable API is
             # an unreadable surface, and its raw text is not evidence.
@@ -573,10 +602,22 @@ def repository_identity(capture: Capture) -> dict[str, Any]:
     full_name = payload.get("full_name")
     repository_id = payload.get("id")
     default_branch = payload.get("default_branch")
-    if not isinstance(full_name, str) or "/" not in full_name:
-        raise ObserverError("repository response is missing full_name")
-    if not isinstance(repository_id, int) or isinstance(repository_id, bool):
-        raise ObserverError("repository response is missing a numeric id")
+    # These mirror the reconciler's own input contract exactly. Emitting a
+    # value it rejects would make the whole document malformed input, which
+    # destroys every other surface's evidence with it — far worse than
+    # reporting one unreadable surface, so the observer refuses here instead.
+    if (
+        not isinstance(full_name, str)
+        or full_name.count("/") != 1
+        or not all(part for part in full_name.split("/"))
+    ):
+        raise ObserverError("repository response full_name must be owner/name")
+    if (
+        not isinstance(repository_id, int)
+        or isinstance(repository_id, bool)
+        or repository_id <= 0
+    ):
+        raise ObserverError("repository response id must be a positive integer")
     if not isinstance(default_branch, str) or not default_branch:
         raise ObserverError("repository response is missing default_branch")
     return {
@@ -607,8 +648,11 @@ def branch_head_sha(capture: Capture) -> str:
             f"branch head response is for {ref!r}, not {expected!r}"
         )
     sha = object_field(payload, "object", "branch head response").get("sha")
-    if not isinstance(sha, str) or len(sha) != 40:
-        raise ObserverError("branch head response is missing object.sha")
+    if not isinstance(sha, str) or not is_hex(sha, 40):
+        raise ObserverError(
+            "branch head response object.sha must be a 40-character "
+            "hexadecimal commit id"
+        )
     return sha
 
 
