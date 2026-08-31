@@ -276,15 +276,27 @@ fn test_evaluate_allows_dangerous_ops_with_side_effects_enabled() -> TestResult 
 const SIDE_EFFECTFUL_EXPRESSIONS: [&str; 4] =
     ["system('ls')", "eval('1')", "print 'test'", "$x = 1"];
 
-/// Every evaluate context that must never carry side-effect authority.
+/// Non-`repl` contexts whose refusal is owned by the #9385 trust boundary.
 ///
-/// Covers all five non-`repl` values the DAP specification defines — `watch`,
-/// `hover`, `variables`, `clipboard`, `string` — plus a label outside the
-/// specification. `clipboard` and `string` have no named `EvaluateContext`
-/// variant and fall to `Other`; they are listed explicitly so that adding a
-/// variant for either later cannot silently drop it from this control.
-const NON_REPL_CONTEXTS: [&str; 6] =
-    ["watch", "hover", "variables", "clipboard", "string", "totally-unknown"];
+/// Covers the DAP-defined `watch`, `variables`, `clipboard` and `string`, plus
+/// a label outside the specification. `clipboard` and `string` have no named
+/// `EvaluateContext` variant and fall to `Other`; they are listed explicitly so
+/// that adding a variant for either later cannot silently drop it here.
+///
+/// `hover` is deliberately absent: since #9573 it is refused *earlier*, by the
+/// capability gate in `handle_evaluate`, so it never reaches this boundary.
+/// It is not uncovered — [`HOVER_CONTEXT`] carries the stronger assertion.
+const NON_REPL_CONTEXTS: [&str; 5] =
+    ["watch", "variables", "clipboard", "string", "totally-unknown"];
+
+/// The one context refused before the #9385 boundary is consulted at all.
+///
+/// #9573 pins `supportsEvaluateForHovers` false and refuses hover-context
+/// evaluate ahead of screening, the side-effect branch, frame lookup and any
+/// debugger I/O. That is strictly stronger than what this PR's boundary
+/// guarantees — hover cannot evaluate *anything*, not merely nothing
+/// side-effectful — so hover is asserted against that gate instead.
+const HOVER_CONTEXT: &str = "hover";
 
 fn refusal_message(response: DapMessage) -> String {
     match response {
@@ -321,6 +333,58 @@ fn side_effects_are_refused_in_every_non_repl_context() -> TestResult {
             );
         }
     }
+
+    Ok(())
+}
+
+#[test]
+fn hover_carries_no_side_effect_authority_under_the_earlier_capability_gate() -> TestResult {
+    // Hover was covered by this PR's boundary until #9573 landed a stricter gate
+    // ahead of it. The property this PR claims for hover — the custom flag can
+    // never widen it into execution — must still hold, so it is asserted here
+    // against whichever gate now owns the refusal rather than dropped.
+    //
+    // The #9573 gate is strictly stronger: hover cannot evaluate anything at
+    // all. If that gate is ever relaxed, hover falls back to the #9385
+    // boundary and this control must be revisited alongside it.
+    let mut adapter = DebugAdapter::new();
+
+    for expression in SIDE_EFFECTFUL_EXPRESSIONS {
+        let response = adapter.handle_request(
+            1,
+            "evaluate",
+            Some(json!({
+                "expression": expression,
+                "context": HOVER_CONTEXT,
+                "allowSideEffects": true
+            })),
+        );
+
+        let message = refusal_message(response);
+        assert!(
+            message.contains("context 'hover' is not supported"),
+            "hover must be refused by the #9573 capability gate for '{expression}', \
+             got: {message}"
+        );
+        assert!(
+            !message.contains("allowSideEffects: true"),
+            "a hover refusal must not prescribe the flag it just refused: {message}"
+        );
+    }
+
+    // A *safe* hover expression is refused too — the gate is about the context,
+    // not the expression. This is what makes it stronger than the #9385
+    // boundary, which admits safe expressions from read-oriented contexts.
+    let response = adapter.handle_request(
+        1,
+        "evaluate",
+        Some(json!({ "expression": "$my_scalar", "context": HOVER_CONTEXT })),
+    );
+    let message = refusal_message(response);
+    assert!(
+        message.contains("context 'hover' is not supported"),
+        "hover refusal must not depend on the expression being dangerous: {message}"
+    );
 
     Ok(())
 }
@@ -441,12 +505,17 @@ fn inspection_refusals_do_not_prescribe_a_retry_that_is_always_refused() -> Test
     // Regression control for a defect this boundary introduced. The safe-eval
     // validators append "(use allowSideEffects: true)" to every refusal. Before
     // #9385 that was actionable from any context; now the flag is refused
-    // outside `repl`, so a watch or hover caller who follows the advice hits a
+    // outside `repl`, so an inspection caller who follows the advice hits a
     // second, different refusal. An error that prescribes a guaranteed failure
     // is worse than one that stays silent.
+    //
+    // `hover` is not exercised here: since #9573 it is refused before screening
+    // runs at all, so no validator message is produced for it to retarget.
+    // `hover_carries_no_side_effect_authority_under_the_earlier_capability_gate`
+    // asserts separately that its refusal also names no unusable flag.
     let mut adapter = DebugAdapter::new();
 
-    for context in ["watch", "hover", "variables", "clipboard", "totally-unknown"] {
+    for context in NON_REPL_CONTEXTS {
         let response = adapter.handle_request(
             1,
             "evaluate",

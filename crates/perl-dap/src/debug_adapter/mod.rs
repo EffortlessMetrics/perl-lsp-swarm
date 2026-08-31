@@ -29,6 +29,7 @@ mod variable_cache;
 // Single-authority re-exports of the standard DAP command list, consumed
 // by the reload contract's protocol-surface collision check (#10097). The
 // list itself is enumerated only by tests.
+pub(crate) use dispatch::DapRequestRoute;
 #[cfg(test)]
 pub(crate) use dispatch::SUPPORTED_COMMANDS;
 pub(crate) use dispatch::is_supported_dap_command;
@@ -1001,7 +1002,13 @@ print "result: $final\n";
                 "supportsHitConditionalBreakpoints",
                 crate::feature_catalog::has_feature("dap.breakpoints.hit_condition"),
             ),
-            ("supportsEvaluateForHovers", crate::feature_catalog::has_feature("dap.core")),
+            // #9573: bound to the hover authority, not to `dap.core`. Hover is
+            // gated on a pure selected-frame inspection proof, so the catalog
+            // row cannot decide this one.
+            (
+                "supportsEvaluateForHovers",
+                crate::backend::capabilities::advertises_evaluate_for_hovers(),
+            ),
             ("supportsSetVariable", crate::feature_catalog::has_feature("dap.core")),
             ("supportsValueFormattingOptions", crate::feature_catalog::has_feature("dap.core")),
             ("supportTerminateDebuggee", crate::feature_catalog::has_feature("dap.core")),

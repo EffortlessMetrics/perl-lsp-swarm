@@ -391,6 +391,7 @@ pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::deserialize<__
 pub struct perl_dap::backend::capabilities::NegotiatedDapCapabilities
 pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_conditional_breakpoints: bool
 pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_data_breakpoints: bool
+pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_evaluate: bool
 pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_evaluate_for_hovers: bool
 pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_function_breakpoints: bool
 pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_hit_conditional_breakpoints: bool
