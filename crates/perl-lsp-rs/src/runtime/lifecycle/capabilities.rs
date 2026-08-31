@@ -212,25 +212,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Classify the client's position-encoding offer BEFORE the one-shot
-        // lifecycle guard (review 5059982819, Finding 1). Classification is
-        // pure with respect to server state, so a rejected offer fails
-        // initialize with a typed error while `initialize_requested` stays
-        // false: the existing ServerNotInitialized (-32002) arms then hold
-        // the fail-closed boundary for any follow-up `initialized`
-        // notification or plain request. If the guard were consumed first, a
-        // rejected initialize would leave `initialize_requested == true` with
-        // no accepted session, and the lifecycle completion paths would
-        // activate the server afterwards.
-        let session_contract = super::session_contract::TextSyncSessionContract::accept(
-            params.as_ref(),
-            super::session_contract::next_session_id(),
-        )
-        .map_err(|rejection| rejection.to_jsonrpc_error())?;
-
-        // Atomically check and set initialize_requested. The guard is
-        // consumed only after classification succeeded, so a consumed guard
-        // always belongs to an initialize that went on to accept a contract.
+        // The first initialize request atomically owns the connection's
+        // one-shot attempt authority before any parameter classification.
+        // Accepted and rejected first attempts both consume this guard; every
+        // later initialize is InvalidRequest before its parameters can affect
+        // the terminal error class (#14301).
         if self
             .initialize_requested
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -242,6 +228,16 @@ impl LspServer {
                 data: None,
             });
         }
+
+        // Classification may still reject malformed first parameters with
+        // -32602. That state remains attempted-but-unaccepted and therefore
+        // cannot serve, complete initialization, or start lifecycle work:
+        // `initialization_accepted()` is the sole serving authority.
+        let session_contract = super::session_contract::TextSyncSessionContract::accept(
+            params.as_ref(),
+            super::session_contract::next_session_id(),
+        )
+        .map_err(|rejection| rejection.to_jsonrpc_error())?;
 
         // Parse client capabilities
         if let Some(params) = &params {
@@ -824,10 +820,11 @@ impl LspServer {
         // accepted text-sync session contract (#9378), never authored here.
         //
         // Release envelope (#8129 branch `full_document_utf16`): the contract
-        // only ever holds FULL + UTF-16, and a client whose offer excludes
-        // UTF-16 was already rejected before any state mutation. Providers
-        // still compute positions in UTF-16 code units, so response, stored
-        // session state, and provider behavior all share one encoding.
+        // always holds FULL + UTF-16. A valid client offer that omits UTF-16
+        // is retained as a mandatory-fallback reason; it does not create a
+        // second wire-encoding state. Providers compute positions in UTF-16
+        // code units, so response, stored session state, and provider behavior
+        // all share one encoding.
         capabilities["positionEncoding"] =
             Value::String(session_contract.position_encoding().wire_name().to_string());
         if features.declaration {
@@ -1015,6 +1012,7 @@ mod tests {
     use crate::protocol::capabilities::BuildFlags;
     use perl_workspace::folder::root_path_to_file_uri;
     use serde_json::{Value, json};
+    use std::sync::{Arc, Barrier};
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -1152,7 +1150,7 @@ mod tests {
             assert!(
                 !still_all,
                 "feature ID '{id}' emitted by to_feature_ids() has no match arm in \
-                 apply_disabled_feature_id â€” add one to keep the two in sync"
+                 apply_disabled_feature_id — add one to keep the two in sync"
             );
         }
     }
@@ -1737,34 +1735,25 @@ mod tests {
     }
 
     #[test]
-    fn initialize_no_common_offer_fails_before_any_state_mutation() {
-        // LSP-FS16-004/007: a client that explicitly excludes UTF-16 is
-        // rejected with a typed initialize failure and NO partial state.
-        // Negative control: restoring the old no-common fallback makes this
-        // focused gate red.
+    fn initialize_valid_offer_omitting_utf16_uses_mandatory_fallback() {
         for offer in [json!(["utf-32", "utf-7"]), json!(["utf-8"]), json!(["utf-32"])] {
             let (response, error, server) = initialize_with_offer(offer.clone());
-            assert!(response.is_none(), "offer {offer} must not produce a response");
-            let error = error.unwrap();
-            assert_eq!(error.code, -32602, "offer {offer} must be typed InvalidParams");
+            assert!(error.is_none(), "valid offer {offer} must be accepted: {error:?}");
+            let response = response.unwrap();
+            let session = server.accepted_text_sync_session().unwrap();
             assert_eq!(
-                error
-                    .data
-                    .as_ref()
-                    .and_then(|data| data.pointer("/rejection/reason"))
-                    .and_then(Value::as_str),
-                Some("no-common-encoding"),
-                "offer {offer} must carry the typed rejection reason"
+                session.contract().selection_reason(),
+                Utf16SelectionReason::MandatoryUtf16Fallback,
+                "offer {offer} must retain the mandatory fallback reason"
             );
-
-            // No accepted session, no capabilities, no workspace mutation.
-            assert!(server.accepted_text_sync_session().is_none());
-            assert!(!server.is_initialized());
-            assert!(server.workspace_folders.lock().is_empty());
-            let caps = server.client_capabilities.lock();
-            assert!(!caps.workspace_configuration_support);
-            assert!(!caps.workspace_folders_support);
-            assert!(!caps.snippet_support);
+            assert_eq!(
+                response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+                Some("utf-16")
+            );
+            assert_eq!(
+                response.pointer("/capabilities/textDocumentSync/change").and_then(Value::as_i64),
+                Some(1)
+            );
         }
     }
 
@@ -1785,28 +1774,107 @@ mod tests {
                 "malformed input must never collapse into absence: {offer}"
             );
             assert!(server.accepted_text_sync_session().is_none());
+            assert!(!server.initialization_accepted());
+            assert!(!server.is_initialized());
         }
+    }
+
+    #[test]
+    fn malformed_first_initialize_consumes_one_shot_authority() {
+        let server = LspServer::new();
+        let first = server.handle_initialize(Some(json!({
+            "capabilities": { "general": { "positionEncodings": ["utf-16", 42] } }
+        })));
+        assert_eq!(first.unwrap_err().code, -32602);
+        assert!(server.accepted_text_sync_session().is_none());
+        assert!(!server.initialization_accepted());
+
+        let second = server.handle_initialize(Some(json!({
+            "capabilities": { "general": { "positionEncodings": ["utf-16"] } }
+        })));
+        assert_eq!(second.unwrap_err().code, -32600);
+        assert!(server.accepted_text_sync_session().is_none());
+        assert!(!server.initialization_accepted());
     }
 
     #[test]
     fn second_initialize_cannot_replace_accepted_contract() {
         // LSP-FS16-008: repeated initialize cannot replace or partially alter
-        // the accepted contract.
+        // the accepted contract, and duplicate error classification happens
+        // before the second request's parameter classification.
         let (response, error, server) = initialize_with_offer(json!(["utf-16"]));
         assert!(error.is_none(), "first initialize must succeed: {error:?}");
         assert!(response.is_some());
         let accepted = server.accepted_text_sync_session().unwrap();
         let original_digest = accepted.contract().digest();
 
-        let second = server.handle_initialize(Some(json!({
-            "capabilities": { "general": { "positionEncodings": ["utf-8", "utf-16"] } }
-        })));
-        assert!(second.is_err(), "second initialize must fail");
-        assert_eq!(second.unwrap_err().code, -32600);
+        for second_params in [
+            json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-8", "utf-16"] } }
+            }),
+            json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-16", 42] } }
+            }),
+        ] {
+            let second = server.handle_initialize(Some(second_params));
+            assert!(second.is_err(), "second initialize must fail");
+            assert_eq!(second.unwrap_err().code, -32600);
 
-        let after = server.accepted_text_sync_session().unwrap();
-        assert_eq!(after.contract().digest(), original_digest);
-        assert_eq!(after.contract().selection_reason(), Utf16SelectionReason::ClientOfferedUtf16);
+            let after = server.accepted_text_sync_session().unwrap();
+            assert_eq!(after.contract().digest(), original_digest);
+            assert_eq!(
+                after.contract().selection_reason(),
+                Utf16SelectionReason::ClientOfferedUtf16
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_initialize_attempts_have_exactly_one_owner() {
+        let server = Arc::new(LspServer::new());
+        let barrier = Arc::new(Barrier::new(3));
+
+        let valid_server = Arc::clone(&server);
+        let valid_barrier = Arc::clone(&barrier);
+        let valid = std::thread::spawn(move || {
+            valid_barrier.wait();
+            valid_server.handle_initialize(Some(json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-8"] } }
+            })))
+        });
+
+        let malformed_server = Arc::clone(&server);
+        let malformed_barrier = Arc::clone(&barrier);
+        let malformed = std::thread::spawn(move || {
+            malformed_barrier.wait();
+            malformed_server.handle_initialize(Some(json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-16", 42] } }
+            })))
+        });
+
+        barrier.wait();
+        let valid = valid.join().unwrap();
+        let malformed = malformed.join().unwrap();
+
+        let invalid_request_count = [&valid, &malformed]
+            .into_iter()
+            .filter(|result| result.as_ref().err().is_some_and(|error| error.code == -32600))
+            .count();
+        assert_eq!(invalid_request_count, 1, "exactly one concurrent attempt must lose ownership");
+
+        match (valid, malformed) {
+            (Ok(_), Err(error)) => {
+                assert_eq!(error.code, -32600);
+                assert!(server.accepted_text_sync_session().is_some());
+            }
+            (Err(error), Err(malformed_error)) => {
+                assert_eq!(error.code, -32600);
+                assert_eq!(malformed_error.code, -32602);
+                assert!(server.accepted_text_sync_session().is_none());
+                assert!(!server.initialization_accepted());
+            }
+            other => panic!("unexpected concurrent initialize outcomes: {other:?}"),
+        }
     }
 
     #[test]
@@ -1831,7 +1899,6 @@ mod tests {
     }
 
     #[test]
-
     fn initialize_advertises_code_action_documentation_only_when_supported()
     -> Result<(), Box<dyn std::error::Error>> {
         let unsupported = LspServer::new()
