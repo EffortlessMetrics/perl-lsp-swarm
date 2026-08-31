@@ -190,6 +190,7 @@ impl SemanticQueryRequirement {
         &self,
         evidence: &SemanticQueryEvidence,
     ) -> Result<(), SemanticQueryContractError> {
+        evidence.validate()?;
         if evidence.query_schema != self.schema {
             return Err(SemanticQueryContractError::SchemaMismatch);
         }
@@ -472,6 +473,60 @@ mod tests {
         .expect("fixture requirement is valid");
         assert!(requirement.validate_evidence(&evidence(true)).is_ok());
         assert!(requirement.validate_evidence(&evidence(false)).is_err());
+    }
+
+    #[test]
+    fn requirement_matches_fact_families_without_relying_on_order() {
+        let requirement = SemanticQueryRequirement::new(
+            "definitions",
+            "semantic-query-v1",
+            vec![
+                SemanticFactFamily::ScopeLocalDeclaration,
+                SemanticFactFamily::PackageFact,
+            ],
+        )
+        .expect("fixture requirement is valid");
+        let valid = SemanticQueryEvidence::new(
+            "project",
+            "root",
+            crate::SourceGeneration::known("doc-1"),
+            crate::SourceGeneration::known("ws-1"),
+            "semantic-query-v1",
+            "definitions",
+            crate::SemanticProducer::SemanticAnalyzer,
+            crate::SemanticProvenance::Known(crate::Provenance::SemanticAnalyzer),
+            crate::SemanticConfidence::Known(crate::Confidence::High),
+            vec![
+                SemanticFactFamily::PackageFact,
+                SemanticFactFamily::ScopeLocalDeclaration,
+            ],
+            vec![
+                SemanticFactFamily::ScopeLocalDeclaration,
+                SemanticFactFamily::PackageFact,
+            ],
+            vec![FactId(1)],
+            vec![],
+        )
+        .expect("fixture evidence is valid");
+
+        assert!(requirement.validate_evidence(&valid).is_ok());
+    }
+
+    #[test]
+    fn direct_requirement_validation_rejects_malformed_evidence() {
+        let requirement = SemanticQueryRequirement::new(
+            "definitions",
+            "semantic-query-v1",
+            vec![SemanticFactFamily::ScopeLocalDeclaration],
+        )
+        .expect("fixture requirement is valid");
+        let mut malformed = evidence(true);
+        malformed.consumed_fact_ids = vec![FactId(1), FactId(1)];
+
+        assert_eq!(
+            requirement.validate_evidence(&malformed),
+            Err(SemanticQueryContractError::DuplicateConsumedFact)
+        );
     }
 
     #[test]
