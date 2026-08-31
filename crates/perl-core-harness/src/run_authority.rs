@@ -59,6 +59,14 @@ pub(crate) const LIMITATION_PROBE_ROW_MALFORMED_PATH: &str = "direct_probe_row_m
 /// Why a probe row was excluded: its normalized path appeared more than once.
 pub(crate) const LIMITATION_PROBE_ROW_DUPLICATE: &str = "direct_probe_row_duplicate";
 
+/// Why a probe row was excluded: it declares a different mode from the run that
+/// planned the probe.
+///
+/// The receipt row stamps the parent observation's mode onto the probe, so a
+/// row declaring another mode would be published under a mode it never ran
+/// (#14363).
+pub(crate) const LIMITATION_PROBE_ROW_WRONG_MODE: &str = "direct_probe_row_wrong_mode";
+
 /// Immutable identity of the expected upstream runner subject.
 ///
 /// This is deliberately narrower than [`UpstreamObservationId`]: equal target
@@ -560,8 +568,24 @@ pub(crate) fn settle_probe_context_rows(
     rows: Vec<RunnerRecord>,
     context_trusted: bool,
 ) {
+    // The receipt stamps the parent observation's mode onto every probe row, so
+    // a row declaring a different mode would be published under a mode it never
+    // ran. Exclude it the way a malformed path is excluded, rather than letting
+    // it stand for the subject (#14363).
+    let expected_mode = diagnostics.parent_observation().map(|parent| parent.mode.clone());
     let mut by_path = BTreeMap::<String, Vec<RunnerRecord>>::new();
     for row in rows {
+        if let Some(expected) = expected_mode.as_deref()
+            && row.mode != expected
+        {
+            tracing::warn!(
+                "perl-core-harness: direct diagnostic probe row for {} declares {} mode during a {expected} run",
+                row.path,
+                row.mode
+            );
+            diagnostics.add_limitation(LIMITATION_PROBE_ROW_WRONG_MODE.to_string());
+            continue;
+        }
         match normalize_test_path(&row.path) {
             Some(path) => by_path.entry(path).or_default().push(row),
             None => {
@@ -784,6 +808,75 @@ mod tests {
             &[record(assertions)],
             terminal_status,
         )
+    }
+
+    /// The receipt stamps the parent observation's mode onto every probe row,
+    /// so a row declaring another mode would be published under a mode it never
+    /// ran. It must be excluded, not allowed to stand for the subject (#14363).
+    #[test]
+    fn probe_rows_declaring_another_mode_are_excluded() -> Result<()> {
+        let parent = observation(1, Some(0))?;
+        let mut diagnostics = DirectDiagnosticSet::plan(&parent);
+        let mut wrong_mode = record(1);
+        wrong_mode.mode = HarnessMode::Execute.as_str().into();
+        wrong_mode.mechanism = Some(perl_core_harness_types::ExecutionMechanism::FixtureReplay);
+
+        settle_probe_context_rows(
+            &mut diagnostics,
+            &[("base/ok.t".to_string(), Some(0))],
+            vec![wrong_mode],
+            true,
+        );
+
+        let receipt = direct_diagnostics_receipt(&diagnostics);
+        assert!(
+            receipt
+                .limitations
+                .iter()
+                .any(|limitation| limitation == LIMITATION_PROBE_ROW_WRONG_MODE),
+            "a wrong-mode probe row must be recorded as a limitation: {:?}",
+            receipt.limitations
+        );
+        let row = receipt.probes.first().ok_or_else(|| {
+            color_eyre::eyre::eyre!("the planned probe must still appear on the receipt")
+        })?;
+        assert_eq!(
+            row.outcome,
+            DiagnosticProbeOutcome::Unavailable,
+            "a wrong-mode row must not stand for the subject"
+        );
+        assert!(row.status.is_none(), "no result may be published from an excluded row");
+        Ok(())
+    }
+
+    #[test]
+    fn probe_rows_matching_the_parent_mode_still_settle() -> Result<()> {
+        // Opposite-direction control: the exclusion must not block a probe that
+        // agrees with the run that planned it.
+        let parent = observation(1, Some(0))?;
+        let mut diagnostics = DirectDiagnosticSet::plan(&parent);
+
+        settle_probe_context_rows(
+            &mut diagnostics,
+            &[("base/ok.t".to_string(), Some(0))],
+            vec![record(1)],
+            true,
+        );
+
+        let receipt = direct_diagnostics_receipt(&diagnostics);
+        assert!(
+            !receipt
+                .limitations
+                .iter()
+                .any(|limitation| limitation == LIMITATION_PROBE_ROW_WRONG_MODE),
+            "an agreeing probe row must not be excluded: {:?}",
+            receipt.limitations
+        );
+        let row = receipt.probes.first().ok_or_else(|| {
+            color_eyre::eyre::eyre!("the planned probe must appear on the receipt")
+        })?;
+        assert_eq!(row.status, Some(RunnerStatus::Pass));
+        Ok(())
     }
 
     #[test]
