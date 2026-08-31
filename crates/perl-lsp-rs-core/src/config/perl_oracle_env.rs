@@ -1116,6 +1116,7 @@ mod tests {
 
     /// `for_dap_test_fixture` uses the deny-all-ambient fixture contract.
     #[test]
+    #[serial_test::serial]
     fn for_dap_test_fixture_denies_ambient_perl_env() -> TestResult {
         let _env_guard = env_lock()?;
         let _env_snapshot = env_snapshot();
