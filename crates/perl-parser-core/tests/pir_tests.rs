@@ -8,8 +8,9 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{HirFile, lower_ast};
 use perl_parser_core::pir::{
-    PIR_RECEIPT_VERSION, PirCallee, PirContext, PirDynamicBoundaryKind, PirEdgeKind, PirGraph,
-    PirLoweringMode, PirMethod, PirOperation, lower_hir, lower_hir_with_identity,
+    PIR_RECEIPT_VERSION, PirAccessMode, PirCallee, PirContext, PirDynamicBoundaryKind,
+    PirEdgeKind, PirEvaluationDemand, PirGraph, PirLoweringMode, PirMethod, PirOperation,
+    lower_hir, lower_hir_with_identity,
 };
 use perl_tdd_support::must_some;
 
@@ -48,7 +49,7 @@ fn lexical_declaration_writes_lvalue_and_assigns() {
 
     // The declared write target is a known lvalue; the statement-level
     // assignment is void. Neither is silently promoted past what HIR proves.
-    assert_eq!(graph.nodes[0].access, perl_parser_core::pir::PirAccessMode::Write);
+    assert_eq!(graph.nodes[0].access, PirAccessMode::Write);
     assert_eq!(graph.nodes[1].context, PirContext::Void);
     assert_eq!(graph.nodes[2].context, PirContext::Unknown);
 
@@ -519,7 +520,7 @@ fn multi_variable_declaration_produces_one_write_per_variable() {
     assert!(names.contains(&"b"), "expected write for $b");
 
     // Every write is an lvalue; the assignment is void.
-    assert!(writes.iter().all(|n| n.access == perl_parser_core::pir::PirAccessMode::Write));
+    assert!(writes.iter().all(|n| n.access == PirAccessMode::Write));
 
     let assigns: Vec<_> =
         graph.nodes.iter().filter(|n| matches!(n.operation, PirOperation::Assign)).collect();
@@ -591,6 +592,39 @@ fn control_flow_branch_shell_is_now_lowered_to_branch() {
     assert_eq!(graph.receipt.operation_counts.get("Branch"), Some(&1));
     // The graph is no longer empty — a Branch node was produced.
     assert!(!graph.is_empty());
+}
+
+#[test]
+fn control_flow_loop_shell_lowers_to_truth_test_demand() {
+    let graph = lower("while ($condition) { 1 }");
+    let loop_node = must_some(
+        graph
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Loop { .. })),
+    );
+
+    assert_eq!(loop_node.demand, PirEvaluationDemand::TruthTest);
+    assert_eq!(graph.receipt.demand_counts.get("TruthTest"), Some(&1));
+}
+
+#[test]
+fn mutating_regex_targets_are_read_modify_write() {
+    for (source, expected_access) in [
+        ("$value =~ s/a/b/;", PirAccessMode::ReadModifyWrite),
+        ("$value =~ s/a/b/r;", PirAccessMode::Read),
+        ("$value =~ tr/a/b/;", PirAccessMode::ReadModifyWrite),
+        ("$value =~ tr/a/b/r;", PirAccessMode::Read),
+    ] {
+        let graph = lower(source);
+        let regex_node = must_some(graph.nodes.iter().find(|node| {
+            matches!(
+                node.operation,
+                PirOperation::Substitution { .. } | PirOperation::Transliteration { .. }
+            )
+        }));
+        assert_eq!(regex_node.access, expected_access, "access classification for {source}");
+    }
 }
 
 #[test]
