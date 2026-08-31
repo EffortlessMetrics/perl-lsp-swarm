@@ -46,15 +46,18 @@ use crate::{GREEN, NC, RED, YELLOW};
 /// `_with` variants exist to carry. A non-literal argument
 /// (`.expect(&format!(…))`) is deliberately out of subject.
 ///
-/// Three literal forms are recognised, in order: raw with one hash
-/// (`r#"…"#`), raw without (`r"…"`), and ordinary (`"…"`, honouring
-/// backslash escapes). `\s*` after `.expect(` spans newlines, so this matches
-/// across the rustfmt-wrapped form where the explanation sits on its own
-/// line — which is why the removed side is joined before matching, exactly as
-/// the added side is.
+/// Raw forms are matched longest-first, up to three hashes, then the ordinary
+/// form (honouring backslash escapes). A regex cannot balance an arbitrary hash
+/// count, so three is an explicit ceiling: `r####"…"####` is not in subject.
+/// The tree contains no raw-string `.expect` at all today, and the ceiling is
+/// documented rather than silent so that a bypass is a known one.
+///
+/// `\s*` after `.expect(` spans newlines, so this matches the rustfmt-wrapped
+/// form where the explanation sits on its own line — which is why the removed
+/// side is joined before matching, exactly as the added side is.
 static EXPECT_CONTEXT_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(
-        r##"\.expect\(\s*(?:r#"(?<rawhash>(?s:.)*?)"#|r"(?<raw>[^"]*)"|"(?<plain>(?:[^"\\]|\\(?s:.))*)")"##,
+        r####"\.expect\(\s*(?:r###"(?<raw3>(?s:.)*?)"###|r##"(?<raw2>(?s:.)*?)"##|r#"(?<raw1>(?s:.)*?)"#|r"(?<raw0>[^"]*)"|"(?<plain>(?:[^"\\]|\\(?s:.))*)")"####,
     )
 });
 
@@ -115,7 +118,7 @@ impl HunkAccumulator {
         let dropped_contexts: Vec<String> = expect_re
             .captures_iter(&self.removed_text)
             .filter_map(|capture| {
-                ["rawhash", "raw", "plain"]
+                ["raw3", "raw2", "raw1", "raw0", "plain"]
                     .iter()
                     .find_map(|name| capture.name(name))
                     .map(|matched| matched.as_str().to_owned())
@@ -193,9 +196,13 @@ pub(crate) fn scan_unified_diff(diff: &str) -> Result<Vec<ContextDrop>> {
             active.removed_text.push_str(removed);
             active.removed_text.push('\n');
         } else if let Some(added) = line.strip_prefix('+') {
+            // The unmasked line feeds the survival search, which must be able
+            // to find an explanation *inside* a string literal. Call detection
+            // uses the masked copy, so `// call must(x) to migrate` is prose,
+            // not a helper invocation.
             active.added_text.push_str(added);
             active.added_text.push('\n');
-            if bare_re.is_match(added) {
+            if bare_re.is_match(&mask_literals_and_line_comments(added)) {
                 active.bare_calls.push(added.trim().to_owned());
             }
         }
@@ -231,6 +238,100 @@ fn post_image_path(line: &str) -> Option<Option<String>> {
     };
     let path = &rest[index + " b/".len()..];
     if path.is_empty() { Some(None) } else { Some(Some(path.to_owned())) }
+}
+
+/// Blanks string-literal bodies and `//` comment text, preserving every other
+/// byte, so a `must(` that is prose rather than code is not read as a call.
+///
+/// Whole-line scope is deliberate: with `--unified=0` there is no reliable
+/// cross-line lexer state in a diff, and a line is the largest unit that can be
+/// masked without one. A `must(` inside a *multi-line* string body therefore
+/// still reads as a call — no worse than not masking at all, and the remedy for
+/// that and every other false positive is the same one line (`_with`, or keep
+/// the explanation).
+///
+/// Block comments are not handled, for the same reason: `/* … */` spans lines.
+fn mask_literals_and_line_comments(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut masked = String::with_capacity(line.len());
+    let mut index = 0;
+
+    while index < chars.len() {
+        if chars[index] == '/' && chars.get(index + 1) == Some(&'/') {
+            masked.extend(std::iter::repeat_n(' ', chars.len() - index));
+            break;
+        }
+
+        if let Some(end) = raw_string_body_end(&chars, index) {
+            // `r`, its hashes and the opening quote stay; the body is blanked.
+            let body_start = index + raw_string_opener_len(&chars, index);
+            masked.extend(chars[index..body_start].iter());
+            masked.extend(std::iter::repeat_n(' ', end - body_start));
+            index = end;
+            continue;
+        }
+
+        if chars[index] == '"' {
+            masked.push('"');
+            index += 1;
+            while index < chars.len() && chars[index] != '"' {
+                // A backslash escapes the next character, `\"` included.
+                let step = if chars[index] == '\\' { 2 } else { 1 };
+                masked.extend(std::iter::repeat_n(' ', step.min(chars.len() - index)));
+                index += step;
+            }
+            // Consume the closing quote here. Leaving it for the outer loop
+            // would read it as the *opening* quote of the next string, masking
+            // the real code between two literals — which hid a genuine
+            // `IpAddr::V6(must(…))` call sitting between them.
+            if index < chars.len() {
+                masked.push('"');
+                index += 1;
+            }
+            continue;
+        }
+
+        masked.push(chars[index]);
+        index += 1;
+    }
+
+    masked
+}
+
+/// Length of a raw-string opener (`r`, its hashes, and the quote) at `index`,
+/// or `0` when one does not start there.
+fn raw_string_opener_len(chars: &[char], index: usize) -> usize {
+    if chars[index] != 'r' {
+        return 0;
+    }
+    if index > 0 && (chars[index - 1].is_alphanumeric() || chars[index - 1] == '_') {
+        return 0;
+    }
+    let mut cursor = index + 1;
+    while chars.get(cursor) == Some(&'#') {
+        cursor += 1;
+    }
+    if chars.get(cursor) == Some(&'"') { cursor + 1 - index } else { 0 }
+}
+
+/// Index just past the body of a raw string starting at `index`, or `None` when
+/// no raw string starts there. An unterminated body runs to end of line.
+fn raw_string_body_end(chars: &[char], index: usize) -> Option<usize> {
+    let opener = raw_string_opener_len(chars, index);
+    if opener == 0 {
+        return None;
+    }
+    let hashes = opener - 2; // minus the leading `r` and the opening quote
+    let mut cursor = index + opener;
+    while cursor < chars.len() {
+        if chars[cursor] == '"'
+            && chars[cursor + 1..].iter().take(hashes).filter(|c| **c == '#').count() == hashes
+        {
+            return Some(cursor);
+        }
+        cursor += 1;
+    }
+    Some(chars.len())
 }
 
 /// Returns `true` when a diff path names a Rust source file.
@@ -618,6 +719,10 @@ mod tests {
                 r##"-        let v = load().expect(r#"the hashed "raw" fixture"#);"##,
                 r#"the hashed "raw" fixture"#,
             ),
+            (
+                r###"-        let v = load().expect(r##"the twice-hashed "#raw" fixture"##);"###,
+                r##"the twice-hashed "#raw" fixture"##,
+            ),
         ] {
             let text =
                 diff("crates/example/src/lib.rs", &[removed, "+        let v = must(load());"]);
@@ -627,6 +732,97 @@ mod tests {
             assert_eq!(findings.len(), 1, "expected {removed} to be flagged");
             assert_eq!(findings[0].dropped_contexts, vec![expected.to_owned()]);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_must_call_written_in_a_comment_is_not_a_call() -> Result<()> {
+        let text = diff(
+            "crates/example/src/lib.rs",
+            &[
+                r#"-        let v = load().expect("the fixture declares Example");"#,
+                "+        let v = load()?;",
+                "+        // migrate the remaining sites with must(x) once #14291 lands",
+            ],
+        );
+
+        assert_eq!(scan_unified_diff(&text)?, vec![]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_must_call_written_inside_a_string_literal_is_not_a_call() -> Result<()> {
+        let text = diff(
+            "crates/example/src/lib.rs",
+            &[
+                r#"-        let v = load().expect("the fixture declares Example");"#,
+                "+        let v = load()?;",
+                r#"+        let hint = "call must(x) to migrate";"#,
+            ],
+        );
+
+        assert_eq!(scan_unified_diff(&text)?, vec![]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_call_between_two_string_literals_stays_visible() -> Result<()> {
+        // Verbatim from PR #12000 (`ai_destination_policy_tests.rs`). Masking
+        // string bodies must not swallow the code *between* two literals: an
+        // earlier masker consumed the closing quote as the next opening quote
+        // and lost this genuine drop.
+        let text = diff(
+            "crates/perl-lsp-rs-core/tests/ai_destination_policy_tests.rs",
+            &[
+                r#"-            IpAddr::V6("fd00::1".parse().expect("valid ipv6 literal")),"#,
+                r#"+            ("https://[fd00::1]/v1", IpAddr::V6(must("fd00::1".parse()))),"#,
+            ],
+        );
+
+        let findings = scan_unified_diff(&text)?;
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].dropped_contexts, vec!["valid ipv6 literal".to_owned()]);
+        Ok(())
+    }
+
+    #[test]
+    fn masking_leaves_a_real_call_beside_prose_visible() -> Result<()> {
+        let text = diff(
+            "crates/example/src/lib.rs",
+            &[
+                r#"-        let v = load().expect("the fixture declares Example");"#,
+                "+        // prose mentioning must(x) must not hide the real call below",
+                "+        let v = must(load());",
+            ],
+        );
+
+        assert_eq!(scan_unified_diff(&text)?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_edits_sharing_one_hunk_are_a_known_false_positive() -> Result<()> {
+        // Evidence is correlated at hunk scope, not structurally: telling
+        // "this `must` replaced that `.expect`" apart from "two unrelated edits
+        // landed adjacent" needs a Rust-aware diff matcher, which is a
+        // different claim. `--unified=0` keeps hunks minimal, so this needs
+        // genuinely adjacent unrelated edits. Pinned so the behaviour is
+        // visible rather than accidental; the remedy is always one line.
+        let text = diff(
+            "crates/example/src/lib.rs",
+            &[
+                r#"-        let a = load_a().expect("the first authority resolves");"#,
+                "-        let b = load_b().unwrap();",
+                "+        let a = load_a()?;",
+                "+        let b = must(load_b());",
+            ],
+        );
+
+        let findings = scan_unified_diff(&text)?;
+
+        assert_eq!(findings.len(), 1, "hunk-scope correlation reports this pairing");
+        assert_eq!(findings[0].dropped_contexts, vec!["the first authority resolves".to_owned()]);
         Ok(())
     }
 
