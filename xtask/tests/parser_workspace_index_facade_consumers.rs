@@ -42,11 +42,9 @@
 //! `perl_parser::index` re-exports semantic-analyzer authority governed by
 //! the #11377 semantic-facade row (#12483).
 //!
-//! Known limitation: comment stripping is lexical and does not tokenize
-//! string literals, so a `//` or unbalanced `/*` inside a string can hide the
-//! remainder of that line from the scan. This mirrors the precision of the
-//! sibling semantic and TDD facade guards and stays on the safe side for
-//! import statements.
+//! String and character literals are blanked as well as comments, preserving
+//! newlines so a literal cannot create a hit or hide a later import on the
+//! same line.
 
 use std::{
     fs,
@@ -81,8 +79,8 @@ fn repo_root() -> PathBuf {
     root
 }
 
-/// Strip line comments and (nested) block comments while preserving all other
-/// structure, including newlines and brace groups.
+/// Strip comments and Rust literals while preserving newlines and all other
+/// structure, including brace groups.
 fn code_without_comments(source: &str) -> String {
     let chars: Vec<char> = source.chars().collect();
     let mut out = String::with_capacity(source.len());
@@ -99,6 +97,44 @@ fn code_without_comments(source: &str) -> String {
         } else if block_depth > 0 && chars[index] == '*' && chars.get(index + 1) == Some(&'/') {
             block_depth -= 1;
             index += 2;
+        } else if block_depth == 0 && chars[index] == 'r' {
+            let mut quote = index + 1;
+            while chars.get(quote) == Some(&'#') {
+                quote += 1;
+            }
+            if chars.get(quote) == Some(&'"') {
+                let hashes = quote - index - 1;
+                index = quote + 1;
+                while index < chars.len() {
+                    if chars[index] == '"'
+                        && (0..hashes).all(|offset| chars.get(index + 1 + offset) == Some(&'#'))
+                    {
+                        index += hashes + 1;
+                        break;
+                    }
+                    if chars[index] == '\n' {
+                        out.push('\n');
+                    }
+                    index += 1;
+                }
+            } else {
+                out.push(chars[index]);
+                index += 1;
+            }
+        } else if block_depth == 0 && matches!(chars[index], '"' | '\'') {
+            let delimiter = chars[index];
+            index += 1;
+            while index < chars.len() {
+                let escaped = chars[index] == '\\' && index + 1 < chars.len();
+                if chars[index] == '\n' {
+                    out.push('\n');
+                }
+                if chars[index] == delimiter && !escaped {
+                    index += 1;
+                    break;
+                }
+                index += if escaped { 2 } else { 1 };
+            }
         } else {
             if block_depth == 0 {
                 out.push(chars[index]);
@@ -481,6 +517,18 @@ fn comments_cannot_hide_or_create_violations() {
                   \n/* perl_parser::workspace_index */\
                   \n// perl_parser::document_store\n";
     assert!(forbidden_facade_references(&code_without_comments(allowed)).is_empty());
+}
+
+#[test]
+fn literals_cannot_hide_or_create_violations() {
+    let source = r#"
+let ordinary = "perl_parser::workspace_index::WorkspaceIndex";
+let raw = r###"perl_parser::document_store::DocumentStore"###;
+let character = ':';
+let marker = "//"; use perl_parser::workspace_index::WorkspaceIndex;
+"#;
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(hits, vec!["perl_parser::workspace_index".to_string()]);
 }
 
 #[test]
