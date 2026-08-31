@@ -38,6 +38,15 @@ fn evaluate_run_block() -> Result<String> {
     workflow_run_block("ripr", "Evaluate routed result")
 }
 
+fn evaluate_gh_token_binding() -> Result<String> {
+    workflow_step_value("ripr", "Evaluate routed result")?
+        .get("env")
+        .and_then(|env| env.get("GH_TOKEN"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("Evaluate routed result GH_TOKEN binding is missing"))
+}
+
 fn workflow_run_block(job_name: &str, step_name: &str) -> Result<String> {
     let root = project_root()?;
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
@@ -127,7 +136,18 @@ fn run_gate_with_fake_gh(
         lookup_failures,
         fetch_failures,
         route,
+        GhApiControl::Valid,
+        Some("gate-token"),
     )
+}
+
+#[derive(Clone, Copy)]
+enum GhApiControl {
+    Valid,
+    WrongRepository,
+    WrongRun,
+    WrongLogJob,
+    MissingToken,
 }
 
 fn run_gate_with_fake_gh_logs(
@@ -136,6 +156,8 @@ fn run_gate_with_fake_gh_logs(
     lookup_failures: u32,
     fetch_failures: u32,
     route: GateRoute<'_>,
+    api_control: GhApiControl,
+    token: Option<&str>,
 ) -> Result<(std::process::Output, String, Option<String>)> {
     let root = project_root()?;
     let sandbox = tempfile::tempdir().context("creating gate workflow sandbox")?;
@@ -152,13 +174,29 @@ fn run_gate_with_fake_gh_logs(
     let jobs_response = sandbox.path().join("jobs.json");
     let classification = sandbox.path().join("ripr-gate-classification.env");
     require_real_jq()?;
-    let run = evaluate_run_block()?;
+    if evaluate_gh_token_binding()? != "${{ github.token }}" {
+        bail!("Evaluate routed result must bind GH_TOKEN to github.token");
+    }
+    let mut run = evaluate_run_block()?;
+    match api_control {
+        GhApiControl::Valid | GhApiControl::MissingToken => {}
+        GhApiControl::WrongRepository => {
+            run = run.replace("repos/${GITHUB_REPOSITORY}/", "repos/Other/repository/");
+        }
+        GhApiControl::WrongRun => {
+            run = run.replace("actions/runs/${GITHUB_RUN_ID}/jobs", "actions/runs/9999/jobs");
+        }
+        GhApiControl::WrongLogJob => {
+            run = run.replace("actions/jobs/${lane_job_id}/logs", "actions/jobs/99999/logs");
+        }
+    }
     let (job_name, job_id) = gate_lane_identity(route);
     let fake = r#"
 sleep() { :; }
 gh() {
   [ "$1" = "api" ] || return 1
   [ -n "${GH_TOKEN:-}" ] || return 1
+  [ "$GH_TOKEN" = "${GITHUB_TOKEN:-}" ] || return 1
   shift
   local url="$1"
   shift
@@ -171,8 +209,10 @@ gh() {
       shift
     fi
   done
+  local expected_jobs_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/jobs?per_page=100"
+  local expected_log_url="repos/${FAKE_REPOSITORY}/actions/jobs/${FAKE_JOB_ID}/logs"
   case "$url" in
-    */jobs?per_page=100)
+    "$expected_jobs_url")
       local count=0
       if [ -f "$FAKE_LOOKUP_CALLS" ]; then count=$(cat "$FAKE_LOOKUP_CALLS"); fi
       printf '%s' "$((count + 1))" > "$FAKE_LOOKUP_CALLS"
@@ -188,7 +228,7 @@ gh() {
       jq "$jq_selector" "$FAKE_JOBS_RESPONSE"
       return $?
       ;;
-    */actions/jobs/*/logs)
+    "$expected_log_url")
       local requested_job_id="${url%/logs}"
       requested_job_id="${requested_job_id##*/}"
       printf '%s\n' "$requested_job_id" >> "$FAKE_FETCH_URLS"
@@ -209,6 +249,10 @@ gh() {
       printf '%s' "$FAKE_LOG"
       return
       ;;
+    *)
+      printf 'unexpected gh API URL: %s\n' "$url" >&2
+      return 1
+      ;;
   esac
   return 1
 }
@@ -227,7 +271,8 @@ gh() {
         .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
         .env("GITHUB_RUN_ID", "4242")
         .env("GITHUB_SHA", "0123456789abcdef0123456789abcdef01234567")
-        .env("GH_TOKEN", "gate-token")
+        .env("GITHUB_TOKEN", "gate-token")
+        .env("GH_TOKEN", token.unwrap_or(""))
         .env("GITHUB_STEP_SUMMARY", &summary)
         .env("FAKE_FETCH", if log.is_some() { "success" } else { "fail" })
         .env("FAKE_LOOKUP_FAILURES", lookup_failures.to_string())
@@ -238,6 +283,8 @@ gh() {
         .env("FAKE_FETCH_CALLS", &fetch_calls)
         .env("FAKE_FETCH_URLS", &fetch_urls)
         .env("FAKE_JOBS_RESPONSE", &jobs_response)
+        .env("FAKE_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
+        .env("FAKE_RUN_ID", "4242")
         .env("FAKE_JOB_NAME", job_name)
         .env("FAKE_JOB_ID", job_id)
         .stdin(Stdio::piped())
@@ -515,7 +562,7 @@ fn run_fallback_condition(
     Ok((output, format!("{combined}\n{summary_text}")))
 }
 
-fn run_fallback_path() -> Result<(std::process::Output, String)> {
+fn run_fallback_path(quality_gate_fails: bool) -> Result<(std::process::Output, String)> {
     let root = project_root()?;
     let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
     let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
@@ -639,6 +686,9 @@ cargo() {
       printf 'fallback warning annotation\n' > target/ripr/review/annotations.txt
       ;;
     quality-gate)
+      if [ "${FAKE_QUALITY_GATE:-pass}" = "fail" ]; then
+        return 1
+      fi
       mkdir -p target/receipts/quality
       printf '{"kind":"quality-gate"}\n' > target/receipts/quality/quality-gate-ripr.json
       printf 'fallback quality gate summary\n' > target/receipts/quality/quality-gate-ripr.md
@@ -679,6 +729,7 @@ checkout_action
                 .ok_or_else(|| anyhow!("fallback checkout action is missing"))?,
         )
         .env("FAKE_CHECKOUT_DEPTH", "0")
+        .env("FAKE_QUALITY_GATE", if quality_gate_fails { "fail" } else { "pass" })
         .env("FAKE_HEAD", "0123456789abcdef0123456789abcdef01234567")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1061,7 +1112,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
             "the production ripr-fallback condition must start the fallback after preflight_ok=false:\n{fallback_output}"
         );
     }
-    let (fallback_path, fallback_path_output) = run_fallback_path()?;
+    let (fallback_path, fallback_path_output) = run_fallback_path(false)?;
     if !fallback_path.status.success()
         || !fallback_path_output.contains(
             "checkout=uses=actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 fetch-depth=0",
@@ -1579,6 +1630,8 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         0,
         1,
         GateRoute::github_failure(),
+        GhApiControl::Valid,
+        Some("gate-token"),
     )?;
     if reused.status.success()
         || !reused_output.contains("classification=ripr-failure")
@@ -1633,12 +1686,21 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         }
     }
 
+    let (fallback_execution, fallback_execution_output) = run_fallback_path(false)?;
+    if !fallback_execution.status.success()
+        || !fallback_execution_output.contains("cargo xtask quality-gate")
+    {
+        bail!(
+            "fallback success result must come from the executed checkout/evidence/quality-gate path:\n{fallback_execution_output}"
+        );
+    }
+    let fallback_result = if fallback_execution.status.success() { "success" } else { "failure" };
     let fallback_route = GateRoute {
         router_target: "cx53",
         cx53_result: "failure",
         cx43_result: "skipped",
         github_result: "skipped",
-        fallback_result: "success",
+        fallback_result,
     };
     let (fallback, fallback_output, fallback_artifact) =
         run_gate_with_fake_gh(None, 0, 0, fallback_route)?;
@@ -1652,12 +1714,22 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
 
+    let (fallback_failure_execution, fallback_failure_execution_output) = run_fallback_path(true)?;
+    if fallback_failure_execution.status.success()
+        || !fallback_failure_execution_output.contains("cargo xtask quality-gate")
+    {
+        bail!(
+            "fallback failure result must come from the executed quality-gate path:\n{fallback_failure_execution_output}"
+        );
+    }
+    let fallback_failure_result =
+        if fallback_failure_execution.status.success() { "success" } else { "failure" };
     let fallback_failure_route = GateRoute {
         router_target: "cx53",
         cx53_result: "failure",
         cx43_result: "skipped",
         github_result: "skipped",
-        fallback_result: "failure",
+        fallback_result: fallback_failure_result,
     };
     let (fallback_failure, fallback_failure_output, fallback_failure_artifact) =
         run_gate_with_fake_gh(Some(evicted_log), 0, 0, fallback_failure_route)?;
@@ -1672,6 +1744,31 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         bail!(
             "fallback failure must select and classify the fallback job rather than a stale primary job:\n{fallback_failure_output}\n{fallback_failure_artifact}"
         );
+    }
+
+    for (name, control, token) in [
+        ("wrong repository", GhApiControl::WrongRepository, Some("gate-token")),
+        ("wrong run", GhApiControl::WrongRun, Some("gate-token")),
+        ("wrong log job", GhApiControl::WrongLogJob, Some("gate-token")),
+        ("missing token", GhApiControl::MissingToken, None),
+    ] {
+        let (negative, output, artifact) = run_gate_with_fake_gh_logs(
+            Some(evicted_log),
+            "##[error]The runner has received a shutdown signal.\n",
+            0,
+            0,
+            GateRoute::github_failure(),
+            control,
+            token,
+        )?;
+        if negative.status.success() || artifact.is_some() {
+            bail!(
+                "{name} API/auth negative control must fail closed without retry artifact:\n{output}"
+            );
+        }
+        if !output.contains("RIPR_GATE_VERDICT=ripr-failure") {
+            bail!("{name} negative control did not reach the fail-closed gate verdict:\n{output}");
+        }
     }
 
     Ok(())
