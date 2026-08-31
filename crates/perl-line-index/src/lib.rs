@@ -93,7 +93,9 @@ impl LineIndex {
     ///
     /// Returns `None` when:
     /// - `line` is out of range (same as [`position_to_byte`]).
-    /// - `column` is past the end of the line (UTF-16 length of the line text).
+    /// - `column` is past the end of the line (the newline character on a
+    ///   non-final line is the last addressable column; the first byte of the
+    ///   next line is out of range).
     /// - `column` points into the middle of a UTF-16 surrogate pair (the
     ///   interior of a supplementary character, U+10000..=U+10FFFF).
     ///
@@ -105,9 +107,14 @@ impl LineIndex {
     pub fn position_to_byte_utf16(&self, text: &str, line: usize, column: usize) -> Option<usize> {
         let line_start = *self.line_starts.get(line)?;
         // Determine where this line's content ends (exclusive).  For non-final
-        // lines that includes the '\n' byte itself so positions pointing at the
-        // newline are accepted.  For the final line we use text_len.
-        let line_end = self.line_starts.get(line + 1).copied().unwrap_or(self.text_len);
+        // lines the newline byte itself is the last addressable position, so
+        // line_end excludes it (same boundary rule as [`position_to_byte`]);
+        // `next_start` belongs to the *next* line.  For the final line we use
+        // text_len.
+        let line_end = self
+            .line_starts
+            .get(line + 1)
+            .map_or(self.text_len, |next_start| next_start.saturating_sub(1));
         let line_text = text.get(line_start..line_end)?;
 
         // Walk the line, accumulating UTF-16 units until we reach `column`.
@@ -124,8 +131,9 @@ impl LineIndex {
             utf16_units += ch_utf16;
         }
 
-        // `column` == total UTF-16 length of the line is the one-past-end
-        // position (valid for range ends).
+        // `column` == total UTF-16 length of the line text is the last
+        // addressable position: the newline byte on a non-final line, or
+        // one-past-end of the text on the final line (valid for range ends).
         if utf16_units == column { Some(line_start + line_text.len()) } else { None }
     }
 
@@ -569,5 +577,42 @@ mod tests {
                 assert_eq!(roundtrip, byte, "roundtrip failed at byte {byte}");
             }
         }
+    }
+
+    // ── UTF-16 boundary parity (#9837) ──────────────────────────────────
+    //
+    // `position_to_byte_utf16` must share one line-boundary rule with the
+    // byte-column conversions: the newline is the last addressable column on
+    // a non-final line and the next line's first byte is out of range.
+
+    #[test]
+    fn utf16_and_byte_columns_agree_on_line_boundary() {
+        let text = "ab\ncd";
+        let idx = LineIndex::new(text);
+
+        // The newline is the last addressable column on line 0.
+        assert_eq!(idx.position_to_byte_utf16(text, 0, 2), Some(2));
+        assert_eq!(idx.position_to_byte_checked(0, 2), Some(2));
+
+        // The next line's first byte is out of range for line 0 in every variant.
+        assert_eq!(idx.position_to_byte(0, 3), None);
+        assert_eq!(idx.position_to_byte_checked(0, 3), None);
+        assert_eq!(idx.position_to_byte_utf16(text, 0, 3), None);
+    }
+
+    #[test]
+    fn utf16_crlf_line_boundary_matches_byte_columns() {
+        let text = "ab\r\ncd";
+        let idx = LineIndex::new(text);
+        assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3)); // the '\n'
+        assert_eq!(idx.position_to_byte_utf16(text, 0, 4), None); // next line start
+        assert_eq!(idx.position_to_byte_checked(0, 4), None);
+    }
+
+    #[test]
+    fn utf16_final_line_end_is_still_addressable() {
+        let text = "ab\ncd";
+        let idx = LineIndex::new(text);
+        assert_eq!(idx.position_to_byte_utf16(text, 1, 2), Some(5)); // one-past-end of final line
     }
 }

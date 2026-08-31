@@ -153,9 +153,9 @@ fn test_utf16_first_line_unaffected_by_second_line() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-/// CRLF line endings are included in the addressable line text: callers may
-/// address the `\r`, the `\n`, and the one-past-end range position at the
-/// start of the next line while still using UTF-16 columns.
+/// CRLF line endings are addressable up to and including the `\n`, which is
+/// the last addressable UTF-16 column on a non-final line; the next line's
+/// first byte is out of range (#9837), matching the byte-column conversions.
 #[test]
 fn test_utf16_crlf_line_accepts_newline_and_range_end_positions()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -163,9 +163,9 @@ fn test_utf16_crlf_line_accepts_newline_and_range_end_positions()
     let idx = LineIndex::new(text);
 
     assert_eq!(idx.position_to_byte_utf16(text, 0, 0), Some(0));
-    assert_eq!(idx.position_to_byte_utf16(text, 0, 2), Some(2));
-    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3));
-    assert_eq!(idx.position_to_byte_utf16(text, 0, 4), Some(4));
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 2), Some(2)); // the '\r'
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3)); // the '\n'
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 4), None); // next line start
 
     // Line 1 starts after the CRLF. The emoji occupies two UTF-16 units, so
     // column 3 is the `d` after the emoji and column 2 is an invalid interior
