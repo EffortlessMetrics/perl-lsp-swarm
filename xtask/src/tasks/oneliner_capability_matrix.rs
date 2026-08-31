@@ -720,7 +720,14 @@ fn macro_definition_bodies(source: &str, code: &[bool]) -> Vec<(usize, usize)> {
     let mut bodies = Vec::new();
 
     for (index, _) in source.match_indices(KEYWORD) {
-        if !code.get(index).copied().unwrap_or(false) {
+        // The keyword must start a token. `helper_macro_rules!(..)` is an
+        // ordinary invocation whose tail happens to spell the keyword, and
+        // treating it as a definition would blank a real fixture's arguments —
+        // the same token-boundary rule `code_mask` applies to a raw string's
+        // leading `r`.
+        if !code.get(index).copied().unwrap_or(false)
+            || bytes.get(index.wrapping_sub(1)).is_some_and(|byte| is_identifier_byte(*byte))
+        {
             continue;
         }
         // Step over the macro's name to its opening delimiter. Anything else
@@ -774,7 +781,12 @@ fn macro_definition_bodies(source: &str, code: &[bool]) -> Vec<(usize, usize)> {
 /// macro definitions, which describe tests rather than declaring them.
 fn evidence_mask(source: &str) -> Vec<bool> {
     let mut code = code_mask(source);
-    for (start, end) in macro_definition_bodies(source, &code) {
+    // A comment may sit between `macro_rules!` and its body, so the definition
+    // is located on the blanked view for the same reason the item walks are:
+    // otherwise the search for the opening delimiter stops at the comment and
+    // the template stays visible.
+    let scan = blank_non_code(source, &code);
+    for (start, end) in macro_definition_bodies(&scan, &code) {
         for flag in code.iter_mut().take(end).skip(start) {
             *flag = false;
         }
@@ -1882,6 +1894,35 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         assert!(evidence.switch_cases.contains_key("after_macro"), "{:?}", evidence.switch_cases);
         assert!(evidence.proof_tests.contains("after_macro_proof"), "{:?}", evidence.proof_tests);
         assert!(!evidence.switch_cases.contains_key("phantom_case"));
+
+        // A comment between the keyword and the body must not leave the
+        // template searchable.
+        for source in [
+            "macro_rules! /* named later */ helper {\n    () => {\n        command_line_oneliner!(phantom_case, \"-e\", \"print 1;\");\n    };\n}\n",
+            "macro_rules! // named later\nhelper {\n    () => {\n        command_line_oneliner!(phantom_case, \"-e\", \"print 1;\");\n    };\n}\n",
+        ] {
+            let evidence = extract_corpus_evidence(source);
+            assert!(
+                evidence.switch_cases.is_empty(),
+                "a comment left the template searchable in {source:?}: {:?}",
+                evidence.switch_cases
+            );
+        }
+
+        // The keyword must start a token. An invocation whose name merely ends
+        // in `macro_rules` is ordinary code, and blanking its arguments would
+        // hide a real fixture without tripping the uncited-fixture rule.
+        let tail_named = concat!(
+            "helper_macro_rules!(\n",
+            "    command_line_oneliner!(real_case, \"-ne\", \"print;\");\n",
+            ");\n"
+        );
+        let evidence = extract_corpus_evidence(tail_named);
+        assert!(
+            evidence.switch_cases.contains_key("real_case"),
+            "an invocation ending in `macro_rules` was treated as a definition: {:?}",
+            evidence.switch_cases
+        );
 
         // The committed corpus defines its fixture macro this way and still
         // yields every real invocation that follows it.
