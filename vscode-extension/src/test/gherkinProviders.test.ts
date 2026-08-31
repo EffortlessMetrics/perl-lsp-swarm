@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { readBoundedFile } from '../gherkinStepDefinitions';
+import * as gherkinStepDefinitions from '../gherkinStepDefinitions';
 import {
   collectStepDefinitionDocuments,
   provideGherkinDocumentSymbols,
@@ -581,6 +582,50 @@ describe('gherkin step-definition workspace envelope', () => {
         'Given qr/^buffer$/, sub { return; };\n',
       ]);
     } finally {
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('prefers a buffer that turns dirty while the disk read is pending', async () => {
+    const root = makeEnvelopeWorkspace('dirty-race');
+    const candidate = path.join(root, 'steps.pm');
+    const diskText = 'Given qr/^disk$/, sub { return; };\n';
+    fs.writeFileSync(candidate, diskText);
+
+    let releaseDiskRead: (value: { text: string; byteLength: number } | null) => void = () =>
+      undefined;
+    const pendingDiskRead = new Promise<{ text: string; byteLength: number } | null>((resolve) => {
+      releaseDiskRead = resolve;
+    });
+    const diskReadSpy = jest
+      .spyOn(gherkinStepDefinitions, 'readBoundedFile')
+      .mockImplementation(async () => pendingDiskRead);
+
+    const dirty = {
+      uri: vscode.Uri.file(candidate),
+      isDirty: false,
+      getText: () => 'Given qr/^buffer$/, sub { return; };\n',
+    } as unknown as vscode.TextDocument;
+    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [dirty];
+
+    try {
+      const scanPromise = collectStepDefinitionDocuments(
+        [vscode.Uri.file(candidate)],
+        cancelled(false),
+      );
+      // The edit lands while the disk read is pending, so the pre-read dirty
+      // check misses it and only the post-await reconcile can see it.
+      (dirty as unknown as { isDirty: boolean }).isDirty = true;
+      releaseDiskRead({ text: diskText, byteLength: Buffer.byteLength(diskText, 'utf8') });
+
+      const scan = await scanPromise;
+
+      expect(scan.documents.map((document) => document.text)).toEqual([
+        'Given qr/^buffer$/, sub { return; };\n',
+      ]);
+    } finally {
+      diskReadSpy.mockRestore();
       (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -302,8 +302,10 @@ export interface StepDefinitionScan {
  * letting the next attempted read cross it. Candidates whose URI scheme is not
  * `file` are skipped: their `fsPath` names no local file this scan may read.
  * A candidate open in the editor with unsaved edits resolves from its buffer
- * under the same envelope, so links never follow stale disk contents; a clean
- * document is read from disk so the regular-file and symlink checks stay on
+ * under the same envelope, so links never follow stale disk contents; because
+ * an edit can land while the disk read is pending, the buffer is re-checked
+ * after the await and preferred over the just-read disk text. A clean
+ * document takes the disk path so the regular-file and symlink checks stay on
  * the read path.
  *
  * Exported for the containment proof in gherkinProviders.test.ts: the scan
@@ -318,6 +320,46 @@ export async function collectStepDefinitionDocuments(
   let acceptedBytes = 0;
   let attemptedBytes = 0;
   let refusal: StepDefinitionScanRefusal | null = null;
+
+  const dirtyDocumentFor = (candidate: vscode.Uri): vscode.TextDocument | undefined =>
+    vscode.workspace.textDocuments.find(
+      (document) => document.uri.toString() === candidate.toString() && document.isDirty,
+    );
+
+  // Admit one candidate's buffer text under the same envelope as a disk read:
+  // charged against the read budget, capped per file, and capped on the
+  // retained total.
+  const admitBufferText = (
+    uri: vscode.Uri,
+    text: string,
+  ): 'admitted' | 'over-file-cap' | 'over-retained-cap' | 'read-budget-exhausted' => {
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (attemptedBytes + bytes > MAX_STEP_DEFINITION_TOTAL_READ_BYTES) {
+      return 'read-budget-exhausted';
+    }
+    attemptedBytes += bytes;
+    if (bytes > MAX_STEP_DEFINITION_FILE_BYTES) {
+      return 'over-file-cap';
+    }
+    if (acceptedBytes + bytes > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      return 'over-retained-cap';
+    }
+    acceptedBytes += bytes;
+    documents.push({ uri, text });
+    return 'admitted';
+  };
+
+  const admitDirtyBuffer = (uri: vscode.Uri): 'stop' | 'continue' => {
+    const outcome = admitBufferText(uri, dirtyDocumentFor(uri)!.getText());
+    if (outcome === 'read-budget-exhausted') {
+      refusal = 'read_budget_exhausted';
+      return 'stop';
+    }
+    if (outcome === 'over-retained-cap') {
+      return 'stop';
+    }
+    return 'continue';
+  };
 
   for (const uri of candidates) {
     if (token.isCancellationRequested) {
@@ -334,25 +376,10 @@ export async function collectStepDefinitionDocuments(
     // visibility: a document open with unsaved edits resolves from its buffer
     // (charged and capped like any read), while a clean document takes the
     // disk path so the regular-file and symlink checks stay on the read path.
-    const dirty = vscode.workspace.textDocuments.find(
-      (document) => document.uri.toString() === uri.toString() && document.isDirty,
-    );
-    if (dirty) {
-      const text = dirty.getText();
-      const bytes = Buffer.byteLength(text, 'utf8');
-      if (attemptedBytes + bytes > MAX_STEP_DEFINITION_TOTAL_READ_BYTES) {
-        refusal = 'read_budget_exhausted';
+    if (dirtyDocumentFor(uri)) {
+      if (admitDirtyBuffer(uri) === 'stop') {
         break;
       }
-      attemptedBytes += bytes;
-      if (bytes > MAX_STEP_DEFINITION_FILE_BYTES) {
-        continue;
-      }
-      if (acceptedBytes + bytes > MAX_STEP_DEFINITION_TOTAL_BYTES) {
-        break;
-      }
-      acceptedBytes += bytes;
-      documents.push({ uri, text });
       continue;
     }
 
@@ -372,6 +399,17 @@ export async function collectStepDefinitionDocuments(
     if (!read) {
       continue;
     }
+
+    // An edit can land while the read is pending, which turns the just-read
+    // disk text stale. Reconcile after the await: a buffer that is dirty now
+    // wins under the same envelope.
+    if (dirtyDocumentFor(uri)) {
+      if (admitDirtyBuffer(uri) === 'stop') {
+        break;
+      }
+      continue;
+    }
+
     if (acceptedBytes + read.byteLength > MAX_STEP_DEFINITION_TOTAL_BYTES) {
       break;
     }
