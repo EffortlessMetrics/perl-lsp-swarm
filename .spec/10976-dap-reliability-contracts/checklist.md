@@ -313,7 +313,7 @@ foreach ($m in [regex]::Matches($acc, '\| T(\d\d) \|')) {
   if ([int]$m.Groups[1].Value -ne $rowIdx) { throw "test-grid rows out of fixed order near T$rowIdx" }
   $rowIdx++
 }
-if ($rowIdx -ne 15) { throw "expected 14 test-grid rows, saw $($rowIdx - 1)" }
+if ($rowIdx -ne 15) { throw "expected 15 test-grid rows, saw $($rowIdx - 1)" }
 
 # --- 5. canonical digest + determinism ---
 function Canonicalize($node) {
