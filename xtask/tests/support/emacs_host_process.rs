@@ -743,6 +743,26 @@ pub fn surviving_processes(
         .collect()
 }
 
+fn diagnostic_probe_failure(phase: &str, probe: &Option<Result<String>>) -> Option<String> {
+    match probe {
+        None => Some(format!(
+            "{phase}-process probe unavailable on this platform; cleanup not observed"
+        )),
+        Some(Err(error)) => Some(format!("{phase}-process probe failed: {error:#}")),
+        Some(Ok(text)) => parse_probe(text)
+            .err()
+            .map(|error| format!("{phase}-process probe unparseable: {error:#}")),
+    }
+}
+
+fn render_process_snapshot(lines: &[ProcessProbeLine]) -> String {
+    let mut text = String::new();
+    for line in lines {
+        let _ = writeln!(text, "{} {}", line.pid, line.args);
+    }
+    text
+}
+
 #[cfg(test)]
 mod process_tests {
     use super::*;
@@ -762,24 +782,4 @@ mod process_tests {
         let after = vec![leaked];
         assert!(surviving_processes(&before, &after, needle).is_empty());
     }
-}
-
-fn diagnostic_probe_failure(phase: &str, probe: &Option<Result<String>>) -> Option<String> {
-    match probe {
-        None => Some(format!(
-            "{phase}-process probe unavailable on this platform; cleanup not observed"
-        )),
-        Some(Err(error)) => Some(format!("{phase}-process probe failed: {error:#}")),
-        Some(Ok(text)) => parse_probe(text)
-            .err()
-            .map(|error| format!("{phase}-process probe unparseable: {error:#}")),
-    }
-}
-
-fn render_process_snapshot(lines: &[ProcessProbeLine]) -> String {
-    let mut text = String::new();
-    for line in lines {
-        let _ = writeln!(text, "{} {}", line.pid, line.args);
-    }
-    text
 }
