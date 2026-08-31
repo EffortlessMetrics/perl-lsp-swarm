@@ -188,6 +188,71 @@ fn the_observation_contract_couples_an_outcome_to_its_status() -> Result<()> {
 }
 
 #[test]
+fn the_observation_contract_binds_activity_evidence_to_an_attempted_request() -> Result<()> {
+    // Raised in review: the contract coupled `status` and `elapsed_ms` to the
+    // outcome but left `response_bytes`, `truncated`, `error_kind` and
+    // `redirects` free, so a producer following the published contract alone
+    // could emit an unattempted request that also reported bytes or an error —
+    // a shape the classifier refuses as `unattempted_request_reports_activity`.
+    // The schema is the durable artifact; a later rewrite that dropped the
+    // redundant code guard would otherwise start admitting these silently.
+    let validator = validator(OBSERVATION_SCHEMA)?;
+    let baseline: Value = serde_json::from_str(AVAILABLE_EXACT)?;
+    validate(&validator, &baseline, "baseline")?;
+
+    // An unattempted request, otherwise well formed: the activity fields below
+    // are the only thing under test.
+    let unattempted = {
+        let mut document = baseline.clone();
+        let transport = &mut document["cells"]["listing"]["transport"];
+        transport["outcome"] = Value::String("not_attempted".to_owned());
+        transport["status"] = Value::Null;
+        transport["elapsed_ms"] = Value::Null;
+        transport["response_bytes"] = Value::Null;
+        document
+    };
+    validate(&validator, &unattempted, "unattempted baseline")?;
+
+    let activity: &[(&str, Value)] = &[
+        ("bytes", serde_json::json!(0)),
+        ("an error", serde_json::json!("timeout")),
+        ("a truncated read", serde_json::json!(true)),
+        ("a redirect", serde_json::json!(1)),
+    ];
+    let fields = ["response_bytes", "error_kind", "truncated", "redirects"];
+    for ((label, value), field) in activity.iter().zip(fields) {
+        let mut reports_activity = unattempted.clone();
+        reports_activity["cells"]["listing"]["transport"][field] = value.clone();
+        if validator.is_valid(&reports_activity) {
+            bail!("an unattempted request reporting {label} passed validation");
+        }
+    }
+
+    // The converse must NOT hold. Each shape below is one the classifier
+    // accepts, so a contract that required an attempted request to report bytes
+    // or an error would refuse observations the code reads happily — including
+    // the affirmative `404` that the whole absence path is built on.
+    let mut absent = baseline.clone();
+    absent["cells"]["listing"]["transport"]["status"] = serde_json::json!(404);
+    absent["cells"]["listing"]["transport"]["response_bytes"] = Value::Null;
+    validate(&validator, &absent, "404 with no byte count")?;
+
+    let mut unreachable = baseline.clone();
+    let transport = &mut unreachable["cells"]["listing"]["transport"];
+    transport["outcome"] = Value::String("transport_error".to_owned());
+    transport["status"] = Value::Null;
+    transport["response_bytes"] = Value::Null;
+    transport["error_kind"] = Value::String("dns".to_owned());
+    validate(&validator, &unreachable, "transport error that read nothing")?;
+
+    let mut truncated_without_a_named_error = baseline;
+    truncated_without_a_named_error["cells"]["listing"]["transport"]["truncated"] =
+        Value::Bool(true);
+    validate(&validator, &truncated_without_a_named_error, "truncated read with no error_kind")?;
+    Ok(())
+}
+
+#[test]
 fn the_contracts_declare_the_versions_the_code_emits() -> Result<()> {
     let receipt_schema: Value = serde_json::from_str(RECEIPT_SCHEMA)?;
     let observation_schema: Value = serde_json::from_str(OBSERVATION_SCHEMA)?;

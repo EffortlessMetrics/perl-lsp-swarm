@@ -333,6 +333,35 @@
               }
             }
           }
+        },
+        {
+          "description": "A request that was never attempted cannot have produced bytes, a redirect, a truncated read, or an error: those are evidence of the attempt it did not make. The classifier refuses the combination as invalid (unattempted_request_reports_activity), so the contract states it. Deliberately one-way: the converse does not hold, because an attempted request may legitimately report none of them. A 404 carrying no byte count is the affirmative-absence shape this tool is built around, a DNS or connect failure reads nothing before it fails, and a healthy response has no error_kind at all — the classifier accepts every one of those, so binding them here would make the contract stricter than the code it describes.",
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "not_attempted"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "properties": {
+              "response_bytes": {
+                "type": "null"
+              },
+              "error_kind": {
+                "type": "null"
+              },
+              "truncated": {
+                "const": false
+              },
+              "redirects": {
+                "const": 0
+              }
+            }
+          }
         }
       ]
     },
