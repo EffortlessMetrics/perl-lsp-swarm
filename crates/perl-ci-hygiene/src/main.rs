@@ -32,6 +32,7 @@ use crate::cli::{Cli, CliCommand};
 use crate::commands::panic_test::{check_panic_test, check_panic_test_with_registry};
 use crate::commands::print_in_lib::check_print_in_lib;
 use crate::commands::regex_static::check_regex_static;
+use crate::commands::serial_test::{check_serial_test, check_serial_test_with_registry};
 #[cfg(test)]
 use crate::commands::todos::{
     has_unlinked_todo_in_hash_line, has_unlinked_todo_in_perl_line, has_unlinked_todo_in_rust_line,
@@ -134,6 +135,15 @@ fn run() -> Result<i32> {
         }
         CliCommand::CheckMustContext { base } => {
             commands::must_context::check(&repo_root, base.as_deref())?
+        }
+        CliCommand::CheckSerialTest { inventory, identity_registry } => {
+            if inventory {
+                commands::serial_test::write_inventory(&repo_root)?
+            } else if let Some(identity_registry) = identity_registry {
+                check_serial_test_with_registry(&repo_root, &identity_registry)?
+            } else {
+                check_serial_test(&repo_root)?
+            }
         }
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
         CliCommand::CheckRegexStatic => check_regex_static(&repo_root)?,

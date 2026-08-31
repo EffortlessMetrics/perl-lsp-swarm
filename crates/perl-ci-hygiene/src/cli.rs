@@ -146,6 +146,15 @@ pub(crate) enum CliCommand {
         #[arg(long, value_name = "REF")]
         base: Option<String>,
     },
+    /// Enforce `#[serial]`-style serialization on parallel-unsafe tests against `ci/serial_test_identities.json` (#1269).
+    CheckSerialTest {
+        /// Emit the parallel-unsafe test identity inventory without applying the registry gate.
+        #[arg(long)]
+        inventory: bool,
+        /// Validate the inventory against an accepted identity registry.
+        #[arg(long, value_name = "PATH", conflicts_with = "inventory")]
+        identity_registry: Option<PathBuf>,
+    },
     /// Enforce no raw print macros in library source (println!/eprintln! belong in tracing).
     CheckPrintInLib,
     /// Enforce regex constructors live in LazyLock/OnceLock statics, never per-call.

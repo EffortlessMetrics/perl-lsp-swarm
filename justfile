@@ -968,6 +968,7 @@ ci-gate:
     just status-check && \
     just ci-clippy-gate && \
     just ci-unwrap-panic-ratchet && \
+    just ci-serial-test-ratchet && \
     just ci-unsafe-ratchet && \
     just ci-print-in-lib-ratchet && \
     just ci-regex-static-ratchet && \
@@ -1100,6 +1101,13 @@ ci-panic-test-ratchet:
     @echo "🛡️  Checking test-code panic! ratchet..."
     @cargo xtask ci-hygiene check-panic-test
     @echo "✅ Test-code panic! ratchet passed"
+
+# Parallel-unsafe test ratchet: test fns mutating process-global state must be
+# #[serial]-guarded or adjudicated in ci/serial_test_identities.json (#1269)
+ci-serial-test-ratchet:
+    @echo "🧩  Checking parallel-unsafe test serialization ratchet..."
+    @cargo xtask ci-hygiene check-serial-test
+    @echo "✅ Parallel-unsafe test ratchet passed"
 
 # Unsafe syntax ratchet (production source only)
 ci-unsafe-ratchet:
