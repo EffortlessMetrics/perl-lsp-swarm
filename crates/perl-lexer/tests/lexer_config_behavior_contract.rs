@@ -438,11 +438,44 @@ fn contains_simd_selection(source: &str) -> bool {
         let Some(value_start) = skip_rust_whitespace_and_comments(bytes, equal_start + 1) else {
             continue;
         };
-        if bytes.get(value_start..value_start + 6) == Some(b"\"simd\"") {
+        if is_simd_string_literal(bytes, value_start) {
             return true;
         }
     }
     false
+}
+
+fn is_simd_string_literal(bytes: &[u8], start: usize) -> bool {
+    if bytes.get(start..start + 6) == Some(b"\"simd\"") {
+        return true;
+    }
+    if bytes.get(start) != Some(&b'r') {
+        return false;
+    }
+
+    let mut cursor = start + 1;
+    let mut hashes = 0usize;
+    while bytes.get(cursor) == Some(&b'#') {
+        hashes += 1;
+        cursor += 1;
+    }
+    if bytes.get(cursor) != Some(&b'"') {
+        return false;
+    }
+    cursor += 1;
+    if bytes.get(cursor..cursor + 4) != Some(b"simd") {
+        return false;
+    }
+    cursor += 4;
+    if bytes.get(cursor) != Some(&b'"') {
+        return false;
+    }
+    cursor += 1;
+    (0..hashes).all(|_| {
+        let matches = bytes.get(cursor) == Some(&b'#');
+        cursor += usize::from(matches);
+        matches
+    })
 }
 
 fn skip_rust_whitespace_and_comments(bytes: &[u8], mut index: usize) -> Option<usize> {
@@ -487,6 +520,8 @@ fn validate_simd_readme_contract(readme: &str) -> R {
         "**Deprecated**",
         "Compatibility no-op",
         "no distinct implementation",
+        "checked-in Rust source scan",
+        "Build scripts are rejected closed",
         "No SIMD performance claim is made",
         "#8749",
     ] {
@@ -526,9 +561,9 @@ fn simd_feature_stays_declared_empty_and_unreferenced() -> R {
     // The `simd` feature is a deprecated compatibility no-op (since 0.17.0,
     // removal owned by #8749). This gate fails if anyone gives the feature a
     // dependency list, selects it from code, or drops the no-op declaration —
-    // which would silently turn the advertised feature into a real claim. Any
-    // build script is rejected closed because its generated output is not
-    // statically inspectable here.
+    // which would silently turn the advertised feature into a real claim. The
+    // checked-in Rust source scan is bounded, and build scripts are rejected
+    // closed because their generated output is not statically inspectable here.
     let manifest = include_str!("../Cargo.toml");
     let features_block = manifest
         .split("[features]")
@@ -573,6 +608,13 @@ fn simd_gate_detects_selection_in_build_surface_fixture() -> R {
 }
 
 #[test]
+fn simd_gate_detects_raw_string_feature_selection() -> R {
+    assert!(contains_simd_selection(r##"#[cfg(feature = r#"simd"#)]"##));
+    assert!(contains_simd_selection(r###"cfg!(feature = r##"simd"##)"###));
+    Ok(())
+}
+
+#[test]
 fn simd_gate_rejects_uninspectable_out_dir_generation_fixture() -> R {
     let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -597,8 +639,8 @@ fn simd_gate_rejects_uninspectable_out_dir_generation_fixture() -> R {
 fn simd_readme_guard_rejects_contradictory_capability_claim() -> R {
     let readme = include_str!("../README.md");
     let contradictory = readme.replace(
-        "No SIMD performance claim is made.",
-        "No SIMD performance claim is made; SIMD acceleration is enabled.",
+        "checked-in Rust source scan",
+        "checked-in Rust source scan; SIMD acceleration is enabled.",
     );
     let error = validate_simd_readme_contract(&contradictory)
         .err()
