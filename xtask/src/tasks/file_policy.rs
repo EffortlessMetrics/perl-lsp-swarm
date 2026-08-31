@@ -596,6 +596,11 @@ fn normalize_line_endings(value: &str) -> String {
     value.replace("\r\n", "\n")
 }
 
+/// Collect the backtick-wrapped first-column cells of a generated inventory
+/// table.
+///
+/// Header, separator, and summary rows have no backtick-wrapped first cell
+/// and are ignored, so the result is exactly the tracked-file rows.
 fn inventory_row_paths(markdown: &str) -> std::collections::BTreeSet<String> {
     markdown
         .lines()
@@ -606,6 +611,12 @@ fn inventory_row_paths(markdown: &str) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
+/// Describe how a regenerated inventory (`expected`) differs from the
+/// committed one (`actual`).
+///
+/// Returns the exact missing and no-longer-generated rows when the row paths
+/// diverge, or a metadata-only note when both documents cover the same rows
+/// but summary counts or other non-row content changed.
 fn inventory_path_delta(actual: &str, expected: &str) -> String {
     let actual = inventory_row_paths(actual);
     let expected = inventory_row_paths(expected);
@@ -2607,6 +2618,23 @@ mod tests {
         let delta = inventory_path_delta(actual, expected);
         assert!(delta.contains("missing generated paths: docs/new.md"));
         assert!(delta.contains("paths no longer generated: docs/old.md"));
+    }
+
+    #[test]
+    fn inventory_path_delta_reports_metadata_only_change_when_row_paths_match() {
+        // Same backtick-wrapped row paths in both documents; only the summary
+        // metadata line differs, so the delta must take the metadata-only
+        // branch instead of naming missing or removed rows.
+        let actual = "# Non-Rust File Inventory\n\n\
+            | Metric | Count |\n|---|---|\n\
+            | Total tracked files | 1 |\n\n\
+            | `docs/keep.md` | documentation | `keep` | owner |\n";
+        let expected = "# Non-Rust File Inventory\n\n\
+            | Metric | Count |\n|---|---|\n\
+            | Total tracked files | 2 |\n\n\
+            | `docs/keep.md` | documentation | `keep` | owner |\n";
+        let delta = inventory_path_delta(actual, expected);
+        assert_eq!(delta, "the row paths match but summary or metadata changed");
     }
 
     #[test]
