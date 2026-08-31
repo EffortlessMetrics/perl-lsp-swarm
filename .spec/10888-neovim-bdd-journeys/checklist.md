@@ -115,9 +115,13 @@ deliberate: the checker catches an omitted or hand-faked packet refresh; the
 gate owns whole-file equivalence.
 
 What is bound and what is not: every `neovim.bdd.*` ledger row, and every
-normative table or law block -- claim-profile membership, the branch-selection
-law, §Hazards, §Contracts, the evidence-stage vocabulary, the subject law, the
-profile laws, the claim boundary, and the three-subject law. Deliberately
+normative table or law block in **both** normative files. In `acceptance.md`:
+claim-profile membership, the branch-selection law, §Hazards, §Contracts, the
+evidence-stage vocabulary, the subject law, the profile laws, and the claim
+boundary. In `context.md`: the three-subject law, the claim-profile summary, the
+evidence chain, and the authority/ownership table. The rule does not stop at a
+file boundary -- `context.md` assigns owners too, and leaving it unbound let a
+corrected `acceptance.md` owner be contradicted from the other file. Deliberately
 unbound: narrative prose, the §Coverage-Map cross-references, and §Blast-Radius,
 none of which assign ownership or state a law. The rule that produced this list
 is simple and was learned the hard way here: **anything that assigns an owner or
@@ -232,6 +236,16 @@ INVARIANT_BLOCKS = {
     # ownership assignments -- which is how it came to contradict a row's own
     # owner chain while every check passed. Normative tables get bound like
     # normative prose.
+    # context.md states ownership too, and the rule below does not stop at a
+    # file boundary. Its claim-profile summary, evidence chain, and
+    # authority/ownership table each assign an owner; leaving them unbound let a
+    # corrected acceptance.md owner be silently contradicted from context.md.
+    "context_claim_profiles": ("context",
+                               r"(?ms)^## Claim profiles$.*?(?=^## Evidence boundaries and chain)"),
+    "context_evidence_chain": ("context",
+                               r"(?ms)^## Evidence boundaries and chain$.*?(?=^## Security boundary)"),
+    "context_authority": ("context",
+                          r"(?ms)^## Authority and ownership$.*?(?=^## Stable versus mutable information)"),
     "hazards_table": ("acceptance",
                       r"(?ms)^## §Hazards.*?(?=^## §Contracts)"),
     "contracts_table": ("acceptance",
@@ -254,6 +268,9 @@ EXPECTED_INVARIANTS = {
     "branch_selection_law",
     "hazards_table",
     "contracts_table",
+    "context_claim_profiles",
+    "context_evidence_chain",
+    "context_authority",
 }
 
 INVARIANT_DIGESTS = {
@@ -262,6 +279,9 @@ INVARIANT_DIGESTS = {
     "claim_boundary": "3d6755e631a9c99f",
     "three_subject_law": "e53af321800e90fb",
     "branch_selection_law": "8cc5566b0f27acdb",
+    "context_claim_profiles": "a45bb5a8c43c857a",
+    "context_evidence_chain": "fbcccadeee3d7439",
+    "context_authority": "ed488a4d0f3eaa88",
     "hazards_table": "b23ecc7dc31924ab",
     "contracts_table": "64a91be0447830a9",
     "profile_membership": "f4de26e57133c176",
