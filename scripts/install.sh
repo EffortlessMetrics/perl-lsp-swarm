@@ -1017,13 +1017,16 @@ commit_current_selection() {
 ensure_path_visible_selectors() {
     local _allow_fault="${1:-1}"
     local _incoming_pair="${2:-0}"
+    local _existing_only="${3:-0}"
     local _rel=".perl-lsp/current"
     local _store _want_dap=0
     _store="$(product_store_dir)"
     if [ "$_allow_fault" = "1" ]; then
         maybe_inject_install_fault "before_selectors"
     fi
-    atomic_symlink_replace "${INSTALL_DIR}/${BIN_NAME}" "${_rel}/${BIN_NAME}"
+    if [ "$_existing_only" != "1" ] || [ -e "${INSTALL_DIR}/${BIN_NAME}" ] || [ -L "${INSTALL_DIR}/${BIN_NAME}" ]; then
+        atomic_symlink_replace "${INSTALL_DIR}/${BIN_NAME}" "${_rel}/${BIN_NAME}"
+    fi
     maybe_observe_product_unit "between_path_members"
     if [ "$_incoming_pair" = "1" ]; then
         # The staged incoming unit carries a DAP, so the DAP selector is
@@ -1037,9 +1040,9 @@ ensure_path_visible_selectors() {
     elif [ ! -e "${_store}/current" ] && [ -n "${EXTRACT_DIR:-}" ] && [ -f "${EXTRACT_DIR}/${DAP_BIN_NAME}" ]; then
         _want_dap=1
     fi
-    if [ "$_want_dap" = "1" ]; then
+    if [ "$_want_dap" = "1" ] && { [ "$_existing_only" != "1" ] || [ -e "${INSTALL_DIR}/${DAP_BIN_NAME}" ] || [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; }; then
         atomic_symlink_replace "${INSTALL_DIR}/${DAP_BIN_NAME}" "${_rel}/${DAP_BIN_NAME}"
-    elif [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ] || [ -f "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+    elif [ "$_existing_only" != "1" ] && { [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ] || [ -f "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; }; then
         # A pre-existing regular file here is stale selector residue from an
         # earlier install layout; leaving it would keep PATH pointed at an
         # adapter unrelated to the selected server unit.

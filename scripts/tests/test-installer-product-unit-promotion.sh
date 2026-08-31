@@ -175,6 +175,37 @@ else
 fi
 
 setup_root
+stage_pair "$EXTRACT_DIR" "server-first" "dap-first"
+PERL_LSP_INSTALL_FAULT=before_commit
+run_promote release
+unset PERL_LSP_INSTALL_FAULT
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [ ! -e "$(path_server)" ] && [ ! -L "$(path_server)" ] \
+    && [ ! -e "$(path_dap)" ] && [ ! -L "$(path_dap)" ] \
+    && [[ "$LAST_OUTPUT" == *"before_commit"* ]]; then
+    pass "first-install commit fault leaves no broken selectors"
+else
+    fail_case "first-install commit fault leaves no broken selectors" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
+setup_root
+stage_pair "$EXTRACT_DIR" "pair-server" "pair-dap"
+run_promote release
+stage_server_only "$EXTRACT_DIR" "source-server"
+PERL_LSP_INSTALL_FAULT=before_commit
+run_promote source
+unset PERL_LSP_INSTALL_FAULT
+if [ "$LAST_STATUS" -ne 0 ] \
+    && assert_complete_pair "pair-server" "pair-dap" \
+    && [ -e "$(path_dap)" ] && [ -L "$(path_dap)" ]; then
+    pass "release-to-source commit fault preserves the paired selector"
+else
+    fail_case "release-to-source commit fault preserves the paired selector" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
+setup_root
 stage_pair "$EXTRACT_DIR" "server-a" "dap-a"
 run_promote release
 stage_pair "$EXTRACT_DIR" "server-b" "dap-b"

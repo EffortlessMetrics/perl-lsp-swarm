@@ -148,6 +148,20 @@ try {
     }
 
     Setup-Root
+    Stage-Pair -Dest $ExtractDir -Server "server-first" -Dap "dap-first"
+    $env:PERL_LSP_INSTALL_FAULT = "before_commit"
+    Invoke-Promote
+    Remove-Item Env:PERL_LSP_INSTALL_FAULT -ErrorAction SilentlyContinue
+    $firstServerCmd = Join-Path $InstallDir "perllsp.cmd"
+    $firstDapCmd = Join-Path $InstallDir "perl-dap.cmd"
+    if (($LastStatus -ne 0) -and -not (Test-Path -LiteralPath $firstServerCmd) -and
+        -not (Test-Path -LiteralPath $firstDapCmd) -and ($LastOutput -like "*before_commit*")) {
+        Pass-Case "first-install commit fault leaves no broken selectors"
+    } else {
+        Fail-Case "first-install commit fault leaves no broken selectors" "status=$LastStatus output=$LastOutput"
+    }
+
+    Setup-Root
     Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
     Invoke-Promote
     Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
@@ -201,7 +215,8 @@ try {
     $serverUnchanged = ($null -ne $dirAfter) -and
         ((Hash-BytesFile (Join-Path $dirAfter "perllsp.exe")) -eq (Hash-BytesFile $previousServer))
     if (($LastStatus -ne 0) -and ($currentAfter -eq $previousCurrent) -and $serverUnchanged -and
-        ($LastOutput -like "*before_commit*")) {
+        ($LastOutput -like "*before_commit*") -and
+        -not (Test-Path -LiteralPath (Join-Path $InstallDir "perl-dap.cmd"))) {
         Pass-Case "source-to-release commit fault preserves the source-only selection"
     } else {
         Fail-Case "source-to-release commit fault preserves the source-only selection" "status=$LastStatus before=$previousCurrent after=$currentAfter output=$LastOutput"
@@ -310,7 +325,6 @@ try {
     Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
     $env:PERL_LSP_INSTALL_OBSERVE = "between_path_members"
     $env:PERL_LSP_INSTALL_OBSERVE_FILE = $obs
-    $env:PERL_LSP_INSTALL_POINTER = "copy"
     try {
         Invoke-Promote
         $obsText = ""
@@ -321,18 +335,16 @@ try {
             ($obsText -like "*server_sha256=*") -and ($obsText -like "*dap_sha256=*") -and
             ($obsText -notlike "*server_sha256=-*") -and ($obsText -notlike "*dap_sha256=-*")
         if ($okObs) {
-            Pass-Case "interleaved PATH reader never sees mixed members or a missing current"
+            Pass-Case "interleaved PATH reader uses one file pointer and never sees a mixed pair"
         } else {
             Fail-Case "interleaved PATH reader never sees mixed members or a missing current" "status=$LastStatus obs=$obsText output=$LastOutput"
         }
     } finally {
         Remove-Item Env:PERL_LSP_INSTALL_OBSERVE -ErrorAction SilentlyContinue
         Remove-Item Env:PERL_LSP_INSTALL_OBSERVE_FILE -ErrorAction SilentlyContinue
-        Remove-Item Env:PERL_LSP_INSTALL_POINTER -ErrorAction SilentlyContinue
     }
 
     Setup-Root
-    $env:PERL_LSP_INSTALL_POINTER = "unprivileged"
     try {
         Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
         Invoke-Promote
@@ -341,12 +353,10 @@ try {
         $currentFile = Join-Path $InstallDir ".perl-lsp\current"
         $isFilePointer = (Test-Path -LiteralPath $currentFile) -and -not (Get-Item -LiteralPath $currentFile).PSIsContainer
         if (($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-b" -Dap "dap-b") -and $isFilePointer) {
-            Pass-Case "unprivileged file pointer plus cmd shims keep complete pairs"
+            Pass-Case "file pointer plus cmd shims keep complete pairs"
         } else {
             Fail-Case "unprivileged file pointer plus cmd shims keep complete pairs" "status=$LastStatus output=$LastOutput filePointer=$isFilePointer"
         }
-    } finally {
-        Remove-Item Env:PERL_LSP_INSTALL_POINTER -ErrorAction SilentlyContinue
     }
 } finally {
     Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
