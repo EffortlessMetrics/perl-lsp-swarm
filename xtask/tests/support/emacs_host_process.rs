@@ -320,7 +320,7 @@ pub fn run_owned_process(
 
     let file_sanitizer = StreamSanitizer::for_run(plan, layout);
     let (event_capture, event_stream) =
-        match capture_bounded_file(layout.event_file(), &file_sanitizer) {
+        match capture_bounded_file(&layout.event_file(), &file_sanitizer) {
             Ok(captured) => {
                 let status = if captured.truncated() { "truncated" } else { "ok" };
                 (captured, status.to_string())
