@@ -16,7 +16,7 @@
 //! document instance, a close/reopen consumer must pair this barrier with an
 //! independent post-reopen result discriminator.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use perl_lsp_ux_tests::{LspEvent, UxHarness};
 use serde_json::Value;
 use std::time::{Duration, Instant};
@@ -41,17 +41,11 @@ pub(crate) fn ready_generation(event: &LspEvent, uri: &str) -> Option<u64> {
     {
         return None;
     }
-    params
-        .get("generation")
-        .filter(|generation| generation.is_u64())
-        .and_then(Value::as_u64)
+    params.get("generation").filter(|generation| generation.is_u64()).and_then(Value::as_u64)
 }
 
 pub(crate) fn ready_generations(events: &[LspEvent], uri: &str) -> Vec<u64> {
-    events
-        .iter()
-        .filter_map(|event| ready_generation(event, uri))
-        .collect()
+    events.iter().filter_map(|event| ready_generation(event, uri)).collect()
 }
 
 pub(crate) fn ready_event_count(harness: &UxHarness, uri: &str) -> usize {
@@ -89,8 +83,7 @@ pub(crate) fn wait_for_generation_after(
                 generations.len(),
             );
         }
-        if let Some(observation) =
-            generation_after(&generations, already_seen, expected_generation)
+        if let Some(observation) = generation_after(&generations, already_seen, expected_generation)
         {
             return Ok(observation);
         }
