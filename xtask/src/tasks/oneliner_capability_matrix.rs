@@ -86,6 +86,8 @@ impl Layer {
         Layer::DifferentialOracle,
     ];
 
+    /// The layer's position in the stack, used for section numbering and to
+    /// keep the rendered order stable regardless of row declaration order.
     fn ordinal(self) -> usize {
         match self {
             Layer::ParserBody => 1,
@@ -99,6 +101,7 @@ impl Layer {
         }
     }
 
+    /// The layer's heading in the generated page.
     fn title(self) -> &'static str {
         match self {
             Layer::ParserBody => "Parser-body acceptance",
@@ -112,6 +115,8 @@ impl Layer {
         }
     }
 
+    /// What earning this layer means, stated so a reader cannot mistake one
+    /// layer's evidence for another's.
     fn description(self) -> &'static str {
         match self {
             Layer::ParserBody => {
@@ -152,6 +157,7 @@ enum Support {
 }
 
 impl Support {
+    /// The status token as it appears in the generated page and in refusals.
     fn as_str(self) -> &'static str {
         match self {
             Support::Supported => "supported",
@@ -499,10 +505,14 @@ struct CorpusEvidence {
 }
 
 impl CorpusEvidence {
+    /// Whether `id` names a fixture the corpus actually declares, in either
+    /// citation role.
     fn contains(&self, id: &str) -> bool {
         self.switch_cases.contains_key(id) || self.proof_tests.contains(id)
     }
 
+    /// Every fixture available as evidence, switch cases and proof targets
+    /// together.
     fn total(&self) -> usize {
         self.switch_cases.len() + self.proof_tests.len()
     }
@@ -665,6 +675,10 @@ fn code_mask(source: &str) -> Vec<bool> {
     mask
 }
 
+/// Whether `byte` can appear inside a Rust identifier.
+///
+/// Used to decide token boundaries, so a keyword is not recognised in the tail
+/// of a longer name.
 fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
@@ -1073,6 +1087,10 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
     evidence
 }
 
+/// Whether `value` is a plausible Rust item name.
+///
+/// A macro argument that is not one is not a fixture name, so it is dropped
+/// rather than recorded as evidence under a name nothing declares.
 fn is_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.chars().all(|c| c.is_alphanumeric() || c == '_')
@@ -1264,6 +1282,13 @@ pub fn run(check: bool) -> Result<()> {
     Ok(())
 }
 
+/// Render the capability matrix as Markdown.
+///
+/// Output is a pure function of `rows` and `evidence` — no timestamps, no
+/// environment, no iteration order that varies — because `--check` compares the
+/// rendered text against the committed page and any instability would surface as
+/// a spurious drift failure. `validate` runs first, so rendering never has to
+/// decide what an unearned or unevidenced row should look like.
 fn render_matrix(rows: &[CapabilityRow], evidence: &CorpusEvidence) -> String {
     let mut output = String::new();
     output.push_str("# Perl Command-Line Analysis Capability Matrix\n\n");
@@ -1355,6 +1380,7 @@ fn render_matrix(rows: &[CapabilityRow], evidence: &CorpusEvidence) -> String {
     output
 }
 
+/// Fixture identifiers as a table cell, or an em dash when there are none.
 fn render_ids(ids: &[&str]) -> String {
     if ids.is_empty() {
         return "—".to_string();
@@ -1362,18 +1388,27 @@ fn render_ids(ids: &[&str]) -> String {
     ids.iter().map(|id| format!("`{id}`")).collect::<Vec<_>>().join("; ")
 }
 
+/// The command that runs a row's evidence, or an em dash when the row earns
+/// nothing and therefore names none.
 fn render_invocable(value: &str) -> String {
     if value.is_empty() { "—".to_string() } else { format!("`{value}`") }
 }
 
+/// An em dash for an empty cell, so a blank never reads as an omission.
 fn dash_if_empty(value: &str) -> &str {
     if value.is_empty() { "—" } else { value }
 }
 
+/// Escape a value for a Markdown table cell.
+///
+/// A literal pipe would silently split the row into extra columns, and a
+/// newline would end it early.
 fn escape_cell(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', "<br>")
 }
 
+/// Normalise line endings so `--check` compares content rather than the
+/// checkout's newline style.
 fn normalize_newlines(value: &str) -> String {
     value.replace("\r\n", "\n")
 }
