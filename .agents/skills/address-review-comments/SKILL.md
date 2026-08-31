@@ -67,8 +67,8 @@ belongs in this candidate only when the present claim would otherwise be false a
 same semantic owner, proof boundary, and rollback unit own the repair. Route a missing
 governed owner or unsettled premise to issue/proof preparation, `BLOCKED`, or
 `NOT_PROVEN`; route a separate proposition, consumer, or rollback seam to a bounded
-follow-up. When the proposed repair would mainly enlarge a one-use or non-gated proof
-instrument, first narrow, simplify, delete, or split that instrument rather than making
+follow-up. When the proposed repair would mainly enlarge a one-use or non-gated proof instrument,
+first narrow, simplify, delete, or split that instrument rather than making
 its private implementation the candidate's dominant surface.
 
 Do not treat comments as independent patch instructions. When two findings share the

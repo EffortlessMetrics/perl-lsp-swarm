@@ -145,8 +145,8 @@ restart a full deep review merely because another commit was pushed.
 Do not publish one commit per comment. `$address-review-comments` first pins the current
 observation basis, decides finding validity separately from current-candidate admission,
 joins the review wave, and promotes only repeated mechanisms to bounded failure classes.
-One writer integrates the accepted wave, runs affected proof and—when a class was
-promoted—its class-level falsifier, rereads the complete governing semantic units and
+One writer integrates the accepted wave, runs affected proof and—when a class was promoted—
+its class-level falsifier, rereads the complete governing semantic units and
 dependent claims, and publishes one candidate update.
 
 If the repair wave introduces a new checker, registry, parser, abstraction, or
