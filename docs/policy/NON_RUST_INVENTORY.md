@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12535 |
+| Total tracked files | 12537 |
 | Rust-family files | 3887 |
-| Non-Rust files | 8648 |
-| Allowlisted | 6409 |
+| Non-Rust files | 8650 |
+| Allowlisted | 6411 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 498 |
-| documentation | 2821 |
+| documentation | 2823 |
 | generated | 2 |
 | production | 349 |
 | test | 2067 |
@@ -2341,6 +2341,7 @@
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12813-Changed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12815-Fixed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13073-Fixed-020212.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13123-Fixed-021700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -5297,6 +5298,7 @@
 | `docs/reference/ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/ARCHITECTURE_OVERVIEW.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/CHANGE_SET_SHADOW_PARITY.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/reference/CHECKING.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/CI_ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/CI_GATE_PLAYBOOK.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/CLUSTER_CURATION.md` | documentation | `non-rust-docs-tree` | docs |
