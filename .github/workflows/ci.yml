@@ -386,7 +386,11 @@ jobs:
         # lane compile-only on Windows: Unix owns execution of the Bash/chmod
         # smoke, while Windows proves the gated target is admitted without
         # importing Unix-only APIs.
-        run: cargo test $WINDOWS_TEST_CRATES --locked --tests --no-run
+        run: |
+          cargo test $WINDOWS_TEST_CRATES --locked --tests --no-run
+          if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
+            cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
+          fi
 
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
   # Prevents committed conflict markers reaching master (see #7183).
@@ -977,7 +981,7 @@ jobs:
           # `.ci/gate-shard-execution.json` row if the dedicated/required
           # formatter path is reverted. Local pr-fast `fmt` remains.
           - name: meta
-            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
+            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
