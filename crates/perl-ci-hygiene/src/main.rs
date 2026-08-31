@@ -133,6 +133,9 @@ fn run() -> Result<i32> {
                 check_panic_test(&repo_root)?
             }
         }
+        CliCommand::CheckMustContext { base } => {
+            commands::must_context::check(&repo_root, base.as_deref())?
+        }
         CliCommand::CheckSerialTest { inventory, identity_registry } => {
             if inventory {
                 commands::serial_test::write_inventory(&repo_root)?
