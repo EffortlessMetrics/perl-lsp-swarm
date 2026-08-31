@@ -49,6 +49,13 @@ RULESET_DETAIL_FORBIDDEN = "ruleset_detail_forbidden"
 RULESET_DETAIL_UNREADABLE = "ruleset_detail_unreadable"
 RULESET_DETAIL_UNREPRESENTABLE = "ruleset_detail_unrepresentable"
 RULESET_LIST_INCOMPLETE = "ruleset_list_incomplete"
+RULESET_LIST_TRUNCATED = "ruleset_list_truncated"
+
+# The ruleset listing is requested at the maximum page size. A repository with
+# more rulesets than one page would silently understate live enforcement, so a
+# paginated listing is reported as truncated rather than followed: one bounded
+# request per surface keeps the response digest single-valued.
+RULESET_PAGE_SIZE = 100
 
 
 class ObserverError(RuntimeError):
@@ -58,7 +65,7 @@ class ObserverError(RuntimeError):
 class ApiResult:
     """One bounded GET outcome: an HTTP status and the exact response bytes."""
 
-    __slots__ = ("status", "body", "transport_failed")
+    __slots__ = ("status", "body", "transport_failed", "link")
 
     def __init__(
         self,
@@ -66,10 +73,18 @@ class ApiResult:
         body: bytes = b"",
         *,
         transport_failed: bool = False,
+        link: str = "",
     ) -> None:
         self.status = status
         self.body = body
         self.transport_failed = transport_failed
+        # Only the RFC 5988 Link header is retained, and only to detect a
+        # truncated listing. No other response header is captured.
+        self.link = link
+
+    @property
+    def has_next_page(self) -> bool:
+        return 'rel="next"' in self.link
 
     @property
     def ok(self) -> bool:
@@ -103,7 +118,11 @@ def http_transport(token: str | None) -> Transport:
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
-                return ApiResult(response.status, response.read())
+                return ApiResult(
+                    response.status,
+                    response.read(),
+                    link=response.headers.get("Link", "") or "",
+                )
         except urllib.error.HTTPError as error:
             return ApiResult(error.code, error.read())
         except (urllib.error.URLError, OSError, ValueError):
@@ -168,6 +187,7 @@ class Capture:
                     "key": key,
                     "status": result.status,
                     "transport_failed": result.transport_failed,
+                    "link": result.link,
                     "body_base64": base64.b64encode(result.body).decode("ascii"),
                 }
                 for key, result in sorted(self.entries.items())
@@ -208,12 +228,16 @@ class Capture:
                 raise ObserverError(
                     "capture bundle entry body_base64 is not valid base64"
                 ) from error
+            link = entry.get("link", "")
+            if not isinstance(link, str):
+                raise ObserverError("capture bundle entry link must be a string")
             capture.record(
                 key,
                 ApiResult(
                     status,
                     body,
                     transport_failed=bool(entry.get("transport_failed", False)),
+                    link=link,
                 ),
             )
         return capture
@@ -236,7 +260,10 @@ def capture_live(repository: str, branch: str, transport: Transport) -> Capture:
     )
     listing = capture.record(
         "ruleset_list",
-        transport(f"repos/{repository}/rulesets?includes_parents=true"),
+        transport(
+            f"repos/{repository}/rulesets"
+            f"?includes_parents=true&per_page={RULESET_PAGE_SIZE}"
+        ),
     )
     if listing.ok:
         for ruleset_id in branch_ruleset_ids(listing):
@@ -487,6 +514,10 @@ def ruleset_surface(capture: Capture, limitations: list[str]) -> dict[str, Any]:
         return surface
 
     surface["list_response_sha256"] = result.sha256()
+    if result.has_next_page:
+        # A second page exists that this bounded capture did not read, so the
+        # observed ruleset set is a subset of live enforcement.
+        limitations.append(RULESET_LIST_TRUNCATED)
     items: list[dict[str, Any]] = []
     for ruleset_id in branch_ruleset_ids(result):
         key = ruleset_key(ruleset_id)

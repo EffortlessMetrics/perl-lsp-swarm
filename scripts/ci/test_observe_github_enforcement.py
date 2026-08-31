@@ -167,7 +167,7 @@ def transport(
             f"repos/{REPOSITORY}/branches/main/protection": (
                 classic if classic is not None else (200, classic_response())
             ),
-            f"repos/{REPOSITORY}/rulesets?includes_parents=true": (
+            f"repos/{REPOSITORY}/rulesets?includes_parents=true&per_page=100": (
                 rulesets
                 if rulesets is not None
                 else (200, ruleset_list_response())
@@ -285,7 +285,7 @@ class CompleteObservation(unittest.TestCase):
                 f"repos/{REPOSITORY}",
                 f"repos/{REPOSITORY}/git/ref/heads/main",
                 f"repos/{REPOSITORY}/branches/main/protection",
-                f"repos/{REPOSITORY}/rulesets?includes_parents=true",
+                f"repos/{REPOSITORY}/rulesets?includes_parents=true&per_page=100",
                 f"repos/{REPOSITORY}/rulesets/{RULESET_ID}",
             ],
         )
@@ -458,6 +458,67 @@ class RulesetObservation(unittest.TestCase):
             snapshot["observation"]["limitations"],
         )
         self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+
+    def test_truncated_ruleset_listing_is_reported_not_silently_subset(
+        self,
+    ) -> None:
+        """A second page of rulesets would understate live enforcement.
+
+        The listing is requested at the maximum page size, but a repository
+        that outgrows one page must not produce a `complete` observation built
+        from a subset of its rulesets.
+        """
+        recorder = transport()
+        listing_path = (
+            f"repos/{REPOSITORY}/rulesets?includes_parents=true&per_page=100"
+        )
+        inner = recorder.__call__
+
+        def paginated(path: str):
+            result = inner(path)
+            if path == listing_path:
+                return observer.ApiResult(
+                    result.status,
+                    result.body,
+                    link='<https://api.github.com/x?page=2>; rel="next"',
+                )
+            return result
+
+        capture = observer.capture_live(REPOSITORY, "main", paginated)
+        snapshot = observer.build_snapshot(
+            capture,
+            source="operator",
+            branch="main",
+            static_receipt=static_receipt(),
+            observed_at="2026-08-16T00:00:00Z",
+        )
+        self.assertIn(
+            observer.RULESET_LIST_TRUNCATED, snapshot["observation"]["limitations"]
+        )
+        self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+        result = model.reconcile(snapshot, static_receipt(), authority(snapshot))
+        self.assertEqual(result["status"], "NOT_PROVEN")
+
+        # The connector shape must not launder the truncation away.
+        restored = observer.Capture.from_bundle(capture.to_bundle())
+        imported = observer.build_snapshot(
+            restored,
+            source="connector",
+            branch="main",
+            static_receipt=static_receipt(),
+            observed_at="2026-08-16T00:00:00Z",
+        )
+        self.assertIn(
+            observer.RULESET_LIST_TRUNCATED, imported["observation"]["limitations"]
+        )
+
+    def test_listing_is_requested_at_the_maximum_page_size(self) -> None:
+        recorder = transport()
+        observer.capture_live(REPOSITORY, "main", recorder)
+        self.assertIn(
+            f"repos/{REPOSITORY}/rulesets?includes_parents=true&per_page=100",
+            recorder.requested,
+        )
 
     def test_inactive_ruleset_is_observed_and_left_to_the_reconciler(self) -> None:
         detail = json.loads(ruleset_detail_response())
@@ -699,6 +760,91 @@ class CommandLine(unittest.TestCase):
                 ]
             )
             self.assertEqual(code, 1)
+
+
+class HttpTransport(unittest.TestCase):
+    """The real transport, proven without a network call.
+
+    Every other test injects a fake transport, so without these the live
+    `http_transport` is unexercised and its Link/status plumbing could be
+    removed with the suite still green.
+    """
+
+    class FakeResponse:
+        def __init__(self, status: int, payload: bytes, link: str = "") -> None:
+            self.status = status
+            self.headers = {"Link": link} if link else {}
+            self._payload = payload
+
+        def read(self) -> bytes:
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc) -> bool:
+            return False
+
+    def run_with(self, fake, path: str = "repos/o/r"):
+        import urllib.request
+
+        original = urllib.request.urlopen
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["url"] = request.full_url
+            captured["method"] = request.get_method()
+            captured["headers"] = dict(request.header_items())
+            if isinstance(fake, Exception):
+                raise fake
+            return fake
+
+        urllib.request.urlopen = fake_urlopen
+        try:
+            result = observer.http_transport("secret-token")(path)
+        finally:
+            urllib.request.urlopen = original
+        return result, captured
+
+    def test_link_header_reaches_the_result(self) -> None:
+        link = '<https://api.github.com/x?page=2>; rel="next"'
+        result, _ = self.run_with(self.FakeResponse(200, b"[]", link))
+        self.assertEqual(result.status, 200)
+        self.assertTrue(result.has_next_page)
+
+    def test_absent_link_header_is_not_a_next_page(self) -> None:
+        result, _ = self.run_with(self.FakeResponse(200, b"[]"))
+        self.assertFalse(result.has_next_page)
+
+    def test_request_is_a_get_to_the_github_api_with_the_token(self) -> None:
+        _, captured = self.run_with(self.FakeResponse(200, b"[]"))
+        self.assertEqual(captured["method"], "GET")
+        self.assertEqual(captured["url"], "https://api.github.com/repos/o/r")
+        self.assertEqual(
+            captured["headers"].get("Authorization"), "Bearer secret-token"
+        )
+
+    def test_http_error_becomes_a_status_not_an_exception(self) -> None:
+        import urllib.error
+
+        error = urllib.error.HTTPError(
+            "https://api.github.com/repos/o/r", 403, "Forbidden", {}, None
+        )
+        error.read = lambda: b'{"message":"Forbidden"}'
+        result, _ = self.run_with(error)
+        self.assertEqual(result.status, 403)
+        self.assertTrue(result.forbidden)
+        self.assertFalse(result.ok)
+
+    def test_host_error_is_a_transport_failure_with_no_retained_text(self) -> None:
+        import urllib.error
+
+        result, _ = self.run_with(
+            urllib.error.URLError("host unreachable at /home/runner/secret")
+        )
+        self.assertTrue(result.transport_failed)
+        self.assertIsNone(result.status)
+        self.assertEqual(result.body, b"")
 
 
 class Privacy(unittest.TestCase):

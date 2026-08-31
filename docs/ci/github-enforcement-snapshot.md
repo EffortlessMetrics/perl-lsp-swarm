@@ -190,7 +190,10 @@ ruleset_detail_forbidden:<ruleset id>
 ruleset_detail_unreadable:<ruleset id>
 ruleset_detail_unrepresentable:<ruleset id>
 ruleset_list_incomplete:<ruleset id>
+ruleset_list_truncated
 ```
+
+The ruleset listing is requested at the maximum page size and is never followed across pages: one bounded request per surface keeps the response digest single-valued. A repository that outgrows one page emits `ruleset_list_truncated`, so an observed subset of rulesets can never present as a complete union.
 
 An unreadable surface never becomes an empty surface. A surface that was not observed carries no rows and no digest, and any limitation downgrades observation permission below `complete`, so a permission failure reaches the reconciler as incomplete evidence rather than as proof that no enforcement exists. `permission` describes access completeness only: a branch with no classic protection at all is a *complete* observation of a `missing` instrument, and what that means for the verdict stays with the reconciler.
 
