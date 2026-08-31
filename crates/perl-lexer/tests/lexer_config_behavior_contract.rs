@@ -357,6 +357,51 @@ fn checkpoint_identity_ignores_noop_configuration_variation() -> R {
     Ok(())
 }
 
+fn collect_rust_sources(
+    root: &std::path::Path,
+    excluded_directories: &[&str],
+    sources: &mut Vec<std::path::PathBuf>,
+) -> R {
+    let metadata = std::fs::symlink_metadata(root)?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|name| excluded_directories.contains(&name))
+            {
+                continue;
+            }
+            collect_rust_sources(&path, excluded_directories, sources)?;
+        }
+    } else if root.extension().is_some_and(|ext| ext == "rs") {
+        sources.push(root.to_path_buf());
+    }
+    Ok(())
+}
+
+fn simd_selection_sources(
+    root: &std::path::Path,
+    excluded_directories: &[&str],
+) -> R<Vec<std::path::PathBuf>> {
+    let mut sources = Vec::new();
+    collect_rust_sources(root, excluded_directories, &mut sources)?;
+    let mut offenders = Vec::new();
+    for path in sources {
+        let contents = std::fs::read_to_string(&path)?;
+        if contents.contains("feature = \"simd\"") {
+            offenders.push(path);
+        }
+    }
+    Ok(offenders)
+}
+
 #[test]
 fn simd_feature_stays_declared_empty_and_unreferenced() -> R {
     // The `simd` feature is a deprecated compatibility no-op (since 0.17.0,
@@ -383,25 +428,27 @@ fn simd_feature_stays_declared_empty_and_unreferenced() -> R {
         "README must keep describing simd as a deprecated compatibility no-op with the removal owner"
     );
 
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut stack = vec![src.clone()];
-    let mut offenders = Vec::new();
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)?.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                let contents = std::fs::read_to_string(&path)?;
-                if contents.contains("feature = \"simd\"") {
-                    offenders.push(path);
-                }
-            }
-        }
-    }
+    let package_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let offenders =
+        simd_selection_sources(package_root, &["tests", "examples", "benches", "target"])?;
     assert!(
         offenders.is_empty(),
-        "no source file may select the compatibility simd feature, but these do: {offenders:?}"
+        "no production, generated, or build source may select the compatibility simd feature, but these do: {offenders:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_gate_detects_selection_in_build_surface_fixture() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_selection");
+    let offenders = simd_selection_sources(&fixture_root, &[])?;
+    assert_eq!(
+        offenders,
+        vec![fixture_root.join("build.rs")],
+        "the negative control must detect a simd selection outside src"
     );
     Ok(())
 }
