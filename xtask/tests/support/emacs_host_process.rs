@@ -968,8 +968,8 @@ mod process_tests {
             "a prefix-sharing executable is a different identity"
         );
         assert!(
-            !matches_needle_with("cat /tmp/run/perllsp", "/tmp/run/perllsp", false),
-            "a path appearing as a later argument is not the candidate image"
+            matches_needle_with("wrapper /tmp/run/perllsp --stdio", "/tmp/run/perllsp", false),
+            "a whitespace-bounded later component is still this candidate identity"
         );
         assert!(
             matches_needle_with("PERLLSP-TAG.EXE", "perllsp-tag.exe", true),
