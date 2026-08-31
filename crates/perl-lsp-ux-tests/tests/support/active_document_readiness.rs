@@ -86,7 +86,7 @@ pub(crate) fn wait_for_generation_after(
         if already_seen > generations.len() {
             bail!(
                 "readiness cursor {already_seen} exceeds the retained matching-event count {} for {uri}",
-                generations.len()
+                generations.len(),
             );
         }
         if let Some(observation) =
