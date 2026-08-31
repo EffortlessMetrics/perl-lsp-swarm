@@ -445,8 +445,29 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     if text.contains("actions/checkout@") && !text.contains("ref: ${{ env.BASE_SHA }}") {
         bail!("subject workflow must checkout the trusted base SHA");
     }
+    if text.matches("actions/checkout@").count() != 1 {
+        bail!("subject workflow must contain exactly one trusted checkout");
+    }
     if text.contains("refs/pull/${{") {
         bail!("subject workflow must pass pull-request refs through environment data");
+    }
+    for forbidden in [
+        "git show",
+        "git archive",
+        "source ",
+        " . ",
+        "bash <",
+        "sh <",
+        "| bash",
+        "| sh",
+        "eval ",
+        "git fetch .*head",
+    ] {
+        if text.contains(forbidden) && forbidden != "refs/pull/" {
+            bail!(
+                "subject workflow must not execute or import candidate-derived content: {forbidden}"
+            );
+        }
     }
     Ok(())
 }
