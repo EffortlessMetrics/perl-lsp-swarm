@@ -414,11 +414,26 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     let (_, bytes) = tree_file(root, subject_sha, ".github/workflows/non-rust-policy.yml")?;
     let text = String::from_utf8(bytes).context("subject workflow is not UTF-8")?;
     for required in [
+        "pull_request_target:",
         "merge_group:",
+        "push:",
+        "workflow_dispatch:",
+        "permissions:\n  contents: read",
+        "ref: ${{ env.BASE_SHA }}",
+        "BASE_SHA:",
+        "SUBJECT_SHA:",
+        "PR_HEAD_SHA:",
+        "PR_NUMBER:",
+        "refs/pull/$PR_NUMBER/merge",
+        "merge-base --is-ancestor",
+        "SUBJECT_SHA^1",
+        "refs/heads/non-rust-policy-subject^{commit}",
+        "--base-sha \"$BASE_SHA\"",
+        "--subject-sha \"$SUBJECT_SHA\"",
         "Non-Rust policy exact-tree",
         "persist-credentials: false",
-        "if: always()",
         "actions/upload-artifact@",
+        "if: always()",
     ] {
         if !text.contains(required) {
             bail!("subject workflow weakens trusted contract: missing {required}");
@@ -426,6 +441,12 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     }
     if text.contains("cargo run") && text.contains("pull_request.head") {
         bail!("subject workflow must not execute candidate source");
+    }
+    if text.contains("actions/checkout@") && !text.contains("ref: ${{ env.BASE_SHA }}") {
+        bail!("subject workflow must checkout the trusted base SHA");
+    }
+    if text.contains("refs/pull/${{") {
+        bail!("subject workflow must pass pull-request refs through environment data");
     }
     Ok(())
 }
@@ -3715,7 +3736,7 @@ review_after = "2026-08-13"
             "workflow_dispatch:",
             "permissions:\n  contents: read",
             "ref: ${{ env.BASE_SHA }}",
-            "refs/pull/${{ github.event.pull_request.number }}/merge",
+            "refs/pull/$PR_NUMBER/merge",
             "merge-base --is-ancestor",
             "Non-Rust policy exact-tree",
             "if: always()",
