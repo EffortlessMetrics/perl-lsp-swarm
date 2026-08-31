@@ -508,8 +508,16 @@ fn test_evaluate_watch_context_passes_safety() -> TestResult {
     assert_evaluate_not_safe_blocked(response, "Safe evaluation mode")
 }
 
+/// #9573: hover no longer "passes safety" — it never reaches safety screening.
+///
+/// This test previously asserted that a hover-context expression was admitted
+/// to the evaluator. That was the defect: `supportsEvaluateForHovers` promised
+/// a pure inspection of the selected frame, while the request actually ran a
+/// raw perl5db command against the debugger's *current* frame. The capability
+/// is now advertised false and hover is refused up front, so the assertion is
+/// inverted rather than removed.
 #[test]
-fn test_evaluate_hover_context_passes_safety() -> TestResult {
+fn test_evaluate_hover_context_is_refused_before_safety_screening() -> TestResult {
     let mut adapter = new_adapter();
     let response = adapter.handle_request(
         1,
@@ -520,7 +528,24 @@ fn test_evaluate_hover_context_passes_safety() -> TestResult {
             "allowSideEffects": false
         })),
     );
-    assert_evaluate_not_safe_blocked(response, "Safe evaluation mode")
+    match response {
+        DapMessage::Response { command, success, message, body, .. } => {
+            assert_eq!(command, "evaluate");
+            assert!(!success, "hover evaluation must not succeed while #9573's gate is closed");
+            let msg = message.unwrap_or_default();
+            assert!(
+                msg.contains("supportsEvaluateForHovers"),
+                "expected the #9573 hover refusal, got {msg:?}"
+            );
+            assert!(
+                !msg.contains("Safe evaluation mode"),
+                "the hover gate must fire before safe-mode screening, got {msg:?}"
+            );
+            assert!(body.is_none(), "a refused hover must not return a result body");
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
 }
 
 #[test]

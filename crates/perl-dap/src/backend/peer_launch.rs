@@ -320,7 +320,7 @@ pub fn static_mirror_capabilities() -> Value {
         "supportsConditionalBreakpoints": true,
         "supportsFunctionBreakpoints": true,
         "supportsBreakpointLocationsRequest": true,
-        "supportsEvaluateForHovers": false,
+        "supportsEvaluateForHovers": crate::backend::capabilities::MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS,
         "supportsHitConditionalBreakpoints": false,
         "supportsLogPoints": false,
         "supportsDataBreakpoints": false,
@@ -963,6 +963,21 @@ impl MirrorPeerBridge {
     }
 
     fn handle_evaluate(&mut self, request_seq: i64, args: Option<&Value>) -> DapMessage {
+        // #9573: refuse hover before reaching the peer, gated on the same value
+        // `static_mirror_capabilities` advertises, so the mirror profile's
+        // advertisement and its admission stay in step.
+        if crate::backend::capabilities::refuse_hover_evaluation(
+            crate::backend::capabilities::MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS,
+            args.and_then(|a| a.get("context")).and_then(Value::as_str),
+        ) {
+            return self.response(
+                request_seq,
+                "evaluate",
+                false,
+                None,
+                Some(crate::backend::capabilities::HOVER_UNSUPPORTED_MESSAGE.to_string()),
+            );
+        }
         let Some(backend) = self.backend.as_mut() else {
             return self.error(request_seq, "evaluate", BackendError::NotConnected);
         };
@@ -1600,6 +1615,52 @@ mod tests {
             .get(1)
             .ok_or_else(|| "initialize response missing initialized event".to_string())?;
         assert_eq!(event_name(initialized)?, "initialized");
+        Ok(())
+    }
+
+    /// #9573: the mirror bridge refuses hover before it ever looks for a peer.
+    ///
+    /// This is discriminating precisely because the bridge is pending: without
+    /// the gate, `handle_evaluate` reaches the `self.backend` lookup and returns
+    /// `NotConnected`. Getting the hover refusal instead proves the gate runs
+    /// first, so hover text can never reach a live external debugger's
+    /// evaluator. A `watch` request on the same pending bridge must still fail
+    /// the ordinary way, which keeps this from passing vacuously.
+    #[test]
+    fn mirror_refuses_hover_before_reaching_the_peer() -> Result<(), String> {
+        let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+
+        for context in ["hover", "Hover", "HOVER"] {
+            let out = bridge.dispatch(
+                2,
+                "evaluate",
+                Some(json!({ "expression": "$x", "context": context })),
+            );
+            let first = out.first().ok_or_else(|| format!("{context} produced no response"))?;
+            let (cmd, ok, body) = as_response(first)?;
+            assert_eq!(cmd, "evaluate");
+            assert!(!ok, "hover-context evaluate must be refused ({context})");
+            assert!(body.is_none(), "a refused hover must not carry a result body ({context})");
+            if let DapMessage::Response { message, .. } = first {
+                let message = message.as_deref().unwrap_or("");
+                assert!(
+                    message.contains("supportsEvaluateForHovers"),
+                    "{context}: expected the #9573 hover refusal, got {message:?}"
+                );
+            }
+        }
+
+        // Negative control: a non-hover context is NOT swept up by the gate and
+        // fails for its own reason instead.
+        let out =
+            bridge.dispatch(3, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
+        let first = out.first().ok_or_else(|| "watch produced no response".to_string())?;
+        if let DapMessage::Response { message, .. } = first {
+            assert!(
+                !message.as_deref().unwrap_or("").contains("supportsEvaluateForHovers"),
+                "watch must not be refused as hover"
+            );
+        }
         Ok(())
     }
 
