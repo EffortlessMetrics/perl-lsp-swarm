@@ -14,6 +14,10 @@ use std::sync::LazyLock;
 
 static SAFE_EVALUATOR: LazyLock<SafeEvaluator> = LazyLock::new(SafeEvaluator::new);
 
+use crate::backend::capabilities::{
+    HOVER_UNSUPPORTED_MESSAGE, advertises_evaluate_for_hovers, refuse_hover_evaluation,
+};
+
 impl DebugAdapter {
     /// Handle evaluate request with policy validation and timeout enforcement.
     ///
@@ -39,6 +43,28 @@ impl DebugAdapter {
                 };
             }
         };
+        // #9573: `supportsEvaluateForHovers` is advertised false because there is
+        // no pure selected-frame inspection path. Refuse hover-context evaluation
+        // here — before expression screening, before the `allowSideEffects`
+        // branch, before frame lookup, before any variable/result reference is
+        // allocated, and before any debugger command is written — so a client
+        // that ignores the advertised floor still cannot reach the raw evaluator.
+        //
+        // This gate is deliberately ahead of the `allowSideEffects` check: that
+        // field must not be able to widen hover into REPL authority.
+        // Bound to the same authority `handle_initialize` advertises, so a future
+        // promotion cannot leave the capability true while this still refuses.
+        if refuse_hover_evaluation(advertises_evaluate_for_hovers(), args.context.as_deref()) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "evaluate".to_string(),
+                body: None,
+                message: Some(HOVER_UNSUPPORTED_MESSAGE.to_string()),
+            };
+        }
+
         // One typed presentation policy for this response (#9588): projected
         // from the typed facts retained at read-back, never by reparsing the
         // display string, and never affecting the evaluation itself.

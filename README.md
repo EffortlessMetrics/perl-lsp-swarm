@@ -160,6 +160,9 @@ The current architecture collapsed the old microcrate graph into a smaller publi
 
 ## Documentation
 
+Start with the [short documentation route map](docs/README.md). Use the
+[curated documentation index](docs/INDEX.md) for a broader map of the docs tree.
+
 | Task | Link |
 |---|---|
 | Install | [docs/how-to/INSTALLATION.md](docs/how-to/INSTALLATION.md) |
