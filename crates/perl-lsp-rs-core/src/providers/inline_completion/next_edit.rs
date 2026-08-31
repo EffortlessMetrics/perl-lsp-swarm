@@ -1471,6 +1471,40 @@ mod tests {
     }
 
     #[test]
+    fn test_assertion_receipt_keeps_a_crlf_pair_when_the_offset_splits_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = NextEditProvider;
+        let source = "use Test::More;\r\nmy $got = 1;\nmy $expected = 1;\n";
+        // The byte between the CR and LF of the first terminator is a valid
+        // UTF-8 boundary, so `prove_test_assertion` accepts it and reaches the
+        // shared helper through the production seam; the adjacency check must
+        // keep the CRLF pair together instead of following the lone LF suffix.
+        let split_crlf_byte = source.find("\r\n").ok_or("missing CRLF terminator")? + 1;
+        let request = TestAssertionNextEditRequest::receipt_only(
+            source,
+            split_crlf_byte,
+            vec!["Test::More".to_string()],
+            vec!["$got".to_string(), "$expected".to_string()],
+        );
+
+        let proof = provider.prove_test_assertion(&request);
+        let candidate = proof.candidate.ok_or("test assertion candidate not prepared")?;
+        assert_eq!(candidate.edit.start_byte, split_crlf_byte);
+        assert_eq!(candidate.edit.end_byte, split_crlf_byte);
+        assert_eq!(candidate.edit.new_text, "is($got, $expected, 'test description');\r\n");
+        let edited = candidate.edit.apply_to(source).ok_or("edit did not apply")?;
+        // The split offset leaves the original `\r` before and `\n` after the
+        // insertion; the assertion text itself still ends with the CRLF the
+        // adjacency check selected.
+        assert_eq!(
+            edited,
+            "use Test::More;\ris($got, $expected, 'test description');\r\n\nmy $got = 1;\nmy \
+             $expected = 1;\n"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn missing_import_receipt_rejects_invalid_module_names()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = NextEditProvider;
