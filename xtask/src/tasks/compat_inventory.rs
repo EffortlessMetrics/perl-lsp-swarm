@@ -35,6 +35,8 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use syn::visit::Visit;
+use syn::{Item, Type, Visibility as SynVisibility};
 
 /// Hand-authored disposition ledger. Humans own this file.
 pub const LEDGER_PATH: &str = "policy/tree-sitter-compat-inventory.toml";
@@ -209,6 +211,11 @@ pub enum SymbolKind {
     Function,
     Struct,
     Enum,
+    Type,
+    Trait,
+    Const,
+    Static,
+    Union,
     /// An inherent `pub fn` on a type, recorded as `Type::method`.
     Method,
 }
@@ -220,6 +227,11 @@ impl SymbolKind {
             Self::Function => "function",
             Self::Struct => "struct",
             Self::Enum => "enum",
+            Self::Type => "type",
+            Self::Trait => "trait",
+            Self::Const => "const",
+            Self::Static => "static",
+            Self::Union => "union",
             Self::Method => "method",
         }
     }
@@ -395,37 +407,12 @@ fn normalize_newlines(text: &str) -> String {
 pub fn discover(root: &Path) -> Result<Discovered> {
     let tracked = tracked_files(root)?;
 
-    let lib_rs = fs::read_to_string(root.join(CRATE_DIR).join("src/lib.rs"))
+    let lib_path = root.join(CRATE_DIR).join("src/lib.rs");
+    let lib_rs = fs::read_to_string(&lib_path)
         .wrap_err_with(|| format!("failed to read {CRATE_DIR}/src/lib.rs"))?;
-    let modules = parse_modules(&lib_rs);
-    let root_reexports = parse_root_reexports(&lib_rs);
-
+    let root_reexports = syn_root_reexports(&lib_rs)?;
     let mut exports = Vec::new();
-    for module in &modules {
-        let module_name = &module.name;
-        let module_path = root.join(CRATE_DIR).join(format!("src/{module_name}.rs"));
-        let source = fs::read_to_string(&module_path)
-            .wrap_err_with(|| format!("failed to read {}", module_path.display()))?;
-        for (name, kind, declared) in parse_declared_items(&source) {
-            let reexported = root_reexports.iter().any(|(m, n)| m == module_name && n == &name);
-            // Rust reachability, not the declaration keyword: a `pub` item in a
-            // private module leaves the crate only through a root `pub use`.
-            // Anything else stays internal and retires with the crate.
-            let visibility = if declared == Visibility::Public && (module.public || reexported) {
-                Visibility::Public
-            } else {
-                Visibility::Internal
-            };
-            let reexported_at_root = visibility == Visibility::Public && reexported;
-            exports.push(Export {
-                module: module_name.clone(),
-                name,
-                kind,
-                visibility,
-                reexported_at_root,
-            });
-        }
-    }
+    discover_syn_module(&lib_path, "crate", true, &root_reexports, &mut exports)?;
 
     // A root re-export that no module actually defines means `lib.rs` and the
     // module files disagree; the inventory must not paper over that.
@@ -668,6 +655,298 @@ fn code_lines(source: &str) -> Vec<String> {
         out.push(sanitized);
     }
     out
+}
+
+/// Parse the Rust file with `syn` and return root re-export source paths.
+fn syn_root_reexports(source: &str) -> Result<Vec<(String, String)>> {
+    let file = syn::parse_file(source).wrap_err("failed to parse compat crate root with syn")?;
+    let mut out = Vec::new();
+    for item in file.items {
+        if let Item::Use(item) = item {
+            if !matches!(item.vis, SynVisibility::Public(_)) {
+                continue;
+            }
+            collect_use_tree(&item.tree, Vec::new(), &mut out);
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn collect_use_tree(tree: &syn::UseTree, prefix: Vec<String>, out: &mut Vec<(String, String)>) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let mut next = prefix;
+            next.push(path.ident.to_string());
+            collect_use_tree(&path.tree, next, out);
+        }
+        syn::UseTree::Name(name) => {
+            if let Some(module) = prefix_to_module(&prefix) {
+                out.push((module, name.ident.to_string()));
+            }
+        }
+        syn::UseTree::Rename(rename) => {
+            if let Some(module) = prefix_to_module(&prefix) {
+                out.push((module, rename.ident.to_string()));
+            }
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_tree(item, prefix.clone(), out);
+            }
+        }
+        syn::UseTree::Glob(_) => {}
+    }
+}
+
+fn prefix_to_module(prefix: &[String]) -> Option<String> {
+    let mut parts = prefix.to_vec();
+    let first = parts.first()?;
+    if matches!(first.as_str(), "self" | "crate" | "super") {
+        parts.remove(0);
+    }
+    if parts.is_empty() { None } else { Some(parts.join("::")) }
+}
+
+struct ItemMacroDetector {
+    found: Option<String>,
+}
+
+impl<'ast> Visit<'ast> for ItemMacroDetector {
+    fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+        if self.found.is_none() {
+            self.found = Some(
+                item.mac
+                    .path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::"),
+            );
+        }
+        syn::visit::visit_item_macro(self, item);
+    }
+}
+
+fn syn_visibility(visibility: &SynVisibility) -> Option<Visibility> {
+    match visibility {
+        SynVisibility::Public(_) => Some(Visibility::Public),
+        SynVisibility::Restricted(_) => Some(Visibility::Internal),
+        SynVisibility::Inherited => None,
+    }
+}
+
+fn syn_item_declaration(item: &Item) -> Option<(String, SymbolKind, Visibility)> {
+    let (name, kind, visibility) = match item {
+        Item::Fn(item) => (&item.sig.ident, SymbolKind::Function, &item.vis),
+        Item::Struct(item) => (&item.ident, SymbolKind::Struct, &item.vis),
+        Item::Enum(item) => (&item.ident, SymbolKind::Enum, &item.vis),
+        Item::Type(item) => (&item.ident, SymbolKind::Type, &item.vis),
+        Item::Trait(item) => (&item.ident, SymbolKind::Trait, &item.vis),
+        Item::Const(item) => (&item.ident, SymbolKind::Const, &item.vis),
+        Item::Static(item) => (&item.ident, SymbolKind::Static, &item.vis),
+        Item::Union(item) => (&item.ident, SymbolKind::Union, &item.vis),
+        _ => return None,
+    };
+    syn_visibility(visibility).map(|visibility| (name.to_string(), kind, visibility))
+}
+
+fn inherent_impl_name(item: &syn::ItemImpl) -> Option<String> {
+    if item.trait_.is_some() {
+        return None;
+    }
+    let Type::Path(path) = item.self_ty.as_ref() else {
+        return None;
+    };
+    path.path.segments.last().map(|segment| segment.ident.to_string())
+}
+
+fn module_file_path(source_path: &Path, name: &str) -> Option<PathBuf> {
+    let parent = source_path.parent()?;
+    let source_stem = source_path.file_stem()?.to_str()?;
+    let base = if source_stem == "lib" || source_stem == "main" {
+        parent.to_path_buf()
+    } else {
+        parent.join(source_stem)
+    };
+    let flat = base.join(format!("{name}.rs"));
+    if flat.is_file() {
+        Some(flat)
+    } else {
+        let nested = base.join(name).join("mod.rs");
+        nested.is_file().then_some(nested)
+    }
+}
+
+fn discover_syn_module(
+    source_path: &Path,
+    module: &str,
+    module_public: bool,
+    root_reexports: &[(String, String)],
+    exports: &mut Vec<Export>,
+) -> Result<()> {
+    let source = fs::read_to_string(source_path)
+        .wrap_err_with(|| format!("failed to read {}", source_path.display()))?;
+    let file = syn::parse_file(&source)
+        .wrap_err_with(|| format!("failed to parse {} with syn", source_path.display()))?;
+    let mut macro_detector = ItemMacroDetector { found: None };
+    macro_detector.visit_file(&file);
+    if let Some(name) = macro_detector.found {
+        bail!(
+            "cannot inventory macro-generated items in {}: item macro `{name}` requires expansion",
+            source_path.display()
+        );
+    }
+
+    for item in &file.items {
+        if let Some((name, kind, declared)) = syn_item_declaration(item) {
+            let reexported =
+                root_reexports.iter().any(|(path, exported)| path == module && exported == &name);
+            let visibility = if declared == Visibility::Public && (module_public || reexported) {
+                Visibility::Public
+            } else {
+                Visibility::Internal
+            };
+            exports.push(Export {
+                module: module.to_string(),
+                name,
+                kind,
+                visibility,
+                reexported_at_root: visibility == Visibility::Public && reexported,
+            });
+        }
+
+        if let Item::Impl(item_impl) = item {
+            if let Some(type_name) = inherent_impl_name(item_impl) {
+                for impl_item in &item_impl.items {
+                    let syn::ImplItem::Fn(method) = impl_item else { continue };
+                    let Some(declared) = syn_visibility(&method.vis) else { continue };
+                    let name = format!("{type_name}::{}", method.sig.ident);
+                    let reexported = root_reexports
+                        .iter()
+                        .any(|(path, exported)| path == module && exported == &name);
+                    let visibility =
+                        if declared == Visibility::Public && (module_public || reexported) {
+                            Visibility::Public
+                        } else {
+                            Visibility::Internal
+                        };
+                    exports.push(Export {
+                        module: module.to_string(),
+                        name,
+                        kind: SymbolKind::Method,
+                        visibility,
+                        reexported_at_root: visibility == Visibility::Public && reexported,
+                    });
+                }
+            }
+        }
+
+        let Item::Mod(item_mod) = item else { continue };
+        let child_name = item_mod.ident.to_string();
+        let child_module =
+            if module == "crate" { child_name.clone() } else { format!("{module}::{child_name}") };
+        let child_public = module_public && matches!(item_mod.vis, SynVisibility::Public(_));
+        if let Some((_, items)) = &item_mod.content {
+            let child_source = source_path.to_path_buf();
+            discover_syn_items(
+                &child_source,
+                &child_module,
+                child_public,
+                root_reexports,
+                exports,
+                items,
+            )?;
+        } else {
+            let child_path = module_file_path(source_path, &child_name).ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "cannot resolve module `{child_module}` declared in {}",
+                    source_path.display()
+                )
+            })?;
+            discover_syn_module(&child_path, &child_module, child_public, root_reexports, exports)?;
+        }
+    }
+    Ok(())
+}
+
+fn discover_syn_items(
+    source_path: &Path,
+    module: &str,
+    module_public: bool,
+    root_reexports: &[(String, String)],
+    exports: &mut Vec<Export>,
+    items: &[Item],
+) -> Result<()> {
+    let synthetic = syn::File { shebang: None, attrs: Vec::new(), items: items.to_vec() };
+    let mut detector = ItemMacroDetector { found: None };
+    detector.visit_file(&synthetic);
+    if let Some(name) = detector.found {
+        bail!(
+            "cannot inventory macro-generated items in {}: item macro `{name}` requires expansion",
+            source_path.display()
+        );
+    }
+    for item in items {
+        if let Some((name, kind, declared)) = syn_item_declaration(item) {
+            let reexported =
+                root_reexports.iter().any(|(path, exported)| path == module && exported == &name);
+            let visibility = if declared == Visibility::Public && (module_public || reexported) {
+                Visibility::Public
+            } else {
+                Visibility::Internal
+            };
+            exports.push(Export {
+                module: module.to_string(),
+                name,
+                kind,
+                visibility,
+                reexported_at_root: visibility == Visibility::Public && reexported,
+            });
+        }
+        if let Item::Impl(item_impl) = item {
+            if let Some(type_name) = inherent_impl_name(item_impl) {
+                for impl_item in &item_impl.items {
+                    let syn::ImplItem::Fn(method) = impl_item else { continue };
+                    let Some(declared) = syn_visibility(&method.vis) else { continue };
+                    let name = format!("{type_name}::{}", method.sig.ident);
+                    let visibility = if declared == Visibility::Public && module_public {
+                        Visibility::Public
+                    } else {
+                        Visibility::Internal
+                    };
+                    exports.push(Export {
+                        module: module.to_string(),
+                        name,
+                        kind: SymbolKind::Method,
+                        visibility,
+                        reexported_at_root: false,
+                    });
+                }
+            }
+        }
+        let Item::Mod(item_mod) = item else { continue };
+        let child_name = item_mod.ident.to_string();
+        let child_module = format!("{module}::{child_name}");
+        let child_public = module_public && matches!(item_mod.vis, SynVisibility::Public(_));
+        if let Some((_, nested)) = &item_mod.content {
+            discover_syn_items(
+                source_path,
+                &child_module,
+                child_public,
+                root_reexports,
+                exports,
+                nested,
+            )?;
+        } else {
+            let path = module_file_path(source_path, &child_name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("cannot resolve module `{child_module}`"))?;
+            discover_syn_module(&path, &child_module, child_public, root_reexports, exports)?;
+        }
+    }
+    Ok(())
 }
 
 /// `pub mod <name>;` declarations in `lib.rs`.
@@ -3004,6 +3283,64 @@ impl<T> Wrapper<T> {
             vec![("Wrapper::get".to_string(), SymbolKind::Method)]
         );
         Ok(())
+    }
+
+    fn syn_exports(source: &str) -> Result<Vec<Export>> {
+        let temp = tempfile::tempdir()?;
+        let lib_path = temp.path().join("lib.rs");
+        fs::write(&lib_path, source)?;
+        let reexports = syn_root_reexports(source)?;
+        let mut exports = Vec::new();
+        discover_syn_module(&lib_path, "crate", true, &reexports, &mut exports)?;
+        exports.sort();
+        Ok(exports)
+    }
+
+    #[test]
+    fn syn_walk_handles_nested_types_and_all_declared_item_forms() -> TestResult {
+        let exports = syn_exports(
+            "pub struct Wrapper<T>(T);\npub struct Inner<const N: usize>;\npub type Nested = Wrapper<Inner<{ 1 + 2 }>>;\npub trait Trait {}\npub const VALUE: usize = 1;\npub static STATE: usize = 1;\npub union Union { value: usize }\npub fn after() {}\n",
+        )?;
+        let kinds: Vec<_> = exports.iter().map(|e| (e.name.as_str(), e.kind)).collect();
+        assert!(kinds.contains(&("Wrapper", SymbolKind::Struct)));
+        assert!(kinds.contains(&("Nested", SymbolKind::Type)));
+        assert!(kinds.contains(&("Trait", SymbolKind::Trait)));
+        assert!(kinds.contains(&("VALUE", SymbolKind::Const)));
+        assert!(kinds.contains(&("STATE", SymbolKind::Static)));
+        assert!(kinds.contains(&("Union", SymbolKind::Union)));
+        assert!(kinds.contains(&("after", SymbolKind::Function)));
+        Ok(())
+    }
+
+    #[test]
+    fn syn_walk_preserves_inline_and_external_module_boundaries() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let src = temp.path().join("src");
+        fs::create_dir_all(src.join("outer"))?;
+        fs::write(
+            src.join("lib.rs"),
+            "pub mod inline { pub mod nested { pub fn inline_fn() {} } }\nmod outer;\n",
+        )?;
+        fs::write(src.join("outer.rs"), "pub mod inner;\npub fn outer_fn() {}\n")?;
+        fs::write(src.join("outer").join("inner.rs"), "pub fn external_fn() {}\n")?;
+        let lib_path = src.join("lib.rs");
+        let source = fs::read_to_string(&lib_path)?;
+        let reexports = syn_root_reexports(&source)?;
+        let mut exports = Vec::new();
+        discover_syn_module(&lib_path, "crate", true, &reexports, &mut exports)?;
+        assert!(exports.iter().any(|e| e.module == "inline::nested" && e.name == "inline_fn"));
+        assert!(exports.iter().any(|e| e.module == "outer" && e.name == "outer_fn"));
+        assert!(exports.iter().any(|e| e.module == "outer::inner" && e.name == "external_fn"));
+        Ok(())
+    }
+
+    #[test]
+    fn syn_walk_refuses_item_macros_without_expansion() {
+        let error = syn_exports("macro_rules! generated { ($name:ident) => { pub fn $name() {} }; }\ngenerated!(made);\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("macro-generated"), "unexpected error: {error}");
+        assert!(error.contains("generated"), "unexpected error: {error}");
     }
 
     // -- checked-in state ---------------------------------------------------
