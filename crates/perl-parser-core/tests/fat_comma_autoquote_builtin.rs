@@ -96,3 +96,11 @@ fn fat_comma_does_not_rewrite_an_expression_operand() {
         NodeKind::FunctionCall { name, .. } if name == "before"
     ));
 }
+
+#[test]
+fn fat_comma_preserves_qualified_builtin_call_operand() {
+    assert!(matches!(
+        &call_argument_kind("my $result = push @items, CORE::time => 1;", "push", 1),
+        NodeKind::FunctionCall { name, args } if name == "CORE::time" && args.is_empty()
+    ));
+}
