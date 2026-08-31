@@ -88,6 +88,13 @@ pub mod invariants;
 /// identity and generated NodeKind status are derived from the same registry
 /// and do not change parser or AST structure.
 pub mod kind_schema;
+/// Source-backed string and heredoc payload types: raw source, cooked value,
+/// and ordered segments as separate typed propositions.
+///
+/// This is a data contract only. It adds no [NodeKind] variant, changes no
+/// existing variant's child fields, and does not affect parser output,
+/// traversal, rendering, or the [kind_schema] registry.
+pub mod source_syntax;
 
 /// Incremental parsing AST types extracted into a dedicated microcrate.
 pub use perl_ast_v2 as v2;
@@ -121,3 +128,10 @@ pub use invariants::{
 };
 /// Byte-offset span indicating where a node appears in source text.
 pub use perl_position_tracking::SourceLocation;
+/// Source-backed string and heredoc payload types.
+pub use source_syntax::{
+    CookedValue, HeredocDeclarationIdentity, HeredocForm, HeredocSyntax, NormalizationRule,
+    PayloadContradiction, PayloadTerminal, SegmentRecoveryCause, SourceSegment,
+    SourceSegmentPayload, SourceSegmentation, StringDelimiter, StringForm, StringSyntax,
+};
+
