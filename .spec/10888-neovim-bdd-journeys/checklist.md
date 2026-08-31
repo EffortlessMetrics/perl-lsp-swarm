@@ -158,6 +158,10 @@ INVARIANT_BLOCKS = {
     "profile_laws": ("acceptance", r"(?ms)^Laws: a stronger profile.*?(?=\n\n)"),
     "claim_boundary": ("acceptance", r"(?ms)^- \*\*Claim boundary:\*\*.*?(?=\n\n|\Z)"),
     "three_subject_law": ("context", r"(?ms)^Three-subject law:.*?(?=\n\n)"),
+    # The evidence-stage vocabulary #10888 requires. Without this the whole
+    # table could be deleted and the checker would still pass.
+    "evidence_vocabulary": ("acceptance",
+                            r"(?ms)^### Evidence-stage vocabulary.*?(?=^## §Test-Grid)"),
 }
 
 INVARIANT_DIGESTS = {
@@ -165,6 +169,7 @@ INVARIANT_DIGESTS = {
     "profile_laws": "60e532ff4fcc0274",
     "claim_boundary": "3d6755e631a9c99f",
     "three_subject_law": "e53af321800e90fb",
+    "evidence_vocabulary": "d78c020224e6bc3d",
 }
 
 ROW_DIGESTS = {
