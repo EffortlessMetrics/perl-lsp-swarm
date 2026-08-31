@@ -477,9 +477,53 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # A single, read-only fan-in is the eligibility boundary for every public
+  # mutation below.  Keeping this separate from the GitHub Release job makes
+  # the ordering visible to GitHub's job graph (and to the structural tests),
+  # rather than relying on a shell step having completed successfully.
+  publisher-eligibility:
+    name: Establish publisher eligibility
+    needs: [candidate, release-metadata]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      manifest_sha256: ${{ steps.bind.outputs.manifest_sha256 }}
+      candidate_run_id: ${{ steps.bind.outputs.candidate_run_id }}
+
+    steps:
+      - name: Download terminal candidate authority
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-terminal-candidate
+          path: candidate
+
+      - name: Bind and seal terminal candidate authority
+        id: bind
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+          CANDIDATE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG" \
+            --check
+          test -s candidate/terminal-artifact-manifest.json
+          test -s candidate/attestation-subjects.sha256
+          manifest_sha256="$(sha256sum candidate/terminal-artifact-manifest.json | awk '{print $1}')"
+          printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
+          printf 'candidate_run_id=%s\n' "$CANDIDATE_RUN_ID" >> "$GITHUB_OUTPUT"
+          printf 'Publisher eligibility sealed for %s at run %s (manifest sha256:%s).\n' \
+            "$SOURCE_SHA" "$CANDIDATE_RUN_ID" "$manifest_sha256"
+
   publish-release:
     name: Publish terminal GitHub Release candidate
-    needs: [candidate, release-metadata]
+    needs: [candidate, publisher-eligibility, release-metadata]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -586,7 +630,7 @@ jobs:
 
   dispatch-publishers:
     name: Dispatch admitted downstream publishers
-    needs: [publish-release, release-metadata]
+    needs: [publish-release, publisher-eligibility, release-metadata]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -598,25 +642,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release-metadata.outputs.version }}
           TAG: ${{ needs.release-metadata.outputs.tag }}
+          EXPECTED_SHA: ${{ github.sha }}
+          CANDIDATE_RUN_ID: ${{ needs.publisher-eligibility.outputs.candidate_run_id }}
+          MANIFEST_SHA256: ${{ needs.publisher-eligibility.outputs.manifest_sha256 }}
           SKIP_CRATES: ${{ github.event.inputs.skip_crates }}
           SKIP_EXTENSION: ${{ github.event.inputs.skip_extension }}
           SKIP_DOCKER: ${{ github.event.inputs.skip_docker }}
         run: |
           set -euo pipefail
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$CANDIDATE_RUN_ID" | grep -Eq '^[0-9]+$'
+          printf '%s' "$MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$'
           if [ "$SKIP_CRATES" != "true" ]; then
             gh api -X POST \
               /repos/${{ github.repository }}/actions/workflows/publish-crates.yml/dispatches \
-              -f ref="$TAG" -F inputs[version]="$VERSION" -F inputs[dry_run]="false"
+              -f ref="$TAG" -F inputs[version]="$VERSION" -F inputs[dry_run]="false" \
+              -F inputs[expected_sha]="$EXPECTED_SHA" -F inputs[candidate_run_id]="$CANDIDATE_RUN_ID" \
+              -F inputs[manifest_sha256]="$MANIFEST_SHA256"
           fi
           if [ "$SKIP_EXTENSION" != "true" ]; then
             gh api -X POST \
               /repos/${{ github.repository }}/actions/workflows/publish-extension.yml/dispatches \
-              -f ref="$TAG" -F inputs[version]="$VERSION"
+              -f ref="$TAG" -F inputs[version]="$VERSION" -F inputs[expected_sha]="$EXPECTED_SHA" \
+              -F inputs[candidate_run_id]="$CANDIDATE_RUN_ID" -F inputs[manifest_sha256]="$MANIFEST_SHA256"
           fi
           if [ "$SKIP_DOCKER" != "true" ]; then
             gh api -X POST \
               /repos/${{ github.repository }}/actions/workflows/docker-publish.yml/dispatches \
-              -f ref="$TAG" -F inputs[version]="$VERSION" -F inputs[push]="true"
+              -f ref="$TAG" -F inputs[version]="$VERSION" -F inputs[push]="true" \
+              -F inputs[expected_sha]="$EXPECTED_SHA" -F inputs[candidate_run_id]="$CANDIDATE_RUN_ID" \
+              -F inputs[manifest_sha256]="$MANIFEST_SHA256"
           fi
 
       - name: Dispatch downstream package refresh workflows

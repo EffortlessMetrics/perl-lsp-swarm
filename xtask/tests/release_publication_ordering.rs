@@ -52,6 +52,7 @@ fn rendered(value: &Value) -> Result<String> {
 
 fn validate_release_graph(document: &Value) -> Result<()> {
     let candidate = job(document, "candidate")?;
+    let eligibility = job(document, "publisher-eligibility")?;
     let publication = job(document, "publish-release")?;
     let publishers = job(document, "dispatch-publishers")?;
 
@@ -60,8 +61,16 @@ fn validate_release_graph(document: &Value) -> Result<()> {
         "GitHub Release can run without candidate success"
     );
     ensure!(
+        needs(publication)?.contains(&"publisher-eligibility"),
+        "GitHub Release can run without the common publisher eligibility fan-in"
+    );
+    ensure!(
         needs(publishers)?.contains(&"publish-release"),
         "publisher dispatch can run before GitHub Release success"
+    );
+    ensure!(
+        needs(publishers)?.contains(&"publisher-eligibility"),
+        "publisher dispatch can run without the common publisher eligibility fan-in"
     );
 
     let candidate_text = rendered(candidate)?;
@@ -85,6 +94,25 @@ fn validate_release_graph(document: &Value) -> Result<()> {
     ensure!(
         !candidate_text.contains("action-gh-release"),
         "candidate job performs a public release mutation"
+    );
+
+    let eligibility_text = rendered(eligibility)?;
+    for required in [
+        "release_terminal_manifest.py",
+        "--check",
+        "terminal-artifact-manifest.json",
+        "attestation-subjects.sha256",
+        "manifest_sha256",
+        "candidate_run_id",
+    ] {
+        ensure!(
+            eligibility_text.contains(required),
+            "publisher eligibility omits required binding `{required}`"
+        );
+    }
+    ensure!(
+        !eligibility_text.contains("secrets."),
+        "publisher eligibility must not receive publisher secrets"
     );
 
     let publication_text = rendered(publication)?;
@@ -116,6 +144,12 @@ fn validate_release_graph(document: &Value) -> Result<()> {
     let publisher_text = rendered(publishers)?;
     for endpoint in PUBLISH_ENDPOINTS {
         ensure!(publisher_text.contains(endpoint), "admitted publisher job omits `{endpoint}`");
+    }
+    for required in ["EXPECTED_SHA", "CANDIDATE_RUN_ID", "MANIFEST_SHA256"] {
+        ensure!(
+            publisher_text.contains(required),
+            "publisher dispatch does not carry exact eligibility binding `{required}`"
+        );
     }
 
     let whole = rendered(document)?;
@@ -272,6 +306,26 @@ fn crates_publisher_has_no_release_published_bypass() -> Result<()> {
         !crates.contains("event.release"),
         "crates publisher still consumes release event authority"
     );
+    Ok(())
+}
+
+#[test]
+fn downstream_publishers_require_the_exact_eligibility_handoff() -> Result<()> {
+    for workflow_name in ["publish-crates.yml", "publish-extension.yml", "docker-publish.yml"] {
+        let text = rendered(&workflow(workflow_name)?)?;
+        for required in [
+            "expected_sha",
+            "candidate_run_id",
+            "manifest_sha256",
+            "release-terminal-candidate",
+            "actual_manifest_sha256",
+        ] {
+            ensure!(
+                text.contains(required),
+                "{workflow_name} does not validate the exact eligibility handoff `{required}`"
+            );
+        }
+    }
     Ok(())
 }
 
