@@ -680,6 +680,7 @@ struct ScanContext<'a> {
     visited: BTreeSet<(usize, PathBuf, Vec<EnvBindings>)>,
     files_seen: BTreeSet<usize>,
     sites: Vec<SerialSiteIdentity>,
+    serialized_sites: Vec<SerialSiteIdentity>,
 }
 
 impl ScanContext<'_> {
@@ -696,9 +697,7 @@ impl ScanContext<'_> {
         for item in items {
             match item {
                 Item::Fn(function) if is_test_function(&function.attrs) => {
-                    if has_serial_guard(&function.attrs) {
-                        continue;
-                    }
+                    let serialized = has_serial_guard(&function.attrs);
                     let mut visitor = SignalVisitor::new(bindings.clone());
                     for input in &function.sig.inputs {
                         if let syn::FnArg::Typed(argument) = input {
@@ -709,7 +708,7 @@ impl ScanContext<'_> {
                     }
                     visitor.visit_block(&function.block);
                     if !visitor.signals.is_empty() {
-                        self.sites.push(SerialSiteIdentity {
+                        let site = SerialSiteIdentity {
                             path: file.relative.clone(),
                             test_function: if inline_modules.is_empty() {
                                 function.sig.ident.to_string()
@@ -718,7 +717,12 @@ impl ScanContext<'_> {
                             },
                             signals: visitor.signals.into_iter().collect(),
                             line: function.sig.fn_token.span.start().line,
-                        });
+                        };
+                        if serialized {
+                            self.serialized_sites.push(site);
+                        } else {
+                            self.sites.push(site);
+                        }
                     }
                 }
                 Item::Mod(module) => {
@@ -783,6 +787,14 @@ fn collect_external_children(
 }
 
 fn complete_serial_site_inventory(repo_root: &Path) -> Result<Vec<SerialSiteIdentity>> {
+    Ok(complete_serial_site_inventories(repo_root)?.0)
+}
+
+fn complete_serial_site_inventories(
+    repo_root: &Path,
+) -> Result<(Vec<SerialSiteIdentity>, Vec<SerialSiteIdentity>)> {
+    // Keep the established unguarded inventory API while exposing guarded
+    // direct mutations to the registry contract.
     let mut parsed = Vec::new();
     for path in walk_workspace_rust_files(repo_root) {
         if let Some(file) = parse_rust_file(repo_root, &path)? {
@@ -800,13 +812,13 @@ fn complete_serial_site_inventory(repo_root: &Path) -> Result<Vec<SerialSiteIden
             collect_external_children(&file.syntax.items, directory, &known, &mut children);
         }
     }
-
     let mut scan = ScanContext {
         parsed: &parsed,
         known: &known,
         visited: BTreeSet::new(),
         files_seen: BTreeSet::new(),
         sites: Vec::new(),
+        serialized_sites: Vec::new(),
     };
     for (index, file) in parsed.iter().enumerate() {
         if !children.contains(&index)
@@ -822,41 +834,45 @@ fn complete_serial_site_inventory(repo_root: &Path) -> Result<Vec<SerialSiteIden
             scan.scan_file(index, directory, &[]);
         }
     }
-    scan.sites.sort();
-    scan.sites.dedup();
-    let identities = scan.sites.iter().fold(
-        BTreeMap::<(String, String), BTreeSet<String>>::new(),
-        |mut identities, site| {
+    fn normalize_sites(sites: &mut Vec<SerialSiteIdentity>) {
+        sites.sort();
+        sites.dedup();
+        let identities = sites.iter().fold(
+            BTreeMap::<(String, String), BTreeSet<String>>::new(),
+            |mut identities, site| {
+                let bare = site
+                    .test_function
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(site.test_function.as_str())
+                    .to_owned();
+                identities
+                    .entry((site.path.clone(), bare))
+                    .or_default()
+                    .insert(site.test_function.clone());
+                identities
+            },
+        );
+        for site in sites.iter_mut() {
             let bare = site
                 .test_function
                 .rsplit("::")
                 .next()
                 .unwrap_or(site.test_function.as_str())
                 .to_owned();
-            identities
-                .entry((site.path.clone(), bare))
-                .or_default()
-                .insert(site.test_function.clone());
-            identities
-        },
-    );
-    for site in &mut scan.sites {
-        let bare = site
-            .test_function
-            .rsplit("::")
-            .next()
-            .unwrap_or(site.test_function.as_str())
-            .to_owned();
-        if identities
-            .get(&(site.path.clone(), bare.clone()))
-            .is_some_and(|qualified| qualified.len() == 1)
-        {
-            site.test_function = bare;
+            if identities
+                .get(&(site.path.clone(), bare.clone()))
+                .is_some_and(|qualified| qualified.len() == 1)
+            {
+                site.test_function = bare;
+            }
         }
+        sites.sort();
+        sites.dedup();
     }
-    scan.sites.sort();
-    scan.sites.dedup();
-    Ok(scan.sites)
+    normalize_sites(&mut scan.sites);
+    normalize_sites(&mut scan.serialized_sites);
+    Ok((scan.sites, scan.serialized_sites))
 }
 
 /// Emit the current parallel-unsafe inventory as JSON. This is the measurement
@@ -884,6 +900,13 @@ enum RegistryState {
     Retired,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Remediation {
+    Pending,
+    Serialized,
+    Eliminated,
+}
+
 #[derive(Debug)]
 struct SerialSiteRecord {
     path: String,
@@ -891,6 +914,7 @@ struct SerialSiteRecord {
     signals: String,
     accepted_reason: String,
     state: RegistryState,
+    remediation: Remediation,
 }
 
 fn validate_registry_signals(entry: usize, signals: &str) -> Result<()> {
@@ -953,7 +977,7 @@ fn read_identity_registry(path: &Path) -> Result<BTreeMap<(String, String), Seri
             eyre!("serial identity registry entry {} must be an object", index + 1)
         })?;
         if let Some(field) = object.keys().find(|field| {
-            !["path", "test_function", "signals", "accepted_reason", "state"]
+            !["path", "test_function", "signals", "accepted_reason", "state", "remediation"]
                 .contains(&field.as_str())
         }) {
             return Err(eyre!(
@@ -976,12 +1000,36 @@ fn read_identity_registry(path: &Path) -> Result<BTreeMap<(String, String), Seri
                 ));
             }
         };
+        let remediation = match required_string("remediation")?.as_str() {
+            "pending" => Remediation::Pending,
+            "serialized" => Remediation::Serialized,
+            "eliminated" => Remediation::Eliminated,
+            other => {
+                return Err(eyre!(
+                    "serial identity registry entry {} has invalid remediation {other:?}",
+                    index + 1
+                ));
+            }
+        };
+        if state == RegistryState::Active && remediation != Remediation::Pending {
+            return Err(eyre!(
+                r#"serial identity registry entry {} active rows require remediation="pending""#,
+                index + 1
+            ));
+        }
+        if state == RegistryState::Retired && remediation == Remediation::Pending {
+            return Err(eyre!(
+                r#"serial identity registry entry {} retired rows require remediation="serialized" or "eliminated""#,
+                index + 1
+            ));
+        }
         let record = SerialSiteRecord {
             path: required_string("path")?,
             test_function: required_string("test_function")?,
             signals: required_string("signals")?,
             accepted_reason: required_string("accepted_reason")?,
             state,
+            remediation,
         };
         let fields = [
             ("path", record.path.trim()),
@@ -1014,7 +1062,7 @@ fn read_identity_registry(path: &Path) -> Result<BTreeMap<(String, String), Seri
 pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> Result<i32> {
     let resolved = registry_path(repo_root, path);
     let registry = read_identity_registry(&resolved)?;
-    let inventory = complete_serial_site_inventory(repo_root)?;
+    let (inventory, serialized_inventory) = complete_serial_site_inventories(repo_root)?;
     let mut current = BTreeMap::new();
     for site in inventory {
         if current.insert(site.key(), site).is_some() {
@@ -1027,11 +1075,12 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
 
     let active_count =
         registry.values().filter(|record| record.state == RegistryState::Active).count();
+    let serialized =
+        serialized_inventory.iter().map(|site| (site.key(), site)).collect::<BTreeMap<_, _>>();
+    let current_total = current.len() + serialized.len();
     println!(
         "parallel-unsafe test identities: current={} active_registry={} registry={:?}",
-        current.len(),
-        active_count,
-        resolved
+        current_total, active_count, resolved
     );
 
     let mut failures = Vec::new();
@@ -1050,6 +1099,10 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
                 site.test_function,
                 site.signals.join(",")
             )),
+            Some(record) if record.remediation == Remediation::Eliminated => failures.push(format!(
+                "ELIMINATED identity returned: {} {} ({})",
+                site.path, site.test_function, site.signals.join(",")
+            )),
             Some(record) => {
                 let current_signals = site.signals.join(",");
                 if record.signals != current_signals {
@@ -1059,6 +1112,51 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
                     ));
                 }
             }
+        }
+    }
+    for (key, site) in &serialized {
+        match registry.get(key) {
+            Some(record)
+                if record.state == RegistryState::Retired
+                    && record.remediation == Remediation::Serialized =>
+            {
+                let current_signals = site.signals.join(",");
+                if record.signals != current_signals {
+                    failures.push(format!(
+                        "SERIALIZED identity signals changed: {} {}",
+                        site.path, site.test_function
+                    ));
+                }
+            }
+            Some(record) if record.remediation == Remediation::Eliminated => {
+                failures.push(format!(
+                    "ELIMINATED identity returned: {} {} ({})",
+                    site.path,
+                    site.test_function,
+                    site.signals.join(",")
+                ))
+            }
+            Some(_) => failures.push(format!(
+                "serialized identity has invalid registry disposition: {} {}",
+                site.path, site.test_function
+            )),
+            None => {}
+        }
+    }
+    for (key, record) in &registry {
+        if record.remediation == Remediation::Serialized && !serialized.contains_key(key) {
+            failures.push(format!(
+                "SERIALIZED identity no longer has a direct mutation and canonical guard: {} {}",
+                record.path, record.test_function
+            ));
+        }
+        if record.remediation == Remediation::Eliminated
+            && (current.contains_key(key) || serialized.contains_key(key))
+        {
+            failures.push(format!(
+                "ELIMINATED identity has a direct process mutation: {} {}",
+                record.path, record.test_function
+            ));
         }
     }
     for (key, record) in &registry {
@@ -1159,6 +1257,7 @@ mod tests {
             "signals": signals,
             "accepted_reason": reason,
             "state": state,
+            "remediation": if state == "retired" { "serialized" } else { "pending" },
         })
     }
 
@@ -1380,7 +1479,7 @@ fn constructs_typed_guard() {
     fn method_call_set_var_is_not_process_env() -> Result<()> {
         let repo = TempRepo::new("method-call")?;
         repo.write_test(
-            "#[test]\nfn builds_child_env() {\n    let mut cmd = std::process::Command::new(\"perl\");\n    cmd.envs([(\"A\", \"1\")]);\n    let mut harness = Harness::default();\n    harness.set_var(\"A\", \"1\");\n}\n",
+            "#[test]\nfn builds_child_env() {\n    let mut cmd = std::process::Command::new(\"perl\");\n    cmd.env(\"A\", \"1\").env_remove(\"B\").env_clear();\n    let mut harness = Harness::default();\n    harness.set_var(\"A\", \"1\");\n}\n",
         )?;
         let path = repo.empty_registry()?;
         assert_eq!(repo.check(&path)?, 0);
@@ -2135,6 +2234,67 @@ fn mutates_after_every_lexical_class() {
     }
 
     #[test]
+    fn serialized_requires_direct_mutation_and_unkeyed_guard() -> Result<()> {
+        let repo = TempRepo::new("serialized-contract")?;
+        let guarded = UNANNOTATED_ENV_TEST.replace("#[test]", "#[test]\n#[serial]");
+        repo.write_test(&guarded)?;
+        let path = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [registry_row(
+                "crates/demo/tests/demo.rs", "flips_toolchain_env", "env_set",
+                "serialized fixture", "retired"
+            )]
+        }))?;
+        assert_eq!(repo.check(&path)?, 0);
+
+        let keyed = guarded.replace("#[serial]", "#[serial(keyed)]");
+        repo.write_test(&keyed)?;
+        assert_eq!(repo.check(&path)?, 1);
+
+        let file_serial = guarded.replace("#[serial]", "#[file_serial]");
+        repo.write_test(&file_serial)?;
+        assert_eq!(repo.check(&path)?, 1);
+
+        let cwd_guarded = "#[test]\n#[serial]\nfn flips_toolchain_env() {\n    std::env::set_current_dir(\"/tmp\");\n}\n";
+        repo.write_test(cwd_guarded)?;
+        let cwd_path = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [registry_row(
+                "crates/demo/tests/demo.rs", "flips_toolchain_env", "cwd",
+                "serialized fixture", "retired"
+            )]
+        }))?;
+        assert_eq!(repo.check(&cwd_path)?, 0);
+
+        let cwd_file_serial = cwd_guarded.replace("#[serial]", "#[file_serial]");
+        repo.write_test(&cwd_file_serial)?;
+        assert_eq!(repo.check(&cwd_path)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn eliminated_rejects_returned_mutation() -> Result<()> {
+        let repo = TempRepo::new("eliminated-contract")?;
+        let mut row = registry_row(
+            "crates/demo/tests/demo.rs",
+            "flips_toolchain_env",
+            "env_set",
+            "eliminated fixture",
+            "retired",
+        );
+        row.as_object_mut()
+            .ok_or_else(|| eyre!("registry test row was not an object"))?
+            .insert("remediation".to_owned(), serde_json::json!("eliminated"));
+        let path =
+            repo.write_registry(serde_json::json!({ "schema_version": 1, "sites": [row] }))?;
+        repo.write_test("#[test]\nfn unrelated() {}\n")?;
+        assert_eq!(repo.check(&path)?, 0);
+        repo.write_test(UNANNOTATED_ENV_TEST)?;
+        assert_eq!(repo.check(&path)?, 1);
+        Ok(())
+    }
+
+    #[test]
     fn inline_cfg_test_module_is_scanned() -> Result<()> {
         let repo = TempRepo::new("inline-mod")?;
         fs::write(
@@ -2272,6 +2432,27 @@ fn mutates_after_every_lexical_class() {
             duplicate_err.contains("duplicates"),
             "expected duplicate-row error, got: {duplicate_err}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn remediation_is_orthogonal_to_registry_state() -> Result<()> {
+        let repo = TempRepo::new("remediation-schema")?;
+        for (state, remediation) in [("active", "serialized"), ("retired", "pending")] {
+            let mut row = registry_row(
+                "crates/demo/tests/demo.rs",
+                "flips_toolchain_env",
+                "env_set",
+                "schema fixture",
+                state,
+            );
+            row.as_object_mut()
+                .ok_or_else(|| eyre!("registry test row was not an object"))?
+                .insert("remediation".to_owned(), serde_json::json!(remediation));
+            let path =
+                repo.write_registry(serde_json::json!({ "schema_version": 1, "sites": [row] }))?;
+            assert!(read_identity_registry(&path).is_err());
+        }
         Ok(())
     }
 
