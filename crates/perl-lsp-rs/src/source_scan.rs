@@ -18,6 +18,16 @@ impl PanicFamilyLint {
             Self::Panic => "clippy::panic",
         }
     }
+
+    /// Clippy accepts raw-identifier lint spellings (`clippy::r#panic`);
+    /// the ratchet must read them the same as the bare names.
+    const fn as_raw_str(self) -> &'static str {
+        match self {
+            Self::UnwrapUsed => "clippy::r#unwrap_used",
+            Self::ExpectUsed => "clippy::r#expect_used",
+            Self::Panic => "clippy::r#panic",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,7 +308,32 @@ pub(crate) fn lib_source(source: &str) -> String {
     out
 }
 
+/// True when the attribute body names a lint group that covers the whole
+/// panic family: `clippy::restriction` contains `unwrap_used`, `expect_used`,
+/// and `panic`, and the bare `warnings` group suppresses every Clippy warning
+/// including them. Group spellings match only with a path or list left
+/// boundary so names like `sandbox_restrictions` cannot match.
+fn group_covers_panic_family(body: &str, i: usize) -> bool {
+    let rest = rest_at(body, i);
+    let list_boundary =
+        |start: usize| start == 0 || matches!(body[..start].chars().next_back(), Some('(' | ','));
+    if rest.starts_with("clippy::restriction")
+        && !ident_continues(rest, "clippy::restriction".len())
+    {
+        return true;
+    }
+    if rest.starts_with("restriction")
+        && !ident_continues(rest, "restriction".len())
+        && list_boundary(i)
+    {
+        return true;
+    }
+    rest.starts_with("warnings") && !ident_continues(rest, "warnings".len()) && list_boundary(i)
+}
+
 fn panic_family_lints_in(body: &str) -> Vec<PanicFamilyLint> {
+    const FAMILY: [PanicFamilyLint; 3] =
+        [PanicFamilyLint::UnwrapUsed, PanicFamilyLint::ExpectUsed, PanicFamilyLint::Panic];
     let mut lints = Vec::new();
     let mut i = 0;
     while i < body.len() {
@@ -307,15 +342,17 @@ fn panic_family_lints_in(body: &str) -> Vec<PanicFamilyLint> {
             continue;
         }
         let rest = rest_at(body, i);
-        for lint in
-            [PanicFamilyLint::UnwrapUsed, PanicFamilyLint::ExpectUsed, PanicFamilyLint::Panic]
-        {
+        let group_hit = group_covers_panic_family(body, i);
+        for lint in FAMILY {
+            if lints.contains(&lint) {
+                continue;
+            }
             let name = lint.as_str();
-            if rest.starts_with(name) && !ident_continues(rest, name.len()) {
-                if !lints.contains(&lint) {
-                    lints.push(lint);
-                }
-                break;
+            let raw_name = lint.as_raw_str();
+            let named = (rest.starts_with(name) && !ident_continues(rest, name.len()))
+                || (rest.starts_with(raw_name) && !ident_continues(rest, raw_name.len()));
+            if named || group_hit {
+                lints.push(lint);
             }
         }
         let Some(ch) = rest.chars().next() else { break };

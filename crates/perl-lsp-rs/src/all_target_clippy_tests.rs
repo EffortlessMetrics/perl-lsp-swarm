@@ -241,6 +241,49 @@ fn cfg_test_wide_expect_used_is_forbidden() {
 }
 
 #[test]
+fn restriction_group_blanket_names_whole_panic_family() {
+    let carved = "#![allow(clippy::restriction)]\nfn production() {}\n";
+    let hits = panic_family_suppressions(carved);
+    assert_eq!(hits.len(), 1, "restriction group allow must be detected");
+    assert!(hits[0].is_forbidden(), "the restriction group covers the panic family");
+    assert_eq!(
+        hits[0].lints,
+        vec![PanicFamilyLint::UnwrapUsed, PanicFamilyLint::ExpectUsed, PanicFamilyLint::Panic]
+    );
+}
+
+#[test]
+fn warnings_group_blanket_names_whole_panic_family() {
+    let carved = "#![allow(warnings)]\nfn production() {}\n";
+    let hits = panic_family_suppressions(carved);
+    assert_eq!(hits.len(), 1, "a bare warnings-group allow suppresses clippy too");
+    assert!(hits[0].is_forbidden());
+    assert_eq!(
+        hits[0].lints,
+        vec![PanicFamilyLint::UnwrapUsed, PanicFamilyLint::ExpectUsed, PanicFamilyLint::Panic]
+    );
+}
+
+#[test]
+fn raw_identifier_lint_spelling_is_still_a_blanket() {
+    let carved = "#![allow(clippy::r#unwrap_used)]\nfn production() {}\n";
+    let hits = panic_family_suppressions(carved);
+    assert_eq!(hits.len(), 1, "clippy accepts raw-identifier lint spellings");
+    assert!(hits[0].is_forbidden());
+    assert_eq!(hits[0].lints, vec![PanicFamilyLint::UnwrapUsed]);
+}
+
+#[test]
+fn group_words_without_lint_group_boundary_are_not_blankets() {
+    let carved = "#![allow(clippy::sandbox_restrictions)]\nfn production() {}\n";
+    let hits = panic_family_suppressions(carved);
+    assert!(
+        hits.is_empty(),
+        "a path merely containing the word restriction must not read as a group blanket"
+    );
+}
+
+#[test]
 fn item_level_expect_with_reason_is_allowed() {
     let allowed = r#"
 #[expect(clippy::panic, reason = "the handler under test must actually panic")]
