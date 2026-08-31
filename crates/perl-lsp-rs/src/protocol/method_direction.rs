@@ -569,40 +569,164 @@ mod tests {
     /// Remove trailing `#[cfg(test)] mod … { … }` regions so test-only string
     /// literals cannot satisfy or pollute production-inventory scans.
     fn strip_test_modules(source: &str) -> String {
-        let mut result = String::with_capacity(source.len());
-        let mut lines = source.lines().peekable();
-        while let Some(line) = lines.next() {
-            result.push_str(line);
-            result.push('\n');
-            if line.trim() != "#[cfg(test)]" {
-                continue;
+        fn module_body(line: &str) -> Option<&str> {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("mod ") {
+                return Some(rest);
             }
-            let Some(next) = lines.peek() else { break };
-            let next_trimmed = next.trim_start();
-            let is_mod_open = next_trimmed.starts_with("mod ")
-                && (next_trimmed.contains('{') || next_trimmed.ends_with(';'));
-            if !is_mod_open {
-                continue;
-            }
-            // Consume the attribute/mod pair. A `mod x;` declaration ends
-            // here; a `mod x {` block is skipped by brace counting.
-            let Some(mod_line) = lines.next() else { break };
-            if mod_line.trim_end().ends_with(';') {
-                continue;
-            }
-            let mut depth =
-                mod_line.matches('{').count() as i64 - mod_line.matches('}').count() as i64;
-            while depth > 0 {
-                match lines.next() {
-                    Some(inner) => {
-                        depth += inner.matches('{').count() as i64;
-                        depth -= inner.matches('}').count() as i64;
+            let rest = trimmed.strip_prefix("pub")?.trim_start();
+            let rest =
+                if rest.starts_with('(') { rest.split_once(')')?.1.trim_start() } else { rest };
+            rest.strip_prefix("mod ")
+        }
+
+        #[derive(Default)]
+        struct BraceState {
+            block_comment_depth: usize,
+            quoted: Option<u8>,
+            raw_hashes: Option<usize>,
+        }
+
+        impl BraceState {
+            fn delta(&mut self, line: &str) -> i64 {
+                let bytes = line.as_bytes();
+                let mut index = 0usize;
+                let mut depth = 0i64;
+                while index < bytes.len() {
+                    if self.block_comment_depth > 0 {
+                        if bytes.get(index..index + 2) == Some(b"/*") {
+                            self.block_comment_depth += 1;
+                            index += 2;
+                        } else if bytes.get(index..index + 2) == Some(b"*/") {
+                            self.block_comment_depth -= 1;
+                            index += 2;
+                        } else {
+                            index += 1;
+                        }
+                        continue;
                     }
-                    None => break,
+                    if let Some(hashes) = self.raw_hashes {
+                        let closing = bytes[index] == b'"'
+                            && bytes
+                                .get(index + 1..index + 1 + hashes)
+                                .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#'));
+                        if closing {
+                            self.raw_hashes = None;
+                            index += hashes + 1;
+                        } else {
+                            index += 1;
+                        }
+                        continue;
+                    }
+                    if let Some(quote) = self.quoted {
+                        if bytes[index] == b'\\' {
+                            index = (index + 2).min(bytes.len());
+                        } else {
+                            if bytes[index] == quote {
+                                self.quoted = None;
+                            }
+                            index += 1;
+                        }
+                        continue;
+                    }
+                    if bytes.get(index..index + 2) == Some(b"//") {
+                        break;
+                    }
+                    if bytes.get(index..index + 2) == Some(b"/*") {
+                        self.block_comment_depth = 1;
+                        index += 2;
+                        continue;
+                    }
+                    if bytes[index] == b'r' {
+                        let mut delimiter = index + 1;
+                        while delimiter < bytes.len() && bytes[delimiter] == b'#' {
+                            delimiter += 1;
+                        }
+                        if delimiter < bytes.len() && bytes[delimiter] == b'"' {
+                            self.raw_hashes = Some(delimiter - index - 1);
+                            index = delimiter + 1;
+                            continue;
+                        }
+                    }
+                    match bytes[index] {
+                        b'"' => self.quoted = Some(b'"'),
+                        b'\'' if bytes.get(index + 2) == Some(&b'\'') => self.quoted = Some(b'\''),
+                        b'{' => depth += 1,
+                        b'}' => depth -= 1,
+                        _ => {}
+                    }
+                    index += 1;
                 }
+                depth
             }
         }
+
+        let mut result = String::with_capacity(source.len());
+        let lines: Vec<&str> = source.lines().collect();
+        let mut index = 0usize;
+        while index < lines.len() {
+            let line = lines[index];
+            if line.trim() == "#[cfg(test)]" {
+                // `#[cfg(test)]` is often followed by one or more attributes
+                // before the module declaration. Look through that attribute
+                // stack so test-only send sites cannot leak into the scan.
+                let mut module_index = index + 1;
+                while module_index < lines.len()
+                    && lines[module_index].trim_start().starts_with("#[")
+                {
+                    module_index += 1;
+                }
+                let next_trimmed = lines.get(module_index).map_or("", |next| next.trim_start());
+                if let Some(module_tail) = module_body(next_trimmed)
+                    .filter(|tail| tail.contains('{') || tail.trim_end().ends_with(';'))
+                {
+                    // A `mod x;` declaration ends here; a `mod x {` block is
+                    // skipped by brace counting.
+                    if module_tail.trim_end().ends_with(';') {
+                        index = module_index + 1;
+                        continue;
+                    }
+                    let mut braces = BraceState::default();
+                    let mut depth = braces.delta(lines[module_index]);
+                    index = module_index + 1;
+                    while depth > 0 && index < lines.len() {
+                        depth += braces.delta(lines[index]);
+                        index += 1;
+                    }
+                    continue;
+                }
+            }
+            result.push_str(line);
+            result.push('\n');
+            index += 1;
+        }
         result
+    }
+
+    #[test]
+    fn strip_test_modules_handles_stacked_attributes() {
+        let source = r##"
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+pub(crate) mod tests {
+    let text = "unbalanced {"; /* nested /* braces: } */ still comment: { */
+    let raw = r#"
+        another unmatched {
+    "#;
+    sender.send_notification("test-only/method", json!({}));
+}
+sender.send_notification("production/method", json!({}));
+"##;
+
+        let stripped = strip_test_modules(source);
+        assert!(!stripped.contains("test-only/method"));
+        assert!(stripped.contains("production/method"));
+    }
+
+    #[test]
+    fn strip_test_modules_does_not_treat_text_as_a_module() {
+        let source = "#[cfg(test)]\nlet text = \"mod { not a declaration\";\n";
+        assert!(strip_test_modules(source).contains("mod { not a declaration"));
     }
 
     fn quoted_literals(line: &str) -> Vec<&str> {
@@ -720,6 +844,67 @@ mod tests {
     /// kind. An unclassified outbound method fails here instead of becoming
     /// a stringly-typed call (negative control 4).
     fn runtime_source_files(manifest_dir: &str) -> Vec<std::path::PathBuf> {
+        fn external_test_modules(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+            let Ok(source) = std::fs::read_to_string(path) else { return Vec::new() };
+            let lines: Vec<&str> = source.lines().collect();
+            let mut excluded = Vec::new();
+            let mut index = 0usize;
+            while index < lines.len() {
+                if lines[index].trim() != "#[cfg(test)]" {
+                    index += 1;
+                    continue;
+                }
+                let mut declaration = index + 1;
+                let mut path_override = None;
+                while declaration < lines.len() && lines[declaration].trim_start().starts_with("#[")
+                {
+                    if let Some(path) = lines[declaration]
+                        .split('"')
+                        .nth(1)
+                        .filter(|_| lines[declaration].contains("#[path"))
+                    {
+                        path_override = Some(path.to_owned());
+                    }
+                    declaration += 1;
+                }
+                let trimmed = lines.get(declaration).map_or("", |line| line.trim_start());
+                let module = trimmed
+                    .find("mod ")
+                    .filter(|position| {
+                        let prefix = trimmed[..*position].trim();
+                        prefix.is_empty() || prefix.starts_with("pub")
+                    })
+                    .map(|position| &trimmed[position + 4..])
+                    .and_then(|rest| rest.strip_suffix(';'))
+                    .map(str::trim)
+                    .filter(|name| {
+                        !name.is_empty()
+                            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    });
+                if let Some(module) = module {
+                    if let Some(parent) = path.parent() {
+                        if let Some(path_override) = path_override {
+                            let external = parent.join(path_override);
+                            if external.is_file() {
+                                excluded.push(external);
+                            }
+                        } else {
+                            let sibling = parent.join(format!("{module}.rs"));
+                            let nested = parent.join(module).join("mod.rs");
+                            if sibling.is_file() {
+                                excluded.push(sibling);
+                            }
+                            if nested.is_file() {
+                                excluded.push(nested);
+                            }
+                        }
+                    }
+                }
+                index = declaration.saturating_add(1);
+            }
+            excluded
+        }
+
         fn visit(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             let Ok(entries) = std::fs::read_dir(dir) else {
                 return;
@@ -737,7 +922,9 @@ mod tests {
         }
         let mut files = Vec::new();
         visit(&std::path::Path::new(manifest_dir).join("src").join("runtime"), &mut files);
-        files
+        let excluded: std::collections::BTreeSet<_> =
+            files.iter().flat_map(|path| external_test_modules(path)).collect();
+        files.into_iter().filter(|path| !excluded.contains(path)).collect()
     }
 
     /// What a send-call site passes as its method argument.
