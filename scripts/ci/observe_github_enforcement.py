@@ -157,6 +157,7 @@ def http_transport(token: str | None) -> Transport:
 
 
 def headers(token: str | None) -> dict[str, str]:
+    """Request headers for one bounded read. The token is used, not stored."""
     value = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": API_VERSION,
@@ -168,6 +169,7 @@ def headers(token: str | None) -> dict[str, str]:
 
 
 def resolve_token(environ: dict[str, str] | None = None) -> str | None:
+    """First non-empty token from the accepted environment variables."""
     environ = os.environ if environ is None else environ
     for name in TOKEN_VARIABLES:
         token = environ.get(name)
@@ -177,6 +179,7 @@ def resolve_token(environ: dict[str, str] | None = None) -> str | None:
 
 
 def normalize_timestamp(value: str, field: str) -> str:
+    """Normalize an ISO-8601 instant to UTC `...Z`, rejecting naive input."""
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
@@ -187,6 +190,7 @@ def normalize_timestamp(value: str, field: str) -> str:
 
 
 def utc_now() -> str:
+    """Current UTC instant, second resolution, in the contract's format."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
@@ -227,6 +231,7 @@ class Capture:
         return self.entries[key]
 
     def to_bundle(self) -> dict[str, Any]:
+        """Serialize the capture, preserving exact bytes and acquisition identity."""
         return {
             "schema_version": CAPTURE_VERSION,
             "repository": self.repository,
@@ -246,6 +251,7 @@ class Capture:
 
     @classmethod
     def from_bundle(cls, bundle: Any) -> "Capture":
+        """Rebuild a capture, rejecting any bundle a real capture could not produce."""
         if not isinstance(bundle, dict):
             raise ObserverError("capture bundle must be an object")
         if bundle.get("schema_version") != CAPTURE_VERSION:
@@ -320,6 +326,7 @@ class Capture:
 
 
 def ruleset_key(ruleset_id: int) -> str:
+    """Capture key holding one ruleset's detail response."""
     return f"ruleset:{ruleset_id}"
 
 
@@ -490,6 +497,7 @@ def static_binding(receipt: dict[str, Any]) -> dict[str, Any]:
 
 
 def repository_identity(capture: Capture) -> dict[str, Any]:
+    """Repository identity from the capture, or fail closed if unreadable."""
     result = capture.get("repository")
     if not result.ok:
         # Without repository identity there is no subject to bind, so the
@@ -518,6 +526,7 @@ def repository_identity(capture: Capture) -> dict[str, Any]:
 
 
 def branch_head_sha(capture: Capture) -> str:
+    """Exact branch head SHA, checked against the branch the capture claims."""
     result = capture.get("branch_head")
     if not result.ok:
         raise ObserverError(
@@ -545,6 +554,7 @@ def branch_head_sha(capture: Capture) -> str:
 def classic_surface(
     capture: Capture, branch: str, limitations: list[str]
 ) -> dict[str, Any]:
+    """Normalize the classic branch-protection surface and its instrument state."""
     result = capture.get("classic_branch_protection")
     surface: dict[str, Any] = {
         "instrument_state": "observed",
@@ -629,6 +639,7 @@ def classic_checks(required: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def app_identity(value: Any, field: str) -> int | None:
+    """Validate an app/integration id: a positive integer, or absent."""
     if value is None:
         return None
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -637,6 +648,7 @@ def app_identity(value: Any, field: str) -> int | None:
 
 
 def ruleset_surface(capture: Capture, limitations: list[str]) -> dict[str, Any]:
+    """Normalize the ruleset surface, reporting every ruleset it could not read."""
     result = capture.get("ruleset_list")
     surface: dict[str, Any] = {
         "instrument_state": "observed",
@@ -748,6 +760,7 @@ def ruleset_item(ruleset_id: int, detail: ApiResult) -> dict[str, Any] | None:
 def ref_name_conditions(
     payload: dict[str, Any],
 ) -> tuple[list[str] | None, list[str]]:
+    """Ref-name selectors; include is None when the ruleset is unrepresentable."""
     ref_name = ((payload.get("conditions") or {}).get("ref_name")) or {}
     if not isinstance(ref_name, dict):
         raise ObserverError("ruleset conditions.ref_name must be an object")
@@ -759,6 +772,7 @@ def ref_name_conditions(
 
 
 def selector_list(value: Any, field: str) -> list[str]:
+    """Sorted unique ref-name selectors, as the snapshot contract requires."""
     if value is None:
         return []
     if not isinstance(value, list):
@@ -772,6 +786,7 @@ def selector_list(value: Any, field: str) -> list[str]:
 
 
 def bypass_actors(payload: dict[str, Any], ruleset_id: int) -> list[dict[str, Any]]:
+    """Normalized, deduplicated bypass actors for one ruleset."""
     actors = payload.get("bypass_actors")
     if actors is None:
         return []
@@ -814,6 +829,7 @@ def bypass_actors(payload: dict[str, Any], ruleset_id: int) -> list[dict[str, An
 def ruleset_status_checks(
     payload: dict[str, Any], ruleset_id: int
 ) -> tuple[bool | None, bool | None, list[dict[str, Any]]]:
+    """Required-status-check settings and contexts from one ruleset's rules."""
     rules = payload.get("rules")
     if rules is None:
         return None, None, []
@@ -863,6 +879,7 @@ def ruleset_status_checks(
 
 
 def optional_bool(value: Any, current: bool | None) -> bool | None:
+    """Keep the current value when a rule omits the flag; reject a non-boolean."""
     if value is None:
         return current
     if not isinstance(value, bool):
@@ -987,6 +1004,7 @@ def build_authority(
 
 
 def write_json(path: Path, payload: Any) -> None:
+    """Write deterministic, key-sorted JSON, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
@@ -995,6 +1013,7 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 def load_json(path: Path, field: str) -> Any:
+    """Read one JSON input, reporting a missing or malformed file as typed."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
@@ -1004,6 +1023,7 @@ def load_json(path: Path, field: str) -> Any:
 
 
 def emit(args: argparse.Namespace, capture: Capture) -> int:
+    """Assemble and write the snapshot, returning the observation exit code."""
     static_receipt = load_json(args.static_receipt, "static receipt")
     snapshot = build_snapshot(
         capture,
@@ -1050,6 +1070,7 @@ def emit(args: argparse.Namespace, capture: Capture) -> int:
 
 
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
+    """Arguments shared by `capture` and `assemble`."""
     # Declared by the operator, never derived from the observation: these are
     # what the reconciliation authority states independently.
     parser.add_argument("--repository", required=True)
