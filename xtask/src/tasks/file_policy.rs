@@ -469,11 +469,28 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     if text.matches("actions/checkout@").count() != 1 {
         bail!("subject workflow must contain exactly one trusted checkout");
     }
+    if text.matches("permissions:").count() != 1 {
+        bail!("subject workflow must define exactly one top-level read-only permissions block");
+    }
+    for line in text.lines().map(str::trim) {
+        if let Some(action) = line.strip_prefix("uses:") {
+            let action = action.trim();
+            if !(action.starts_with("actions/checkout@")
+                || action.starts_with("dtolnay/rust-toolchain@")
+                || action.starts_with("taiki-e/install-action@")
+                || action.starts_with("Swatinem/rust-cache@")
+                || action.starts_with("actions/upload-artifact@"))
+            {
+                bail!("subject workflow adds an unapproved action: {action}");
+            }
+        }
+    }
     if text.contains("refs/pull/${{") {
         bail!("subject workflow must pass pull-request refs through environment data");
     }
     for forbidden in [
         "git show",
+        "git cat-file",
         "git archive",
         "source ",
         " . ",
