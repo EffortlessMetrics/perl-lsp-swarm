@@ -180,6 +180,63 @@ fn recognized_execute_nonzero_exact_match_is_no_change() {
     assert!(!classification.requires_candidate);
 }
 
+/// The accepted side of the forgery: a stored baseline claiming a rail no
+/// evidence backs must not become a comparable subject, even when the current
+/// observation is honest and the counts match exactly.
+#[test]
+fn forged_accepted_baseline_mechanism_is_not_proven() {
+    for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+        let mut accepted = sample_v2_baseline(2, 2);
+        accepted.mode = HarnessMode::Execute;
+        for result in &mut accepted.file_results {
+            result.mechanism = Some(mechanism);
+        }
+        let mut current = sample_report(2, 2);
+        current.mode = HarnessMode::Execute;
+        current.harness_status = Some(1);
+        for result in &mut current.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+
+        let classification =
+            classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+
+        assert_eq!(
+            classification.transition,
+            CompatibilityTransition::NotProven,
+            "an accepted baseline claiming {mechanism} must not be comparable"
+        );
+        assert!(!classification.requires_candidate);
+        assert!(
+            classification.reason.contains("no current rail can supply"),
+            "unexpected reason for {mechanism}: {}",
+            classification.reason
+        );
+    }
+}
+
+/// The current-observation side of the same forgery, kept alongside the
+/// accepted side so deleting either mechanism gate fails a test.
+#[test]
+fn forged_current_observation_mechanism_is_not_proven() {
+    let mut accepted = sample_v2_baseline(2, 2);
+    accepted.mode = HarnessMode::Execute;
+    for result in &mut accepted.file_results {
+        result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+    }
+    let mut current = sample_report(2, 2);
+    current.mode = HarnessMode::Execute;
+    current.harness_status = Some(1);
+    for result in &mut current.file_results {
+        result.mechanism = Some(ExecutionMechanism::EirExecution);
+    }
+
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("no current rail can supply"));
+}
+
 #[test]
 fn forged_summary_blocks_no_change() {
     let accepted = sample_v2_baseline(2, 2);

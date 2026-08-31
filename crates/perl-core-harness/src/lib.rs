@@ -614,10 +614,12 @@ pub fn boundaries(config: BoundaryRegistryConfig) -> Result<()> {
 pub fn triage(config: TriageConfig) -> Result<()> {
     let bundle = read_boundary_bundle(&config.bundle)?;
     let compile_path = bundle_artifact_path(&bundle, "compile_report")?;
-    let raw = fs::read_to_string(&compile_path)
-        .with_context(|| format!("reading compile report {}", compile_path.display()))?;
-    let report: RunReport = serde_json::from_str(&raw)
-        .with_context(|| format!("decoding compile report {}", compile_path.display()))?;
+    // Decode through the shared reader rather than inline: it is the only place
+    // the mechanism contract is applied to this JSON shape, and clustering a
+    // report that over-claims its execution evidence would carry that claim
+    // into the durable failure-cluster and history artifacts (#14363).
+    let report = read_run_report(&compile_path)
+        .with_context(|| format!("compile report {}", compile_path.display()))?;
     validate_bundle_report_identity(&bundle, &report)?;
     ensure_valid_report_shape(&report)?;
     let cluster_report = build_failure_cluster_report(&bundle, &report)?;
@@ -11170,6 +11172,35 @@ exit 1
 
     fn triage_config(bundle: PathBuf, output: PathBuf) -> TriageConfig {
         TriageConfig { bundle, output, history: None, write_history: false, check_history: false }
+    }
+
+    #[test]
+    fn triage_refuses_a_bundle_whose_report_over_claims_its_evidence() -> TestResult {
+        // Triage decodes the bundle's compile report and clusters it into
+        // durable failure-cluster and history artifacts. A report claiming
+        // execution evidence its rail never produced must not reach them.
+        let temp = tempfile::tempdir()?;
+        let mut report = two_file_parse_failure_report();
+        report.mode = HarnessMode::Compile;
+        for result in &mut report.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let bundle = write_triage_bundle(temp.path(), &report)?;
+        let output = temp.path().join("triage");
+
+        let error = match triage(triage_config(bundle, output.clone())) {
+            Err(error) => error,
+            Ok(()) => bail!("a compile report claiming execution evidence must not be clustered"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("only execution receipts may carry") {
+            bail!("unexpected triage error: {text}");
+        }
+        if output.join("failure-clusters.json").exists() {
+            bail!("no cluster artifact should be written from an inadmissible report");
+        }
+        Ok(())
     }
 
     #[test]

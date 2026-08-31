@@ -213,6 +213,11 @@ pub fn validate_accepted_baseline(
     match accepted {
         AcceptedBaseline::V2(value) => validate_compile_baseline_v2(value).map(|_| ()),
         AcceptedBaseline::V1(value) => {
+            // The V1 arm re-implements its structural checks inline, so it does
+            // not inherit the V2 arm's contract. Delegate the mechanism claim to
+            // the same shared helper: the documented future V1-migration slice
+            // must not reopen this gap (#14363).
+            validate_mechanism_claims(value.mode, &value.file_results, "accepted")?;
             if let Some(path) = first_whitespace_contaminated_path(&value.file_results) {
                 return Err(EvidenceValidationError::new(format!(
                     "accepted file-result path {path:?} has leading or trailing whitespace"
