@@ -16,6 +16,12 @@ const MAX_STEP_DEFINITION_FILES = 500;
 // authority instead of restating these bounds in a second module.
 export const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
 export const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
+// The aggregate envelope bounds what the scan READS, not only what it keeps:
+// a candidate rejected by the per-file cap has already consumed up to
+// `MAX_STEP_DEFINITION_FILE_BYTES + 1` bytes of I/O, so attempted reads are
+// counted against this budget and the scan refuses (typed, fail-closed)
+// before an attempted read can cross it.
+export const MAX_STEP_DEFINITION_TOTAL_READ_BYTES = 16 * 1024 * 1024;
 const MAX_MATCH_REGEX_LENGTH = 256;
 const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Rejecting ReDoS-shaped patterns bounds the cost of any single match, not the
@@ -411,9 +417,16 @@ export async function collectWorkspaceStepDefinitionSources(
  * Deciding on `lstat().size` and then calling `readFile` does not bound the
  * read: a workspace process can grow or replace the file in between, and
  * `readFile` allocates whatever is actually there. The size is therefore taken
- * from the already-open descriptor and enforced by the read itself. Returns
- * `null` for anything that is not a readable regular file within the limit,
- * including a symlink, which `O_NOFOLLOW` rejects.
+ * from the already-open descriptor and enforced by the read itself, and the
+ * read window contains no path observation that a hostile process could race.
+ * Returns `null` for anything that is not a readable regular file within the
+ * limit. Symlinks are rejected on every platform: `O_NOFOLLOW` where the
+ * platform defines it, and additionally an `lstat` of the path entry after the
+ * bounded read — win32 defines no `O_NOFOLLOW` and `fstat` of a descriptor
+ * opened through a link reports the resolved target, so the link is verified
+ * on the path entry instead. A verified-out candidate is never admitted; on
+ * win32 its resolved content is consumed once, bounded, and charged to the
+ * read budget.
  *
  * Exported for the provider workspace scan (#9773) and its containment proof:
  * both step-definition readers must enforce the same per-file, regular-file,
@@ -423,9 +436,13 @@ export async function readBoundedFile(
   filePath: string,
   limit: number,
 ): Promise<{ text: string; byteLength: number } | null> {
+  // win32 defines no O_NOFOLLOW; there the path-entry check below is what
+  // rejects symlinks, so the absent constant must contribute 0 to the flags
+  // instead of poisoning them.
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
   let handle: fs.promises.FileHandle;
   try {
-    handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    handle = await fs.promises.open(filePath, flags);
   } catch {
     return null;
   }
@@ -449,6 +466,11 @@ export async function readBoundedFile(
     }
 
     if (filled > limit) {
+      return null;
+    }
+
+    const pathEntry = await fs.promises.lstat(filePath);
+    if (pathEntry.isSymbolicLink()) {
       return null;
     }
 

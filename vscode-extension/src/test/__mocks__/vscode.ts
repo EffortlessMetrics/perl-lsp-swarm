@@ -10,7 +10,7 @@ import { jest } from '@jest/globals';
 
 export const Uri = {
   parse: (value: string) => ({ toString: () => value, fsPath: value }),
-  file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path }),
+  file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path, scheme: 'file' }),
 };
 
 export class ThemeColor {

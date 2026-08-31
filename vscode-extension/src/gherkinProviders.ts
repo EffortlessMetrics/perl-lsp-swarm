@@ -3,6 +3,7 @@ import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
 import {
   MAX_STEP_DEFINITION_FILE_BYTES,
   MAX_STEP_DEFINITION_TOTAL_BYTES,
+  MAX_STEP_DEFINITION_TOTAL_READ_BYTES,
   readBoundedFile,
 } from './gherkinStepDefinitions';
 
@@ -270,15 +271,40 @@ async function loadStepDefinitionDocuments(
     }
   }
 
-  return collectStepDefinitionDocuments(Array.from(seen.values()), token);
+  const scan = await collectStepDefinitionDocuments(Array.from(seen.values()), token);
+  return scan.documents;
+}
+
+/** Typed refusal causes for the bounded step-definition workspace scan. */
+export type StepDefinitionScanRefusal = 'read_budget_exhausted';
+
+/** Outcome of the bounded step-definition workspace scan. */
+export interface StepDefinitionScan {
+  documents: StepDefinitionDocument[];
+  /** Every attempted read, including candidates the scan went on to reject. */
+  attemptedBytes: number;
+  /** Set when the scan stopped rather than let an attempted read cross the budget. */
+  refusal: StepDefinitionScanRefusal | null;
 }
 
 /**
  * Read candidate step-definition files sequentially under the same envelope as
- * the step-definition collector (#9773): a per-file byte cap, an aggregate
- * byte cap, and regular-files only. The previous implementation opened each
- * candidate through `openTextDocument` with no byte bound at all, so a
- * workspace of 1000 large or special files could occupy the extension host.
+ * the step-definition collector (#9773): a per-file byte cap, an aggregate cap
+ * on both attempted and retained bytes, and regular local files only. The
+ * previous implementation opened each candidate through `openTextDocument`
+ * with no byte bound at all, so a workspace of 1000 large or special files
+ * could occupy the extension host.
+ *
+ * The retained cap alone is not a read bound: a candidate rejected by the
+ * per-file cap has already consumed up to `MAX_STEP_DEFINITION_FILE_BYTES + 1`
+ * bytes of I/O, so every attempted read is charged against the read budget and
+ * the scan stops with the typed `read_budget_exhausted` refusal instead of
+ * letting the next attempted read cross it. Candidates whose URI scheme is not
+ * `file` are skipped: their `fsPath` names no local file this scan may read.
+ * A candidate open in the editor with unsaved edits resolves from its buffer
+ * under the same envelope, so links never follow stale disk contents; a clean
+ * document is read from disk so the regular-file and symlink checks stay on
+ * the read path.
  *
  * Exported for the containment proof in gherkinProviders.test.ts: the scan
  * bounds are a security claim and need a direct seam, not one observed only
@@ -287,19 +313,62 @@ async function loadStepDefinitionDocuments(
 export async function collectStepDefinitionDocuments(
   candidates: readonly vscode.Uri[],
   token: vscode.CancellationToken,
-): Promise<StepDefinitionDocument[]> {
+): Promise<StepDefinitionScan> {
   const documents: StepDefinitionDocument[] = [];
   let acceptedBytes = 0;
+  let attemptedBytes = 0;
+  let refusal: StepDefinitionScanRefusal | null = null;
 
   for (const uri of candidates) {
     if (token.isCancellationRequested) {
       break;
     }
+    if (uri.scheme !== 'file') {
+      continue;
+    }
     if (acceptedBytes >= MAX_STEP_DEFINITION_TOTAL_BYTES) {
       break;
     }
 
+    // The scan that replaced `openTextDocument` must not regress dirty-buffer
+    // visibility: a document open with unsaved edits resolves from its buffer
+    // (charged and capped like any read), while a clean document takes the
+    // disk path so the regular-file and symlink checks stay on the read path.
+    const dirty = vscode.workspace.textDocuments.find(
+      (document) => document.uri.toString() === uri.toString() && document.isDirty,
+    );
+    if (dirty) {
+      const text = dirty.getText();
+      const bytes = Buffer.byteLength(text, 'utf8');
+      if (attemptedBytes + bytes > MAX_STEP_DEFINITION_TOTAL_READ_BYTES) {
+        refusal = 'read_budget_exhausted';
+        break;
+      }
+      attemptedBytes += bytes;
+      if (bytes > MAX_STEP_DEFINITION_FILE_BYTES) {
+        continue;
+      }
+      if (acceptedBytes + bytes > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+        break;
+      }
+      acceptedBytes += bytes;
+      documents.push({ uri, text });
+      continue;
+    }
+
+    // Rejected candidates are charged at their worst case — the per-file cap
+    // plus the one overflow byte readBoundedFile reads to distinguish "at the
+    // limit" from "over it" — so no attempted read can cross the read budget.
+    if (
+      attemptedBytes + MAX_STEP_DEFINITION_FILE_BYTES + 1 >
+      MAX_STEP_DEFINITION_TOTAL_READ_BYTES
+    ) {
+      refusal = 'read_budget_exhausted';
+      break;
+    }
+
     const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    attemptedBytes += read ? read.byteLength : MAX_STEP_DEFINITION_FILE_BYTES + 1;
     if (!read) {
       continue;
     }
@@ -311,7 +380,7 @@ export async function collectStepDefinitionDocuments(
     documents.push({ uri, text: read.text });
   }
 
-  return documents;
+  return { documents, attemptedBytes, refusal };
 }
 
 function extractStepReference(

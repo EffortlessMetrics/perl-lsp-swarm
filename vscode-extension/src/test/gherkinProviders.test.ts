@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { readBoundedFile } from '../gherkinStepDefinitions';
 import {
   collectStepDefinitionDocuments,
   provideGherkinDocumentSymbols,
@@ -426,12 +427,12 @@ describe('gherkin step-definition workspace envelope', () => {
     fs.writeFileSync(small, 'Given qr/^ok$/, sub { return; };\n');
 
     try {
-      const documents = await collectStepDefinitionDocuments(
+      const scan = await collectStepDefinitionDocuments(
         [vscode.Uri.file(oversized), vscode.Uri.file(small)],
         cancelled(false),
       );
 
-      expect(documents.map((document) => document.uri.fsPath)).toEqual([small]);
+      expect(scan.documents.map((document) => document.uri.fsPath)).toEqual([small]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -449,13 +450,13 @@ describe('gherkin step-definition workspace envelope', () => {
     });
 
     try {
-      const documents = await collectStepDefinitionDocuments(candidates, cancelled(false));
+      const scan = await collectStepDefinitionDocuments(candidates, cancelled(false));
 
       // 40 files fit under 16 MiB; the 41st would push past the cap, so the
       // scan must stop rather than read the rest. Without the aggregate cap
       // this scan would return all 42 documents.
-      expect(documents).toHaveLength(40);
-      const acceptedBytes = documents.reduce(
+      expect(scan.documents).toHaveLength(40);
+      const acceptedBytes = scan.documents.reduce(
         (total, document) => total + Buffer.byteLength(document.text, 'utf8'),
         0,
       );
@@ -471,29 +472,140 @@ describe('gherkin step-definition workspace envelope', () => {
     fs.writeFileSync(candidate, 'Given qr/^ok$/, sub { return; };\n');
 
     try {
-      const documents = await collectStepDefinitionDocuments(
+      const scan = await collectStepDefinitionDocuments(
         [vscode.Uri.file(candidate)],
         cancelled(true),
       );
 
-      expect(documents).toHaveLength(0);
+      expect(scan.documents).toHaveLength(0);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test('skips candidates that are not regular files', async () => {
-    const root = makeEnvelopeWorkspace('missing-file');
+  test('skips a symlinked candidate and reads the regular file on every platform', async () => {
+    const root = makeEnvelopeWorkspace('symlink');
     const regular = path.join(root, 'steps.pm');
     fs.writeFileSync(regular, 'Given qr/^ok$/, sub { return; };\n');
+    const linked = path.join(root, 'linked.pm');
+    let symlinkConstructed = false;
+    try {
+      fs.symlinkSync(regular, linked, 'file');
+      symlinkConstructed = true;
+    } catch (error) {
+      // Windows without developer mode and hardened sandboxes refuse symlink
+      // creation. The regular-file leg still runs everywhere, and the
+      // link-mechanism test below discriminates without a real link; the
+      // refusal code must still be one of the known platform refusals.
+      const code = (error as NodeJS.ErrnoException).code;
+      expect(['EPERM', 'EACCES', 'ENOTSUP', 'UNKNOWN', 'ENOENT']).toContain(code);
+    }
 
     try {
-      const documents = await collectStepDefinitionDocuments(
-        [vscode.Uri.file(path.join(root, 'absent.pm')), vscode.Uri.file(regular)],
+      const scan = await collectStepDefinitionDocuments(
+        symlinkConstructed
+          ? [vscode.Uri.file(linked), vscode.Uri.file(regular)]
+          : [vscode.Uri.file(regular)],
         cancelled(false),
       );
 
-      expect(documents.map((document) => document.uri.fsPath)).toEqual([regular]);
+      expect(scan.documents.map((document) => document.uri.fsPath)).toEqual([regular]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a candidate whose path entry is a symlink even where symlinks cannot be constructed', async () => {
+    const root = makeEnvelopeWorkspace('symlink-mechanism');
+    const regular = path.join(root, 'steps.pm');
+    fs.writeFileSync(regular, 'Given qr/^ok$/, sub { return; };\n');
+    const lstat = jest
+      .spyOn(fs.promises, 'lstat')
+      .mockResolvedValue({ isSymbolicLink: () => true } as unknown as fs.Stats);
+
+    try {
+      const read = await readBoundedFile(regular, 512 * 1024);
+
+      expect(read).toBeNull();
+    } finally {
+      lstat.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses the scan when attempted reads exhaust the read budget', async () => {
+    const root = makeEnvelopeWorkspace('read-budget');
+    // The review's falsifier: 100 x 600 KiB candidates are each rejected by
+    // the per-file cap only AFTER reading 512 KiB + 1 byte, so a scan that
+    // counts only retained bytes streams ~50 MB while its retained total
+    // stays 0. The read budget must stop it far short of that.
+    const hostile = Buffer.alloc(600 * 1024, 0x61);
+    const candidates = Array.from({ length: 100 }, (_unused, index) => {
+      const candidate = path.join(root, `hostile_${index}.pm`);
+      fs.writeFileSync(candidate, hostile);
+      return vscode.Uri.file(candidate);
+    });
+
+    try {
+      const scan = await collectStepDefinitionDocuments(candidates, cancelled(false));
+
+      expect(scan.documents).toHaveLength(0);
+      expect(scan.refusal).toBe('read_budget_exhausted');
+      expect(scan.attemptedBytes).toBeLessThanOrEqual(16 * 1024 * 1024);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('prefers an open dirty document buffer over its stale disk contents', async () => {
+    const root = makeEnvelopeWorkspace('dirty-buffer');
+    const candidate = path.join(root, 'steps.pm');
+    fs.writeFileSync(candidate, 'Given qr/^stale$/, sub { return; };\n');
+    const dirty = {
+      uri: vscode.Uri.file(candidate),
+      isDirty: true,
+      getText: () => 'Given qr/^buffer$/, sub { return; };\n',
+    } as unknown as vscode.TextDocument;
+    (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [dirty];
+
+    try {
+      const scan = await collectStepDefinitionDocuments(
+        [vscode.Uri.file(candidate)],
+        cancelled(false),
+      );
+
+      // The disk copy says ^stale$; the open buffer says ^buffer$. Links must
+      // follow the buffer, the way the previous openTextDocument-based scan
+      // happened to see it.
+      expect(scan.documents.map((document) => document.text)).toEqual([
+        'Given qr/^buffer$/, sub { return; };\n',
+      ]);
+    } finally {
+      (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = [];
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('skips candidates whose URI scheme is not a local file', async () => {
+    const root = makeEnvelopeWorkspace('scheme');
+    const regular = path.join(root, 'steps.pm');
+    const virtual = path.join(root, 'virtual.pm');
+    fs.writeFileSync(regular, 'Given qr/^ok$/, sub { return; };\n');
+    fs.writeFileSync(virtual, 'Given qr/^ok$/, sub { return; };\n');
+
+    try {
+      const scan = await collectStepDefinitionDocuments(
+        [
+          { scheme: 'git', fsPath: virtual, toString: () => virtual } as unknown as vscode.Uri,
+          vscode.Uri.file(regular),
+        ],
+        cancelled(false),
+      );
+
+      // A non-file fsPath names no local file this scan may read, so the
+      // virtual candidate must not be opened even though a local file exists
+      // at that path.
+      expect(scan.documents.map((document) => document.uri.fsPath)).toEqual([regular]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
