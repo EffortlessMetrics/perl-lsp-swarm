@@ -30,9 +30,11 @@
 //! `perl_parser::compat::...` token. Importing the bare `compat` module
 //! without a governed segment stays allowed.
 //!
-//! Governed scan roots are the workspace `crates` tree plus the root-level
-//! members `xtask/src` and `fuzz/fuzz_targets`; `crates/perl-parser/` itself
-//! is excluded because it is the facade owner until #11391.
+//! Governed scan roots are the complete Rust source trees for the root-level
+//! workspace members `crates`, `xtask`, and `fuzz`; this includes each
+//! member's src, tests, examples, benches, and fuzz targets. The
+//! `crates/perl-parser/` tree itself is excluded because it is the facade
+//! owner until #11391.
 //! `perl_workspace::workspace_index` and similar canonical-owner heads never
 //! match because every hit must anchor on the exact `perl_parser` path head.
 //!
@@ -54,9 +56,11 @@ use std::{
 const FACADE_CRATE_PREFIX: &str = "crates/perl-parser/";
 const FACADE_HEAD: &str = "perl_parser";
 
-/// Scan roots for governed consumer sources. Root-level workspace members
-/// (`xtask`, `fuzz`) are scanned explicitly alongside `crates`.
-const SCAN_ROOTS: &[&str] = &["crates", "xtask/src", "fuzz/fuzz_targets"];
+/// Complete Rust source trees for the root-level workspace members. Keeping
+/// the member roots (rather than selected target subdirectories) includes
+/// dev/test/example/bench targets and makes the guard itself part of the
+/// governed population.
+const SCAN_ROOTS: &[&str] = &["crates", "xtask", "fuzz"];
 
 /// Leading path segments of `perl-parser` modules that re-export workspace,
 /// document-store, and cross-file index authority. The root-level re-exports
@@ -412,6 +416,17 @@ fn temporary_exceptions_are_unique_owned_and_still_consumed() {
             "stale exception {} / {} must be removed",
             exception.path,
             exception.token
+        );
+    }
+}
+
+#[test]
+fn scan_roots_cover_all_root_level_workspace_members_and_target_kinds() {
+    assert_eq!(SCAN_ROOTS, &["crates", "xtask", "fuzz"]);
+    for relative in ["xtask/src", "xtask/tests", "xtask/examples", "fuzz/fuzz_targets"] {
+        assert!(
+            SCAN_ROOTS.iter().any(|root| relative == *root || relative.starts_with(&format!("{root}/"))),
+            "governed target root is outside the scan denominator: {relative}"
         );
     }
 }
