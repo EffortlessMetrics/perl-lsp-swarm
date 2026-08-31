@@ -88,9 +88,8 @@ fn hover_suppresses_builtin_card_inside_string() -> TestResult {
     harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let result = hover(&mut harness, doc, "sprintf")?;
-    let markdown = hover_markdown(&result).unwrap_or_default();
     assert!(
-        result.is_null() || !markdown.contains("Built-in"),
+        result.is_null(),
         "builtin hover must not appear inside a string literal, got: {result}"
     );
     Ok(())
@@ -105,9 +104,8 @@ fn hover_suppresses_generic_fallback_in_qw_list() -> TestResult {
     harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let result = hover(&mut harness, doc, "process_data_helper")?;
-    let markdown = hover_markdown(&result).unwrap_or_default();
     assert!(
-        result.is_null() || (!markdown.contains("**Perl**") && !markdown.contains("Subroutine")),
+        result.is_null(),
         "qw() members are literal fragments, not code symbols, got: {result}"
     );
     Ok(())
@@ -148,9 +146,8 @@ fn hover_suppresses_generic_fallback_in_recovery_input() -> TestResult {
     harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let result = hover(&mut harness, doc, "process_data_helper")?;
-    let markdown = hover_markdown(&result).unwrap_or_default();
     assert!(
-        result.is_null() || !markdown.contains("**Perl**"),
+        result.is_null(),
         "recovery-ambiguous input must not produce a generic code token, got: {result}"
     );
     Ok(())
@@ -231,6 +228,123 @@ fn hover_keeps_keyword_in_proven_code() -> TestResult {
 
     let result = hover(&mut harness, doc, "last")?;
     assert!(!result.is_null(), "keyword hover in code must survive, got null");
+    Ok(())
+}
+
+/// Negative (review 5062479350 leak 1): regex-shaped text inside a comment has
+/// no RegexLike region evidence and must not produce a Regex Pattern card.
+#[test]
+fn hover_suppresses_regex_island_in_comment() -> TestResult {
+    let doc = "# match /ab+c/ please\nmy $x = 1;\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let result = hover(&mut harness, doc, "ab")?;
+    assert!(result.is_null(), "regex heuristic must fail closed inside a comment, got: {result}");
+    Ok(())
+}
+
+/// Negative (review 5062479350 leak 1): regex-shaped text inside a string
+/// literal must not produce a Regex Pattern card.
+#[test]
+fn hover_suppresses_regex_island_in_string() -> TestResult {
+    let doc = "my $tip = \"match /ab+c/ please\";\nmy $y = 2;\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let result = hover(&mut harness, doc, "ab")?;
+    assert!(
+        result.is_null(),
+        "regex heuristic must fail closed inside a string literal, got: {result}"
+    );
+    Ok(())
+}
+
+/// Negative (review 5062479350 leak 2): hovering non-code INSIDE a named sub
+/// must not leak the enclosing sub's generic Subroutine card through the
+/// containment-based analyzer fallback.
+#[test]
+fn hover_suppresses_subroutine_containment_from_comment_inside_sub() -> TestResult {
+    let doc = "sub outer {\n    # process_data_helper handles the request\n    my $inner = 1;\n}\nmy $after = 2;\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let result = hover(&mut harness, doc, "process_data_helper")?;
+    assert!(
+        result.is_null(),
+        "containment fallback must not answer with the enclosing sub inside a comment, got: {result}"
+    );
+    Ok(())
+}
+
+/// Negative (review 5062479350 leak 2): same containment leak shape through a
+/// string literal inside the sub body.
+#[test]
+fn hover_suppresses_subroutine_containment_from_string_inside_sub() -> TestResult {
+    let doc = "sub outer {\n    my $greeting = \"process_data_helper ready\";\n}\nmy $after = 2;\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let result = hover(&mut harness, doc, "process_data_helper")?;
+    assert!(
+        result.is_null(),
+        "containment fallback must not answer with the enclosing sub inside a string, got: {result}"
+    );
+    Ok(())
+}
+
+/// Positive control: a genuine regex literal in code keeps its island card.
+#[test]
+fn hover_keeps_regex_island_in_proven_code() -> TestResult {
+    let doc = "if ($x =~ /\\d+/) {\n}\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let result = hover(&mut harness, doc, "\\d")?;
+    assert!(!result.is_null(), "regex island must survive in genuine regex code, got null");
+    let markdown = hover_markdown(&result).unwrap_or_default();
+    assert!(
+        markdown.contains("Regex") || markdown.to_lowercase().contains("digit"),
+        "expected regex explanation for a real regex literal, got: {result}"
+    );
+    Ok(())
+}
+
+/// Positive control: hovering the declared sub name still returns the
+/// Subroutine card.
+#[test]
+fn hover_keeps_subroutine_hover_on_declaration() -> TestResult {
+    let doc = "sub outer { my $inner = 1; }\nmy $after = 2;\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let result = hover(&mut harness, doc, "outer")?;
+    assert!(!result.is_null(), "sub declaration hover must survive, got null");
+    let markdown = hover_markdown(&result).unwrap_or_default();
+    assert!(
+        markdown.contains("Subroutine"),
+        "expected Subroutine card on the declaration, got: {result}"
+    );
+    Ok(())
+}
+
+/// Positive control: proven code inside a sub body still hovers — the
+/// containment gate must not suppress real code hover.
+#[test]
+fn hover_keeps_proven_code_hover_inside_sub_body() -> TestResult {
+    let doc = "sub outer {\n    my $inner = 1;\n}\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let result = hover(&mut harness, doc, "$inner")?;
+    assert!(!result.is_null(), "proven-code hover inside a sub body must survive, got null");
     Ok(())
 }
 

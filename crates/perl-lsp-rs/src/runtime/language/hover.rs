@@ -457,8 +457,19 @@ impl LspServer {
             return HoverExtracted::None;
         };
 
-        if let Some(symbol_info) =
-            analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
+        // Containment-based analyzer claims are gated on proven code (#4967):
+        // `symbol_at` and `find_definition`'s `symbol_at` fallback return the
+        // smallest declaration *containing* the offset, so a `sub` symbol also
+        // contains the comments, strings, and heredocs inside its body.
+        // Answering from containment in non-code leaked the enclosing sub's
+        // generic card (review 5062479350). Span-exact islands above are
+        // reachable regardless.
+        let containment_claims_proven =
+            Self::token_fallback_is_proven_code(source_region, text, offset);
+
+        if containment_claims_proven
+            && let Some(symbol_info) =
+                analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
             && let Some(modifier_kind) =
                 symbol_info.attributes.iter().find_map(|a| a.strip_prefix("modifier="))
         {
@@ -476,46 +487,52 @@ impl LspServer {
         // is surfaced at call sites instead of the generic subroutine card.
         // Only discard when find_definition returned the enclosing sub (token
         // mismatch) or when the class model has modifier metadata for the callee.
-        let symbol_at_cursor = analyzer.find_definition(offset).filter(|sym| {
-            let token = Self::get_token_at_position_static(text, offset);
-            #[cfg(feature = "workspace")]
-            {
-                if matches!(
-                    sym.kind,
-                    crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
-                ) && Self::extract_arrow_receiver(text, offset).is_some()
-                    && sym.declaration.as_deref() != Some("has")
+        let symbol_at_cursor = if containment_claims_proven {
+            analyzer.find_definition(offset).filter(|sym| {
+                let token = Self::get_token_at_position_static(text, offset);
+                #[cfg(feature = "workspace")]
                 {
-                    if token != sym.name && !token.is_empty() {
-                        return false;
-                    }
-                    if token == sym.name
-                        && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+                    if matches!(
+                        sym.kind,
+                        crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                    ) && Self::extract_arrow_receiver(text, offset).is_some()
+                        && sym.declaration.as_deref() != Some("has")
                     {
-                        let receiver_pkg =
-                            Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
-                        if !receiver_pkg.is_empty()
-                            && analyzer
-                                .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
-                                .is_some_and(|hover| {
-                                    hover
-                                        .details
-                                        .iter()
-                                        .any(|detail| detail.starts_with("Decorated with:"))
-                                })
-                        {
+                        if token != sym.name && !token.is_empty() {
                             return false;
+                        }
+                        if token == sym.name
+                            && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+                        {
+                            let receiver_pkg =
+                                Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
+                            if !receiver_pkg.is_empty()
+                                && analyzer
+                                    .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
+                                    .is_some_and(|hover| {
+                                        hover
+                                            .details
+                                            .iter()
+                                            .any(|detail| detail.starts_with("Decorated with:"))
+                                    })
+                            {
+                                return false;
+                            }
                         }
                     }
                 }
-            }
-            // If the token matches the symbol name this IS a direct hover on that
-            // symbol (e.g. hovering on `sub run` where cursor is on `run`).
-            if token == sym.name || token.is_empty() {
-                return true; // keep — cursor is directly on the symbol
-            }
-            true
-        });
+                // If the token matches the symbol name this IS a direct hover on that
+                // symbol (e.g. hovering on `sub run` where cursor is on `run`).
+                if token == sym.name || token.is_empty() {
+                    return true; // keep — cursor is directly on the symbol
+                }
+                true
+            })
+        } else {
+            // Not proven code: the containment-based fallback fails closed
+            // (#4967); the generic token fallback below applies its own gate.
+            None
+        };
         if let Some(symbol_info) = symbol_at_cursor {
             // Detect Moo/Moose attribute accessors (declaration == "has") early and
             // render a dedicated card that shows the attribute metadata clearly,
@@ -770,10 +787,13 @@ impl LspServer {
     ) -> HoverExtracted {
         // Check if the cursor is inside a regex literal and provide explanation.
         //
-        // Semantic island: regex construct documentation is a dedicated
-        // provider claim on exact operator/flag/construct spans and stays
-        // possible inside regex bodies (#4967).
-        if let Some(regex_hover) = Self::extract_regex_hover(text, offset) {
+        // Semantic island: regex construct documentation claims an exact
+        // operator/pattern span and stays possible inside genuine regex
+        // regions. The scan itself is a whole-line lexical heuristic, so the
+        // claimed span must carry generation-bound `RegexLike` evidence to
+        // answer; regex-shaped text in comments, strings, POD, heredocs, or
+        // recovery input fails closed (#4967).
+        if let Some(regex_hover) = Self::extract_regex_hover(text, offset, region_index) {
             return HoverExtracted::Complete(regex_hover);
         }
 

@@ -16,7 +16,7 @@ pub(super) struct LiveHoverCompilerContext {
     /// routing decision itself is made at context construction (#4967).
     #[expect(
         dead_code,
-        reason = "policy:5003-pr1: trace substrate field for upcoming hover routing"
+        reason = "policy:5003-pr1: trace-only receipt; routing decides at context construction (#4967)"
     )]
     source_region_kind: Option<String>,
 }
