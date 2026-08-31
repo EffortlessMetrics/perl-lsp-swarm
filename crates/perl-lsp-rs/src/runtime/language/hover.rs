@@ -350,7 +350,12 @@ impl LspServer {
                     return Ok(Self::inject_hover_range_opt(hv, &hover_range));
                 }
                 #[cfg(feature = "workspace")]
-                HoverExtracted::InheritedMethod(receiver_pkg, method_name, doc_uri) => {
+                HoverExtracted::InheritedMethod(
+                    receiver_pkg,
+                    method_name,
+                    doc_uri,
+                    dynamic_fallback,
+                ) => {
                     if !self.workspace_index_stale_for_document(&doc_uri) {
                         let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                         if let Some(hover_value) =
@@ -358,6 +363,24 @@ impl LspServer {
                         {
                             return Self::inject_hover_range(hover_value, &hover_range);
                         }
+                    }
+                    // The workspace lookup found nothing (or the index is stale).
+                    // Fall back to the same-file dynamic-boundary card rather than
+                    // dropping to generic token hover.
+                    //
+                    // This card reaches here from a path that previously returned
+                    // `Complete`, so it must still be offered to the live-compiler
+                    // cutover exactly as that arm does. Otherwise routing AUTOLOAD
+                    // through phase 2 would silently disable compiler-backed
+                    // provenance for the one case most likely to carry it.
+                    if let Some(hover_value) = dynamic_fallback {
+                        if let Some(compiler_hover) = self.try_live_compiler_hover(
+                            Some(&hover_value),
+                            live_compiler_context.as_ref(),
+                        ) {
+                            return Self::inject_hover_range(compiler_hover, &hover_range);
+                        }
+                        return Self::inject_hover_range(hover_value, &hover_range);
                     }
                 }
                 #[cfg(not(feature = "workspace"))]
@@ -679,6 +702,8 @@ impl LspServer {
         // emit InheritedMethod for Phase 2 (workspace index BFS).
         #[cfg(feature = "workspace")]
         {
+            use perl_semantic_facts::Provenance;
+
             if let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset) {
                 // Extract the method name token at the cursor
                 let method_name = Self::get_token_at_position_static(text, offset);
@@ -695,16 +720,47 @@ impl LspServer {
                             analyzer.resolve_inherited_method_hover(&receiver_pkg, &method_name)
                         {
                             let details = hover_info.details.join("\n");
-                            return HoverExtracted::Complete(json!({
+                            // Branch on the typed provenance, not on `details`
+                            // prose and not on confidence. PLSP-SPEC-0002 lists
+                            // "Low confidence" and "Dynamic boundary" as separate
+                            // states: a future heuristic hover could be Low
+                            // without being a boundary, and keying the card off
+                            // Low would then mislabel it. Only DynamicBoundary
+                            // means the signature is a handler rather than an
+                            // exact definition of the requested method.
+                            let is_dynamic =
+                                matches!(hover_info.provenance, Some(Provenance::DynamicBoundary));
+                            let heading = if is_dynamic {
+                                "**Method (dynamic dispatch)**"
+                            } else {
+                                "**Method**"
+                            };
+                            let card = json!({
                                 "contents": {
                                     "kind": "markdown",
                                     "value": format!(
-                                        "**Method**\n\n`{}`\n\n{}",
+                                        "{}\n\n`{}`\n\n{}",
+                                        heading,
                                         hover_info.signature,
                                         details
                                     ),
                                 },
-                            }));
+                            });
+                            if is_dynamic {
+                                // The same-file model only sees same-file classes,
+                                // so its AUTOLOAD answer is not authoritative: an
+                                // ancestor in another file may define the method
+                                // exactly, and an exact method outranks AUTOLOAD.
+                                // Defer to the workspace pass, carrying this card
+                                // as the fallback if that finds nothing.
+                                return HoverExtracted::InheritedMethod(
+                                    receiver_pkg,
+                                    method_name,
+                                    uri.to_string(),
+                                    Some(card),
+                                );
+                            }
+                            return HoverExtracted::Complete(card);
                         }
 
                         // No in-file ancestor found — defer to Phase 2 workspace BFS
@@ -712,6 +768,7 @@ impl LspServer {
                             receiver_pkg,
                             method_name,
                             uri.to_string(),
+                            None,
                         );
                     }
                 }
@@ -1561,7 +1618,13 @@ impl LspServer {
         let mut queue = VecDeque::new();
         let mut related_package_cache: HashMap<String, Vec<String>> = HashMap::new();
 
-        let build_package_hover = |package_name: &str| -> Option<Value> {
+        // Perl searches the whole resolution order for an exact method before
+        // consulting AUTOLOAD. Resolving per-package — exact-then-AUTOLOAD for each
+        // package in turn — would let a subclass AUTOLOAD pre-empt an ancestor's
+        // real method and report an exact call as a dynamic boundary. So the
+        // traversal below collects the order first, then runs these two passes over
+        // it in sequence. Mirrors `resolve_inherited_method_hover_ordered`.
+        let build_exact_hover = |package_name: &str| -> Option<Value> {
             let members = workspace_index.get_package_members(package_name);
             if members.iter().any(|symbol| symbol.name == method_name) {
                 let detail = if package_name == receiver_pkg {
@@ -1579,19 +1642,31 @@ impl LspServer {
                     },
                 }));
             }
+            None
+        };
 
+        let build_autoload_hover = |package_name: &str| -> Option<Value> {
+            let members = workspace_index.get_package_members(package_name);
             if members.iter().any(|symbol| symbol.name == "AUTOLOAD") {
                 let detail = if package_name == receiver_pkg {
                     format!("Resolved via `AUTOLOAD` in `{package_name}`")
                 } else {
                     format!("Resolved via inherited `AUTOLOAD` in `{package_name}`")
                 };
+                // Same DynamicBoundary rule as the in-file path: this workspace
+                // hit is an AUTOLOAD handler, not an exact definition of
+                // `method_name`, so the card must not read as a plain method.
+                // The condition is the structural AUTOLOAD member match above,
+                // not a string match on rendered prose.
                 return Some(json!({
                     "contents": {
                         "kind": "markdown",
                         "value": format!(
-                            "**Method**\n\n`sub {}::AUTOLOAD`\n\n{}\n\nRequested method: `{}`",
-                            package_name, detail, method_name
+                            "**Method (dynamic dispatch)**\n\n`sub {}::AUTOLOAD`\n\n{}\n\nRequested method: `{}`\n\n{}",
+                            package_name,
+                            detail,
+                            method_name,
+                            crate::semantic::AUTOLOAD_DYNAMIC_DISPATCH_DETAIL
                         ),
                     },
                 }));
@@ -1599,10 +1674,6 @@ impl LspServer {
 
             None
         };
-
-        if let Some(hover) = build_package_hover(receiver_pkg) {
-            return Some(hover);
-        }
 
         // Inner closure: enqueue parent and role packages not yet visited.
         // Mirrors the logic in `inherited_method_definition_location` (navigation.rs)
@@ -1664,6 +1735,10 @@ impl LspServer {
             }
         };
 
+        // Collect the full resolution order first, receiver included, so the exact
+        // and AUTOLOAD passes below both see every package.
+        let universal_pkg = "UNIVERSAL".to_string();
+        let mut resolution_order = vec![receiver_pkg.to_string()];
         enqueue_related(receiver_pkg, &mut queue, &visited);
 
         while let Some(package_name) = queue.pop_front() {
@@ -1671,11 +1746,44 @@ impl LspServer {
                 continue;
             }
 
-            if let Some(hover) = build_package_hover(&package_name) {
+            enqueue_related(&package_name, &mut queue, &visited);
+            resolution_order.push(package_name);
+        }
+
+        // Phase 1 — exact method anywhere in the order, then `UNIVERSAL`.
+        //
+        // Perl permits user-defined `UNIVERSAL::` methods beyond the four builtins
+        // `is_universal_method` knows, and they outrank a class's AUTOLOAD. The
+        // workspace index is the only place such a definition can be seen, so
+        // `UNIVERSAL` is searched here — after the receiver's own ancestors, before
+        // any AUTOLOAD.
+        for package_name in resolution_order.iter().chain(std::iter::once(&universal_pkg)) {
+            if let Some(hover) = build_exact_hover(package_name) {
                 return Some(hover);
             }
+        }
 
-            enqueue_related(&package_name, &mut queue, &visited);
+        // Phase 2 — AUTOLOAD fallback, same order. `UNIVERSAL` is deliberately
+        // NOT included here, unlike the exact pass above.
+        //
+        // Perl does consult `UNIVERSAL::AUTOLOAD` last, so including it looks
+        // symmetric — but the two lookups are not comparable. The exact pass is
+        // name-matched: it fires only when someone defines `UNIVERSAL::<this exact
+        // method>`. An AUTOLOAD lookup is name-independent, so adding `UNIVERSAL`
+        // here would make *every* otherwise-unresolved method in any workspace that
+        // happens to index a `UNIVERSAL::AUTOLOAD` render as dynamic dispatch
+        // through it — including when that definition is never loaded, which Perl
+        // requires before the handler can run. That is a false dynamic claim on a
+        // huge population of calls, which is the over-claiming this whole seam
+        // exists to prevent.
+        //
+        // Correctly admitting it needs the caller's effective load context, which
+        // this resolver does not have. Left unhandled and recorded rather than
+        // approximated.
+        for package_name in &resolution_order {
+            if let Some(hover) = build_autoload_hover(package_name) {
+                return Some(hover);
+            }
         }
 
         None
