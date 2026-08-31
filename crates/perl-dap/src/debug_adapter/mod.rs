@@ -129,7 +129,16 @@ pub struct DebugAdapter {
     seq: Arc<Mutex<i64>>,
     /// Active debug session (process-based)
     session: Arc<Mutex<Option<DebugSession>>>,
-    /// Attached process ID for PID-based attach mode
+    /// Attached process ID for PID-based attach mode.
+    ///
+    /// #8109: production can no longer store a PID — `handle_attach` refuses
+    /// every `processId` request before mutation, so this is unreachable from
+    /// any live attach path. It is retained only behind the
+    /// `seed_attached_pid_for_test` boundary (`cfg(any(test,
+    /// feature = "test-helpers"))`) so the synthetic PID fallback branches in
+    /// stack/evaluate rendering stay exercised by invalid-negative tests.
+    /// Removing the field together with those fallback branches is owned by
+    /// the #8109 follow-up once #6684 defines the real attach journey.
     attached_pid: Arc<Mutex<Option<u32>>>,
     /// TCP attach session (for connecting to running debugger)
     tcp_session: Arc<Mutex<Option<TcpAttachSession>>>,
@@ -1321,27 +1330,94 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_attach_process_id_mode() -> Result<(), Box<dyn std::error::Error>> {
-        let mut adapter = DebugAdapter::new();
-        // #4638: use current process PID so verify_attach_target succeeds.
-        let pid = std::process::id();
-        let args = json!({
-            "processId": pid
-        });
-        let response = adapter.handle_request(1, "attach", Some(args));
+    fn test_attach_process_id_mode_is_refused_fail_closed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // #8109: processId attach must be refused before any target inspection,
+        // session mutation, signal, or stopped/entry event — process existence
+        // plus signal control is not a stopped debugger session.
+        let assert_refused = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
+            match response {
+                DapMessage::Response { success, command, body, message, .. } => {
+                    assert!(!success, "processId attach must be refused (#8109)");
+                    assert_eq!(command, "attach");
+                    assert!(body.is_none(), "refusal must not carry an attach body");
+                    let msg = message.ok_or("Expected message")?;
+                    assert!(msg.contains("not supported"), "msg must name the refusal: {msg}");
+                    assert!(msg.contains("8109"), "msg must cite the owning issue: {msg}");
+                    Ok(())
+                }
+                _ => return Err("Expected response".into()),
+            }
+        };
 
+        let mut adapter = DebugAdapter::new();
+
+        // Numeric processId — the previously "successful" shape.
+        let args = json!({ "processId": std::process::id() });
+        assert_refused(adapter.handle_request(1, "attach", Some(args)))?;
+
+        // stopOnEntry must not change the disposition (no synthetic entry event).
+        let args = json!({ "processId": std::process::id(), "stopOnEntry": true });
+        assert_refused(adapter.handle_request(2, "attach", Some(args)))?;
+
+        // Input independence: a non-numeric processId takes the same early gate
+        // instead of slipping into the TCP branch.
+        let args = json!({ "processId": "not-a-number" });
+        assert_refused(adapter.handle_request(3, "attach", Some(args)))?;
+
+        // A refused PID attach must not disturb an existing active session:
+        // no generation bump, no state clear. Skipped when the seed helper
+        // could not spawn a debuggee (no `perl` on PATH).
+        adapter.seed_running_session_for_test();
+        let seeded = {
+            let session = lock_or_recover(&adapter.session, "test.attach_refusal_seed");
+            session.is_some()
+        };
+        if seeded {
+            let args = json!({ "processId": std::process::id() });
+            assert_refused(adapter.handle_request(4, "attach", Some(args)))?;
+            let session = lock_or_recover(&adapter.session, "test.attach_refusal_session");
+            assert!(
+                session.is_some(),
+                "a refused processId attach must leave the active session untouched (#8109)"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_process_id_refusal_emits_no_events() -> Result<(), Box<dyn std::error::Error>> {
+        // The refusal path must be observable as event-silent: with an event
+        // channel installed, no stopped/entry/thread/process/terminal event may
+        // be emitted for a refused processId attach.
+        use std::sync::mpsc::sync_channel;
+        let mut adapter = DebugAdapter::new();
+        let (tx, rx) = sync_channel::<DapMessage>(64);
+        // Tests are a child module of `debug_adapter`, so the private field is
+        // directly reachable; no production setter is needed.
+        adapter.event_sender = Some(tx);
+
+        let args = json!({ "processId": std::process::id(), "stopOnEntry": true });
+        let response = adapter.handle_request(1, "attach", Some(args));
         match response {
-            DapMessage::Response { success, command, body, message, .. } => {
-                assert!(success);
-                assert_eq!(command, "attach");
-                assert!(body.is_some());
-                let body = body.ok_or("Expected body")?;
-                assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(pid as u64));
-                assert!(message.is_some());
-                let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("signal-control mode"));
+            DapMessage::Response { success, .. } => {
+                assert!(!success, "processId attach must be refused (#8109)");
             }
             _ => return Err("Expected response".into()),
+        }
+
+        // Give any (forbidden) event emission a moment to land, then require
+        // the channel to still be empty.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        match rx.try_recv() {
+            Ok(event) => {
+                return Err(format!("refused processId attach emitted an event: {event:?}").into());
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err("event channel disconnected during attach refusal".into());
+            }
         }
         Ok(())
     }

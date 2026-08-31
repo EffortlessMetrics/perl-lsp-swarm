@@ -660,38 +660,42 @@ fn test_terminate_preserves_breakpoints_but_replace_still_clears() -> TestResult
     Ok(())
 }
 
-// ── C2: attach then terminate cleanup ────────────────────────────────────────
+// ── C2: refused PID attach leaves no session to leak ─────────────────────────
 
-/// C2 — PID-attach session → terminate → session torn down, no leaked handle.
+/// C2 — PID-attach refusal (#8109) → no session created, no stopped event,
+/// and nothing leaked: subsequent `threads` stays empty.
 ///
-/// After terminate the session state is cleared and a "terminated" event is
-/// emitted. Subsequent `threads` calls return an empty list (no leaked attach
-/// thread), confirming the handle was released.
+/// #8109 removed the signal-control PID attach: process existence plus signal
+/// control never established a debugger transport, so the adapter must refuse
+/// the request instead of synthesizing a stopped session. The no-leak property
+/// this row guards is now that a refusal creates no session at all — later
+/// `threads` calls stay empty.
 #[test]
-fn test_attach_then_terminate_cleanup() -> TestResult {
+fn test_refused_pid_attach_leaves_no_session_to_leak() -> TestResult {
     let (mut adapter, rx) = make_adapter_with_rx();
 
-    // Attach in PID-signal-control mode.  #4638: use current process PID so
-    // verify_attach_target succeeds.
+    // Attach in PID-signal-control mode is refused fail-closed (#8109).
     let attach_response =
         adapter.handle_request(1, "attach", Some(json!({ "processId": std::process::id() })));
-    assert_cleanup_success(&attach_response, "attach")?;
+    match &attach_response {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert_eq!(*command, "attach");
+            assert!(!success, "PID attach must be refused (#8109)");
+            assert!(body.is_none(), "refusal must not carry an attach body");
+            let msg = message.clone().ok_or("Expected refusal message")?;
+            assert!(msg.contains("not supported"), "refusal must name the disposition: {msg}");
+        }
+        other => return Err(format!("Expected attach response, got {other:?}").into()),
+    }
 
-    // Drain the "stopped" event emitted by attach.
-    let _ = wait_cleanup_event(&rx, "stopped", 200);
-
-    // Terminate the attached session.
-    let term_response = adapter.handle_request(2, "terminate", None);
-    assert_cleanup_success(&term_response, "terminate")?;
-
-    // "terminated" event must arrive.
+    // No synthetic "stopped" event may be emitted by the refusal.
     assert!(
-        wait_cleanup_event(&rx, "terminated", 300).is_some(),
-        "terminate after attach must emit a terminated event"
+        wait_cleanup_event(&rx, "stopped", 200).is_none(),
+        "a refused PID attach must not emit a stopped event (#8109)"
     );
 
-    // The PID session is torn down — threads must return empty (no leaked handle).
-    let threads_response = adapter.handle_request(3, "threads", None);
+    // threads must return empty (no leaked PID session).
+    let threads_response = adapter.handle_request(2, "threads", None);
     match threads_response {
         DapMessage::Response { success: true, body: Some(ref body), .. } => {
             let threads = body
@@ -700,7 +704,7 @@ fn test_attach_then_terminate_cleanup() -> TestResult {
                 .ok_or("threads body must have threads array")?;
             assert!(
                 threads.is_empty(),
-                "after terminate, threads must be empty (no leaked PID session), got {threads:?}"
+                "after a refused PID attach, threads must be empty (no leaked session), got {threads:?}"
             );
         }
         DapMessage::Response { success: true, body: None, .. } => {
