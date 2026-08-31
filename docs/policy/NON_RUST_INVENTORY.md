@@ -9,8 +9,8 @@
 | Total tracked files | 12530 |
 | Rust-family files | 3885 |
 | Non-Rust files | 8645 |
-| Allowlisted | 6406 |
-| Unclassified | 2239 |
+| Allowlisted | 6408 |
+| Unclassified | 2237 |
 
 ## Non-Rust files by category
 
@@ -20,9 +20,9 @@
 | documentation | 2820 |
 | generated | 2 |
 | production | 349 |
-| test | 2067 |
+| test | 2069 |
 | tooling | 671 |
-| unclassified | 2239 |
+| unclassified | 2237 |
 
 ## Unclassified files
 
@@ -111,8 +111,6 @@
 | `crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json` | `json` |
 | `crates/perl-parser-core/libcheck_unwrap.rlib` | `rlib` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
-| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_no_diff.json` | `json` |
-| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_with_diff.json` | `json` |
 | `crates/perl-workspace/tests/fixtures/semantic_scorecard/manifest.json` | `json` |
 | `distribution/build-packages.sh` | `sh` |
 | `distribution/chocolatey/perl-lsp.nuspec` | `nuspec` |
@@ -4245,6 +4243,8 @@
 | `crates/perl-regex/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-ripr-facts/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `crates/perl-ripr-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_no_diff.json` | test | `non-rust-ripr-facts-packet-goldens` | ripr/facts-producer |
+| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_with_diff.json` | test | `non-rust-ripr-facts-packet-goldens` | ripr/facts-producer |
 | `crates/perl-semantic-analyzer/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-analyzer/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-semantic-analyzer/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
