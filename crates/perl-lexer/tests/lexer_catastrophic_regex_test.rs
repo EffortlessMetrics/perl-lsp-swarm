@@ -111,7 +111,10 @@ fn test_very_long_pattern_budget_guard() {
     );
 }
 
-/// Test that deeply nested delimiters trigger budget guard
+/// Test that deeply nested delimiters terminate via local recovery.
+///
+/// Nesting beyond `MAX_DELIM_NEST` never reaches `budget_guard`: the
+/// balanced-segment helpers reject the opener and recover locally (#14389).
 #[test]
 fn test_deeply_nested_delimiters_budget_guard() {
     // Create a pattern with deeply nested delimiters beyond MAX_DELIM_NEST (128)
@@ -128,7 +131,7 @@ fn test_deeply_nested_delimiters_budget_guard() {
     let mut lexer = PerlLexer::new(&pattern);
     let tokens: Vec<_> = lexer.collect_tokens();
 
-    // Should handle or produce error token for excessive nesting
+    // Depth rejection recovers locally; the stream must terminate without hanging
     assert!(!tokens.is_empty(), "Deeply nested delimiters should be handled without hanging");
 }
 

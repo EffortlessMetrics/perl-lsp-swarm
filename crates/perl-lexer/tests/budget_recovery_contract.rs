@@ -20,10 +20,11 @@
 //!   line-bounded header text (no remainder copy, no EOF jump); pinned by
 //!   `tests/heredoc_security_tests.rs`.
 //!
-//! The `MAX_DELIM_NEST` arm of `budget_guard` is *not* part of this
-//! contract: it has no public-API driver (its only caller passes
-//! `depth = 0`), so it is pinned from inside the crate in `src/tests.rs`.
-//! Wiring it through a real driver or removing it is tracked in #14389.
+//! `MAX_DELIM_NEST` is *not* part of this contract: it is enforced earlier,
+//! at the nesting site — `consume_nested_opener` rejects the opener and the
+//! balanced-segment helpers recover locally. `budget_guard`'s unreachable
+//! depth arm had no public-API driver and was removed in #14389; the depth
+//! stop is pinned by `tests/limits_tests.rs`.
 
 use std::sync::Arc;
 

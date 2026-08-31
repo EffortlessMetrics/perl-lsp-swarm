@@ -131,11 +131,12 @@
 //!   `tests/heredoc_security_tests.rs`.
 //!
 //! `MAX_DELIM_NEST` is a local quote-like recovery limit, not a reachable
-//! uniform budget-stop path: the current public-API driver passes `depth = 0`
-//! to `budget_guard`, while `consume_nested_opener` handles reachable nesting
-//! locally inside balanced-segment helpers. Its retained crate-private guard
-//! is pinned from inside the crate (`src/tests.rs`); wiring it through a real
-//! driver or removing it is tracked in #14389.
+//! uniform budget-stop path: `consume_nested_opener` rejects the opener at
+//! the depth limit and the balanced-segment helpers recover locally, so the
+//! enclosing token terminates cleanly without an `UnknownRest` EOF jump.
+//! `budget_guard`'s unreachable depth arm had no public-API driver and was
+//! removed in #14389; the depth stop itself is pinned by
+//! `tests/limits_tests.rs`.
 //!
 //! The reachable budget stops above are pinned end to end by
 //! `tests/budget_recovery_contract.rs`, alongside #6717's heredoc threshold
@@ -215,7 +216,7 @@ use crate::lexer::helpers::{
     empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
     is_perl_punctuation_variable, is_quote_op_word_prefix,
 };
-use crate::limits::{MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
+use crate::limits::{MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
 
 impl<'a> PerlLexer<'a> {
     /// Create a new lexer that emits `HeredocBody` tokens (for LSP folding)
@@ -583,9 +584,10 @@ impl<'a> PerlLexer<'a> {
     ///
     /// **Limits**:
     /// - `MAX_REGEX_BYTES` (64KB): Maximum bytes in a single regex literal
-    /// - `depth` is an internal guard input retained for the crate's unit pin;
-    ///   `parse_regex` always passes `0`. Public quote-like delimiter parsing
-    ///   enforces `MAX_DELIM_NEST` in the balanced-segment helpers instead.
+    ///
+    /// This guard is byte-budget only (#14389). Delimiter nesting has its own
+    /// stop: `consume_nested_opener` rejects at `MAX_DELIM_NEST` and the
+    /// balanced-segment helpers recover locally instead of jumping to EOF.
     ///
     /// **Graceful Degradation**:
     /// - A regex byte-budget stop emits `UnknownRest` and jumps to EOF.
@@ -605,22 +607,17 @@ impl<'a> PerlLexer<'a> {
     /// - Amortized cost: O(1) per token
     #[allow(clippy::inline_always)] // Performance critical in lexer hot path
     #[inline(always)]
-    fn budget_guard(&mut self, start: usize, depth: usize) -> Option<Token> {
+    fn budget_guard(&mut self, start: usize) -> Option<Token> {
         // Fast path: most calls won't hit limits
         let bytes_consumed = self.position - start;
-        if bytes_consumed <= MAX_REGEX_BYTES && depth <= MAX_DELIM_NEST {
+        if bytes_consumed <= MAX_REGEX_BYTES {
             return None;
         }
 
         // Slow path: budget exceeded - graceful degradation
         #[cfg(debug_assertions)]
         {
-            tracing::debug!(
-                bytes_consumed,
-                depth,
-                position = self.position,
-                "Lexer budget exceeded"
-            );
+            tracing::debug!(bytes_consumed, position = self.position, "Lexer budget exceeded");
         }
 
         self.position = self.input.len();
