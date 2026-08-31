@@ -264,6 +264,7 @@ mod tests {
     /// and a second call returns the same value (served from cache). Skips when
     /// no Perl is available on the host.
     #[test]
+    #[serial_test::serial]
     fn version_probes_and_caches_real_interpreter() -> TestResult {
         let perl = match crate::platform::resolve_perl_path_with_toolchain().ok() {
             Some(p) => p,
