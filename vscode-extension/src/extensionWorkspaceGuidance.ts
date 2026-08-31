@@ -17,10 +17,17 @@ interface DiscoveryScanResult {
   readonly visited: number;
 }
 
+interface CoverageResult {
+  readonly covered: boolean;
+  readonly complete: boolean;
+}
+
 interface DiscoveryFinding {
   readonly folder: vscode.WorkspaceFolder;
-  readonly config: vscode.WorkspaceConfiguration;
+  readonly folderUri: string;
+  readonly rootRealPath: string;
   readonly includePaths: string[];
+  readonly includePathsFingerprint: string;
   readonly discovered: string[];
   readonly complete: boolean;
   readonly cacheKey: string;
@@ -37,13 +44,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function hasErrorCode(error: unknown, code: string): boolean {
-  return (
-    error !== null &&
-    typeof error === 'object' &&
-    'code' in error &&
-    (error as NodeJS.ErrnoException).code === code
-  );
+function errorCode(error: unknown): string | undefined {
+  return error !== null && typeof error === 'object' && 'code' in error
+    ? String((error as NodeJS.ErrnoException).code)
+    : undefined;
 }
 
 function isWithinBasePath(basePath: string, targetPath: string): boolean {
@@ -60,90 +64,19 @@ async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
-async function nearestExistingPath(candidatePath: string): Promise<string | undefined> {
-  let current = candidatePath;
-  while (true) {
-    try {
-      await fs.promises.lstat(current);
-      return current;
-    } catch (error: unknown) {
-      if (!hasErrorCode(error, 'ENOENT')) {
-        throw error;
-      }
-    }
-
-    const parent = path.dirname(current);
-    if (parent === current) {
+async function realpathIfExists(targetPath: string): Promise<string | undefined> {
+  try {
+    return await fs.promises.realpath(targetPath);
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') {
       return undefined;
     }
-    current = parent;
+    throw error;
   }
 }
 
-async function isSafeCreatableRelativePath(
-  workspacePath: string,
-  workspaceRealPath: string,
-  includePath: string,
-): Promise<boolean> {
-  if (path.isAbsolute(includePath)) {
-    return false;
-  }
-
-  const targetPath = path.resolve(workspacePath, includePath);
-  if (!isWithinBasePath(workspacePath, targetPath) || targetPath === workspacePath) {
-    return false;
-  }
-
-  try {
-    const existing = await nearestExistingPath(targetPath);
-    if (!existing) {
-      return false;
-    }
-    const existingRealPath = await fs.promises.realpath(existing);
-    return isWithinBasePath(workspaceRealPath, existingRealPath);
-  } catch {
-    return false;
-  }
-}
-
-async function createSafeRelativeDirectory(
-  workspacePath: string,
-  workspaceRealPath: string,
-  includePath: string,
-): Promise<boolean> {
-  if (!(await isSafeCreatableRelativePath(workspacePath, workspaceRealPath, includePath))) {
-    throw new Error('path is not contained by the current workspace folder');
-  }
-
-  const targetPath = path.resolve(workspacePath, includePath);
-  const relative = path.relative(workspacePath, targetPath);
-  const segments = relative.split(path.sep).filter(Boolean);
-  let current = workspacePath;
-  let created = false;
-
-  for (const segment of segments) {
-    const next = path.join(current, segment);
-    try {
-      await fs.promises.mkdir(next);
-      created = true;
-    } catch (error: unknown) {
-      if (!hasErrorCode(error, 'EEXIST')) {
-        throw error;
-      }
-    }
-
-    const stat = await fs.promises.lstat(next);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new Error('path component is not a regular directory');
-    }
-    const realPath = await fs.promises.realpath(next);
-    if (!isWithinBasePath(workspaceRealPath, realPath)) {
-      throw new Error('path escaped the current workspace folder');
-    }
-    current = next;
-  }
-
-  return created;
+function includePathsFingerprint(includePaths: readonly string[]): string {
+  return crypto.createHash('sha256').update(JSON.stringify(includePaths)).digest('hex');
 }
 
 function scheduleGuidance(
@@ -220,26 +153,6 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
       continue;
     }
 
-    let workspaceRealPath: string;
-    try {
-      workspaceRealPath = await fs.promises.realpath(folder.uri.fsPath);
-    } catch {
-      continue;
-    }
-
-    const creatablePaths: string[] = [];
-    for (const includePath of missingPaths) {
-      if (
-        await isSafeCreatableRelativePath(
-          folder.uri.fsPath,
-          workspaceRealPath,
-          includePath,
-        )
-      ) {
-        creatablePaths.push(includePath);
-      }
-    }
-
     const firstMissing = missingPaths[0];
     if (firstMissing === undefined) {
       continue;
@@ -249,14 +162,10 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
       : `relative to ${folder.name}`;
     const suffix =
       missingPaths.length > 1 ? ` ${missingPaths.length} include paths are missing.` : '';
-    const actions = ['Open Settings'];
-    if (creatablePaths.length > 0) {
-      actions.push('Create Missing Directories');
-    }
 
     const choice = await vscode.window.showWarningMessage(
       `Perl LSP: configured include path "${firstMissing}" (${relativeNote}) does not exist.${suffix}`,
-      ...actions,
+      'Open Settings',
     );
 
     if (choice === 'Open Settings') {
@@ -264,57 +173,44 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
         'workbench.action.openSettings',
         '@ext:EffortlessMetrics.perl-lsp-rs perl-lsp.includePaths',
       );
-      await context.globalState.update(cacheKey, missingSignature);
-      continue;
     }
-
-    if (choice === 'Create Missing Directories') {
-      const createdPaths: string[] = [];
-      let creationFailed = false;
-      for (const includePath of creatablePaths) {
-        try {
-          const created = await createSafeRelativeDirectory(
-            folder.uri.fsPath,
-            workspaceRealPath,
-            includePath,
-          );
-          if (created || (await pathExists(path.resolve(folder.uri.fsPath, includePath)))) {
-            createdPaths.push(includePath);
-          }
-        } catch (error: unknown) {
-          creationFailed = true;
-          void vscode.window.showWarningMessage(
-            `Perl LSP: failed to create directory "${includePath}": ${errorMessage(error)}`,
-          );
-        }
-      }
-
-      if (createdPaths.length > 0) {
-        void vscode.window.showInformationMessage(
-          `Created ${createdPaths.length} include director${createdPaths.length === 1 ? 'y' : 'ies'}: ${createdPaths.join(', ')}.`,
-        );
-      }
-      if (!creationFailed && createdPaths.length === creatablePaths.length) {
-        await context.globalState.update(cacheKey, undefined);
-      }
-      continue;
-    }
-
     await context.globalState.update(cacheKey, missingSignature);
   }
 }
 
-/** True when an existing configured root is equal to or an ancestor of the candidate. */
-export function isIncludePathCandidateCovered(
+async function canonicalCoverage(
   workspaceRoot: string,
   configuredPaths: readonly string[],
   candidate: string,
-): boolean {
-  const candidatePath = path.resolve(workspaceRoot, candidate);
-  return configuredPaths.some((configured) => {
-    const configuredPath = path.resolve(workspaceRoot, configured);
-    return isWithinBasePath(configuredPath, candidatePath);
-  });
+): Promise<CoverageResult> {
+  try {
+    const candidateRealPath = await realpathIfExists(path.resolve(workspaceRoot, candidate));
+    if (!candidateRealPath) {
+      return { covered: false, complete: false };
+    }
+
+    for (const configured of configuredPaths) {
+      const configuredRealPath = await realpathIfExists(path.resolve(workspaceRoot, configured));
+      if (!configuredRealPath) {
+        continue;
+      }
+      if (isWithinBasePath(configuredRealPath, candidateRealPath)) {
+        return { covered: true, complete: true };
+      }
+    }
+    return { covered: false, complete: true };
+  } catch {
+    return { covered: false, complete: false };
+  }
+}
+
+/** True when a current canonical configured root is equal to or an ancestor of the candidate. */
+export async function isIncludePathCandidateCovered(
+  workspaceRoot: string,
+  configuredPaths: readonly string[],
+  candidate: string,
+): Promise<boolean> {
+  return (await canonicalCoverage(workspaceRoot, configuredPaths, candidate)).covered;
 }
 
 async function directoryContainsPerlModule(
@@ -325,9 +221,6 @@ async function directoryContainsPerlModule(
   const state = { remaining: entryBudget, visited: 0, complete: true };
 
   const walk = async (current: string, depth: number): Promise<boolean> => {
-    if (depth > maxDepth) {
-      return false;
-    }
     if (state.remaining <= 0) {
       state.complete = false;
       return false;
@@ -357,6 +250,10 @@ async function directoryContainsPerlModule(
       if (!entry.isDirectory() || entry.name.startsWith('.')) {
         continue;
       }
+      if (depth >= maxDepth) {
+        state.complete = false;
+        continue;
+      }
       if (await walk(path.join(current, entry.name), depth + 1)) {
         return true;
       }
@@ -382,7 +279,10 @@ export function suggestDiscoveredIncludePaths(
     discoveryRuns,
     context,
     'include-path discovery',
-    () => runDiscoveredIncludePathGuidance(context),
+    async () => {
+      await validationRuns.get(context);
+      await runDiscoveredIncludePathGuidance(context);
+    },
   );
 }
 
@@ -403,19 +303,31 @@ export async function runDiscoveredIncludePathGuidance(
     const includePaths: string[] = config.get('includePaths', [...DEFAULT_INCLUDE_PATHS]);
     const discovered: string[] = [];
     let complete = true;
+    let rootRealPath: string;
+    try {
+      rootRealPath = await fs.promises.realpath(folder.uri.fsPath);
+    } catch {
+      reports.push({ folder: folder.name, discovered: [], complete: false });
+      continue;
+    }
 
     for (const candidate of DISCOVERY_CANDIDATE_DIRS) {
-      if (isIncludePathCandidateCovered(folder.uri.fsPath, includePaths, candidate)) {
-        continue;
-      }
-
       const resolved = path.resolve(folder.uri.fsPath, candidate);
       try {
         const stat = await fs.promises.stat(resolved);
         if (!stat.isDirectory()) {
           continue;
         }
-      } catch {
+      } catch (error: unknown) {
+        if (errorCode(error) !== 'ENOENT') {
+          complete = false;
+        }
+        continue;
+      }
+
+      const coverage = await canonicalCoverage(folder.uri.fsPath, includePaths, candidate);
+      complete = complete && coverage.complete;
+      if (coverage.covered) {
         continue;
       }
 
@@ -442,8 +354,10 @@ export async function runDiscoveredIncludePathGuidance(
 
     findings.push({
       folder,
-      config,
-      includePaths,
+      folderUri: folder.uri.toString(),
+      rootRealPath,
+      includePaths: [...includePaths],
+      includePathsFingerprint: includePathsFingerprint(includePaths),
       discovered,
       complete,
       cacheKey,
@@ -470,10 +384,38 @@ export async function runDiscoveredIncludePathGuidance(
 
   if (choice === 'Add for These Folders') {
     const applied: string[] = [];
+    const stale: string[] = [];
     for (const finding of findings) {
-      const next = Array.from(new Set([...finding.includePaths, ...finding.discovered]));
+      const currentFolder = vscode.workspace.workspaceFolders?.find(
+        (folder) => folder === finding.folder && folder.uri.toString() === finding.folderUri,
+      );
+      if (!currentFolder) {
+        stale.push(finding.folder.name);
+        continue;
+      }
+
+      let currentRootRealPath: string;
       try {
-        await finding.config.update(
+        currentRootRealPath = await fs.promises.realpath(currentFolder.uri.fsPath);
+      } catch {
+        stale.push(finding.folder.name);
+        continue;
+      }
+      const currentConfig = vscode.workspace.getConfiguration('perl-lsp', currentFolder.uri);
+      const currentIncludePaths: string[] = currentConfig.get('includePaths', [
+        ...DEFAULT_INCLUDE_PATHS,
+      ]);
+      if (
+        currentRootRealPath !== finding.rootRealPath ||
+        includePathsFingerprint(currentIncludePaths) !== finding.includePathsFingerprint
+      ) {
+        stale.push(finding.folder.name);
+        continue;
+      }
+
+      const next = Array.from(new Set([...currentIncludePaths, ...finding.discovered]));
+      try {
+        await currentConfig.update(
           'includePaths',
           next,
           vscode.ConfigurationTarget.WorkspaceFolder,
@@ -485,6 +427,11 @@ export async function runDiscoveredIncludePathGuidance(
           `Perl LSP: could not update include paths for ${finding.folder.name}: ${errorMessage(error)}`,
         );
       }
+    }
+    if (stale.length > 0) {
+      void vscode.window.showWarningMessage(
+        `Perl LSP: include-path suggestions for ${stale.join(', ')} changed before they could be applied. Run the guidance again.`,
+      );
     }
     if (applied.length > 0) {
       void vscode.window.showInformationMessage(`Added include paths for ${applied.join('; ')}.`);
