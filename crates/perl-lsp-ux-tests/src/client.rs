@@ -1310,7 +1310,6 @@ mod tests {
         assert!(response.get("error").is_none());
     }
 
-
     #[test]
     fn inline_completion_dynamic_registration_is_admitted() {
         let request = json!({
