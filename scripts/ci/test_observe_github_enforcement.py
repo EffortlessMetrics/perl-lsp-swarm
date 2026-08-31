@@ -1329,6 +1329,54 @@ class CommandLine(unittest.TestCase):
                 ["authority.json", "capture.json", "snapshot.json", "static.json"],
             )
 
+    def test_outputs_cannot_share_a_destination(self) -> None:
+        """Two payloads writing one path silently lose one of them.
+
+        Each output is staged and replaced in turn, so a shared destination
+        ends up holding whichever payload was written last while the run still
+        exits successfully. A caller who asked for a snapshot can be handed an
+        authority instead, with nothing saying so.
+        """
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle = root / "capture.json"
+            receipt = root / "static.json"
+            shared = root / "out.json"
+            bundle.write_text(json.dumps(capture.to_bundle()), encoding="utf-8")
+            receipt.write_text(json.dumps(static_receipt()), encoding="utf-8")
+            (root / "sub").mkdir()
+
+            collisions = (
+                ["--snapshot", str(shared), "--authority", str(shared),
+                 "--authority-repository-id", str(REPOSITORY_ID)],
+                ["--snapshot", str(shared), "--capture-bundle", str(shared)],
+                # A spelling pathlib does not normalise away: `..` is kept in
+                # the Path (it can change meaning through a symlink), so only
+                # resolving the real path catches this collision.
+                ["--snapshot", str(shared), "--capture-bundle",
+                 str(root / "sub" / ".." / "out.json")],
+            )
+            for tail in collisions:
+                code = observer.main(
+                    [
+                        "assemble",
+                        "--capture",
+                        str(bundle),
+                        "--repository",
+                        REPOSITORY,
+                        "--source",
+                        "connector",
+                        "--static-receipt",
+                        str(receipt),
+                        *tail,
+                    ]
+                )
+                self.assertEqual(code, 1, f"{tail} was accepted")
+                self.assertFalse(
+                    shared.exists(), f"{tail} wrote a colliding output"
+                )
+
     def test_a_long_destination_name_can_still_be_staged(self) -> None:
         """`mkstemp` appends to the prefix it is given.
 
@@ -1575,6 +1623,49 @@ class MalformedSurfaces(unittest.TestCase):
     Aborting would discard identity and branch-head evidence that is still
     bindable, and would leave the reconciler with nothing to judge.
     """
+
+    def test_falsy_rule_parameters_do_not_read_as_an_empty_rule(self) -> None:
+        """`parameters: false` must not silently contribute zero checks.
+
+        `x or {}` turns every falsy value into an empty mapping, which makes
+        the `isinstance` guard behind it dead code. The rule then contributes
+        no contexts and no limitation, so a malformed ruleset reaches the
+        reconciler as a *complete* observation that is simply missing required
+        contexts — a false DRIFT built out of evidence nobody could read.
+        """
+        for malformed in (False, 0, [], ""):
+            detail = json.loads(ruleset_detail_response())
+            detail["rules"][0]["parameters"] = malformed
+            snapshot = observe(transport(detail=(200, body(detail))))
+            # Refused as an unreadable detail, never silently empty.
+            self.assertIn(
+                f"ruleset_detail_unreadable:{RULESET_ID}",
+                snapshot["observation"]["limitations"],
+                f"{malformed!r} was accepted as an empty parameter set",
+            )
+            self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+
+    def test_non_object_containers_raise_typed_errors(self) -> None:
+        """A truthy non-object must not reach `.get` and raise AttributeError.
+
+        These paths fail closed either way, but an untyped `AttributeError`
+        escapes the observer's error contract instead of becoming a limitation
+        or a typed refusal.
+        """
+        head = json.loads(branch_head_response())
+        head["object"] = "not-an-object"
+        broken = transport()
+        broken.responses[f"repos/{REPOSITORY}/git/ref/heads/main"] = (
+            200,
+            body(head),
+        )
+        with self.assertRaises(observer.ObserverError):
+            observe(broken)
+
+        detail = json.loads(ruleset_detail_response())
+        detail["conditions"] = "not-an-object"
+        snapshot = observe(transport(detail=(200, body(detail))))
+        self.assertNotEqual(snapshot["observation"]["permission"], "complete")
 
     def test_malformed_classic_body_is_unreadable_not_fatal(self) -> None:
         snapshot = observe(transport(classic=(200, b"{not json")))

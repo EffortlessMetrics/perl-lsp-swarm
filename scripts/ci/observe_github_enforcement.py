@@ -606,7 +606,7 @@ def branch_head_sha(capture: Capture) -> str:
         raise ObserverError(
             f"branch head response is for {ref!r}, not {expected!r}"
         )
-    sha = (payload.get("object") or {}).get("sha")
+    sha = object_field(payload, "object", "branch head response").get("sha")
     if not isinstance(sha, str) or len(sha) != 40:
         raise ObserverError("branch head response is missing object.sha")
     return sha
@@ -841,14 +841,37 @@ def ref_name_conditions(
     payload: dict[str, Any],
 ) -> tuple[list[str] | None, list[str]]:
     """Ref-name selectors; include is None when the ruleset is unrepresentable."""
-    ref_name = ((payload.get("conditions") or {}).get("ref_name")) or {}
-    if not isinstance(ref_name, dict):
-        raise ObserverError("ruleset conditions.ref_name must be an object")
+    conditions = object_field(payload, "conditions", "ruleset")
+    ref_name = object_field(conditions, "ref_name", "ruleset conditions")
     include = selector_list(ref_name.get("include"), "include")
     exclude = selector_list(ref_name.get("exclude"), "exclude")
     if not include:
         return None, exclude
     return include, exclude
+
+
+def object_field(
+    container: dict[str, Any], field: str, subject: str
+) -> dict[str, Any]:
+    """Read one nested object, treating absent as empty and malformed as an error.
+
+    `container.get(field) or {}` looks equivalent and is not: it turns every
+    falsy value into an empty mapping, so a malformed `false` reads as "this
+    rule requires nothing" and any `isinstance` guard written behind it is
+    dead code. A truthy non-object is worse — it reaches `.get` and escapes as
+    an untyped `AttributeError`. Absent and null are the only values that may
+    stand in for an empty object.
+
+    Every caller has already established that `container` is a mapping, so
+    this deliberately does not re-check it: a guard no input can reach cannot
+    be falsified, and an unfalsifiable guard is not protection.
+    """
+    value = container.get(field)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ObserverError(f"{subject}.{field} must be an object")
+    return value
 
 
 def selector_list(value: Any, field: str) -> list[str]:
@@ -930,9 +953,7 @@ def ruleset_status_checks(
             raise ObserverError(f"ruleset {ruleset_id} rule must be an object")
         if rule.get("type") != "required_status_checks":
             continue
-        parameters = rule.get("parameters") or {}
-        if not isinstance(parameters, dict):
-            raise ObserverError(f"ruleset {ruleset_id} rule parameters invalid")
+        parameters = object_field(rule, "parameters", f"ruleset {ruleset_id} rule")
         strict = optional_bool(
             parameters.get("strict_required_status_checks_policy"), strict
         )
@@ -1191,6 +1212,21 @@ def emit(args: argparse.Namespace, capture: Capture) -> int:
         )
     if args.capture_bundle:
         outputs.append((args.capture_bundle, capture.to_bundle()))
+    # Two outputs sharing a destination would each be staged and replaced in
+    # turn, leaving whichever ran last and still exiting successfully — a
+    # caller who asked for a snapshot could be handed an authority, with
+    # nothing recording the substitution. Distinctness is checked on the
+    # resolved paths so two spellings of one file cannot slip through.
+    seen: dict[Path, str] = {}
+    for path, _ in outputs:
+        resolved = Path(os.path.realpath(path))
+        if resolved in seen:
+            raise ObserverError(
+                f"output paths must be distinct: {path} would overwrite the "
+                f"{seen[resolved]} written to the same destination"
+            )
+        seen[resolved] = "snapshot" if path == args.snapshot else "output"
+
     # Every payload reaches disk before any destination is replaced. Writing
     # is where the failures live — a full disk, a bad path, a lost permission
     # — so staging first keeps a half-written run from publishing a fresh
