@@ -412,6 +412,12 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         bail!("subject workflow removes the trusted exact-tree policy workflow");
     }
     let (_, bytes) = tree_file(root, subject_sha, ".github/workflows/non-rust-policy.yml")?;
+    let subject_matches_base = if !base_listing.is_empty() {
+        let (_, base_bytes) = tree_file(root, base_sha, ".github/workflows/non-rust-policy.yml")?;
+        base_bytes == bytes
+    } else {
+        false
+    };
     let contract_version = |text: &str| -> Result<u64> {
         text.lines()
             .find_map(|line| line.trim().strip_prefix("# contract-version:"))
@@ -426,7 +432,7 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         let base_text = String::from_utf8(base_bytes).context("base workflow is not UTF-8")?;
         let base_version = contract_version(&base_text)?;
         let subject_version = contract_version(&text)?;
-        if subject_version != base_version.saturating_add(1) {
+        if !subject_matches_base && subject_version != base_version.saturating_add(1) {
             bail!(
                 "trusted workflow changes require exactly one contract-version increment (base {base_version}, subject {subject_version})"
             );
@@ -501,10 +507,20 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         "git show",
         "git cat-file",
         "git archive",
+        "git checkout",
+        "git clone",
+        "git read-tree",
+        "git reset",
+        "git restore",
+        "git worktree",
         "source ",
+        " . ./",
+        "./$",
         " . ",
         "bash <",
         "sh <",
+        "curl ",
+        "wget ",
         "| bash",
         "| sh",
         "eval ",
@@ -3708,6 +3724,10 @@ review_after = "2026-08-13"
             &[
                 ("README.md", "fixture\n"),
                 ("policy/non-rust-allowlist.toml", &readme_allowlist_toml()?),
+                (
+                    ".github/workflows/non-rust-policy.yml",
+                    include_str!("../../../.github/workflows/non-rust-policy.yml"),
+                ),
             ],
         )?;
         let base = commit_fixture(temp.path(), "base")?;
@@ -3788,6 +3808,39 @@ review_after = "2026-08-13"
         )
         .expect_err("unrelated PR head must fail");
         assert!(error.to_string().contains("does not contain PR head"));
+        Ok(())
+    }
+
+    #[test]
+    fn exact_tree_accepts_unchanged_trusted_workflow() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        write_fixture(temp.path(), "README.md", "updated fixture\n")?;
+        let subject = commit_fixture(temp.path(), "documentation-only change")?;
+        let receipt = temp.path().join("unchanged-workflow.json");
+
+        non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt, None, None)?;
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_rejects_alternate_candidate_checkout_or_import() -> Result<()> {
+        for injected in [
+            "\n          git checkout \"$SUBJECT_SHA\"\n",
+            "\n          git worktree add candidate \"$SUBJECT_SHA\"\n",
+            "\n          source ./candidate.sh\n",
+        ] {
+            let (temp, base) = exact_fixture()?;
+            let workflow_path = ".github/workflows/non-rust-policy.yml";
+            let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+            write_fixture(temp.path(), workflow_path, &(workflow.clone() + injected))?;
+            let subject = commit_fixture(temp.path(), "untrusted workflow")?;
+            let error = validate_subject_workflow(temp.path(), &base, &subject)
+                .expect_err("candidate checkout/import must be rejected");
+            assert!(
+                error.to_string().contains("must not execute or import candidate-derived content"),
+                "unexpected error: {error}"
+            );
+        }
         Ok(())
     }
 
