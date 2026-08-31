@@ -529,10 +529,48 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
         config = REPO_ROOT / subject.CROSS_CONFIG_RELATIVE
         for target in cross_targets:
             with self.subTest(target=target):
+                # validate_cross_config returns the image it accepted, so
+                # assert on its shape rather than re-reading the same value:
+                # the pin must be an immutable digest for this exact target.
+                image = subject.validate_cross_config(config, target)
+                match = subject.CROSS_IMAGE_PIN.fullmatch(image)
+                self.assertIsNotNone(match, image)
                 self.assertEqual(
-                    subject.validate_cross_config(config, target),
-                    subject.load_cross_image(config, target),
+                    match.group("repository"),
+                    f"{subject.CROSS_IMAGE_REGISTRY}/{target}",
                 )
+                self.assertEqual(len(match.group("digest")), 64)
+
+    def test_reviewed_pins_are_not_the_0_2_5_tag_images(self) -> None:
+        """Pinning must freeze the container in use, not swap the toolchain.
+
+        `.github/workflows/release.yml` installs cross with
+        `cargo install --git --rev`, and a cargo git checkout keeps a usable
+        `.git`, so cross's `commit-info.txt` is non-empty and it resolves the
+        rolling `:main` tag rather than `:0.2.5` (0.2.5
+        `src/docker/shared.rs:668-687`). The `:0.2.5` images differ from
+        `:main` for all three targets, so pinning them would silently change
+        which container compiles the release binaries.
+
+        These are the recorded `:0.2.5` digests. If a pin ever equals one, the
+        pin moved the toolchain instead of freezing it.
+        """
+        tag_0_2_5 = {
+            "aarch64-unknown-linux-gnu": (
+                "7f8308a8734d9fcd2ebbe9a3e4bdea74af293f0799d80c3cc341e340cda49a4c"
+            ),
+            "x86_64-unknown-linux-musl": (
+                "77db671d8356a64ae72a3e1415e63f547f26d374fbe3c4762c1cd36c7eac7b99"
+            ),
+            "aarch64-unknown-linux-musl": (
+                "702154f52b2d8091671aa2c84d5582d849f949977228c735ff8462f93cc0e1e4"
+            ),
+        }
+        config = REPO_ROOT / subject.CROSS_CONFIG_RELATIVE
+        for target, superseded in tag_0_2_5.items():
+            with self.subTest(target=target):
+                image = subject.load_cross_image(config, target)
+                self.assertNotIn(superseded, image)
 
     def test_release_workflow_declares_all_three_cross_rows(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
