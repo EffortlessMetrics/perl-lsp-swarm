@@ -2197,6 +2197,19 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             drop(_indexing_transition);
 
+            // Pull-capable clients will receive the refresh request below. A
+            // push-only client has no refresh protocol, so retry diagnostics
+            // for documents that survived the topology transition after the
+            // new folder/configuration authorities are installed. The publish
+            // path still performs its sink currentness check; this is only a
+            // recomputation trigger for candidates rejected during the move.
+            if !self.client_supports_pull_diags.load(std::sync::atomic::Ordering::Relaxed) {
+                let open_uris = self.documents.lock().keys().cloned().collect::<Vec<_>>();
+                for uri in open_uris {
+                    self.publish_diagnostics(&uri);
+                }
+            }
+
             // Trigger client refresh after workspace folder changes
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after workspace folder changes");
