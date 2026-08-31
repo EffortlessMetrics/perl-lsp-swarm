@@ -72,6 +72,17 @@ fn antip_detects_multiline_regex_code_block_heredoc() {
 }
 
 #[test]
+fn antip_detects_nested_multiline_regex_code_block_heredoc() {
+    let code = "qr/x(?{ if (1) { 1 } print <<'MATCH';\nbody\nMATCH\n})/;\n";
+
+    assert!(
+        has_regex_code_block(code),
+        "a heredoc after a nested block must be reported; got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn antip_detects_multiline_eval_string_heredoc() {
     // An eval string declaring a heredoc must span newlines to reach the
     // terminator, so `[^\n']*` dropped every real occurrence.

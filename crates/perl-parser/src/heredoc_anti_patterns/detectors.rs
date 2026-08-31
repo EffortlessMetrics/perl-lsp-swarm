@@ -349,6 +349,31 @@ static REGEX_HEREDOC_PATTERN: LazyLock<Regex> =
         Err(_) => unreachable!("REGEX_HEREDOC_PATTERN regex failed to compile"),
     });
 
+fn regex_code_block_matches(scan_code: &str) -> Vec<usize> {
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(relative_start) = scan_code[search_from..].find("(?{") {
+        let start = search_from + relative_start;
+        let opening_brace = start + 2;
+
+        // A malformed outer block cannot contain a complete diagnostic. Stop
+        // here rather than rescanning the same suffix from every nested
+        // candidate and turning malformed input into quadratic work.
+        let Some(closing_brace) = find_matching_brace(scan_code, opening_brace) else {
+            break;
+        };
+
+        if scan_code[opening_brace + 1..closing_brace].contains("<<") {
+            matches.push(start);
+        }
+
+        search_from = closing_brace + 1;
+    }
+
+    matches
+}
+
 impl PatternDetector for RegexHeredocDetector {
     fn detect(
         &self,
@@ -356,21 +381,19 @@ impl PatternDetector for RegexHeredocDetector {
         offset: usize,
         line_starts: &[usize],
     ) -> Vec<(AntiPattern, Location)> {
-        let mut results = Vec::new();
         let scan_code = mask_non_code_regions(code);
-
-        for cap in REGEX_HEREDOC_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
-
-                results.push((
-                    AntiPattern::RegexCodeBlockHeredoc { location: location.clone() },
+        regex_code_block_matches(&scan_code)
+            .into_iter()
+            .map(|start| {
+                let location = location_from_start(line_starts, offset, start);
+                (
+                    AntiPattern::RegexCodeBlockHeredoc {
+                        location: location.clone(),
+                    },
                     location,
-                ));
-            }
-        }
-
-        results
+                )
+            })
+            .collect()
     }
 
     fn diagnose(&self, pattern: &AntiPattern) -> Option<Diagnostic> {
@@ -388,6 +411,9 @@ impl PatternDetector for RegexHeredocDetector {
         }
     }
 }
+}
+
+
 
 // Eval heredoc detector
 struct EvalHeredocDetector;
