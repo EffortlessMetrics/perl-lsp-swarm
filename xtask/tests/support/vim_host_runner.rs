@@ -979,8 +979,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::StaleGenerationHeld => {
-                validate_repeating_freshness_event(
+                validate_repeating_event(
                     event,
+                    "freshness",
                     "hold_index",
                     STALE_GENERATION_HOLD_CAP,
                     &mut freshness_hold_index,
@@ -1006,8 +1007,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::ClientMaterializationApplied => {
-                validate_repeating_freshness_event(
+                validate_repeating_event(
                     event,
+                    "freshness",
                     "materialization_index",
                     CLIENT_MATERIALIZATION_CAP,
                     &mut freshness_materialization_index,
@@ -1029,8 +1031,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::GenerationCurrentObserved => {
-                validate_repeating_freshness_event(
+                validate_repeating_event(
                     event,
+                    "freshness",
                     "generation_index",
                     GENERATION_CURRENT_CAP,
                     &mut freshness_generation_index,
@@ -1242,8 +1245,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::SaveOwnerConfigured => {
-                validate_repeating_save_event(
+                validate_repeating_event(
                     event,
+                    "save",
                     "owner_index",
                     SAVE_OWNER_CONFIGURED_CAP,
                     &mut save_owner_index,
@@ -1278,8 +1282,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::SaveSettlementObserved => {
-                validate_repeating_save_event(
+                validate_repeating_event(
                     event,
+                    "save",
                     "save_index",
                     SAVE_SETTLEMENT_CAP,
                     &mut save_settlement_index,
@@ -1329,8 +1334,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::StaleResultHoldObserved => {
-                validate_repeating_save_event(
+                validate_repeating_event(
                     event,
+                    "save",
                     "hold_index",
                     STALE_RESULT_HOLD_CAP,
                     &mut save_hold_index,
@@ -1472,50 +1478,6 @@ pub const STALE_RESULT_HOLD_CAP: u32 = 4;
 /// The minimum honest absence-observation window for a stale-generation hold:
 /// below this the "no spontaneous republish" claim carries no observation.
 pub const MIN_STALE_WINDOW_MS: u64 = 2000;
-
-/// Validate one repeating #11390 freshness event: its index detail is numeric,
-/// exactly one greater than the last seen index for its kind (monotone,
-/// gap-free), and within the kind's cap.
-fn validate_repeating_freshness_event(
-    event: &DriverEvent,
-    index_key: &str,
-    cap: u32,
-    last_index: &mut u32,
-) -> Result<()> {
-    validate_repeating_index(event, index_key, cap, last_index)
-}
-
-/// Validate one repeating #11396 save-format event with the same law.
-fn validate_repeating_save_event(
-    event: &DriverEvent,
-    index_key: &str,
-    cap: u32,
-    last_index: &mut u32,
-) -> Result<()> {
-    validate_repeating_index(event, index_key, cap, last_index)
-}
-
-fn validate_repeating_index(
-    event: &DriverEvent,
-    index_key: &str,
-    cap: u32,
-    last_index: &mut u32,
-) -> Result<()> {
-    let index = event
-        .details
-        .get(index_key)
-        .and_then(|value| value.parse::<u32>().ok())
-        .with_context(|| format!("repeating event omitted a numeric {index_key}"))?;
-    ensure!(
-        index == *last_index + 1,
-        "repeating event {index_key} {} is not exactly one greater than the last seen {}",
-        index,
-        *last_index
-    );
-    ensure!(index <= cap, "repeating event {index_key} {index} exceeds the journey cap {cap}");
-    *last_index = index;
-    Ok(())
-}
 
 /// Validate one repeating event with a monotone, gap-free, capped index.
 fn validate_repeating_event(
