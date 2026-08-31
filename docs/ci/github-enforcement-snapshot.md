@@ -121,13 +121,70 @@ The semantic snapshot digest is deterministic. Ordering of checks, rulesets, sel
 
 The Gate Enforcement Contract remains authority for checked-in roles, producer identity, workflow posture, event reachability, and policy/workflow digests. This model consumes that receipt; it does not parse workflows again.
 
-Issue #9154 owns the least-privileged capture path and freshness policy. It can now provide classic and ruleset response digests, raw ref-name conditions, and a `trusted_default_branch`, `operator`, or `connector` source without redefining target or union semantics.
+`scripts/ci/observe_github_enforcement.py` (#9154) owns the least-privileged capture path and freshness policy. It provides classic and ruleset response digests, raw ref-name conditions, and a `trusted_default_branch`, `operator`, or `connector` source without redefining target or union semantics. See [Capturing an observation](#capturing-an-observation) below.
 
 Promotion and correction remain separate human-authorized transactions under #3048. A source PR, a green workflow, one accessible API surface, or a fixture cannot establish live enforcement by itself.
 
 ## Reconciliation authority
 
 `reconcile` requires a third, closed offline input that independently states the expected repository full name, numeric repository ID, default branch, evaluation time, maximum observation age, and future-clock-skew allowance. Snapshot self-report cannot authenticate itself. Missing authority, repository mismatch, stale observation, or implausibly future observation yields `NOT_PROVEN`.
+
+## Capturing an observation
+
+`scripts/ci/observe_github_enforcement.py` is the bounded observer. It issues GET requests only, retains no credential material, and has no settings-mutation path. It asserts no verdict: it reports which surfaces it read, hashes the exact bytes, and leaves union, targeting, and `MATCH` / `DRIFT` / `NOT_PROVEN` to the reconciler.
+
+```bash
+python3 scripts/ci/validate_gate_enforcement_contract.py \
+  --root . \
+  --receipt target/receipts/gate-enforcement-contract.json
+
+GITHUB_TOKEN=... python3 scripts/ci/observe_github_enforcement.py capture \
+  --repository EffortlessMetrics/perl-lsp-swarm \
+  --branch main \
+  --source operator \
+  --static-receipt target/receipts/gate-enforcement-contract.json \
+  --snapshot target/receipts/github-enforcement-observation.json \
+  --authority target/receipts/github-enforcement-authority.json \
+  --capture-bundle target/receipts/github-enforcement-capture.json
+
+python3 scripts/ci/reconcile_github_enforcement_snapshot.py \
+  reconcile \
+  --snapshot target/receipts/github-enforcement-observation.json \
+  --static-receipt target/receipts/gate-enforcement-contract.json \
+  --authority target/receipts/github-enforcement-authority.json \
+  --receipt target/receipts/github-enforcement-union.json
+```
+
+`capture` exits `0` on a complete observation, `2` when a surface could not be read to a definitive answer, and `1` when no bindable snapshot exists at all. A `--capture-bundle` records the exact response bytes so `assemble` can re-derive the identical snapshot offline — that is the `connector` shape, and it is what makes the capture reviewable after the fact.
+
+### Execution shapes
+
+The observer supports the least-privileged shape that can actually read both surfaces:
+
+```text
+trusted_default_branch  repository-owned default-branch job
+operator                a maintainer running the command directly
+connector               a capture bundle imported as a typed observation
+```
+
+`GET /repos/{owner}/{repo}/branches/{branch}/protection` and `GET /repos/{owner}/{repo}/rulesets` both require administration read access, which the ordinary Actions `GITHUB_TOKEN` does not carry. No repository workflow is wired to this observer, because widening a candidate PR's permissions to obtain that access is exactly the supply-chain hazard the policy train exists to avoid. **The hosted result is therefore `NOT_PROVEN` by construction until an explicitly managed read-only credential with administration read is provisioned.** The operator and connector shapes are usable today and produce the same contract.
+
+### Limitations are a closed vocabulary
+
+Raw host errors, response bodies, and credential material never reach a snapshot. A surface that was not read to a definitive answer emits one of:
+
+```text
+classic_branch_protection_forbidden
+classic_branch_protection_unreadable
+ruleset_list_forbidden
+ruleset_list_unreadable
+ruleset_detail_forbidden:<ruleset id>
+ruleset_detail_unreadable:<ruleset id>
+ruleset_detail_unrepresentable:<ruleset id>
+ruleset_list_incomplete:<ruleset id>
+```
+
+An unreadable surface never becomes an empty surface. A surface that was not observed carries no rows and no digest, and any limitation downgrades observation permission below `complete`, so a permission failure reaches the reconciler as incomplete evidence rather than as proof that no enforcement exists. `permission` describes access completeness only: a branch with no classic protection at all is a *complete* observation of a `missing` instrument, and what that means for the verdict stays with the reconciler.
 
 ## Source-specific bindings
 
