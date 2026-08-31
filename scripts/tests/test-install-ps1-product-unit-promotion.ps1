@@ -337,7 +337,7 @@ try {
         if ($okObs) {
             Pass-Case "interleaved PATH reader uses one file pointer and never sees a mixed pair"
         } else {
-            Fail-Case "interleaved PATH reader never sees mixed members or a missing current" "status=$LastStatus obs=$obsText output=$LastOutput"
+            Fail-Case "interleaved PATH reader uses one file pointer and never sees a mixed pair" "status=$LastStatus obs=$obsText output=$LastOutput"
         }
     } finally {
         Remove-Item Env:PERL_LSP_INSTALL_OBSERVE -ErrorAction SilentlyContinue
@@ -345,8 +345,7 @@ try {
     }
 
     Setup-Root
-    try {
-        Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
+    Stage-Pair -Dest $ExtractDir -Server "server-a" -Dap "dap-a"
         Invoke-Promote
         Stage-Pair -Dest $ExtractDir -Server "server-b" -Dap "dap-b"
         Invoke-Promote
@@ -357,7 +356,6 @@ try {
         } else {
             Fail-Case "unprivileged file pointer plus cmd shims keep complete pairs" "status=$LastStatus output=$LastOutput filePointer=$isFilePointer"
         }
-    }
 } finally {
     Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
