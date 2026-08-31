@@ -12,6 +12,18 @@
 //! from the already-serialized `inc` list embedded in `MySetup.pm`, in
 //! producer order.
 //!
+//! Untrusted embedded strings never drive host probes outside the declared
+//! rules. The embedded `inc`/`base` values are untrusted input: they are
+//! resolved against the workspace root (never the process CWD) and compared
+//! lexically. Existence probing is gated to the module's workspace-bounded
+//! authority: only entries that lexically resolve inside the workspace root
+//! are probed, with exactly the same surface as the marker checks. Entries
+//! resolving outside it — arbitrary absolute host paths, UNC device paths,
+//! root-escaping relative entries — are classified without any host access
+//! and reported as explicit
+//! [`CARMEL_ARTIFACT_UNVERIFIED_LIMITATION`] entries whose existence stays
+//! unknown.
+//!
 //! Authority mapping (contract §3, aligned to [`crate::environment`]
 //! enums):
 //!
@@ -45,9 +57,18 @@ pub const CARMEL_ARTIFACT_EXPLANATION_CODE: &str = "carmel_artifact";
 /// may be attributed to Carmel; resolution requires explicit configuration.
 pub const MANAGER_AMBIGUOUS_EXPLANATION_CODE: &str = "manager_ambiguous";
 
-/// Limitation code for an embedded dev-mode artifact path that no longer
-/// exists on the host.
+/// Limitation code for an embedded dev-mode artifact entry that resolves
+/// inside the workspace root (the module's bounded probe authority) but was
+/// probed absent.
 pub const CARMEL_ARTIFACT_MISSING_LIMITATION: &str = "carmel_artifact_missing";
+
+/// Limitation code for an embedded dev-mode artifact entry that resolves
+/// outside the workspace root — an arbitrary absolute host path, a UNC
+/// device path, or a root-escaping relative entry. Such entries are
+/// classified lexically and never probed: their host existence stays
+/// unknown rather than letting untrusted embedded bytes act as a host
+/// existence oracle.
+pub const CARMEL_ARTIFACT_UNVERIFIED_LIMITATION: &str = "carmel_artifact_unverified";
 
 /// Limitation code for an embedded install-time `base` that no longer
 /// matches the current project root (relocated project).
@@ -119,8 +140,12 @@ pub struct CarmelArtifactRoot {
     pub role: IncludeEntryRole,
     /// Producer-local stable order; never recomputed (contract §3).
     pub source_order: u32,
-    /// Whether the path currently exists on the host.
-    pub exists: bool,
+    /// Existence under the module's workspace-bounded probe authority.
+    /// `Some(bool)` when the entry lexically resolves inside the workspace
+    /// root and was probed; `None` when the entry resolves outside it and
+    /// was never probed (see [`CARMEL_ARTIFACT_UNVERIFIED_LIMITATION`]) —
+    /// untrusted embedded bytes must not act as a host existence oracle.
+    pub exists: Option<bool>,
 }
 
 /// Facts parsed from a `.carmel/MySetup.pm` environment block.
@@ -173,11 +198,13 @@ pub struct CarmelDetection {
     /// Parsed dev-state facts. `None` when the marker is absent or could not
     /// be parsed (see `limitations`).
     pub dev_state: Option<MySetupFacts>,
-    /// Dev-mode artifact candidates in producer order, with host existence.
-    /// Empty unless dev state parsed.
+    /// Dev-mode artifact candidates in producer order, with workspace-bounded
+    /// existence (`None` when the entry resolves outside the probe
+    /// authority). Empty unless dev state parsed.
     pub artifact_roots: Vec<CarmelArtifactRoot>,
-    /// Explicit limitations: unparsable dev state, missing artifacts,
-    /// relocated `base`.
+    /// Explicit limitations: unparsable dev state, missing workspace-bounded
+    /// artifacts, unprobed outside-workspace artifact entries, relocated
+    /// `base`.
     pub limitations: Vec<EnvironmentLimitation>,
 }
 
@@ -187,7 +214,11 @@ pub struct CarmelDetection {
 /// of `.carmel/MySetup.pm`. Deterministic for a fixed filesystem view: the
 /// artifact candidate list is the embedded serialized list in producer
 /// order, never recomputed, and the post-rollout root is one fixed relative
-/// literal.
+/// literal. Embedded `inc`/`base` strings are untrusted input: relative
+/// entries resolve against `workspace_root` (never the process CWD) and are
+/// compared lexically, and only entries that lexically resolve inside
+/// `workspace_root` are existence-probed — outside entries are classified
+/// without any host access (see [`CARMEL_ARTIFACT_UNVERIFIED_LIMITATION`]).
 #[must_use]
 pub fn detect_carmel(workspace_root: &Path) -> CarmelDetection {
     let cpanfile_present = workspace_root.join(CPANFILE_MARKER).is_file();
@@ -221,20 +252,40 @@ pub fn detect_carmel(workspace_root: &Path) -> CarmelDetection {
                 Some(facts) => {
                     match &facts.inc {
                         Some(inc) => {
-                            for (source_order, path) in inc.iter().enumerate() {
-                                let exists = Path::new(path).exists();
-                                if !exists {
-                                    limitations.push(EnvironmentLimitation {
-                                        code: CARMEL_ARTIFACT_MISSING_LIMITATION.to_string(),
-                                        detail: format!(
-                                            "embedded dev artifact path does not exist: {path}"
-                                        ),
-                                        input_id: None,
-                                    });
-                                }
+                            for (source_order, entry) in inc.iter().enumerate() {
+                                let exists = match classify_artifact_entry(entry, workspace_root) {
+                                    ArtifactEntryOrigin::WorkspaceBounded { resolved } => {
+                                        let exists = resolved.exists();
+                                        if !exists {
+                                            limitations.push(EnvironmentLimitation {
+                                                code: CARMEL_ARTIFACT_MISSING_LIMITATION
+                                                    .to_string(),
+                                                detail: format!(
+                                                    "embedded dev artifact path resolves \
+                                                     inside the workspace but does not \
+                                                     exist: {entry}"
+                                                ),
+                                                input_id: None,
+                                            });
+                                        }
+                                        Some(exists)
+                                    }
+                                    ArtifactEntryOrigin::OutsideWorkspace => {
+                                        limitations.push(EnvironmentLimitation {
+                                            code: CARMEL_ARTIFACT_UNVERIFIED_LIMITATION.to_string(),
+                                            detail: format!(
+                                                "embedded dev artifact path resolves \
+                                                 outside the workspace root; existence is \
+                                                 not probed and stays unknown: {entry}"
+                                            ),
+                                            input_id: None,
+                                        });
+                                        None
+                                    }
+                                };
                                 artifact_roots.push(CarmelArtifactRoot {
-                                    path: path.clone(),
-                                    role: artifact_role(path),
+                                    path: entry.clone(),
+                                    role: artifact_role(entry),
                                     source_order: source_order as u32,
                                     exists,
                                 });
@@ -248,10 +299,8 @@ pub fn detect_carmel(workspace_root: &Path) -> CarmelDetection {
                             input_id: None,
                         }),
                     }
-                    if let Some(base) = facts
-                        .base
-                        .as_deref()
-                        .filter(|base| is_relocated_base(workspace_root, base))
+                    if let Some(base) =
+                        facts.base.as_deref().filter(|base| is_relocated_base(workspace_root, base))
                     {
                         limitations.push(EnvironmentLimitation {
                             code: CARMEL_BASE_MISMATCH_LIMITATION.to_string(),
@@ -311,14 +360,70 @@ fn artifact_role(path: &str) -> IncludeEntryRole {
 }
 
 /// Whether the embedded install-time `base` no longer matches the current
-/// project root. Canonical comparison when the host resolves both sides,
-/// lexical otherwise.
+/// project root. The comparison is purely lexical: the embedded `base` is
+/// untrusted input and is never handed to the filesystem (no
+/// `canonicalize`, no symlink or network-path resolution). A textual
+/// difference is reported as the explicit
+/// [`CARMEL_BASE_MISMATCH_LIMITATION`]; resolving it further would require
+/// probing untrusted paths.
 fn is_relocated_base(workspace_root: &Path, base: &str) -> bool {
-    let base = PathBuf::from(base);
-    match (std::fs::canonicalize(workspace_root), std::fs::canonicalize(&base)) {
-        (Ok(current), Ok(base)) => current != base,
-        _ => workspace_root != base,
+    lexical_normalize(workspace_root) != lexical_normalize(Path::new(base))
+}
+
+/// Classification of one embedded dev-mode artifact entry, decided
+/// lexically from the untrusted string alone — no host access.
+enum ArtifactEntryOrigin {
+    /// Lexically resolves inside the workspace root; eligible for the same
+    /// bounded existence probe as the marker checks.
+    WorkspaceBounded {
+        /// Normalized, workspace-resolved candidate path.
+        resolved: PathBuf,
+    },
+    /// Resolves outside the workspace root: an arbitrary absolute host
+    /// path, a UNC device path, or a root-escaping relative entry. Never
+    /// probed.
+    OutsideWorkspace,
+}
+
+/// Resolve one embedded artifact entry against `workspace_root` and decide
+/// whether the module's bounded authority permits an existence probe.
+///
+/// The entry is untrusted input: relative entries resolve against the
+/// workspace root (never the process CWD) and `.`/`..` components are
+/// normalized lexically, so a root-escaping entry such as `../x` is
+/// classified [`ArtifactEntryOrigin::OutsideWorkspace`] deterministically
+/// instead of probing whatever the process CWD happens to be.
+fn classify_artifact_entry(entry: &str, workspace_root: &Path) -> ArtifactEntryOrigin {
+    let candidate = Path::new(entry);
+    let resolved = if candidate.is_absolute() {
+        lexical_normalize(candidate)
+    } else {
+        lexical_normalize(&workspace_root.join(candidate))
+    };
+    if resolved.starts_with(lexical_normalize(workspace_root).as_path()) {
+        ArtifactEntryOrigin::WorkspaceBounded { resolved }
+    } else {
+        ArtifactEntryOrigin::OutsideWorkspace
     }
+}
+
+/// Normalize `.` and `..` components lexically. No symlink, drive, or
+/// network resolution: untrusted path text never reaches the filesystem
+/// through this function.
+fn lexical_normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Read at most [`DEV_STATE_READ_LIMIT`] bytes of `path` as UTF-8.
@@ -575,6 +680,34 @@ mod tests {
         crate::Digest::of(tag)
     }
 
+    /// Escape one string as a single-quoted Perl literal (Carmel `quote`
+    /// shape: only `\'` and `\\` escapes).
+    fn perl_single_quoted(value: &str) -> String {
+        let mut out = String::from("'");
+        for ch in value.chars() {
+            match ch {
+                '\'' => out.push_str("\\'"),
+                '\\' => out.push_str("\\\\"),
+                _ => out.push(ch),
+            }
+        }
+        out.push('\'');
+        out
+    }
+
+    /// Build a generated-MySetup-shaped environment block with the given
+    /// `inc` entries and `base` value.
+    fn mysetup_with(inc: &[String], base: &str) -> String {
+        let mut source = String::from("our %environment = (\n");
+        source.push_str(&format!("  'base' => {},\n", perl_single_quoted(base)));
+        source.push_str("  'inc' => [\n");
+        for entry in inc {
+            source.push_str(&format!("    {},\n", perl_single_quoted(entry)));
+        }
+        source.push_str("  ],\n);\n1;\n");
+        source
+    }
+
     fn fixture_input(tag: &str) -> crate::environment::EnvironmentInputId {
         crate::environment::EnvironmentInput::new(
             format!("test.{tag}"),
@@ -741,23 +874,27 @@ our %environment = (
             ]
         );
         assert!(
-            detection.artifact_roots.iter().all(|root| !root.exists),
-            "fixture artifact paths are host-external"
+            detection.artifact_roots.iter().all(|root| root.exists.is_none()),
+            "host-external fixture paths stay unprobed: {:?}",
+            detection.artifact_roots
         );
         assert_eq!(
             detection.artifact_roots.iter().map(|root| root.role).collect::<Vec<_>>(),
             vec![IncludeEntryRole::BlibArch, IncludeEntryRole::BlibLib]
         );
-        assert!(
+        assert_eq!(
             detection
                 .limitations
                 .iter()
-                .any(|item| item.code == CARMEL_ARTIFACT_MISSING_LIMITATION),
-            "host-external fixture paths report missing-artifact limitations"
+                .filter(|item| item.code == CARMEL_ARTIFACT_UNVERIFIED_LIMITATION)
+                .count(),
+            2,
+            "both outside-workspace entries report unverified limitations: {:?}",
+            detection.limitations
         );
         assert!(
             detection.limitations.iter().all(|item| {
-                item.code == CARMEL_ARTIFACT_MISSING_LIMITATION
+                item.code == CARMEL_ARTIFACT_UNVERIFIED_LIMITATION
                     || item.code == CARMEL_BASE_MISMATCH_LIMITATION
             }),
             "no unexpected limitation codes: {:?}",
@@ -766,6 +903,128 @@ our %environment = (
         // The embedded base never matches the temp fixture root.
         assert!(
             detection.limitations.iter().any(|item| item.code == CARMEL_BASE_MISMATCH_LIMITATION)
+        );
+    }
+
+    #[test]
+    fn relative_inc_entries_resolve_against_workspace_root_not_cwd() {
+        // `present/blib/lib` exists inside the fixture root only. If the
+        // detector resolved entries against the process CWD (the package
+        // directory under test), the first entry would not exist there and
+        // the probe would report absence; workspace-root resolution is the
+        // only way to observe `Some(true)`.
+        let fixture = Fixture::new("relative-inc");
+        fixture.write("cpanfile", "requires 'JSON::PP';\n");
+        let base = fixture.root.to_str().expect("utf-8 fixture root").to_string();
+        fixture.write(
+            ".carmel/MySetup.pm",
+            &mysetup_with(&["present/blib/lib".to_string(), "absent/blib/lib".to_string()], &base),
+        );
+        fixture.dir("present/blib/lib");
+
+        let detection = detect_carmel(&fixture.root);
+        let exists: Vec<Option<bool>> =
+            detection.artifact_roots.iter().map(|root| root.exists).collect();
+        assert_eq!(
+            exists,
+            vec![Some(true), Some(false)],
+            "relative entries must resolve against the workspace root, never the process CWD"
+        );
+        assert!(
+            detection
+                .limitations
+                .iter()
+                .any(|item| item.code == CARMEL_ARTIFACT_MISSING_LIMITATION),
+            "probed-absent workspace-bounded entries report missing-artifact limitations"
+        );
+        assert!(
+            !detection
+                .limitations
+                .iter()
+                .any(|item| item.code == CARMEL_ARTIFACT_UNVERIFIED_LIMITATION),
+            "workspace-contained entries sit inside the bounded probe authority"
+        );
+    }
+
+    #[test]
+    fn escaping_and_unc_entries_are_unverified_without_probing() {
+        let fixture = Fixture::new("escape-unc");
+        fixture.write("cpanfile", "requires 'JSON::PP';\n");
+        // A real directory at the escape target: if the detector probed the
+        // `../` entry (against the process CWD or the fixture parent), it
+        // would observe existence; classification must leave the entry
+        // unprobed instead.
+        let escape_target =
+            fixture.root.parent().expect("fixture parent").join("escape-target/blib/lib");
+        std::fs::create_dir_all(&escape_target).expect("escape target fixture");
+        let base = fixture.root.to_str().expect("utf-8 fixture root").to_string();
+        // `//server/share/...` is a UNC device path on Windows and an
+        // absolute non-workspace path on Unix — outside the workspace root
+        // either way, with identical classification.
+        fixture.write(
+            ".carmel/MySetup.pm",
+            &mysetup_with(
+                &["../escape-target/blib/lib".to_string(), "//server/share/blib/lib".to_string()],
+                &base,
+            ),
+        );
+
+        let detection = detect_carmel(&fixture.root);
+        assert!(
+            detection.artifact_roots.iter().all(|root| root.exists.is_none()),
+            "outside-workspace entries stay unprobed: {:?}",
+            detection.artifact_roots
+        );
+        assert_eq!(
+            detection
+                .limitations
+                .iter()
+                .filter(|item| item.code == CARMEL_ARTIFACT_UNVERIFIED_LIMITATION)
+                .count(),
+            2,
+            "root-escaping and UNC entries yield typed unverified limitations: {:?}",
+            detection.limitations
+        );
+        assert!(
+            detection
+                .limitations
+                .iter()
+                .all(|item| item.code == CARMEL_ARTIFACT_UNVERIFIED_LIMITATION),
+            "no other limitation classes: {:?}",
+            detection.limitations
+        );
+        // Deterministic: a second detection run observes the identical,
+        // host-probe-free result.
+        assert_eq!(detect_carmel(&fixture.root), detection);
+
+        let _ = std::fs::remove_dir_all(escape_target);
+    }
+
+    #[test]
+    fn base_lexically_matching_root_is_not_relocated() {
+        // Lexical equality — including through `..` normalization — must
+        // not report relocation. The embedded `base` is untrusted input:
+        // it is compared lexically and never canonicalized against the
+        // host (no symlink or network-path resolution of untrusted bytes).
+        let fixture = Fixture::new("base-lexical");
+        fixture.write("cpanfile", "requires 'JSON::PP';\n");
+        let root = fixture.root.to_str().expect("utf-8 fixture root").to_string();
+        fixture.write(
+            ".carmel/MySetup.pm",
+            &mysetup_with(&["present/blib/lib".to_string()], &format!("{root}/sub/..")),
+        );
+        fixture.dir("present/blib/lib");
+
+        let detection = detect_carmel(&fixture.root);
+        assert!(
+            !detection.limitations.iter().any(|item| item.code == CARMEL_BASE_MISMATCH_LIMITATION),
+            "a base that lexically normalizes to the workspace root is not relocated: {:?}",
+            detection.limitations
+        );
+        assert_eq!(
+            detection.artifact_roots.iter().map(|root| root.exists).collect::<Vec<_>>(),
+            vec![Some(true)],
+            "workspace-bounded entries are probed"
         );
     }
 

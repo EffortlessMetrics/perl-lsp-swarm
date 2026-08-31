@@ -22,19 +22,31 @@ const CARMEL_ROLLOUT_SENTINEL: &str = "local/.carmel";
 /// (#4998 gate; #13642 §3(2)) — they enter the environment snapshot through
 /// `perl_workspace_core::carmel` as Ambient-authority candidates or explicit
 /// limitations, never as project `@INC` authority without explicit trust.
-#[cfg(test)]
+///
+/// The marker also discriminates the lock: `carmel install` writes
+/// `cpanfile.snapshot` itself (receipt §1, support since v0.1.29), so the
+/// canonical dev-mode workspace is cpanfile + `cpanfile.snapshot` +
+/// `.carmel/MySetup.pm` with no `local/.carmel`. Contract §2(b): that shape
+/// is dev mode and must not yield the project-local root.
 const CARMEL_DEV_STATE: &str = ".carmel/MySetup.pm";
 
 /// Detect include paths produced by Carton and Carmel in a workspace root.
 ///
 /// The project is the directory holding `cpanfile` (the declaration; never
 /// installed-root evidence by itself). One relative root is produced:
-/// `local/lib/perl5` — when Carton markers (`carton.lock`, `cpanfile.snapshot`)
-/// are present, or when the `local/.carmel` rollout sentinel marks the tree
-/// as Carmel rollout output. A `cpanfile.snapshot` alone cannot identify its
-/// producer (the Carton-format header carries no producer field), so this
-/// detector attributes no separate Carmel root and adds nothing for Carmel
-/// dev-mode state (`.carmel/MySetup.pm`), which has no project-local root.
+/// `local/lib/perl5` — when Carton markers (`carton.lock`, or a
+/// `cpanfile.snapshot` whose producer is not identified as Carmel) are
+/// present, or when the `local/.carmel` rollout sentinel marks the tree as
+/// Carmel rollout output.
+///
+/// A `cpanfile.snapshot` is written in the shared Carton format with no
+/// producer field. When `.carmel/MySetup.pm` identifies the producer as
+/// Carmel, the snapshot is Carmel's own dev-mode lock (the canonical
+/// `carmel install` shape) and must not admit the Carton root: dev mode has
+/// no project-local root (contract §2(b)), and this detector adds nothing
+/// for Carmel dev-mode state — its artifact roots are owned by the
+/// environment detection seam. An explicit `carton.lock` still identifies
+/// Carton: a workspace with both managers keeps the shared root.
 ///
 /// These are runtime-derived roots (#4998): their safety class is "bounded,
 /// hard-coded, workspace-relative literals" and must stay that way. They are
@@ -48,11 +60,20 @@ pub fn detect_dependency_include_paths(workspace_root: &Path) -> Vec<String> {
         return Vec::new();
     }
 
-    let carton_locked = workspace_root.join("carton.lock").is_file()
-        || workspace_root.join("cpanfile.snapshot").is_file();
+    let snapshot_locked = workspace_root.join("cpanfile.snapshot").is_file();
+    let carton_locked = workspace_root.join("carton.lock").is_file();
+    let carmel_dev_state = workspace_root.join(CARMEL_DEV_STATE).is_file();
     let carmel_rolled_out = workspace_root.join(CARMEL_ROLLOUT_SENTINEL).exists();
 
-    if carton_locked || carmel_rolled_out {
+    // A `cpanfile.snapshot` shares Carton's format with no producer field.
+    // When `.carmel/MySetup.pm` identifies the producer as Carmel, the
+    // snapshot is Carmel's own dev-mode lock and must not admit the Carton
+    // install root — this is not a Carton behavior change: a workspace with
+    // MySetup is not a Carton workspace. An explicit `carton.lock` still
+    // identifies Carton.
+    let carton_root = carton_locked || (snapshot_locked && !carmel_dev_state);
+
+    if carton_root || carmel_rolled_out {
         vec![LOCAL_INSTALL_INCLUDE_PATH.to_string()]
     } else {
         Vec::new()
@@ -120,6 +141,68 @@ mod tests {
             workspace.path().join(CARMEL_DEV_STATE),
             "our %environment = ('inc' => [], 'base' => '/x');\n",
         )?;
+
+        assert!(detect_dependency_include_paths(workspace.path()).is_empty());
+        Ok(())
+    }
+
+    /// Canonical dev-mode shape (receipt §1): `carmel install` writes
+    /// `cpanfile`, `cpanfile.snapshot`, and `.carmel/MySetup.pm` together.
+    /// The MySetup marker identifies the snapshot's producer, so the lock
+    /// must not admit the Carton root: dev mode has no project-local root
+    /// (contract §2(b)). The two detection layers agree on the same on-disk
+    /// state (`detect_carmel` classifies it dev-mode with `rollout_root`:
+    /// None).
+    #[test]
+    fn carmel_dev_mode_with_its_own_snapshot_has_no_project_local_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(
+            workspace.path().join("cpanfile.snapshot"),
+            "# carton snapshot format: version 1.0\n",
+        )?;
+        std::fs::create_dir_all(workspace.path().join(".carmel"))?;
+        std::fs::write(
+            workspace.path().join(CARMEL_DEV_STATE),
+            "our %environment = ('inc' => [], 'base' => '/x');\n",
+        )?;
+
+        assert!(detect_dependency_include_paths(workspace.path()).is_empty());
+        Ok(())
+    }
+
+    /// An explicit `carton.lock` still identifies Carton even next to Carmel
+    /// dev state: both managers present keep the one shared install root.
+    #[test]
+    fn explicit_carton_lock_wins_over_carmel_dev_state() -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(
+            workspace.path().join("cpanfile.snapshot"),
+            "# carton snapshot format: version 1.0\n",
+        )?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+        std::fs::create_dir_all(workspace.path().join(".carmel"))?;
+        std::fs::write(workspace.path().join(CARMEL_DEV_STATE), "1;\n")?;
+
+        assert_eq!(
+            detect_dependency_include_paths(workspace.path()),
+            vec![LOCAL_INSTALL_INCLUDE_PATH]
+        );
+        Ok(())
+    }
+
+    /// Contract §1: `vendor/cache` is Carmel's tarball download directory,
+    /// never a library root. Nothing about a `vendor/cache` tree may enter
+    /// this detector's output, so a future plausible-but-baseless vendor
+    /// path cannot re-enter silently.
+    #[test]
+    fn vendor_cache_alone_is_not_a_root() -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::create_dir_all(workspace.path().join("vendor/cache"))?;
+        std::fs::write(workspace.path().join("vendor/cache/JSON-PP-4.16.tar.gz"), "tarball\n")?;
 
         assert!(detect_dependency_include_paths(workspace.path()).is_empty());
         Ok(())

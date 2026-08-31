@@ -179,11 +179,11 @@ mod tests {
         Ok(())
     }
 
-    #[test]
     /// Migrated Carmel detection (#13642 §2/§3): a rolled-out Carmel project
     /// (discriminated by the `local/.carmel` sentinel) contributes the shared
     /// install-base root `local/lib/perl5`. The previous `vendor/lib/perl5`
     /// marker had no basis in Carmel source and is retired.
+    #[test]
     fn refresh_workspace_metadata_adds_carmel_include_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
