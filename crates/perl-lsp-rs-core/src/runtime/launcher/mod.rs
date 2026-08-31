@@ -15,6 +15,7 @@ use std::sync::{Once, OnceLock};
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
+mod checking_guidance;
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
 pub use crate::features::grid::{compliance_counts_for_profile, to_json_for_profile};
@@ -250,11 +251,11 @@ pub struct LspArgs {
     #[arg(long)]
     pub info: bool,
 
-    /// Validate Perl files and report parse errors (batch mode)
+    /// Native in-process parser check of listed files (does not execute project Perl)
     #[arg(long)]
     pub check: bool,
 
-    /// Scan a project directory and report parsability summary
+    /// Native parsability report (80% threshold; not a strict all-clean check)
     #[arg(long, conflicts_with = "check")]
     pub check_project: Option<Option<String>>,
 
@@ -416,9 +417,9 @@ pub enum LaunchAction {
     Health,
     /// Show server info (version, features, coverage).
     Info,
-    /// Validate Perl files in batch mode.
+    /// Native in-process parser check of listed files.
     Check,
-    /// Scan a project directory and report parsability summary.
+    /// Native project parsability report at a fixed 80% threshold.
     CheckProject {
         /// Directory to scan (defaults to ".").
         dir: String,
@@ -925,9 +926,17 @@ pub fn help_text() -> String {
     out.push_str("  --features-json      Output features catalog as JSON\n");
     out.push('\n');
     out.push_str("Tool options:\n");
-    out.push_str("  --check <files...>   Validate Perl files and report parse errors\n");
-    out.push_str("  --check-project [dir]\n");
-    out.push_str("                       Scan project directory for parsability report\n");
+    out.push_str("  ");
+    out.push_str(checking_guidance::CHECK_FLAG);
+    out.push_str(" <files...>   ");
+    out.push_str(checking_guidance::CHECK_DESCRIPTION);
+    out.push_str(" (does not execute project Perl)\n");
+    out.push_str("  ");
+    out.push_str(checking_guidance::CHECK_PROJECT_FLAG);
+    out.push_str(" [dir]\n");
+    out.push_str("                       ");
+    out.push_str(checking_guidance::CHECK_PROJECT_DESCRIPTION);
+    out.push('\n');
     out.push_str("  --doctor [dir]       Explain Perl path, config, and effective @INC roots\n");
     out.push_str(
         "  --external-tools     With --doctor: native-first external tooling report (registry-driven)\n",
@@ -960,13 +969,31 @@ pub fn help_text() -> String {
         "  --ripr-out <path>    Output path (default: target/ripr/reports/perl-facts.json)\n",
     );
     out.push('\n');
+    out.push_str("Checking commands (native vs real Perl):\n");
+    out.push_str("  Need fast native feedback on listed files?     ");
+    out.push_str(checking_guidance::CHECK_FLAG);
+    out.push_str(" <files...>\n");
+    out.push_str("  Need a project parser coverage metric?         ");
+    out.push_str(checking_guidance::CHECK_PROJECT_FLAG);
+    out.push_str(" [dir]\n");
+    out.push_str(
+        "  Need real-Perl compile observation?            editor Perl: Check Syntax / DAP (`perl -c`)\n",
+    );
+    out.push_str(
+        "  Advisories remain visible but non-blocking. `--check-project` can PASS below 100% clean.\n",
+    );
+    out.push('\n');
     out.push_str("Examples:\n");
     out.push_str("  perllsp --stdio                         # stdio mode (default)\n");
     out.push_str("  perllsp --stdio --log                   # with logging\n");
     out.push_str("  perllsp --socket --port 9257            # TCP socket mode\n");
     out.push_str("  perllsp --stdio --feature-profile=prod  # production profile\n");
-    out.push_str("  perllsp --check lib/MyModule.pm         # syntax check\n");
-    out.push_str("  perllsp --check-project lib/            # project scan\n");
+    out.push_str("  perllsp --check lib/MyModule.pm         # ");
+    out.push_str(checking_guidance::CHECK_EXAMPLE_COMMENT);
+    out.push('\n');
+    out.push_str("  perllsp --check-project lib/            # ");
+    out.push_str(checking_guidance::CHECK_PROJECT_EXAMPLE_COMMENT);
+    out.push('\n');
     out.push_str("  perllsp --doctor .                      # first-run setup report\n");
     out.push_str("  perllsp --doctor --external-tools       # registry-driven tooling report\n");
     out.push_str("  perllsp --doctor --critic-compatibility # critic config compatibility\n");
@@ -1088,8 +1115,8 @@ _perl-lsp() {
         '--log[Enable logging to stderr]' \
         '--health[Quick health check]' \
         '--info[Show server info]' \
-        '--check[Validate Perl files]:file:_files -g "*.{pl,pm,t}"' \
-        '--check-project[Scan project directory for parsability report]:dir:_directories' \
+        '--check[Native in-process parser check of listed files]:file:_files -g "*.{pl,pm,t}"' \
+        '--check-project[Native parsability report (80% threshold; not a strict all-clean check)]:dir:_directories' \
         '--doctor[Explain Perl path, config, and effective @INC roots]:dir:_directories' \
         '--external-tools[With --doctor: native-first external tooling report]' \
         '--critic-compatibility[With --doctor: .perlcriticrc compatibility, process-free]' \
@@ -1124,8 +1151,8 @@ complete -c perl-lsp -l port -x -d 'Port to listen on'
 complete -c perl-lsp -l log -d 'Enable logging to stderr'
 complete -c perl-lsp -l health -d 'Quick health check'
 complete -c perl-lsp -l info -d 'Show server info'
-complete -c perl-lsp -l check -F -d 'Validate Perl files'
-complete -c perl-lsp -l check-project -d 'Scan project directory for parsability report'
+complete -c perl-lsp -l check -F -d 'Native in-process parser check of listed files'
+complete -c perl-lsp -l check-project -d 'Native parsability report (80% threshold; not a strict all-clean check)'
 complete -c perl-lsp -l doctor -d 'Explain Perl path, config, and effective @INC roots'
 complete -c perl-lsp -l version -d 'Show version information'
 complete -c perl-lsp -l features-json -d 'Output features catalog as JSON'
@@ -1158,8 +1185,8 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
         [CompletionResult]::new('--log', '--log', 'ParameterName', 'Enable logging to stderr')
         [CompletionResult]::new('--health', '--health', 'ParameterName', 'Quick health check')
         [CompletionResult]::new('--info', '--info', 'ParameterName', 'Show server info')
-        [CompletionResult]::new('--check', '--check', 'ParameterName', 'Validate Perl files')
-        [CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Scan project directory for parsability report')
+        [CompletionResult]::new('--check', '--check', 'ParameterName', 'Native in-process parser check of listed files')
+        [CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Native parsability report (80% threshold; not a strict all-clean check)')
         [CompletionResult]::new('--doctor', '--doctor', 'ParameterName', 'Explain Perl path, config, and effective @INC roots')
         [CompletionResult]::new('--external-tools', '--external-tools', 'ParameterName', 'With --doctor: native-first external tooling report')
         [CompletionResult]::new('--critic-compatibility', '--critic-compatibility', 'ParameterName', 'With --doctor: .perlcriticrc compatibility, process-free')
@@ -1736,6 +1763,8 @@ mod tests {
     fn help_mentions_check_flag() {
         let text = super::help_text();
         assert!(text.contains("--check"));
+        assert!(text.contains(super::checking_guidance::CHECK_DESCRIPTION));
+        assert!(text.contains("does not execute project Perl"));
     }
 
     #[test]
@@ -1771,6 +1800,7 @@ mod tests {
     fn help_mentions_check_project_flag() {
         let text = super::help_text();
         assert!(text.contains("--check-project"));
+        assert!(text.contains(super::checking_guidance::CHECK_PROJECT_DESCRIPTION));
     }
 
     // -- --doctor flag -----------------------------------------------
