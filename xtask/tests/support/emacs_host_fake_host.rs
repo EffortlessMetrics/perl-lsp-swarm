@@ -329,6 +329,15 @@ pub fn run_fake_host_entry(mode: &str) -> ! {
 }
 
 fn run_fake_host_mode(mode: &str) -> Result<i32> {
+    if mode == "descendant_sleep" {
+        let ready = child_required_env(FAKE_HOST_DESCENDANT_READY_ENV)?;
+        fs::write(&ready, format!("ready pid={}", std::process::id()).as_bytes())
+            .with_context(|| format!("writing {}", ready.display()))?;
+        for _ in 0..(DESCENDANT_LIFETIME_CAP_MS / 50) {
+            thread::sleep(Duration::from_millis(50));
+        }
+        return Ok(0);
+    }
     let event_file = child_required_env("PERL_LSP_EMACS_EVENT_FILE")?;
     let mut sequence = 0_u64;
     match mode {
@@ -409,15 +418,6 @@ fn run_fake_host_mode(mode: &str) -> Result<i32> {
             let _descendant_pid =
                 spawn_preexisting_candidate(&candidate, &ready_marker, &entry_test)?;
             child_emit_lifecycle(&event_file, &mut sequence, None)?;
-            Ok(0)
-        }
-        "descendant_sleep" => {
-            let ready = child_required_env(FAKE_HOST_DESCENDANT_READY_ENV)?;
-            fs::write(&ready, format!("ready pid={}", std::process::id()).as_bytes())
-                .with_context(|| format!("writing {}", ready.display()))?;
-            for _ in 0..(DESCENDANT_LIFETIME_CAP_MS / 50) {
-                thread::sleep(Duration::from_millis(50));
-            }
             Ok(0)
         }
         other => bail!("unknown supervision fixture mode: {other}"),
