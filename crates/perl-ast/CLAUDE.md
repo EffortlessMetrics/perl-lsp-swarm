@@ -32,7 +32,7 @@ cargo doc -p perl-ast --open         # View documentation
 |------|---------|
 | `lib.rs` | Re-exports `Node`, `NodeKind`, `SourceLocation` |
 | `ast.rs` | Primary AST: `Node` struct (kind + location), `NodeKind` enum (50+ variants) |
-| `kind_schema/` | Structural `NodeKind` registry: production `FieldId` membership and field-aware child traversal; not rendering/status/fingerprint authority |
+| `kind_schema/` | Structural `NodeKind` registry: production `FieldId` membership, field-aware child traversal, schema identity, and freshness-gated NodeKind inventory; not rendering or parser behavior |
 | `ast/node_clone.rs` | Iterative `Node` clone over canonical child fields |
 | `ast/node_debug.rs` | Iterative bounded `Node`/`NodeKind` `Debug` |
 | `ast/node_eq.rs` | Iterative `Node` equality over canonical child fields |

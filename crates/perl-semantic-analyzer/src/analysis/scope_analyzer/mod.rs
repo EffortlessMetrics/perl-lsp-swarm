@@ -1487,42 +1487,40 @@ impl ScopeAnalyzer {
 
             match &parent.kind {
                 // Method call: Class->method (Class is bareword)
-                NodeKind::Binary { op, left, right: _ } if op == "->" => {
+                NodeKind::Binary { op, left, right: _ }
+                    if op == "->" && std::ptr::eq(left.as_ref(), current) =>
+                {
                     // Check if current node is the class name (left side of the -> operation)
-                    if std::ptr::eq(left.as_ref(), current) {
-                        return true;
-                    }
+                    return true;
                 }
-                NodeKind::MethodCall { object, .. } => {
+                NodeKind::MethodCall { object, .. } if std::ptr::eq(object.as_ref(), current) => {
                     // Check if current node is the class name (object)
-                    if std::ptr::eq(object.as_ref(), current) {
-                        return true;
-                    }
+                    return true;
                 }
                 // Hash subscript: $hash{key} or %hash{key}
-                NodeKind::Binary { op, left: _, right } if op == "{}" => {
+                NodeKind::Binary { op, left: _, right }
+                    if op == "{}" && std::ptr::eq(right.as_ref(), current) =>
+                {
                     // Check if current node is the key (right side of the {} operation)
-                    if std::ptr::eq(right.as_ref(), current) {
-                        return true;
-                    }
+                    return true;
                 }
                 // Hash/key-value slice keys: @hash{...} or %hash{...}
-                NodeKind::HashSlice { keys, .. } | NodeKind::KeyValueSlice { keys, .. } => {
-                    if std::ptr::eq(keys.as_ref(), current) {
-                        return true;
-                    }
+                NodeKind::HashSlice { keys, .. } | NodeKind::KeyValueSlice { keys, .. }
+                    if std::ptr::eq(keys.as_ref(), current) =>
+                {
+                    return true;
                 }
                 // Arrow-deref hash subscript/slice: $ref->{key}, $obj->method()->{key},
                 // $a->{b}{c}, $ref->%{key}
                 // Anchor on `node`, not `current`: only direct simple keys are auto-quoted,
                 // so composite or qualified keys like `$ref->{FOO + 1}` and `$ref->{FOO::BAR}`
                 // must still flag their barewords.
-                NodeKind::Binary { op, left: _, right } if op == "->{}" || op == "->%{}" => {
-                    if std::ptr::eq(right.as_ref(), node)
-                        && Self::is_simple_autoquoted_hash_key(node)
-                    {
-                        return true;
-                    }
+                NodeKind::Binary { op, left: _, right }
+                    if (op == "->{}" || op == "->%{}")
+                        && std::ptr::eq(right.as_ref(), node)
+                        && Self::is_simple_autoquoted_hash_key(node) =>
+                {
+                    return true;
                 }
                 NodeKind::HashLiteral { pairs } => {
                     // Check if current node is a key in any of the pairs
@@ -1532,22 +1530,20 @@ impl ScopeAnalyzer {
                         }
                     }
                 }
-                NodeKind::ArrayLiteral { .. } => {
+                NodeKind::ArrayLiteral { .. } if i > 0 => {
                     // Check grandparent
-                    if i > 0 {
-                        let grandparent = ancestors[i - 1];
-                        if let NodeKind::Binary { op, right, .. } = &grandparent.kind {
-                            if op == "{}" && std::ptr::eq(right.as_ref(), parent) {
-                                return true;
-                            }
-                        }
-                        // ArrayLiteral used as keys in a slice: @hash{@keys} or %hash{@keys}
-                        if matches!(&grandparent.kind,
-                            NodeKind::HashSlice { keys, .. } | NodeKind::KeyValueSlice { keys, .. }
-                            if std::ptr::eq(keys.as_ref(), parent))
-                        {
+                    let grandparent = ancestors[i - 1];
+                    if let NodeKind::Binary { op, right, .. } = &grandparent.kind {
+                        if op == "{}" && std::ptr::eq(right.as_ref(), parent) {
                             return true;
                         }
+                    }
+                    // ArrayLiteral used as keys in a slice: @hash{@keys} or %hash{@keys}
+                    if matches!(&grandparent.kind,
+                        NodeKind::HashSlice { keys, .. } | NodeKind::KeyValueSlice { keys, .. }
+                        if std::ptr::eq(keys.as_ref(), parent))
+                    {
+                        return true;
                     }
                 }
                 // Handle IndirectCall which parser sometimes produces for $hash{key} in print statements

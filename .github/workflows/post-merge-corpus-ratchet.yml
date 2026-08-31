@@ -62,7 +62,7 @@ jobs:
           shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -129,17 +129,121 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # TEMPORARY CONTAINMENT (#13004): the v1 full-corpus checkpoint format has no
+  # identity manifest, process-tree/quiescence boundary, atomic promotion, or
+  # lane-local retention cap. Keep every full consumer fail-closed until those
+  # controls and exact-source hosted proof land. The bounded top-50 job above
+  # remains available and does not consume these checkpoint keys.
+  #
+  # Budgeted checkpoint lane (#12823). The scheduled runner envelope has been
+  # observed killing jobs externally at ~24m29s of wall-clock while a cold
+  # top-1000 install needs far longer, and the historical save gate required one
+  # complete pass — so every run banked nothing and restored nothing the next
+  # day. This job ends on its own terms inside an explicit install budget
+  # strictly below that envelope and banks whatever consistent state cpanm has
+  # reached under a rolling per-run checkpoint key, so each scheduled run
+  # advances the frontier monotonically until one pass fits whole.
+  corpus-warm-full:
+    name: CPAN corpus warm pass (full — 1000 distributions)
+    if: |
+      false &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.event.inputs.mode == 'full' &&
+        github.ref_name == github.event.repository.default_branch))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      complete: ${{ steps.cpan-install.outputs.complete }}
+
+    steps:
+      - name: Checkout analysis tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          cache-on-failure: true
+          shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore CPAN corpus cache (full)
+        id: cpan-corpus-cache-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/cpan-corpus
+          key: cpan-corpus-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}
+          restore-keys: |
+            cpan-corpus-${{ runner.os }}-
+
+      # Unconditional by contract (#12823): a restore hit must never skip this
+      # pass again. cpanm treats already-installed modules as no-ops, so a warm
+      # hit costs seconds while keeping the completion marker truthful.
+      - name: Install CPAN corpus checkpoint
+        id: cpan-install
+        run: |
+          set -euo pipefail
+          cargo xtask cpan-corpus install --time-budget-minutes 12 \
+            | tee "${RUNNER_TEMP}/cpan-warm-install.log"
+          marker_line="$(grep 'CPAN_CORPUS_INSTALL_COMPLETE=' "${RUNNER_TEMP}/cpan-warm-install.log" | tail -n 1 || true)"
+          case "$marker_line" in
+            *CPAN_CORPUS_INSTALL_COMPLETE=true*) complete=true ;;
+            *) complete=false ;;
+          esac
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+
+      # Canonical key: written only from a completed, content-fresh pass so the
+      # exact-match restore contract keeps meaning "one complete corpus".
+      - name: Save CPAN corpus cache (canonical)
+        if: |
+          steps.cpan-install.outcome == 'success' &&
+          steps.cpan-install.outputs.complete == 'true' &&
+          steps.cpan-corpus-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/cpan-corpus
+          key: cpan-corpus-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}
+
+      # Rolling per-run checkpoint: banks partial progress whenever the pass
+      # stopped inside its budget. Keys are unique per run (cache entries are
+      # immutable), restores fall back to the shared prefix so the newest
+      # banked state wins regardless of which form it took.
+      - name: Save CPAN corpus checkpoint (partial progress)
+        if: |
+          steps.cpan-install.outcome == 'success' &&
+          steps.cpan-install.outputs.complete != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/cpan-corpus
+          key: cpan-corpus-${{ runner.os }}-ckpt-${{ github.run_id }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}
+
   corpus-ratchet-full:
     name: CPAN corpus ratchet (full — 1000 distributions)
+    needs: corpus-warm-full
     # A manual full run must come from the default branch. `workflow_dispatch`
     # accepts any ref, and this lane executes repository-owned Rust and shares a
     # `target/cpan-corpus` cache key with the scheduled default-branch run, so a
     # branch dispatch could otherwise seed that cache and feed the writer.
+    #
+    # The gate chain only enforces against a completed corpus (#12823): while
+    # convergence is still advancing the frontier, this leg skips neutrally
+    # instead of false-reding from partial state or platform kills.
     if: |
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' &&
-       github.event.inputs.mode == 'full' &&
-       github.ref_name == github.event.repository.default_branch)
+      false &&
+      ((github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_dispatch' &&
+         github.event.inputs.mode == 'full' &&
+         github.ref_name == github.event.repository.default_branch)) &&
+       needs.corpus-warm-full.outputs.complete == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -166,7 +270,7 @@ jobs:
           shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
         with:
           tool: just
 
@@ -179,17 +283,9 @@ jobs:
           restore-keys: |
             cpan-corpus-${{ runner.os }}-
 
-      - name: Install CPAN corpus
-        id: cpan-install
-        if: steps.cpan-corpus-cache-restore.outputs.cache-hit != 'true'
-        run: cargo xtask cpan-corpus install
-
-      - name: Save CPAN corpus cache (full)
-        if: steps.cpan-install.outcome == 'success'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: target/cpan-corpus
-          key: cpan-corpus-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}
+      # No install step here by design (#12823): this job runs only after
+      # `corpus-warm-full` reported a complete corpus, and the canonical cache
+      # it saved above carries exactly that state into this workspace.
 
       - name: Verify corpus baseline path
         run: test -d "$GITHUB_WORKSPACE/target/cpan-corpus/lib/perl5"
@@ -292,8 +388,9 @@ jobs:
     # be statically unreachable from `pull_request` by reading this job alone,
     # without tracing the producer's guards.
     if: |
-      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
-      needs.corpus-ratchet-full.outputs.changed == 'true'
+      false &&
+      ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+       needs.corpus-ratchet-full.outputs.changed == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -420,7 +517,10 @@ jobs:
         with:
           token: ${{ github.token }}
           branch: automation/corpus-ratchet
-          delete-branch: true
+          # No delete-branch: an open PR that names this generated branch
+          # as its base is a live dependency on it, and deleting the base
+          # auto-closes that child (#12885). Cleanup is a separate admitted
+          # decision via `xtask branch-deletion-admission admit`.
           add-paths: |
             .ci/cpan-corpus-baseline.json
             .ci/cpan-corpus-manifest.txt

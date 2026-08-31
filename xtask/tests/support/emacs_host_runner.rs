@@ -1,16 +1,11 @@
 use anyhow::{Context, Result, bail, ensure};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
-use std::fmt::Write as _;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
 use xtask::editor_client_compat::{
     ArtifactKind, CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity, CleanupResult,
     ClientSourceState, DiagnosticMode, DiagnosticsIdentity, EditorClientCompatReceipt,
@@ -19,10 +14,13 @@ use xtask::editor_client_compat::{
     SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION, ServerIdentity, WorkspaceFixtureIdentity,
     canonical_expectation_set_digest, fixture_digest,
 };
+use xtask::editor_host::{
+    BoundedRun, HostProcessLedger, PathRedaction, ProbeCapture, judge_cleanup,
+    validate_safe_identity, write_artifact,
+};
 
 pub const RUN_PLAN_SCHEMA_VERSION: &str = "emacs_host_run_plan.v1";
 pub const DRIVER_SCHEMA_VERSION: &str = "emacs_host_driver.v1";
-const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -586,23 +584,16 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct ProcessLedger {
-    pid: u32,
-    timed_out: bool,
-    kill_requested: bool,
-    exit_code: Option<i32>,
-    cleanup: CleanupResult,
-    event_count: usize,
-    driver_complete: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct ProcessObservation {
     pub status_code: Option<i32>,
     pub timed_out: bool,
     pub kill_requested: bool,
     pub cleanup: CleanupResult,
+    /// Bounded detail naming the deciding cleanup evidence (shared ledger
+    /// law): a `pass` names the clean process set; every other verdict names
+    /// what could not be observed.
+    pub cleanup_detail: String,
     pub events: Vec<DriverEvent>,
     pub driver_complete: bool,
     pub artifacts: Vec<EvidenceArtifact>,
@@ -617,59 +608,56 @@ impl ProcessObservation {
     }
 }
 
+/// Execute one owned host process under a parent-owned hard deadline and
+/// judge OS-level cleanup by a deterministic before/after process-set
+/// comparison for the exact candidate executable. The mechanics — deadline,
+/// forced kill, separated captures, numeric set comparison, orderly-exit law
+/// — are owned by [`xtask::editor_host`]; this binding keeps only the Emacs
+/// run plan, needle policy, and evidence retention.
+///
+/// Historical note: this runner previously inferred cleanup purely from the
+/// host's own exit status — exactly the "client event substitutes for OS
+/// evidence" defect class #10894 forbids. The shared comparison makes a
+/// surviving `perllsp` observable as `fail`, an unusable probe honest as
+/// `not_proven`, and nothing silently green.
 pub fn run_owned_process(
     command: &mut Command,
     plan: &EmacsHostRunPlan,
     layout: &HermeticLayout,
 ) -> Result<ProcessObservation> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().context("spawning Emacs host subject")?;
-    let pid = child.id();
-    let mut stdout = child.stdout.take().context("capturing host stdout")?;
-    let mut stderr = child.stderr.take().context("capturing host stderr")?;
-    let stdout_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
-    let stderr_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
-
-    let deadline = Instant::now() + Duration::from_millis(plan.identity.timeout_ms);
-    let mut timed_out = false;
-    let mut kill_requested = false;
-    let status: ExitStatus = loop {
-        if let Some(status) = child.try_wait().context("polling Emacs host process")? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            timed_out = true;
-            child.kill().context("killing timed-out Emacs host process")?;
-            kill_requested = true;
-            break child.wait().context("reaping timed-out Emacs host process")?;
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-
-    let stdout = join_reader(stdout_reader, "host stdout")?;
-    let stderr = join_reader(stderr_reader, "host stderr")?;
-    // `Child::kill` signals only the Emacs process. The adapter starts
-    // `perllsp` as a descendant, so after a forced kill — or any exit that
-    // skipped the driver's own shutdown path — nothing here has observed that
-    // the server went away, and the server can outlive the run. Claiming
-    // `pass` in the receipt would assert a cleanup that was never witnessed,
-    // so only a host that terminated through its own shutdown path with a
-    // success status may report a proven cleanup; everything else is
-    // `not_proven` rather than `fail`, because a leak is unobserved here, not
-    // demonstrated.
-    let cleanup = if timed_out || kill_requested || status.code() != Some(0) {
-        CleanupResult::NotProven
+    // Same needle policy as the Vim substrate binding: full executable path
+    // where the probe reports command lines, bare image name on Windows.
+    let needle = if cfg!(windows) {
+        plan.paths
+            .candidate_executable
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("perllsp")
+            .to_string()
     } else {
-        CleanupResult::Pass
+        plan.paths.candidate_executable.to_string_lossy().into_owned()
     };
+
+    let probe_before = ProbeCapture::take();
+    let bounded: BoundedRun = xtask::editor_host::bounded_run(
+        command,
+        plan.identity.timeout_ms,
+        "the Emacs host subject",
+    )?;
+    let probe_after = ProbeCapture::take();
+    let probes_available = matches!(probe_before, ProbeCapture::Captured(_))
+        && matches!(probe_after, ProbeCapture::Captured(_));
+    // A leaked server is now observed directly; conversely even a clean
+    // process set stays not-proven when the host was killed or exited
+    // abnormally without its own shutdown path.
+    let judgment = judge_cleanup(
+        &probe_before,
+        &probe_after,
+        &needle,
+        cfg!(windows),
+        bounded.orderly_success(),
+    );
+
     let event_bytes = fs::read(layout.event_file()).unwrap_or_default();
     let events = parse_driver_events(&event_bytes, false).unwrap_or_default();
     let driver_complete = validate_driver_events(&events, true).is_ok();
@@ -679,7 +667,7 @@ pub fn run_owned_process(
         &layout.artifact_directory,
         "emacs/driver-stdout.log",
         ArtifactKind::DriverOutput,
-        &stdout,
+        &bounded.stdout,
         plan,
         layout,
     )?);
@@ -687,7 +675,7 @@ pub fn run_owned_process(
         &layout.artifact_directory,
         "emacs/driver-stderr.log",
         ArtifactKind::DriverOutput,
-        &stderr,
+        &bounded.stderr,
         plan,
         layout,
     )?);
@@ -719,44 +707,54 @@ pub fn run_owned_process(
         }
     }
 
-    let ledger = ProcessLedger {
-        pid,
-        timed_out,
-        kill_requested,
-        exit_code: status.code(),
-        cleanup,
-        event_count: events.len(),
-        driver_complete,
-    };
-    let ledger_bytes = serde_json::to_vec_pretty(&ledger)?;
-    artifacts.push(write_sanitized_artifact(
-        &layout.artifact_directory,
-        "emacs/process-ledger.json",
-        ArtifactKind::ProcessLedger,
-        &ledger_bytes,
-        plan,
-        layout,
-    )?);
+    artifacts.push(
+        HostProcessLedger::record(
+            &bounded,
+            events.len(),
+            driver_complete,
+            probes_available,
+            &judgment,
+        )
+        .artifact(
+            &layout.artifact_directory,
+            "emacs/process-ledger.json",
+            &emacs_redactions(plan, layout),
+        )?,
+    );
 
     Ok(ProcessObservation {
-        status_code: status.code(),
-        timed_out,
-        kill_requested,
-        cleanup,
+        status_code: bounded.status_code,
+        timed_out: bounded.timed_out,
+        kill_requested: bounded.kill_requested,
+        cleanup: judgment.result,
+        cleanup_detail: judgment.detail,
         events,
         driver_complete,
         artifacts,
     })
 }
 
-fn join_reader(
-    handle: thread::JoinHandle<std::io::Result<Vec<u8>>>,
-    label: &str,
-) -> Result<Vec<u8>> {
-    handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("{label} reader thread panicked"))?
-        .with_context(|| format!("reading {label}"))
+/// The Emacs run plan's capture redaction map. Every absolute path the run
+/// plan accepts has to appear here: an Emacs load error or backtrace names the
+/// driver, adapter, configuration, and package files directly, and these
+/// captures are written as sanitized artifacts that may be uploaded, so a path
+/// omitted from this list leaks the checkout or user directory it came from.
+fn emacs_redactions(plan: &EmacsHostRunPlan, layout: &HermeticLayout) -> Vec<PathRedaction> {
+    let mut redactions = vec![
+        PathRedaction { path: layout.root.clone(), token: "<RUN_ROOT>" },
+        PathRedaction { path: plan.paths.artifact_root.clone(), token: "<ARTIFACT_ROOT>" },
+        PathRedaction { path: plan.paths.fixture_root.clone(), token: "<WORKSPACE>" },
+        PathRedaction { path: plan.paths.candidate_executable.clone(), token: "<CANDIDATE>" },
+        PathRedaction { path: plan.paths.emacs_executable.clone(), token: "<EMACS>" },
+        PathRedaction { path: plan.paths.client_source.clone(), token: "<CLIENT_SOURCE>" },
+        PathRedaction { path: plan.paths.driver.clone(), token: "<DRIVER>" },
+        PathRedaction { path: plan.paths.adapter.clone(), token: "<ADAPTER>" },
+        PathRedaction { path: plan.paths.configuration.clone(), token: "<CONFIGURATION>" },
+    ];
+    if let Some(client_package) = plan.paths.client_package.as_ref() {
+        redactions.push(PathRedaction { path: client_package.clone(), token: "<CLIENT_PACKAGE>" });
+    }
+    redactions
 }
 
 fn write_sanitized_artifact(
@@ -767,53 +765,7 @@ fn write_sanitized_artifact(
     plan: &EmacsHostRunPlan,
     layout: &HermeticLayout,
 ) -> Result<EvidenceArtifact> {
-    validate_safe_identity(id, "artifact id")?;
-    let sanitized = sanitize_text(bytes, plan, layout);
-    let bounded = bound_capture(sanitized.as_bytes());
-    let destination = artifact_root.join(id);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&destination, bounded)
-        .with_context(|| format!("writing sanitized artifact {}", destination.display()))?;
-    Ok(EvidenceArtifact { kind, id: id.to_string(), sha256: file_sha256(&destination)? })
-}
-
-fn sanitize_text(bytes: &[u8], plan: &EmacsHostRunPlan, layout: &HermeticLayout) -> String {
-    let mut text = String::from_utf8_lossy(bytes).into_owned();
-    // Every absolute path the run plan accepts has to appear here. An Emacs
-    // load error or backtrace names the driver, adapter, configuration, and
-    // package files directly, and these captures are written as sanitized
-    // artifacts that may be uploaded, so a path omitted from this list leaks
-    // the checkout or user directory it came from.
-    let mut replacements = vec![
-        (&layout.root, "<RUN_ROOT>"),
-        (&plan.paths.artifact_root, "<ARTIFACT_ROOT>"),
-        (&plan.paths.fixture_root, "<WORKSPACE>"),
-        (&plan.paths.candidate_executable, "<CANDIDATE>"),
-        (&plan.paths.emacs_executable, "<EMACS>"),
-        (&plan.paths.client_source, "<CLIENT_SOURCE>"),
-        (&plan.paths.driver, "<DRIVER>"),
-        (&plan.paths.adapter, "<ADAPTER>"),
-        (&plan.paths.configuration, "<CONFIGURATION>"),
-    ];
-    if let Some(client_package) = plan.paths.client_package.as_ref() {
-        replacements.push((client_package, "<CLIENT_PACKAGE>"));
-    }
-    // Longest first: a run root is a prefix of the paths nested under it, and
-    // replacing the prefix first would leave the longer path unrecognizable.
-    replacements.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_os_str().len()));
-    for (path, token) in replacements {
-        if let Some(value) = path.to_str() {
-            text = text.replace(value, token);
-            text = text.replace(&value.replace('\\', "/"), token);
-        }
-    }
-    text
-}
-
-fn bound_capture(bytes: &[u8]) -> &[u8] {
-    if bytes.len() <= MAX_CAPTURE_BYTES { bytes } else { &bytes[..MAX_CAPTURE_BYTES] }
+    write_artifact(artifact_root, id, kind, bytes, &emacs_redactions(plan, layout))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -885,58 +837,19 @@ pub fn default_not_proven_diagnostics() -> DiagnosticsIdentity {
 }
 
 pub fn file_sha256(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    bytes_sha256(&bytes)
+    xtask::editor_host::sha256_file(path)
 }
 
 fn verify_file_sha256(path: &Path, expected: &str, label: &str) -> Result<()> {
-    let actual = file_sha256(path)?;
-    ensure!(actual == expected, "{label} hash mismatch");
-    Ok(())
-}
-
-fn bytes_sha256(bytes: &[u8]) -> Result<String> {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let mut identity = String::with_capacity("sha256:".len() + 64);
-    identity.push_str("sha256:");
-    for byte in hasher.finalize() {
-        write!(&mut identity, "{byte:02x}")?;
-    }
-    Ok(identity)
+    xtask::editor_host::verify_sha256_file(path, expected, label)
 }
 
 fn validate_sha256(value: &str, field: &str) -> Result<()> {
-    let Some(hex) = value.strip_prefix("sha256:") else {
-        bail!("{field} must use sha256:<64 lowercase hex> identity");
-    };
-    ensure!(is_lower_hex(hex, 64), "{field} must use sha256:<64 lowercase hex> identity");
-    Ok(())
-}
-
-fn validate_safe_identity(value: &str, field: &str) -> Result<()> {
-    let value = value.trim();
-    ensure!(!value.is_empty(), "{field} cannot be empty");
-    ensure!(!value.starts_with('/'), "{field} must not expose an absolute path");
-    ensure!(!value.starts_with('~'), "{field} must not expose a home-relative path");
-    ensure!(!value.contains('\\'), "{field} must use normalized separators");
-    ensure!(!value.contains("://"), "{field} must not expose a URI-qualified path");
-    ensure!(
-        !(value.len() >= 3
-            && value.as_bytes()[0].is_ascii_alphabetic()
-            && value.as_bytes()[1] == b':'
-            && value.as_bytes()[2] == b'/'),
-        "{field} must not expose a drive-qualified path"
-    );
-    ensure!(
-        !value.split('/').any(|component| component == ".."),
-        "{field} must not contain parent traversal"
-    );
-    Ok(())
+    xtask::editor_host::validate_sha256_field(value, field)
 }
 
 fn is_lower_hex(value: &str, len: usize) -> bool {
-    value.len() == len && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    xtask::editor_host::is_lower_hex(value, len)
 }
 
 fn is_reason_token(value: &str) -> bool {

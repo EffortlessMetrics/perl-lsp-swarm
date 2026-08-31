@@ -63,6 +63,8 @@ jobs:
             run_rust_smoke: false
           - perl: '5.40'
             run_rust_smoke: true
+          - perl: '5.42'
+            run_rust_smoke: false
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,7 +94,7 @@ jobs:
               my $supported = ($] >= $minimum) ? 1 : 0;
 
               if ($supported && !$ok) {
-                die "$name expected to compile on Perl $], error: $err";
+                die "$name expected to compile and satisfy its probe on Perl $], error: $err";
               }
               if (!$supported && $ok) {
                 die "$name unexpectedly compiled on Perl $] (minimum $minimum)";
@@ -101,12 +103,77 @@ jobs:
 
             check_gate(q{say}, 5.010, q{use feature q(say); say q(ok); 1;});
             check_gate(q{state}, 5.010, q{use feature q(state); state $x = 1; $x++; 1;});
+            # Subroutine signatures compile as an experimental feature from
+            # Perl 5.20 (stabilized at 5.36), so the floor for the probe is
+            # 5.020: every version at or above it must compile the probe, and
+            # every version below it must fail to compile it.
             check_gate(
               q{signatures},
-              5.036,
+              5.020,
               q{use feature q(signatures); no warnings q(experimental::signatures); sub f ($x) { $x }; 1;}
             );
             check_gate(q{class}, 5.038, q{use feature q(class); no warnings q(experimental::class); class Probe { }; 1;});
+
+            # Nearest-spelling controls remain valid throughout the matrix.
+            check_gate(
+              q{bitwise xor},
+              5.008,
+              q{my $value = 5 ^ 3; die "unexpected bitwise xor result" unless $value == 6; 1;}
+            );
+            check_gate(
+              q{bitwise xor assignment},
+              5.008,
+              q{my $value = 5; $value ^= 3; die "unexpected bitwise xor assignment result" unless $value == 6; 1;}
+            );
+
+            # Perl 5.40 introduced binary logical XOR. Verify the full truth
+            # table so token acceptance alone cannot satisfy this probe, and
+            # include a non-Boolean case so the 0/1 inputs that bitwise xor
+            # also satisfies cannot mask a `^^`-as-`^` confusion.
+            check_gate(
+              q{logical xor},
+              5.040,
+              q{
+                my @cases = (
+                  [0, 0, 0],
+                  [0, 1, 1],
+                  [1, 0, 1],
+                  [1, 1, 0],
+                  [1, 2, 0],
+                );
+                for my $case (@cases) {
+                  my ($left, $right, $expected) = @$case;
+                  my $actual = ($left ^^ $right) ? 1 : 0;
+                  die "logical xor truth table mismatch" unless $actual == $expected;
+                }
+                1;
+              }
+            );
+
+            # Perl 5.42 completed the operator family with assigning logical
+            # XOR. Verify mutation and result rather than parse success alone;
+            # the non-Boolean case distinguishes logical semantics from a
+            # bitwise `^=` confusion, which would leave $value == 3.
+            check_gate(
+              q{assigning logical xor},
+              5.042,
+              q{
+                my @cases = (
+                  [0, 0, 0],
+                  [0, 1, 1],
+                  [1, 0, 1],
+                  [1, 1, 0],
+                  [1, 2, 0],
+                );
+                for my $case (@cases) {
+                  my ($value, $right, $expected) = @$case;
+                  $value ^^= $right;
+                  my $actual = $value ? 1 : 0;
+                  die "assigning logical xor truth table mismatch" unless $actual == $expected;
+                }
+                1;
+              }
+            );
 
             print qq{version-gated probes passed on $^V\n};
           '

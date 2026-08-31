@@ -1,5 +1,9 @@
-export type CrashObservationSource = 'process_exit' | 'watchdog';
-export type CrashObservationSummary = 'process_exit' | 'watchdog' | 'both_deduped';
+export type CrashObservationSource = 'process_exit' | 'watchdog' | 'startup_failure';
+export type CrashObservationSummary =
+  | 'process_exit'
+  | 'watchdog'
+  | 'startup_failure'
+  | 'both_deduped';
 export type RecoveryDecisionDisposition =
   | 'start_recovery'
   | 'deduped_existing_episode'
@@ -45,6 +49,7 @@ interface RecoveryEpisodeState {
   decision: CrashRecoveryDecision;
   process_exit_observed: boolean;
   watchdog_observed: boolean;
+  startup_failure_observed: boolean;
   terminal: RecoveryTerminalDisposition | null;
   replacement_generation: number | null;
 }
@@ -65,10 +70,23 @@ const RECENT_EPISODE_LIMIT = 16;
 const PENDING_OBSERVATION_LIMIT = 4;
 
 function observationSummary(episode: RecoveryEpisodeState): CrashObservationSummary {
-  if (episode.process_exit_observed && episode.watchdog_observed) {
-    return 'both_deduped';
+  const observed: CrashObservationSource[] = [];
+  if (episode.process_exit_observed) {
+    observed.push('process_exit');
   }
-  return episode.watchdog_observed ? 'watchdog' : 'process_exit';
+  if (episode.watchdog_observed) {
+    observed.push('watchdog');
+  }
+  if (episode.startup_failure_observed) {
+    observed.push('startup_failure');
+  }
+  // A single observation reports itself; several observations deduplicated
+  // into one episode report the existing combined marker.
+  const [single] = observed;
+  if (observed.length === 1 && single !== undefined) {
+    return single;
+  }
+  return 'both_deduped';
 }
 
 function episodeKey(generation: number, processIdentity: string): string {
@@ -166,6 +184,7 @@ export class CrashRecoveryArbiter {
       decision,
       process_exit_observed: observation.source === 'process_exit',
       watchdog_observed: observation.source === 'watchdog',
+      startup_failure_observed: observation.source === 'startup_failure',
       terminal: exhausted ? 'recovery_failed' : null,
       replacement_generation: null,
     };
@@ -288,8 +307,10 @@ export class CrashRecoveryArbiter {
   ): void {
     if (source === 'process_exit') {
       episode.process_exit_observed = true;
-    } else {
+    } else if (source === 'watchdog') {
       episode.watchdog_observed = true;
+    } else {
+      episode.startup_failure_observed = true;
     }
   }
 

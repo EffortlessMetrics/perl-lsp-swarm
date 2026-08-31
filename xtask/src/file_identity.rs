@@ -33,7 +33,7 @@ pub fn windows_file_identity(path: &Path) -> Result<Option<WindowsFileIdentity>>
     use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
     use winapi::um::fileapi::FILE_ID_INFO;
     use winapi::um::minwinbase::FileIdInfo;
-    use winapi::um::winbase::GetFileInformationByHandleEx;
+    use winapi::um::winbase::{FILE_FLAG_BACKUP_SEMANTICS, GetFileInformationByHandleEx};
     use winapi::um::winnt::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE};
 
     let display_path = path.display().to_string();
@@ -49,6 +49,7 @@ pub fn windows_file_identity(path: &Path) -> Result<Option<WindowsFileIdentity>>
     let file = match std::fs::OpenOptions::new()
         .access_mode(0)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
     {
         Ok(file) => file,

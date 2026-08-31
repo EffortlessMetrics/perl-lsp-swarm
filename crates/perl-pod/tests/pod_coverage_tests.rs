@@ -176,26 +176,33 @@ fn g_angle_bracket_passes_through_literally() {
 
 /// Verify that `#` (not in the alphanumeric or `- . _ ~ : /` safe set) is
 /// percent-encoded, exercising the `else` branch of the `matches!` guard.
+/// Uses DESCRIPTION: NAME renders links as plain display text (#12824) and no
+/// longer exercises the markdown target path.
 #[test]
 fn encode_link_hash_is_percent_encoded() {
-    let doc = extract_pod("=head1 NAME\n\nL<Module#anchor>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<Module#anchor>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
     // '#' must appear percent-encoded in the URL
-    assert!(name.contains("%23"), "hash should be percent-encoded as %23; got: {name}");
+    assert!(
+        description.contains("%23"),
+        "hash should be percent-encoded as %23; got: {description}"
+    );
 }
 
 // -- escape_markdown_link_text: backslash branch --
 
 /// A backslash in the display text of an `L<>` link must be escaped to `\\`
-/// so it does not act as a markdown escape character.
+/// so it does not act as a markdown escape character. Uses DESCRIPTION: NAME
+/// renders links as plain display text (#12824) and no longer exercises the
+/// markdown escape path.
 #[test]
 fn escape_markdown_backslash_in_display_text() {
     // L<back\slash|Module::Name>
-    let doc = extract_pod("=head1 NAME\n\nL<back\\slash|Module::Name>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<back\\slash|Module::Name>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
     assert!(
-        name.contains("back\\\\slash") || name.contains("back\\slash"),
-        "backslash in display text should be handled; got: {name}"
+        description.contains("back\\\\slash"),
+        "backslash in display text should be markdown-escaped; got: {description}"
     );
 }
 

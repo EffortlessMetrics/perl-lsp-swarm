@@ -1,6 +1,7 @@
 # Documentation Index
 
-This page is the documentation front door for the `perl-lsp` workspace.
+This page is a curated documentation index for the `perl-lsp` workspace.
+For a shorter task-oriented route map, start with [README.md](README.md).
 
 ## Diataxis Quick Guide
 
@@ -28,6 +29,7 @@ Choose the path that matches what you are trying to do:
 | Install the language server | [Installation Guide](how-to/INSTALLATION.md) |
 | Integrate perl-lsp into GitHub Actions | [GitHub Actions Integration](how-to/GITHUB_ACTIONS.md) |
 | Upgrade an existing installation | [Upgrading](how-to/UPGRADING.md) |
+| Promote a prepared swarm release into `perl-lsp` without losing history | [History-Preserving Publication Sync](how-to/PUBLICATION_SYNC.md) |
 | Get a working editor setup quickly | [Getting Started](tutorials/GETTING_STARTED.md) |
 | Set up continuous testing and watch loops | [Continuous Testing](how-to/CONTINUOUS_TESTING.md) |
 | Configure editor or workspace settings | [Configuration Reference](reference/CONFIG.md) |
@@ -44,6 +46,7 @@ Choose the path that matches what you are trying to do:
 | Add or audit public API documentation | [Missing Documentation Guide](reference/MISSING_DOCUMENTATION_GUIDE.md) |
 | Understand stability and compatibility | [Stability Policy](reference/STABILITY.md) |
 | Compare distribution channels and support tiers | [Distribution Matrix](project/DISTRIBUTION_MATRIX.md) |
+| Audit install claims and pin hazards across doc surfaces | [Install Claim Surface Inventory](distribution/INSTALL_CLAIM_SURFACES.md) |
 | Understand the native stack product policy | [Native Stack Product Policy](reference/NATIVE_STACK_POLICY.md) |
 | Read the historical analyses and launch material | [Articles and Research Notes](articles/README.md) |
 | Decide where a doc belongs in Diataxis | [Diataxis Authoring Guide](reference/DIATAXIS_GUIDE.md) |
@@ -68,6 +71,7 @@ Task-focused instructions for common workflows (goal-oriented).
 - [Installation Guide](how-to/INSTALLATION.md)
 - [GitHub Actions Integration](how-to/GITHUB_ACTIONS.md)
 - [Upgrading](how-to/UPGRADING.md)
+- [History-Preserving Publication Sync](how-to/PUBLICATION_SYNC.md)
 - [Editor Setup](how-to/EDITOR_SETUP.md)
 - [Native Tooling Migration](how-to/NATIVE_TOOLING_MIGRATION.md)
 - [Troubleshooting](how-to/TROUBLESHOOTING.md)
@@ -109,6 +113,7 @@ Decision records, project status, and planning documents.
 - [ADR Index](adr/README.md) — chronological index plus a topic guide for parser, runtime, DAP, security, and swarm decisions
 - [Project Roadmap](project/ROADMAP.md)
 - [Distribution Matrix](project/DISTRIBUTION_MATRIX.md)
+- [Install Claim Surface Inventory](distribution/INSTALL_CLAIM_SURFACES.md)
 - [Compiler-Backed LSP Roadmap](project/COMPILER_BACKED_LSP_ROADMAP.md)
 - [Preview Before Edit ADR](adr/PLSP-ADR-0003-preview-before-edit.md)
 - [PR Semantic Incorporation and Disposition Spec](specs/PLSP-SPEC-0006-pr-queue-disposition.md)

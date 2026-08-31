@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "checks-run",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.checks",
+  "subject": "checks@fixture-tree",
+  "source_result": "pass",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:90ad285ecb126d8658deda9a9ee23036b2e92280035573f2d4ece4c78669f46a",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}

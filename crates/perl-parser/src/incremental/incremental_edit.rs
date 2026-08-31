@@ -241,10 +241,10 @@ impl IncrementalEditSet {
                 continue;
             }
 
-            if let Some(previous) = previous_non_empty {
-                if edit.old_end_byte > previous.start_byte {
-                    return None;
-                }
+            if let Some(previous) = previous_non_empty
+                && edit.old_end_byte > previous.start_byte
+            {
+                return None;
             }
             previous_non_empty = Some(edit);
         }

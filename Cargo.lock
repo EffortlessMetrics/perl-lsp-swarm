@@ -136,6 +136,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arbitrary"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
+dependencies = [
+ "derive_arbitrary",
+]
+
+[[package]]
 name = "assert_cmd"
 version = "2.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -609,6 +618,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "powerfmt",
+]
+
+[[package]]
+name = "derive_arbitrary"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -1657,6 +1677,7 @@ dependencies = [
  "perl-ast-v2",
  "perl-position-tracking",
  "perl-token",
+ "sha2",
  "strum",
 ]
 
@@ -1674,6 +1695,7 @@ dependencies = [
  "chrono",
  "clap",
  "color-eyre",
+ "perl-test-must",
  "regex",
  "serde_json",
  "toml",
@@ -1689,6 +1711,7 @@ dependencies = [
  "nix",
  "perl-core-harness-types",
  "perl-tdd-support",
+ "perl-test-must",
  "serde",
  "serde_json",
  "sha2",
@@ -1746,6 +1769,7 @@ dependencies = [
  "clap",
  "criterion",
  "getrandom 0.4.3",
+ "libc",
  "nix",
  "perl-ast",
  "perl-lexer",
@@ -1800,6 +1824,7 @@ dependencies = [
  "perl-tdd-support",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "toml",
@@ -1838,6 +1863,7 @@ dependencies = [
  "perl-parser-core",
  "perl-subprocess-runtime",
  "perl-tdd-support",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -1960,7 +1986,9 @@ dependencies = [
  "perl-tdd-support",
  "perl-workspace",
  "proptest",
+ "regex",
  "tempfile",
+ "unicode-ident",
  "url",
 ]
 
@@ -2054,6 +2082,7 @@ dependencies = [
  "pest_derive",
  "regex",
  "serde",
+ "serde_json",
  "sha2",
  "stacker",
  "tempfile",
@@ -2176,11 +2205,13 @@ dependencies = [
 name = "perl-tdd-support"
 version = "0.17.0"
 dependencies = [
+ "anyhow",
  "lsp-types",
  "perl-parser-core",
  "perl-test-must",
  "serde",
  "serde_json",
+ "tempfile",
  "url",
 ]
 
@@ -2989,6 +3020,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.2",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]
@@ -4129,6 +4171,7 @@ dependencies = [
  "glob",
  "indicatif",
  "jsonschema",
+ "libc",
  "notify",
  "perl-ci-hygiene",
  "perl-core-harness",
@@ -4146,13 +4189,16 @@ dependencies = [
  "perl-semantic-facts",
  "perl-tdd-support",
  "perl-workspace",
+ "proc-macro2",
  "procfs",
  "regex",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha1",
  "sha2",
  "similar 3.2.0",
+ "syn 2.0.117",
  "tar",
  "tempfile",
  "toml",
@@ -4161,6 +4207,7 @@ dependencies = [
  "tree-sitter-perl-rs",
  "walkdir",
  "winapi",
+ "zip",
 ]
 
 [[package]]
@@ -4264,6 +4311,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "zip"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb2a05c7c36fde6c09b08576c9f7fb4cda705990f73b58fe011abf7dfb24168b"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
 ]
 
 [[package]]

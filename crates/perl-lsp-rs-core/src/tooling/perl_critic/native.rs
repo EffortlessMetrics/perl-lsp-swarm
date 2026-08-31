@@ -1957,10 +1957,10 @@ fn push_unchecked_open_close_statement_finding(
     out: &mut Vec<CriticFinding>,
 ) {
     match &expression.kind {
-        NodeKind::FunctionCall { name, .. } if is_open_close_call(name) => {
-            if !has_trailing_error_check(source, expression) {
-                out.push(unchecked_open_close_finding(rule, source, expression, name));
-            }
+        NodeKind::FunctionCall { name, .. }
+            if is_open_close_call(name) && !has_trailing_error_check(source, expression) =>
+        {
+            out.push(unchecked_open_close_finding(rule, source, expression, name));
         }
         _ => {}
     }

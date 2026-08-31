@@ -2,7 +2,7 @@
 //!
 //! These tests prove the checker fails for realistic wrong registries. Production
 //! FieldId membership and field-aware traversal are owned by the registry after
-//! #8424; rendering and status are not.
+//! #8424. Schema identity and freshness-gated status live in `kind_schema_identity`.
 
 use perl_ast::kind_schema::{
     ChildFieldSpec, FieldCardinality, GrammarInputWitness, GrammarNameSpec, KindBody,

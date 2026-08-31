@@ -954,3 +954,100 @@ fn released_subject_never_searches_the_host_installation() -> Result<()> {
     );
     Ok(())
 }
+
+/// A directly observed leaked `perllsp` fails the run even when the host
+/// itself exited 0 through no driver fault — the cleanup facet outranks the
+/// not-proven fall-through, mirroring the Vim evaluator's law (#12794
+/// review: "Promote observed Emacs cleanup leaks to failure").
+#[test]
+fn observed_cleanup_leak_fails_an_orderly_run() -> Result<()> {
+    use host_run_task::emacs_host_runner as runner_types;
+    use runner_types::{DriverEventKind, ProcessObservation};
+    use std::collections::BTreeMap as Details;
+
+    let subject_digest = format!("sha256:{}", "c".repeat(64));
+    let plan = host_run_task::emacs_host_runner::EmacsHostRunPlan {
+        identity: host_run_task::emacs_host_runner::EmacsHostRunIdentity {
+            schema_version: RUN_PLAN_SCHEMA_VERSION.to_string(),
+            stage: xtask::editor_client_compat::EvidenceStage::ExactSourceLocal,
+            repository: "repo".into(),
+            candidate_sha: format!("sha256:{}", "a".repeat(64)),
+            emacs_version: "GNU Emacs 30.1".into(),
+            emacs_build_sha256: format!("sha256:{}", "b".repeat(64)),
+            client: host_run_task::emacs_host_runner::ClientSubject {
+                client_id: "eglot".into(),
+                kind: host_run_task::emacs_host_runner::EmacsClientKind::BundledEglot,
+                version: "30.1".into(),
+                source_state: xtask::editor_client_compat::ClientSourceState::UpstreamSource,
+                source_ref: "bundled".into(),
+                source_sha256: subject_digest.clone(),
+                package_sha256: None,
+            },
+            driver_sha256: subject_digest,
+            adapter_sha256: format!("sha256:{}", "d".repeat(64)),
+            configuration_sha256: format!("sha256:{}", "e".repeat(64)),
+            candidate_version: "perl-lsp 0.1.0".into(),
+            candidate_build_revision: "f".repeat(40),
+            candidate_artifact_sha256: format!("sha256:{}", "0".repeat(64)),
+            fixture: xtask::editor_client_compat::WorkspaceFixtureIdentity {
+                id: "fixture".into(),
+                digest: format!("sha256:{}", "1".repeat(64)),
+                expectation_set_id: "set".into(),
+                expectation_set_digest: format!("sha256:{}", "2".repeat(64)),
+            },
+            journey_selector: "selector".into(),
+            platform: xtask::editor_client_compat::PlatformIdentity {
+                os: "test".into(),
+                os_version: "0".into(),
+                arch: "x".into(),
+            },
+            registration_state:
+                xtask::editor_client_compat::RegistrationState::ManualClientRegistration,
+            timeout_ms: 60_000,
+        },
+        paths: host_run_task::emacs_host_runner::EmacsHostPaths {
+            emacs_executable: std::path::PathBuf::from("emacs"),
+            client_source: std::path::PathBuf::from("eglot.el"),
+            client_package: None,
+            driver: std::path::PathBuf::from("driver.el"),
+            adapter: std::path::PathBuf::from("adapter.el"),
+            configuration: std::path::PathBuf::from("conf.el"),
+            candidate_executable: std::path::PathBuf::from("perllsp"),
+            fixture_root: std::path::PathBuf::from("fixture"),
+            artifact_root: std::path::PathBuf::from("artifacts"),
+        },
+    };
+    let mut client_loaded_details = Details::new();
+    client_loaded_details.insert("source_sha256".to_string(), "c".repeat(64));
+    let events = vec![{
+        let mut event = runner_types::DriverEvent {
+            schema_version: RUN_PLAN_SCHEMA_VERSION.to_string(),
+            sequence: 1,
+            kind: runner_types::DriverEventKind::ClientLoaded,
+            details: client_loaded_details,
+        };
+        event
+    }];
+    let observation = ProcessObservation {
+        status_code: Some(0),
+        timed_out: false,
+        kill_requested: false,
+        cleanup: xtask::editor_client_compat::CleanupResult::Fail,
+        cleanup_detail: "process-set comparison observed 1 surviving candidate process(es)".into(),
+        events,
+        driver_complete: true,
+        artifacts: Vec::new(),
+    };
+    let judgment = host_run_task::evaluate_observation(&plan, &observation)?;
+    ensure!(
+        judgment.result == xtask::editor_client_compat::ObservationResult::Fail,
+        "an observed leak must fail an otherwise orderly run, got {:?}",
+        judgment.result
+    );
+    ensure!(
+        judgment.failure_class == Some(xtask::editor_client_compat::FailureClass::Cleanup),
+        "the leak must classify as Cleanup, got {:?}",
+        judgment.failure_class
+    );
+    Ok(())
+}

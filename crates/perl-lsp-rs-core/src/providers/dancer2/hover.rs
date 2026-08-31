@@ -310,6 +310,7 @@ mod tests {
     use crate::providers::dancer2::facts::canonical_file_facts;
     use perl_semantic_analyzer::Parser;
     use perl_semantic_facts::{FileId, SourceGeneration};
+    use perl_test_must::{must_some_with, must_with};
 
     struct Setup {
         activations: Dancer2FileActivations,
@@ -319,7 +320,7 @@ mod tests {
 
     fn setup(source: &'static str) -> Setup {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
+        let ast = must_with(parser.parse(), "fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
@@ -331,13 +332,18 @@ mod tests {
     fn get_route_hover_reports_get_head_and_name_pattern_separately() {
         let source = "use Dancer2;\nget '/users/:id' => sub { 1 };";
         let setup = setup(source);
-        let offset = source.find("/users/:id").expect("pattern offset");
-        let projection =
-            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset)
-                .expect("route hover");
-        let RouteHoverProjection::Route { content, exact } = projection else {
-            panic!("expected route projection");
-        };
+        let offset = must_some_with(source.find("/users/:id"), "pattern offset");
+        let projection = must_some_with(
+            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset),
+            "route hover",
+        );
+        let (content, exact) = must_some_with(
+            match projection {
+                RouteHoverProjection::Route { content, exact } => Some((content, exact)),
+                RouteHoverProjection::Keyword { .. } | RouteHoverProjection::Hook { .. } => None,
+            },
+            "expected route projection",
+        );
         assert!(exact);
         assert!(content.contains("GET, HEAD"), "{content}");
         assert!(content.contains("pattern: `/users/:id`"), "{content}");
@@ -349,13 +355,18 @@ mod tests {
     fn named_route_hover_includes_name_and_pattern_separately() {
         let source = "use Dancer2;\nget 'user_show', '/users/:id' => sub { 1 };";
         let setup = setup(source);
-        let offset = source.find("/users/:id").expect("pattern offset");
-        let projection =
-            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset)
-                .expect("route hover");
-        let RouteHoverProjection::Route { content, .. } = projection else {
-            panic!("expected route projection");
-        };
+        let offset = must_some_with(source.find("/users/:id"), "pattern offset");
+        let projection = must_some_with(
+            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset),
+            "route hover",
+        );
+        let (content, _exact) = must_some_with(
+            match projection {
+                RouteHoverProjection::Route { content, exact } => Some((content, exact)),
+                RouteHoverProjection::Keyword { .. } | RouteHoverProjection::Hook { .. } => None,
+            },
+            "expected route projection",
+        );
         assert!(content.contains("route name: `user_show`"), "{content}");
         assert!(content.contains("pattern: `/users/:id`"), "{content}");
     }
@@ -364,13 +375,18 @@ mod tests {
     fn hook_hover_exposes_identity() {
         let source = "use Dancer2;\nhook 'before' => sub { 1 };";
         let setup = setup(source);
-        let offset = source.find("before").expect("hook name offset");
-        let projection =
-            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset)
-                .expect("hook hover");
-        let RouteHoverProjection::Hook { content, exact } = projection else {
-            panic!("expected hook projection");
-        };
+        let offset = must_some_with(source.find("before"), "hook name offset");
+        let projection = must_some_with(
+            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset),
+            "hook hover",
+        );
+        let (content, exact) = must_some_with(
+            match projection {
+                RouteHoverProjection::Hook { content, exact } => Some((content, exact)),
+                RouteHoverProjection::Route { .. } | RouteHoverProjection::Keyword { .. } => None,
+            },
+            "expected hook projection",
+        );
         assert!(exact);
         assert!(content.contains("Dancer2 hook"), "{content}");
         assert!(content.contains("hook: `before`"), "{content}");
@@ -380,7 +396,7 @@ mod tests {
     fn no_activation_yields_no_framework_hover() {
         let source = "get '/x' => sub { 1 };";
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
+        let ast = must_with(parser.parse(), "fixture must parse");
         let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         assert!(hover_projection_at(&activations, &facts, &ast, "main", 5).is_none());
@@ -391,13 +407,11 @@ mod tests {
         let source = "use Dancer2;\nget '/x' => sub { params; };";
         let setup = setup(source);
         let _ = setup.facts;
-        let activation = setup.activations.for_package("main").expect("activation");
-        let params = activation
-            .facts
-            .keywords
-            .iter()
-            .find(|k| k.keyword == "params")
-            .expect("params keyword");
+        let activation = must_some_with(setup.activations.for_package("main"), "activation");
+        let params = must_some_with(
+            activation.facts.keywords.iter().find(|k| k.keyword == "params"),
+            "params keyword",
+        );
         assert_eq!(params.scope, DslKeywordScope::RouteHandlerOnly);
     }
 }

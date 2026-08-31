@@ -39,6 +39,7 @@ serde = []
 [dev-dependencies]
 perl-tdd-support = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 toml = "1.1.2"

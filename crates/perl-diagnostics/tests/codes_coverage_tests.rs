@@ -65,6 +65,12 @@ fn as_str_security_readpipe_is_pl606() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
+fn as_str_security_sql_injection_is_pl607() -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(DiagnosticCode::SecuritySqlInjection.as_str(), "PL607");
+    Ok(())
+}
+
+#[test]
 fn as_str_version_incompat_feature_is_pl900() -> Result<(), Box<dyn std::error::Error>> {
     // Line 299 in codes/mod.rs
     assert_eq!(DiagnosticCode::VersionIncompatFeature.as_str(), "PL900");
@@ -106,6 +112,17 @@ fn documentation_url_security_readpipe() -> Result<(), Box<dyn std::error::Error
     let url = DiagnosticCode::SecurityReadpipe.documentation_url();
     assert_eq!(url, Some("https://docs.perl-lsp.org/errors/PL606"));
     Ok(())
+}
+
+#[test]
+fn documentation_url_security_sql_injection_is_the_reviewed_owasp_reference() {
+    // #5035: the storyboarded `security.sql_injection` wire format pins the
+    // codeDescription href to the OWASP SQL injection reference
+    // (crates/perl-lsp-rs/tests/lsp_critical_user_stories.rs, "TEST 4").
+    // PL607 is the reviewed external-reference exception to the
+    // docs.perl-lsp.org error-page convention.
+    let url = DiagnosticCode::SecuritySqlInjection.documentation_url();
+    assert_eq!(url, Some("https://owasp.org/www-community/attacks/SQL_Injection"));
 }
 
 #[test]
@@ -919,6 +936,7 @@ fn parse_code_round_trip_all_variants_exhaustive() -> Result<(), Box<dyn std::er
         DiagnosticCode::SecurityExecCall,
         DiagnosticCode::SecurityPipeOpen,
         DiagnosticCode::SecurityReadpipe,
+        DiagnosticCode::SecuritySqlInjection,
         DiagnosticCode::UnusedImport,
         DiagnosticCode::ModuleNotFound,
         DiagnosticCode::SourceFilterModule,
@@ -934,8 +952,8 @@ fn parse_code_round_trip_all_variants_exhaustive() -> Result<(), Box<dyn std::er
 
     assert_eq!(
         all_variants.len(),
-        56,
-        "expected exhaustive DiagnosticCode variant list to cover 56 variants"
+        57,
+        "expected exhaustive DiagnosticCode variant list to cover 57 variants"
     );
     for code in &all_variants {
         let s = code.as_str();
@@ -980,6 +998,7 @@ fn severity_security_codes_are_all_warning() -> Result<(), Box<dyn std::error::E
         DiagnosticCode::SecurityExecCall,
         DiagnosticCode::SecurityPipeOpen,
         DiagnosticCode::SecurityReadpipe,
+        DiagnosticCode::SecuritySqlInjection,
     ];
     for code in &security_codes {
         assert_eq!(
@@ -1071,6 +1090,7 @@ fn all_pl_codes_have_documentation_url() -> Result<(), Box<dyn std::error::Error
         DiagnosticCode::SecurityExecCall,
         DiagnosticCode::SecurityPipeOpen,
         DiagnosticCode::SecurityReadpipe,
+        DiagnosticCode::SecuritySqlInjection,
         DiagnosticCode::UnusedImport,
         DiagnosticCode::ModuleNotFound,
         DiagnosticCode::SourceFilterModule,
@@ -1087,6 +1107,14 @@ fn all_pl_codes_have_documentation_url() -> Result<(), Box<dyn std::error::Error
         let url = code.documentation_url();
         assert!(url.is_some(), "PL code {} should have a documentation URL", code.as_str());
         let url_str = url.ok_or("missing url")?;
+        // PL607 is the reviewed external-reference exception (#5035): its
+        // codeDescription href is pinned to the OWASP SQL injection reference
+        // by the storyboarded wire format, so the error-page prefix and
+        // code-suffix shape do not apply to it.
+        if matches!(code, DiagnosticCode::SecuritySqlInjection) {
+            assert_eq!(url_str, "https://owasp.org/www-community/attacks/SQL_Injection");
+            continue;
+        }
         assert!(
             url_str.starts_with("https://docs.perl-lsp.org/errors/"),
             "URL for {} should start with base URL, got {}",

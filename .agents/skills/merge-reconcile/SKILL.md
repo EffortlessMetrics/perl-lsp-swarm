@@ -131,7 +131,13 @@ of legacy branch-protection checks and merges past a still-pending required cont
 probe ONLY once the required union is green on the head SHA — `ripr+ New Gap Gate` is
 its last reporter — or an explicit waiver is recorded on the PR or issue naming every
 unmet requirement (#12289's probe merged 42 minutes before the required check failed;
-#12565 confirmed the mechanism).
+#12565 confirmed the mechanism). This section is the single source for the probe
+mechanism; `$finish-pr` points here rather than restating it.
+
+The waiver bar: prose alone never suffices. A waiver is recorded on the PR or issue by
+the accountable lane root, names every unmet requirement individually, and states why
+each is safe to outrun — with the evidence that makes it safe, not the assertion. A
+waiver recorded merely to save wall-clock is not a waiver; it is an unreviewed merge.
 
 When the protected-merge conjunction holds, the lane owns the transition: merge, or
 arm auto-merge (`gh pr merge <n> --auto --squash --match-head-commit

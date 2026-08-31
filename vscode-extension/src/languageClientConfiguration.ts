@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
+import { COEXISTENCE_CONFIGURATION_INPUTS } from './coexistenceAdvisory';
 
 export const DEFAULT_INCLUDE_PATHS = ['lib', 'local/lib/perl5'] as const;
 
@@ -57,6 +58,10 @@ const LIVE_SETTINGS = [
   'perl-lsp.externalIncludePaths',
   'perl-lsp.trace.server',
   ...CRITIC_SETTINGS,
+  // Every coexistence advisory input must classify live so the advisory
+  // re-evaluation block stays reachable when any collected input changes
+  // (#7214 clear/restore semantics).
+  ...COEXISTENCE_CONFIGURATION_INPUTS,
 ] as const;
 
 const RECONSTRUCT_SETTINGS = [

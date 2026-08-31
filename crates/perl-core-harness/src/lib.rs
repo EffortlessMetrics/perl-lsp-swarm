@@ -10,6 +10,7 @@
 pub mod artifacts;
 #[path = "target_contracts/contract.rs"]
 pub mod contract;
+pub mod critic_oracle;
 #[path = "target_contracts/io.rs"]
 pub mod io;
 #[path = "target_contracts/matrix.rs"]
@@ -149,6 +150,42 @@ pub mod invocation_trace {
         UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION, Utf8Switch,
     };
     pub use validate::{validate_invocation_trace_receipt, validate_trace_receipt_subject_binding};
+}
+
+/// Strict pure fan-in join proving one complete observed runner subject
+/// (`observed_runner_subject.v1`, #12287): the observed `t/TEST` membership
+/// (#12281/#12283), its independently reconstructed plan (#7737), and the
+/// effective-invocation observation set (#12284/#12285) joined one-to-one
+/// under the exact #12286 transfer relation and #12158 producer identity.
+/// Representation only: no upstream execution, tracing, compiler invocation,
+/// production selection, or accepted-state transition.
+pub mod observed_subject {
+    /// Strict constructors, digests, freshness, and the join arithmetic.
+    #[path = "build.rs"]
+    pub mod build;
+    /// Receipt, binding, row, disposition, diagnostic, state, and work types.
+    #[path = "model.rs"]
+    pub mod model;
+    /// Fail-closed structural validation re-proving receipt-traveled laws.
+    #[path = "validate.rs"]
+    pub mod validate;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use build::{
+        build_observed_runner_subject, check_observed_runner_subject, observed_subject_freshness,
+        observed_subject_payload_digest,
+    };
+    pub use model::{
+        JoinWork, OBSERVED_RUNNER_SUBJECT_SCHEMA_VERSION, OBSERVED_SUBJECT_CLAIM_BOUNDARY,
+        ObservedRunnerSubjectInput, ObservedRunnerSubjectPayload, ObservedRunnerSubjectRow,
+        ObservedRunnerSubjectV1, ObservedSubjectBindings, ObservedSubjectState,
+        OrdinaryInstrumentedEquivalenceIdentity, ProducerSubjectIdentity, SubjectDiagnostic,
+        SubjectJoinDisposition,
+    };
+    pub use validate::validate_observed_runner_subject_shape;
 }
 
 use chrono::Utc;
@@ -1103,10 +1140,21 @@ fn validate_publication_paths(paths: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// One nibble of a canonically serialized hexadecimal identity (#7725):
+/// lower-case ASCII digits and `a`-`f` only, so every load-bearing
+/// content-addressed receipt carries exactly one spelling per digest.
+pub(crate) fn is_lower_case_hex_byte(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
+}
+
+/// A 64-character SHA-256 identity in its one canonical serialized form.
+pub(crate) fn is_canonical_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(is_lower_case_hex_byte)
+}
+
 fn validate_git_sha(value: &str, label: &str) -> Result<()> {
-    if value.len() != 40 && value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        bail!("{label} must be a 40- or 64-character hexadecimal SHA");
+    if !(value.len() == 40 || value.len() == 64) || !value.bytes().all(is_lower_case_hex_byte) {
+        bail!("{label} must be a 40- or 64-character hexadecimal SHA ([0-9a-f] lower-case)");
     }
     Ok(())
 }
@@ -1163,8 +1211,8 @@ fn validate_digest(value: &str, label: &str) -> Result<()> {
     let Some(hex) = value.strip_prefix("sha256:") else {
         bail!("{label} must use the sha256:<hex> format");
     };
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("{label} must contain 64 hexadecimal characters");
+    if !is_canonical_sha256_hex(hex) {
+        bail!("{label} must contain 64 hexadecimal characters ([0-9a-f] lower-case)");
     }
     Ok(())
 }
@@ -11493,5 +11541,35 @@ exit 1
         // An unavailable rail must not advertise a schema or borrow evidence.
         assert!(unavailable.schema_version.is_none());
         assert!(unavailable.evidence_refs.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod digest_intake_case_tests {
+    //! #7725: Git identities and sha256 digests accepted by the publication
+    //! and evidence intake validators must keep exactly one canonical
+    //! serialized spelling: lower-case hexadecimal.
+
+    use super::{validate_digest, validate_git_sha};
+
+    #[test]
+    fn git_shas_accept_only_canonical_lower_case_hex() {
+        assert!(validate_git_sha(&"cd".repeat(20), "landed commit").is_ok());
+        assert!(validate_git_sha(&"01".repeat(32), "landed commit").is_ok());
+        assert!(validate_git_sha(&"CD".repeat(20), "landed commit").is_err());
+        assert!(validate_git_sha(&"EF".repeat(32), "landed commit").is_err());
+        assert!(validate_git_sha(&"cD".repeat(20), "landed commit").is_err());
+        assert!(validate_git_sha(&"zz".repeat(20), "landed commit").is_err());
+        assert!(validate_git_sha(&"cd".repeat(19), "landed commit").is_err());
+    }
+
+    #[test]
+    fn sha256_digests_keep_prefix_policy_and_require_lower_case() {
+        assert!(validate_digest(&format!("sha256:{}", "ab".repeat(32)), "receipt digest").is_ok());
+        assert!(validate_digest(&format!("sha256:{}", "AB".repeat(32)), "receipt digest").is_err());
+        assert!(validate_digest(&format!("sha256:{}", "aB".repeat(32)), "receipt digest").is_err());
+        assert!(validate_digest(&"ab".repeat(32), "receipt digest").is_err());
+        assert!(validate_digest(&format!("sha1:{}", "ab".repeat(32)), "receipt digest").is_err());
+        assert!(validate_digest(&format!("sha256:{}", "ab".repeat(31)), "receipt digest").is_err());
     }
 }

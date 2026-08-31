@@ -1100,72 +1100,7 @@ impl<'a> Parser<'a> {
                 // depth units (this check plus parse_primary's own guard) so that
                 // deep array-ref nesting hits MAX_RECURSION_DEPTH before the OS stack
                 // overflows — symmetric with the double-guard used by hash literals.
-                self.check_recursion()?;
-
-                // Array reference constructor: [ LIST ]
-                //
-                // Inside [...] the content is always list context. Fat arrow (=>)
-                // acts as a comma with auto-quoting of the left-hand bareword — it
-                // does NOT introduce a hash literal. We parse element-by-element
-                // using parse_assignment so that comma / fat-arrow separators are
-                // consumed at this level rather than being swallowed into a single
-                // inner expression by parse_expression -> parse_comma.
-                let start_token = self.tokens.next()?; // consume [
-                let start = start_token.start();
-
-                let mut elements = Vec::new();
-
-                while self.peek_kind() != Some(TokenKind::RightBracket) && !self.tokens.is_eof() {
-                    let mut elem = self.parse_assignment()?;
-
-                    // Fat arrow: auto-quote bare identifiers and consume the =>
-                    if self.peek_kind() == Some(TokenKind::FatArrow) {
-                        Self::autoquote_fat_arrow_key(&mut elem);
-                        self.consume_token()?; // consume =>
-                        elements.push(elem);
-                        // Parse the value that follows =>
-                        if self.peek_kind() != Some(TokenKind::RightBracket) {
-                            elements.push(self.parse_assignment()?);
-                        }
-                    } else {
-                        elements.push(elem);
-                    }
-
-                    // Consume comma separator; a fat-arrow separator is left
-                    // for the top of the next iteration to handle as a key.
-                    // e.g. `[a => b => c]` — after pushing `a` and `b`, the
-                    // next peek is `=>`, so we do NOT break; we let the loop
-                    // re-enter and treat `b` (already pushed) as the key for
-                    // the implicit next pair.  Actually `b` is already in
-                    // elements — the chained `=>` makes `c` a new element too.
-                    // We consume `=>` here so the loop-top `parse_assignment`
-                    // picks up `c` as the value.
-                    if self.peek_kind() == Some(TokenKind::Comma) {
-                        self.consume_token()?; // consume ,
-                        self.consume_redundant_commas()?;
-                    } else if self.peek_kind() == Some(TokenKind::FatArrow) {
-                        // Chained fat arrow: the value we just pushed becomes
-                        // the auto-quoted key for the next pair.  Autoquote the
-                        // last element and consume the `=>`.
-                        if let Some(last) = elements.last_mut() {
-                            Self::autoquote_fat_arrow_key(last);
-                        }
-                        self.consume_token()?; // consume chained =>
-                        // Parse the value that follows the chained =>
-                        if self.peek_kind() != Some(TokenKind::RightBracket) && !self.tokens.is_eof() {
-                            elements.push(self.parse_assignment()?);
-                        }
-                        // Continue loop — there may be more separators
-                    } else {
-                        break;
-                    }
-                }
-
-                self.expect_closing_delimiter(TokenKind::RightBracket)?;
-                let end = self.previous_position();
-
-                self.exit_recursion();
-                Ok(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end }))
+                self.with_depth(|s| s.parse_array_literal_contents())
             }
 
             // Handle & as sigil when at primary position
@@ -1340,6 +1275,73 @@ impl<'a> Parser<'a> {
                 Err(ParseError::unexpected("expression", token_kind.display_name(), pos))
             }
         }
+    }
+
+    /// Array reference constructor: `[ LIST ]`.
+    ///
+    /// Called under an extra [`Parser::with_depth`] so each `[...]` nesting
+    /// level consumes two depth units with parse_primary's own guard.
+    fn parse_array_literal_contents(&mut self) -> ParseResult<Node> {
+        // Inside [...] the content is always list context. Fat arrow (=>)
+        // acts as a comma with auto-quoting of the left-hand bareword — it
+        // does NOT introduce a hash literal. We parse element-by-element
+        // using parse_assignment so that comma / fat-arrow separators are
+        // consumed at this level rather than being swallowed into a single
+        // inner expression by parse_expression -> parse_comma.
+        let start_token = self.tokens.next()?; // consume [
+        let start = start_token.start();
+
+        let mut elements = Vec::new();
+
+        while self.peek_kind() != Some(TokenKind::RightBracket) && !self.tokens.is_eof() {
+            let mut elem = self.parse_assignment()?;
+
+            // Fat arrow: auto-quote bare identifiers and consume the =>
+            if self.peek_kind() == Some(TokenKind::FatArrow) {
+                Self::autoquote_fat_arrow_key(&mut elem);
+                self.consume_token()?; // consume =>
+                elements.push(elem);
+                // Parse the value that follows =>
+                if self.peek_kind() != Some(TokenKind::RightBracket) {
+                    elements.push(self.parse_assignment()?);
+                }
+            } else {
+                elements.push(elem);
+            }
+
+            // Consume comma separator; a fat-arrow separator is left
+            // for the top of the next iteration to handle as a key.
+            // e.g. `[a => b => c]` — after pushing `a` and `b`, the
+            // next peek is `=>`, so we do NOT break; we let the loop
+            // re-enter and treat `b` (already pushed) as the key for
+            // the implicit next pair.  Actually `b` is already in
+            // elements — the chained `=>` makes `c` a new element too.
+            // We consume `=>` here so the loop-top `parse_assignment`
+            // picks up `c` as the value.
+            if self.peek_kind() == Some(TokenKind::Comma) {
+                self.consume_token()?; // consume ,
+                self.consume_redundant_commas()?;
+            } else if self.peek_kind() == Some(TokenKind::FatArrow) {
+                // Chained fat arrow: the value we just pushed becomes
+                // the auto-quoted key for the next pair.  Autoquote the
+                // last element and consume the `=>`.
+                if let Some(last) = elements.last_mut() {
+                    Self::autoquote_fat_arrow_key(last);
+                }
+                self.consume_token()?; // consume chained =>
+                // Parse the value that follows the chained =>
+                if self.peek_kind() != Some(TokenKind::RightBracket) && !self.tokens.is_eof() {
+                    elements.push(self.parse_assignment()?);
+                }
+                // Continue loop — there may be more separators
+            } else {
+                break;
+            }
+        }
+
+        self.expect_closing_delimiter(TokenKind::RightBracket)?;
+        let end = self.previous_position();
+        Ok(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end }))
     }
 }
 

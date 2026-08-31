@@ -8,9 +8,59 @@ use super::super::{
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::fallback::text::folding_ranges_from_text;
-use crate::protocol::{REQUEST_CANCELLED, req_uri};
+use crate::protocol::{REQUEST_CANCELLED, invalid_params, req_uri};
+#[cfg(test)]
+use crate::protocol::{REQUEST_FAILED, internal_error};
 use crate::state::document_symbol_cap;
+#[cfg(test)]
+use std::cell::Cell;
 use std::sync::OnceLock;
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum FoldingRangeTestFault {
+    Cancelled,
+    ProviderFailure,
+    Unavailable,
+    InstrumentFailure,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FOLDING_RANGE_TEST_FAULT: Cell<Option<FoldingRangeTestFault>> =
+        const { Cell::new(None) };
+}
+
+#[cfg(test)]
+#[must_use]
+struct FoldingRangeTestFaultGuard;
+
+#[cfg(test)]
+impl Drop for FoldingRangeTestFaultGuard {
+    fn drop(&mut self) {
+        FOLDING_RANGE_TEST_FAULT.with(|cell| cell.set(None));
+    }
+}
+
+#[cfg(test)]
+impl FoldingRangeTestFault {
+    fn into_error(self) -> JsonRpcError {
+        match self {
+            Self::Cancelled => JsonRpcError {
+                code: REQUEST_CANCELLED,
+                message: "Request cancelled - folding range provider".to_string(),
+                data: None,
+            },
+            Self::ProviderFailure => internal_error("folding range provider failure"),
+            Self::Unavailable => JsonRpcError {
+                code: REQUEST_FAILED,
+                message: "folding range analysis unavailable".to_string(),
+                data: None,
+            },
+            Self::InstrumentFailure => internal_error("folding range instrument failure"),
+        }
+    }
+}
 
 static SUB_REGEX: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 static PACKAGE_REGEX: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
@@ -203,21 +253,24 @@ impl LspServer {
                             ast,
                             &doc.text,
                         );
-                    let mut document_symbols = document_symbols_to_json(live_result.symbols);
 
-                    // Append Test2/Test::More subtest symbols so the outline shows
-                    // the subtest tree. Subtest calls only exist in test files, so
+                    // Merge Test2/Test::More subtests into their lexically
+                    // enclosing outline scopes (#1792): each subtest nests under
+                    // the innermost scope the parse proves instead of floating at
+                    // the top level. Subtest calls only exist in test files, so
                     // this is empty for ordinary source.
+                    let mut outline = live_result.symbols;
                     let subtests = perl_lsp_rs_core::providers::testing::subtest::discover_subtests(
                         ast, &doc.text,
                     );
                     if !subtests.is_empty() {
-                        let subtest_symbols =
-                            perl_lsp_rs_core::providers::testing::subtest::subtest_document_symbols(
-                                &subtests,
-                            );
-                        document_symbols.extend(document_symbols_to_json(subtest_symbols));
+                        perl_lsp_rs_core::providers::testing::subtest::nest_subtest_symbols_in_outline(
+                            &mut outline,
+                            &subtests,
+                            &doc.text,
+                        );
                     }
+                    let mut document_symbols = document_symbols_to_json(outline);
 
                     // Append POD section symbols from a direct line scan
                     document_symbols.extend(pod_section_symbols(&doc.text));
@@ -260,134 +313,159 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
+    /// Admit a foldingRange request before fold computation.
+    ///
+    /// Production dispatch is a transparent adapter over this result (#13981):
+    /// malformed, stale, unavailable, and injected provider faults stay errors
+    /// rather than being rewritten as an empty fold list.
+    fn admit_folding_range_request<'a>(
+        &self,
+        params: Option<&'a Value>,
+    ) -> Result<&'a str, JsonRpcError> {
+        if !self.advertised_features.lock().folding_range {
+            return Err(crate::protocol::method_not_advertised());
+        }
+
+        let params =
+            params.ok_or_else(|| invalid_params("Missing required parameter: textDocument.uri"))?;
+        let uri = req_uri(params)?;
+        let req_version =
+            params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
+        self.ensure_latest(uri, req_version)?;
+
+        #[cfg(test)]
+        if let Some(fault) = FOLDING_RANGE_TEST_FAULT.with(Cell::take) {
+            return Err(fault.into_error());
+        }
+
+        Ok(uri)
+    }
+
+    #[cfg(test)]
+    fn inject_folding_range_test_fault(
+        &self,
+        fault: FoldingRangeTestFault,
+    ) -> FoldingRangeTestFaultGuard {
+        let _ = self;
+        FOLDING_RANGE_TEST_FAULT.with(|cell| cell.set(Some(fault)));
+        FoldingRangeTestFaultGuard
+    }
+
     /// Handle textDocument/foldingRange request
     pub(crate) fn handle_folding_range(
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Gate unadvertised feature
-        if !self.advertised_features.lock().folding_range {
-            return Err(crate::protocol::method_not_advertised());
+        let uri = self.admit_folding_range_request(params.as_ref())?;
+
+        // Snapshot the document text and parsed AST under the documents
+        // lock, then drop the guard so the expensive scanning, AST walk,
+        // and deduplication run off-lock (#4966). This is the same pattern
+        // already used by the sibling hover and formatting providers.
+        let (text, parsed) = {
+            let documents = self.documents_guard();
+            match self.get_document(&documents, uri) {
+                Some(doc) => (doc.text_arc.to_string(), doc.current_parsed()),
+                None => return Ok(Some(json!([]))),
+            }
+        };
+
+        let doc_text = &text;
+        let mut lsp_ranges = Vec::new();
+
+        // Add text-based data section folding
+        if let Some(marker_offset) = crate::util::find_data_marker_byte_lexed(doc_text) {
+            let marker_line = offset_to_line(doc_text, marker_offset);
+            let total_lines = doc_text.lines().count();
+
+            // Add fold for data section body if it exists
+            let start_line = marker_line + 1;
+            let end_line = total_lines.saturating_sub(1);
+            push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "comment");
         }
 
-        if let Some(params) = params {
-            let uri = req_uri(&params)?;
+        // NOTE: Heredoc folding is handled by the AST NodeKind::Heredoc arm
+        // in FoldingRangeExtractor::extract. The previous lexer-based
+        // extract_heredoc_ranges produced overlapping-but-non-identical
+        // ranges that caused double-fold chevrons (#5072).
 
-            // Snapshot the document text and parsed AST under the documents
-            // lock, then drop the guard so the expensive scanning, AST walk,
-            // and deduplication run off-lock (#4966). This is the same pattern
-            // already used by the sibling hover and formatting providers.
-            let (text, parsed) = {
-                let documents = self.documents_guard();
-                match self.get_document(&documents, uri) {
-                    Some(doc) => (doc.text_arc.to_string(), doc.current_parsed()),
-                    None => return Ok(Some(json!([]))),
-                }
-            };
+        // Add POD folding ranges (POD is parser trivia — no NodeKind::Pod — so the
+        // AST path cannot fold it).  This scan runs only when the AST is available,
+        // complementing the existing fallback that runs when it is not.  (#5071)
+        for (pod_start_line, pod_end_line) in extract_pod_ranges(doc_text) {
+            push_multiline_folding_range(&mut lsp_ranges, pod_start_line, pod_end_line, "comment");
+        }
 
-            let doc_text = &text;
-            let mut lsp_ranges = Vec::new();
+        // Add #region/#endregion folding ranges
+        let region_ranges = crate::folding::FoldingRangeExtractor::extract_region_markers(doc_text);
+        for range in region_ranges {
+            let start_line = offset_to_line(doc_text, range.start_offset);
+            let end_line = offset_to_line(doc_text, range.end_offset);
+            push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "region");
+        }
 
-            // Add text-based data section folding
-            if let Some(marker_offset) = crate::util::find_data_marker_byte_lexed(doc_text) {
-                let marker_line = offset_to_line(doc_text, marker_offset);
-                let total_lines = doc_text.lines().count();
+        if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+            // Extract folding ranges from AST
+            let mut extractor = crate::folding::FoldingRangeExtractor::new();
+            let ranges = extractor.extract(ast);
 
-                // Add fold for data section body if it exists
-                let start_line = marker_line + 1;
-                let end_line = total_lines.saturating_sub(1);
-                push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "comment");
-            }
-
-            // NOTE: Heredoc folding is handled by the AST NodeKind::Heredoc arm
-            // in FoldingRangeExtractor::extract. The previous lexer-based
-            // extract_heredoc_ranges produced overlapping-but-non-identical
-            // ranges that caused double-fold chevrons (#5072).
-
-            // Add POD folding ranges (POD is parser trivia — no NodeKind::Pod — so the
-            // AST path cannot fold it).  This scan runs only when the AST is available,
-            // complementing the existing fallback that runs when it is not.  (#5071)
-            for (pod_start_line, pod_end_line) in extract_pod_ranges(doc_text) {
-                push_multiline_folding_range(
-                    &mut lsp_ranges,
-                    pod_start_line,
-                    pod_end_line,
-                    "comment",
-                );
-            }
-
-            // Add #region/#endregion folding ranges
-            let region_ranges =
-                crate::folding::FoldingRangeExtractor::extract_region_markers(doc_text);
-            for range in region_ranges {
+            // Convert to LSP JSON format with proper line offsets
+            for range in ranges {
+                // Calculate actual line numbers from document content
                 let start_line = offset_to_line(doc_text, range.start_offset);
                 let end_line = offset_to_line(doc_text, range.end_offset);
-                push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "region");
+                if let Some(lsp_end_line) = lsp_inclusive_multiline_end_line(start_line, end_line) {
+                    let mut lsp_range = json!({
+                        "startLine": start_line,
+                        "endLine": lsp_end_line,  // LSP folding ranges are inclusive
+                    });
+
+                    if let Some(ref kind) = range.kind {
+                        lsp_range["kind"] = match kind {
+                            crate::folding::FoldingRangeKind::Comment => json!("comment"),
+                            crate::folding::FoldingRangeKind::Imports => json!("imports"),
+                            crate::folding::FoldingRangeKind::Region => json!("region"),
+                        };
+                    }
+
+                    lsp_ranges.push(lsp_range);
+                }
             }
 
-            if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                // Extract folding ranges from AST
-                let mut extractor = crate::folding::FoldingRangeExtractor::new();
-                let ranges = extractor.extract(ast);
+            // Dedup identical ranges (start+end+kind) that arise when both a
+            // Subroutine node and its inner Block node map to the same line span.
+            lsp_ranges.sort_by_key(|r| {
+                (
+                    r["startLine"].as_u64().unwrap_or(0),
+                    r["endLine"].as_u64().unwrap_or(0),
+                    r.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                )
+            });
+            lsp_ranges.dedup_by_key(|r| {
+                (
+                    r["startLine"].as_u64().unwrap_or(0),
+                    r["endLine"].as_u64().unwrap_or(0),
+                    r.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                )
+            });
 
-                // Convert to LSP JSON format with proper line offsets
-                for range in ranges {
-                    // Calculate actual line numbers from document content
-                    let start_line = offset_to_line(doc_text, range.start_offset);
-                    let end_line = offset_to_line(doc_text, range.end_offset);
-                    if let Some(lsp_end_line) =
-                        lsp_inclusive_multiline_end_line(start_line, end_line)
-                    {
-                        let mut lsp_range = json!({
-                            "startLine": start_line,
-                            "endLine": lsp_end_line,  // LSP folding ranges are inclusive
-                        });
-
-                        if let Some(ref kind) = range.kind {
-                            lsp_range["kind"] = match kind {
-                                crate::folding::FoldingRangeKind::Comment => json!("comment"),
-                                crate::folding::FoldingRangeKind::Imports => json!("imports"),
-                                crate::folding::FoldingRangeKind::Region => json!("region"),
-                            };
-                        }
-
-                        lsp_ranges.push(lsp_range);
-                    }
-                }
-
-                // Dedup identical ranges (start+end+kind) that arise when both a
-                // Subroutine node and its inner Block node map to the same line span.
-                lsp_ranges.sort_by_key(|r| {
-                    (
-                        r["startLine"].as_u64().unwrap_or(0),
-                        r["endLine"].as_u64().unwrap_or(0),
-                        r.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    )
-                });
-                lsp_ranges.dedup_by_key(|r| {
-                    (
-                        r["startLine"].as_u64().unwrap_or(0),
-                        r["endLine"].as_u64().unwrap_or(0),
-                        r.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    )
-                });
-
-                // If no ranges from AST, try fallback
-                if lsp_ranges.is_empty() {
-                    return Ok(Some(json!(folding_ranges_from_text(doc_text, 1000))));
-                }
-
-                return Ok(Some(json!(lsp_ranges)));
-            } else {
-                // No AST, use fallback
+            // If no ranges from AST, try fallback
+            if lsp_ranges.is_empty() {
                 return Ok(Some(json!(folding_ranges_from_text(doc_text, 1000))));
             }
+
+            return Ok(Some(json!(lsp_ranges)));
         }
 
-        Ok(Some(json!([])))
+        // No AST, use fallback
+        Ok(Some(json!(folding_ranges_from_text(doc_text, 1000))))
     }
 
-    /// Non-blocking folding range handler with text-based fallback
+    /// Non-blocking folding range handler with text-based fallback.
+    ///
+    /// Test-only (#4628 / #13981): compiled out of production builds so this
+    /// path cannot satisfy production foldingRange acceptance.
+    #[cfg(any(test, feature = "test-fallbacks"))]
     pub(crate) fn on_folding_range(
         &self,
         params: serde_json::Value,
@@ -632,6 +710,10 @@ fn document_symbols_empty_compiler_receipt(reason: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{
+        CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcId, JsonRpcRequest,
+        JsonRpcResponse, METHOD_NOT_FOUND, REQUEST_FAILED,
+    };
 
     #[test]
     fn push_multiline_folding_range_boundary_discriminator_end_line_gt_start_line_rejects_equal_input()
@@ -754,6 +836,298 @@ mod tests {
                 && range.get("endLine").and_then(Value::as_u64).is_some_and(|end| end > 0)
         }));
 
+        Ok(())
+    }
+
+    fn production_folding_range_tests_blocked_by_test_fallbacks() -> bool {
+        if std::env::var("LSP_TEST_FALLBACKS").is_ok() {
+            eprintln!("Skipping production foldingRange dispatch test: LSP_TEST_FALLBACKS is set");
+            true
+        } else {
+            false
+        }
+    }
+
+    fn folding_range_rpc(id: i64, method: &str, params: Option<Value>) -> JsonRpcRequest {
+        JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Integer(id)),
+            method: method.to_string(),
+            params,
+        }
+    }
+
+    fn initialized_folding_range_server() -> LspServer {
+        let server = LspServer::new();
+        let init = server.handle_request(folding_range_rpc(1, "initialize", Some(json!({}))));
+        assert!(
+            init.as_ref().is_some_and(|response| response.error.is_none()),
+            "initialize must succeed before production foldingRange dispatch tests"
+        );
+        server
+    }
+
+    fn request_folding_range(
+        server: &LspServer,
+        id: i64,
+        params: Option<Value>,
+    ) -> Result<JsonRpcResponse, Box<dyn std::error::Error>> {
+        server
+            .handle_request(folding_range_rpc(id, "textDocument/foldingRange", params))
+            .ok_or_else(|| "textDocument/foldingRange must produce a JSON-RPC response".into())
+    }
+
+    fn assert_folding_range_error(
+        response: &JsonRpcResponse,
+        expected_code: i32,
+        message_needle: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if response.result.is_some() {
+            return Err(format!(
+                "non-success foldingRange terminal must not become empty success, got result {:?}",
+                response.result
+            )
+            .into());
+        }
+        let error = response.error.as_ref().ok_or("expected JsonRpcError, not empty success")?;
+        if error.code != expected_code {
+            return Err(format!(
+                "foldingRange must preserve the exact JsonRpcError code {expected_code}, got {}; message={}",
+                error.code, error.message
+            )
+            .into());
+        }
+        if !error.message.contains(message_needle) {
+            return Err(format!(
+                "foldingRange error message {:?} must contain {message_needle:?}",
+                error.message
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    fn foldable_sub_source() -> &'static str {
+        "sub full {\n    my $value = 1;\n    return $value;\n}\n"
+    }
+
+    fn open_foldable_document(
+        server: &LspServer,
+        uri: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 2,
+                "text": foldable_sub_source(),
+            }
+        })))?;
+        Ok(())
+    }
+
+    #[test]
+    fn folding_range_dispatch_returns_legitimate_empty_for_known_empty_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if production_folding_range_tests_blocked_by_test_fallbacks() {
+            return Ok(());
+        }
+
+        let server = initialized_folding_range_server();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": "file:///empty-folds.pl",
+                "languageId": "perl",
+                "version": 1,
+                "text": "",
+            }
+        })))?;
+
+        let response = request_folding_range(
+            &server,
+            2,
+            Some(json!({ "textDocument": { "uri": "file:///empty-folds.pl" } })),
+        )?;
+        if let Some(error) = response.error.as_ref() {
+            return Err(format!(
+                "legitimate empty must come from a completed handler, not an error: {error:?}"
+            )
+            .into());
+        }
+        if response.result.as_ref() != Some(&json!([])) {
+            return Err(format!(
+                "known empty document must return a successful empty fold list, got {:?}",
+                response.result
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn folding_range_dispatch_returns_known_folds_for_completed_handler()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if production_folding_range_tests_blocked_by_test_fallbacks() {
+            return Ok(());
+        }
+
+        let server = initialized_folding_range_server();
+        open_foldable_document(&server, "file:///known-folds.pl")?;
+
+        let response = request_folding_range(
+            &server,
+            2,
+            Some(json!({ "textDocument": { "uri": "file:///known-folds.pl" } })),
+        )?;
+        if let Some(error) = response.error.as_ref() {
+            return Err(format!("known folds must succeed: {error:?}").into());
+        }
+        let ranges = response
+            .result
+            .as_ref()
+            .and_then(Value::as_array)
+            .ok_or("known folds must return a fold array")?;
+        if ranges.is_empty() {
+            return Err(format!(
+                "completed handler over the original request must still return known folds: {ranges:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn folding_range_dispatch_preserves_invalid_params_instead_of_empty_success()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if production_folding_range_tests_blocked_by_test_fallbacks() {
+            return Ok(());
+        }
+
+        let server = initialized_folding_range_server();
+        let response = request_folding_range(&server, 2, Some(json!({})))?;
+        assert_folding_range_error(&response, INVALID_PARAMS, "textDocument.uri")?;
+
+        let missing_params = request_folding_range(&server, 3, None)?;
+        assert_folding_range_error(&missing_params, INVALID_PARAMS, "textDocument.uri")?;
+        Ok(())
+    }
+
+    #[test]
+    fn folding_range_dispatch_preserves_content_modified_instead_of_empty_success()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if production_folding_range_tests_blocked_by_test_fallbacks() {
+            return Ok(());
+        }
+
+        let server = initialized_folding_range_server();
+        open_foldable_document(&server, "file:///stale-folds.pl")?;
+
+        let response = request_folding_range(
+            &server,
+            2,
+            Some(json!({
+                "textDocument": {
+                    "uri": "file:///stale-folds.pl",
+                    "version": 1
+                }
+            })),
+        )?;
+        assert_folding_range_error(&response, CONTENT_MODIFIED, "Document changed")?;
+        Ok(())
+    }
+
+    #[test]
+    fn folding_range_dispatch_preserves_request_cancelled_instead_of_empty_success()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if production_folding_range_tests_blocked_by_test_fallbacks() {
+            return Ok(());
+        }
+
+        let server = initialized_folding_range_server();
+        open_foldable_document(&server, "file:///cancelled-folds.pl")?;
+        let _fault = server.inject_folding_range_test_fault(FoldingRangeTestFault::Cancelled);
+
+        let response = request_folding_range(
+            &server,
+            2,
+            Some(json!({ "textDocument": { "uri": "file:///cancelled-folds.pl" } })),
+        )?;
+        assert_folding_range_error(&response, REQUEST_CANCELLED, "cancelled")?;
+        Ok(())
+    }
+
+    #[test]
+    fn folding_range_dispatch_preserves_provider_failure_instead_of_empty_success()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if production_folding_range_tests_blocked_by_test_fallbacks() {
+            return Ok(());
+        }
+
+        let server = initialized_folding_range_server();
+        open_foldable_document(&server, "file:///provider-failure-folds.pl")?;
+        let _fault = server.inject_folding_range_test_fault(FoldingRangeTestFault::ProviderFailure);
+
+        let response = request_folding_range(
+            &server,
+            2,
+            Some(json!({ "textDocument": { "uri": "file:///provider-failure-folds.pl" } })),
+        )?;
+        assert_folding_range_error(&response, INTERNAL_ERROR, "provider failure")?;
+        Ok(())
+    }
+
+    #[test]
+    fn folding_range_dispatch_does_not_record_unavailable_analysis_as_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if production_folding_range_tests_blocked_by_test_fallbacks() {
+            return Ok(());
+        }
+
+        let server = initialized_folding_range_server();
+        {
+            let mut features = server.advertised_features.lock();
+            features.folding_range = false;
+        }
+        let gated = request_folding_range(
+            &server,
+            2,
+            Some(json!({ "textDocument": { "uri": "file:///unadvertised-folds.pl" } })),
+        )?;
+        assert_folding_range_error(&gated, METHOD_NOT_FOUND, "not advertised")?;
+
+        {
+            let mut features = server.advertised_features.lock();
+            features.folding_range = true;
+        }
+        open_foldable_document(&server, "file:///unavailable-folds.pl")?;
+        let _fault = server.inject_folding_range_test_fault(FoldingRangeTestFault::Unavailable);
+        let unavailable = request_folding_range(
+            &server,
+            3,
+            Some(json!({ "textDocument": { "uri": "file:///unavailable-folds.pl" } })),
+        )?;
+        assert_folding_range_error(&unavailable, REQUEST_FAILED, "unavailable")?;
+        Ok(())
+    }
+
+    #[test]
+    fn folding_range_dispatch_preserves_instrument_failure_instead_of_empty_success()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if production_folding_range_tests_blocked_by_test_fallbacks() {
+            return Ok(());
+        }
+
+        let server = initialized_folding_range_server();
+        open_foldable_document(&server, "file:///instrument-failure-folds.pl")?;
+        let _fault =
+            server.inject_folding_range_test_fault(FoldingRangeTestFault::InstrumentFailure);
+
+        let response = request_folding_range(
+            &server,
+            2,
+            Some(json!({ "textDocument": { "uri": "file:///instrument-failure-folds.pl" } })),
+        )?;
+        assert_folding_range_error(&response, INTERNAL_ERROR, "instrument failure")?;
         Ok(())
     }
 }

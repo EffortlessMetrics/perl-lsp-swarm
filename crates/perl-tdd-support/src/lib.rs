@@ -51,7 +51,6 @@
     clippy::items_after_statements,
     clippy::return_self_not_must_use,
     clippy::unused_self,
-    clippy::collapsible_match,
     clippy::only_used_in_recursion,
     clippy::items_after_test_module,
     clippy::while_let_loop,
@@ -97,3 +96,18 @@ pub use symlink_privilege::{SymlinkTestDecision, classify_symlink_error, symlink
 
 /// CI Guardrail Ignored Test Monitoring and Governance.
 pub mod governance;
+
+/// Windows symlink capability helpers for tests that exercise reparse-point
+/// semantics without requiring Developer Mode ([#12567]).
+///
+/// Windows-only by construction: every helper wraps a `std::os::windows::fs`
+/// API and none has a non-Windows stub. On Unix targets tests use
+/// [`std::os::unix::fs::symlink`] directly under `#[cfg(unix)]` ([#12567]),
+/// so both this module and the crate-root re-export are gated behind
+/// `#[cfg(windows)]`; unconditional imports of these names are a compile
+/// error on other targets.
+#[cfg(windows)]
+pub mod windows_fs;
+
+#[cfg(windows)]
+pub use windows_fs::{try_create_dir_symlink, try_create_file_symlink};

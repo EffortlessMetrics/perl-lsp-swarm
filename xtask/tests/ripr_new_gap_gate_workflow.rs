@@ -353,3 +353,97 @@ fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
         .unwrap_or(rest.len());
     Some(&rest[..next])
 }
+
+#[test]
+fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let gate = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let retry = fs::read_to_string(root.join(".github/workflows/ripr-infra-retry.yml"))?;
+    let classifier = fs::read_to_string(root.join("scripts/ci/classify-ripr-lane-termination"))?;
+    let self_test =
+        fs::read_to_string(root.join("scripts/tests/test-classify-ripr-lane-termination.sh"))?;
+    let whitelist = fs::read_to_string(root.join("policy/ci-lane-whitelist.toml"))?;
+
+    // #12563 complement to #12771: the gate must run the ONE classifier from
+    // the tested script instead of an inline grep twin, and must echo its
+    // machine-checkable verdict into the run log for auditability.
+    assert!(
+        gate.contains("bash scripts/ci/classify-ripr-lane-termination"),
+        "gate must classify lane termination through the shared tested script"
+    );
+    assert!(
+        !gate.contains("eviction_matches=$(grep -cE"),
+        "inline grep classification twins the tested classifier and must not return"
+    );
+    for verdict in [
+        "RIPR_GATE_VERDICT=infra-no-proof",
+        "RIPR_GATE_VERDICT=ripr-failure",
+        "RIPR_GATE_VERDICT=cancelled-no-verdict",
+        "RIPR_GATE_VERDICT=neutral-router-skipped",
+        "RIPR_GATE_VERDICT=router-not-success",
+        "RIPR_GATE_VERDICT=success",
+    ] {
+        assert!(
+            gate.contains(verdict),
+            "every gate outcome must emit a distinctive machine-checkable verdict token"
+        );
+    }
+    assert!(
+        gate.contains("RIPR_GATE_DECISION boundary="),
+        "each infra-no-proof application must document its decision boundary in the run log"
+    );
+
+    // Classifier boundary: precedence between genuine reds and teardown
+    // evidence is encoded in code order, not prose.
+    let gap_rule =
+        classifier.find("gap_hits").ok_or("classifier must evaluate genuine gap receipts first")?;
+    let infra_class = classifier
+        .find("\"infra-no-proof\"")
+        .ok_or("classifier must assign the infra-no-proof class")?;
+    assert!(
+        gap_rule < infra_class,
+        "genuine gap receipt evaluation must precede any infra classification"
+    );
+    for marker in [
+        "The runner has received a shutdown signal",
+        "Process completed with exit code 143.",
+        "The operation was canceled",
+        "quality gate failed; see receipt",
+    ] {
+        assert!(
+            classifier.contains(marker),
+            "classifier must pin its exact evidence markers: {marker}"
+        );
+    }
+
+    // Responder: the exhausted retry bound surfaces NOT_PROVEN loudly rather
+    // than as a silent notice.
+    assert!(
+        retry.contains("RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted"),
+        "attempt >= 2 must surface NOT_PROVEN with a machine-checkable verdict token"
+    );
+    assert!(
+        retry.contains("[ \"${RUN_ATTEMPT}\" != \"1\" ]"),
+        "the single automatic retry stays bounded to attempt 1"
+    );
+
+    // The fixture suite pins the discriminator: real failure with teardown
+    // noise present still classifies ripr-failure.
+    assert!(
+        self_test.contains("DISCRIMINATOR: genuine gap receipt outranks later teardown marker"),
+        "self-test must prove real failures are never classified infra"
+    );
+    assert!(
+        self_test.contains("empty log fails closed to ripr-failure"),
+        "self-test must prove absent evidence fails closed"
+    );
+
+    // Lane hygiene: the privileged responder must carry a whitelist entry.
+    assert!(
+        whitelist.contains("workflow = \".github/workflows/ripr-infra-retry.yml\""),
+        "ripr-infra-retry must be governed by a ci-lane-whitelist entry"
+    );
+
+    Ok(())
+}

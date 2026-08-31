@@ -775,10 +775,14 @@ gates:
       cargo clippy
       --workspace --bins --locked --no-deps
       -- -D clippy::unwrap_used -D clippy::expect_used
-    timeout_seconds: 300
+    # 600s/480000ms: cold-runner clippy over 1307 production files measured
+    # ~272s before timing out at the old 300s envelope (#13292-era meta-shard
+    # redness); the lint content itself is clean, so the envelope was the
+    # binding constraint.
+    timeout_seconds: 600
     retry_count: 0
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 480000
       max_warnings: 0
     quarantine: false
     tags:
@@ -1510,7 +1514,7 @@ gates:
 
   - name: non_rust_inventory_check
     tier: merge_gate
-    description: "Scan and classify tracked non-Rust files without requiring a race-prone snapshot match"
+    description: "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
     required: true
     command: cargo xtask non-rust inventory --check
     timeout_seconds: 300
