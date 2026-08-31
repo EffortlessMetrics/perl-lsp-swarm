@@ -4,7 +4,7 @@
 
 - **Tier**: 6 (composition crate — pure language-processing; no LSP provider dependencies)
 - **Version**: workspace (currently 0.12.3)
-- **Purpose**: Central hub crate that aggregates and re-exports the core parser, semantic analyzer, workspace indexer, and refactoring engine into a single public API surface. Also provides the `perl-parse` CLI binary.
+- **Purpose**: Central hub crate that aggregates and re-exports the core parser, semantic analyzer, workspace indexer, and operation-specific refactoring providers into a single public API surface. Also provides the `perl-parse` CLI binary.
 
 ## Commands
 
@@ -28,7 +28,7 @@ cargo bench -p perl-parser               # Parser benchmarks
 | `perl-lexer` | direct (tokenization) |
 | `perl-semantic-analyzer` | `analysis` (scope, type inference, symbols, dead code) |
 | `perl-workspace` | `workspace` (cross-file indexing, document store, rename) |
-| `perl-refactoring` | `refactor` (import optimizer, modernize, refactoring engine, workspace refactor) |
+| `perl-refactoring` | `refactor` (import optimizer, modernize, workspace refactor) |
 | `perl-tdd-support` | `tdd` (test generator, test runner, TDD workflow) |
 | `perl-incremental-parsing` | `incremental` (feature-gated behind `incremental`) |
 
@@ -40,7 +40,7 @@ cargo bench -p perl-parser               # Parser benchmarks
 - `SemanticAnalyzer`, `SemanticModel`, `HoverInfo` — semantic analysis
 - `ScopeAnalyzer`, `TypeInferenceEngine`, `SymbolTable` — analysis primitives
 - `TestGenerator`, `TddWorkflow` — TDD support
-- `RefactoringEngine`, `ImportOptimizer` — refactoring
+- `ImportOptimizer` and operation-specific refactor providers — refactoring
 - `PositionMapper` — byte/UTF-16 offset conversions for LSP
 - `TokenStream`, `Token`, `TokenKind` — token layer
 - `RecoveryParser` — error-recovery wrapper
