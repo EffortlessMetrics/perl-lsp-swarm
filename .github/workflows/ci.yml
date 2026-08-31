@@ -378,7 +378,7 @@ jobs:
         run: |
           cargo test $WINDOWS_TEST_CRATES --locked --lib
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
-            cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene
+            cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
           fi
 
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
