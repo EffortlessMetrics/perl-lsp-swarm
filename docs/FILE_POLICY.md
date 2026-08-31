@@ -37,8 +37,6 @@ Broad globs should also include `broad_glob_reason`.
 
 ## Rollout boundary
 
-Enforcement belongs to the file-policy checker and the authoritative ledger at
-`policy/non-rust-allowlist.toml`. The exact candidate-tree inventory is generated
-under `target/policy/` and published by CI and documentation builds. No full-tree
-inventory is committed: whole-repository counters and sorted path rows are
-observations of a tree, not merge authority.
+This documentation PR does not add enforcement. Enforcement belongs to the
+file-policy checker and its current inventory in
+[`docs/policy/NON_RUST_INVENTORY.md`](policy/NON_RUST_INVENTORY.md).

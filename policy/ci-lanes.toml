@@ -92,21 +92,6 @@ blocking = true
 outputs = ["target/receipts/shards/*.json", "target/test-results/*.xml"]
 duplicate_of = []
 
-[lane.non_rust_policy]
-description = "Validate exact candidate-tree non-Rust classification and publish inventory evidence."
-intent = "attributable file-policy enforcement"
-runner = "ubuntu_24_04"
-base_lem = 3
-default_pr = true
-blocking = true
-paths = ["**"]
-outputs = [
-  "target/policy/non-rust-inventory.md",
-  "target/policy/non-rust-inventory.json",
-  "target/policy/non-rust-policy-exact-tree.json",
-]
-duplicate_of = []
-
 [lane.merge_gate_aggregate]
 description = "Aggregate required gate results into merge-blocking status."
 intent = "branch protection surface"

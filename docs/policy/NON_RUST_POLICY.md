@@ -9,8 +9,7 @@ declares which non-Rust files are permitted in `perl-lsp` and on what terms.
 ```text
 policy/non-rust-allowlist.toml   # the active allowlist
 policy/non-rust-debt.toml        # uncertain entries pending classification
-target/policy/non-rust-inventory.{md,json}  # current-tree generated inventory
-docs/policy/NON_RUST_INVENTORY.md  # optional reference snapshot; not merge authority
+docs/policy/NON_RUST_INVENTORY.md  # generated inventory (PR 3)
 ```
 
 Reader / writer:

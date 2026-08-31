@@ -18,14 +18,16 @@ Done on master:
 | PR 02 — `policy/non-rust-allowlist.toml` + `policy/non-rust-debt.toml` | merged | #8159 |
 | PR 03 — `cargo xtask non-rust inventory` | merged | #8512 |
 
-Inventory current state is generated on demand with
-`cargo xtask non-rust inventory`; repository-wide counts are observations of the
-checked tree and are therefore not committed here.
+Inventory current state (regenerable via `cargo xtask non-rust inventory`):
+
+- 8466 tracked files
+- 2375 Rust-family
+- 6091 non-Rust (3974 allowlisted, **2117 unclassified**)
 
 The remaining ladder is split into three streams:
 
 1. **Rollout stream** — the remaining PRs 04 → 11 from the rollout plan.
-2. **Inventory stream** — classification PRs for the unclassified backlog.
+2. **Inventory stream** — classification PRs for the 2117 unclassified files.
 3. **Tightening stream** — narrowing broad globs and adding maintainer affordances.
 
 ## Rollout stream (sequential dependencies)
@@ -49,9 +51,9 @@ merged — open in parallel.
 
 ## Inventory stream (independent, parallel-safe)
 
-Rows that classify the unclassified files. Each is a separate small PR that
-adds explicit `[[allow]]` entries to `policy/non-rust-allowlist.toml`. Use the
-current-tree generated report for the live denominator and path set.
+Rows that classify the 2117 unclassified files. Each is a separate small PR
+that adds explicit `[[allow]]` entries to `policy/non-rust-allowlist.toml`.
+Land these before R-10 so blocking-allowlist mode is clean.
 
 | Row | Title | Tracking issue | Coverage |
 |----:|-------|---------------:|----------|
@@ -127,4 +129,4 @@ Tightening stream:
 - Doctrine: [FILE_POLICY.md](FILE_POLICY.md)
 - Schema: [NON_RUST_POLICY.md](NON_RUST_POLICY.md)
 - Catalog: [POLICY_ALLOWLISTS.md](POLICY_ALLOWLISTS.md)
-- Live inventory: generate `target/policy/non-rust-inventory.{md,json}` with `cargo xtask non-rust inventory --check`; CI publishes both outputs and the documentation build includes the Markdown projection.
+- Live inventory: [NON_RUST_INVENTORY.md](NON_RUST_INVENTORY.md) (regenerable)

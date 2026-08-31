@@ -1,6 +1,6 @@
 # File-Policy Rollout Burndown (non-rust)
 
-> **Substrate (already built)**: `cargo xtask non-rust inventory` landed in #8512, with `policy/non-rust-allowlist.toml` as the authoritative ledger and current-tree Markdown/JSON generated under `target/policy/` for CI and documentation publication. `docs/policy/NON_RUST_INVENTORY.md` is only a reference snapshot, not byte-fresh merge authority. Umbrella #8174 tracks the broader PR 3–11 ladder.
+> **Substrate (already built)**: `cargo xtask non-rust inventory` landed in #8512, with `policy/non-rust-allowlist.toml` as the authoritative ledger and generated `docs/policy/NON_RUST_INVENTORY.md` as the user-readable summary. Umbrella #8174 tracks the broader PR 3–11 ladder.
 > **Connector gap**: `cargo xtask check-file-policy --mode advisory` (read-only CI surface that prints policy deltas without failing) plus `cargo xtask non-rust propose` (emits a draft TOML diff a reviewer can apply) — together they make the inventory user-trustworthy without forcing every contributor onto an all-or-nothing strict mode.
 > **0.14.0 upside**: contributors can add or move non-rust files (workflows, policy docs, scripts, manifests) and immediately see what they tripped, with a precise proposal for how to register it. No more silent allowlist drift; no more "what is this file even for" review threads.
 
@@ -48,7 +48,7 @@ gh issue view 8592
 ## Related
 
 - Umbrella issue: #8174 (`policy(files): track file-policy rollout PRs 3–11`).
-- Architecture / spec docs: `docs/FILE_POLICY.md`, `docs/POLICY_ALLOWLISTS.md`, `docs/policy/NON_RUST_POLICY.md`; generated inventory: `target/policy/non-rust-inventory.{md,json}`.
+- Architecture / spec docs: `docs/FILE_POLICY.md`, `docs/POLICY_ALLOWLISTS.md`, `docs/policy/NON_RUST_INVENTORY.md`.
 - Status doc: `docs/project/status/index.md`.
 - Adjacent rails: `docs/development/CODECOV_EVIDENCE_RAIL.md` / `docs/ci/codecov-rollout.md` (Cov-6 registers `codecov.yml` under `policy/non-rust-allowlist.toml`), `docs/development/CI_UX_RAIL.md` (CI doctor will surface file-policy failures locally).
 

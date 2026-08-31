@@ -14,9 +14,6 @@ on:
       - 'book/**'
       - 'scripts/populate-book.sh'
       - 'scripts/tests/test-populate-book-roadmap-links.sh'
-      - 'policy/non-rust-allowlist.toml'
-      - 'xtask/src/tasks/file_policy.rs'
-      - 'xtask/src/main.rs'
       - '.github/workflows/docs-deploy.yml'
   workflow_dispatch:
 
@@ -58,9 +55,6 @@ jobs:
         run: |
           cargo install mdbook --version 0.4.40 --locked || true
           mdbook --version
-
-      - name: Validate and generate current-tree non-Rust inventory
-        run: cargo run --locked -p xtask -- non-rust inventory --check
 
       - name: Populate documentation
         run: |

@@ -2,7 +2,7 @@ schema_version = 1
 policy = "generated-allowlist"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-08-31"
+updated = "2026-08-25"
 
 [[allow]]
 id = "generated-cargo-lock"
@@ -42,6 +42,18 @@ created = "2026-08-24"
 review_after = "2026-11-22"
 
 [[allow]]
+id = "generated-non-rust-inventory"
+path = "docs/policy/NON_RUST_INVENTORY.md"
+kind = "inventory"
+generated_by = "cargo xtask non-rust inventory --write"
+regenerate = "cargo xtask non-rust inventory --write"
+owner = "release/ci"
+reason = "The committed non-Rust inventory is generated from tracked files and the canonical policy ledger."
+covered_by = ["cargo xtask check-generated", "cargo xtask non-rust inventory"]
+created = "2026-08-24"
+review_after = "2026-11-22"
+
+[[allow]]
 id = "generated-repository-topology"
 path = "docs/architecture/repository-topology.md"
 kind = "status_page"
@@ -56,3 +68,15 @@ covered_by = [
 ]
 created = "2026-08-29"
 review_after = "2026-11-27"
+
+[[allow]]
+id = "generated-oneliner-capability-matrix"
+path = "docs/project/status/oneliner_capability_matrix.md"
+kind = "status_page"
+generated_by = "cargo xtask oneliner-capability-matrix"
+regenerate = "cargo xtask oneliner-capability-matrix"
+owner = "docs/status"
+reason = "Command-line analysis capability matrix generated from the conformance corpus (#13735). Named separately from the broad status-page glob so policy reports can identify its real generator and its --check command."
+covered_by = ["cargo xtask check-generated", "cargo xtask oneliner-capability-matrix --check"]
+created = "2026-08-31"
+review_after = "2026-11-29"

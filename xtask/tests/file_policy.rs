@@ -38,14 +38,14 @@ fn non_rust_inventory_subcommand_help_exits_zero() -> Result<()> {
 }
 
 #[test]
-fn non_rust_inventory_inventory_help_describes_current_tree_check() -> Result<()> {
+fn non_rust_inventory_inventory_help_describes_fail_closed_snapshot_check() -> Result<()> {
     let output = Command::cargo_bin("xtask")?.args(["non-rust", "inventory", "--help"]).output()?;
     assert!(output.status.success(), "non-rust inventory --help should exit 0");
     let help = String::from_utf8(output.stdout)?;
     ensure!(
-        help.contains("Validate current-tree policy")
-            && help.contains("target/policy/non-rust-inventory"),
-        "inventory --help must describe current-tree validation and generated outputs"
+        help.contains("Require the generated Markdown snapshot")
+            && help.contains("after line-ending normalization"),
+        "inventory --help must describe the fail-closed normalized snapshot check"
     );
     Ok(())
 }
@@ -156,10 +156,58 @@ fn non_rust_inventory_markdown_has_header() -> Result<()> {
     Ok(())
 }
 
-/// The inventory check must have an independently attributable, exact-tree CI
-/// result instead of being hidden inside the aggregate policy shard.
+/// Assert that `docs/policy/NON_RUST_INVENTORY.md` matches what the current
+/// tree generates.
+///
+/// When this test fails, the committed snapshot is stale.  Refresh it with:
+///
+/// ```text
+/// cargo xtask non-rust inventory --write
+/// ```
+///
+/// then commit the updated file.  The test deliberately fails with a diff so
+/// that the stale content is visible without opening a separate file — compare
+/// the "left" (committed) with the "right" (generated) in the panic output.
 #[test]
-fn non_rust_inventory_check_is_wired_to_exact_tree_job() -> Result<()> {
+fn non_rust_inventory_docs_are_current() -> Result<()> {
+    let _guard = inventory_output_lock()?;
+    let root = project_root()?;
+
+    // Generate fresh output to target/ — no tracked file is touched.
+    Command::cargo_bin("xtask")?
+        .args(["non-rust", "inventory"])
+        .current_dir(&root)
+        .assert()
+        .success();
+
+    let generated_path = root.join("target/policy/non-rust-inventory.md");
+    let committed_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
+
+    let generated = std::fs::read_to_string(&generated_path).map_err(|e| {
+        eyre!("could not read generated inventory at {}: {e}", generated_path.display())
+    })?;
+    let committed = std::fs::read_to_string(&committed_path).map_err(|e| {
+        eyre!("could not read committed inventory at {}: {e}", committed_path.display())
+    })?;
+
+    // Normalise line endings so CRLF/LF differences do not cause spurious failures.
+    let normalize = |s: &str| s.replace("\r\n", "\n");
+
+    assert_eq!(
+        normalize(&committed),
+        normalize(&generated),
+        "\n\ndocs/policy/NON_RUST_INVENTORY.md is stale.\n\
+         Run `cargo xtask non-rust inventory --write` and commit the result.\n"
+    );
+
+    Ok(())
+}
+
+/// The generated inventory check is only useful when the existing policy
+/// shard actually invokes it. Keep the source policy and workflow matrix
+/// wired to the same direct, read-only command.
+#[test]
+fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
     let root = project_root()?;
     let policy: Value =
         serde_yaml_ng::from_str(&std::fs::read_to_string(root.join(".ci/gate-policy.yaml"))?)?;
@@ -178,9 +226,9 @@ fn non_rust_inventory_check_is_wired_to_exact_tree_job() -> Result<()> {
     ensure!(
         gate.get("description").and_then(Value::as_str)
             == Some(
-                "Validate current-tree non-Rust classification and emit reviewable inventory artifacts"
+                "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
             ),
-        "the required gate description must promise current-tree policy validation"
+        "the required gate description must promise exact normalized snapshot parity"
     );
     assert_eq!(
         gate.get("command").and_then(Value::as_str),
@@ -197,8 +245,8 @@ fn non_rust_inventory_check_is_wired_to_exact_tree_job() -> Result<()> {
     let mapped = policy
         .get("workflow_integration")
         .and_then(|integration| integration.get("job_mapping"))
-        .and_then(|mapping| mapping.get("non-rust-policy"))
-        .and_then(|job| job.get("gates"))
+        .and_then(|mapping| mapping.get("ci-gate"))
+        .and_then(|ci_gate| ci_gate.get("gates"))
         .and_then(Value::as_sequence)
         .map(|gates| {
             gates
@@ -208,75 +256,14 @@ fn non_rust_inventory_check_is_wired_to_exact_tree_job() -> Result<()> {
                 .count()
         })
         .unwrap_or_default();
-    assert_eq!(mapped, 1, "gate must be mapped exactly once in workflow integration");
+    assert_eq!(mapped, 1, "gate must be mapped exactly once in the policy shard");
 
-    let workflow_text = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
-    let workflow: Value = serde_yaml_ng::from_str(&workflow_text)?;
-    let job = workflow
-        .get("jobs")
-        .and_then(|jobs| jobs.get("non-rust-policy"))
-        .ok_or_else(|| eyre!("dedicated non-rust-policy job is missing"))?;
-    ensure!(
-        job.get("name").and_then(Value::as_str) == Some("Non-Rust policy exact-tree"),
-        "dedicated result must be attributable"
-    );
-    let env = job.get("env").ok_or_else(|| eyre!("job env is missing"))?;
-    ensure!(
-        env.get("SUBJECT_SHA").and_then(Value::as_str).is_some_and(|value| {
-            value.contains("github.event.pull_request.head.sha")
-                && value.contains("github.event.merge_group.head_sha")
-                && value.contains("inputs.head_sha")
-        }),
-        "job must select the exact PR, merge-group, or dispatch subject"
-    );
-    ensure!(
-        env.get("BASE_SHA").and_then(Value::as_str).is_some_and(|value| {
-            value.contains("github.event.pull_request.base.sha")
-                && value.contains("github.event.merge_group.base_sha")
-                && value.contains("inputs.base_sha")
-        }),
-        "job must select the explicit event comparison base"
-    );
-    let steps = job
-        .get("steps")
-        .and_then(Value::as_sequence)
-        .ok_or_else(|| eyre!("job steps are missing"))?;
-    let step_named = |name: &str| {
-        steps.iter().find(|step| step.get("name").and_then(Value::as_str) == Some(name))
-    };
-    let checkout = step_named("Checkout exact non-Rust policy subject")
-        .ok_or_else(|| eyre!("exact-subject checkout is missing"))?;
-    ensure!(
-        checkout.get("with").and_then(|with| with.get("ref")).and_then(Value::as_str)
-            == Some("${{ env.SUBJECT_SHA }}"),
-        "checkout must use the selected exact subject"
-    );
-    let binding = step_named("Bind policy evidence to the checked-out tree")
-        .and_then(|step| step.get("run"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| eyre!("candidate-binding step is missing"))?;
-    ensure!(
-        binding.contains("test \"$actual_sha\" = \"$SUBJECT_SHA\"")
-            && binding.contains("test \"$SUBJECT_SHA\" = \"$GITHUB_SHA\"")
-            && binding.contains("git rev-parse --verify \"$BASE_SHA^{commit}\"")
-            && binding.contains("SUBJECT_TREE_SHA="),
-        "job must verify the selected commit, base, and tree"
-    );
-    let policy_step = step_named("Validate exact-tree non-Rust policy")
-        .ok_or_else(|| eyre!("policy execution step is missing"))?;
-    ensure!(
-        policy_step.get("run").and_then(Value::as_str)
-            == Some("cargo xtask gates --gate non_rust_inventory_check"),
-        "dedicated job must execute the governed gate"
-    );
-    ensure!(
-        policy_step.get("env").and_then(|env| env.get("CI_SCOPE_BASE")).and_then(Value::as_str)
-            == Some("${{ env.BASE_SHA }}"),
-        "policy execution must receive the explicit comparison base"
-    );
-    ensure!(
-        !workflow_text.contains("adr_link_check non_rust_inventory_check lint_policy"),
-        "aggregate policy shard must not duplicate the dedicated result"
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+    assert!(
+        workflow.contains(
+            "docs_build adr_link_check non_rust_inventory_check lint_policy v2_bundle_sync"
+        ),
+        "the live policy matrix must execute the inventory scan gate"
     );
     Ok(())
 }

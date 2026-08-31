@@ -22,11 +22,12 @@ on:
 concurrency:
   group: post-merge-status-${{ github.ref }}
   # #10199: this run is the only automated healer for the generated status
-  # documents. With
+  # documents and docs/policy/NON_RUST_INVENTORY.md (#11731). With
   # cancel-in-progress the next merge superseded each in-flight run before its
   # ~10-minute generate cycle finished, so under merge cadence the healing PR
-  # never opened and main's committed status documents drifted permanently.
-  # Queued runs are
+  # never opened and main's committed inventory drifted permanently. Every
+  # later branch then failed the strict inventory ratchet in
+  # xtask/tests/file_policy.rs, reding PR Smoke on healthy PRs. Queued runs are
   # safe: each regenerates from its own pinned event SHA and the writer updates
   # the same automation branch, so the newest completed run converges.
   cancel-in-progress: false
@@ -75,6 +76,14 @@ jobs:
       - name: Regenerate status subsystem files and roadmap
         run: cargo run --locked -p xtask -- update-status --write
 
+      # Merge-time non-Rust inventory refresh (#11731): any merge that changes
+      # tracked file counts drifts docs/policy/NON_RUST_INVENTORY.md, and the
+      # next branch cut from main then fails non_rust_inventory_check in
+      # unit_routed_full. Regenerating here lands the drift with the same
+      # reviewable PR as the status documents instead of on an unlucky branch.
+      - name: Regenerate the non-Rust inventory
+        run: cargo run --locked -p xtask -- non-rust inventory --write
+
       - name: Validate and stage exact generated payload
         id: payload
         run: |
@@ -97,6 +106,7 @@ jobs:
               "docs/project/status/parser.md",
               "docs/project/status/quality.md",
               "docs/project/ROADMAP.md",
+              "docs/policy/NON_RUST_INVENTORY.md",
           ]
           # `update-status --write` regenerates six subsystems, not four: it also
           # owns docs/project/status/{dap,workspace}.md, editor_ux.json, and the
@@ -112,6 +122,7 @@ jobs:
           # privileged writer stay bounded to the canonical files. (#13355)
           owned_paths = {
               "docs/project/ROADMAP.md",
+              "docs/policy/NON_RUST_INVENTORY.md",
               "Cargo.lock",
           }
           root = Path.cwd().resolve()
@@ -327,6 +338,7 @@ jobs:
               "docs/project/status/parser.md",
               "docs/project/status/quality.md",
               "docs/project/ROADMAP.md",
+              "docs/policy/NON_RUST_INVENTORY.md",
           ]
           expected_paths = set(canonical)
           # Re-declared here on purpose. The generator enforces the same limits,
@@ -533,6 +545,7 @@ jobs:
             docs/project/status/parser.md
             docs/project/status/quality.md
             docs/project/ROADMAP.md
+            docs/policy/NON_RUST_INVENTORY.md
 
       - name: Raise CI on the generated PR
         # GITHUB_TOKEN-created PRs raise no pull_request events, so none of
@@ -682,3 +695,4 @@ jobs:
 
           print(f"superseded {closed} stale proposal PR(s); default-branch tip {tip}")
           PY
+
