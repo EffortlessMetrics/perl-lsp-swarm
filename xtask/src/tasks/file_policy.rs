@@ -483,6 +483,15 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             {
                 bail!("subject workflow adds an unapproved action: {action}");
             }
+            let reference = action
+                .split_once('@')
+                .and_then(|(_, value)| value.split_whitespace().next())
+                .ok_or_else(|| {
+                    eyre!("subject workflow action is missing an immutable reference: {action}")
+                })?;
+            if reference.len() != 40 || !reference.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                bail!("subject workflow action must use a full 40-hex commit SHA: {action}");
+            }
         }
     }
     if text.contains("refs/pull/${{") {
