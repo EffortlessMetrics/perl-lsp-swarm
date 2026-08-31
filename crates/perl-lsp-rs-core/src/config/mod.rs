@@ -3834,6 +3834,7 @@ profile = "recommended"
     }
 
     #[test]
+    #[serial_test::serial]
     #[allow(unsafe_code)] // transient PATH mutation, serialized + restored (see below)
     fn perltidy_discoverable_on_path_still_yields_native_default()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
