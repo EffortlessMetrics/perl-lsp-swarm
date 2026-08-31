@@ -101,7 +101,15 @@ precise failure the immutability law exists to prevent. The row digests make
 the ID and its meaning inseparable, so any legitimate rewording of a published
 row must update its digest deliberately and visibly in the diff.
 
-Stated limitation: a row and its digest can be changed together in one commit,
+Stated limitation, inventory: this checker verifies that the committed
+inventory actually contains this packet's rows, not that the whole file equals
+the generator's projection. Re-deriving that projection means running the
+generator, which would break the checker's read-only, no-build contract and
+duplicate `non_rust_inventory_check`, whose job it already is. The boundary is
+deliberate: the checker catches an omitted or hand-faked packet refresh; the
+gate owns whole-file equivalence.
+
+Stated limitation, digests: a row and its digest can be changed together in one commit,
 so the digests prove *consistency and visibility*, not *authority*. They make
 an ID reassignment impossible to perform silently; they cannot establish that
 the reassignment was governed. Governance remains a #10888 revision decision
@@ -432,8 +440,19 @@ def main():
     adds_packet_file = any(
         line.split("\t")[0].startswith("A") and line.split("\t")[-1] in set(FILES)
         for line in statuses)
-    if adds_packet_file and INVENTORY not in changed:
-        fail(f"packet files are added but {INVENTORY} was not regenerated")
+    if adds_packet_file:
+        if INVENTORY not in changed:
+            fail(f"packet files are added but {INVENTORY} was not regenerated")
+        # Presence in the changed set is not evidence of content: any edit at
+        # all would satisfy it, including an inventory still missing these
+        # rows. Validate the required generated state itself.
+        try:
+            inventory_text = open(INVENTORY, encoding="utf-8").read()
+        except OSError:
+            fail(f"missing {INVENTORY}")
+        absent = [path for path in FILES if f"| `{path}` |" not in inventory_text]
+        if absent:
+            fail(f"{INVENTORY} does not list the packet's rows: {absent}")
 
     print("SPEC_10888_STRUCTURAL_CHECK=PASS")
     print(f"scenario_ids={len(ids)} falsifiers={len(rows)}")
