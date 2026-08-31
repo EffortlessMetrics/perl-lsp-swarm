@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: pr-13876-bounded-repair
+  group: pr-13876-bounded-repair-active
   cancel-in-progress: false
 
 jobs:
