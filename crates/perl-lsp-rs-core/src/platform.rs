@@ -189,6 +189,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn home_dir_fallback_uses_temp_dir() {
         let original_home = std::env::var("HOME").ok();
         let original_userprofile = std::env::var("USERPROFILE").ok();
@@ -219,6 +220,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn termux_candidates_include_prefix_bin_perl() {
         let original_prefix = std::env::var("PREFIX").ok();
 
