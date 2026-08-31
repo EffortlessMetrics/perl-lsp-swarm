@@ -730,6 +730,67 @@ class EvidenceBinding(unittest.TestCase):
             },
         )
 
+    def test_malformed_static_digests_are_rejected(self) -> None:
+        """A SUCCESS receipt can still carry a digest the reconciler rejects.
+
+        Binding it would produce a snapshot that looks complete and that the
+        reconciler throws out as invalid input.
+        """
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        cases = [
+            ("subject_sha256", "abc"),
+            ("subject_sha256", "Z" * 64),
+            ("exact_source_sha256", ""),
+        ]
+        for field, value in cases:
+            receipt = static_receipt()
+            receipt[field] = value
+            with self.subTest(field=field, value=value[:8]):
+                with self.assertRaises(observer.ObserverError):
+                    observer.build_snapshot(
+                        capture, source="operator", static_receipt=receipt
+                    )
+        for field, value in (("repository_sha", "a" * 39), ("repository_sha", "g" * 40)):
+            receipt = static_receipt()
+            receipt["subjects"][field] = value
+            with self.subTest(field=field):
+                with self.assertRaises(observer.ObserverError):
+                    observer.build_snapshot(
+                        capture, source="operator", static_receipt=receipt
+                    )
+        receipt = static_receipt()
+        receipt["subjects"]["policy"]["sha256"] = "b" * 63
+        with self.assertRaises(observer.ObserverError):
+            observer.build_snapshot(
+                capture, source="operator", static_receipt=receipt
+            )
+
+    def test_a_partial_write_cannot_leave_a_truncated_file(self) -> None:
+        """Evidence is staged and renamed, never written in place.
+
+        A truncated JSON file that still parses is worse than no file.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw) / "out.json"
+            target.write_text('{"previous": true}', encoding="utf-8")
+            original = Path.write_text
+
+            def failing(self, data, encoding=None, **kwargs):
+                if self.name.endswith(".tmp"):
+                    raise OSError("no space left on device")
+                return original(self, data, encoding=encoding, **kwargs)
+
+            Path.write_text = failing
+            try:
+                with self.assertRaises(OSError):
+                    observer.write_json(target, {"new": True})
+            finally:
+                Path.write_text = original
+            self.assertEqual(
+                target.read_text(encoding="utf-8"), '{"previous": true}'
+            )
+            self.assertFalse((Path(raw) / "out.json.tmp").exists())
+
     def test_non_success_static_receipt_cannot_be_bound(self) -> None:
         receipt = static_receipt()
         receipt["status"] = "FAILURE"
@@ -880,6 +941,17 @@ class CaptureBundle(unittest.TestCase):
         self.assertNotEqual(snapshot["observation"]["permission"], "complete")
         result = model.reconcile(snapshot, static_receipt(), authority(snapshot))
         self.assertEqual(result["status"], "NOT_PROVEN")
+
+    def test_duplicate_bundle_keys_are_rejected(self) -> None:
+        """A real capture records each key once, so two is ambiguous evidence.
+
+        Accepting it would let the last entry silently replace the response
+        the observer actually saw.
+        """
+        bundle = self.valid_bundle()
+        bundle["entries"].append(dict(bundle["entries"][0]))
+        with self.assertRaises(observer.ObserverError):
+            observer.Capture.from_bundle(bundle)
 
     def test_bundle_transport_failed_must_be_a_boolean(self) -> None:
         """Cases chosen to slip past the status/transport_failed pairing check.
@@ -1147,8 +1219,8 @@ class HttpTransport(unittest.TestCase):
             self.headers = {"Link": link} if link else {}
             self._payload = payload
 
-        def read(self) -> bytes:
-            return self._payload
+        def read(self, size: int | None = None) -> bytes:
+            return self._payload if size is None else self._payload[:size]
 
         def __enter__(self):
             return self
@@ -1233,6 +1305,20 @@ class HttpTransport(unittest.TestCase):
         self.assertEqual(result.status, 403)
         self.assertTrue(result.forbidden)
         self.assertFalse(result.ok)
+
+    def test_an_oversized_response_is_not_read_into_memory(self) -> None:
+        """An unbounded read lets one response terminate the observer."""
+        oversized = b"x" * (observer.MAX_RESPONSE_BYTES + 10)
+        result, _ = self.run_with(self.FakeResponse(200, oversized))
+        self.assertTrue(result.transport_failed)
+        self.assertEqual(result.body, b"")
+        self.assertFalse(result.ok)
+
+    def test_a_response_at_the_bound_is_still_read(self) -> None:
+        payload = b"x" * observer.MAX_RESPONSE_BYTES
+        result, _ = self.run_with(self.FakeResponse(200, payload))
+        self.assertFalse(result.transport_failed)
+        self.assertEqual(len(result.body), observer.MAX_RESPONSE_BYTES)
 
     def test_host_error_is_a_transport_failure_with_no_retained_text(self) -> None:
         import urllib.error

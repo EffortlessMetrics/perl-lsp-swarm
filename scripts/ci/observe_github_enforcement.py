@@ -65,6 +65,11 @@ RULESET_PAGE_SIZE = 100
 # does not satisfy "must be app N".
 ANY_SOURCE_APP_ID = -1
 
+# No enforcement response legitimately approaches this size. Reading without a
+# bound would let an oversized or hostile response exhaust memory and kill the
+# observer; an over-long body is treated as an unreadable surface instead.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
 # Closed vocabularies the reconciler enforces. An unknown value must not reach
 # the snapshot: the reconciler would reject the whole document as invalid
 # input, destroying every other surface's evidence with it. An unrepresentable
@@ -148,9 +153,13 @@ def http_transport(token: str | None) -> Transport:
         )
         try:
             with opener.open(request, timeout=30) as response:
+                payload = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(payload) > MAX_RESPONSE_BYTES:
+                    # Oversized: not evidence, and not worth holding in memory.
+                    return ApiResult(None, b"", transport_failed=True)
                 return ApiResult(
                     response.status,
-                    response.read(),
+                    payload,
                     link=response.headers.get("Link", "") or "",
                 )
         except urllib.error.HTTPError as error:
@@ -325,6 +334,12 @@ class Capture:
             link = entry.get("link", "")
             if not isinstance(link, str):
                 raise ObserverError("capture bundle entry link must be a string")
+            if key in capture.entries:
+                # One key, two responses: the real capture records each key
+                # once, so an ambiguous bundle is not admissible evidence.
+                raise ObserverError(
+                    f"capture bundle contains duplicate entry: {key}"
+                )
             capture.record(
                 key,
                 ApiResult(status, body, transport_failed=failed, link=link),
@@ -497,9 +512,19 @@ def static_binding(receipt: dict[str, Any]) -> dict[str, Any]:
         "policy_sha256": policy.get("sha256"),
         "repository_sha": subjects.get("repository_sha"),
     }
+    # Shape-checked here, matching the reconciler's own digest lengths. A
+    # SUCCESS receipt carrying a malformed digest would otherwise produce a
+    # snapshot that looks complete and that the reconciler rejects wholesale.
     for field, value in binding.items():
-        if not isinstance(value, str) or not value:
-            raise ObserverError(f"static receipt is missing {field}")
+        width = 40 if field == "repository_sha" else 64
+        if not isinstance(value, str) or len(value) != width:
+            raise ObserverError(
+                f"static receipt {field} must be {width} hexadecimal characters"
+            )
+        if any(character not in "0123456789abcdef" for character in value):
+            raise ObserverError(
+                f"static receipt {field} must be lowercase hexadecimal"
+            )
     return binding
 
 
@@ -1052,12 +1077,20 @@ def build_authority(
 
 
 def write_json(path: Path, payload: Any) -> None:
-    """Write deterministic, key-sorted JSON, creating parent directories."""
+    """Write deterministic, key-sorted JSON, creating parent directories.
+
+    The write is staged beside the destination and renamed into place, so an
+    interrupted or failed write cannot leave a truncated evidence file that
+    still parses as the real thing.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    body = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    staged = path.with_name(f"{path.name}.tmp")
+    try:
+        staged.write_text(body, encoding="utf-8")
+        os.replace(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def load_json(path: Path, field: str) -> Any:
