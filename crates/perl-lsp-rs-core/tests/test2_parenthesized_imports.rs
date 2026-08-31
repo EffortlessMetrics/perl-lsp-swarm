@@ -10,7 +10,9 @@ fn resolve_v0(args: &str) -> Result<ResolvedImport, Box<dyn std::error::Error>> 
 }
 
 fn complete(source_with_cursor: &str) -> Vec<CompletionItem> {
-    let position = source_with_cursor.find('|').unwrap_or(source_with_cursor.len());
+    let position = source_with_cursor
+        .find('|')
+        .expect("completion fixture must mark the cursor with |");
     let source = source_with_cursor.replacen('|', "", 1);
     let mut parser = Parser::new(source.as_str());
     let ast = must(parser.parse());
@@ -33,6 +35,7 @@ fn parenthesized_explicit_selection_replaces_v0_defaults(
 
     assert!(resolved.symbols.contains("ok"));
     assert!(!resolved.symbols.contains("is"), "nonempty parentheses must not restore defaults");
+    assert!(!resolved.symbols.contains("like"), "nonempty parentheses must not restore the compare defaults");
     Ok(())
 }
 
@@ -78,6 +81,7 @@ fn completion_projects_only_the_parenthesized_selection() {
     let items = complete("use Test2::V0 ('ok');\n|");
     let labels = test2_labels(&items);
 
+    assert!(!labels.is_empty(), "expected Test2-owned completion rows");
     assert!(labels.contains(&"ok"));
     assert!(!labels.contains(&"is"), "completion must not restore unselected V0 defaults");
 }
@@ -87,6 +91,7 @@ fn completion_honors_a_parenthesized_exclusion() {
     let items = complete("use Test2::V0 ('!ok');\n|");
     let labels = test2_labels(&items);
 
+    assert!(!labels.is_empty(), "expected Test2-owned completion rows");
     assert!(!labels.contains(&"ok"));
     assert!(labels.contains(&"is"), "other reviewed V0 defaults remain available");
 }
