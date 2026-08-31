@@ -748,6 +748,10 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                     HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
                 builder.alloc_expr(assign_expr, assign_range)
             });
+            let init_expr_id = init_expr_id.or_else(|| {
+                matches!(&variable.kind, NodeKind::Assignment { .. })
+                    .then(|| lower_expr(builder, variable))
+            });
 
             builder.alloc_stmt(
                 HirStmt::Let {
@@ -840,11 +844,15 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
             builder.alloc_expr(HirExpr::Binary { lhs: lhs_id, op: binary_op, rhs: rhs_id }, range)
         }
 
-        NodeKind::Assignment { lhs, rhs, .. } => {
+        NodeKind::Assignment { lhs, rhs, op } => {
             let lhs_id = lower_expr(builder, lhs);
             let rhs_id = lower_expr(builder, rhs);
             builder.alloc_expr(
-                HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode: AssignMode::Simple },
+                HirExpr::Assign {
+                    lhs: lhs_id,
+                    rhs: rhs_id,
+                    mode: if op == "=" { AssignMode::Simple } else { AssignMode::ReadModifyWrite },
+                },
                 range,
             )
         }

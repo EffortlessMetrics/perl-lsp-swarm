@@ -145,11 +145,15 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek_second()
                     .is_ok_and(|token| token.kind() == TokenKind::Assign && token.start() == end);
+            let valid_boundary = adjacent_assign
+                && !self.tokens.peek_third().is_ok_and(|token| {
+                    matches!(token.kind(), TokenKind::Assign | TokenKind::FatArrow)
+                });
 
-            if adjacent_assign {
+            if valid_boundary {
                 self.tokens.next()?; // consume x
                 self.tokens.next()?; // consume =
-                return Ok(Some(("x=", start)));
+                return Ok(Some(("x=", end + 1)));
             }
         }
 

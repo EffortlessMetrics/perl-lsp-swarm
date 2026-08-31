@@ -279,7 +279,7 @@ fn repetition_assignment_rejects_malformed_operator_boundaries() -> Result<(), S
 #[test]
 fn repetition_assignment_recovers_missing_rhs_with_exact_spans() -> Result<(), String> {
     for (source, assignment_start, recovery_offset) in
-        [("$value x=;", 0, 7), ("my $value x=;", 3, 10)]
+        [("$value x=;", 0, 9), ("my $value x=;", 3, 12)]
     {
         let output = Parser::new(source).parse_with_recovery();
         let assignment = find_assignment(&output.ast, "x=").ok_or_else(|| {
