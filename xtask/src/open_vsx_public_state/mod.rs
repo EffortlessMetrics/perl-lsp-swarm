@@ -62,12 +62,18 @@ struct Args {
     out: PathBuf,
 }
 
+/// Entry point for the standalone `open-vsx-public-state` binary.
 pub fn run_from_env() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     run_with_paths(args.input, args.out)
 }
 
+/// Classify one observation and publish its receipt.
+///
+/// The receipt is written for every state, including the ones that end in a
+/// non-zero exit: the durable artifact is the answer, and the exit status only
+/// reports whether that answer can be trusted.
 pub fn run_with_paths(input: PathBuf, out: PathBuf) -> Result<()> {
     let observation = load_observation(&input)?;
     prepare_output_parent(SUBJECT, &out)?;
@@ -121,6 +127,11 @@ pub fn run_with_paths(input: PathBuf, out: PathBuf) -> Result<()> {
 const OBSERVATION_SCHEMA: &str =
     include_str!("../../../schemas/open_vsx_public_state_observation.v1.schema.json");
 
+/// Read an observation and hold it to the published contract before use.
+///
+/// Deserialization alone would enforce only what the Rust types happen to
+/// encode, so the document is validated against the schema as well: one
+/// authority for the input shape rather than two that can drift apart.
 fn load_observation(path: &Path) -> Result<Observation> {
     let raw = fs::read_to_string(path)
         .wrap_err_with(|| format!("reading Open VSX observation {}", path.display()))?;

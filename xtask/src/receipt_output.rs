@@ -165,10 +165,17 @@ fn sync_directory(_parent: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The directory a path lives in, reading a bare file name as the current one.
 fn parent_or_current(path: &Path) -> &Path {
     path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."))
 }
 
+/// An absolute path suitable for comparison, whether or not the file exists.
+///
+/// An existing path is canonicalized outright. A receipt that has not been
+/// written yet cannot be, so its parent is canonicalized and the file name
+/// re-appended — otherwise the alias checks would have nothing to compare until
+/// after the write they exist to prevent.
 fn resolved_candidate_path(subject: &str, path: &Path) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {
         return Err(eyre!("{subject} path must not be empty"));
@@ -187,6 +194,11 @@ fn resolved_candidate_path(subject: &str, path: &Path) -> Result<PathBuf> {
     normalize_lexically(subject, &canonical_parent.join(file_name))
 }
 
+/// Resolve `.` and `..` textually, without consulting the filesystem.
+///
+/// Only ever applied to a path whose parent is already canonical, so no symlink
+/// can be hiding behind a `..` segment. A path that would climb above the
+/// filesystem root is refused rather than silently clamped to it.
 fn normalize_lexically(subject: &str, path: &Path) -> Result<PathBuf> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -205,6 +217,11 @@ fn normalize_lexically(subject: &str, path: &Path) -> Result<PathBuf> {
     Ok(normalized)
 }
 
+/// Whether two paths name the same file, hard links included.
+///
+/// Canonical-path equality catches direct paths and symlinks but not a second
+/// name for the same inode, which would let a receipt overwrite the very
+/// observation it was classified from.
 #[cfg(unix)]
 fn same_file_identity(subject: &str, output: &Path, source: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
@@ -253,6 +270,11 @@ fn same_file_identity(subject: &str, output: &Path, source: &Path) -> Result<boo
     Ok(output_identity == source_identity)
 }
 
+/// Whether two paths name the same file, on a platform exposing no link identity.
+///
+/// The answer is the honest one available here: canonical-path equality has
+/// already run in the caller, and nothing further can be proven, so this
+/// reports no additional alias rather than guessing at one.
 #[cfg(not(any(unix, windows)))]
 fn same_file_identity(_subject: &str, _output: &Path, _source: &Path) -> Result<bool> {
     // Canonical path equality above covers direct paths and symlink aliases on every platform.

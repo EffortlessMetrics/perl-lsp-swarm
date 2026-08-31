@@ -940,6 +940,11 @@ fn build_cells(observation: &Observation) -> Vec<CellResult> {
         .collect()
 }
 
+/// Whether a surface affirmed this exact identity, for the three that can.
+///
+/// The other three answer a different question — a listing page, a version
+/// table, a package file — so they report `None` rather than a default that
+/// would read as a denial.
 fn identity_match(observation: &Observation, cell: Cell) -> Option<bool> {
     match cell {
         Cell::Search => observation.cells.search.matched_identity,
@@ -958,10 +963,12 @@ fn published_versions(observation: &Observation, cell: Cell) -> Option<Vec<Strin
     }
 }
 
+/// Every surface paired with its transport record, in the fixed cell order.
 fn transports(observation: &Observation) -> Vec<(Cell, &Transport)> {
     Cell::ALL.into_iter().map(|cell| (cell, transport_for(observation, cell))).collect()
 }
 
+/// The transport record belonging to one surface.
 fn transport_for(observation: &Observation, cell: Cell) -> &Transport {
     match cell {
         Cell::Listing => &observation.cells.listing.transport,
@@ -1061,6 +1068,10 @@ fn unsafe_reference(value: &str) -> Option<&'static str> {
     None
 }
 
+/// Whether a value is a lowercase hexadecimal SHA-256.
+///
+/// Case is significant rather than normalised: an uppercase digest is refused
+/// outright, so one digest can never reach comparison in two spellings.
 fn is_sha256(value: &str) -> bool {
     value.len() == 64
         && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
