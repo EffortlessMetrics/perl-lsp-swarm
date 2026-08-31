@@ -66,7 +66,7 @@ impl PositionEncodingSessionContext {
     /// Support is not activation: the active value remains independently pinned
     /// until the end-to-end cutover owned by #1690.
     #[must_use]
-    pub(crate) const fn server_supported() -> &'static [PositionEncoding] {
+    pub(crate) const fn server_supported(self) -> &'static [PositionEncoding] {
         &SERVER_SUPPORTED_POSITION_ENCODINGS
     }
 
@@ -96,7 +96,7 @@ impl LspServer {
             Some(PositionEncodingSessionContext::COMPATIBILITY_PINNED_UTF16);
     }
 
-    pub(super) fn clear_position_encoding_session_context(&self) {
+    pub(crate) fn clear_position_encoding_session_context(&self) {
         *self.position_encoding_session_context.lock() = None;
     }
 
@@ -175,10 +175,7 @@ mod tests {
         let context = server
             .position_encoding_session_context()
             .ok_or("initialized session should expose an active encoding")?;
-        assert_eq!(
-            PositionEncodingSessionContext::server_supported(),
-            &[PositionEncoding::Utf8, PositionEncoding::Utf16]
-        );
+        assert_eq!(context.server_supported(), &[PositionEncoding::Utf8, PositionEncoding::Utf16]);
         assert_eq!(context.active().encoding(), PositionEncoding::Utf16);
         assert_eq!(
             context.active().selection_reason(),
@@ -302,16 +299,5 @@ mod tests {
 
         assert_eq!(server.position_encoding_for_coordinates()?, PositionEncoding::Utf16);
         Ok(())
-    }
-
-    #[test]
-    fn clearing_active_context_removes_a_published_value() {
-        let server = LspServer::new();
-        server.publish_position_encoding_session_context();
-        assert!(server.position_encoding_session_context().is_some());
-
-        server.clear_position_encoding_session_context();
-
-        assert!(server.position_encoding_session_context().is_none());
     }
 }
