@@ -1060,7 +1060,10 @@ fn validate_simd_readme_contract(readme: &str) -> R {
                 )));
             }
         }
-        if line.contains("performance") && !line.contains("no simd performance claim is made") {
+        if line.contains("performance")
+            && (!line.contains("no simd performance claim is made")
+                || line.match_indices("performance").count() > 1)
+        {
             return Err(missing(format!(
                 "README simd contract contains a contradictory performance claim: {line}"
             )));
@@ -1070,12 +1073,22 @@ fn validate_simd_readme_contract(readme: &str) -> R {
 }
 
 fn simd_claim_is_negated(prefix: &str) -> bool {
-    prefix
+    let clause = prefix
+        .rsplit(|character: char| matches!(character, '.' | ';' | '!' | '?' | '|'))
+        .next()
+        .unwrap_or(prefix);
+    let mut words = clause
         .split(|character: char| !character.is_ascii_alphanumeric() && character != '\'')
         .filter(|word| !word.is_empty())
-        .rev()
-        .take(5)
-        .any(|word| matches!(word, "no" | "not" | "without" | "never" | "isn't" | "doesn't"))
+        .rev();
+    let Some(last) = words.next() else {
+        return false;
+    };
+    if matches!(last, "no" | "not" | "without" | "never" | "isn't" | "doesn't") {
+        return true;
+    }
+    matches!(last, "use" | "uses" | "used" | "using")
+        && matches!(words.next(), Some("not" | "without" | "never" | "doesn't"))
 }
 
 #[test]
@@ -1271,6 +1284,20 @@ fn simd_readme_guard_rejects_contradictory_capability_claim() -> R {
 }
 
 #[test]
+fn simd_readme_guard_rejects_mixed_negation_capability_claim() -> R {
+    let readme = include_str!("../README.md");
+    let contradictory = format!("{readme}\nNo claim; lexer uses SIMD acceleration.\n");
+    let error = validate_simd_readme_contract(&contradictory)
+        .err()
+        .ok_or_else(|| missing("mixed README SIMD wording unexpectedly passed"))?;
+    assert!(
+        error.to_string().contains("accelerat"),
+        "mixed-clause contradiction must identify the capability claim: {error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn simd_readme_guard_allows_negated_implementation_claim() -> R {
     let readme = include_str!("../README.md");
     let truthful = format!("{readme}\nNo SIMD implementation is used.\n");
@@ -1295,7 +1322,9 @@ fn simd_readme_guard_rejects_simd_backend_claim() -> R {
 #[test]
 fn simd_readme_guard_rejects_contradictory_performance_claim() -> R {
     let readme = include_str!("../README.md");
-    let contradictory = format!("{readme}\nThe lexer provides better SIMD performance.\n");
+    let contradictory = format!(
+        "{readme}\nNo SIMD performance claim is made; the lexer provides better SIMD performance.\n"
+    );
     let error = validate_simd_readme_contract(&contradictory).err().ok_or_else(|| {
         missing("contradictory README SIMD performance wording unexpectedly passed")
     })?;
