@@ -10,7 +10,9 @@
 //! later consumers cannot silently reopen different report bytes.
 
 use color_eyre::eyre::{Context, Result, bail};
-use perl_core_harness_types::{HarnessMode, RUN_REPORT_SCHEMA_VERSION, RunReport};
+use perl_core_harness_types::{
+    HarnessMode, RUN_REPORT_SCHEMA_VERSION, RunReport, validate_file_result_mechanisms,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -207,6 +209,14 @@ fn read_report_evidence(path: &Path) -> Result<ReportEvidence> {
         .with_context(|| format!("decoding run report {}", path.display()))?;
     if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
         bail!("{} uses unsupported run-report schema {}", path.display(), report.schema_version);
+    }
+    // Admission copies report bytes forward as evidence, so a report whose
+    // execution-mechanism claim is inadmissible must not pass through here
+    // either (#14363).
+    if let Err((result_path, violation)) =
+        validate_file_result_mechanisms(report.mode, &report.file_results)
+    {
+        bail!("{}: file result {result_path}: {violation}", path.display());
     }
 
     let (terminal_admitted, reason) = match report.harness_status {

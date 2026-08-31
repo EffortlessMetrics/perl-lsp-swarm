@@ -10,8 +10,9 @@
 use crate::transition::model::AcceptedBaseline;
 use crate::transition::terminal::TerminalProcessOutcome;
 use perl_core_harness_types::{
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, ObservedSemanticBoundary,
+    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, HarnessMode, ObservedSemanticBoundary,
     RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunnerStatus,
+    validate_file_result_mechanisms,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -92,6 +93,7 @@ pub fn validate_run_report(
             "current observation repeats file-result path {path}"
         )));
     }
+    validate_mechanism_claims(report.mode, &report.file_results, "current")?;
     validate_file_result_assertions(&report.file_results, "current")?;
     validate_summary_against_file_results(report)?;
     validate_failure_inventory(
@@ -106,6 +108,24 @@ pub fn validate_run_report(
         "current",
     )?;
     Ok(ValidatedRunReport { inner: report.clone() })
+}
+
+/// Reject transition evidence whose per-file execution-mechanism claims are not
+/// admissible for the mode that produced them.
+///
+/// This module is the canonical structural validator for transition evidence,
+/// so the mechanism contract has to hold here too. Without it, `classify` and
+/// `check` would accept an observation or an accepted baseline claiming a rail
+/// no evidence backs — the same forgery the receipt, report, and baseline
+/// readers already refuse (#14363).
+fn validate_mechanism_claims(
+    mode: HarnessMode,
+    file_results: &[RunFileResult],
+    subject: &str,
+) -> Result<(), EvidenceValidationError> {
+    validate_file_result_mechanisms(mode, file_results).map_err(|(path, violation)| {
+        EvidenceValidationError::new(format!("{subject} file result {path}: {violation}"))
+    })
 }
 
 /// Validate an accepted V2 baseline's structural count and membership invariants.
@@ -134,6 +154,7 @@ pub fn validate_compile_baseline_v2(
             "accepted V2 file_membership repeats path {path}"
         )));
     }
+    validate_mechanism_claims(baseline.mode, &baseline.file_results, "accepted V2")?;
     if let Some(path) = first_whitespace_contaminated_path(&baseline.file_results) {
         return Err(EvidenceValidationError::new(format!(
             "accepted file-result path {path:?} has leading or trailing whitespace"
@@ -459,11 +480,81 @@ fn first_whitespace_contaminated_str<'a>(
 mod ripr_inventory_call_observers {
     use super::*;
     use perl_core_harness_types::{
-        HarnessMode, HarnessProfile, HarnessRunner, ObservedSemanticBoundary, RunFailure,
-        RunFileResult, RunReport, RunSummary, RunnerStatus, SemanticBoundaryConfidence,
+        ExecutionMechanism, HarnessMode, HarnessProfile, HarnessRunner, ObservedSemanticBoundary,
+        RunFailure, RunFileResult, RunReport, RunSummary, RunnerStatus, SemanticBoundaryConfidence,
         SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundarySourceSpan,
     };
     use std::collections::BTreeMap;
+
+    /// An execute-mode observation shaped like the selected-base receipt.
+    fn clean_execute_report() -> RunReport {
+        let mut report = clean_report();
+        report.mode = HarnessMode::Execute;
+        report.harness_status = Some(1);
+        for result in &mut report.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        report
+    }
+
+    #[test]
+    fn validate_run_report_rejects_a_relabelled_execution_mechanism() {
+        // `classify` and `check` reach this validator, so an observation
+        // claiming a rail no evidence backs must not become comparable.
+        for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+            let mut report = clean_execute_report();
+            for result in &mut report.file_results {
+                result.mechanism = Some(mechanism);
+            }
+
+            let err = validate_run_report(&report).expect_err("relabelled mechanism");
+
+            assert!(
+                err.reason.contains("no current rail can supply"),
+                "unexpected reason for {mechanism}: {}",
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn validate_run_report_rejects_an_execution_observation_without_a_mechanism() {
+        let mut report = clean_execute_report();
+        for result in &mut report.file_results {
+            result.mechanism = None;
+        }
+
+        let err = validate_run_report(&report).expect_err("missing mechanism");
+
+        assert!(
+            err.reason.contains("does not declare an execution mechanism"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn validate_run_report_rejects_a_compile_observation_claiming_execution_evidence() {
+        let mut report = clean_report();
+        for result in &mut report.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+
+        let err = validate_run_report(&report).expect_err("mechanism outside execution");
+
+        assert!(
+            err.reason.contains("only execution receipts may carry"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn validate_run_report_accepts_an_honestly_classified_execution_observation() {
+        // Opposite-direction control: the contract must not block real evidence.
+        validate_run_report(&clean_execute_report())
+            .expect("an honestly classified execute observation stays comparable");
+    }
 
     #[test]
     fn validate_run_report_rejects_missing_failure_record() {
@@ -734,10 +825,10 @@ mod ripr_inventory_call_observers {
     /// instead of being permanently misclassified by zero-only defensive code.
     #[test]
     fn recognized_execute_nonzero_status_is_terminally_admissible() {
-        let mut report = clean_report();
-        report.mode = HarnessMode::Execute;
-        report.harness_status = Some(1);
-        assert!(validate_run_report(&report).is_ok());
+        // `clean_execute_report` is `clean_report` in execute mode with the
+        // scheduler's recognized nonzero status and an honest mechanism, so the
+        // subject stays terminal admissibility rather than classification.
+        assert!(validate_run_report(&clean_execute_report()).is_ok());
     }
 
     #[test]

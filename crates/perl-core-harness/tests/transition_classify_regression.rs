@@ -9,9 +9,9 @@ use perl_core_harness::transition::{
 };
 use perl_core_harness_types::{
     COMPILE_BASELINE_SCHEMA_VERSION, COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition,
-    CompileBaseline, CompileBaselineV2, HarnessMode, HarnessProfile, HarnessRunner,
-    ObservedSemanticBoundary, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
-    RunSummary, RunnerStatus, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
+    CompileBaseline, CompileBaselineV2, ExecutionMechanism, HarnessMode, HarnessProfile,
+    HarnessRunner, ObservedSemanticBoundary, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult,
+    RunReport, RunSummary, RunnerStatus, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
     SemanticBoundaryLockScope, SemanticBoundarySourceSpan,
 };
 use std::collections::BTreeMap;
@@ -167,6 +167,14 @@ fn recognized_execute_nonzero_exact_match_is_no_change() {
     let mut current = sample_report(2, 2);
     current.mode = HarnessMode::Execute;
     current.harness_status = Some(1);
+    // Execution evidence names its rail on both sides; the subject here is the
+    // recognized nonzero terminal status, not the mechanism.
+    for result in &mut accepted.file_results {
+        result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+    }
+    for result in &mut current.file_results {
+        result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+    }
     let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     assert_eq!(classification.transition, CompatibilityTransition::NoChange);
     assert!(!classification.requires_candidate);
