@@ -153,6 +153,14 @@ impl EnvBindings {
                 );
                 continue;
             }
+            if glob && path.len() == 2 && parent.module_aliases.contains(&path[1]) {
+                for function in ["set_var", "remove_var", "set_current_dir"] {
+                    if let Some(signal) = signal_category(function) {
+                        self.direct_aliases.insert(function.to_owned(), signal);
+                    }
+                }
+                continue;
+            }
             if glob || path.len() != 2 {
                 continue;
             }
@@ -523,48 +531,6 @@ fn module_bindings(items: &[Item], parent: Option<&EnvBindings>) -> EnvBindings 
     bindings
 }
 
-fn collect_module_sites(
-    path: &str,
-    items: &[Item],
-    parent: Option<&EnvBindings>,
-    sites: &mut Vec<SerialSiteIdentity>,
-) -> EnvBindings {
-    let bindings = module_bindings(items, parent);
-    for item in items {
-        match item {
-            Item::Fn(function) if is_test_function(&function.attrs) => {
-                if has_serial_guard(&function.attrs) {
-                    continue;
-                }
-                let mut visitor = SignalVisitor::new(bindings.clone());
-                for input in &function.sig.inputs {
-                    if let syn::FnArg::Typed(argument) = input {
-                        for name in pattern_names(&argument.pat) {
-                            visitor.bindings.shadow_value(&name);
-                        }
-                    }
-                }
-                visitor.visit_block(&function.block);
-                if !visitor.signals.is_empty() {
-                    sites.push(SerialSiteIdentity {
-                        path: path.to_owned(),
-                        test_function: function.sig.ident.to_string(),
-                        signals: visitor.signals.into_iter().collect(),
-                        line: function.sig.fn_token.span.start().line,
-                    });
-                }
-            }
-            Item::Mod(module) => {
-                if let Some((_, child_items)) = &module.content {
-                    collect_module_sites(path, child_items, Some(&bindings), sites);
-                }
-            }
-            _ => {}
-        }
-    }
-    bindings
-}
-
 struct ParsedRustFile {
     path: PathBuf,
     relative: String,
@@ -606,6 +572,7 @@ fn explicit_module_path(module: &syn::ItemMod) -> Option<PathBuf> {
 fn external_module_path(
     parent: &Path,
     module: &syn::ItemMod,
+    inline_modules: &[String],
     known: &BTreeMap<PathBuf, usize>,
 ) -> Option<PathBuf> {
     let directory = parent.parent()?;
@@ -616,10 +583,13 @@ fn external_module_path(
 
     let name = ident_name(&module.ident);
     let mut candidates = BTreeSet::new();
-    candidates.insert(directory.join(format!("{name}.rs")));
-    candidates.insert(directory.join(&name).join("mod.rs"));
+    let inline_directory =
+        inline_modules.iter().fold(directory.to_path_buf(), |path, module| path.join(module));
+    candidates.insert(inline_directory.join(format!("{name}.rs")));
+    candidates.insert(inline_directory.join(&name).join("mod.rs"));
     if let Some(stem) = parent.file_stem() {
-        let nested = directory.join(stem);
+        let nested =
+            inline_modules.iter().fold(directory.join(stem), |path, module| path.join(module));
         candidates.insert(nested.join(format!("{name}.rs")));
         candidates.insert(nested.join(&name).join("mod.rs"));
     }
@@ -630,22 +600,90 @@ fn external_module_path(
     (matches.len() == 1).then(|| matches[0].clone())
 }
 
-fn scan_parsed_file(
-    index: usize,
-    parent: Option<&EnvBindings>,
-    parsed: &[ParsedRustFile],
-    edges: &BTreeMap<usize, Vec<usize>>,
-    visited: &mut BTreeSet<usize>,
-    sites: &mut Vec<SerialSiteIdentity>,
-) {
-    if !visited.insert(index) {
-        return;
+struct ScanContext<'a> {
+    parsed: &'a [ParsedRustFile],
+    known: &'a BTreeMap<PathBuf, usize>,
+    visited: BTreeSet<usize>,
+    sites: Vec<SerialSiteIdentity>,
+}
+
+impl ScanContext<'_> {
+    fn scan_scope(
+        &mut self,
+        file_index: usize,
+        items: &[Item],
+        inline_modules: &[String],
+        parent: Option<&EnvBindings>,
+    ) {
+        let file = &self.parsed[file_index];
+        let bindings = module_bindings(items, parent);
+        for item in items {
+            match item {
+                Item::Fn(function) if is_test_function(&function.attrs) => {
+                    if has_serial_guard(&function.attrs) {
+                        continue;
+                    }
+                    let mut visitor = SignalVisitor::new(bindings.clone());
+                    for input in &function.sig.inputs {
+                        if let syn::FnArg::Typed(argument) = input {
+                            for name in pattern_names(&argument.pat) {
+                                visitor.bindings.shadow_value(&name);
+                            }
+                        }
+                    }
+                    visitor.visit_block(&function.block);
+                    if !visitor.signals.is_empty() {
+                        self.sites.push(SerialSiteIdentity {
+                            path: file.relative.clone(),
+                            test_function: function.sig.ident.to_string(),
+                            signals: visitor.signals.into_iter().collect(),
+                            line: function.sig.fn_token.span.start().line,
+                        });
+                    }
+                }
+                Item::Mod(module) => {
+                    if let Some((_, child_items)) = &module.content {
+                        let mut child_modules = inline_modules.to_vec();
+                        child_modules.push(ident_name(&module.ident));
+                        self.scan_scope(file_index, child_items, &child_modules, Some(&bindings));
+                    } else if let Some(path) =
+                        external_module_path(&file.path, module, inline_modules, self.known)
+                        && let Some(child) = self.known.get(&path).copied()
+                    {
+                        self.scan_file(child, Some(&bindings));
+                    }
+                }
+                _ => {}
+            }
+        }
     }
-    let file = &parsed[index];
-    let bindings = collect_module_sites(&file.relative, &file.syntax.items, parent, sites);
-    if let Some(children) = edges.get(&index) {
-        for child in children {
-            scan_parsed_file(*child, Some(&bindings), parsed, edges, visited, sites);
+
+    fn scan_file(&mut self, index: usize, parent: Option<&EnvBindings>) {
+        if !self.visited.insert(index) {
+            return;
+        }
+        let items = self.parsed[index].syntax.items.clone();
+        self.scan_scope(index, &items, &[], parent);
+    }
+}
+
+fn collect_external_children(
+    file: &ParsedRustFile,
+    items: &[Item],
+    inline_modules: &[String],
+    known: &BTreeMap<PathBuf, usize>,
+    children: &mut BTreeSet<usize>,
+) {
+    for item in items {
+        let Item::Mod(module) = item else { continue };
+        if let Some((_, child_items)) = &module.content {
+            let mut child_modules = inline_modules.to_vec();
+            child_modules.push(ident_name(&module.ident));
+            collect_external_children(file, child_items, &child_modules, known, children);
+        } else if let Some(path) = external_module_path(&file.path, module, inline_modules, known)
+            && let Some(child) = known.get(&path)
+        {
+            children.insert(*child);
         }
     }
 }
@@ -662,33 +700,23 @@ fn complete_serial_site_inventory(repo_root: &Path) -> Result<Vec<SerialSiteIden
         .enumerate()
         .map(|(index, file)| (file.path.clone(), index))
         .collect::<BTreeMap<_, _>>();
-    let mut edges = BTreeMap::<usize, Vec<usize>>::new();
     let mut children = BTreeSet::new();
-    for (index, file) in parsed.iter().enumerate() {
-        for item in &file.syntax.items {
-            let Item::Mod(module) = item else { continue };
-            if module.content.is_some() {
-                continue;
-            }
-            let Some(path) = external_module_path(&file.path, module, &known) else { continue };
-            let Some(child) = known.get(&path).copied() else { continue };
-            edges.entry(index).or_default().push(child);
-            children.insert(child);
-        }
+    for file in &parsed {
+        collect_external_children(file, &file.syntax.items, &[], &known, &mut children);
     }
 
-    let mut sites = Vec::new();
-    let mut visited = BTreeSet::new();
+    let mut scan =
+        ScanContext { parsed: &parsed, known: &known, visited: BTreeSet::new(), sites: Vec::new() };
     for index in 0..parsed.len() {
         if !children.contains(&index) {
-            scan_parsed_file(index, None, &parsed, &edges, &mut visited, &mut sites);
+            scan.scan_file(index, None);
         }
     }
     for index in 0..parsed.len() {
-        scan_parsed_file(index, None, &parsed, &edges, &mut visited, &mut sites);
+        scan.scan_file(index, None);
     }
-    sites.sort();
-    Ok(sites)
+    scan.sites.sort();
+    Ok(scan.sites)
 }
 
 /// Emit the current parallel-unsafe inventory as JSON. This is the measurement
@@ -1277,6 +1305,89 @@ fn unrelated_inherited_helper_is_not_environment() {
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].path, "crates/demo/tests/inherited.rs");
         assert_eq!(sites[0].test_function, "inherited_environment_alias");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn external_child_can_glob_an_inherited_environment_module_alias() -> Result<()> {
+        let repo = TempRepo::new("external-parent-module-glob")?;
+        repo.write_test(
+            r#"
+use std::env as process_environment;
+mod inherited_environment;
+
+mod unrelated_environment {
+    pub fn set_var(_key: &str, _value: &str) {}
+}
+mod inherited_unrelated;
+"#,
+        )?;
+        fs::write(
+            repo.path.join("crates/demo/tests/inherited_environment.rs"),
+            r#"
+use super::process_environment::*;
+
+#[test]
+fn inherited_environment_function() {
+    unsafe { set_var("A", "1"); }
+}
+"#,
+        )?;
+        fs::write(
+            repo.path.join("crates/demo/tests/inherited_unrelated.rs"),
+            r#"
+use super::unrelated_environment::*;
+
+#[test]
+fn unrelated_inherited_function() {
+    set_var("A", "1");
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/inherited_environment.rs");
+        assert_eq!(sites[0].test_function, "inherited_environment_function");
+        assert_eq!(sites[0].signals, vec!["env_set"]);
+        Ok(())
+    }
+
+    #[test]
+    fn external_child_of_inline_module_inherits_environment_bindings() -> Result<()> {
+        let repo = TempRepo::new("inline-parent-external-child")?;
+        repo.write_test(
+            r#"
+mod parent {
+    use std::env as process_environment;
+    fn unrelated_set_var(_key: &str, _value: &str) {}
+    mod child;
+}
+"#,
+        )?;
+        fs::create_dir_all(repo.path.join("crates/demo/tests/parent"))?;
+        fs::write(
+            repo.path.join("crates/demo/tests/parent/child.rs"),
+            r#"
+use super::*;
+
+#[test]
+fn nested_inherited_environment_alias() {
+    unsafe { process_environment::set_var("A", "1"); }
+}
+
+#[test]
+fn nested_unrelated_helper() {
+    unrelated_set_var("A", "1");
+}
+"#,
+        )?;
+
+        let sites = complete_serial_site_inventory(&repo.path)?;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].path, "crates/demo/tests/parent/child.rs");
+        assert_eq!(sites[0].test_function, "nested_inherited_environment_alias");
         assert_eq!(sites[0].signals, vec!["env_set"]);
         Ok(())
     }
