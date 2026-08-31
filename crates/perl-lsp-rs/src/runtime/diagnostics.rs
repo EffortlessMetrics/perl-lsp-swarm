@@ -2747,10 +2747,15 @@ mod tests {
     }
 
     #[test]
-    fn native_critic_exclusion_by_compat_spelling_removes_the_logical_row() {
+    fn native_critic_exclusion_by_compat_spelling_strips_critic_and_keeps_the_core_row() {
         // #7475 discriminating control: excluding a reviewed compatibility
-        // spelling must remove the whole logical alias set. Producer-side
+        // spelling must remove the whole Critic alias set. Producer-side
         // rule-ID gating alone could never honor `PL601`.
+        //
+        // #14209 (residual of #13798/#13999): the exclude is Critic-producer
+        // policy, so it strips the Critic contribution and may not revoke the
+        // independently owned built-in core proposition; removing the core
+        // row itself is a built-in-policy decision, never Critic config.
         let (server, buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
@@ -2775,14 +2780,14 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap_or_default();
         assert!(
             !text.contains("native.security.backtick_exec"),
-            "excluding PL601 must remove the backtick logical row; got: {text:?}"
+            "excluding PL601 must strip the backtick Critic contribution; got: {text:?}"
         );
-        // #11918: exclusion by the compatibility spelling removes the whole
-        // logical row — the built-in contributor no longer survives beside
-        // the excluded native alias.
+        // #11918/#14209: the built-in contributor survives beside the excluded
+        // native alias as a core-only PL601 row.
         assert!(
-            !text.contains("PL601"),
-            "excluding PL601 must remove the complete alias row; got: {text:?}"
+            text.contains("PL601"),
+            "excluding PL601 may only strip the Critic side; the built-in core \
+             proposition must survive; got: {text:?}"
         );
     }
 
