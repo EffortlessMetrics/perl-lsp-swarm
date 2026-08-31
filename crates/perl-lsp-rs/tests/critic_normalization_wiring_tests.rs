@@ -26,6 +26,11 @@ const SERVICE_ENTRYPOINT: &str = "NativeCriticService::analyze(";
 const SERVICE_SOURCE_REL: &str = "../../crates/perl-lsp-rs-core/src/tooling/perl_critic/service.rs";
 const MIGRATED_TRANSPORTS: [&str; 2] = ["runtime/diagnostics.rs", "features/diagnostics/pull.rs"];
 
+/// Every diagnostic transport migrated by #9062. `runtime/diagnostics.rs`
+/// carries both push and workspace pull.
+const ALL_MIGRATED_TRANSPORTS: [&str; 3] =
+    ["runtime/diagnostics.rs", "features/diagnostics/pull.rs", "runtime/language/code_actions.rs"];
+
 /// Composition entry points that only the service may call in production.
 /// Anything below would let a consumer rebuild its own producer/filter/
 /// suppression pipeline instead of consuming one shared run.
@@ -55,6 +60,62 @@ const NATIVE_CONSUMER_SOURCES: [&str; 4] = [
     "runtime/language/code_actions.rs",
     "execute_command/provider.rs",
 ];
+
+/// #9062: no migrated diagnostic transport may reach an external Perl::Critic
+/// process path.
+///
+/// The dynamic suite proves a deprecated engine value does not change output
+/// and that native evaluation still runs. It cannot, by itself, prove the
+/// subprocess was never invoked -- an external tool that happened to emit
+/// nothing would satisfy those assertions too. Restoring the deleted mock
+/// runtime purely to observe its own absence would mean keeping dead product
+/// plumbing alive for a test, so the invocation-count proposition is carried
+/// statically instead: the external entry points cannot be reached from these
+/// files at all.
+///
+/// Together the two are complete: reachability makes an external product
+/// process path impossible, equivalence shows the deprecated selector is inert,
+/// and the non-vacuity control shows the native service still runs.
+#[test]
+fn migrated_diagnostic_transports_cannot_reach_an_external_critic_process() -> Result<(), String> {
+    /// Construction and execution seams for external Perl::Critic, plus the two
+    /// collectors that were its only diagnostic-transport callers before the
+    /// #9062 cutover removed them.
+    ///
+    /// Deliberately seams rather than the bare type name: a file that merely
+    /// names or re-exports `CriticAnalyzer` in a doc comment or a type position
+    /// cannot thereby run the external tool, and banning the identifier forever
+    /// would make this gate a false-positive generator during the #9072/#9068
+    /// transition. What must stay impossible is constructing or driving it.
+    const EXTERNAL_PROCESS_ENTRYPOINTS: [&str; 6] = [
+        "CriticAnalyzer::new(",
+        "CriticAnalyzer::with_os_runtime(",
+        ".analyze_file(",
+        ".analyze_file_with_hash(",
+        "collect_external_perlcritic_diagnostics",
+        "collect_perlcritic_diagnostics",
+    ];
+
+    for transport in ALL_MIGRATED_TRANSPORTS {
+        let source = production_source(transport)?;
+
+        for entry in EXTERNAL_PROCESS_ENTRYPOINTS {
+            if source.contains(entry) {
+                return Err(format!(
+                    "{transport} reaches external Perl::Critic execution through `{entry}`;                      after #9062 no diagnostic transport may run the external tool. Retirement                      of the raw settings is #9072 and deletion of the residual architecture is                      #9068, but reachability from a product transport must already be zero"
+                ));
+            }
+        }
+
+        if !source.contains(SERVICE_ENTRYPOINT) {
+            return Err(format!(
+                "{transport} must evaluate native critic rules through                  `{SERVICE_ENTRYPOINT}`; a transport that reaches neither the service nor the                  external tool would satisfy the negative above vacuously"
+            ));
+        }
+    }
+
+    Ok(())
+}
 
 /// Read one production source file of this crate.
 ///

@@ -15,20 +15,21 @@
 //! candidate derived from a removed document instance is rejected by instance
 //! identity (`Arc::ptr_eq`), even when its numeric counter still matches.
 //!
-//! Lock order: sink lock → documents lock → config lock (each brief and
-//! read-only inside validation). No path may acquire them in reverse order;
-//! publish paths take their snapshots under the documents lock and release it
-//! before committing, and read configuration only in scoped blocks that end
-//! before the commit call.
+//! Lock order: sink lock (push only) → documents lock → workspace-folders/root
+//! lock → config lock. No path may acquire them in reverse order. Expensive
+//! analysis and projection happen before this boundary; the final closure keeps
+//! these read-only authority guards through response selection or outbound
+//! enqueue, then releases them immediately.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
 use parking_lot::Mutex;
+use perl_lsp_rs_core::config::AcceptedCriticSnapshot;
 use serde_json::Value;
 
-use super::LspServer;
+use super::{LspServer, source_path_from_uri};
 
 /// Accepted parse state a push-diagnostics candidate was derived from.
 ///
@@ -44,23 +45,7 @@ pub(crate) struct PushDiagnosticIdentity {
     /// under (#13304), when the payload carries any. `None` means the payload
     /// is policy-independent: a clear, a syntax-only or fast parse-error
     /// publication, or a run that produced no publishable native rows.
-    pub(crate) accepted_critic_policy: Option<AcceptedCriticPolicy>,
-}
-
-/// Exact accepted critic policy identity behind one push candidate (#13304).
-///
-/// Document identity and generation say nothing about configuration: a
-/// `didChangeConfiguration` between analysis and the sink leaves both
-/// unchanged while the policy that produced the rows is dead. This value is
-/// what the sink re-checks against live configuration inside the same
-/// critical section that performs the irreversible enqueue.
-#[derive(Clone)]
-pub(crate) struct AcceptedCriticPolicy {
-    /// Owning root key the accepted state was derived for, exactly as passed
-    /// to the #8253 authority at snapshot time.
-    pub(crate) owning_root: Option<String>,
-    /// Fingerprint of the accepted state the published rows came from.
-    pub(crate) fingerprint: String,
+    pub(crate) accepted_critic_snapshot: Option<AcceptedCriticSnapshot>,
 }
 
 impl PushDiagnosticIdentity {
@@ -73,7 +58,7 @@ impl PushDiagnosticIdentity {
             normalized_uri: normalized_uri.to_string(),
             document_instance: Arc::clone(document_instance),
             generation,
-            accepted_critic_policy: None,
+            accepted_critic_snapshot: None,
         }
     }
 
@@ -81,11 +66,11 @@ impl PushDiagnosticIdentity {
     /// produced under, so the sink can reject a publication whose policy moved
     /// after analysis (#13304).
     #[must_use]
-    pub(crate) fn with_accepted_critic_policy(
+    pub(crate) fn with_accepted_critic_snapshot(
         mut self,
-        policy: Option<AcceptedCriticPolicy>,
+        snapshot: Option<AcceptedCriticSnapshot>,
     ) -> Self {
-        self.accepted_critic_policy = policy;
+        self.accepted_critic_snapshot = snapshot;
         self
     }
 }
@@ -128,6 +113,16 @@ pub(crate) enum PushDiagnosticsCommitOutcome {
     OutboundFailure,
 }
 
+/// Why a staged diagnostic effect could not linearize against its accepted
+/// document and Critic subject.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DiagnosticSubjectRejection {
+    DocumentClosed,
+    WrongDocumentInstance,
+    SupersededGeneration,
+    SupersededCriticPolicy,
+}
+
 /// Last diagnostic publication this server committed for a normalized URI.
 struct CommittedPushDiagnostic {
     document_instance: Arc<AtomicU32>,
@@ -151,6 +146,61 @@ impl PushDiagnosticsSink {
 }
 
 impl LspServer {
+    /// Validate one staged diagnostic subject and commit its effect while all
+    /// authorities that can move that subject remain locked.
+    ///
+    /// The closure is the linearization point: document replacement/change,
+    /// workspace-folder rebind and accepted Critic configuration movement all
+    /// block until it returns. Callers must finish every fallible or expensive
+    /// staging step before entering this boundary.
+    pub(crate) fn commit_if_diagnostic_subject_current<T>(
+        &self,
+        uri: &str,
+        document_instance: &Arc<AtomicU32>,
+        generation: u32,
+        accepted_critic_snapshot: Option<&AcceptedCriticSnapshot>,
+        commit: impl FnOnce() -> T,
+    ) -> Result<T, DiagnosticSubjectRejection> {
+        let normalized_uri = self.normalize_uri_key(uri);
+        let documents = self.documents.lock();
+        let Some(document) = documents.get(&normalized_uri) else {
+            return Err(DiagnosticSubjectRejection::DocumentClosed);
+        };
+        if !Arc::ptr_eq(&document.generation, document_instance) {
+            return Err(DiagnosticSubjectRejection::WrongDocumentInstance);
+        }
+        if document.current_generation() != generation {
+            return Err(DiagnosticSubjectRejection::SupersededGeneration);
+        }
+
+        if let Some(snapshot) = accepted_critic_snapshot {
+            let workspace_folders = self.workspace_folders.lock();
+            let root_path = self.root_path.lock();
+            let config = self.config.lock();
+            let live_root =
+                super::best_workspace_folder_for_doc(&workspace_folders, &normalized_uri)
+                    .and_then(|folder| {
+                        folder.path.clone().or_else(|| source_path_from_uri(&folder.uri))
+                    })
+                    .or_else(|| root_path.clone())
+                    .map(|path| path.to_string_lossy().into_owned());
+            if live_root.as_deref() != snapshot.owning_root() || !snapshot.is_current(&config) {
+                return Err(DiagnosticSubjectRejection::SupersededCriticPolicy);
+            }
+
+            let committed = commit();
+            drop(config);
+            drop(root_path);
+            drop(workspace_folders);
+            drop(documents);
+            return Ok(committed);
+        }
+
+        let committed = commit();
+        drop(documents);
+        Ok(committed)
+    }
+
     /// Commit one push-diagnostics replacement/clear at the sink boundary.
     ///
     /// See the module docs for the boundary contract. `payload` must be the
@@ -162,49 +212,48 @@ impl LspServer {
         payload: Value,
         disposition: PushDiagnosticsDisposition,
     ) -> PushDiagnosticsCommitOutcome {
-        let mut committed = self.push_diagnostics_sink.committed.lock();
+        self.commit_push_diagnostics_after_staging(identity, payload, disposition, || {})
+    }
 
-        // 1+2. Exact currency at the boundary: live document instance AND
-        // accepted generation, checked under one brief documents acquisition.
-        let currency = {
-            let docs = self.documents.lock();
-            docs.get(&identity.normalized_uri).map(|doc| {
-                (
-                    Arc::ptr_eq(&doc.generation, &identity.document_instance),
-                    doc.current_generation(),
+    /// Testable staging seam immediately before the shared linearization
+    /// boundary. Production supplies a no-op; falsifiers move accepted state
+    /// here to prove the final boundary, rather than an earlier precheck, owns
+    /// publication authority.
+    fn commit_push_diagnostics_after_staging(
+        &self,
+        identity: &PushDiagnosticIdentity,
+        payload: Value,
+        disposition: PushDiagnosticsDisposition,
+        after_staging: impl FnOnce(),
+    ) -> PushDiagnosticsCommitOutcome {
+        after_staging();
+        let mut committed = self.push_diagnostics_sink.committed.lock();
+        let result = self.commit_if_diagnostic_subject_current(
+            &identity.normalized_uri,
+            &identity.document_instance,
+            identity.generation,
+            identity.accepted_critic_snapshot.as_ref(),
+            || {
+                self.enqueue_committed_push_diagnostic(
+                    &mut committed,
+                    identity,
+                    payload,
+                    disposition,
                 )
-            })
-        };
-        let rejection = match currency {
-            None => PushDiagnosticsCommitOutcome::RejectedDocumentClosed,
-            Some((false, _)) => PushDiagnosticsCommitOutcome::RejectedWrongDocumentInstance,
-            Some((true, live_generation)) if live_generation != identity.generation => {
+            },
+        );
+        let rejection = match result {
+            Ok(outcome) => return outcome,
+            Err(DiagnosticSubjectRejection::DocumentClosed) => {
+                PushDiagnosticsCommitOutcome::RejectedDocumentClosed
+            }
+            Err(DiagnosticSubjectRejection::WrongDocumentInstance) => {
+                PushDiagnosticsCommitOutcome::RejectedWrongDocumentInstance
+            }
+            Err(DiagnosticSubjectRejection::SupersededGeneration) => {
                 PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
             }
-            Some((true, _)) => {
-                // 2b. Accepted critic policy currency, re-checked inside this
-                // same critical section (#13304). Document identity and
-                // generation cannot observe configuration movement, so without
-                // this a `didChangeConfiguration` landing between analysis and
-                // the sink publishes dead-policy rows as current. The config
-                // lock is taken briefly and read-only, and released before the
-                // enqueue below.
-                let policy_current =
-                    identity.accepted_critic_policy.as_ref().is_none_or(|policy| {
-                        self.config
-                            .lock()
-                            .effective_critic_state(policy.owning_root.as_deref())
-                            .fingerprint()
-                            == policy.fingerprint
-                    });
-                if policy_current {
-                    return self.enqueue_committed_push_diagnostic(
-                        &mut committed,
-                        identity,
-                        payload,
-                        disposition,
-                    );
-                }
+            Err(DiagnosticSubjectRejection::SupersededCriticPolicy) => {
                 PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy
             }
         };
@@ -218,8 +267,9 @@ impl LspServer {
         rejection
     }
 
-    /// Ledger compare/record + outbound enqueue. Caller has already proven
-    /// ticket currency and holds the sink lock.
+    /// Ledger compare/record + outbound enqueue. Caller has proven ticket
+    /// currency and holds both the sink lock and the shared subject-authority
+    /// guards through this irreversible operation.
     fn enqueue_committed_push_diagnostic(
         &self,
         committed: &mut HashMap<String, CommittedPushDiagnostic>,
@@ -322,9 +372,9 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::{
-        AcceptedCriticPolicy, LspServer, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome,
-        PushDiagnosticsDisposition,
+        LspServer, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome, PushDiagnosticsDisposition,
     };
+    use perl_lsp_rs_core::config::AcceptedCriticSnapshot;
     use serde_json::json;
     use std::io::Write;
     use std::sync::Arc as StdArc;
@@ -485,12 +535,9 @@ mod tests {
         assert!(wait_for_frames(&buf, 1), "didOpen publication must flush first");
 
         // The policy the candidate's rows were produced under.
-        let accepted_fingerprint =
-            { server.config.lock().effective_critic_state(None).fingerprint() };
-        let bound = identity.clone().with_accepted_critic_policy(Some(AcceptedCriticPolicy {
-            owning_root: None,
-            fingerprint: accepted_fingerprint.clone(),
-        }));
+        let accepted_snapshot = AcceptedCriticSnapshot::capture(&server.config.lock(), None);
+        let accepted_fingerprint = accepted_snapshot.fingerprint();
+        let bound = identity.clone().with_accepted_critic_snapshot(Some(accepted_snapshot.clone()));
 
         // Control: while the policy is still live, binding it changes nothing.
         let frames_before = frame_count(&buf);
@@ -543,6 +590,221 @@ mod tests {
             ),
             PushDiagnosticsCommitOutcome::CommittedCurrent
         );
+    }
+
+    /// #13304: two distinct accepted filter shapes can alias under the legacy
+    /// 64-bit observation token. The sink must compare the sealed snapshot,
+    /// not authorize publication from that token.
+    #[test]
+    fn critic_policy_legacy_fingerprint_collision_is_rejected_without_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const SEPARATOR: char = '\u{1f}';
+        let (server, buf) = make_server();
+        let uri = "file:///sink_critic_collision_test.pl";
+        {
+            let mut config = server.config.lock();
+            config.perlcritic_enabled = true;
+            config.native_critic_include = vec![format!("a{SEPARATOR}b")];
+        }
+        let identity = open_document(&server, uri, "my $x = 1;\n");
+        if !wait_for_frames(&buf, 1) {
+            return Err("didOpen publication must flush first".into());
+        }
+
+        let accepted = AcceptedCriticSnapshot::capture(&server.config.lock(), None);
+        let bound = identity.clone().with_accepted_critic_snapshot(Some(accepted.clone()));
+        if server.commit_push_diagnostics(
+            &bound,
+            json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+            PushDiagnosticsDisposition::Replacement,
+        ) != PushDiagnosticsCommitOutcome::CommittedCurrent
+        {
+            return Err("the sealed snapshot must commit while its policy is live".into());
+        }
+        if !wait_for_frames(&buf, 2) {
+            return Err("live-policy control publication must flush".into());
+        }
+
+        server.config.lock().native_critic_include = vec!["a".to_string(), "b".to_string()];
+        let live = AcceptedCriticSnapshot::capture(&server.config.lock(), None);
+        if accepted == live {
+            return Err("collision fixture must move the accepted policy".into());
+        }
+        if accepted.fingerprint() != live.fingerprint() {
+            return Err("fixture must alias under the legacy 64-bit token".into());
+        }
+        if accepted.result_identity_fingerprint() == live.result_identity_fingerprint() {
+            return Err("canonical accepted-state identities must distinguish the fixture".into());
+        }
+
+        let settled_frames = frame_count(&buf);
+        if server.commit_push_diagnostics(
+            &bound,
+            json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+            PushDiagnosticsDisposition::Replacement,
+        ) != PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy
+        {
+            return Err("a legacy-token collision must not authorize stale rows".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if frame_count(&buf) != settled_frames {
+            return Err("a colliding stale policy must not enqueue a frame".into());
+        }
+        Ok(())
+    }
+
+    /// #13304: the sink must re-resolve the document's live owning root. Exact
+    /// configuration equality at the stored root cannot make a folder rebind
+    /// current.
+    #[test]
+    fn critic_policy_workspace_folder_rebind_is_rejected_without_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let fallback = temp.path().join("fallback");
+        let original_owner = temp.path().join("owner");
+        let script = original_owner.join("sink_rebind_test.pl");
+        std::fs::create_dir_all(&fallback)?;
+        std::fs::create_dir_all(&original_owner)?;
+        std::fs::write(&script, "my $x = 1;\n")?;
+
+        let uri = url::Url::from_file_path(&script).map_err(|_| "bad document URI")?.to_string();
+        let owner_uri = url::Url::from_directory_path(&original_owner)
+            .map_err(|_| "bad owner URI")?
+            .to_string();
+        let (server, buf) = make_server();
+        *server.root_path.lock() = Some(fallback);
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(owner_uri)
+                .with_path(original_owner.clone()),
+        );
+        let identity = open_document(&server, &uri, "my $x = 1;\n");
+        if !wait_for_frames(&buf, 1) {
+            return Err("didOpen publication must flush first".into());
+        }
+
+        let owner = original_owner.to_string_lossy().into_owned();
+        let accepted = AcceptedCriticSnapshot::capture(&server.config.lock(), Some(&owner));
+        let bound = identity.clone().with_accepted_critic_snapshot(Some(accepted.clone()));
+        if server.commit_push_diagnostics(
+            &bound,
+            json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+            PushDiagnosticsDisposition::Replacement,
+        ) != PushDiagnosticsCommitOutcome::CommittedCurrent
+        {
+            return Err("the original folder owner must commit while live".into());
+        }
+        if !wait_for_frames(&buf, 2) {
+            return Err("live-owner control publication must flush".into());
+        }
+
+        server.workspace_folders.lock().clear();
+        if !accepted.is_current(&server.config.lock()) {
+            return Err("configuration must remain current at the stored root".into());
+        }
+        let settled_frames = frame_count(&buf);
+        if server.commit_push_diagnostics(
+            &bound,
+            json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+            PushDiagnosticsDisposition::Replacement,
+        ) != PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy
+        {
+            return Err("a workspace-folder rebind must stale the push candidate".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if frame_count(&buf) != settled_frames {
+            return Err("a root-rebound candidate must not enqueue a frame".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generation_movement_after_staging_is_rejected_without_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server();
+        let uri = "file:///sink_generation_after_staging.pl";
+        let identity = open_document(&server, uri, "my $x = 1;\n");
+        if !wait_for_frames(&buf, 1) {
+            return Err("didOpen publication must flush first".into());
+        }
+        let settled_frames = frame_count(&buf);
+        let live_generation = StdArc::clone(&identity.document_instance);
+        let generation = identity.generation;
+        let outcome = server.commit_push_diagnostics_after_staging(
+            &identity,
+            json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+            PushDiagnosticsDisposition::Replacement,
+            || live_generation.store(generation + 1, Ordering::SeqCst),
+        );
+        if outcome != PushDiagnosticsCommitOutcome::RejectedSupersededGeneration {
+            return Err(
+                format!("generation movement must reject at final commit: {outcome:?}").into()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if frame_count(&buf) != settled_frames {
+            return Err("a generation moved after staging must not enqueue a frame".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn policy_movement_after_staging_is_rejected_without_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server();
+        let uri = "file:///sink_policy_after_staging.pl";
+        let identity = open_document(&server, uri, "my $x = 1;\n");
+        if !wait_for_frames(&buf, 1) {
+            return Err("didOpen publication must flush first".into());
+        }
+        let accepted = AcceptedCriticSnapshot::capture(&server.config.lock(), None);
+        let bound = identity.with_accepted_critic_snapshot(Some(accepted));
+        let settled_frames = frame_count(&buf);
+        let outcome = server.commit_push_diagnostics_after_staging(
+            &bound,
+            json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+            PushDiagnosticsDisposition::Replacement,
+            || {
+                server.config.lock().native_critic_exclude =
+                    vec!["native.testing.require_use_strict".to_string()];
+            },
+        );
+        if outcome != PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy {
+            return Err(format!("policy movement must reject at final commit: {outcome:?}").into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if frame_count(&buf) != settled_frames {
+            return Err("a policy moved after staging must not enqueue a frame".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn root_rebind_after_staging_is_rejected_without_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server();
+        let uri = "file:///workspace-a/sink_root_after_staging.pl";
+        server.test_set_workspace_folder_uris(&["file:///workspace-a/"]);
+        let identity = open_document(&server, uri, "my $x = 1;\n");
+        if !wait_for_frames(&buf, 1) {
+            return Err("didOpen publication must flush first".into());
+        }
+        let accepted = server.capture_accepted_critic(uri);
+        let bound = identity.with_accepted_critic_snapshot(Some(accepted));
+        let settled_frames = frame_count(&buf);
+        let outcome = server.commit_push_diagnostics_after_staging(
+            &bound,
+            json!({ "uri": uri, "version": 1, "diagnostics": [] }),
+            PushDiagnosticsDisposition::Replacement,
+            || server.test_set_workspace_folder_uris(&["file:///workspace-b/"]),
+        );
+        if outcome != PushDiagnosticsCommitOutcome::RejectedSupersededCriticPolicy {
+            return Err(format!("root rebind must reject at final commit: {outcome:?}").into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if frame_count(&buf) != settled_frames {
+            return Err("a root rebound after staging must not enqueue a frame".into());
+        }
+        Ok(())
     }
 
     #[test]

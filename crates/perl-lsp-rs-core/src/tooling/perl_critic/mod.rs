@@ -5,8 +5,6 @@
 
 mod analyzer;
 mod built_in;
-#[cfg(test)]
-mod test_core_authority_policy;
 mod identity;
 mod native;
 mod normalized;
@@ -15,6 +13,8 @@ mod remediation;
 mod result_identity;
 mod semantic;
 mod service;
+#[cfg(test)]
+mod test_core_authority_policy;
 mod types;
 
 pub use analyzer::{CriticAnalyzer, hash_content};
@@ -41,9 +41,9 @@ pub use normalized::{
 pub use quick_fix::{QuickFix, TextEdit};
 pub use remediation::{CriticRemediationClass, CriticRemediationEligibility};
 pub use result_identity::{
-    CriticPolicyIdentity, CriticPolicyIdentityError, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION,
-    DiagnosticFactIdentity, DiagnosticResultIdentity, DiagnosticResultIdentityInput,
-    DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
+    AcceptedCriticPolicyIdentity, CriticPolicyIdentity, CriticPolicyIdentityError,
+    DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity, DiagnosticResultIdentity,
+    DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
 };
 pub use semantic::{
     BuiltInCriticObservation, NativeCriticPolicy, UnresolvedNativeFindingIdentity,

@@ -1,7 +1,7 @@
 impl<'a> Parser<'a> {
     /// Parse a complete program
     fn parse_program(&mut self) -> ParseResult<Node> {
-        let start = self.current_position();
+        let start = 0;
         let mut statements = Vec::new();
 
         while !self.tokens.is_eof() {

@@ -23,11 +23,9 @@
 
 use std::collections::BTreeSet;
 
-use perl_lsp_rs_core::config::CriticEngine;
 use perl_lsp_rs_core::tooling::perl_critic::{
-    CRITIC_IDENTITY_SCHEMA_VERSION, CriticPolicyIdentity, CriticPolicyIdentityError,
-    DiagnosticFactIdentity, DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions,
-    DiagnosticSourceIdentity, NativeCriticProfile,
+    AcceptedCriticPolicyIdentity, CRITIC_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity,
+    DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
 };
 use perl_source_identity::{ContentDigest, LogicalSourceId, ProjectId, WorkspaceRootId};
 
@@ -36,7 +34,7 @@ use super::PullDiagnosticsContext;
 /// Schema/domain version of this composer. Bump whenever the set of
 /// load-bearing fragments changes so prior client-held IDs stop parsing and
 /// every report degrades honestly to `full`.
-pub const PULL_REPORT_IDENTITY_SCHEMA_VERSION: u16 = 1;
+pub const PULL_REPORT_IDENTITY_SCHEMA_VERSION: u16 = 3;
 
 /// Wire prefix of a composed pull-report result ID.
 const PULL_REPORT_IDENTITY_PREFIX: &str = "diagnostic-pull-report.v";
@@ -54,11 +52,6 @@ const RULE_CATALOG_SCHEMA_VERSION: u32 = 1;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
 const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 1;
 const REMEDIATION_WIRE_SCHEMA_VERSION: u16 = 1;
-
-/// Domain tag binding the legacy built-in analyzer's effective policy. The
-/// built-in analyzer takes no user configuration beyond the encoded policy
-/// fields, so a stable domain digest is its complete policy identity.
-const LEGACY_BUILTIN_POLICY_DOMAIN: &str = "perl-lsp:pull-legacy-builtin-policy:v1";
 
 /// Behavior-bearing negotiated wire-projection state.
 ///
@@ -102,8 +95,8 @@ pub enum NotReusable {
     /// No owning workspace/folder authority could be established for the
     /// document, so the logical source identity cannot be formed.
     MissingRootAuthority,
-    /// The accepted critic policy contradicts its engine's requirements.
-    PolicyIncomplete(CriticPolicyIdentityError),
+    /// The accepted Critic snapshot lacks its owning root authority.
+    MissingCriticRootAuthority,
 }
 
 impl std::fmt::Display for NotReusable {
@@ -112,8 +105,8 @@ impl std::fmt::Display for NotReusable {
             Self::MissingRootAuthority => {
                 f.write_str("no owning workspace/root authority for the document")
             }
-            Self::PolicyIncomplete(error) => {
-                write!(f, "critic policy identity incomplete: {error}")
+            Self::MissingCriticRootAuthority => {
+                f.write_str("accepted critic snapshot has no owning root authority")
             }
         }
     }
@@ -168,16 +161,11 @@ pub struct PullReportSubject {
     relative_path: String,
     content_digest: ContentDigest,
     document_generation: Option<u64>,
-    engine: CriticEngine,
-    profile: NativeCriticProfile,
-    severity: u8,
-    include: BTreeSet<String>,
-    exclude: BTreeSet<String>,
-    legacy_policy_digest: Option<ContentDigest>,
+    critic_root_id: WorkspaceRootId,
+    accepted_critic_fingerprint: String,
     facts_generation: Option<u64>,
     resolver_roots: BTreeSet<String>,
     projection: DiagnosticProjectionFragment,
-    critic_enabled: bool,
 }
 
 /// Assemble the complete subject for one document report.
@@ -200,37 +188,25 @@ pub fn pull_report_subject(
     let root_id = WorkspaceRootId::from_project_and_root_key(&project, root_key);
     let relative_path = root_relative_path(uri);
 
-    // Mirror `add_native_critic_diagnostics`: the effective native profile is
-    // the configured spelling parsed leniently with the same Strict fallback.
-    // Under the legacy engine the native profile is inert and pinned so
-    // unrelated profile settings cannot churn legacy-engine identities.
-    let (profile, legacy_policy_digest) = match context.critic_engine {
-        CriticEngine::Native => (
-            NativeCriticProfile::parse_legacy(&context.native_critic_profile)
-                .unwrap_or(NativeCriticProfile::Strict),
-            None,
-        ),
-        CriticEngine::Legacy => (
-            NativeCriticProfile::Recommended,
-            Some(ContentDigest::of_bytes(LEGACY_BUILTIN_POLICY_DOMAIN.as_bytes())),
-        ),
+    let Some(critic_root_key) = context.accepted_critic_snapshot.owning_root() else {
+        return Err(NotReusable::MissingCriticRootAuthority);
     };
+    let critic_root_id = WorkspaceRootId::from_project_and_root_key(&project, critic_root_key);
 
     Ok(PullReportSubject {
         content_digest: ContentDigest::of_bytes(content.as_bytes()),
-        severity: context.perlcritic_severity.clamp(1, 5) as u8,
-        include: context.native_critic_include.iter().cloned().collect(),
-        exclude: context.native_critic_exclude.iter().cloned().collect(),
+        critic_root_id,
+        accepted_critic_fingerprint: context
+            .accepted_critic_snapshot
+            .result_identity_fingerprint()
+            .as_wire()
+            .to_string(),
         resolver_roots: context.include_paths.iter().cloned().collect(),
         root_id,
         relative_path,
         document_generation,
-        engine: context.critic_engine,
-        profile,
         facts_generation: context.facts_generation,
         projection: context.projection,
-        critic_enabled: context.perlcritic_enabled,
-        legacy_policy_digest,
     })
 }
 
@@ -272,22 +248,10 @@ impl PullReportSubject {
     /// through SHA-256 over a length-prefixed canonical encoding that embeds
     /// the core substrate identity (#7201) plus this layer's fragments.
     pub fn compose(&self) -> Result<PullReportResultId, NotReusable> {
-        // Configuration generations have no independent counter authority yet
-        // (#6736/#7064 own one); the pinned 0 scopes the field explicitly while
-        // every behavior-bearing configuration field is encoded on its own.
-        const NO_CONFIGURATION_GENERATION_AUTHORITY: u64 = 0;
-
-        let policy = CriticPolicyIdentity::new(
-            self.root_id.clone(),
-            NO_CONFIGURATION_GENERATION_AUTHORITY,
-            self.engine,
-            self.profile,
-            self.severity,
-            self.include.clone(),
-            self.exclude.clone(),
-            self.legacy_policy_digest.clone(),
-        )
-        .map_err(NotReusable::PolicyIncomplete)?;
+        let policy = AcceptedCriticPolicyIdentity::new(
+            self.critic_root_id.clone(),
+            self.accepted_critic_fingerprint.clone(),
+        );
 
         let facts = match self.facts_generation {
             Some(generation) => {
@@ -314,11 +278,10 @@ impl PullReportSubject {
         .compose();
 
         let mut canonical = String::new();
-        push_str(&mut canonical, "identity_schema", PULL_REPORT_IDENTITY_V1_TAG);
+        push_str(&mut canonical, "identity_schema", PULL_REPORT_IDENTITY_V3_TAG);
         push_str(&mut canonical, "substrate", inner.as_str());
         push_str(&mut canonical, "position_encoding", self.projection.position_encoding.as_token());
         push_u64(&mut canonical, "markup_messages", u64::from(self.projection.markup_messages));
-        push_u64(&mut canonical, "critic_enabled", u64::from(self.critic_enabled));
         push_set(&mut canonical, "resolver_roots", &self.resolver_roots);
 
         let digest = ContentDigest::of_bytes(canonical.as_bytes());
@@ -331,7 +294,7 @@ impl PullReportSubject {
 
 /// Domain tag for the outer composition, kept distinct from the substrate's
 /// own schema field so the two layers cannot be confused.
-const PULL_REPORT_IDENTITY_V1_TAG: &str = "perl-lsp:pull-report-identity:v1";
+const PULL_REPORT_IDENTITY_V3_TAG: &str = "perl-lsp:pull-report-identity:v3";
 
 /// Reduce a document URI to a stable logical path spelling.
 ///
@@ -375,7 +338,7 @@ mod tests {
 
     use super::{DiagnosticProjectionFragment, PullPositionEncoding, *};
     use crate::features::diagnostics::PullDiagnosticsContext;
-    use perl_lsp_rs_core::config::CriticEngine;
+    use perl_lsp_rs_core::config::{AcceptedCriticSnapshot, CriticEngine, ServerConfig};
 
     fn projection(encoding: PullPositionEncoding, markup: bool) -> DiagnosticProjectionFragment {
         DiagnosticProjectionFragment { position_encoding: encoding, markup_messages: markup }
@@ -384,6 +347,8 @@ mod tests {
     fn context_with(root: Option<&str>) -> PullDiagnosticsContext {
         let mut context = PullDiagnosticsContext::new();
         context.identity_root_key = root.map(str::to_string);
+        let config = ServerConfig::default();
+        context.accepted_critic_snapshot = AcceptedCriticSnapshot::capture(&config, root);
         // Live fact-store state for the baseline subject.
         context.facts_generation = Some(13);
         context.projection = projection(PullPositionEncoding::Utf16, false);
@@ -445,6 +410,36 @@ mod tests {
     }
 
     #[test]
+    fn old_result_ids_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+        for legacy in [
+            "diagnostic-pull-report.v1-sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "diagnostic-pull-report.v2-sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
+            if PullReportResultId::from_wire(legacy).is_some() {
+                return Err(format!("old result ID must fail closed to Full: {legacy}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_state_identity_uses_the_snapshot_sha256_fingerprint()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context_with(Some("/tmp/ws-a"));
+        let subject = subject_for(&context, URI_A, CONTENT);
+        let expected = context.accepted_critic_snapshot.result_identity_fingerprint();
+        if subject.accepted_critic_fingerprint != expected.as_wire() {
+            return Err("pull identity must consume the snapshot's SHA-256 fingerprint".into());
+        }
+        if subject.accepted_critic_fingerprint == context.accepted_critic_snapshot.fingerprint() {
+            return Err(
+                "the legacy 64-bit observation token must not authorize result reuse".into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn every_load_bearing_fragment_moves_the_id() {
         let baseline_context = context_with(Some("/tmp/ws-a"));
         let baseline = subject_for(&baseline_context, URI_A, CONTENT).compose().ok().unwrap();
@@ -463,24 +458,26 @@ mod tests {
             pull_report_subject(URI_A, CONTENT, Some(4), &baseline_context).ok().unwrap();
         assert_ne!(baseline, later_instance.compose().ok().unwrap());
 
-        // Engine selection.
+        // Raw legacy observations are not accepted authority. Moving all of
+        // them alone must leave the identity unchanged.
         let mut context = baseline_context.clone();
         context.critic_engine = CriticEngine::Legacy;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
-        // Severity.
-        let mut context = baseline_context.clone();
         context.perlcritic_severity = 4;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
-        // Native profile spelling.
-        let mut context = baseline_context.clone();
         context.native_critic_profile = "strict".to_string();
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
-        // Include/exclude rule sets.
-        let mut context = baseline_context.clone();
         context.native_critic_include = vec!["native.testing.require_use_strict".to_string()];
+        context.native_critic_exclude = vec!["native.security.string_eval".to_string()];
+        context.perlcritic_enabled = false;
+        assert_eq!(
+            baseline,
+            subject_for(&context, URI_A, CONTENT).compose().ok().unwrap(),
+            "raw legacy selector movement must not change accepted Critic identity"
+        );
+
+        // Accepted snapshot movement is load-bearing.
+        let mut context = baseline_context.clone();
+        let moved_config = ServerConfig { perlcritic_severity: 4, ..ServerConfig::default() };
+        context.accepted_critic_snapshot =
+            AcceptedCriticSnapshot::capture(&moved_config, Some("/tmp/ws-a"));
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 
         // Fact-store availability and generation.
@@ -509,11 +506,6 @@ mod tests {
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
         let mut context = baseline_context.clone();
         context.projection = projection(PullPositionEncoding::Utf16, true);
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
-        // External-critic admission state.
-        let mut context = baseline_context.clone();
-        context.perlcritic_enabled = false;
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 
         // Logical document identity: equal bytes and counters, different path.
@@ -555,22 +547,20 @@ mod tests {
     }
 
     #[test]
-    fn legacy_engine_pins_native_profile_but_carries_policy_digest() {
+    fn raw_legacy_selector_is_observation_only() -> Result<(), Box<dyn std::error::Error>> {
         let mut context = context_with(Some("/tmp/ws-a"));
         context.critic_engine = CriticEngine::Legacy;
-        let baseline = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        let baseline =
+            subject_for(&context, URI_A, CONTENT).compose().map_err(|error| error.to_string())?;
 
         let mut profile_moved = context.clone();
         profile_moved.native_critic_profile = "strict".to_string();
-        assert_eq!(
-            baseline,
-            subject_for(&profile_moved, URI_A, CONTENT).compose().ok().unwrap(),
-            "the native profile is inert under the legacy engine"
-        );
-
-        // The legacy engine composes successfully: its required policy digest
-        // is supplied from the pinned built-in policy domain.
-        let subject = pull_report_subject(URI_A, CONTENT, Some(1), &context);
-        assert!(subject.is_ok(), "legacy engine subject must be complete");
+        let moved = subject_for(&profile_moved, URI_A, CONTENT)
+            .compose()
+            .map_err(|error| error.to_string())?;
+        if baseline != moved {
+            return Err("raw native profile movement must remain observation-only".into());
+        }
+        Ok(())
     }
 }

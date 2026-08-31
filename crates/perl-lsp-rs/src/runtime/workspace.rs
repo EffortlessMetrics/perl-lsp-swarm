@@ -1480,10 +1480,8 @@ impl LspServer {
                 // changed so the next diagnostic cycle rebuilds it with the new config.
                 #[cfg(not(target_arch = "wasm32"))]
                 if critic_config_changed {
-                    *self.critic_analyzer.lock() = None;
                     self.session_warning_dedup
                         .clear_family(super::session_warning_dedup::SessionWarningFamily::Critic);
-                    self.pull_diagnostics_orchestrator.reset();
                 }
 
                 // Update workspace config (include paths, @INC)
