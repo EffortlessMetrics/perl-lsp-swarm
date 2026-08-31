@@ -49,6 +49,7 @@
 //! same line.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -310,7 +311,85 @@ fn forbidden_facade_references(code: &str) -> Vec<String> {
     }
     hits.sort();
     hits.dedup();
+    let aliases = facade_aliases(code);
+    for (alias, target) in aliases {
+        let alias_chars: Vec<char> = alias.chars().collect();
+        for cursor in 0..=chars.len().saturating_sub(alias_chars.len()) {
+            if chars[cursor..cursor + alias_chars.len()] == alias_chars[..]
+                && (cursor == 0
+                    || (!chars[cursor - 1].is_ascii_alphanumeric() && chars[cursor - 1] != '_'))
+                && chars.get(cursor + alias_chars.len()) == Some(&':')
+                && chars.get(cursor + alias_chars.len() + 1) == Some(&':')
+            {
+                hits.push(target.clone());
+            }
+        }
+    }
+    hits.sort();
+    hits.dedup();
     hits
+}
+
+/// Resolve aliases introduced by `use` statements so renamed facade roots and
+/// brace members remain inside the recurrence guard's governed population.
+fn facade_aliases(code: &str) -> BTreeMap<String, String> {
+    let compact = code.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut aliases = BTreeMap::new();
+    for statement in compact.split(';') {
+        let Some(mut path) = statement.trim().strip_prefix("use ") else {
+            continue;
+        };
+        if let Some((root, alias)) = path.split_once(" as ") {
+            if root == FACADE_HEAD {
+                aliases.insert(alias.trim().to_string(), FACADE_HEAD.to_string());
+            } else if let Some(target) = resolve_facade_path(root, &aliases) {
+                aliases.insert(alias.trim().to_string(), target);
+            }
+            continue;
+        }
+        if !path.starts_with(FACADE_HEAD) {
+            continue;
+        }
+        if let (Some(open), Some(close)) = (path.find('{'), path.rfind('}')) {
+            path = &path[open + 1..close];
+            for member in path.split(',') {
+                let Some((member_path, alias)) = member.trim().split_once(" as ") else {
+                    continue;
+                };
+                if let Some(target) = resolve_facade_path(member_path.trim(), &aliases) {
+                    aliases.insert(alias.trim().to_string(), target);
+                }
+            }
+        }
+    }
+    aliases
+}
+
+fn resolve_facade_path(path: &str, aliases: &BTreeMap<String, String>) -> Option<String> {
+    let mut segments = path.split("::");
+    let first = segments.next()?.trim();
+    let mut target = if first == FACADE_HEAD {
+        FACADE_HEAD.to_string()
+    } else if first == "compat" || is_forbidden_ident(first) {
+        format!("{FACADE_HEAD}::{first}")
+    } else {
+        aliases.get(first)?.clone()
+    };
+    if is_forbidden_ident(first) {
+        return Some(target);
+    }
+    for segment in segments {
+        let segment = segment.trim();
+        if segment == "compat" || is_forbidden_ident(segment) {
+            target = format!("{target}::{segment}");
+            if is_forbidden_ident(segment) {
+                return Some(target);
+            }
+        } else if segment == "*" {
+            return None;
+        }
+    }
+    None
 }
 
 fn collect_rs_files(
@@ -544,6 +623,21 @@ let marker = "//"; use perl_parser::workspace_index::WorkspaceIndex;
 "#;
     let hits = forbidden_facade_references(&code_without_comments(source));
     assert_eq!(hits, vec!["perl_parser::workspace_index".to_string()]);
+}
+
+#[test]
+fn renamed_facade_imports_cannot_bypass_the_guard() {
+    let source = "use perl_parser as parser;\nuse parser::workspace_index::WorkspaceIndex;\n\
+use perl_parser::{workspace_index as index, document_store as docs};\n\
+use index::WorkspaceIndex; use docs::DocumentStore;\n";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(
+        hits,
+        vec![
+            "perl_parser::document_store".to_string(),
+            "perl_parser::workspace_index".to_string(),
+        ]
+    );
 }
 
 #[test]
