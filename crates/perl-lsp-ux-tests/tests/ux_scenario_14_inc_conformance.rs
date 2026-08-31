@@ -980,6 +980,14 @@ fn scenario_14_findbin_relative() -> Result<(), String> {
             .filter(|refuses| **refuses)
             .count();
 
+    print_conformance(
+        "findbin_escape_boundary",
+        escape_pl701_fires,
+        escape_completion_refuses,
+        escape_def_empty,
+        escape_hover_refuses,
+    );
+
     // Any admitting consumer means a FindBin-extracted root that escapes the
     // workspace was honored — an include authority (or an invoked-script
     // guess) stronger than the declared document-directory contract.
