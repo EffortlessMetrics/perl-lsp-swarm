@@ -736,33 +736,18 @@ fn spawn_stimulus_watcher(
     let thread_state = Arc::clone(&state);
     let markers_dir = markers_dir.to_path_buf();
     let needle = candidate_needle(candidate);
-    std::thread::spawn(move || {
-        loop {
-            let stop = thread_state.lock().map(|state| state.stop).unwrap_or(true);
-            if stop {
-                break;
-            }
-            if let Ok(mut state) = thread_state.lock() {
-                watcher_cycle(&markers_dir, &needle, &mut state);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(150));
+    let handle = std::thread::spawn(move || loop {
+        let stop = thread_state.lock().map(|state| state.stop).unwrap_or(true);
+        if stop {
+            break;
         }
-    });
-    let handle = std::thread::spawn(move || {
-        loop {
-            let stop = thread_state.lock().map(|state| state.stop).unwrap_or(true);
-            if stop {
-                break;
-            }
-            if let Ok(mut state) = thread_state.lock() {
-                watcher_cycle(&markers_dir, &needle, &mut state);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(150));
+        if let Ok(mut state) = thread_state.lock() {
+            watcher_cycle(&markers_dir, &needle, &mut state);
         }
+        std::thread::sleep(std::time::Duration::from_millis(150));
     });
     (state, handle)
 }
-
 fn stop_stimulus_watcher(
     state: &Arc<Mutex<StimulusWatchState>>,
     handle: std::thread::JoinHandle<()>,
