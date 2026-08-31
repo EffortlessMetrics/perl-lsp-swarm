@@ -1,0 +1,58 @@
+name: Refresh workflow security baseline for 14406
+
+on:
+  push:
+    branches:
+      - agent/release-exact-prerequisite-graph
+    paths:
+      - '.github/workflows/refresh-workflow-security-baseline-14406.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-workflow-security-baseline-14406
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Regenerate and commit exact candidate baseline
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout exact branch candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/release-exact-prerequisite-graph
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove generator before use
+        run: python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+
+      - name: Regenerate and validate candidate baseline
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/workflow_security_ratchet.py baseline \
+            --root . \
+            --output .ci/workflow-security-baseline.json
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+            --root . \
+            --baseline .ci/workflow-security-baseline.json \
+            --baseline-root .
+
+      - name: Remove one-shot workflow and commit generated ledger
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/refresh-workflow-security-baseline-14406.yml
+          git add .ci/workflow-security-baseline.json
+          git diff --cached --check
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git commit -m 'chore(release): shrink workflow security baseline (#14406)'
+          gh auth setup-git
+          git push origin HEAD:agent/release-exact-prerequisite-graph
