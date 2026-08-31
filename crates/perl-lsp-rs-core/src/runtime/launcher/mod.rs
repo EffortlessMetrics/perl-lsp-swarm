@@ -1400,7 +1400,9 @@ mod tests {
 
     #[test]
     #[allow(unsafe_code)]
+    #[serial_test::serial]
     fn init_logging_does_not_panic_with_log_file() {
+        let _snapshot = crate::test_support::EnvSnapshot::capture(&["PERL_LSP_LOG_FILE"]);
         let dir = std::env::temp_dir().join("perl-lsp-test-log-rotation");
         let _ = std::fs::create_dir_all(&dir);
         let log_path = dir.join("test.log");
@@ -1413,11 +1415,6 @@ mod tests {
             std::env::set_var("PERL_LSP_LOG_FILE", log_path.to_str().unwrap_or_default());
         }
         super::init_logging("debug");
-        // SAFETY: test-only cleanup.
-        unsafe {
-            std::env::remove_var("PERL_LSP_LOG_FILE");
-        }
-
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1935,9 +1932,9 @@ mod tests {
 
     #[test]
     #[allow(unsafe_code)]
+    #[serial_test::serial]
     fn startup_banner_suppressed_by_quiet_env() {
-        // Save previous value to avoid test pollution even if test panics.
-        let previous = std::env::var_os("PERL_LSP_QUIET");
+        let _snapshot = crate::test_support::EnvSnapshot::capture(&["PERL_LSP_QUIET"]);
 
         // SAFETY: test-only env var manipulation; previous value is restored after test.
         unsafe {
@@ -1951,12 +1948,6 @@ mod tests {
             super::FeatureProfile::current(),
             super::TransportMode::Stdio,
         );
-
-        // SAFETY: restore previous value.
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PERL_LSP_QUIET", value) },
-            None => unsafe { std::env::remove_var("PERL_LSP_QUIET") },
-        }
     }
 
     // ANSI detection helpers

@@ -599,6 +599,16 @@ mod tests {
             .map_err(|_| std::io::Error::other("perl oracle env test mutex poisoned").into())
     }
 
+    fn env_snapshot() -> crate::test_support::EnvSnapshot {
+        crate::test_support::EnvSnapshot::capture(&[
+            "PERL5LIB",
+            "PERL5OPT",
+            "PERL_LOCAL_LIB_ROOT",
+            "PERL_LOCAL_LIB_PREFIX",
+            "HOME",
+        ])
+    }
+
     /// Helper: build a minimal `PerlOracleEnv` for unit tests that don't
     /// need a real Perl binary.
     fn dummy_env(
@@ -730,8 +740,10 @@ mod tests {
     /// The perldoc oracle strips poisoned ambient env by default, while still
     /// allowing `PERL5LIB` only when the user explicitly enabled it.
     #[test]
+    #[serial_test::serial]
     fn for_perldoc_strips_poisoned_env_and_gates_perl5lib() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -788,11 +800,6 @@ mod tests {
             ))
         })();
 
-        unsafe { std::env::remove_var("PERL5LIB") };
-        unsafe { std::env::remove_var("PERL5OPT") };
-        unsafe { std::env::remove_var("PERL_LOCAL_LIB_ROOT") };
-        unsafe { std::env::remove_var("PERL_LOCAL_LIB_PREFIX") };
-
         let (denied_stdout, allowed_stdout) = result?;
         assert_eq!(
             denied_stdout.trim(),
@@ -840,8 +847,10 @@ mod tests {
     /// poisoned-env regression guard for the #8685 seam.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn for_language_probe_strips_perl5opt() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -862,8 +871,6 @@ mod tests {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output()?;
-        unsafe { std::env::remove_var("PERL5OPT") };
-
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert_eq!(
             stdout.trim(),
@@ -877,8 +884,10 @@ mod tests {
     /// poisoned-env regression guard for the #8685 seam.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn for_language_probe_strips_perl5lib_when_disabled() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -903,8 +912,6 @@ mod tests {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output()?;
-        unsafe { std::env::remove_var("PERL5LIB") };
-
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert_eq!(
             stdout.trim(),
@@ -967,8 +974,10 @@ mod tests {
     /// `for_module_resolution` strips PERL5OPT and respects PERL5LIB opt-in.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn for_module_resolution_strips_perl5opt_and_gates_perl5lib() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1019,9 +1028,6 @@ mod tests {
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output()?;
 
-        unsafe { std::env::remove_var("PERL5LIB") };
-        unsafe { std::env::remove_var("PERL5OPT") };
-
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert_eq!(
             stdout.trim(),
@@ -1053,8 +1059,10 @@ mod tests {
     /// `for_dap_bridge` blocks poisoned ambient Perl env unless debug config opts in.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn for_dap_bridge_gates_perl5lib_and_perl5opt() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1088,9 +1096,6 @@ mod tests {
             ))
         })();
 
-        unsafe { std::env::remove_var("PERL5LIB") };
-        unsafe { std::env::remove_var("PERL5OPT") };
-
         let (denied_stdout, allowed_stdout) = result?;
         assert_eq!(
             denied_stdout.trim(),
@@ -1113,6 +1118,7 @@ mod tests {
     #[test]
     fn for_dap_test_fixture_denies_ambient_perl_env() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let Some(oracle) = PerlOracleEnv::for_dap_test_fixture() else {
             return Ok(());
         };
@@ -1128,8 +1134,10 @@ mod tests {
     /// `for_dap_test_fixture` strips parent-process Perl env from actual Perl
     /// fixture invocations.
     #[test]
+    #[serial_test::serial]
     fn for_dap_test_fixture_strips_poisoned_env_from_invocation() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let Some(oracle) = PerlOracleEnv::for_dap_test_fixture() else {
             return Ok(());
         };
@@ -1153,10 +1161,6 @@ mod tests {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         })();
 
-        unsafe { std::env::remove_var("PERL5LIB") };
-        unsafe { std::env::remove_var("PERL5OPT") };
-        unsafe { std::env::remove_var("PERL_LOCAL_LIB_ROOT") };
-
         let stdout = result?;
         assert_eq!(
             stdout.trim(),
@@ -1169,8 +1173,10 @@ mod tests {
     /// `for_startup_inc_probe` with `usePerl5lib=false` must strip PERL5LIB:
     /// regression guard for the #8493 incident.
     #[test]
+    #[serial_test::serial]
     fn for_startup_inc_probe_strips_when_use_perl5lib_false() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()), // no perl — skip
@@ -1202,8 +1208,6 @@ mod tests {
         let out = cmd.output()?;
         let stdout = String::from_utf8_lossy(&out.stdout);
 
-        unsafe { std::env::remove_var("PERL5LIB") };
-
         assert!(
             !stdout.contains(&poison_path),
             "PERL5LIB poison ({poison_path}) must NOT appear in subprocess output \
@@ -1221,8 +1225,10 @@ mod tests {
     /// PERL5LIB is stripped by default (`allow_perl5lib=false`).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn perl_oracle_env_strips_perl5lib_by_default() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1240,8 +1246,6 @@ mod tests {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output()?;
-        unsafe { std::env::remove_var("PERL5LIB") };
-
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert_eq!(
             stdout.trim(),
@@ -1254,8 +1258,10 @@ mod tests {
     /// PERL5LIB passes through when `allow_perl5lib=true`.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn perl_oracle_env_allows_perl5lib_when_opted_in() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1273,8 +1279,6 @@ mod tests {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output()?;
-        unsafe { std::env::remove_var("PERL5LIB") };
-
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             stdout.contains(&poison_path),
@@ -1286,8 +1290,10 @@ mod tests {
     /// PERL5OPT is always stripped (no `allow_perl5opt` flag is true).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn perl_oracle_env_strips_perl5opt() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1302,8 +1308,6 @@ mod tests {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output()?;
-        unsafe { std::env::remove_var("PERL5OPT") };
-
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert_eq!(
             stdout.trim(),
@@ -1316,8 +1320,10 @@ mod tests {
     /// HOME is stripped (not in allow-set).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn perl_oracle_env_strips_home() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1335,8 +1341,6 @@ mod tests {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output()?;
-        unsafe { std::env::remove_var("HOME") };
-
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             !stdout.contains(&poison_path),
@@ -1348,8 +1352,10 @@ mod tests {
     /// PERL_LOCAL_LIB_ROOT is stripped by default.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn perl_oracle_env_strips_local_lib() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1367,8 +1373,6 @@ mod tests {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output()?;
-        unsafe { std::env::remove_var("PERL_LOCAL_LIB_ROOT") };
-
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert_eq!(
             stdout.trim(),
@@ -1407,8 +1411,10 @@ mod tests {
     /// (canonical acceptance test for the #8688 incident).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn for_version_probe_strips_poisoned_env() -> TestResult {
         let _env_guard = env_lock()?;
+        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1428,9 +1434,6 @@ mod tests {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output()?;
-
-        unsafe { std::env::remove_var("PERL5LIB") };
-        unsafe { std::env::remove_var("PERL5OPT") };
 
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(

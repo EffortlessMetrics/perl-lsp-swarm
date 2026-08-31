@@ -3834,6 +3834,7 @@ profile = "recommended"
     }
 
     #[test]
+    #[serial_test::serial]
     #[allow(unsafe_code)] // transient PATH mutation, serialized + restored (see below)
     fn perltidy_discoverable_on_path_still_yields_native_default()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -3847,7 +3848,7 @@ profile = "recommended"
         // PATH" contract behaviorally, not just structurally.
         //
         // PATH is process-global, so serialize against any other PATH-touching
-        // test and restore it before asserting (a leaked mutation would poison
+        // test and restore it on scope exit (a leaked mutation would poison
         // sibling tests). The lock is crate-shared (`crate::test_support`), not
         // function-local, so every PATH-mutating test acquires the SAME guard.
         use std::io::Write as _;
@@ -3867,6 +3868,7 @@ profile = "recommended"
             std::fs::set_permissions(&bin_path, perms)?;
         }
 
+        let _snapshot = crate::test_support::EnvSnapshot::capture(&["PATH"]);
         let original_path = std::env::var_os("PATH");
         let probe_path = {
             let mut parts = vec![dir.path().to_path_buf()];
@@ -3885,13 +3887,6 @@ profile = "recommended"
             "formatting": { "enabled": true }
         }));
         let engine_with_perltidy_on_path = config.formatting_engine;
-
-        // Restore PATH before asserting so a failing assert cannot leak the
-        // mutated PATH into sibling tests. SAFETY: still under PATH_ENV_LOCK.
-        match original_path {
-            Some(prev) => unsafe { std::env::set_var("PATH", prev) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
 
         assert_eq!(
             engine_with_perltidy_on_path,

@@ -189,9 +189,9 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn home_dir_fallback_uses_temp_dir() {
-        let original_home = std::env::var("HOME").ok();
-        let original_userprofile = std::env::var("USERPROFILE").ok();
+        let _snapshot = crate::test_support::EnvSnapshot::capture(&["HOME", "USERPROFILE"]);
 
         // SAFETY: single-threaded test; no other threads reading these vars.
         unsafe {
@@ -202,15 +202,6 @@ mod tests {
         let result = home_dir();
         let expected = std::env::temp_dir();
 
-        unsafe {
-            if let Some(val) = original_home {
-                std::env::set_var("HOME", val);
-            }
-            if let Some(val) = original_userprofile {
-                std::env::set_var("USERPROFILE", val);
-            }
-        }
-
         assert_eq!(
             result, expected,
             "home_dir() fallback should be std::env::temp_dir(), got {result:?}"
@@ -219,8 +210,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn termux_candidates_include_prefix_bin_perl() {
-        let original_prefix = std::env::var("PREFIX").ok();
+        let _snapshot = crate::test_support::EnvSnapshot::capture(&["PREFIX"]);
 
         // SAFETY: test controls process env for the duration of this test.
         unsafe {
@@ -228,18 +220,6 @@ mod tests {
         }
 
         let candidates = termux_perl_candidates();
-
-        if let Some(val) = original_prefix {
-            // SAFETY: restore captured test environment value.
-            unsafe {
-                std::env::set_var("PREFIX", val);
-            }
-        } else {
-            // SAFETY: restore environment to original unset state.
-            unsafe {
-                std::env::remove_var("PREFIX");
-            }
-        }
 
         assert!(
             candidates.iter().any(|p| p
