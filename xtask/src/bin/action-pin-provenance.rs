@@ -59,9 +59,16 @@ enum BaseSource {
     MergeBase(String),
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct Ledger {
     pin: Vec<LedgerPin>,
+    source_path: String,
+    pin_lines: Vec<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LedgerFile {
+    pin: Vec<toml::Spanned<LedgerPin>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
@@ -155,7 +162,7 @@ fn main() -> Result<()> {
     let root = args.root.unwrap_or_else(default_root);
     verify_subject_binding(&root, args.expect_merge_of.as_deref(), args.expect_origin.as_deref())?;
     let ledger_path = if args.ledger.is_absolute() { args.ledger } else { root.join(args.ledger) };
-    let ledger = load_ledger(&ledger_path)?;
+    let ledger = load_ledger(&ledger_path, &ledger_display_path(&root, &ledger_path))?;
     let pattern = uses_pattern()?;
     let current = scan_worktree(&root, &pattern)?;
     let comparator = if let Some(spec) = non_empty(args.merge_base.as_deref()) {
@@ -354,9 +361,22 @@ fn immutable_sha_pattern() -> Result<Regex> {
     Regex::new(r"^[0-9a-fA-F]{40}$").context("compiling immutable sha pattern")
 }
 
-fn load_ledger(path: &Path) -> Result<Ledger> {
+fn ledger_display_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+}
+
+fn load_ledger(path: &Path, source_path: &str) -> Result<Ledger> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    let parsed: LedgerFile =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let mut pin = Vec::with_capacity(parsed.pin.len());
+    let mut pin_lines = Vec::with_capacity(parsed.pin.len());
+    for located in parsed.pin {
+        let start = located.span().start.min(text.len());
+        pin_lines.push(text.as_bytes()[..start].iter().filter(|byte| **byte == b'\n').count() + 1);
+        pin.push(located.into_inner());
+    }
+    Ok(Ledger { pin, source_path: source_path.to_owned(), pin_lines })
 }
 
 fn scan_worktree(root: &Path, pattern: &Regex) -> Result<Vec<Occurrence>> {
@@ -518,20 +538,33 @@ fn validate(
 }
 
 fn validate_ledger(ledger: &Ledger, issues: &mut Vec<Issue>) {
-    let mut values: BTreeMap<(&str, &str), BTreeSet<(&ProjectionKind, &str)>> = BTreeMap::new();
-    for pin in &ledger.pin {
-        values.entry((&pin.action, &pin.sha)).or_default().insert((&pin.kind, &pin.value));
+    let mut values: BTreeMap<(&str, &str), Vec<(usize, &LedgerPin)>> = BTreeMap::new();
+    for (index, pin) in ledger.pin.iter().enumerate() {
+        values.entry((&pin.action, &pin.sha)).or_default().push((index, pin));
     }
-    for ((action, sha), projections) in values {
-        let authoritative: BTreeSet<_> =
-            projections.iter().filter(|(kind, _)| **kind != ProjectionKind::LegacyDebt).collect();
-        if authoritative.len() > 1 {
+    for ((action, sha), rows) in values {
+        let mut authoritative = BTreeSet::new();
+        let mut first_line = None;
+        for (index, pin) in rows {
+            if pin.kind == ProjectionKind::LegacyDebt
+                || !authoritative.insert((&pin.kind, pin.value.as_str()))
+            {
+                continue;
+            }
+            let line = ledger.pin_lines.get(index).copied().unwrap_or(1);
+            let Some(previous_line) = first_line else {
+                first_line = Some(line);
+                continue;
+            };
             issues.push(Issue {
                 level: "error",
                 code: "CONTRADICTORY_LEDGER_MAPPING",
-                path: DEFAULT_LEDGER.into(),
-                line: 1,
-                message: format!("{action}@{sha} has contradictory reviewed mappings"),
+                path: ledger.source_path.clone(),
+                line,
+                message: format!(
+                    "{action}@{sha} has a reviewed mapping that contradicts {}:{previous_line}",
+                    ledger.source_path
+                ),
             });
         }
     }
@@ -614,7 +647,8 @@ mod tests {
         scan_text(".github/workflows/test.yml", source, &uses_pattern()?)
     }
     fn ledger(pins: Vec<LedgerPin>) -> Ledger {
-        Ledger { pin: pins }
+        let pin_lines = (1..=pins.len()).collect();
+        Ledger { pin: pins, source_path: DEFAULT_LEDGER.into(), pin_lines }
     }
     fn row(action: &str, sha: &str, kind: ProjectionKind, value: &str) -> LedgerPin {
         LedgerPin { action: action.into(), sha: sha.into(), kind, value: value.into() }
@@ -675,12 +709,24 @@ mod tests {
     }
     #[test]
     fn contradictory_authoritative_mappings_fail() -> Result<()> {
-        let map = ledger(vec![
-            row("actions/checkout", SHA, ProjectionKind::ReleaseTag, "v7.0.0"),
-            row("actions/checkout", SHA, ProjectionKind::ReleaseTag, "v7.0.1"),
-        ]);
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("custom-pins.toml");
+        let source = format!(
+            "# selected ledger\n\n[[pin]]\naction = 'actions/checkout'\nsha = '{SHA}'\nkind = 'release_tag'\nvalue = 'v7.0.0'\n\n[[pin]]\naction = 'actions/checkout'\nsha = '{SHA}'\nkind = 'release_tag'\nvalue = 'v7.0.1'\n"
+        );
+        fs::write(&path, &source)?;
+        let map = load_ledger(&path, "custom/custom-pins.toml")?;
         let receipt = validate(vec![], vec![], false, false, &map);
-        assert!(receipt.issues.iter().any(|i| i.code == "CONTRADICTORY_LEDGER_MAPPING"));
+        let issue = receipt
+            .issues
+            .iter()
+            .find(|issue| issue.code == "CONTRADICTORY_LEDGER_MAPPING")
+            .ok_or_else(|| eyre!("missing contradictory-ledger issue"))?;
+        assert_eq!(issue.path, "custom/custom-pins.toml");
+        assert_eq!(issue.line, 9);
+        assert!(issue.message.contains("custom/custom-pins.toml:3"));
+        let summary = failure_summary(&receipt);
+        assert!(summary.contains("CONTRADICTORY_LEDGER_MAPPING at custom/custom-pins.toml:9"));
         Ok(())
     }
     #[test]
