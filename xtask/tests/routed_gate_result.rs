@@ -764,8 +764,8 @@ fn partial_hosted_identity_is_refused() {
         run_attempt: 2,
         matrix: None,
     });
-    let result = build_routed_result(&plan, "fmt_gate", observation).expect("builds");
-    let refused = result.validate().expect_err("partial hosted identity must refuse");
+    let refused = build_routed_result(&plan, "fmt_gate", observation)
+        .expect_err("partial hosted identity must refuse during building");
     assert!(refused.contains("hosted"), "{refused}");
 }
 

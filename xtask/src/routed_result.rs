@@ -529,6 +529,11 @@ pub fn build_routed_result(
 
     // Contradiction guards between the runner status and the raw observations.
     match &observation.runner_status {
+        RoutedReaderGateStatus::Fail
+            if observation.child.timed_out || observation.child.cancelled =>
+        {
+            return Err("runner reports failure with timeout or cancellation facts".to_string());
+        }
         RoutedReaderGateStatus::Timeout if !observation.child.timed_out => {
             return Err("runner reports timeout but the child shows no timeout flag".to_string());
         }
@@ -536,6 +541,12 @@ pub fn build_routed_result(
             return Err(
                 "runner reports cancellation but the child shows no cancellation flag".to_string()
             );
+        }
+        RoutedReaderGateStatus::Timeout if observation.child.cancelled => {
+            return Err("runner reports timeout with cancellation facts".to_string());
+        }
+        RoutedReaderGateStatus::CancelledAfterStart if observation.child.timed_out => {
+            return Err("runner reports cancellation with timeout facts".to_string());
         }
         RoutedReaderGateStatus::SpawnErrorBeforeStart
             if observation.command_started || child_touched =>
@@ -688,6 +699,7 @@ pub fn build_routed_result(
         result_fingerprint: String::new(),
     };
     result.result_fingerprint = result.semantic_fingerprint_of()?;
+    result.validate()?;
     Ok(result)
 }
 
@@ -916,12 +928,12 @@ fn validate_plane_honesty(result: &RoutedGateResultV1) -> Result<(), String> {
             }
         }
         TerminalOutcome::Timeout => {
-            if !result.child.timed_out {
+            if !result.child.timed_out || result.child.cancelled {
                 return Err("timeout product outcome without a timeout flag".to_string());
             }
         }
         TerminalOutcome::Cancelled => {
-            if !result.child.cancelled {
+            if !result.child.cancelled || result.child.timed_out {
                 return Err("cancelled product outcome without a cancellation flag".to_string());
             }
         }
@@ -933,7 +945,11 @@ fn validate_plane_honesty(result: &RoutedGateResultV1) -> Result<(), String> {
                 );
             }
         }
-        TerminalOutcome::Failure => {}
+        TerminalOutcome::Failure => {
+            if result.child.timed_out || result.child.cancelled {
+                return Err("failure cannot carry timeout or cancellation facts".to_string());
+            }
+        }
         other => {
             // Missing/stale/not-proven/instrument-only products still must
             // not ride on a settled child that claims clean success.

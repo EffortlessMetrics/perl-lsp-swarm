@@ -1582,6 +1582,11 @@ fn run_gate_plan(
             Ok((compiled, output_dir))
         })
         .transpose()?;
+    let routed_hosted_identity = if routed_gate_plan.is_some() {
+        routed_result_adapter::collect_hosted_identity()?
+    } else {
+        None
+    };
 
     // Run each gate
     let mut results: Vec<GateResult> = Vec::new();
@@ -1602,6 +1607,13 @@ fn run_gate_plan(
 
     for (idx, planned_gate) in plan.selected.iter().enumerate() {
         let gate = &planned_gate.gate;
+        if routed_gate_plan.is_some() {
+            let status = cmd!("git", "status", "--porcelain=v1")
+                .dir(&root)
+                .read()
+                .map_err(|error| eyre!("checking the execution tree before the next route-plan gate: {error}"))?;
+            routed_result_adapter::ensure_execution_tree_is_clean(&status)?;
+        }
         emit_gate_begin(gate);
         if let Some(ref pb) = spinner {
             pb.set_position(idx as u64);
@@ -1614,14 +1626,13 @@ fn run_gate_plan(
 
         // One executed planned `run` row -> one normalized result (#9156).
         if let Some((compiled, output_dir)) = &routed_gate_plan {
-            let hosted = routed_result_adapter::collect_hosted_identity()?;
             routed_result_adapter::emit_planned_run_row_result(
                 compiled,
                 gate,
                 &result,
                 &root.join("target/receipts"),
                 output_dir,
-                hosted,
+                routed_hosted_identity.clone(),
             )
             .with_context(|| format!("normalized routed-gate result failed for {}", gate.name))?;
         }
