@@ -701,6 +701,87 @@ fn char_literal_end(source: &str, quote: usize) -> Option<usize> {
 /// Qualifiers that may sit between an item's attributes and its keyword.
 const ITEM_QUALIFIERS: &[&str] = &["pub", "unsafe", "async", "default", "const"];
 
+/// Byte spans covering the bodies of `macro_rules!` definitions.
+///
+/// A fixture invocation inside a macro definition is a template, not a test.
+/// `cargo test` generates nothing from it until the macro is invoked, and then
+/// under whatever name the caller supplies — so counting the template would
+/// publish support for a fixture that never runs under the name cited.
+///
+/// Excluding the body is the honest reading rather than a refusal: the names
+/// inside are not fixture names, so they simply never become citable, and a row
+/// naming one fails the existing "cites no such corpus case" rule. A fixture
+/// that a macro genuinely *generates* stays invisible for the same reason,
+/// which understates rather than over-claims; #14346 owns making that an
+/// explicit refusal once discovery is a parse.
+fn macro_definition_bodies(source: &str, code: &[bool]) -> Vec<(usize, usize)> {
+    const KEYWORD: &str = "macro_rules!";
+    let bytes = source.as_bytes();
+    let mut bodies = Vec::new();
+
+    for (index, _) in source.match_indices(KEYWORD) {
+        if !code.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        // Step over the macro's name to its opening delimiter. Anything else
+        // between the two means this is not a definition we can bound, so the
+        // region stays visible rather than being excluded on a guess.
+        let mut cursor = index + KEYWORD.len();
+        while let Some(&byte) = bytes.get(cursor) {
+            if matches!(byte, b'{' | b'(' | b'[') {
+                break;
+            }
+            if !byte.is_ascii_whitespace() && !is_identifier_byte(byte) {
+                break;
+            }
+            cursor += 1;
+        }
+        let Some(&open) = bytes.get(cursor) else {
+            continue;
+        };
+        let close = match open {
+            b'{' => b'}',
+            b'(' => b')',
+            b'[' => b']',
+            _ => continue,
+        };
+
+        let mut depth = 0usize;
+        let mut scan = cursor;
+        while scan < bytes.len() {
+            if code.get(scan).copied().unwrap_or(false) {
+                if bytes[scan] == open {
+                    depth += 1;
+                } else if bytes[scan] == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+            scan += 1;
+        }
+        // An unbalanced body is not bounded, so it is left visible.
+        if depth == 0 && scan < bytes.len() {
+            bodies.push((cursor, scan + 1));
+        }
+    }
+
+    bodies
+}
+
+/// The mask evidence discovery runs against: real code, minus the bodies of
+/// macro definitions, which describe tests rather than declaring them.
+fn evidence_mask(source: &str) -> Vec<bool> {
+    let mut code = code_mask(source);
+    for (start, end) in macro_definition_bodies(source, &code) {
+        for flag in code.iter_mut().take(end).skip(start) {
+            *flag = false;
+        }
+    }
+    code
+}
+
 /// `source` with every non-code byte replaced by a space, preserving byte
 /// offsets so indices remain interchangeable with the original.
 ///
@@ -858,7 +939,7 @@ fn suppresses_execution(attributes: &str) -> bool {
 /// module today, so this never fires; if one appears, the check stops and says
 /// what to do rather than quietly over-counting.
 fn reject_suppressed_modules(source: &str) -> Result<()> {
-    let code = code_mask(source);
+    let code = evidence_mask(source);
     let scan = blank_non_code(source, &code);
     for (index, _) in source.match_indices("mod ") {
         if !code.get(index).copied().unwrap_or(false) {
@@ -887,7 +968,7 @@ fn reject_suppressed_modules(source: &str) -> Result<()> {
 /// Extract corpus evidence from the conformance corpus source text.
 fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
     let mut evidence = CorpusEvidence::default();
-    let code = code_mask(source);
+    let code = evidence_mask(source);
     let scan = blank_non_code(source, &code);
 
     for (index, _) in source.match_indices("command_line_oneliner!(") {
@@ -1751,6 +1832,64 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         );
         assert!(live.switch_cases.contains_key("live_case"), "{:?}", live.switch_cases);
         assert!(live.proof_tests.contains("live_proof"), "{:?}", live.proof_tests);
+    }
+
+    /// A fixture written inside a macro definition is a template, not a test,
+    /// and must not become citable evidence.
+    ///
+    /// `cargo test` generates nothing from an uninvoked `macro_rules!` body, so
+    /// a row citing a name that only appears there would publish support for a
+    /// fixture that never runs.
+    #[test]
+    fn macro_definition_bodies_are_not_evidence() {
+        let phantom = concat!(
+            "macro_rules! helper {\n",
+            "    () => {\n",
+            "        command_line_oneliner!(phantom_case, \"-e\", \"print 1;\");\n",
+            "        #[test]\n",
+            "        fn phantom_proof() {}\n",
+            "    };\n",
+            "}\n"
+        );
+        let evidence = extract_corpus_evidence(phantom);
+        assert!(
+            evidence.switch_cases.is_empty(),
+            "a templated fixture was captured: {:?}",
+            evidence.switch_cases
+        );
+        assert!(
+            evidence.proof_tests.is_empty(),
+            "a templated proof target was captured: {:?}",
+            evidence.proof_tests
+        );
+
+        // Citing the phantom is refused by the existing unknown-fixture rule.
+        let mut row = ROWS
+            .iter()
+            .find(|row| row.layer == Layer::ParserBody && row.subject == "-e")
+            .cloned()
+            .expect("the -e row exists");
+        row.evidence = &["phantom_case"];
+        expect_rejected(&scaffold_with(row), "phantom_case");
+
+        // Nested delimiters inside the body must not end it early, and real
+        // invocations after the definition must still register.
+        let real = format!(
+            "{phantom}\ncommand_line_oneliner!(after_macro, \"-ne\", \"print;\");\n\
+             #[test]\nfn after_macro_proof() {{}}\n"
+        );
+        let evidence = extract_corpus_evidence(&real);
+        assert!(evidence.switch_cases.contains_key("after_macro"), "{:?}", evidence.switch_cases);
+        assert!(evidence.proof_tests.contains("after_macro_proof"), "{:?}", evidence.proof_tests);
+        assert!(!evidence.switch_cases.contains_key("phantom_case"));
+
+        // The committed corpus defines its fixture macro this way and still
+        // yields every real invocation that follows it.
+        let root = project_root().expect("project root");
+        let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
+        assert!(corpus.contains("macro_rules! command_line_oneliner"), "corpus shape changed");
+        let evidence = extract_corpus_evidence(&corpus);
+        assert_eq!(evidence.switch_cases.len(), 18, "{:?}", evidence.switch_cases.keys());
     }
 
     /// Blanking preserves byte offsets, so indices stay interchangeable with
