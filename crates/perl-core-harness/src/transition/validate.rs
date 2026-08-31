@@ -485,8 +485,9 @@ fn first_whitespace_contaminated_str<'a>(
 mod ripr_inventory_call_observers {
     use super::*;
     use perl_core_harness_types::{
-        ExecutionMechanism, HarnessMode, HarnessProfile, HarnessRunner, ObservedSemanticBoundary,
-        RunFailure, RunFileResult, RunReport, RunSummary, RunnerStatus, SemanticBoundaryConfidence,
+        COMPILE_BASELINE_SCHEMA_VERSION, CompileBaseline, ExecutionMechanism, HarnessMode,
+        HarnessProfile, HarnessRunner, ObservedSemanticBoundary, RunFailure, RunFileResult,
+        RunReport, RunSummary, RunnerStatus, SemanticBoundaryConfidence,
         SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundarySourceSpan,
     };
     use std::collections::BTreeMap;
@@ -559,6 +560,73 @@ mod ripr_inventory_call_observers {
         // Opposite-direction control: the contract must not block real evidence.
         validate_run_report(&clean_execute_report())
             .expect("an honestly classified execute observation stays comparable");
+    }
+
+    /// A V1 accepted baseline in execute mode with an honest mechanism.
+    fn clean_v1_accepted(mechanism: Option<ExecutionMechanism>) -> CompileBaseline {
+        let report = clean_execute_report();
+        let mut file_results = report.file_results.clone();
+        for result in &mut file_results {
+            result.mechanism = mechanism;
+        }
+        CompileBaseline {
+            schema_version: COMPILE_BASELINE_SCHEMA_VERSION.to_string(),
+            report_schema_version: RUN_REPORT_SCHEMA_VERSION.to_string(),
+            mode: report.mode,
+            profile: report.profile,
+            files_total: report.summary.files_total,
+            files_passed: report.summary.files_passed,
+            files_failed: report.summary.files_failed,
+            tap_assertions_total: report.summary.tap_assertions_total,
+            tap_assertions_passed: report.summary.tap_assertions_passed,
+            buckets: BTreeMap::new(),
+            expected_failures: Vec::new(),
+            file_results,
+            semantic_boundaries: Some(Vec::new()),
+        }
+    }
+
+    /// The V1 arm re-implements its structural checks inline rather than
+    /// delegating, so it needs its own control: without one, the mechanism
+    /// claim could be dropped from that arm and no test would notice (#14363).
+    #[test]
+    fn validate_accepted_baseline_v1_rejects_a_relabelled_mechanism() {
+        for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+            let accepted = AcceptedBaseline::V1(clean_v1_accepted(Some(mechanism)));
+
+            let err = validate_accepted_baseline(&accepted)
+                .expect_err("a V1 baseline claiming an unsupported rail must be refused");
+
+            assert!(
+                err.reason.contains("no current rail can supply"),
+                "unexpected reason for {mechanism}: {}",
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn validate_accepted_baseline_v1_rejects_a_missing_mechanism() {
+        let accepted = AcceptedBaseline::V1(clean_v1_accepted(None));
+
+        let err = validate_accepted_baseline(&accepted)
+            .expect_err("an execute-mode V1 baseline must name its rail");
+
+        assert!(
+            err.reason.contains("does not declare an execution mechanism"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn validate_accepted_baseline_v1_accepts_honest_evidence() {
+        // Opposite-direction control: the added gate must not block a
+        // legitimately accepted V1 baseline.
+        let accepted =
+            AcceptedBaseline::V1(clean_v1_accepted(Some(ExecutionMechanism::FixtureReplay)));
+
+        validate_accepted_baseline(&accepted).expect("honest V1 evidence stays comparable");
     }
 
     #[test]

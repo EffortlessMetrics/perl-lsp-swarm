@@ -1933,6 +1933,37 @@ mod tests {
     }
 
     #[test]
+    fn report_validation_rejects_an_inadmissible_execution_mechanism() -> TestResult {
+        // `validate_report` gates `read_reports`, which feeds the
+        // derive-runner-records and check-runner-records CLI surfaces. It owns
+        // its own copy of the contract, so it needs its own control (#14363).
+        let mut mislabelled = sample_report(HarnessMode::Compile);
+        for result in &mut mislabelled.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let Err(error) = validate_report(&mislabelled) else {
+            bail!("a compile report claiming execution evidence must be rejected");
+        };
+        if !error.to_string().contains("only execution receipts may carry") {
+            bail!("unexpected mislabelling error: {error}");
+        }
+
+        let mut forged = sample_execute_report();
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let Err(error) = validate_report(&forged) else {
+            bail!("a report claiming an unsupported rail must be rejected");
+        };
+        if !error.to_string().contains("no current rail can supply") {
+            bail!("unexpected forgery error: {error}");
+        }
+
+        // Opposite-direction control: honest evidence still validates.
+        validate_report(&sample_execute_report())
+    }
+
+    #[test]
     fn report_validation_rejects_contradictory_source_lock() -> TestResult {
         let mut report = sample_report(HarnessMode::Compile);
         let mut boundary = sample_boundary();

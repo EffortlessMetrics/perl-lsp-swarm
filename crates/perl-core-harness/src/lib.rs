@@ -7251,6 +7251,50 @@ mod tests {
         Ok(())
     }
 
+    /// The V2 decode gate guards `baseline --series … --check` and
+    /// `validate-current-authority`. A hand-edited V2 artifact is exactly how a
+    /// forged claim would arrive, so the gate needs its own control (#14363).
+    #[test]
+    fn compile_baseline_v2_decode_rejects_an_inadmissible_mechanism() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let config = sample_baseline_v2_config();
+        let baseline =
+            baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])?;
+
+        // Honest control first: the real artifact decodes.
+        let honest = serde_json::to_value(&baseline)?;
+        parse_compile_baseline_v2(honest, "honest")?;
+
+        // A compile baseline executes nothing, so any mechanism is a claim its
+        // rail never made.
+        let mut tampered = baseline.clone();
+        for result in &mut tampered.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let Err(error) = parse_compile_baseline_v2(serde_json::to_value(&tampered)?, "tampered")
+        else {
+            bail!("a compile V2 baseline claiming execution evidence must not decode");
+        };
+        if !format!("{error:?}").contains("only execution receipts may carry") {
+            bail!("unexpected mislabelling error: {error:?}");
+        }
+
+        // An execute-mode baseline claiming a rail nothing backs.
+        let mut forged = baseline;
+        forged.mode = HarnessMode::Execute;
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let Err(error) = parse_compile_baseline_v2(serde_json::to_value(&forged)?, "forged") else {
+            bail!("a V2 baseline claiming an unsupported rail must not decode");
+        };
+        if !format!("{error:?}").contains("no current rail can supply") {
+            bail!("unexpected forgery error: {error:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn compile_baseline_v2_rejects_an_extra_passing_file() -> TestResult {
         let discovery = sample_discovery_report();
