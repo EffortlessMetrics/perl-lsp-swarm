@@ -1,5 +1,4 @@
 component: "Language intelligence"
 kind: Fixed
 body: "DAP structured mutation values now decode strict JSON unicode escapes, including surrogate pairs, instead of refusing every escape form (#11328)."
-time: 
-16:51:52
+time: 2026-08-25T16:51:52Z
