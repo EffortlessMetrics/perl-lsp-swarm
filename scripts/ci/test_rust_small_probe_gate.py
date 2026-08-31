@@ -35,8 +35,8 @@ def normalize_expression(value: str) -> str:
 
 def step_block(workflow: str, step_name: str) -> tuple[str, int]:
     pattern = re.compile(
-        rf"(?ms)^(?P<indent>[ \\t]*)- name: {re.escape(step_name)}[ \\t]*\\n"
-        rf"(?P<body>.*?)(?=^(?P=indent)- name: |\\Z)"
+        rf"(?ms)^(?P<indent>[ \t]*)- name: {re.escape(step_name)}[ \t]*\n"
+        rf"(?P<body>.*?)(?=^(?P=indent)- name: |\Z)"
     )
     match = pattern.search(workflow)
     if match is None:
@@ -46,7 +46,7 @@ def step_block(workflow: str, step_name: str) -> tuple[str, int]:
 
 def probe_expression(workflow: str) -> str:
     block, _ = step_block(workflow, PROBE_STEP)
-    if_match = re.search(r"(?m)^(?P<indent>[ \\t]+)if: >-[ \\t]*$", block)
+    if_match = re.search(r"(?m)^(?P<indent>[ \t]+)if: >-[ \t]*$", block)
     if if_match is None:
         raise AssertionError("main-red probe must use a multiline applicability expression")
     shell_match = re.search(
