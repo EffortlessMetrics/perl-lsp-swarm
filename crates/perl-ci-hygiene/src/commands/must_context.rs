@@ -316,6 +316,10 @@ fn raw_string_opener_len(chars: &[char], index: usize) -> usize {
 
 /// Index just past the body of a raw string starting at `index`, or `None` when
 /// no raw string starts there. An unterminated body runs to end of line.
+/// "Just past the body" includes the closing quote and its trailing hashes:
+/// the masker consumes the whole literal, so leaving the closing quote in the
+/// input would make the ordinary-`"` branch treat it as an *opening* quote and
+/// mask the real code (e.g. a `must(…)` call) that follows the literal.
 fn raw_string_body_end(chars: &[char], index: usize) -> Option<usize> {
     let opener = raw_string_opener_len(chars, index);
     if opener == 0 {
@@ -327,7 +331,7 @@ fn raw_string_body_end(chars: &[char], index: usize) -> Option<usize> {
         if chars[cursor] == '"'
             && chars[cursor + 1..].iter().take(hashes).filter(|c| **c == '#').count() == hashes
         {
-            return Some(cursor);
+            return Some((cursor + 1 + hashes).min(chars.len()));
         }
         cursor += 1;
     }
@@ -833,6 +837,32 @@ mod tests {
         );
 
         assert_eq!(scan_unified_diff(&text)?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn masking_a_raw_string_does_not_hide_the_call_that_follows_it() -> Result<()> {
+        // The raw-string masker must consume the closing quote (and hashes) of
+        // the literal. Leaving the quote in the input made the ordinary-`"`
+        // branch read it as an *opening* quote and mask the rest of the line —
+        // hiding a real `must(` call that follows the literal on the same line
+        // (the #12000 subject shape, `IpAddr::V6(must("fd00::1".parse()))`).
+        let text = diff(
+            "crates/example/src/lib.rs",
+            &[
+                r#"-        let v = load().expect("valid ipv6 literal");"#,
+                r#"+        let prefix = r"fd00:"; let v = IpAddr::V6(must(load()));"#,
+            ],
+        );
+
+        let findings = scan_unified_diff(&text)?;
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "a bare must( following a raw-string literal on one line must still be reported"
+        );
+        assert_eq!(findings[0].dropped_contexts, vec!["valid ipv6 literal".to_owned()]);
         Ok(())
     }
 

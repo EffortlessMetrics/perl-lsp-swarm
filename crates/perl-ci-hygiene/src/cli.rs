@@ -222,6 +222,30 @@ mod tests {
     }
 
     #[test]
+    fn must_context_parses_optional_base() -> Result<()> {
+        let default_cli = Cli::try_parse_from(["perl-ci-hygiene", "check-must-context"])?;
+        let CliCommand::CheckMustContext { base } = default_cli.command else {
+            return Err(eyre!("expected check-must-context command"));
+        };
+        assert_eq!(
+            base, None,
+            "omitted --base must stay None so the resolver tries its candidates"
+        );
+
+        let explicit_cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "check-must-context",
+            "--base",
+            "origin/main",
+        ])?;
+        let CliCommand::CheckMustContext { base } = explicit_cli.command else {
+            return Err(eyre!("expected check-must-context command"));
+        };
+        assert_eq!(base.as_deref(), Some("origin/main"));
+        Ok(())
+    }
+
+    #[test]
     fn cargo_passthrough_commands_forward_wrapper_flags_without_separator() -> Result<()> {
         let expected = owned(&["--package", "perl-lsp-rs-core", "--all-targets", "parser::tests"]);
 
