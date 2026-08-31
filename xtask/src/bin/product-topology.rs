@@ -80,6 +80,7 @@ struct DependencyPolicy {
     product_requires: Vec<String>,
     mcp_requires: Vec<String>,
     lsp_forbids: Vec<String>,
+    dap_forbids: Vec<String>,
     mcp_forbids: Vec<String>,
 }
 
@@ -576,6 +577,10 @@ fn validate_dependencies(
         forbid_dependencies(lsp_library, &policy.dependencies.lsp_forbids, "LSP library", findings);
     }
 
+    if let Some(dap) = packages.get(&policy.packages.dap).copied() {
+        forbid_dependencies(dap, &policy.dependencies.dap_forbids, "DAP package", findings);
+    }
+
     if matches!(policy.mcp_stage, McpStage::Admitted | McpStage::Required)
         && let Some(mcp_adapter) = packages.get(&policy.packages.mcp_adapter).copied()
     {
@@ -698,9 +703,15 @@ fn require_precedes(
     findings: &mut BTreeSet<String>,
 ) {
     let Some(dependency_index) = publish_order.get(dependency) else {
+        findings.insert(format!(
+            "publish-order: dependency missing from allowlist={dependency}"
+        ));
         return;
     };
     let Some(consumer_index) = publish_order.get(consumer) else {
+        findings.insert(format!(
+            "publish-order: consumer missing from allowlist={consumer}"
+        ));
         return;
     };
     if dependency_index >= consumer_index {
@@ -798,6 +809,12 @@ mod tests {
                 product_requires: vec!["perl-lsp-rs".to_owned()],
                 mcp_requires: vec!["perl-code-intelligence".to_owned()],
                 lsp_forbids: vec!["perl-mcp".to_owned()],
+                dap_forbids: vec![
+                    "perllsp".to_owned(),
+                    "perl-lsp-rs".to_owned(),
+                    "perl-mcp".to_owned(),
+                    "perl-mcp-rs".to_owned(),
+                ],
                 mcp_forbids: vec![
                     "perllsp".to_owned(),
                     "perl-lsp-rs".to_owned(),
@@ -1103,6 +1120,24 @@ mod tests {
             &report,
             "MCP adapter package=perl-mcp requires normal dependency=perl-code-intelligence",
         )
+    }
+
+    #[test]
+    fn dap_rejects_code_intelligence_dependencies() -> Result<()> {
+        let (policy, mut metadata, manifest) = fixture(McpStage::Absent);
+        if let Some(dap) = metadata.packages.iter_mut().find(|package| package.name == "perl-dap") {
+            dap.dependencies.push(dependency("perllsp"));
+        }
+        let report = validate(&policy, &metadata, &manifest);
+        require_finding(&report, "DAP package package=perl-dap forbids dependency=perllsp")
+    }
+
+    #[test]
+    fn missing_publish_order_edge_fails_closed() -> Result<()> {
+        let (policy, metadata, mut manifest) = fixture(McpStage::Absent);
+        manifest.workspace.metadata.publish.allow.retain(|package| package != "perl-lsp-rs");
+        let report = validate(&policy, &metadata, &manifest);
+        require_finding(&report, "dependency missing from allowlist=perl-lsp-rs")
     }
 
     #[test]
