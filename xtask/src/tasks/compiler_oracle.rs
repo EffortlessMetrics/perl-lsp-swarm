@@ -12,7 +12,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fs;
     use std::path::Path;
-    use std::process::{Command, Output, Stdio};
+    use std::process::{Child, Command, Output, Stdio};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -112,11 +112,11 @@ for my $sub (qw(Oracle::Demo::proto)) {
 
         assert_eq!(
             rust_facts, expected_facts,
-            "the Rust side must observe the independently authored fixture facts"
+            "the Rust side must match the expected fixture fact manifest"
         );
         assert_eq!(
             observed.facts, expected_facts,
-            "the Perl oracle must observe the independently authored fixture facts"
+            "the Perl oracle must match the expected fixture fact manifest"
         );
 
         let receipt = compare_facts(observed.perl_version, rust_facts, observed.facts);
@@ -129,8 +129,8 @@ for my $sub (qw(Oracle::Demo::proto)) {
             "compile-effect oracle disagreements: {rendered}"
         );
         assert_eq!(
-            receipt.compared_families.as_slice(),
-            COMPARED_FAMILIES.as_slice(),
+            receipt.compared_families,
+            vec!["package", "sub", "constant", "prototype", "isa"],
             "receipt should cover exactly the selected bounded fact families"
         );
         assert_eq!(
@@ -248,7 +248,13 @@ for my $sub (qw(Oracle::Demo::proto)) {
         let started = Instant::now();
 
         loop {
-            if child.try_wait().with_context(|| format!("poll {operation}"))?.is_some() {
+            let status = match child.try_wait() {
+                Ok(status) => status,
+                Err(error) => {
+                    return Err(cleanup_after_poll_error(child, error, operation));
+                }
+            };
+            if status.is_some() {
                 return child
                     .wait_with_output()
                     .with_context(|| format!("collect {operation} output"));
@@ -277,6 +283,35 @@ for my $sub (qw(Oracle::Demo::proto)) {
 
             thread::sleep(ORACLE_POLL_INTERVAL.min(timeout.saturating_sub(elapsed)));
         }
+    }
+
+    fn cleanup_after_poll_error(
+        mut child: Child,
+        poll_error: std::io::Error,
+        operation: &str,
+    ) -> anyhow::Error {
+        let kill_error = child.kill().err();
+        let reap_error = if kill_error.is_none() {
+            child.wait_with_output().err()
+        } else {
+            match child.try_wait() {
+                Ok(Some(_)) => child.wait_with_output().err(),
+                Ok(None) | Err(_) => None,
+            }
+        };
+
+        let mut details = format!("{operation} polling failed: {poll_error}");
+        if let Some(error) = kill_error {
+            details.push_str(&format!("; kill cleanup failed: {error}"));
+        } else {
+            details.push_str("; child kill requested");
+        }
+        if let Some(error) = reap_error {
+            details.push_str(&format!("; reap cleanup failed: {error}"));
+        } else {
+            details.push_str("; child reap attempted");
+        }
+        anyhow::anyhow!(details)
     }
 
     fn parse_oracle_facts(stdout: &str) -> Result<BTreeSet<NormalizedFact>> {
@@ -411,7 +446,7 @@ for my $sub (qw(Oracle::Demo::proto)) {
 
     #[test]
     fn compiler_oracle_negative_control_tracks_removed_source_fact() -> Result<()> {
-        let source_without_ordinary = FIXTURE_SOURCE.replace("sub ordinary { 1 }\n", "");
+        let source_without_ordinary = FIXTURE_SOURCE.replace(ORDINARY_SUB_LINE, "");
         let rust_facts = normalize_rust_compile_effects(&lower_source(&source_without_ordinary));
         let observed = run_perl_oracle(&source_without_ordinary)?;
 
@@ -427,17 +462,14 @@ for my $sub (qw(Oracle::Demo::proto)) {
     }
 
     #[test]
-    fn compiler_oracle_comparison_preserves_both_disagreement_directions() {
-        let rust_facts = BTreeSet::from([
-            normalized("package", "Oracle::RustOnly".to_string()),
-            normalized("sub", "Oracle::Shared".to_string()),
-        ]);
-        let perl_facts = BTreeSet::from([
-            normalized("package", "Oracle::PerlOnly".to_string()),
-            normalized("sub", "Oracle::Shared".to_string()),
-        ]);
+    fn compiler_oracle_comparison_preserves_both_disagreement_directions() -> Result<()> {
+        let observed = run_perl_oracle(FIXTURE_SOURCE)?;
+        let mut rust_facts = observed.facts.clone();
+        rust_facts.insert(normalized("package", "Oracle::RustOnly".to_string()));
+        let mut perl_facts = observed.facts;
+        perl_facts.insert(normalized("package", "Oracle::PerlOnly".to_string()));
 
-        let receipt = compare_facts("v-test".to_string(), rust_facts, perl_facts);
+        let receipt = compare_facts(observed.perl_version, rust_facts, perl_facts);
 
         assert_eq!(receipt.matched_facts, vec![normalized("sub", "Oracle::Shared".to_string())]);
         assert_eq!(
