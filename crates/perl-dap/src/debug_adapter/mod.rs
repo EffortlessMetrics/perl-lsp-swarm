@@ -977,7 +977,13 @@ print "result: $final\n";
                 "supportsHitConditionalBreakpoints",
                 crate::feature_catalog::has_feature("dap.breakpoints.hit_condition"),
             ),
-            ("supportsEvaluateForHovers", crate::feature_catalog::has_feature("dap.core")),
+            // #9573: bound to the hover authority, not to `dap.core`. Hover is
+            // gated on a pure selected-frame inspection proof, so the catalog
+            // row cannot decide this one.
+            (
+                "supportsEvaluateForHovers",
+                crate::backend::capabilities::advertises_evaluate_for_hovers(),
+            ),
             ("supportsSetVariable", crate::feature_catalog::has_feature("dap.core")),
             ("supportsValueFormattingOptions", crate::feature_catalog::has_feature("dap.core")),
             ("supportTerminateDebuggee", crate::feature_catalog::has_feature("dap.core")),
