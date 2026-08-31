@@ -1399,6 +1399,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     #[allow(unsafe_code)]
     fn init_logging_does_not_panic_with_log_file() {
         let dir = std::env::temp_dir().join("perl-lsp-test-log-rotation");
@@ -1934,6 +1935,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     #[allow(unsafe_code)]
     fn startup_banner_suppressed_by_quiet_env() {
         // Save previous value to avoid test pollution even if test panics.
