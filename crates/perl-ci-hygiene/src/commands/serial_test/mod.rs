@@ -169,6 +169,14 @@ impl EnvBindings {
                 }
                 continue;
             }
+            if !glob
+                && inherited.len() == 2
+                && authority.module_aliases.contains(&inherited[0])
+                && let Some(signal) = signal_category(&inherited[1])
+            {
+                self.direct_aliases.insert(alias.unwrap_or_else(|| inherited[1].clone()), signal);
+                continue;
+            }
             if glob || inherited.len() != 1 {
                 continue;
             }
@@ -1592,6 +1600,7 @@ mod unrelated_environment {
 mod outer {
     mod via_crate {
         use crate::{root_environment as process_environment, root_remove as clear_environment};
+        use crate::root_environment::set_var as change_environment;
 
         #[test]
         fn crate_module_alias() {
@@ -1602,10 +1611,16 @@ mod outer {
         fn crate_direct_alias() {
             unsafe { clear_environment("B"); }
         }
+
+        #[test]
+        fn crate_function_through_module_alias() {
+            unsafe { change_environment("B2", "1"); }
+        }
     }
 
     mod via_super_super {
         use super::super::{root_environment as process_environment, root_remove as clear_environment};
+        use super::super::root_environment::remove_var as clear_module_environment;
 
         #[test]
         fn ancestor_module_alias() {
@@ -1615,6 +1630,11 @@ mod outer {
         #[test]
         fn ancestor_direct_alias() {
             unsafe { clear_environment("D"); }
+        }
+
+        #[test]
+        fn ancestor_function_through_module_alias() {
+            unsafe { clear_module_environment("D2"); }
         }
     }
 
@@ -1637,8 +1657,10 @@ mod outer {
             .collect::<BTreeMap<_, _>>();
         let expected = BTreeMap::from([
             ("ancestor_direct_alias", ["env_remove"].as_slice()),
+            ("ancestor_function_through_module_alias", ["env_remove"].as_slice()),
             ("ancestor_module_alias", ["env_set"].as_slice()),
             ("crate_direct_alias", ["env_remove"].as_slice()),
+            ("crate_function_through_module_alias", ["env_set"].as_slice()),
             ("crate_module_alias", ["env_set"].as_slice()),
         ]);
         assert_eq!(actual, expected);
