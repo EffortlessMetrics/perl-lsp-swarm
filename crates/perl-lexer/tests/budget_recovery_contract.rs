@@ -1,22 +1,29 @@
 //! Unified budget-stop recovery shape contract (#14158 adjudication, #6717).
 //!
-//! Every per-token budget stop — regex scan steps, regex bytes, delimiter
-//! nesting depth, heredoc body bytes — must emit the same recovery shape at
-//! the lexer boundary: an empty-text `UnknownRest` spanning the degraded
-//! remainder `[token_start, input.len())`, immediately followed by terminal
-//! `EOF`, with identical input producing identical tokens. Over-budget
-//! recovery must never copy the unbounded source remainder; consumers that
-//! need the payload reconstruct it from source they already hold (the parser
-//! `TokenStream` conversion owns that step).
+//! Every reachable per-token budget stop — regex scan steps, regex bytes, and
+//! heredoc body bytes — must emit the same recovery shape at the lexer
+//! boundary: an empty-text `UnknownRest` spanning the degraded remainder
+//! `[token_start, input.len())`, immediately followed by terminal `EOF`, with
+//! identical input producing identical tokens. Over-budget recovery must
+//! never copy the unbounded source remainder; consumers that need the payload
+//! reconstruct it from source they already hold (the parser `TokenStream`
+//! conversion owns that step).
 //!
-//! The one documented exception, pinned at the bottom, is a heredoc that
-//! reaches EOF *inside* its budget: its body is bounded by the budget itself,
-//! so retaining the payload is safe. Boundedness — not token kind — is the
-//! dividing line between the two shapes.
+//! Two budget stops are documented exceptions because their payloads stay
+//! bounded; boundedness — not token kind — is the dividing line between the
+//! shapes:
 //!
-//! The delimiter-depth arm of `budget_guard` has no public-API driver (its
-//! only caller passes `depth = 0`), so it is pinned from inside the crate in
-//! `src/tests.rs` instead.
+//! - a heredoc that reaches EOF *inside* its budget keeps its body payload
+//!   (`<= MAX_HEREDOC_BYTES`); pinned at the bottom of this file;
+//! - `try_heredoc` at `MAX_HEREDOC_DEPTH` pending heredocs emits a
+//!   payload-carrying `Error("Heredoc nesting too deep")` over the
+//!   line-bounded header text (no remainder copy, no EOF jump); pinned by
+//!   `tests/heredoc_security_tests.rs`.
+//!
+//! The `MAX_DELIM_NEST` arm of `budget_guard` is *not* part of this
+//! contract: it has no public-API driver (its only caller passes
+//! `depth = 0`), so it is pinned from inside the crate in `src/tests.rs`.
+//! Wiring it through a real driver or removing it is tracked in #14389.
 
 use std::sync::Arc;
 
@@ -114,8 +121,8 @@ fn heredoc_byte_budget_stop_is_geometry_only() -> R {
     assert_geometry_only_over_budget_recovery(&source, HEREDOC_HEADER.len(), path)
 }
 
-/// The single documented exception: EOF reached *inside* the heredoc budget
-/// keeps its budget-bounded body payload.
+/// One of the two documented exceptions: EOF reached *inside* the heredoc
+/// budget keeps its budget-bounded body payload.
 #[test]
 fn eof_inside_heredoc_budget_keeps_bounded_payload() -> R {
     let path = "EOF inside heredoc budget";
@@ -134,6 +141,40 @@ fn eof_inside_heredoc_budget_keeps_bounded_payload() -> R {
     assert!(
         recovery.1.len() <= MAX_HEREDOC_BYTES,
         "{path}: the retained payload stays budget-bounded"
+    );
+    assert_eq!((recovery.2, recovery.3), (body_start, source.len()));
+    assert!(
+        matches!(tokens.get(index + 1).map(|token| &token.0), Some(TokenType::EOF)),
+        "{path}: terminal EOF must immediately follow the recovery token"
+    );
+    Ok(())
+}
+
+/// The `<=` boundary of that exception: a body of exactly `MAX_HEREDOC_BYTES`
+/// with no terminator sits *at* the budget when EOF arrives, so the full
+/// payload must be retained. This discriminates the boundary — a regression
+/// to a strict `<` comparison here, or an over-budget jump in this arm, would
+/// swap the retained payload for the geometry-only shape pinned above.
+#[test]
+fn eof_at_exact_heredoc_budget_keeps_bounded_payload() -> R {
+    let path = "EOF at exact heredoc budget";
+    let source = format!("{HEREDOC_HEADER}{}", "x".repeat(MAX_HEREDOC_BYTES));
+    assert_eq!(source.len() - HEREDOC_HEADER.len(), MAX_HEREDOC_BYTES);
+    let body_start = HEREDOC_HEADER.len();
+
+    let tokens = signatures(&source);
+    let index = recovery_index(&tokens, path)?;
+    let recovery = &tokens[index];
+
+    assert_eq!(
+        &*recovery.1,
+        &source[body_start..],
+        "{path}: the exactly-at-budget body payload is retained"
+    );
+    assert_eq!(
+        recovery.1.len(),
+        MAX_HEREDOC_BYTES,
+        "{path}: the retained payload pins the <= MAX_HEREDOC_BYTES boundary"
     );
     assert_eq!((recovery.2, recovery.3), (body_start, source.len()));
     assert!(

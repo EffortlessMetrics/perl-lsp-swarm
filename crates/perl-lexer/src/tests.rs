@@ -573,9 +573,11 @@ fn test_exponent_marker_without_digits_after_sign_only() -> TestResult {
 #[test]
 fn budget_guard_delimiter_depth_arm_matches_the_geometry_only_contract() -> TestResult {
     // The depth arm has no public-API driver (`parse_regex` passes `depth = 0`),
-    // so it is exercised here directly. It must produce the same recovery shape
-    // as every other budget stop: `tests/budget_recovery_contract.rs` pins the
-    // reachable paths end to end (#6717, #14158).
+    // so it is exercised here directly. It must produce the same geometry-only
+    // shape as every reachable over-budget stop:
+    // `tests/budget_recovery_contract.rs` pins those paths end to end
+    // (#6717, #14158); wiring this arm through a real driver or removing it is
+    // tracked in #14389.
     let source = "abc";
     let mut lexer = PerlLexer::new(source);
     lexer.restore(&LexerCheckpoint::at_position(1));

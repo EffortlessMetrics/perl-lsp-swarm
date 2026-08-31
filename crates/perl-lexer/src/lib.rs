@@ -103,9 +103,10 @@
 //!
 //! # Budget-Stop Recovery Contract (#6717, #14158)
 //!
-//! When any per-token budget is exhausted — regex scan steps, regex bytes,
-//! delimiter nesting depth, or heredoc body bytes — every over-budget token is
-//! emitted in one uniform shape, regardless of which construct hit the limit:
+//! When a reachable per-token budget is exhausted — regex scan steps
+//! (`MAX_REGEX_PARSE_STEPS`), regex bytes (`MAX_REGEX_BYTES`), or heredoc
+//! body bytes (`MAX_HEREDOC_BYTES`) — every over-budget token is emitted in
+//! one uniform shape, regardless of which construct hit the limit:
 //!
 //! - **Kind**: [`TokenType::UnknownRest`], classified as a recovery token.
 //! - **Text**: empty. Over-budget recovery must never copy the unbounded
@@ -118,13 +119,28 @@
 //! - **Determinism**: identical source and configuration produce identical
 //!   tokens (#6717).
 //!
-//! The single documented exception is a heredoc that reaches EOF *inside* its
-//! budget: that recovery retains its body payload (`text ==
-//! &input[body_start..]`) because the body is budget-bounded
-//! (`<= MAX_HEREDOC_BYTES`). Boundedness — not token kind — is the dividing
-//! line between payload-free and payload-carrying recovery.
+//! Two budget stops are documented exceptions because their payloads are
+//! bounded — boundedness, not token kind, is the dividing line between
+//! payload-free and payload-carrying recovery:
 //!
-//! The contract is pinned for every budget stop by
+//! - A heredoc that reaches EOF *inside* its budget retains its body payload
+//!   (`text == &input[body_start..]`) because the body is budget-bounded
+//!   (`<= MAX_HEREDOC_BYTES`).
+//! - `try_heredoc` at `MAX_HEREDOC_DEPTH` pending heredocs emits
+//!   [`TokenType::Error`]`("Heredoc nesting too deep")` carrying the
+//!   line-bounded heredoc header text over `[start, position)` — no
+//!   remainder copy, no EOF jump. Pinned by
+//!   `tests/heredoc_security_tests.rs`.
+//!
+//! The `MAX_DELIM_NEST` arm of `budget_guard` is *not* part of this
+//! contract: no public-API driver passes a depth above the limit (its only
+//! caller, `parse_regex`, passes `depth = 0`), and the reachable depth
+//! limiter `consume_nested_opener` recovers locally inside the
+//! balanced-segment helpers without the uniform shape. The arm is retained
+//! and pinned from inside the crate (`src/tests.rs`); wiring it through a
+//! real driver or removing it is tracked in #14389.
+//!
+//! The reachable budget stops above are pinned end to end by
 //! `tests/budget_recovery_contract.rs`, alongside #6717's heredoc threshold
 //! contract in `tests/heredoc_byte_budget_contract.rs`.
 //!
@@ -220,8 +236,11 @@ impl<'a> PerlLexer<'a> {
     /// Over-budget heredoc recovery (#6717): geometry-only `UnknownRest` with
     /// empty text over `[body_start, input.len())`. The unbounded remainder is
     /// deliberately not copied; the EOF-inside-budget arm in [`Self::next_token`]
-    /// is the only payload-carrying recovery, and only because its body stays
-    /// within `MAX_HEREDOC_BYTES`. Pinned by `tests/budget_recovery_contract.rs`.
+    /// is the only payload-carrying over-budget `UnknownRest`, and only
+    /// because its body stays within `MAX_HEREDOC_BYTES`. `try_heredoc`'s
+    /// `MAX_HEREDOC_DEPTH` stop is the other bounded-payload budget stop (a
+    /// payload-carrying `Error` over the header text). Pinned by
+    /// `tests/budget_recovery_contract.rs`.
     fn heredoc_budget_recovery(&mut self, body_start: usize) -> Token {
         self.pending_heredocs.remove(0);
         self.position = self.input.len();
