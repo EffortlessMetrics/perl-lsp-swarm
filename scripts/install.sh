@@ -48,7 +48,64 @@ NC='\033[0m'
 say()     { printf '%b\n' "$1"; }
 info()    { say "${GREEN}=>${NC} $1"; }
 warn()    { say "${YELLOW}warning:${NC} $1" >&2; }
-err()     { say "${RED}error:${NC} $1" >&2; exit 1; }
+# First-install selector rollback is invoked from err() and from INT/TERM/HUP
+# during the selector-to-commit window so injected faults and signals drop
+# newly created PATH names without replacing the caller's EXIT trap (main
+# removes TMPDIR that way). Once current already names the incoming candidate,
+# those PATH names are live for that unit and must not be removed.
+committed_incoming_product_unit() {
+    local _store _cur
+    [ -n "${_plsp_incoming_id:-}" ] || return 1
+    _store="$(product_store_dir)"
+    [ -L "${_store}/current" ] || return 1
+    _cur="$(readlink "${_store}/current" 2>/dev/null || true)"
+    [ "$_cur" = "candidates/${_plsp_incoming_id}" ]
+}
+rollback_new_path_selectors() {
+    if committed_incoming_product_unit; then
+        _plsp_rollback_server=""
+        _plsp_rollback_dap=""
+        return 0
+    fi
+    if [ -n "${_plsp_rollback_server:-}" ]; then
+        rm -f -- "$_plsp_rollback_server"
+    fi
+    if [ -n "${_plsp_rollback_dap:-}" ]; then
+        rm -f -- "$_plsp_rollback_dap"
+    fi
+    _plsp_rollback_server=""
+    _plsp_rollback_dap=""
+}
+restore_saved_signal_trap() {
+    local _saved="$1" _sig="$2"
+    if [ -n "$_saved" ]; then
+        eval "$_saved"
+    else
+        trap - "$_sig"
+    fi
+}
+# Do not install an EXIT handler here: that would replace main's TMPDIR
+# cleanup. exit after rollback so the caller's EXIT trap still runs.
+rollback_new_path_selectors_on_signal() {
+    rollback_new_path_selectors
+    disarm_new_path_selector_signal_rollback
+    exit 1
+}
+arm_new_path_selector_signal_rollback() {
+    _plsp_prev_int="$(trap -p INT 2>/dev/null || true)"
+    _plsp_prev_term="$(trap -p TERM 2>/dev/null || true)"
+    _plsp_prev_hup="$(trap -p HUP 2>/dev/null || true)"
+    trap rollback_new_path_selectors_on_signal INT TERM HUP
+}
+disarm_new_path_selector_signal_rollback() {
+    restore_saved_signal_trap "${_plsp_prev_int:-}" INT
+    restore_saved_signal_trap "${_plsp_prev_term:-}" TERM
+    restore_saved_signal_trap "${_plsp_prev_hup:-}" HUP
+    _plsp_prev_int=""
+    _plsp_prev_term=""
+    _plsp_prev_hup=""
+}
+err()     { rollback_new_path_selectors; say "${RED}error:${NC} $1" >&2; exit 1; }
 
 need_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -855,17 +912,328 @@ build_from_source() {
     EXTRACT_DIR="${TMPDIR}/install-root/bin"
 }
 
+# ── Product-unit promotion ─────────────────────────────────────────────────────
+# Readers of PATH-visible names and of .perl-lsp/current observe one complete
+# unit. Current is a symlink replaced by rename(2); PATH names are stable
+# relative links into current, so they cannot be updated member-by-member.
+
+product_store_dir() {
+    printf '%s\n' "${INSTALL_DIR}/.perl-lsp"
+}
+
+maybe_inject_install_fault() {
+    local _barrier="$1" _pid
+    if [ "${PERL_LSP_INSTALL_FAULT:-}" = "signal_${_barrier}" ]; then
+        # Test-only: deliver TERM so the selector-window handlers run.
+        # Use BASHPID in this shell. Do not capture it from a helper via $(),
+        # which would be a different process. Bash 3.2 has no BASHPID; $$
+        # there is the parent harness, so ask a child for PPID instead.
+        if [ -n "${BASHPID:-}" ]; then
+            _pid="$BASHPID"
+        else
+            _pid="$(sh -c 'echo $PPID')"
+        fi
+        kill -s TERM "$_pid"
+        return 0
+    fi
+    if [ "${PERL_LSP_INSTALL_FAULT:-}" = "$_barrier" ]; then
+        err "injected product-unit fault: $_barrier"
+    fi
+}
+
+maybe_observe_product_unit() {
+    local _barrier="$1"
+    if [ "${PERL_LSP_INSTALL_OBSERVE:-}" != "$_barrier" ]; then
+        return 0
+    fi
+    if [ -z "${PERL_LSP_INSTALL_OBSERVE_FILE:-}" ]; then
+        err "PERL_LSP_INSTALL_OBSERVE_FILE is required for observation barrier $_barrier"
+    fi
+    # Keep the first hit. Post-commit selector repair must not overwrite the
+    # pre-commit between_path_members snapshot.
+    if [ -e "$PERL_LSP_INSTALL_OBSERVE_FILE" ]; then
+        return 0
+    fi
+    {
+        observe_current_product_unit
+        observe_path_visible_product_unit
+    } > "$PERL_LSP_INSTALL_OBSERVE_FILE"
+    if grep -q 'state=mixed' "$PERL_LSP_INSTALL_OBSERVE_FILE"; then
+        err "path-visible product unit became mixed at $_barrier"
+    fi
+}
+
+hash_product_member() {
+    local _tool
+    _tool="$(select_sha256_tool)" || err "SHA-256 tool is required to bind product-unit identity"
+    calculate_sha256 "$_tool" "$1"
+}
+
+product_unit_candidate_id() {
+    local _disposition="$1" _server_hash="$2" _dap_hash="$3" _tmp _tool _id
+    _tmp="$(mktemp)"
+    {
+        printf '%s\0' "perl-lsp-swarm:standalone-product-unit.v1"
+        printf '%s\0' "$_disposition"
+        printf '%s\0' "$_server_hash"
+        printf '%s\0' "$_dap_hash"
+    } > "$_tmp"
+    _tool="$(select_sha256_tool)" || err "SHA-256 tool is required to bind product-unit identity"
+    _id="$(calculate_sha256 "$_tool" "$_tmp")" || return
+    rm -f "$_tmp"
+    printf '%s\n' "$_id"
+}
+
+write_product_unit_manifest() {
+    local _dir="$1" _disposition="$2" _id="$3" _server_hash="$4" _dap_hash="$5"
+    cat > "${_dir}/product_unit.v1" <<EOF
+schema=standalone_product_unit.v1
+disposition=${_disposition}
+candidate_id=${_id}
+server_sha256=${_server_hash}
+dap_sha256=${_dap_hash}
+EOF
+}
+
+classify_staged_product_unit() {
+    local _src="$1" _mode="$2"
+    local _server="${_src}/${BIN_NAME}"
+    local _dap="${_src}/${DAP_BIN_NAME}"
+    if [ ! -f "$_server" ] || [ -L "$_server" ]; then
+        err "staged product unit is missing a regular perllsp member"
+    fi
+    if [ "$_mode" = "source" ]; then
+        printf '%s\n' "advanced_source_server_only"
+        return 0
+    fi
+    if [ ! -f "$_dap" ] || [ -L "$_dap" ]; then
+        err "archive product unit requires a complete perllsp/perl-dap pair"
+    fi
+    printf '%s\n' "archive_pair_required"
+}
+
+atomic_symlink_replace() {
+    local _link="$1" _target="$2"
+    local _tmp="${_link}.tmp.$$"
+    rm -f "$_tmp"
+    ln -s "$_target" "$_tmp"
+    # GNU mv follows a symlink-to-directory destination unless -T is given, which
+    # would move the new pointer into the old candidate instead of replacing it.
+    if mv -T "$_tmp" "$_link" 2>/dev/null; then
+        return 0
+    fi
+    # BSD/macOS mv has no -T. rename(2) replaces a symlink without following it
+    # and without an unlink gap. Perl is present on the supported POSIX hosts.
+    if command -v perl >/dev/null 2>&1 \
+        && perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' -- "$_tmp" "$_link"
+    then
+        return 0
+    fi
+    rm -f "$_tmp"
+    err "atomic current-pointer replace requires GNU mv -T or perl rename"
+}
+
+publish_immutable_candidate() {
+    local _src="$1" _disposition="$2" _allow_fault="${3:-1}"
+    local _store _server_src _server_hash _dap_src _dap_hash="-" _id _dest _attempt _existing_dap
+    _store="$(product_store_dir)"
+    _server_src="${_src}/${BIN_NAME}"
+    _server_hash="$(hash_product_member "$_server_src")" || return
+    _dap_src="${_src}/${DAP_BIN_NAME}"
+    if [ "$_disposition" = "archive_pair_required" ]; then
+        _dap_hash="$(hash_product_member "$_dap_src")" || return
+    fi
+    _id="$(product_unit_candidate_id "$_disposition" "$_server_hash" "$_dap_hash")" || return
+    _dest="${_store}/candidates/${_id}"
+    mkdir -p "${_store}/candidates" "${_store}/attempts"
+    if [ -d "$_dest" ]; then
+        if [ "$(hash_product_member "${_dest}/${BIN_NAME}")" != "$_server_hash" ]; then
+            err "immutable candidate already exists with different perllsp bytes"
+        fi
+        if [ "$_disposition" = "archive_pair_required" ]; then
+            _existing_dap="$(hash_product_member "${_dest}/${DAP_BIN_NAME}")" || return
+            if [ "$_existing_dap" != "$_dap_hash" ]; then
+                err "immutable candidate already exists with different perl-dap bytes"
+            fi
+        fi
+        printf '%s\n' "$_id"
+        return 0
+    fi
+    if [ "$_allow_fault" = "1" ]; then
+        maybe_inject_install_fault "before_publish"
+    fi
+    _attempt="$(mktemp -d "${_store}/attempts/att.XXXXXX")"
+    cp "$_server_src" "${_attempt}/${BIN_NAME}"
+    chmod 755 "${_attempt}/${BIN_NAME}"
+    if [ "$_disposition" = "archive_pair_required" ]; then
+        cp "$_dap_src" "${_attempt}/${DAP_BIN_NAME}"
+        chmod 755 "${_attempt}/${DAP_BIN_NAME}"
+    fi
+    write_product_unit_manifest "$_attempt" "$_disposition" "$_id" "$_server_hash" "$_dap_hash"
+    mv "$_attempt" "$_dest"
+    printf '%s\n' "$_id"
+}
+
+commit_current_selection() {
+    local _id="$1" _allow_fault="${2:-1}"
+    local _store _current _old
+    _store="$(product_store_dir)"
+    _current="${_store}/current"
+    if [ "$_allow_fault" = "1" ]; then
+        maybe_inject_install_fault "before_commit"
+    fi
+    if [ -L "$_current" ]; then
+        _old="$(readlink "$_current")"
+        atomic_symlink_replace "${_store}/previous" "$_old"
+    fi
+    atomic_symlink_replace "$_current" "candidates/${_id}"
+    if [ "$_allow_fault" = "1" ]; then
+        maybe_inject_install_fault "after_commit"
+    fi
+}
+
+ensure_path_visible_selectors() {
+    local _allow_fault="${1:-1}"
+    local _incoming_pair="${2:-0}"
+    local _existing_only="${3:-0}"
+    local _rel=".perl-lsp/current"
+    local _store _want_dap=0
+    _store="$(product_store_dir)"
+    if [ "$_allow_fault" = "1" ]; then
+        maybe_inject_install_fault "before_selectors"
+    fi
+    if [ "$_existing_only" != "1" ] || [ -e "${INSTALL_DIR}/${BIN_NAME}" ] || [ -L "${INSTALL_DIR}/${BIN_NAME}" ]; then
+        atomic_symlink_replace "${INSTALL_DIR}/${BIN_NAME}" "${_rel}/${BIN_NAME}"
+    fi
+    maybe_observe_product_unit "between_path_members"
+    if [ "$_incoming_pair" = "1" ]; then
+        # The staged incoming unit carries a DAP, so the DAP selector is
+        # written here, before current switches: the commit then publishes the
+        # whole pair to PATH at once instead of relying on a post-commit
+        # selector repair that a failure could leave unfinished. The selector
+        # target is relative and retargets atomically at the commit.
+        _want_dap=1
+    elif [ -f "${_store}/current/${DAP_BIN_NAME}" ]; then
+        _want_dap=1
+    elif [ ! -e "${_store}/current" ] && [ -n "${EXTRACT_DIR:-}" ] && [ -f "${EXTRACT_DIR}/${DAP_BIN_NAME}" ]; then
+        _want_dap=1
+    fi
+    if [ "$_want_dap" = "1" ] && { [ "$_existing_only" != "1" ] || [ -e "${INSTALL_DIR}/${DAP_BIN_NAME}" ] || [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; }; then
+        atomic_symlink_replace "${INSTALL_DIR}/${DAP_BIN_NAME}" "${_rel}/${DAP_BIN_NAME}"
+    elif [ "$_existing_only" != "1" ] && { [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ] || [ -f "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; }; then
+        # A pre-existing regular file here is stale selector residue from an
+        # earlier install layout; leaving it would keep PATH pointed at an
+        # adapter unrelated to the selected server unit.
+        rm -f "${INSTALL_DIR}/${DAP_BIN_NAME}"
+    elif [ -d "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+        err "stale PATH selector is a directory: ${INSTALL_DIR}/${DAP_BIN_NAME}"
+    fi
+}
+
+path_visible_member_hash() {
+    local _path="$1"
+    if [ ! -e "$_path" ]; then
+        printf '%s\n' "-"
+        return 0
+    fi
+    hash_product_member "$_path"
+}
+
+observe_current_product_unit() {
+    local _store _current _id _manifest _disposition="unknown" _server="-" _dap="-"
+    _store="$(product_store_dir)"
+    _current="${_store}/current"
+    if [ ! -L "$_current" ]; then
+        printf 'state=none\n'
+        return 0
+    fi
+    _id="$(readlink "$_current")"
+    _id="${_id##*/}"
+    _manifest="${_current}/product_unit.v1"
+    if [ -f "$_manifest" ]; then
+        _disposition="$(awk -F= '/^disposition=/ {print $2; exit}' "$_manifest")"
+    fi
+    if [ -f "${_current}/${BIN_NAME}" ]; then
+        _server="$(hash_product_member "${_current}/${BIN_NAME}")"
+    fi
+    if [ -f "${_current}/${DAP_BIN_NAME}" ]; then
+        _dap="$(hash_product_member "${_current}/${DAP_BIN_NAME}")"
+    fi
+    printf 'state=selected disposition=%s candidate_id=%s server_sha256=%s dap_sha256=%s\n' \
+        "$_disposition" "$_id" "$_server" "$_dap"
+}
+
+observe_path_visible_product_unit() {
+    local _server _dap _server_link _dap_link _server_dir="" _dap_dir=""
+    local _cur _cur_server="-" _cur_dap="-"
+    _server="$(path_visible_member_hash "${INSTALL_DIR}/${BIN_NAME}")"
+    _dap="$(path_visible_member_hash "${INSTALL_DIR}/${DAP_BIN_NAME}")"
+    if [ -L "${INSTALL_DIR}/${BIN_NAME}" ]; then
+        _server_link="$(readlink "${INSTALL_DIR}/${BIN_NAME}")"
+        _server_dir="$(dirname "$_server_link")"
+    fi
+    if [ -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+        _dap_link="$(readlink "${INSTALL_DIR}/${DAP_BIN_NAME}")"
+        _dap_dir="$(dirname "$_dap_link")"
+    fi
+    if [ -n "$_dap_dir" ] && [ -n "$_server_dir" ] && [ "$_server_dir" != "$_dap_dir" ]; then
+        printf 'state=mixed server_sha256=%s dap_sha256=%s\n' "$_server" "$_dap"
+        return 0
+    fi
+    _cur="$(observe_current_product_unit)"
+    _cur_server="$(printf '%s\n' "$_cur" | sed -n 's/.*server_sha256=\([^ ]*\).*/\1/p')"
+    _cur_dap="$(printf '%s\n' "$_cur" | sed -n 's/.*dap_sha256=\([^ ]*\).*/\1/p')"
+    if [ "$_cur_server" != "-" ] && [ "$_cur_dap" != "-" ]; then
+        if { [ "$_server" != "-" ] && [ "$_dap" = "-" ]; } \
+            || { [ "$_server" = "-" ] && [ "$_dap" != "-" ]; }; then
+            printf 'state=mixed server_sha256=%s dap_sha256=%s\n' "$_server" "$_dap"
+            return 0
+        fi
+    fi
+    if [ "$_server" != "-" ] && [ "$_dap" != "-" ]; then
+        if { [ "$_server" = "$_cur_server" ] && [ "$_dap" != "$_cur_dap" ]; } \
+            || { [ "$_server" != "$_cur_server" ] && [ "$_dap" = "$_cur_dap" ]; }; then
+            printf 'state=mixed server_sha256=%s dap_sha256=%s\n' "$_server" "$_dap"
+            return 0
+        fi
+    fi
+    printf 'state=path_visible server_sha256=%s dap_sha256=%s\n' "$_server" "$_dap"
+}
+
+legacy_regular_product_dir() {
+    local _tmp
+    if [ -L "${INSTALL_DIR}/${BIN_NAME}" ] || [ ! -f "${INSTALL_DIR}/${BIN_NAME}" ]; then
+        return 1
+    fi
+    _tmp="$(mktemp -d)"
+    cp "${INSTALL_DIR}/${BIN_NAME}" "${_tmp}/${BIN_NAME}"
+    if [ -f "${INSTALL_DIR}/${DAP_BIN_NAME}" ] && [ ! -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+        cp "${INSTALL_DIR}/${DAP_BIN_NAME}" "${_tmp}/${DAP_BIN_NAME}"
+        printf '%s %s\n' "$_tmp" "archive_pair_required"
+    else
+        printf '%s %s\n' "$_tmp" "historical_server_only"
+    fi
+}
+
+promote_legacy_layout_if_needed() {
+    local _legacy _disposition _id _tmp
+    _legacy="$(legacy_regular_product_dir)" || return 0
+    _tmp="${_legacy%% *}"
+    _disposition="${_legacy#* }"
+    _id="$(publish_immutable_candidate "$_tmp" "$_disposition" 0)" || return
+    rm -rf "$_tmp"
+    commit_current_selection "$_id" 0 || return
+    ensure_path_visible_selectors 0 || return
+}
+
 # ── Install ────────────────────────────────────────────────────────────────────
 
 install_binaries() {
-    local _src_bin="${EXTRACT_DIR}/${BIN_NAME}"
-    if [ ! -f "$_src_bin" ]; then
-        err "binary not found in archive: $_src_bin"
-    fi
+    local _mode="${1:-${INSTALL_MODE:-release}}"
+    local _disposition _id _store _previous="none" _receipt _server_hash _dap_hash="-" _incoming_pair
 
     mkdir -p "$INSTALL_DIR"
 
-    # Verify we can write to the install directory.
     if [ ! -w "$INSTALL_DIR" ]; then
         err "install directory is not writable: $INSTALL_DIR
 Try one of:
@@ -873,17 +1241,68 @@ Try one of:
   INSTALL_DIR=\$HOME/.local/bin bash scripts/install.sh"
     fi
 
-    info "installing $BIN_NAME to $INSTALL_DIR"
-    cp "$_src_bin" "$INSTALL_DIR/$BIN_NAME"
-    chmod 755 "$INSTALL_DIR/$BIN_NAME"
-    info "installed: $INSTALL_DIR/$BIN_NAME"
+    _disposition="$(classify_staged_product_unit "$EXTRACT_DIR" "$_mode")" || return
+    _store="$(product_store_dir)"
+    mkdir -p "$_store"
 
-    # Install perl-dap companion binary if present (ships since v0.9.1).
-    local _src_dap="${EXTRACT_DIR}/${DAP_BIN_NAME}"
-    if [ -f "$_src_dap" ]; then
-        info "installing $DAP_BIN_NAME to $INSTALL_DIR"
-        cp "$_src_dap" "$INSTALL_DIR/$DAP_BIN_NAME"
-        chmod 755 "$INSTALL_DIR/$DAP_BIN_NAME"
+    promote_legacy_layout_if_needed || return
+
+    _id="$(publish_immutable_candidate "$EXTRACT_DIR" "$_disposition")" || return
+    _incoming_pair=0
+    if [ "$_disposition" = "archive_pair_required" ]; then
+        _incoming_pair=1
+    fi
+    _plsp_rollback_server=""
+    _plsp_rollback_dap=""
+    if [ ! -e "${INSTALL_DIR}/${BIN_NAME}" ] && [ ! -L "${INSTALL_DIR}/${BIN_NAME}" ]; then
+        _plsp_rollback_server="${INSTALL_DIR}/${BIN_NAME}"
+    fi
+    if [ ! -e "${INSTALL_DIR}/${DAP_BIN_NAME}" ] && [ ! -L "${INSTALL_DIR}/${DAP_BIN_NAME}" ]; then
+        _plsp_rollback_dap="${INSTALL_DIR}/${DAP_BIN_NAME}"
+    fi
+    # Pair selectors are created before current flips so the commit publishes
+    # both PATH names together. If commit fails closed, drop names this attempt
+    # created so a first install does not leave dangling commands. err() and
+    # INT/TERM/HUP run the same rollback so injected faults and signals do not
+    # replace main's TMPDIR EXIT trap. After current names this candidate,
+    # rollback becomes a no-op so a deferred signal cannot unpublish PATH.
+    _plsp_incoming_id="$_id"
+    arm_new_path_selector_signal_rollback
+    if ! ensure_path_visible_selectors 1 "$_incoming_pair" 0; then
+        rollback_new_path_selectors
+        disarm_new_path_selector_signal_rollback
+        _plsp_incoming_id=""
+        return 1
+    fi
+    if ! commit_current_selection "$_id"; then
+        rollback_new_path_selectors
+        disarm_new_path_selector_signal_rollback
+        _plsp_incoming_id=""
+        return 1
+    fi
+    _plsp_rollback_server=""
+    _plsp_rollback_dap=""
+    _plsp_incoming_id=""
+    disarm_new_path_selector_signal_rollback
+    ensure_path_visible_selectors || return
+
+    if [ -L "${_store}/previous" ]; then
+        _previous="$(readlink "${_store}/previous")"
+        _previous="${_previous##*/}"
+    fi
+    _server_hash="$(hash_product_member "${_store}/current/${BIN_NAME}")" || return
+    if [ -f "${_store}/current/${DAP_BIN_NAME}" ]; then
+        _dap_hash="$(hash_product_member "${_store}/current/${DAP_BIN_NAME}")" || return
+    fi
+    _receipt="product_unit_receipt disposition=${_disposition} candidate_id=${_id} previous=${_previous} server_sha256=${_server_hash} dap_sha256=${_dap_hash} state=selected"
+    case "$_receipt" in
+        *"${INSTALL_DIR}"*|*"${EXTRACT_DIR}"*)
+            err "product-unit receipt contained a private path"
+            ;;
+    esac
+    info "$_receipt"
+    info "installed: $INSTALL_DIR/$BIN_NAME"
+    if [ "$_dap_hash" != "-" ]; then
         info "installed: $INSTALL_DIR/$DAP_BIN_NAME"
     fi
 }

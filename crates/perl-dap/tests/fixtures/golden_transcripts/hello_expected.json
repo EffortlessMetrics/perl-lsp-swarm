@@ -17,7 +17,7 @@
       "success": true,
       "body": {
         "supportsConfigurationDoneRequest": true,
-        "supportsEvaluateForHovers": true,
+        "supportsEvaluateForHovers": false,
         "supportsConditionalBreakpoints": false
       }
     },
