@@ -670,8 +670,7 @@ fn syn_root_reexports(source: &str) -> Result<Vec<(String, String)>> {
             if !matches!(item.vis, SynVisibility::Public(_)) {
                 continue;
             }
-            collect_use_tree(&item.tree, Vec::new(), &mut out)
-                .wrap_err("unsupported glob re-export in crate root")?;
+            collect_use_tree(&item.tree, Vec::new(), &mut out)?;
         }
     }
     out.sort();
@@ -714,7 +713,7 @@ fn collect_use_tree(
                 shown = "crate".to_string();
             }
             Err(color_eyre::eyre::eyre!(
-                "`pub use {shown}::*` cannot be inventoried without expansion; expand the glob \
+                "unsupported glob re-export `pub use {shown}::*` in crate root: expand the glob \
                  into named re-exports so every public symbol is classifiable"
             ))
         }
@@ -3374,7 +3373,7 @@ impl<T> Wrapper<T> {
     fn syn_walk_resolves_children_of_mod_rs_from_its_parent_directory() -> TestResult {
         let temp = tempfile::tempdir()?;
         let src = temp.path().join("src");
-        fs::create_dir_all(&src)?;
+        fs::create_dir_all(src.join("outer"))?;
         fs::write(src.join("lib.rs"), "pub mod outer;\n")?;
         fs::write(src.join("outer").join("mod.rs"), "pub mod inner;\npub fn outer_fn() {}\n")?;
         fs::write(src.join("outer").join("inner.rs"), "pub fn external_fn() {}\n")?;
