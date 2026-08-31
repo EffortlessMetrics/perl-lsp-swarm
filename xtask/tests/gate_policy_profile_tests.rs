@@ -19,6 +19,7 @@ struct GatePolicyDoc {
 struct PolicyGate {
     name: String,
     tier: String,
+    description: String,
     #[serde(default = "default_true")]
     required: bool,
     #[serde(default)]
@@ -440,6 +441,116 @@ fn package_args(command: &str) -> Vec<String> {
         .filter_map(|(index, _)| tokens.get(index + 1))
         .map(|package| (*package).to_string())
         .collect()
+}
+
+const DAP_HELPER_TARGETS: [&str; 4] = [
+    "eval_ref_cache_miss_resume_tests",
+    "dap_evaluate_comprehensive_tests",
+    "dap_variable_reference_hardening_tests",
+    "pause_signal_delivery_tests",
+];
+
+fn dap_helper_command_error(command: &str) -> Option<String> {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let separator_count = tokens.iter().filter(|token| **token == "&&").count();
+    if separator_count != 1 {
+        return Some("DAP helper command must have exactly one && separator".to_string());
+    }
+    if tokens.iter().any(|token| matches!(**token, ";" | "||")) {
+        return Some("DAP helper command must not swallow failures".to_string());
+    }
+
+    let separator = tokens.iter().position(|token| *token == "&&")?;
+    let helper_tokens = &tokens[separator + 1..];
+    if !helper_tokens.windows(2).any(|window| window[0] == "-p" && window[1] == "perl-dap") {
+        return Some("DAP helper command must target perl-dap".to_string());
+    }
+    if !helper_tokens
+        .windows(2)
+        .any(|window| window[0] == "--features" && window[1] == "test-helpers")
+    {
+        return Some("DAP helper command must enable test-helpers".to_string());
+    }
+
+    for target in DAP_HELPER_TARGETS {
+        let occurrences = helper_tokens
+            .windows(2)
+            .filter(|window| window[0] == "--test" && window[1] == target)
+            .count();
+        if occurrences != 1 {
+            return Some(format!("DAP helper command must bind exactly one --test {target}"));
+        }
+    }
+    None
+}
+
+fn dap_support_gate(root: &PathBuf) -> Result<PolicyGate, Box<dyn std::error::Error>> {
+    let content = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+    parsed
+        .gates
+        .into_iter()
+        .find(|gate| gate.name == "unit_dap_support_full")
+        .ok_or_else(|| "missing unit_dap_support_full gate".into())
+}
+
+#[test]
+fn dap_support_gate_binds_all_helper_targets_and_propagates_failures()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let gate = dap_support_gate(&root)?;
+    assert_eq!(gate.tier, "merge_gate");
+    assert!(gate.required, "DAP support gate must stay required");
+    assert!(!gate.quarantine, "DAP support gate must not be quarantined");
+    assert!(
+        gate.description.contains("Windows-only pause runtime"),
+        "the Linux claim boundary must remain explicit"
+    );
+    if let Some(error) = dap_helper_command_error(&gate.command) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error).into());
+    }
+
+    for target in DAP_HELPER_TARGETS {
+        let mutated = gate.command.replacen(&format!(" --test {target}"), "", 1);
+        assert!(
+            dap_helper_command_error(&mutated).is_some(),
+            "removing {target} must fail the policy contract"
+        );
+    }
+    let missing_feature = gate.command.replace("--features test-helpers", "--features default");
+    assert!(dap_helper_command_error(&missing_feature).is_some());
+    let swallowed_failure = gate.command.replacen("&&", ";", 1);
+    assert!(dap_helper_command_error(&swallowed_failure).is_some());
+    Ok(())
+}
+
+#[test]
+fn dap_support_retry_envelope_leaves_terminal_receipt_headroom()
+-> Result<(), Box<dyn std::error::Error>> {
+    const SHARD_WATCHDOG_SECONDS: u64 = 1_200;
+    const LINUX_CLEANUP_GRACE_SECONDS: u64 = 75;
+    const TERMINAL_RECEIPT_RESERVE_SECONDS: u64 = 120;
+    const EXPECTED_TIMEOUT_SECONDS: u64 = 450;
+    const EXPECTED_BUDGET_MS: u64 = 360_000;
+
+    let root = project_root();
+    let gate = dap_support_gate(&root)?;
+    assert_eq!(gate.timeout_seconds, Some(EXPECTED_TIMEOUT_SECONDS));
+    assert_eq!(gate.retry_count, Some(1));
+    let attempts = u64::from(gate.retry_count.unwrap_or_default()) + 1;
+    let worst_case = attempts * (EXPECTED_TIMEOUT_SECONDS + LINUX_CLEANUP_GRACE_SECONDS);
+    assert!(
+        worst_case + TERMINAL_RECEIPT_RESERVE_SECONDS <= SHARD_WATCHDOG_SECONDS,
+        "retry envelope must leave time for terminal receipts"
+    );
+    assert_eq!(gate.budgets.and_then(|budgets| budgets.max_duration_ms), Some(EXPECTED_BUDGET_MS));
+
+    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+    assert!(
+        workflow.contains("timeout --signal=TERM --kill-after=30s 1200s"),
+        "the policy test must bind its envelope to the shard watchdog"
+    );
+    Ok(())
 }
 
 /// The LSP unit lanes must partition `LSP_UNIT_SURFACE` exactly: every crate

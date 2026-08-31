@@ -1246,7 +1246,7 @@ gates:
 
   - name: unit_dap_support_full
     tier: merge_gate
-    description: "DAP, CI hygiene, test support, and tree-sitter workspace tests"
+    description: "DAP, CI hygiene, test support, and tree-sitter workspace tests; Linux does not prove Windows-only pause runtime"
     required: true
     # Keep the broad support-crate portion --lib-only because the remaining
     # integration suites are tracked red debt (#11708). The four perl-dap
@@ -1260,6 +1260,14 @@ gates:
     #   perl-test-must                2
     #   tree-sitter-perl-c            6
     #   tree-sitter-perl-rs           8
+    # The command is retried once only after a watchdog timeout. Two attempts
+    # at 450s plus the Linux watchdog's 75s TERM/KILL grace per attempt consume
+    # 1050s, leaving 150s inside the workflow's 1200s shard watchdog for the
+    # terminal gate receipt, summary, and process cleanup. Do not increase this
+    # ceiling without revisiting that outer watchdog contract.
+    # Claim boundary: on Linux the Windows-only pause test is compiled and
+    # invoked but its cfg(windows) runtime body is not executed. This row does
+    # not claim Windows pause behavior; that remains a Windows proof obligation.
     command: >-
       cargo test --locked --lib
       -p perl-ci-hygiene -p perl-dap
@@ -1272,10 +1280,10 @@ gates:
       --test dap_variable_reference_hardening_tests
       --test pause_signal_delivery_tests
       -- --test-threads=4
-    timeout_seconds: 900
+    timeout_seconds: 450
     retry_count: 1
     budgets:
-      max_duration_ms: 720000
+      max_duration_ms: 360000
     quarantine: false
     tags:
       - test
