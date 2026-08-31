@@ -1141,6 +1141,43 @@ class FreshnessBinding(unittest.TestCase):
         self.assertEqual(built["repository"]["repository_id"], REPOSITORY_ID)
         self.assertEqual(built["max_observation_age_seconds"], 3600)
 
+    def test_mixed_capture_generations_are_refused_by_the_consumer(self) -> None:
+        """A snapshot and authority from different runs cannot reconcile.
+
+        Staging every payload before any rename shrinks the window, but a
+        multi-file rename is not one transaction: a failure between renames
+        could leave one destination new and another old. The observer cannot
+        close that on POSIX, so this pins the property that actually protects
+        the consumer — the reconciler's own freshness bounds refuse either
+        mixed pairing, because the authority states its evaluation time
+        independently of the observation.
+
+        The bound is real but not unlimited: two runs closer together than
+        the skew allowance are indistinguishable, which is why this asserts a
+        window rather than absolute detection.
+        """
+        older = observe(observed_at="2026-08-16T00:00:00Z")
+        newer = observe(observed_at="2026-08-16T09:00:00Z")
+
+        # New snapshot left beside an authority from the earlier run.
+        stale_authority = authority(older, evaluated_at="2026-08-16T00:05:00Z")
+        result = model.reconcile(newer, static_receipt(), stale_authority)
+        self.assertEqual(result["status"], "NOT_PROVEN")
+        self.assertIn("observation_from_future", codes(result))
+
+        # And the opposite order: old snapshot, authority from the later run.
+        fresh_authority = authority(newer, evaluated_at="2026-08-16T09:05:00Z")
+        result = model.reconcile(older, static_receipt(), fresh_authority)
+        self.assertEqual(result["status"], "NOT_PROVEN")
+        self.assertIn("observation_stale", codes(result))
+
+        # Negative control: one coherent generation still reconciles.
+        matched = authority(newer, evaluated_at="2026-08-16T09:05:00Z")
+        self.assertIn(
+            model.reconcile(newer, static_receipt(), matched)["status"],
+            {"MATCH", "DRIFT"},
+        )
+
 
 class CommandLine(unittest.TestCase):
     def test_assemble_writes_snapshot_and_authority_from_a_bundle(self) -> None:
