@@ -641,9 +641,27 @@ def main():
     stray = sorted(p for p in changed if p not in allowed)
     if stray:
         fail(f"unexpected changed paths: {stray}")
-    missing = sorted(p for p in FILES if p not in changed)
-    if missing:
-        fail(f"spec files absent from the candidate change set: {missing}")
+    # The candidate must actually touch this packet, or the checker would print
+    # PASS for a change set of {INVENTORY} alone -- a branch with nothing to do
+    # with the ledger.
+    #
+    # It must NOT require all three. That was the original rule, and it only
+    # held because this candidate adds all three at once; the first later
+    # revision that corrects one file would have had to make meaningless edits
+    # to the other two to get PASS -- a checker demanding noise in the diff to
+    # certify a clean change. The block below already reasoned this way about
+    # the inventory ("so a later revision that only edits packet prose is not
+    # forced to touch generated output") and this check did not follow it.
+    #
+    # Requiring all three "when the candidate adds any of them" does not repair
+    # it either: adding a third file to a base that tracks two is exactly that
+    # case, and the two it does not touch are not this candidate's to edit.
+    # Whole-packet integrity is not this check's job in any case -- the
+    # directory-contents check establishes the packet is exactly three files,
+    # `stray` establishes nothing else moved, and the inventory check below
+    # verifies all three rows on an add.
+    if not any(p in changed for p in FILES):
+        fail("candidate change set contains no packet file")
 
     # A newly tracked file needs an inventory row, so when this candidate ADDS
     # the packet files the regenerated inventory must travel with them.
