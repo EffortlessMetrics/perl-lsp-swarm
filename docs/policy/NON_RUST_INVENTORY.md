@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 349 |
 | test | 2067 |
-| tooling | 671 |
+| tooling | 672 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -3628,6 +3628,7 @@
 | `ci/quarantine-baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/quick_check.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/regex_static_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
+| `ci/serial_test_identities.json` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/test_heredocs.sh` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/test_quality_rebaseline_receipt.toml` | tooling | `non-rust-ci-legacy-tree` | release/ci |
 | `ci/todo_baseline.txt` | tooling | `non-rust-ci-legacy-tree` | release/ci |
