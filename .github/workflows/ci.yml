@@ -228,11 +228,12 @@ jobs:
             done
 
             if [ "$docs_only" = "true" ]; then
-              # Keep existing required contexts active for docs/assets-only
-              # changes. The independent non-rust-policy job validates all
-              # candidate trees regardless of this routing decision.
+              # The policy shard includes the generated non-Rust inventory
+              # freshness gate. Keep the existing required CI contexts active
+              # for docs/assets-only changes so tracked-file additions and
+              # removals cannot bypass that check.
               echo "run_ci=true" >> "$GITHUB_OUTPUT"
-              echo "::notice::Docs/assets-only PR detected — running required CI contexts"
+              echo "::notice::Docs/assets-only PR detected — running the policy shard for generated-inventory freshness"
             else
               echo "run_ci=true" >> "$GITHUB_OUTPUT"
               echo "::notice::Non-draft PR with code/config changes — running merge-gate (pr-smoke, conflict-markers, shards, UX tests); supersede protection via preflight-latest-check (#1484)"
@@ -682,9 +683,10 @@ jobs:
 
   # ── PR Smoke: advisory fast feedback for every PR ────────────────────
   # ADVISORY (continue-on-error): this lane runs the `pr-fast` xtask tier, whose
-  # gates (fmt, conflict markers, publish/layer checks, and unit_routed_full) are
-  # already covered — and split for parallelism — by the merge-gate-shards below,
-  # which form the deterministic CI Gate base. Because pr-fast runs the unit tests
+  # gates (fmt, conflict markers, publish/layer checks, and unit_routed_full)
+  # overlap hosted shards. Hosted formatter authority is dedicated
+  # `Rust formatting` plus required Rust Small (#9959/#9127); PR Smoke `fmt`
+  # remains advisory overlap owned by #9166. Because pr-fast runs the unit tests
   # in one combined `unit_routed_full` lane, it is the flakier of the two and has
   # false-reddened green PRs (e.g. PR #3321: unit_routed_full exit 101 while all
   # seven CI Gate shards passed). It is not a required check and no longer gates
@@ -965,8 +967,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `fmt` retired from this hosted shard after protected rustfmt
+          # parity via required Rust Small (#9959). Rollback: restore `fmt`
+          # as the first meta gate and the matching
+          # `.ci/gate-shard-execution.json` row if the dedicated/required
+          # formatter path is reverted. Local pr-fast `fmt` remains.
           - name: meta
-            gates: fmt ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
+            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
@@ -983,7 +990,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check lint_policy v2_bundle_sync nested_lock_check version_sync
+            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check lint_policy v2_bundle_sync nested_lock_check version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -1689,115 +1696,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # Candidate-bound file-policy result. This is independent from the aggregate
-  # policy shard so a classification failure is attributable and cannot turn
-  # committed generated-document drift into a compound main-red refusal.
-  non-rust-policy:
-    name: Non-Rust policy exact-tree
-    needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    env:
-      SUBJECT_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha || github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
-      BASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
-      RECEIPT_PATH: target/policy/non-rust-policy-exact-tree.json
-    steps:
-      - name: Checkout exact non-Rust policy subject
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ env.SUBJECT_SHA }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
-        with:
-          toolchain: 1.95.0
-
-      - name: Cache xtask build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          cache-on-failure: true
-          cache-targets: true
-          shared-key: non-rust-policy-${{ hashFiles('Cargo.lock') }}
-
-      - name: Bind policy evidence to the checked-out tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          actual_sha="$(git rev-parse HEAD^{commit})"
-          test "$actual_sha" = "$SUBJECT_SHA"
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            test "$SUBJECT_SHA" = "$GITHUB_SHA"
-          fi
-          git rev-parse --verify "$BASE_SHA^{commit}" >/dev/null
-          echo "SUBJECT_TREE_SHA=$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
-
-      - name: Validate exact-tree non-Rust policy
-        id: policy
-        continue-on-error: true
-        env:
-          CI_SCOPE_BASE: ${{ env.BASE_SHA }}
-        run: cargo xtask gates --gate non_rust_inventory_check
-
-      - name: Record exact-tree policy receipt
-        if: always()
-        shell: bash
-        env:
-          CHECK_OUTCOME: ${{ steps.policy.outcome }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$(dirname "$RECEIPT_PATH")"
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          receipt = {
-              "schema_version": 1,
-              "gate": "non_rust_inventory_check",
-              "event": os.environ["EVENT_NAME"],
-              "subject_sha": os.environ["SUBJECT_SHA"],
-              "subject_tree_sha": os.environ["SUBJECT_TREE_SHA"],
-              "base_sha": os.environ["BASE_SHA"],
-              "outcome": os.environ["CHECK_OUTCOME"],
-              "outputs": [
-                  path
-                  for path in (
-                      "target/policy/non-rust-inventory.md",
-                      "target/policy/non-rust-inventory.json",
-                  )
-                  if Path(path).is_file()
-              ],
-          }
-          path = Path(os.environ["RECEIPT_PATH"])
-          path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
-          PY
-
-      - name: Upload exact-tree inventory evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
-        with:
-          name: non-rust-policy-${{ env.SUBJECT_SHA }}
-          path: |
-            target/policy/non-rust-inventory.md
-            target/policy/non-rust-inventory.json
-            ${{ env.RECEIPT_PATH }}
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Enforce policy verdict
-        if: always()
-        shell: bash
-        env:
-          CHECK_OUTCOME: ${{ steps.policy.outcome }}
-        run: test "$CHECK_OUTCOME" = "success"
-
-  # Standalone, candidate-bound formatter result for protected integration.
-  # Keep the existing advisory `fmt` meta-shard during the parity window tracked
-  # by #7087; this independently visible context is the ruleset promotion target.
+  # Standalone, candidate-bound formatter result. Live merge blocking is the
+  # required Perl LSP Rust Small Result path (#9127/#12320). This job remains
+  # the advisory receipt producer; duplicate meta-shard fmt execution is
+  # retired (#9959). Settings-app promotion of this context remains #7087.
   rust-formatting:
     name: Rust formatting
     runs-on: ubuntu-24.04
