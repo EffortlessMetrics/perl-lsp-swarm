@@ -1446,11 +1446,12 @@ impl LspServer {
             self.publish_diagnostics(uri);
             return;
         }
-        let guard = self.diagnostic_debouncer.lock();
-        if let Some(ref d) = *guard
-            && d.schedule(uri)
-        {
-            return;
+        let mut guard = self.diagnostic_debouncer.lock();
+        if let Some(debouncer) = guard.as_ref() {
+            if debouncer.schedule(uri) {
+                return;
+            }
+            *guard = None;
         }
         drop(guard);
         self.publish_diagnostics(uri);
