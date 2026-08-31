@@ -6,7 +6,7 @@ body: >-
   every reachable over-budget token shape with five executable contract tests:
   empty-text UnknownRest over the degraded remainder through EOF for regex scan
   steps, regex bytes, and heredoc bytes. Document MAX_DELIM_NEST as a separate
-  local quote-like recovery path and test that production reachability. Also
+  local quote-like recovery path and pin its crate-private guard invariant. Also
   pin the two bounded-payload exceptions of EOF-inside-budget heredoc recovery
   and the MAX_HEREDOC_DEPTH heredoc-header error.
 time: 2026-08-30T00:00:00Z

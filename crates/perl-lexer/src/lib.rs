@@ -96,7 +96,7 @@
 //!
 //! - **MAX_REGEX_BYTES**: 64KB maximum for regex patterns
 //! - **MAX_HEREDOC_BYTES**: 256KB maximum for heredoc bodies
-//! - **MAX_DELIM_NEST**: 128 levels maximum nesting depth for delimiters
+//! - **MAX_DELIM_NEST**: 128 levels maximum nesting depth for local delimiter recovery
 //! - **MAX_REGEX_PARSE_STEPS**: 32K maximum scan iterations for regex literals
 //!
 //! # Budget-Stop Recovery Contract (#6717, #14158)
@@ -130,13 +130,12 @@
 //!   remainder copy, no EOF jump. Pinned by
 //!   `tests/heredoc_security_tests.rs`.
 //!
-//! The `MAX_DELIM_NEST` arm of `budget_guard` is *not* part of this
-//! contract: no public-API driver passes a depth above the limit (its only
-//! caller, `parse_regex`, passes `depth = 0`), and the reachable depth
-//! limiter `consume_nested_opener` recovers locally inside the
-//! balanced-segment helpers without the uniform shape. The arm is retained
-//! and pinned from inside the crate (`src/tests.rs`); wiring it through a
-//! real driver or removing it is tracked in #14389.
+//! `MAX_DELIM_NEST` is a local quote-like recovery limit, not a reachable
+//! uniform budget-stop path: the current public-API driver passes `depth = 0`
+//! to `budget_guard`, while `consume_nested_opener` handles reachable nesting
+//! locally inside balanced-segment helpers. Its retained crate-private guard
+//! is pinned from inside the crate (`src/tests.rs`); wiring it through a real
+//! driver or removing it is tracked in #14389.
 //!
 //! The reachable budget stops above are pinned end to end by
 //! `tests/budget_recovery_contract.rs`, alongside #6717's heredoc threshold
