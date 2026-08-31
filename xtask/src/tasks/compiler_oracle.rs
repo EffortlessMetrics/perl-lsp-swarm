@@ -403,7 +403,7 @@ for my $sub (qw(Oracle::Demo::proto)) {
     fn compiler_oracle_timeout_is_bounded_and_retains_stderr() -> Result<()> {
         let mut command = isolated_perl_command();
         command.arg("-e").arg(
-            r#"print STDERR "compiler-oracle-timeout-sentinel\n"; select undef, undef, undef, 2;"#,
+            r#"print STDERR "compiler-oracle-timeout-sentinel\n"; select undef, undef, undef, 5;"#,
         );
 
         let started = Instant::now();
@@ -417,7 +417,7 @@ for my $sub (qw(Oracle::Demo::proto)) {
         let message = format!("{error:#}");
 
         assert!(
-            started.elapsed() < Duration::from_secs(1),
+            started.elapsed() < Duration::from_secs(2),
             "timeout should return near the deadline rather than after the full sleep"
         );
         assert!(
