@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -479,6 +480,106 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
                     root, "cargo", "x86_64-unknown-linux-gnu"
                 )
             self.assertEqual(first, second)
+
+    def test_cross_image_override_names_follow_cross_naming(self) -> None:
+        names = subject.cross_image_override_names(CROSS_TARGET)
+        self.assertEqual(
+            names,
+            (
+                "CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE",
+                "CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_DOCKERFILE",
+                "CROSS_BUILD_DOCKERFILE",
+            ),
+        )
+
+    def test_ambient_image_override_cannot_bypass_the_pin(self) -> None:
+        """#7534: an env override selects the container, `Cross.toml` does not.
+
+        Cross reads image selection from the environment before `Cross.toml`
+        (0.2.5 `src/config.rs::string_from_config` returns the env value and
+        never consults the TOML), and a dockerfile override replaces the
+        pulled image entirely. Either would run a container the digest does
+        not describe, so the digest must refuse to be computed at all.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_cross_config(root)
+            for name in subject.cross_image_override_names(CROSS_TARGET):
+                for value in (
+                    "ghcr.io/attacker/evil@sha256:" + "b" * 64,
+                    "",  # cross reads an empty value as a selection too
+                ):
+                    with self.subTest(variable=name, value=value):
+                        with mock.patch.object(
+                            subject, "run", side_effect=cross_runner_outputs(1)
+                        ):
+                            with self.assertRaisesRegex(
+                                subject.BuildIdentityError,
+                                "ambient cross image override",
+                            ):
+                                subject.toolchain_digest(
+                                    root,
+                                    "cross",
+                                    CROSS_TARGET,
+                                    env={name: value},
+                                )
+
+    def test_override_for_another_target_does_not_block_this_one(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_cross_config(root)
+            slug = OTHER_CROSS_TARGET.upper().replace("-", "_")
+            other = f"CROSS_TARGET_{slug}_IMAGE"
+            with mock.patch.object(
+                subject, "run", side_effect=cross_runner_outputs(1)
+            ):
+                digest = subject.toolchain_digest(
+                    root, "cross", CROSS_TARGET, env={other: "x"}
+                )
+            self.assertEqual(len(digest), 64)
+
+    def test_cargo_runner_ignores_cross_image_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_cross_config(root)
+            with mock.patch.object(
+                subject,
+                "run",
+                side_effect=[
+                    mock.Mock(stdout=b"rustc 1\n"),
+                    mock.Mock(stdout=b"cargo 1\n"),
+                ],
+            ):
+                digest = subject.toolchain_digest(
+                    root,
+                    "cargo",
+                    "x86_64-unknown-linux-gnu",
+                    env={"CROSS_BUILD_DOCKERFILE": "Dockerfile"},
+                )
+            self.assertEqual(len(digest), 64)
+
+    def test_build_environment_strips_overrides_it_controls(self) -> None:
+        mapping = valid_mapping()
+        mapping["target"] = CROSS_TARGET
+        identity = subject.ReleaseBuildIdentity.from_mapping(mapping)
+        polluted = dict(os.environ)
+        polluted["CROSS_BUILD_DOCKERFILE"] = "Dockerfile.evil"
+        with mock.patch.object(subject.os, "environ", polluted):
+            with self.assertRaisesRegex(
+                subject.BuildIdentityError, "ambient cross image override"
+            ):
+                subject.build_environment(
+                    identity, root=REPO_ROOT, runner="cross"
+                )
+
+        clean = {k: v for k, v in os.environ.items()}
+        clean.pop("CROSS_BUILD_DOCKERFILE", None)
+        with mock.patch.object(subject.os, "environ", clean):
+            env = subject.build_environment(
+                identity, root=REPO_ROOT, runner="cross"
+            )
+        for name in subject.cross_image_override_names(CROSS_TARGET):
+            self.assertNotIn(name, env)
 
     def test_cross_config_rejects_unpinned_target(self) -> None:
         """The pre-#7534 config shape must no longer be admitted."""

@@ -380,11 +380,50 @@ def validate_cross_config(path: Path, target: str) -> str:
     return validate_cross_image(load_cross_image(path, target), target)
 
 
-def toolchain_digest(root: Path, runner: str, target: str) -> str:
+def cross_image_override_names(target: str) -> tuple[str, ...]:
+    """Ambient variables that re-select the container for one cross target.
+
+    Cross resolves image selection from the environment BEFORE `Cross.toml`
+    (0.2.5 `src/config.rs` `string_from_config` returns the env value first),
+    and a dockerfile override replaces the pulled image with a locally built
+    one (`src/docker/shared.rs` `image_for_target`). Either would run a
+    different container than the reviewed pin this digest binds.
+    """
+    slug = target.upper().replace("-", "_")
+    return (
+        f"CROSS_TARGET_{slug}_IMAGE",
+        f"CROSS_TARGET_{slug}_DOCKERFILE",
+        "CROSS_BUILD_DOCKERFILE",
+    )
+
+
+def reject_cross_image_overrides(
+    target: str, env: Mapping[str, str] | None = None
+) -> None:
+    """Fail closed when the ambient environment could bypass the pin."""
+    source = os.environ if env is None else env
+    # Presence, not truthiness: cross reads an empty value as a selection.
+    present = [
+        name for name in cross_image_override_names(target) if name in source
+    ]
+    if present:
+        raise BuildIdentityError(
+            "ambient cross image override would replace the reviewed pin for "
+            f"{target} without changing toolchain_digest: {sorted(present)}"
+        )
+
+
+def toolchain_digest(
+    root: Path,
+    runner: str,
+    target: str,
+    env: Mapping[str, str] | None = None,
+) -> str:
     rustc = run(["rustc", "--version", "--verbose"], cwd=root).stdout
     runner_version = run([runner, "--version"], cwd=root).stdout
     payload = b"rustc\0" + rustc + b"\0runner\0" + runner_version
     if runner == "cross":
+        reject_cross_image_overrides(target, env)
         config = cross_config_path(root)
         image = validate_cross_config(config, target)
         # Bind the pinned image structurally, not only through config bytes:
@@ -592,9 +631,15 @@ def build_environment(
             raise BuildIdentityError(
                 "cross builds require workspace root for CROSS_CONFIG"
             )
+        reject_cross_image_overrides(identity.target, env)
         config = cross_config_path(root)
         validate_cross_config(config, identity.target)
         env["CROSS_CONFIG"] = str(config)
+        # Defence in depth for the subprocesses this adapter spawns. The
+        # workflow's own `$BUILD_CMD build` step does not pass through here,
+        # so `prepare` failing closed above is what protects that one.
+        for name in cross_image_override_names(identity.target):
+            env.pop(name, None)
     return env
 
 
