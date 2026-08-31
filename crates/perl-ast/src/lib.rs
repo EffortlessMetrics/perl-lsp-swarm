@@ -14,6 +14,8 @@
 //! - [`invariant_policy`] -- Exhaustive range, child, payload, and recovery policy.
 //! - [`invariants`] -- Bounded structural validation shared by parser paths.
 //! - [`kind_schema`] -- Structural `NodeKind` registry, field-aware traversal, schema identity, and NodeKind inventory.
+//! - [`source_syntax`] -- Source-backed string and heredoc payload contract: raw
+//!   source, cooked value, and ordered segments as separate typed propositions.
 //! - [`v2`] -- Experimental second-generation AST re-exported from `perl-ast-v2`
 //!   for incremental parsing.
 //!
@@ -91,9 +93,9 @@ pub mod kind_schema;
 /// Source-backed string and heredoc payload types: raw source, cooked value,
 /// and ordered segments as separate typed propositions.
 ///
-/// This is a data contract only. It adds no [NodeKind] variant, changes no
+/// This is a data contract only. It adds no [`NodeKind`] variant, changes no
 /// existing variant's child fields, and does not affect parser output,
-/// traversal, rendering, or the [kind_schema] registry.
+/// traversal, rendering, or the [`kind_schema`] registry.
 pub mod source_syntax;
 
 /// Incremental parsing AST types extracted into a dedicated microcrate.
@@ -134,4 +136,3 @@ pub use source_syntax::{
     PayloadContradiction, PayloadTerminal, SegmentRecoveryCause, SourceSegment,
     SourceSegmentPayload, SourceSegmentation, StringDelimiter, StringForm, StringSyntax,
 };
-
