@@ -175,6 +175,9 @@ pub enum PirEvaluationDemand {
     /// The expression is consumed as a boolean condition.
     TruthTest,
     /// The expression is consumed only for definedness.
+    ///
+    /// This variant is reserved for the follow-up definedness-demand slice;
+    /// PIR v0 currently emits it only as vocabulary, not from lowering.
     DefinednessTest,
 }
 

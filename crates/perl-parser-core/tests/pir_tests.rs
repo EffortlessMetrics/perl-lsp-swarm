@@ -61,6 +61,36 @@ fn lexical_declaration_writes_lvalue_and_assigns() {
     assert_eq!(name.name, "x");
 }
 
+
+#[test]
+fn mutating_regex_operations_report_read_modify_write_access() {
+    let substitution = lower("$x =~ s/a/b/;");
+    let substitution_node = must_some(substitution.nodes.iter().find(|node| {
+        matches!(node.operation, PirOperation::Substitution { .. })
+    }));
+    assert_eq!(substitution_node.access, perl_parser_core::pir::PirAccessMode::ReadModifyWrite);
+    assert_eq!(substitution.receipt.access_counts.get("ReadModifyWrite"), Some(&1));
+
+    let substitution_copy = lower("$x =~ s/a/b/r;");
+    let substitution_copy_node = must_some(substitution_copy.nodes.iter().find(|node| {
+        matches!(node.operation, PirOperation::Substitution { .. })
+    }));
+    assert_eq!(substitution_copy_node.access, perl_parser_core::pir::PirAccessMode::Read);
+
+    let transliteration = lower("$x =~ tr/a/b/;");
+    let transliteration_node = must_some(transliteration.nodes.iter().find(|node| {
+        matches!(node.operation, PirOperation::Transliteration { .. })
+    }));
+    assert_eq!(transliteration_node.access, perl_parser_core::pir::PirAccessMode::ReadModifyWrite);
+    assert_eq!(transliteration.receipt.access_counts.get("ReadModifyWrite"), Some(&1));
+
+    let transliteration_copy = lower("$x =~ tr/a/b/r;");
+    let transliteration_copy_node = must_some(transliteration_copy.nodes.iter().find(|node| {
+        matches!(node.operation, PirOperation::Transliteration { .. })
+    }));
+    assert_eq!(transliteration_copy_node.access, perl_parser_core::pir::PirAccessMode::Read);
+}
+
 #[test]
 fn literal_operands_precede_enclosing_pir_parents() {
     let assignment = lower("my $x = 1;");
