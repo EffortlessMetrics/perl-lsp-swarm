@@ -848,6 +848,47 @@ fn ensure_adapter_invariants(receipt: &OracleReceiptV1) -> Result<()> {
     for entry in receipt.dynamic_boundaries.iter().chain(&receipt.unsupported_effects) {
         ensure_ordered_range("boundary", entry.source_range.as_ref())?;
     }
+
+    // One receipt describes one snapshot, and the snapshot's path class is what
+    // decides whether that source may be named at all. A range that reclassifies
+    // the same source contradicts the declaration the redaction gate above reads:
+    // a `redacted_private_fixture` snapshot carrying `public_test_fixture` ranges
+    // asserts, per range, that the private source's identity may cross. The
+    // schema types both fields independently and cannot relate them, so the
+    // adapter refuses the contradiction rather than honouring whichever
+    // declaration a later reader happens to consult.
+    for fact in receipt.normalized_facts.rust.iter().chain(&receipt.normalized_facts.oracle) {
+        ensure_snapshot_path_class("normalized fact", receipt, fact.source_range.as_ref())?;
+    }
+    for input in &receipt.generated_inputs {
+        ensure_snapshot_path_class("generated input", receipt, input.source_range.as_ref())?;
+    }
+    for entry in receipt.dynamic_boundaries.iter().chain(&receipt.unsupported_effects) {
+        ensure_snapshot_path_class("boundary", receipt, entry.source_range.as_ref())?;
+    }
+    Ok(())
+}
+
+/// A source range names a region of the receipt's own snapshot, so it must
+/// carry the snapshot's path class.
+fn ensure_snapshot_path_class(
+    owner: &str,
+    receipt: &OracleReceiptV1,
+    range: Option<&SourceRange>,
+) -> Result<()> {
+    let Some(range) = range else {
+        return Ok(());
+    };
+    let snapshot = receipt.source_snapshot.path_class;
+    if range.path_class != snapshot {
+        bail!(
+            "a {owner} source range declares path class {} while the receipt's source snapshot \
+             declares {}; one receipt describes one snapshot, and its path class governs whether \
+             that source may be named",
+            range.path_class.tag(),
+            snapshot.tag()
+        );
+    }
     Ok(())
 }
 
@@ -1462,6 +1503,20 @@ fn collect_findings(receipt: &OracleReceiptV1) -> Findings {
     if receipt.module_path_authority.ambient_roots_reported {
         findings.unproven.push("ambient module roots were reported".to_owned());
     }
+    // A declared authority with nothing declared is not hermetic evidence: the
+    // schema requires the `declared_roots` key but not a member, so a receipt
+    // can name `declared_fixture_root` while resolving modules from whatever
+    // `@INC` the run happened to inherit. That is the ambient case wearing a
+    // declared label, and it cannot support an exact row.
+    if receipt.module_path_authority.authority != ModuleAuthority::AmbientReported
+        && receipt.module_path_authority.declared_roots.is_empty()
+    {
+        findings.unproven.push(format!(
+            "module-path authority is {} but no root is declared, so module resolution is \
+             ambient in fact",
+            receipt.module_path_authority.authority.tag()
+        ));
+    }
     let unbounded =
         count_by(&receipt.ambient_inputs, |input| input.authority == AmbientAuthority::Unbounded);
     if unbounded > 0 {
@@ -1890,4 +1945,157 @@ pub fn adapt_receipts(values: &[Value]) -> Result<BTreeMap<String, CompilerProfi
         }
     }
     Ok(observations)
+}
+
+// ---------------------------------------------------------------------------
+// Adapter-owned invariants
+// ---------------------------------------------------------------------------
+//
+// The integration suite in `xtask/tests/compiler_operating_profile_oracle_adapter.rs`
+// proves this adapter through its public surface, which is where every
+// falsifier the controlling issue names belongs. Two of the adapter's own
+// invariants cannot be reached from there: the schema pins
+// `editor_runtime_dependency` to `{"const": false}` and `comparisons` to
+// `minItems: 1`, so a document that reaches `ensure_adapter_invariants` has
+// already satisfied both. Their purpose is defence in depth against a future
+// schema relaxation, and that claim is only proven against a decoded receipt.
+//
+// Receipt construction stays test-only, so the fixture is duplicated here
+// rather than re-exported from production: a `pub` fixture API is exactly what
+// the narrowed surface exists to withhold from downstream evidence lanes.
+#[cfg(test)]
+mod tests {
+    use super::{
+        Result, SOURCE_SCHEMA_TAG, Value, adapt_receipt_value, canonical_receipt_text,
+        ensure_adapter_invariants, receipt_digest, validate_receipt_value,
+    };
+    use serde_json::json;
+
+    /// The same fully agreeing, hermetic receipt the integration suite uses,
+    /// as a decoded value rather than a document under test.
+    fn agreeing_receipt() -> Value {
+        json!({
+            "schema_version": "oracle_receipt.v1",
+            "receipt_id": "oracle-receipt-0001",
+            "comparison_class": "IsaComposition",
+            "fixture_id": "isa-composition-basic",
+            "source_snapshot": {
+                "path_class": "public_test_fixture",
+                "fixture_source": "differential_oracle/isa_composition_basic.pl",
+                "content_hash": "sha256:2f1c9a"
+            },
+            "rust_extractor": {
+                "name": "perl-semantic-facts",
+                "version": "0.8.3",
+                "fact_model": "package-sub-table.v1"
+            },
+            "perl_oracle": {
+                "interpreter": "declared_fixture_perl",
+                "version": "v5.38.0",
+                "invocation_mode": "declared_fixture_command"
+            },
+            "module_path_authority": {
+                "authority": "declared_fixture_root",
+                "declared_roots": ["fixtures/differential_oracle/lib"],
+                "ambient_roots_reported": false
+            },
+            "environment": {
+                "denied": ["PERL5LIB", "PERL5OPT", "local::lib"],
+                "declared": ["PATH"],
+                "redacted_values": true
+            },
+            "ambient_inputs": [],
+            "generated_inputs": [],
+            "dynamic_boundaries": [],
+            "stale_facts": [],
+            "unsupported_effects": [],
+            "normalized_facts": {
+                "rust": [fact("fact-isa-1", "Child::ISA"), fact("fact-isa-2", "Child::new")],
+                "oracle": [fact("fact-isa-1", "Child::ISA"), fact("fact-isa-2", "Child::new")]
+            },
+            "comparisons": [
+                comparison("fact-isa-1"),
+                comparison("fact-isa-2")
+            ],
+            "provider_behavior_changed": false,
+            "editor_runtime_dependency": false,
+            "redaction": {
+                "private_paths_redacted": true,
+                "environment_values_redacted": true,
+                "raw_launch_payloads_redacted": true
+            },
+            "claim_boundary": "one fixture, one comparison class, test-only oracle evidence"
+        })
+    }
+
+    fn fact(fact_id: &str, name: &str) -> Value {
+        json!({
+            "fact_id": fact_id,
+            "name": name,
+            "provenance": "ExplicitSource",
+            "confidence": "high",
+            "freshness": "fresh",
+            "fallback": "none",
+            "source_range": {
+                "path_class": "public_test_fixture",
+                "start_line": 3,
+                "start_character": 0,
+                "end_line": 3,
+                "end_character": 24
+            }
+        })
+    }
+
+    fn comparison(fact_id: &str) -> Value {
+        json!({
+            "result_class": "oracle_agrees",
+            "fact_id": fact_id,
+            "promotion_effect": "supports_promotion",
+            "message": "bounded explanatory text that is never parsed for semantics"
+        })
+    }
+
+    /// The adapter refuses an editor-runtime receipt and an empty comparison
+    /// set in its own right, not only because the schema happens to encode
+    /// both. Relaxing the schema must not silently widen what is accepted.
+    #[test]
+    fn adapter_owned_invariants_hold_independently_of_the_schema() -> Result<()> {
+        let mut receipt = validate_receipt_value(&agreeing_receipt())?;
+        ensure_adapter_invariants(&receipt)?;
+
+        receipt.editor_runtime_dependency = true;
+        assert!(
+            ensure_adapter_invariants(&receipt).is_err(),
+            "the adapter rejects an editor-runtime receipt in its own right"
+        );
+
+        receipt.editor_runtime_dependency = false;
+        receipt.comparisons.clear();
+        assert!(
+            ensure_adapter_invariants(&receipt).is_err(),
+            "no agreement can be observed from an empty comparison set"
+        );
+        Ok(())
+    }
+
+    /// The envelope's receipt reference carries the digest of the canonical
+    /// receipt text, and that text is domain-separated by the source schema
+    /// tag, so two schemas cannot canonicalize to one preimage.
+    #[test]
+    fn the_receipt_digest_is_taken_over_canonical_receipt_text() -> Result<()> {
+        let value = agreeing_receipt();
+        let receipt = validate_receipt_value(&value)?;
+        let canonical = canonical_receipt_text(&receipt);
+
+        assert!(
+            canonical.starts_with(&format!("{SOURCE_SCHEMA_TAG}\n")),
+            "the canonical preimage opens with the source schema tag: {canonical}"
+        );
+        assert_eq!(
+            receipt_digest(&receipt)?.as_str(),
+            adapt_receipt_value(&value)?.receipt.digest.as_str(),
+            "the envelope's receipt reference carries exactly this digest"
+        );
+        Ok(())
+    }
 }

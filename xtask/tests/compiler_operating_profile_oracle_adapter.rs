@@ -156,6 +156,29 @@ mod compiler_operating_profile_oracle_adapter {
         receipt
     }
 
+    /// Set every path class in the receipt at once.
+    ///
+    /// A receipt describes exactly one snapshot, so its redaction class is a
+    /// whole-receipt property: every range in the document anchors into that
+    /// one source. Tests that vary the class use this rather than moving the
+    /// snapshot alone, which the adapter refuses as self-contradictory.
+    fn with_path_class(receipt: &mut Value, path_class: &str) {
+        receipt["source_snapshot"]["path_class"] = json!(path_class);
+        fn reclass(entries: Option<&mut Vec<Value>>, path_class: &str) {
+            for entry in entries.into_iter().flatten() {
+                if entry["source_range"].is_object() {
+                    entry["source_range"]["path_class"] = json!(path_class);
+                }
+            }
+        }
+        for side in ["rust", "oracle"] {
+            reclass(receipt["normalized_facts"][side].as_array_mut(), path_class);
+        }
+        for collection in ["generated_inputs", "dynamic_boundaries", "unsupported_effects"] {
+            reclass(receipt[collection].as_array_mut(), path_class);
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Negative controls: the adapter really does accept good evidence
     // ---------------------------------------------------------------------------
@@ -980,7 +1003,7 @@ mod compiler_operating_profile_oracle_adapter {
         // A redacted private fixture never has its source named, so an
         // unrepresentable one there is not a refusal.
         adapt(&agreeing_with(|r| {
-            r["source_snapshot"]["path_class"] = json!("redacted_private_fixture");
+            with_path_class(r, "redacted_private_fixture");
             r["source_snapshot"]["fixture_source"] = json!("/home/runner/private.pl");
         }))?;
         Ok(())
@@ -1313,6 +1336,120 @@ mod compiler_operating_profile_oracle_adapter {
     }
 
     // ---------------------------------------------------------------------------
+    // Falsifier 14b — a declared module authority that declares no root
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn falsifier_14b_a_declared_authority_with_no_declared_root_is_ambient_in_fact() -> Result<()> {
+        // `declared_roots` is a required key with no required member, so a
+        // receipt can claim declared authority while resolving modules from
+        // whatever `@INC` the run inherited. That is the ambient case wearing a
+        // declared label and must not reach the accepted-compatibility ceiling.
+        for authority in ["declared_fixture_root", "declared_module_roots"] {
+            let observation = adapt(&agreeing_with(|receipt| {
+                receipt["module_path_authority"]["authority"] = json!(authority);
+                receipt["module_path_authority"]["declared_roots"] = json!([]);
+            }))?;
+
+            assert!(
+                matches!(observation.disposition, ObservationDisposition::NotProven { .. }),
+                "{authority} with no declared root is not proven: {:?}",
+                observation.disposition
+            );
+            assert_eq!(observation.ceiling.claim_ceiling(), ClaimCeiling::ObservedEvidence);
+        }
+
+        // Negative control: the same authority with a root declared is exactly
+        // the accepted case, so the finding discriminates emptiness, not the
+        // authority tag.
+        let declared = adapt(&agreeing_with(|receipt| {
+            receipt["module_path_authority"]["authority"] = json!("declared_module_roots");
+        }))?;
+        assert_eq!(declared.disposition, ObservationDisposition::Pass);
+        assert_eq!(declared.ceiling.claim_ceiling(), ClaimCeiling::AcceptedCompatibility);
+
+        // And the already-ambient authority is unchanged by an empty root list:
+        // it was never the declared case this finding names.
+        let ambient = adapt(&agreeing_with(|receipt| {
+            receipt["module_path_authority"]["authority"] = json!("ambient_reported");
+            receipt["module_path_authority"]["declared_roots"] = json!([]);
+        }))?;
+        assert!(matches!(ambient.disposition, ObservationDisposition::NotProven { .. }));
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------------
+    // Falsifier 14c — a range reclassifies the snapshot's path class
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn falsifier_14c_a_range_may_not_reclassify_the_snapshots_path_class() -> Result<()> {
+        // The snapshot's path class is what gates whether the source may be
+        // named. A redacted-private snapshot carrying a public range asserts,
+        // per range, that the private source's identity may cross.
+        let leaking = agreeing_with(|receipt| {
+            receipt["source_snapshot"]["path_class"] = json!("redacted_private_fixture");
+        });
+        assert_rejected(&leaking, "path class")?;
+        assert_rejected(&leaking, "redacted_private_fixture")?;
+
+        // The rule covers every range-bearing collection, not only the fact
+        // sets, and it fails closed in both directions: the adapter refuses the
+        // disagreement rather than privileging the stricter side.
+        for collection in ["generated_inputs", "dynamic_boundaries", "unsupported_effects"] {
+            let entry = match collection {
+                "generated_inputs" => json!({
+                    "framework": "Moo",
+                    "provenance": "SourceBackedGenerated",
+                    "source_range": public_range()
+                }),
+                _ => json!({ "kind": "symbolic_dispatch", "source_range": public_range() }),
+            };
+            let over_redacted = agreeing_with(|receipt| {
+                receipt[collection] = json!([entry]);
+                with_path_class(receipt, "redacted_private_fixture");
+                receipt[collection][0]["source_range"]["path_class"] = json!("public_test_fixture");
+            });
+            assert_rejected(&over_redacted, "path class")?;
+        }
+
+        // Negative control: a consistently redacted receipt is accepted, so the
+        // refusal discriminates the contradiction and not redaction itself. A
+        // null range carries no class and stays exempt.
+        let consistent = agreeing_with(|receipt| {
+            receipt["generated_inputs"] = json!([{
+                "framework": "Moo",
+                "provenance": "SourceBackedGenerated",
+                "source_range": null
+            }]);
+            with_path_class(receipt, "redacted_private_fixture");
+        });
+        assert!(matches!(
+            adapt(&consistent)?.disposition,
+            ObservationDisposition::Pass | ObservationDisposition::NotProven { .. }
+        ));
+        assert_eq!(
+            adapt(&agreeing_with(|receipt| {
+                with_path_class(receipt, "redacted_private_fixture");
+            }))?
+            .disposition,
+            ObservationDisposition::Pass
+        );
+        Ok(())
+    }
+
+    /// A public range over the fixture's own source.
+    fn public_range() -> Value {
+        json!({
+            "path_class": "public_test_fixture",
+            "start_line": 7,
+            "start_character": 0,
+            "end_line": 7,
+            "end_character": 12
+        })
+    }
+
+    // ---------------------------------------------------------------------------
     // Falsifier 15 — editor_runtime_dependency = true is accepted
     // ---------------------------------------------------------------------------
 
@@ -1369,11 +1506,11 @@ mod compiler_operating_profile_oracle_adapter {
     #[test]
     fn falsifier_17_private_fixture_identity_never_crosses_the_boundary() -> Result<()> {
         let first = agreeing_with(|receipt| {
-            receipt["source_snapshot"]["path_class"] = json!("redacted_private_fixture");
+            with_path_class(receipt, "redacted_private_fixture");
             receipt["source_snapshot"]["fixture_source"] = json!("redacted-private-fixture-alpha");
         });
         let second = agreeing_with(|receipt| {
-            receipt["source_snapshot"]["path_class"] = json!("redacted_private_fixture");
+            with_path_class(receipt, "redacted_private_fixture");
             receipt["source_snapshot"]["fixture_source"] = json!("redacted-private-fixture-beta");
         });
 
