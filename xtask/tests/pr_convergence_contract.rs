@@ -30,6 +30,10 @@ fn prose(text: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn provider_neutral(text: &str) -> String {
+    text.replace("`$", "`")
+}
+
 fn section<'a>(document: &'a str, heading: &str) -> Result<&'a str, String> {
     let start = document.find(heading).ok_or_else(|| format!("missing section {heading:?}"))?;
     let tail = &document[start + heading.len()..];
@@ -172,17 +176,18 @@ fn validate_contract(spec: &str) -> Result<(), String> {
 }
 
 fn validate_review_wave_skills(address: &str, finish: &str) -> Result<(), String> {
-    let repair = section(address, "### Repair-wave boundary")?;
+    let address = provider_neutral(address);
+    let finish = provider_neutral(finish);
+    let repair = section(&address, "### Repair-wave boundary")?;
     for marker in [
         "Judge finding validity and current-candidate admission separately.",
         "one-use or non-gated proof instrument",
         "promote them to one failure class",
-        "Run a class-level falsifier only when a failure class was promoted.",
-        "run `$simplify-candidate` before final challenge",
+        "run `simplify-candidate` before final challenge",
         "current claim, proof, limitations, and remaining work",
     ] {
-        if !address.contains(marker) {
-            return Err(format!("address-review-comments lost marker {marker:?}"));
+        if !repair.contains(marker) {
+            return Err(format!("repair-wave boundary lost marker {marker:?}"));
         }
     }
     let admission = repair
@@ -195,12 +200,17 @@ fn validate_review_wave_skills(address: &str, finish: &str) -> Result<(), String
         return Err("failure classes must be admitted to the current claim before promotion".to_string());
     }
 
-    let stabilization = section(finish, "## Repair waves and head stabilization")?;
+    let procedure = section(&address, "## Procedure")?;
+    if !procedure.contains("Run a class-level falsifier only when a failure class was promoted.") {
+        return Err("class-level proof must be conditional on a promoted class".to_string());
+    }
+
+    let stabilization = section(&finish, "## Repair waves and head stabilization")?;
     for marker in [
         "Do not publish one commit per comment.",
         "when a class was promoted",
-        "run `$simplify-candidate` before final challenge",
-        "bounded fresh merge-tree re-evaluation selected by `$verify-live-ci`",
+        "run `simplify-candidate` before final challenge",
+        "bounded fresh merge-tree re-evaluation selected by `verify-live-ci`",
         "sole action owner for that exception",
     ] {
         if !stabilization.contains(marker) {
