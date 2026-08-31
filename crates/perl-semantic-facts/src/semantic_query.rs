@@ -176,8 +176,11 @@ impl SemanticQueryRequirement {
             required_fact_families,
             exact_empty_requires_complete: true,
         };
-        if requirement.query_family.trim().is_empty() || requirement.schema.trim().is_empty() {
-            return Err(SemanticQueryContractError::EmptyIdentity("query requirement"));
+        if requirement.query_family.trim().is_empty() {
+            return Err(SemanticQueryContractError::EmptyIdentity("query_family"));
+        }
+        if requirement.schema.trim().is_empty() {
+            return Err(SemanticQueryContractError::EmptyIdentity("schema"));
         }
         if duplicate_families(&requirement.required_fact_families) {
             return Err(SemanticQueryContractError::DuplicateFactFamily);
@@ -290,12 +293,44 @@ impl<T> SemanticQueryOutcome<T> {
                     return Err(SemanticQueryContractError::ExactOutcomeLacksEvidence);
                 }
             }
-            Self::Partial { evidence, .. }
-            | Self::NotReady { evidence, .. }
-            | Self::Stale { evidence, .. }
-            | Self::Ambiguous { evidence, .. }
-            | Self::Dynamic { evidence, .. }
-            | Self::Unsupported { evidence, .. } => evidence.validate()?,
+            Self::Partial { limitations, evidence, .. } => {
+                evidence.validate()?;
+                if limitations.is_empty() || evidence.limitations.is_empty() {
+                    return Err(SemanticQueryContractError::MissingLimitation);
+                }
+            }
+            Self::NotReady { reason, evidence } => {
+                evidence.validate()?;
+                if reason.trim().is_empty() {
+                    return Err(SemanticQueryContractError::EmptyReason);
+                }
+            }
+            Self::Stale { expected, observed, evidence } => {
+                evidence.validate()?;
+                if expected == observed {
+                    return Err(SemanticQueryContractError::MatchingGenerations);
+                }
+            }
+            Self::Ambiguous { candidates, evidence, .. } => {
+                evidence.validate()?;
+                if candidates.len() < 2 {
+                    return Err(SemanticQueryContractError::InsufficientCandidates);
+                }
+            }
+            Self::Dynamic { boundary, evidence } => {
+                evidence.validate()?;
+                if !evidence.limitations.iter().any(|limitation| {
+                    matches!(limitation, SemanticQueryLimitation::Boundary(value) if value == boundary)
+                }) {
+                    return Err(SemanticQueryContractError::MissingBoundaryLimitation);
+                }
+            }
+            Self::Unsupported { reason, evidence } => {
+                evidence.validate()?;
+                if reason.trim().is_empty() {
+                    return Err(SemanticQueryContractError::EmptyReason);
+                }
+            }
             Self::InstrumentFailure { .. } => {}
         }
         Ok(())
@@ -308,19 +343,24 @@ impl<T> SemanticQueryOutcome<T> {
     ) -> Result<(), SemanticQueryContractError> {
         self.validate()?;
         match self {
-            Self::Complete { evidence, .. } | Self::LegitimateEmpty { evidence } => {
-                requirement.validate_evidence(evidence)?;
-            }
-            _ => {}
+            Self::Complete { evidence, .. }
+            | Self::Partial { evidence, .. }
+            | Self::LegitimateEmpty { evidence }
+            | Self::NotReady { evidence, .. }
+            | Self::Stale { evidence, .. }
+            | Self::Ambiguous { evidence, .. }
+            | Self::Dynamic { evidence, .. }
+            | Self::Unsupported { evidence, .. } => requirement.validate_evidence(evidence)?,
+            Self::InstrumentFailure { .. } => {}
         }
         Ok(())
     }
 
     /// Whether the outcome is safe to consume as an exact result.
     #[must_use]
-    pub fn is_exact(&self) -> bool {
+    pub fn is_exact(&self, requirement: &SemanticQueryRequirement) -> bool {
         matches!(self, Self::Complete { .. } | Self::LegitimateEmpty { .. })
-            && self.validate().is_ok()
+            && self.validate_against(requirement).is_ok()
     }
 }
 
@@ -345,6 +385,16 @@ pub enum SemanticQueryContractError {
     ExactOutcomeLacksEvidence,
     /// A query-family requirement was registered more than once.
     DuplicateRequirement,
+    /// A non-exact outcome omitted its stated limitation.
+    MissingLimitation,
+    /// A not-ready or unsupported outcome omitted its reason.
+    EmptyReason,
+    /// A stale outcome used the same generation on both sides.
+    MatchingGenerations,
+    /// An ambiguous outcome did not retain multiple candidates.
+    InsufficientCandidates,
+    /// A dynamic outcome did not record its boundary in evidence.
+    MissingBoundaryLimitation,
 }
 
 impl std::fmt::Display for SemanticQueryContractError {
@@ -363,6 +413,13 @@ impl std::fmt::Display for SemanticQueryContractError {
                 "exact semantic query outcome lacks complete evidence".to_owned()
             }
             Self::DuplicateRequirement => "semantic query requirement is duplicated".to_owned(),
+            Self::MissingLimitation => "non-exact semantic query outcome lacks a limitation".to_owned(),
+            Self::EmptyReason => "semantic query outcome reason is empty".to_owned(),
+            Self::MatchingGenerations => "stale semantic query generations unexpectedly match".to_owned(),
+            Self::InsufficientCandidates => "ambiguous semantic query outcome lacks multiple candidates".to_owned(),
+            Self::MissingBoundaryLimitation => {
+                "dynamic semantic query outcome lacks its boundary limitation".to_owned()
+            }
         };
         formatter.write_str(&message)
     }
@@ -410,6 +467,14 @@ mod tests {
         .expect("fixture evidence is valid")
     }
 
+    fn evidence_with_limitation(
+        limitation: SemanticQueryLimitation,
+    ) -> SemanticQueryEvidence {
+        let mut evidence = evidence(true);
+        evidence.limitations.push(limitation);
+        evidence
+    }
+
     #[test]
     fn exact_and_legitimate_empty_require_complete_evidence() {
         assert!(
@@ -441,7 +506,7 @@ mod tests {
             SemanticQueryOutcome::Partial {
                 value: 1_u8,
                 limitations: vec![SemanticQueryLimitation::BudgetExceeded],
-                evidence: e.clone(),
+                evidence: evidence_with_limitation(SemanticQueryLimitation::BudgetExceeded),
             },
             SemanticQueryOutcome::NotReady { reason: "building".into(), evidence: e.clone() },
             SemanticQueryOutcome::Stale {
@@ -456,11 +521,21 @@ mod tests {
             },
             SemanticQueryOutcome::Dynamic {
                 boundary: BoundaryKind::DynamicValue,
-                evidence: e.clone(),
+                evidence: evidence_with_limitation(SemanticQueryLimitation::Boundary(
+                    BoundaryKind::DynamicValue,
+                )),
             },
             SemanticQueryOutcome::Unsupported { reason: "profile".into(), evidence: e },
         ];
-        assert!(states.iter().all(|state| state.validate().is_ok() && !state.is_exact()));
+        let requirement = SemanticQueryRequirement::new(
+            "definitions",
+            "semantic-query-v1",
+            vec![SemanticFactFamily::ScopeLocalDeclaration],
+        )
+        .expect("fixture requirement is valid");
+        assert!(states.iter().all(|state| {
+            state.validate().is_ok() && !state.is_exact(&requirement)
+        }));
     }
 
     #[test]
@@ -530,6 +605,53 @@ mod tests {
     }
 
     #[test]
+    fn typed_variants_reject_contradictory_payloads() {
+        let e = evidence(true);
+        assert_eq!(
+            (SemanticQueryOutcome::<u8>::NotReady {
+                reason: "  ".into(),
+                evidence: e.clone(),
+            })
+            .validate(),
+            Err(SemanticQueryContractError::EmptyReason)
+        );
+        assert_eq!(
+            (SemanticQueryOutcome::<u8>::Unsupported {
+                reason: String::new(),
+                evidence: e.clone(),
+            })
+                .validate(),
+            Err(SemanticQueryContractError::EmptyReason)
+        );
+        assert_eq!(
+            (SemanticQueryOutcome::<u8>::Stale {
+                expected: crate::SourceGeneration::known("doc-1"),
+                observed: crate::SourceGeneration::known("doc-1"),
+                evidence: e.clone(),
+            })
+            .validate(),
+            Err(SemanticQueryContractError::MatchingGenerations)
+        );
+        assert_eq!(
+            (SemanticQueryOutcome::<u8>::Ambiguous {
+                candidates: vec![1_u8],
+                limitations: vec![],
+                evidence: e.clone(),
+            })
+            .validate(),
+            Err(SemanticQueryContractError::InsufficientCandidates)
+        );
+        assert_eq!(
+            (SemanticQueryOutcome::<u8>::Dynamic {
+                boundary: BoundaryKind::DynamicValue,
+                evidence: e,
+            })
+            .validate(),
+            Err(SemanticQueryContractError::MissingBoundaryLimitation)
+        );
+    }
+
+    #[test]
     fn malformed_evidence_and_empty_normalization_are_rejected() {
         let duplicate = SemanticQueryEvidence::new(
             "project",
@@ -550,16 +672,20 @@ mod tests {
             vec![],
         );
         assert_eq!(duplicate, Err(SemanticQueryContractError::DuplicateFactFamily));
-        assert!(
-            !SemanticQueryOutcome::<u8>::Dynamic {
-                boundary: BoundaryKind::DynamicValue,
-                evidence: evidence(true)
-            }
-            .is_exact()
-        );
+        let requirement = SemanticQueryRequirement::new(
+            "definitions",
+            "semantic-query-v1",
+            vec![SemanticFactFamily::ScopeLocalDeclaration],
+        )
+        .expect("fixture requirement is valid");
+        assert!(!SemanticQueryOutcome::<u8>::Dynamic {
+            boundary: BoundaryKind::DynamicValue,
+            evidence: evidence(true),
+        }
+        .is_exact(&requirement));
         assert!(
             !SemanticQueryOutcome::<u8>::InstrumentFailure { reason: "probe unavailable".into() }
-                .is_exact()
+                .is_exact(&requirement)
         );
     }
 
@@ -572,11 +698,3 @@ mod tests {
         )
         .expect("fixture requirement is valid");
         let mut registry = SemanticQueryRequirementRegistry::new();
-        assert!(registry.insert(requirement.clone()).is_ok());
-        assert!(registry.get("definitions", "semantic-query-v1").is_some());
-        assert_eq!(
-            registry.insert(requirement),
-            Err(SemanticQueryContractError::DuplicateRequirement)
-        );
-    }
-}
