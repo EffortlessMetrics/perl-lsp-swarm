@@ -135,10 +135,23 @@ fn ci_metrics_ratchet_routes(justfile: &str) -> Result<Vec<RatchetRoute>, Box<dy
     let mut routes = Vec::new();
 
     for command in ci_metrics_ratchet_body(justfile)? {
-        // `just` line prefixes: `@` suppresses echo, `-` ignores failure, `+`
-        // is the shebang-recipe form. Strip them before reading the command —
-        // `@cargo run …` is a real invocation, not a progress line.
-        let command = command.trim_start_matches(['@', '-', '+']).trim();
+        // `just` line prefixes: `@` suppresses echoing the command, `-` makes
+        // `just` ignore its exit status. Echo suppression is harmless, but an
+        // ignored exit status means the route cannot fail — verified against
+        // `just` 1.21.0, where a recipe containing `-false` exits 0.
+        let mut rest = command.as_str();
+        let mut ignores_failure = false;
+        loop {
+            if let Some(tail) = rest.strip_prefix('@') {
+                rest = tail;
+            } else if let Some(tail) = rest.strip_prefix('-') {
+                rest = tail;
+                ignores_failure = true;
+            } else {
+                break;
+            }
+        }
+        let command = rest.trim();
 
         // Progress lines and comments check nothing.
         if command.starts_with("echo ") || command.starts_with('#') || command.is_empty() {
@@ -146,9 +159,17 @@ fn ci_metrics_ratchet_routes(justfile: &str) -> Result<Vec<RatchetRoute>, Box<dy
         }
 
         // A route only counts if the recipe actually runs it and lets it fail.
-        // `echo cargo run … ratchet-check parser` or a `|| true` suffix leaves
-        // the substring intact while the floor stops being enforced, so a
-        // neutered command must not read as coverage.
+        // `echo cargo run … ratchet-check parser`, a leading `-`, or a
+        // `|| true` suffix all leave the command text intact while the floor
+        // stops being enforced, so a neutered command must not read as coverage.
+        if ignores_failure {
+            return Err(format!(
+                "`ci-metrics-ratchet` prefixes `{command}` with `-`, so `just` ignores its exit \
+                 status. A ratchet route that cannot fail does not enforce its floor; drop the \
+                 prefix or drop the route rather than leaving it reading as covered."
+            )
+            .into());
+        }
         if let Some(suppressor) =
             ["|| true", "|| :", "|| exit 0", "||true"].iter().find(|s| command.contains(**s))
         {
@@ -372,5 +393,87 @@ fn ratchet_guide_separates_receipt_absence_from_missing_instrumentation()
          so operators do not read its fail-closed behavior as a missing-receipt symptom"
     );
 
+    Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// Focused parser cases.
+//
+// The assertions above run against the committed `justfile`, so they only prove
+// the parser is right about the recipe as it stands today. These pin the
+// classification itself against recipe shapes that would otherwise have to be
+// introduced into the real `justfile` to be caught.
+// -----------------------------------------------------------------------------
+
+fn recipe(body: &str) -> String {
+    format!(
+        "some-other-recipe:\n    @echo skip\n\nci-metrics-ratchet:\n{body}\n\nnext-recipe:\n    @echo done\n"
+    )
+}
+
+#[test]
+fn parser_counts_a_real_invocation_with_echo_suppressed() -> Result<(), Box<dyn Error>> {
+    let justfile = recipe("    @cargo run -p xtask -- metrics ratchet-check parser");
+    let routes = ci_metrics_ratchet_routes(&justfile)?;
+    assert_eq!(routes, vec![RatchetRoute::Subsystem("parser".to_string())]);
+    Ok(())
+}
+
+/// Rejection message for a recipe body, or an empty string if it was accepted.
+fn rejection_message(justfile: &str) -> String {
+    match ci_metrics_ratchet_routes(justfile) {
+        Ok(_) => String::new(),
+        Err(error) => error.to_string(),
+    }
+}
+
+#[test]
+fn parser_rejects_a_route_whose_failure_just_ignores() {
+    // `-cargo …` runs but its exit status is discarded, so the floor is not
+    // enforced even though the command text still names the subsystem.
+    for body in [
+        "    -cargo run -p xtask -- metrics ratchet-check parser",
+        "    @-cargo run -p xtask -- metrics ratchet-check parser",
+        "    -@cargo run -p xtask -- metrics ratchet-check parser",
+    ] {
+        let message = rejection_message(&recipe(body));
+        assert!(
+            message.contains("ignores its exit status"),
+            "`{body}` must be rejected for its ignored exit status, but was accepted \
+             or rejected for another reason; message: {message:?}"
+        );
+    }
+}
+
+#[test]
+fn parser_rejects_a_printed_or_suppressed_route() -> Result<(), Box<dyn Error>> {
+    // A printed command resolves to no route at all rather than a false one.
+    let printed = recipe("    echo cargo run -p xtask -- metrics ratchet-check parser");
+    assert!(
+        ci_metrics_ratchet_routes(&printed)?.is_empty(),
+        "a printed command must not resolve to a covered route"
+    );
+
+    let suppressed = recipe("    cargo run -p xtask -- metrics ratchet-check parser || true");
+    let message = rejection_message(&suppressed);
+    assert!(
+        message.contains("suppresses the failure"),
+        "a `|| true` route must be rejected for its suppressor; message: {message:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn parser_keeps_routes_after_a_blank_line_and_joins_continuations() -> Result<(), Box<dyn Error>> {
+    let justfile = recipe(
+        "    @echo start\n    cargo run -p xtask -- metrics ratchet-check parser\n\n    cargo run -p xtask -- \\\n        ux-scorecard --format json --ratchet-check",
+    );
+    let routes = ci_metrics_ratchet_routes(&justfile)?;
+    assert_eq!(
+        routes,
+        vec![RatchetRoute::Subsystem("parser".to_string()), RatchetRoute::EditorUx],
+        "a blank line must not end the recipe body, and a `\\` continuation must join"
+    );
     Ok(())
 }
