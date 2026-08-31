@@ -953,6 +953,75 @@ gates:
     planning:
       role: always_on
 
+  # ── Focused control-plane owner proofs (#13698) ────────────────────────────
+  # #13698: main run 33128026402 spent ~22 minutes inside the shared PR-fast
+  # runner before its only failure — the deterministic `ci_subject`
+  # digest-oracle fixture defect — surfaced from `unit_routed_full`, the broad
+  # routed unit cohort (today the only pr_fast gate that executes xtask's
+  # `tests/` suites). These focused owner gates run their owners' fast
+  # deterministic proofs BEFORE that cohort, and (`short_circuit: true`) stop
+  # the remaining plan on a blocking failure, so a control-plane regression is
+  # reported without paying the cohort's full build/test budget first.
+  #
+  # Routing stays exact-subject: `rust_package_scoped` selects each gate only
+  # when ci-scope picks `xtask` — the owner crate of the CI-subject, route
+  # plan, gate-runner, workflow-policy, generated-inventory, and badge-producer
+  # proofs — so product-only diffs pay nothing for control-plane proofs
+  # (falsifier 2). Neither gate duplicates another pr_fast gate: `unit_scoped`
+  # runs `--lib` only and already covers the xtask library surface early, and
+  # `unit_routed_full` runs `--tests` only, so the bin and `ci_subject` targets
+  # are covered nowhere else in this tier. The broad cohort below is untouched
+  # and remains the authoritative backstop: a focused pass never removes it
+  # (falsifier 4), and a focused pass followed by a cohort failure still reds
+  # the run with both dispositions recorded (falsifier 3). No timeout was
+  # raised and no required gate became advisory (acceptance).
+  - name: ci_subject_digest_oracle
+    tier: pr_fast
+    description: "Focused immutable-subject digest-oracle proof (#13698): ci_subject owns the ci-subject.v1 receipt digest/envelope classification and its independent fixture oracle"
+    required: true
+    command: cargo test -p xtask --locked --test ci_subject
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    short_circuit: true
+    tags:
+      - test
+      - focused
+      - ci-subject
+      - digest-oracle
+    planning:
+      role: rust_package_scoped
+      packages:
+        - xtask
+
+  - name: unit_control_plane_bins
+    tier: pr_fast
+    description: "Focused control-plane owner proof (#13698): xtask bin unit tests for the gate runner, route plan/ci-scope, workflow policy, generated inventory, and badge producer owner modules"
+    required: true
+    # Owner-module filters, not the whole 3000-test bin suite: the projection
+    # is exactly the six control-plane owners named by #13698, and the filter
+    # set excludes suites with known environment-sensitive process-timeout
+    # tests (e.g. cpan_corpus) so the focused gate stays deterministic. The
+    # pinning test in xtask/src/tasks/gates.rs pins this command, so module
+    # drift fails the focused gate's own proof before CI.
+    command: "cargo test -p xtask --locked --bin xtask -- tasks::gates:: tasks::ci_scope:: tasks::workflow_policy_lint:: tasks::workflow_trigger_lint:: tasks::generated_files:: tasks::badges:: -- --test-threads=1"
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 480000
+    quarantine: false
+    short_circuit: true
+    tags:
+      - test
+      - focused
+      - control-plane
+    planning:
+      role: rust_package_scoped
+      packages:
+        - xtask
+
   - name: unit_routed_full
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"

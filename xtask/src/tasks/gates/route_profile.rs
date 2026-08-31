@@ -664,6 +664,7 @@ mod route_profile_spec {
                 role: GatePlanningRole::Static,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         }
     }
 
