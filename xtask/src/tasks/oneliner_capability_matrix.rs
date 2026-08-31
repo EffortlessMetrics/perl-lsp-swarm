@@ -662,7 +662,7 @@ fn classify_spans(source: &str) -> Vec<Span> {
         // String literals, including the `b`, `c`, and raw forms: `"`, `b"`,
         // `c"`, `r"`, `br"`, `cr"`, and any of the raw ones with `#` padding.
         // The prefix must start a token, or it is the tail of an identifier.
-        if matches!(byte, b'r' | b'b' | b'c') && starts_token(bytes, i) {
+        if matches!(byte, b'r' | b'b' | b'c') && starts_token(source, i) {
             let mut cursor = i;
             if matches!(bytes[cursor], b'b' | b'c') {
                 cursor += 1;
@@ -810,7 +810,7 @@ fn macro_definition_bodies(source: &str, code: &[bool]) -> Vec<(usize, usize)> {
         // treating it as a definition would blank a real fixture's arguments —
         // the same token-boundary rule `code_mask` applies to a raw string's
         // leading `r`.
-        if !code.get(index).copied().unwrap_or(false) || !starts_token(bytes, index) {
+        if !code.get(index).copied().unwrap_or(false) || !starts_token(source, index) {
             continue;
         }
         // Step over the macro's name to its opening delimiter. Anything else
@@ -1046,11 +1046,21 @@ fn suppresses_execution(attributes: &str) -> bool {
 /// Every scan in this module looks for a literal, and a literal also occurs
 /// inside longer names: `helper_command_line_oneliner!`, `émacro_rules!`,
 /// `commodity`. Without this the scan reads an unrelated construct as the one it
-/// was looking for, which has been the single most repeated defect here — three
-/// separate instances during review. It belongs in one predicate applied at
-/// every site rather than at whichever site was last reported.
-fn starts_token(bytes: &[u8], index: usize) -> bool {
-    !bytes.get(index.wrapping_sub(1)).is_some_and(|byte| is_identifier_byte(*byte))
+/// was looking for, which has been the single most repeated defect here. It
+/// belongs in one predicate applied at every site rather than at whichever site
+/// was last reported — and because it is one predicate, correcting it for
+/// Unicode identifiers corrects every scan at once.
+fn starts_token(source: &str, index: usize) -> bool {
+    let Some(head) = source.get(..index) else {
+        return true;
+    };
+    // Rust identifiers are not ASCII. Inspecting one preceding *byte* reads a
+    // UTF-8 continuation byte as a non-identifier, so `écommand_line_oneliner!`
+    // passed as the fixture macro. Step back one whole character instead.
+    !head
+        .chars()
+        .next_back()
+        .is_some_and(|character| character.is_alphanumeric() || character == '_')
 }
 
 /// Whether the `mod` keyword starts at `index`.
@@ -1059,12 +1069,12 @@ fn starts_token(bytes: &[u8], index: usize) -> bool {
 /// on the next line are both valid Rust, and missing them would let a suppressed
 /// module's fixtures count as running evidence. Callers pass the blanked view,
 /// so `mod/* c */name` separates correctly too.
-fn mod_keyword_at(bytes: &[u8], index: usize) -> bool {
-    if !bytes[index..].starts_with(b"mod") || !starts_token(bytes, index) {
+fn mod_keyword_at(source: &str, index: usize) -> bool {
+    if !source.as_bytes()[index..].starts_with(b"mod") || !starts_token(source, index) {
         return false;
     }
     // A keyword must be followed by separating whitespace, not more identifier.
-    bytes.get(index + 3).is_some_and(u8::is_ascii_whitespace)
+    source.as_bytes().get(index + 3).is_some_and(u8::is_ascii_whitespace)
 }
 
 /// Refuse to extract from a corpus containing a suppressed module.
@@ -1081,7 +1091,7 @@ fn reject_suppressed_modules(source: &str) -> Result<()> {
     let code = evidence_mask(source);
     let scan = blank_non_code(source, &code);
     for (index, _) in source.match_indices("mod") {
-        if !code.get(index).copied().unwrap_or(false) || !mod_keyword_at(scan.as_bytes(), index) {
+        if !code.get(index).copied().unwrap_or(false) || !mod_keyword_at(&scan, index) {
             continue;
         }
         let attributes = preceding_attributes(&scan, item_start_before(&scan, index));
@@ -1115,7 +1125,7 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
     for (index, _) in source.match_indices("command_line_oneliner!(") {
         // `helper_command_line_oneliner!(..)` is a different macro whose name
         // ends with this one; its arguments are not corpus fixtures.
-        if !code.get(index).copied().unwrap_or(false) || !starts_token(source.as_bytes(), index) {
+        if !code.get(index).copied().unwrap_or(false) || !starts_token(source, index) {
             continue;
         }
         if suppresses_execution(&preceding_attributes(&scan, item_start_before(&scan, index))) {
@@ -1172,7 +1182,7 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
         // otherwise supply the fixture name.
         let Some(fn_offset) = rest.match_indices("fn ").map(|(offset, _)| offset).find(|offset| {
             code.get(index + offset).copied().unwrap_or(false)
-                && starts_token(source.as_bytes(), index + offset)
+                && starts_token(source, index + offset)
         }) else {
             continue;
         };
@@ -2238,6 +2248,24 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         // …while the prefixes as ordinary identifiers stay code.
         let identifiers = "let br = 1; let b = 2; let cr = 3;\ncommand_line_oneliner!(live, \"-e\", \"print 1;\");\n";
         assert!(extract_corpus_evidence(identifiers).switch_cases.contains_key("live"));
+
+        // A Unicode-prefixed name whose tail spells a scanned token is a
+        // different identifier, at every scan site.
+        for source in [
+            "écommand_line_oneliner!(fake, \"-e\", \"print 1;\");\n",
+            "Ωcommand_line_oneliner!(fake, \"-e\", \"print 1;\");\n",
+        ] {
+            let evidence = extract_corpus_evidence(source);
+            assert!(
+                evidence.switch_cases.is_empty(),
+                "a Unicode-prefixed macro supplied a fixture in {source:?}: {:?}",
+                evidence.switch_cases
+            );
+        }
+        assert!(
+            reject_suppressed_modules("#[cfg(feature = \"x\")]\nfn émod() {}\n").is_ok(),
+            "`mod` matched inside a Unicode identifier"
+        );
 
         // A suppressing attribute stays visible however many follow it.
         let mut many = String::from("#[cfg(feature = \"x\")]\n");
