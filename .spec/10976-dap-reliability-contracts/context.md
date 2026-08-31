@@ -18,7 +18,7 @@ family view         = one of seven compiled durability areas
 role                = closed train-role vocabulary reused from #10558 planning
 one disposition     = exactly one of the #10976 disposition enum
 compiled invariants = normative one-line contracts per family
-hard dependencies   = integer issue references from the accepted train order
+hard dependencies   = distinct integer issue references resolving to the accepted train order
 consumers           = closed issue-number vocabulary (#10558 family)
 ```
 
