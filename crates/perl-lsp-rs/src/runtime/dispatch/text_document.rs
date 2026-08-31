@@ -171,17 +171,12 @@ impl LspServer {
             };
         }
 
-        // Production path: try the real handler first, fall back on
-        // non-cancellation errors.  REQUEST_CANCELLED is preserved so the
-        // client receives the cancellation instead of an empty result (#4628).
-        self.handle_definition_cancellable(params, id).or_else(|error| {
-            if error.code == crate::protocol::REQUEST_CANCELLED {
-                Err(error)
-            } else {
-                tracing::warn!(error = %error, "definition handler error, using empty-params fallback");
-                self.on_definition(json!({})).map(Some)
-            }
-        })
+        // Production path: the canonical handler's outcome is terminal.
+        // Cancelled, stale, invalid, and provider failures reach the client at
+        // their typed JSON-RPC codes; a failed request is never flattened into
+        // an apparently-successful empty search by an empty-params fallback
+        // (#5108).
+        self.handle_definition_cancellable(params, id)
     }
 
     pub(super) fn handle_declaration_dispatch(
@@ -210,16 +205,23 @@ impl LspServer {
             };
         }
 
-        // Production path: try real handler first, fall back on
-        // non-cancellation errors.  REQUEST_CANCELLED is preserved.
+        // Production path: try the real handler first. The compatibility
+        // fallback runs only when the failure carries no terminal protocol
+        // verdict (`references_fallback_eligible`): cancelled, stale, invalid,
+        // and internal-failure outcomes are refused and reach the client at
+        // their typed codes (#5108). The fallback receives the exact original
+        // request (`fallback_params`), and its provider and reason are logged.
         let fallback_params = params.clone().unwrap_or_else(|| json!({}));
         self.handle_references_with_request_id(params, request_id).or_else(|error| {
-            if error.code == crate::protocol::REQUEST_CANCELLED {
-                Err(error)
-            } else {
-                tracing::warn!(error = %error, "references handler error, using empty-params fallback");
-                self.on_references(fallback_params, request_id).map(Some)
+            if !references_fallback_eligible(error.code) {
+                return Err(error);
             }
+            tracing::warn!(
+                error = %error,
+                provider = "on_references",
+                "references handler error is fallback-eligible; running bounded text fallback"
+            );
+            self.on_references(fallback_params, request_id).map(Some)
         })
     }
 
@@ -529,6 +531,32 @@ impl LspServer {
     }
 }
 
+/// Explicit eligibility predicate for the `textDocument/references`
+/// compatibility fallback (#5108).
+///
+/// The fallback may serve an answer only when the canonical handler failed
+/// without a terminal protocol verdict. Cancelled, stale, invalid, and
+/// internal-failure outcomes must reach the client at their typed JSON-RPC
+/// codes; they can never enter the fallback, because a fallback result would
+/// relabel the failure as an apparently-successful (possibly empty) search.
+fn references_fallback_eligible(code: i32) -> bool {
+    use crate::protocol::{
+        CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, PARSE_ERROR,
+        REQUEST_CANCELLED, SERVER_CANCELLED,
+    };
+
+    !matches!(
+        code,
+        REQUEST_CANCELLED
+            | SERVER_CANCELLED
+            | CONTENT_MODIFIED
+            | PARSE_ERROR
+            | INVALID_REQUEST
+            | INVALID_PARAMS
+            | INTERNAL_ERROR
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,57 +598,79 @@ mod tests {
         );
     }
 
-    /// Static-analysis test: verify that definition and references production
-    /// fallback paths preserve REQUEST_CANCELLED instead of silently swallowing
-    /// it (#4628). FoldingRange production dispatch is a transparent adapter
-    /// and must not regain an error-to-empty fallback (#13981).
+    /// Static-analysis test: the production references fallback must stay
+    /// behind the explicit eligibility predicate
+    /// (`references_fallback_eligible`), so cancelled, stale, invalid, and
+    /// internal-failure outcomes can never enter it (#5108). The production
+    /// definition dispatch is a transparent adapter and must not regain any
+    /// error-to-empty fallback (see
+    /// `production_definition_dispatch_does_not_retry_errors_as_empty`).
     #[test]
-    fn production_fallback_paths_preserve_request_cancelled() {
+    fn production_references_fallback_requires_explicit_eligibility()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = include_str!("text_document.rs");
+        let method_body = dispatch_method_source(source, "handle_references_cancellable_dispatch")?;
 
-        // Find each dispatch method and verify its production path checks
-        // for REQUEST_CANCELLED.
-        let methods =
-            ["handle_definition_cancellable_dispatch", "handle_references_cancellable_dispatch"];
+        // The fallback decision must go through the named eligibility
+        // predicate; a bare error-code comparison cannot express the contract.
+        assert!(
+            method_body.contains("references_fallback_eligible(error.code)"),
+            "references production path must gate the fallback behind \
+             references_fallback_eligible (#5108)\n{method_body}"
+        );
 
-        for method_name in &methods {
-            // Find the method body
-            let method_start = source.find(&format!("fn {method_name}(")).unwrap_or(0);
+        // The production path must not use a bare `or_else(|_|` that
+        // swallows all errors — it must inspect the error (#4628).
+        assert!(
+            !method_body.contains(".or_else(|_|"),
+            "references production path must not swallow all errors with or_else(|_| ...) \
+             — it must inspect the error (#4628)"
+        );
 
-            // Find the next method after this one (or end of file)
-            let method_end = source[method_start + 20..]
-                .find("\n    }")
-                .map(|pos| method_start + 20 + pos + 6)
-                .unwrap_or(source.len());
-
-            let method_body = &source[method_start..method_end];
-
-            // The production path must reference REQUEST_CANCELLED
-            assert!(
-                method_body.contains("REQUEST_CANCELLED"),
-                "{method_name} production path must preserve REQUEST_CANCELLED (#4628)"
-            );
-
-            // The production path must not use a bare `or_else(|_|` that
-            // swallows all errors — it must inspect the error.
-            assert!(
-                !method_body.contains(".or_else(|_|"),
-                "{method_name} production path must not swallow all errors with or_else(|_| ...) \
-                 — it must check for REQUEST_CANCELLED (#4628)"
-            );
-        }
+        // The predicate itself must refuse cancellation; behavioral coverage
+        // is in `references_dispatch_preserves_cancellation`.
+        assert!(
+            !references_fallback_eligible(crate::protocol::REQUEST_CANCELLED),
+            "REQUEST_CANCELLED must never enter the references fallback (#5108)"
+        );
+        Ok(())
     }
 
-    fn folding_range_dispatch_source(source: &str) -> Result<&str, &'static str> {
-        let start_marker = "fn handle_folding_range_dispatch(";
-        let method_start =
-            source.find(start_marker).ok_or("handle_folding_range_dispatch present")?;
+    fn dispatch_method_source<'a>(
+        source: &'a str,
+        method_name: &str,
+    ) -> Result<&'a str, &'static str> {
+        let start_marker = format!("fn {method_name}(");
+        let method_start = source.find(&start_marker).ok_or("dispatch method present")?;
         let after_start = method_start + start_marker.len();
         let next_fn = source[after_start..]
             .find("\n    pub(super) fn ")
             .map(|offset| after_start + offset)
             .unwrap_or(source.len());
         Ok(&source[method_start..next_fn])
+    }
+
+    fn folding_range_dispatch_source(source: &str) -> Result<&str, &'static str> {
+        dispatch_method_source(source, "handle_folding_range_dispatch")
+    }
+
+    /// Recurrence guard (#5108): no production dispatch in this file may call
+    /// a provider fallback with empty parameters. An empty-parameter fallback
+    /// receives no URI or position, can only answer `[]`, and therefore turns
+    /// any failure it catches into an apparently-successful empty search.
+    #[test]
+    fn production_dispatch_has_no_empty_param_fallbacks() {
+        let source = include_str!("text_document.rs");
+        let production_source = source.split("#[cfg(test)]\nmod tests").next().unwrap_or(source);
+
+        for forbidden in
+            ["on_definition(json!({}))", "on_references(json!({})", "on_folding_range(json!({}))"]
+        {
+            assert!(
+                !production_source.contains(forbidden),
+                "empty-parameter production fallback `{forbidden}` must not return (#5108)"
+            );
+        }
     }
 
     /// Production foldingRange dispatch must be a transparent adapter over the
@@ -665,6 +715,54 @@ mod tests {
                 "#[cfg(any(test, feature = \"test-fallbacks\"))]\n    pub(crate) fn on_folding_range("
             ),
             "on_folding_range must stay cfg-gated out of production builds (#13981)"
+        );
+        Ok(())
+    }
+
+    /// Production definition dispatch must be a transparent adapter over the
+    /// canonical handler. An `.or_else` retry through `on_definition(json!({}))`
+    /// receives no URI or position and flattens cancelled, stale, invalid, and
+    /// provider failures into an apparently-successful empty search (#5108).
+    #[test]
+    fn production_definition_dispatch_does_not_retry_errors_as_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = include_str!("text_document.rs");
+        let production_source = source.split("#[cfg(test)]\nmod tests").next().unwrap_or(source);
+        let method_body =
+            dispatch_method_source(production_source, "handle_definition_cancellable_dispatch")?;
+
+        assert!(
+            method_body.contains("self.handle_definition_cancellable(params, id)"),
+            "production definition dispatch must call the canonical handler (#5108)"
+        );
+        assert!(
+            !method_body.contains(".or_else"),
+            "production definition dispatch must not regain an error-to-empty `.or_else` (#5108)\n{method_body}"
+        );
+        assert!(
+            !method_body.contains("on_definition(json!({}))"),
+            "production definition dispatch must not replace errors with on_definition(json!({{}})) (#5108)\n{method_body}"
+        );
+        assert!(
+            method_body.contains("#[cfg(any(test, feature = \"test-fallbacks\"))]"),
+            "retained LSP_TEST_FALLBACKS path must stay cfg-gated (#4628)"
+        );
+        assert!(
+            method_body.contains("std::env::var(\"LSP_TEST_FALLBACKS\")"),
+            "test-only definition fallback must remain behind LSP_TEST_FALLBACKS"
+        );
+        assert!(
+            method_body.contains("advertised_features.lock().definition"),
+            "test-only definition fallback must not run when the feature is unadvertised (#4628)"
+        );
+        let handler_source = include_str!("../language/navigation.rs");
+        let handler_production =
+            handler_source.split("#[cfg(test)]\nmod tests").next().unwrap_or(handler_source);
+        assert!(
+            handler_production.contains(
+                "#[cfg(any(test, feature = \"test-fallbacks\"))]\n    pub(crate) fn on_definition("
+            ),
+            "on_definition must stay cfg-gated out of production builds (#5108)"
         );
         Ok(())
     }
@@ -728,5 +826,254 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    /// Behavioral test: a cancelled references request returns
+    /// REQUEST_CANCELLED from the dispatch method, never a fallback result
+    /// (#4628, #5108).
+    #[test]
+    #[serial_test::serial]
+    fn references_dispatch_preserves_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+        // If LSP_TEST_FALLBACKS is set (by a parallel test), the test-fallback
+        // branch intercepts and bypasses the production path we want to
+        // exercise.
+        if std::env::var("LSP_TEST_FALLBACKS").is_ok() {
+            eprintln!("Skipping cancellation test: LSP_TEST_FALLBACKS is set");
+            return Ok(());
+        }
+
+        let server = LspServer::new();
+        let request_id = JsonRpcId::Integer(51080);
+        let typed_id = request_id.clone();
+
+        // The references handler consults the server-side cancelled set (not
+        // the global token registry), so mark the request cancelled there.
+        server.cancel_mark(&typed_id);
+
+        let params = json!({
+            "textDocument": {"uri": "file:///nonexistent.pl", "version": 1},
+            "position": {"line": 0, "character": 0}
+        });
+
+        let result = server
+            .handle_references_cancellable_dispatch(Some(params), Some(&request_id.to_value()));
+
+        // Clean up the cancelled marker
+        server.cancel_clear(&typed_id);
+
+        match result {
+            Err(error) => {
+                assert_eq!(
+                    error.code, REQUEST_CANCELLED,
+                    "cancelled references request must return REQUEST_CANCELLED, not a fallback"
+                );
+            }
+            Ok(Some(_)) => {
+                return Err(
+                    "cancelled references request returned a result instead of REQUEST_CANCELLED"
+                        .into(),
+                );
+            }
+            Ok(None) => {
+                return Err(
+                    "cancelled references request returned None instead of REQUEST_CANCELLED"
+                        .into(),
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Behavioral falsifier (#5108): a definition request with missing
+    /// URI/position remains a request error; the dispatch layer must not
+    /// flatten it into an apparently-successful empty search through the
+    /// empty-params fallback.
+    #[test]
+    #[serial_test::serial]
+    fn definition_dispatch_refuses_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var("LSP_TEST_FALLBACKS").is_ok() {
+            eprintln!("Skipping invalid-params test: LSP_TEST_FALLBACKS is set");
+            return Ok(());
+        }
+
+        let server = LspServer::new();
+        let request_id = JsonRpcId::Integer(51081);
+
+        let result = server
+            .handle_definition_cancellable_dispatch(Some(json!({})), Some(&request_id.to_value()));
+
+        match result {
+            Err(error) => {
+                assert_eq!(
+                    error.code,
+                    crate::protocol::INVALID_PARAMS,
+                    "missing uri/position must remain a request error (#5108)"
+                );
+            }
+            Ok(result) => {
+                return Err(format!(
+                    "invalid definition params must not become a successful empty result; got {result:?}"
+                )
+                .into());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Behavioral falsifier (#5108): a references request with missing
+    /// URI/position remains a request error; the eligibility predicate refuses
+    /// it, so the compatibility fallback cannot relabel it as empty success.
+    #[test]
+    #[serial_test::serial]
+    fn references_dispatch_refuses_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var("LSP_TEST_FALLBACKS").is_ok() {
+            eprintln!("Skipping invalid-params test: LSP_TEST_FALLBACKS is set");
+            return Ok(());
+        }
+
+        let server = LspServer::new();
+        let request_id = JsonRpcId::Integer(51082);
+
+        let result = server
+            .handle_references_cancellable_dispatch(Some(json!({})), Some(&request_id.to_value()));
+
+        match result {
+            Err(error) => {
+                assert_eq!(
+                    error.code,
+                    crate::protocol::INVALID_PARAMS,
+                    "missing uri/position must remain a request error (#5108)"
+                );
+            }
+            Ok(result) => {
+                return Err(format!(
+                    "invalid references params must not become a successful empty result; got {result:?}"
+                )
+                .into());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Behavioral falsifier (#5108): an older request version returns
+    /// CONTENT_MODIFIED from the definition dispatch, never an empty success.
+    #[test]
+    #[serial_test::serial]
+    fn definition_dispatch_preserves_content_modified() -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var("LSP_TEST_FALLBACKS").is_ok() {
+            eprintln!("Skipping stale-request test: LSP_TEST_FALLBACKS is set");
+            return Ok(());
+        }
+
+        let server = LspServer::new();
+        let uri = "file:///5108-stale-definition.pl";
+        server.test_apply_did_open(uri, "my $x = 1;\n", 2)?;
+
+        let request_id = JsonRpcId::Integer(51083);
+        let params = json!({
+            "textDocument": {"uri": uri, "version": 1},
+            "position": {"line": 0, "character": 4}
+        });
+
+        let result = server
+            .handle_definition_cancellable_dispatch(Some(params), Some(&request_id.to_value()));
+
+        match result {
+            Err(error) => {
+                assert_eq!(
+                    error.code,
+                    crate::protocol::CONTENT_MODIFIED,
+                    "a stale definition request must return CONTENT_MODIFIED (#5108)"
+                );
+            }
+            Ok(result) => {
+                return Err(format!(
+                    "stale definition request must not become a successful empty result; got {result:?}"
+                )
+                .into());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Behavioral falsifier (#5108): an older request version returns
+    /// CONTENT_MODIFIED from the references dispatch; the compatibility
+    /// fallback must not swallow it.
+    #[test]
+    #[serial_test::serial]
+    fn references_dispatch_preserves_content_modified() -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var("LSP_TEST_FALLBACKS").is_ok() {
+            eprintln!("Skipping stale-request test: LSP_TEST_FALLBACKS is set");
+            return Ok(());
+        }
+
+        let server = LspServer::new();
+        let uri = "file:///5108-stale-references.pl";
+        server.test_apply_did_open(uri, "my $x = 1;\n$x;\n", 2)?;
+
+        let request_id = JsonRpcId::Integer(51084);
+        let params = json!({
+            "textDocument": {"uri": uri, "version": 1},
+            "position": {"line": 1, "character": 1},
+            "context": {"includeDeclaration": true}
+        });
+
+        let result = server
+            .handle_references_cancellable_dispatch(Some(params), Some(&request_id.to_value()));
+
+        match result {
+            Err(error) => {
+                assert_eq!(
+                    error.code,
+                    crate::protocol::CONTENT_MODIFIED,
+                    "a stale references request must return CONTENT_MODIFIED (#5108)"
+                );
+            }
+            Ok(result) => {
+                return Err(format!(
+                    "stale references request must not become a successful empty result; got {result:?}"
+                )
+                .into());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Unit test (#5108): the eligibility predicate must refuse every terminal
+    /// protocol outcome; only non-terminal failures may take the retained
+    /// compatibility fallback.
+    #[test]
+    fn references_fallback_eligibility_predicate_excludes_terminal_outcomes() {
+        use crate::protocol::{
+            CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, PARSE_ERROR,
+            REQUEST_CANCELLED, REQUEST_FAILED, SERVER_CANCELLED,
+        };
+
+        for code in [
+            REQUEST_CANCELLED,
+            SERVER_CANCELLED, // cancelled
+            CONTENT_MODIFIED, // stale
+            PARSE_ERROR,
+            INVALID_REQUEST,
+            INVALID_PARAMS, // invalid
+            INTERNAL_ERROR, // internal provider failure
+        ] {
+            assert!(
+                !references_fallback_eligible(code),
+                "terminal outcome {code} must never enter the references fallback (#5108)"
+            );
+        }
+
+        // A non-terminal failure may take the retained fallback, which
+        // answers from the exact original request.
+        assert!(
+            references_fallback_eligible(REQUEST_FAILED),
+            "a non-terminal failure must stay fallback-eligible (#5108)"
+        );
     }
 }

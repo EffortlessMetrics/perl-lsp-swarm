@@ -6,7 +6,7 @@
 use super::super::{
     Arc, DocumentState, GLOBAL_CANCELLATION_REGISTRY, ImplementationProvider, JsonRpcError,
     JsonRpcId, LspServer, ParentMap, Parser, PerlLspCancellationToken, REQUEST_CANCELLED, Value,
-    json, location_from_path,
+    json,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{req_position, req_uri};
@@ -15,6 +15,11 @@ use perl_lsp_rs_core::providers::ProviderDecisionFreshness;
 use perl_parser_core::source_file::is_binary_content;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
+
+// Only the test-fallbacks compatibility handler (`on_definition`) needs this
+// helper; production definition dispatch is a transparent adapter (#5108).
+#[cfg(any(test, feature = "test-fallbacks"))]
+use super::super::location_from_path;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -2703,6 +2708,11 @@ impl LspServer {
     }
 
     /// Non-blocking definition handler with fallback
+    ///
+    /// Production definition dispatch is a transparent adapter over the
+    /// canonical handler, so this compatibility handler is compiled only for
+    /// the test-fallbacks path (#5108).
+    #[cfg(any(test, feature = "test-fallbacks"))]
     pub(crate) fn on_definition(
         &self,
         params: serde_json::Value,
