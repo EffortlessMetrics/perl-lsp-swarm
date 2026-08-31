@@ -325,7 +325,7 @@ mod guard {
             if !lower.starts_with(word) {
                 continue;
             }
-            let after = text.get(word.len())?;
+            let after = text.get(word.len()..)?;
             match after.chars().next() {
                 Some(c) if c.is_ascii_alphanumeric() || c == '-' || c == '_' => {}
                 _ => return Some(after),
