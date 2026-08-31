@@ -971,6 +971,7 @@ ci-gate:
     just ci-unsafe-ratchet && \
     just ci-print-in-lib-ratchet && \
     just ci-regex-static-ratchet && \
+    just ci-must-context && \
     just ci-forbid-fatal && \
     just ci-test-lib && \
     just check-all-targets && \

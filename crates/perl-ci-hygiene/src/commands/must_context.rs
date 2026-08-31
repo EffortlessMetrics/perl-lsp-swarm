@@ -45,8 +45,18 @@ use crate::{GREEN, NC, RED, YELLOW};
 /// Only string-literal explanations count: they are the assertion context the
 /// `_with` variants exist to carry. A non-literal argument
 /// (`.expect(&format!(…))`) is deliberately out of subject.
-static EXPECT_CONTEXT_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r#"\.expect\(\s*"((?:[^"\\]|\\.)*)""#));
+///
+/// Three literal forms are recognised, in order: raw with one hash
+/// (`r#"…"#`), raw without (`r"…"`), and ordinary (`"…"`, honouring
+/// backslash escapes). `\s*` after `.expect(` spans newlines, so this matches
+/// across the rustfmt-wrapped form where the explanation sits on its own
+/// line — which is why the removed side is joined before matching, exactly as
+/// the added side is.
+static EXPECT_CONTEXT_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
+    Regex::new(
+        r##"\.expect\(\s*(?:r#"(?<rawhash>(?s:.)*?)"#|r"(?<raw>[^"]*)"|"(?<plain>(?:[^"\\]|\\(?s:.))*)")"##,
+    )
+});
 
 /// Matches a bare `must` / `must_some` / `must_err` call.
 ///
@@ -76,7 +86,12 @@ pub(crate) struct ContextDrop {
 struct HunkAccumulator {
     file: String,
     new_start_line: usize,
-    removed_contexts: Vec<String>,
+    /// Every removed line of the hunk, joined, so an `.expect(…)` whose
+    /// explanation rustfmt wrapped onto its own line is still one match.
+    /// Scanning removed lines individually missed exactly that form, which is
+    /// the common shape for the sentence-length explanations `_with` exists to
+    /// carry.
+    removed_text: String,
     bare_calls: Vec<String>,
     /// Every added line of the hunk, joined, so an explanation can be looked
     /// for wherever it landed — a `_with` argument, a preceding `assert!`, or a
@@ -90,16 +105,21 @@ impl HunkAccumulator {
     /// A hunk is a violation when it adds at least one bare `must*` call and at
     /// least one removed `.expect("…")` explanation appears nowhere on the
     /// added side — that explanation no longer reaches the panic message.
-    fn into_finding(self) -> Option<ContextDrop> {
+    fn into_finding(self, expect_re: &Regex) -> Option<ContextDrop> {
         if self.bare_calls.is_empty() {
             return None;
         }
         // The explanation must survive as a string literal, quotes included.
         // Matching the bare substring would let an identifier that happens to
         // contain it (`load_a` "carrying" the context `a`) hide a real drop.
-        let dropped_contexts: Vec<String> = self
-            .removed_contexts
-            .into_iter()
+        let dropped_contexts: Vec<String> = expect_re
+            .captures_iter(&self.removed_text)
+            .filter_map(|capture| {
+                ["rawhash", "raw", "plain"]
+                    .iter()
+                    .find_map(|name| capture.name(name))
+                    .map(|matched| matched.as_str().to_owned())
+            })
             .filter(|context| !self.added_text.contains(&format!("\"{context}\"")))
             .collect();
         if dropped_contexts.is_empty() {
@@ -138,7 +158,7 @@ pub(crate) fn scan_unified_diff(diff: &str) -> Result<Vec<ContextDrop>> {
         // rather than from `+++` keeps an added source line that happens to
         // read `++ …` from being mistaken for a post-image header.
         if let Some(path) = post_image_path(line) {
-            close_hunk(&mut hunk, &mut findings);
+            close_hunk(&mut hunk, &mut findings, expect_re);
             current_file = path;
             continue;
         }
@@ -154,7 +174,7 @@ pub(crate) fn scan_unified_diff(diff: &str) -> Result<Vec<ContextDrop>> {
         }
 
         if line.starts_with("@@") {
-            close_hunk(&mut hunk, &mut findings);
+            close_hunk(&mut hunk, &mut findings, expect_re);
             hunk = current_file.as_ref().and_then(|file| {
                 is_rust_diff_path(file).then(|| HunkAccumulator {
                     file: file.clone(),
@@ -170,11 +190,8 @@ pub(crate) fn scan_unified_diff(diff: &str) -> Result<Vec<ContextDrop>> {
         };
 
         if let Some(removed) = line.strip_prefix('-') {
-            for capture in expect_re.captures_iter(removed) {
-                if let Some(context) = capture.get(1) {
-                    active.removed_contexts.push(context.as_str().to_owned());
-                }
-            }
+            active.removed_text.push_str(removed);
+            active.removed_text.push('\n');
         } else if let Some(added) = line.strip_prefix('+') {
             active.added_text.push_str(added);
             active.added_text.push('\n');
@@ -184,13 +201,17 @@ pub(crate) fn scan_unified_diff(diff: &str) -> Result<Vec<ContextDrop>> {
         }
     }
 
-    close_hunk(&mut hunk, &mut findings);
+    close_hunk(&mut hunk, &mut findings, expect_re);
     Ok(findings)
 }
 
 /// Finalizes `hunk`, pushing its finding onto `findings` when it has one.
-fn close_hunk(hunk: &mut Option<HunkAccumulator>, findings: &mut Vec<ContextDrop>) {
-    if let Some(finding) = hunk.take().and_then(HunkAccumulator::into_finding) {
+fn close_hunk(
+    hunk: &mut Option<HunkAccumulator>,
+    findings: &mut Vec<ContextDrop>,
+    expect_re: &Regex,
+) {
+    if let Some(finding) = hunk.take().and_then(|active| active.into_finding(expect_re)) {
         findings.push(finding);
     }
 }
@@ -315,10 +336,25 @@ fn ref_exists(repo_root: &Path, reference: &str) -> bool {
 ///
 /// Zero context keeps hunks minimal, so a removal and an addition are paired
 /// only when they are genuinely adjacent.
+///
+/// The `a/`/`b/` prefixes are pinned explicitly. [`post_image_path`] finds the
+/// file boundary by the ` b/` separator, so an ambient `diff.noprefix=true`
+/// would emit boundaries this scanner cannot attribute and silently report
+/// every file as clean — a false green driven by config the guard does not
+/// own.
 fn read_diff(repo_root: &Path, base: &str) -> Result<String> {
     let output = Command::new("git")
         .current_dir(repo_root)
-        .args(["diff", "--unified=0", "--no-color", &format!("{base}...HEAD"), "--", "*.rs"])
+        .args([
+            "diff",
+            "--unified=0",
+            "--no-color",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            &format!("{base}...HEAD"),
+            "--",
+            "*.rs",
+        ])
         .output()
         .map_err(|error| eyre!("failed to run `git diff` against '{base}': {error}"))?;
 
@@ -522,6 +558,75 @@ mod tests {
 
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].dropped_contexts, vec!["the second authority resolves".to_owned()]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_rustfmt_wrapped_expect_still_reports_its_dropped_explanation() -> Result<()> {
+        // rustfmt breaks any `.expect("…")` whose explanation is long enough,
+        // which is precisely the sentence-length case `_with` exists for.
+        // Scanning removed lines one at a time never saw the literal.
+        let text = diff(
+            "crates/example/src/lib.rs",
+            &[
+                "-    let value = load()",
+                "-        .expect(",
+                r#"-            "the fixture declares Example with an explanation long enough to wrap","#,
+                "-        );",
+                "+    let value = must(load());",
+            ],
+        );
+
+        let findings = scan_unified_diff(&text)?;
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].dropped_contexts,
+            vec!["the fixture declares Example with an explanation long enough to wrap".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_wrapped_expect_carried_into_a_with_call_stays_clean() -> Result<()> {
+        let text = diff(
+            "crates/example/src/lib.rs",
+            &[
+                "-    let value = load()",
+                "-        .expect(",
+                r#"-            "the fixture declares Example with an explanation long enough to wrap","#,
+                "-        );",
+                "+    let value = must_with(",
+                "+        load(),",
+                r#"+        "the fixture declares Example with an explanation long enough to wrap","#,
+                "+    );",
+            ],
+        );
+
+        assert_eq!(scan_unified_diff(&text)?, vec![]);
+        Ok(())
+    }
+
+    #[test]
+    fn raw_string_explanations_are_in_subject() -> Result<()> {
+        for (removed, expected) in [
+            (
+                r#"-        let v = load().expect(r"the raw fixture declares Example");"#,
+                "the raw fixture declares Example",
+            ),
+            (
+                r##"-        let v = load().expect(r#"the hashed "raw" fixture"#);"##,
+                r#"the hashed "raw" fixture"#,
+            ),
+        ] {
+            let text =
+                diff("crates/example/src/lib.rs", &[removed, "+        let v = must(load());"]);
+
+            let findings = scan_unified_diff(&text)?;
+
+            assert_eq!(findings.len(), 1, "expected {removed} to be flagged");
+            assert_eq!(findings[0].dropped_contexts, vec![expected.to_owned()]);
+        }
         Ok(())
     }
 
