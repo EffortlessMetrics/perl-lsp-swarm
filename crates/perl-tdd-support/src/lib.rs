@@ -86,7 +86,16 @@ pub use tdd::test_runner;
 
 /// Safe unwrap replacements for tests.
 /// Re-exported from `perl-test-must` for backward compatibility.
-pub use perl_test_must::{must, must_err, must_some};
+///
+/// Both families are re-exported. The `_with` variants are the
+/// context-preserving counterparts: when a call site migrates away from
+/// `.expect("…")`, `must_with` / `must_some_with` / `must_err_with` keep the
+/// explanation in the panic diagnostic, while the bare helpers drop it
+/// ([#14291]). Re-exporting only the bare three made the correct form
+/// unreachable through this import path.
+///
+/// [#14291]: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14291
+pub use perl_test_must::{must, must_err, must_err_with, must_some, must_some_with, must_with};
 
 /// Typed skip for symlink-creating tests on Windows sessions without
 /// `SeCreateSymbolicLinkPrivilege` (os error 1314).
