@@ -605,9 +605,19 @@ mod tests {
     // route passes before any sweep has produced a receipt.  Until #14175 that
     // promise was only ever asserted as a literal string in a workflow file,
     // which proves nothing about what the checker does.  These two tests pin the
-    // behavior instead, and the regression case is the negative control: it
-    // shows the bootstrap pass comes from the fallback, not from a checker that
-    // cannot fail on this path.
+    // observable behavior instead: a missing receipt passes, and the regression
+    // case is the negative control showing that pass does not come from a
+    // checker incapable of failing.
+    //
+    // What they deliberately do not pin: that the fallback substitutes the
+    // *baseline values* rather than an empty map.  Both choices return `Ok`
+    // here, because `check_floor_metrics` skips metrics absent from `current`
+    // (see `test_ratchet_missing_current_skipped`), so the two are
+    // indistinguishable through this function's result.  Separating them would
+    // mean reshaping `run_ratchet_check` to expose its resolved current
+    // metrics, which #14175 scopes out.  Worth knowing if that skip ever
+    // becomes fail-closed: the two fallbacks would stop agreeing, and this
+    // suite would not notice.
     // -------------------------------------------------------------------------
     const BOOTSTRAP_BASELINE: &str = r#"{
   "schema_version": 1,

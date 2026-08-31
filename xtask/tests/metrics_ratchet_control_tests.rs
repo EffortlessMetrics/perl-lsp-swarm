@@ -56,23 +56,58 @@ impl RatchetRoute {
     }
 }
 
-/// Extract the body of the `ci-metrics-ratchet` recipe from the `justfile`.
+/// Extract the logical command lines of the `ci-metrics-ratchet` recipe body.
 ///
-/// A `just` recipe body runs from its header to the first blank or unindented
-/// line. Scoping to the recipe body keeps sibling recipes — notably
+/// A `just` recipe body runs from its header to the first non-blank *unindented*
+/// line. A blank line does **not** end the recipe — verified against `just`
+/// 1.21.0, whose `--dump --dump-format json` keeps lines after an interior blank
+/// in the same recipe body. Treating a blank line as the end would silently drop
+/// every route after it, which is the same class of hole this contract exists to
+/// close, so blanks are skipped rather than used as a terminator.
+///
+/// Scoping to the recipe body keeps sibling recipes — notably
 /// `ci-metrics-ratchet-check <subsystem>`, which carries a `{{subsystem}}`
-/// placeholder — from being read as coverage.
+/// placeholder — from being read as coverage. Trailing `\` continuations are
+/// joined so a command wrapped for readability stays one logical command.
+///
+/// Known limitation: command text is matched literally, so shell quoting is not
+/// interpreted. A non-`@` `echo "... metrics ratchet-check foo ..."` would be
+/// read as a route. That fails loudly rather than silently under-reporting
+/// coverage, and no such line exists in this recipe.
 fn ci_metrics_ratchet_body(justfile: &str) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut lines = justfile.lines().skip_while(|line| line.trim_end() != "ci-metrics-ratchet:");
+    // Accept a header that later gains dependencies (`ci-metrics-ratchet: dep`).
+    // `ci-metrics-ratchet-check` does not match, since it lacks the `:` here.
+    let mut lines =
+        justfile.lines().skip_while(|line| !line.trim_end().starts_with("ci-metrics-ratchet:"));
     lines.next().ok_or(
         "justfile no longer defines a `ci-metrics-ratchet` recipe; the nightly \
                 scorecard ratchet job runs it by name",
     )?;
 
-    Ok(lines
-        .take_while(|line| !line.trim().is_empty() && line.starts_with([' ', '\t']))
-        .map(|line| line.trim().to_string())
-        .collect())
+    let mut commands: Vec<String> = Vec::new();
+    let mut continued = false;
+    for line in lines.take_while(|line| line.trim().is_empty() || line.starts_with([' ', '\t'])) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let (text, continues) = match trimmed.strip_suffix('\\') {
+            Some(head) => (head.trim_end(), true),
+            None => (trimmed, false),
+        };
+
+        match commands.last_mut() {
+            Some(previous) if continued => {
+                previous.push(' ');
+                previous.push_str(text);
+            }
+            _ => commands.push(text.to_string()),
+        }
+        continued = continues;
+    }
+
+    Ok(commands)
 }
 
 /// Resolve every checking command in the `ci-metrics-ratchet` recipe to the
