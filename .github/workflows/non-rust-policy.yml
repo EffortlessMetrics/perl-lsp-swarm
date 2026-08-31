@@ -122,10 +122,21 @@ jobs:
                       block.append(candidate[10:] if candidate.startswith("          ") else "")
                   run_blocks.append((index + 1, "\n".join(block)))
           for line_number, block in run_blocks:
-              if "cargo run" in block and any(token in block for token in forbidden):
-                  raise SystemExit(
-                      f"candidate-controlled cargo invocation in run block at line {line_number}"
-                  )
+              command_lines = block.splitlines()
+              for offset, command_line in enumerate(command_lines):
+                  if not command_line.lstrip().startswith("cargo run"):
+                      continue
+                  command = [command_line]
+                  for continuation in command_lines[offset + 1:]:
+                      stripped = continuation.strip()
+                      if stripped.startswith("--") or command[-1].rstrip().endswith("\\"):
+                          command.append(continuation)
+                      else:
+                          break
+                  if any(token in "\\n".join(command) for token in forbidden):
+                      raise SystemExit(
+                          f"candidate-controlled cargo invocation in run block at line {line_number}"
+                      )
           PY
       - name: Run trusted exact-tree evaluator
         if: steps.bind.outcome == 'success'
