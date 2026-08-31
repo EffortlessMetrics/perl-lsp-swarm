@@ -100,12 +100,23 @@ impl LspServer {
         *self.position_encoding_session_context.lock() = None;
     }
 
-    /// Return the active coordinate encoding, retaining UTF-16 for direct calls
-    /// made before initialize by compatibility and unit-test paths.
+    /// Return the active coordinate encoding.
+    ///
+    /// Coordinate production is not valid until initialize has published the
+    /// session context. Do not silently fall back to the legacy client record
+    /// or to UTF-16: doing so would hide a lifecycle violation.
     #[must_use]
-    pub(crate) fn position_encoding_for_coordinates(&self) -> PositionEncoding {
+    pub(crate) fn position_encoding_for_coordinates(
+        &self,
+    ) -> Result<PositionEncoding, crate::protocol::JsonRpcError> {
         self.position_encoding_session_context()
-            .map_or(PositionEncoding::Utf16, |context| context.active().encoding())
+            .map(|context| context.active().encoding())
+            .ok_or_else(|| {
+                crate::protocol::JsonRpcError::new(
+                    crate::protocol::INVALID_REQUEST,
+                    "position encoding is unavailable before initialize or after shutdown",
+                )
+            })
     }
 }
 
@@ -128,6 +139,21 @@ mod tests {
     fn active_context_is_absent_before_initialize() {
         let server = LspServer::new();
         assert!(server.position_encoding_session_context().is_none());
+    }
+
+    #[test]
+    fn coordinate_encoding_is_rejected_before_initialize() {
+        let server = LspServer::new();
+        let error = server.position_encoding_for_coordinates().unwrap_err();
+
+        assert_eq!(error.code, crate::protocol::INVALID_REQUEST);
+        assert!(error.message.contains("before initialize"));
+
+        server.publish_position_encoding_session_context();
+        server.clear_position_encoding_session_context();
+        let error = server.position_encoding_for_coordinates().unwrap_err();
+        assert_eq!(error.code, crate::protocol::INVALID_REQUEST);
+        assert!(error.message.contains("after shutdown"));
     }
 
     #[test]
@@ -271,7 +297,7 @@ mod tests {
         )?;
         server.client_capabilities.lock().position_encoding = PosEnc::Utf8;
 
-        assert_eq!(server.position_encoding_for_coordinates(), PositionEncoding::Utf16);
+        assert_eq!(server.position_encoding_for_coordinates()?, PositionEncoding::Utf16);
         Ok(())
     }
 }
