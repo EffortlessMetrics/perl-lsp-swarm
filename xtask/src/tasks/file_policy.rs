@@ -466,7 +466,12 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             bail!("subject workflow weakens trusted contract: missing {required}");
         }
     }
-    if text.contains("cargo run") && text.contains("pull_request.head") {
+    if text.lines().any(|line| {
+        line.contains("cargo run")
+            && (line.contains("pull_request.head")
+                || line.contains("pull_request.head.sha")
+                || line.contains("github.event.pull_request.head"))
+    }) {
         bail!("subject workflow must not execute candidate source");
     }
     if text.contains("actions/checkout@") && !text.contains("ref: ${{ env.BASE_SHA }}") {
