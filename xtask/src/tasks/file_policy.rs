@@ -26,7 +26,7 @@
 //!
 //! Refs: #8174, #8566.
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
@@ -113,6 +113,8 @@ pub struct ExactTreePolicyReceipt {
     pub outcome: String,
     pub failure_stage: Option<String>,
     pub error: Option<String>,
+    /// UTC date used when evaluating expiring allowlist entries.
+    pub evaluation_date: String,
     pub evaluator_commit: Option<String>,
     pub evaluator_tree: Option<String>,
     pub inventory_markdown_path: Option<String>,
@@ -159,9 +161,22 @@ struct PreparedAllowEntry<'a> {
 }
 
 fn prepare_allow_entries(entries: &[AllowEntry]) -> Vec<PreparedAllowEntry<'_>> {
+    prepare_allow_entries_at(entries, Utc::now().date_naive())
+}
+
+fn prepare_allow_entries_at(
+    entries: &[AllowEntry],
+    evaluation_date: NaiveDate,
+) -> Vec<PreparedAllowEntry<'_>> {
     let mut prepared = Vec::new();
     for entry in entries {
-        if entry.retired {
+        if entry.retired
+            || entry
+                .expires
+                .as_deref()
+                .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+                .is_some_and(|expires| expires <= evaluation_date)
+        {
             continue;
         }
         let glob = match entry.glob.as_deref() {
@@ -236,7 +251,7 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         if glob.is_some() == path.is_some() {
             bail!("allow entry {id} must set exactly one matcher");
         }
-        let matcher = glob.or(path).unwrap();
+        let matcher = glob.or(path).ok_or_else(|| eyre!("allow entry {id} has no matcher"))?;
         if matcher.starts_with("./")
             || matcher.starts_with('/')
             || matcher.contains('\\')
@@ -263,11 +278,11 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         if !KNOWN_CLASSIFICATIONS.contains(&classification) {
             bail!("unknown classification {classification} in allow entry {id}");
         }
-        let covered_by = table.get("covered_by");
-        let coverage = covered_by.and_then(toml::Value::as_array);
-        if covered_by.is_some()
-            && coverage.is_none_or(|items| !items.iter().all(|item| item.as_str().is_some()))
-        {
+        let covered_by = table
+            .get("covered_by")
+            .ok_or_else(|| eyre!("allow entry {id} is missing covered_by"))?;
+        let coverage = covered_by.as_array();
+        if coverage.is_none_or(|items| !items.iter().all(|item| item.as_str().is_some())) {
             bail!("allow entry {id} covered_by must be a list of strings");
         }
         if COVERAGE_REQUIRING_CLASSIFICATIONS.contains(&classification)
@@ -354,7 +369,14 @@ fn git_object(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
         .output()
         .with_context(|| format!("running git {}", args.join(" ")))?;
     if !output.status.success() {
-        bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&output.stderr));
+        let detail = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("no diagnostic")
+            .chars()
+            .take(240)
+            .collect::<String>();
+        bail!("git {} failed: {detail}", args.join(" "));
     }
     Ok(output.stdout)
 }
@@ -386,13 +408,21 @@ fn tree_file(root: &Path, sha: &str, path: &str) -> Result<(String, Vec<u8>)> {
 }
 
 fn classify_tree(root: &Path, sha: &str) -> Result<(Vec<FileRecord>, String)> {
+    classify_tree_at(root, sha, Utc::now().date_naive())
+}
+
+fn classify_tree_at(
+    root: &Path,
+    sha: &str,
+    evaluation_date: NaiveDate,
+) -> Result<(Vec<FileRecord>, String)> {
     let (blob_sha, policy) = tree_file(root, sha, "policy/non-rust-allowlist.toml")?;
     validate_exact_policy_bytes(&policy)?;
     let allowlist: Allowlist =
         toml::from_str(std::str::from_utf8(&policy).context("allowlist is not UTF-8")?)
             .with_context(|| format!("parsing policy/non-rust-allowlist.toml from {sha}"))?;
     validate_exact_allow_entries(&allowlist.allow)?;
-    let prepared = prepare_allow_entries(&allowlist.allow);
+    let prepared = prepare_allow_entries_at(&allowlist.allow, evaluation_date);
     let records = tree_paths(root, sha)?
         .iter()
         .map(|path| classify_file_with_prepared(path, &prepared))
@@ -446,7 +476,7 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         "push:",
         "workflow_dispatch:",
         "permissions:\n  contents: read",
-        "ref: ${{ env.BASE_SHA }}",
+        "ref: ${{ env.EVALUATOR_SHA }}",
         "BASE_SHA:",
         "SUBJECT_SHA:",
         "PR_HEAD_SHA:",
@@ -474,14 +504,74 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     }) {
         bail!("subject workflow must not execute candidate source");
     }
-    if text.contains("actions/checkout@") && !text.contains("ref: ${{ env.BASE_SHA }}") {
-        bail!("subject workflow must checkout the trusted base SHA");
+    if text.contains("actions/checkout@") && !text.contains("ref: ${{ env.EVALUATOR_SHA }}") {
+        bail!("subject workflow must checkout the trusted evaluator SHA");
     }
     if text.matches("actions/checkout@").count() != 1 {
         bail!("subject workflow must contain exactly one trusted checkout");
     }
     if text.matches("permissions:").count() != 1 {
         bail!("subject workflow must define exactly one top-level read-only permissions block");
+    }
+    // Validate the load-bearing steps structurally, so comments or unrelated
+    // jobs cannot satisfy the trusted-base contract.
+    let yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&text).context("parsing trusted workflow YAML")?;
+    let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
+    let jobs = yaml
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("jobs")))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("trusted workflow must define jobs mapping"))?;
+    let job = jobs
+        .get(key("exact-tree"))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("trusted workflow must define exact-tree job"))?;
+    let steps = job
+        .get(key("steps"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .ok_or_else(|| eyre!("exact-tree job must define steps sequence"))?;
+    let step_run_contains = |needle: &str| {
+        steps.iter().any(|step| {
+            step.as_mapping()
+                .and_then(|map| map.get(key("run")))
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some_and(|run| run.contains(needle))
+        })
+    };
+    if !steps.iter().any(|step| {
+        let Some(map) = step.as_mapping() else { return false };
+        map.get(key("uses"))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_some_and(|uses| uses.starts_with("actions/checkout@"))
+            && map
+                .get(key("with"))
+                .and_then(serde_yaml_ng::Value::as_mapping)
+                .and_then(|with| with.get(key("ref")))
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some_and(|reference| reference.contains("env.EVALUATOR_SHA"))
+    }) {
+        bail!("trusted workflow must checkout EVALUATOR_SHA in its checkout step");
+    }
+    if !step_run_contains("git fetch --no-tags origin \"$SUBJECT_SHA\"")
+        || !step_run_contains("git update-ref refs/heads/non-rust-policy-subject")
+    {
+        bail!("trusted workflow must bind the exact SUBJECT_SHA Git object");
+    }
+    if !step_run_contains("cargo run --locked -p xtask -- non-rust exact-tree") {
+        bail!("trusted workflow must execute the exact-tree evaluator in a run step");
+    }
+    if !steps.iter().any(|step| {
+        let Some(map) = step.as_mapping() else { return false };
+        map.get(key("uses"))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_some_and(|uses| uses.starts_with("actions/upload-artifact@"))
+            && map
+                .get(key("if"))
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some_and(|condition| condition.contains("always()"))
+    }) {
+        bail!("trusted workflow must upload evidence with if: always()");
     }
     for line in text.lines().map(str::trim) {
         if let Some(action) = line.strip_prefix("uses:") {
@@ -592,6 +682,7 @@ pub fn non_rust_exact_tree(
             outcome: "fail".to_string(),
             failure_stage: Some(failure_stage.to_string()),
             error: Some(error_text),
+            evaluation_date: Utc::now().date_naive().to_string(),
             evaluator_commit: git_object(root, &["rev-parse", "HEAD"])
                 .ok()
                 .and_then(|b| String::from_utf8(b).ok())
@@ -608,7 +699,7 @@ pub fn non_rust_exact_tree(
             inventory_json_sha256: None,
         };
         if !receipt_path.exists() {
-            if let Some(parent) = receipt_path.parent() {
+            if let Some(parent) = receipt_path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 fs::create_dir_all(parent)?;
             }
             fs::write(receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
@@ -669,8 +760,11 @@ fn non_rust_exact_tree_inner(
     let subject_tree_sha =
         String::from_utf8(git_object(root, &["rev-parse", &subject_tree_ref])?)?.trim().to_string();
     validate_subject_workflow(root, &base_commit, &subject_commit)?;
-    let (base_records, base_allowlist_blob_sha) = classify_tree(root, &base_commit)?;
-    let (subject_records, subject_allowlist_blob_sha) = classify_tree(root, &subject_commit)?;
+    let evaluation_date = Utc::now().date_naive();
+    let (base_records, base_allowlist_blob_sha) =
+        classify_tree_at(root, &base_commit, evaluation_date)?;
+    let (subject_records, subject_allowlist_blob_sha) =
+        classify_tree_at(root, &subject_commit, evaluation_date)?;
     let base_unclassified = base_records
         .iter()
         .filter(|r| r.category == "unclassified")
@@ -717,6 +811,7 @@ fn non_rust_exact_tree_inner(
         new_unclassified_paths: new_unclassified_paths.clone(),
         failure_stage: None,
         error: None,
+        evaluation_date: evaluation_date.to_string(),
         evaluator_commit: git_object(root, &["rev-parse", "HEAD"])
             .ok()
             .and_then(|b| String::from_utf8(b).ok())
@@ -732,7 +827,7 @@ fn non_rust_exact_tree_inner(
         inventory_json_size: Some(json_bytes.len() as u64),
         inventory_json_sha256: Some(json_sha256),
     };
-    if let Some(parent) = receipt_path.parent() {
+    if let Some(parent) = receipt_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     fs::write(receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
@@ -3861,7 +3956,7 @@ review_after = "2026-08-13"
             "push:",
             "workflow_dispatch:",
             "permissions:\n  contents: read",
-            "ref: ${{ env.BASE_SHA }}",
+            "ref: ${{ env.EVALUATOR_SHA }}",
             "refs/pull/$PR_NUMBER/merge",
             "merge-base --is-ancestor",
             "Non-Rust policy exact-tree",
