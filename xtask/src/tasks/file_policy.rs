@@ -307,13 +307,18 @@ fn classify_tree(root: &Path, sha: &str) -> Result<(Vec<FileRecord>, String)> {
     Ok((records, blob_sha))
 }
 
-fn validate_subject_workflow(root: &Path, sha: &str) -> Result<()> {
+fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> Result<()> {
+    let base_listing =
+        git_object(root, &["ls-tree", base_sha, "--", ".github/workflows/non-rust-policy.yml"])?;
     let listing =
-        git_object(root, &["ls-tree", sha, "--", ".github/workflows/non-rust-policy.yml"])?;
-    if listing.is_empty() {
+        git_object(root, &["ls-tree", subject_sha, "--", ".github/workflows/non-rust-policy.yml"])?;
+    if listing.is_empty() && base_listing.is_empty() {
         return Ok(());
     }
-    let (_, bytes) = tree_file(root, sha, ".github/workflows/non-rust-policy.yml")?;
+    if listing.is_empty() {
+        bail!("subject workflow removes the trusted exact-tree policy workflow");
+    }
+    let (_, bytes) = tree_file(root, subject_sha, ".github/workflows/non-rust-policy.yml")?;
     let text = String::from_utf8(bytes).context("subject workflow is not UTF-8")?;
     for required in [
         "merge_group:",
@@ -460,7 +465,7 @@ fn non_rust_exact_tree_inner(
         String::from_utf8(git_object(root, &["rev-parse", &base_tree_ref])?)?.trim().to_string();
     let subject_tree_sha =
         String::from_utf8(git_object(root, &["rev-parse", &subject_tree_ref])?)?.trim().to_string();
-    validate_subject_workflow(root, &subject_commit)?;
+    validate_subject_workflow(root, &base_commit, &subject_commit)?;
     let (base_records, base_allowlist_blob_sha) = classify_tree(root, &base_commit)?;
     let (subject_records, subject_allowlist_blob_sha) = classify_tree(root, &subject_commit)?;
     let base_unclassified = base_records
