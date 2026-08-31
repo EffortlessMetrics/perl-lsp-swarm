@@ -164,13 +164,23 @@ mod tests {
 
     #[test]
     fn has_physical_path_covers_correct_variants() {
-        assert!(SourceOrigin::Workspace.has_physical_path());
-        assert!(SourceOrigin::Generated.has_physical_path());
-        assert!(SourceOrigin::Staged.has_physical_path());
-        assert!(SourceOrigin::Upstream.has_physical_path());
-        assert!(!SourceOrigin::Virtual.has_physical_path());
-        assert!(!SourceOrigin::RuntimeDerived.has_physical_path());
-        assert!(!SourceOrigin::Unknown.has_physical_path());
+        let cases = [
+            (SourceOrigin::Workspace, true),
+            (SourceOrigin::Virtual, false),
+            (SourceOrigin::Generated, true),
+            (SourceOrigin::Staged, true),
+            (SourceOrigin::Upstream, true),
+            (SourceOrigin::RuntimeDerived, false),
+            (SourceOrigin::Unknown, false),
+        ];
+
+        for (origin, expected) in cases {
+            assert_eq!(
+                origin.has_physical_path(),
+                expected,
+                "unexpected physical-path classification for {origin}"
+            );
+        }
     }
 
     #[test]
@@ -256,3 +266,4 @@ mod tests {
         }
     }
 }
+
