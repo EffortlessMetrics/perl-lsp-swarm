@@ -1168,6 +1168,49 @@ fn a_graph_deeper_than_the_bound_is_reported_as_instrument_failure() {
 }
 
 #[test]
+fn a_row_origin_past_the_bound_is_reported_even_when_the_root_closes() {
+    // Checking only the roots would leave this case silent. `exposure_errors`,
+    // `phase_errors` and `static_surface_errors` each start their own bounded
+    // traversal at the row's cited function, and an `on_demand` row is by
+    // construction reached by no root — so the root walk closing immediately
+    // says nothing about the walk the checker actually performs for that row.
+    let mut body = String::from("impl Server { pub fn handle_initialize(&self) {} }\n");
+    let hops = census::MAX_DEPTH + 3;
+    body.push_str("pub fn lazy_entry() { hop_0(); }\n");
+    for hop in 0..hops {
+        body.push_str(&format!("pub fn hop_{hop}() {{ hop_{}(); }}\n", hop + 1));
+    }
+    body.push_str(&format!(
+        "pub fn hop_{hops}() {{ let _ = std::process::Command::new(\"perl\").output(); }}"
+    ));
+    let census = Census::from_sources(&[(SYNTHETIC_ROOT_FILE.to_string(), body)]);
+
+    let root = census.resolve(SYNTHETIC_ROOT_FILE, "handle_initialize").expect("root resolves");
+    assert!(
+        census.truncation_witnesses(root, census::MAX_DEPTH).is_empty(),
+        "the root's own walk must close, or this test would pass for the wrong reason"
+    );
+
+    let lazy = InitOperationRow {
+        operation_id: "synthetic.lazy_chain",
+        file: SYNTHETIC_ROOT_FILE,
+        function: "lazy_entry",
+        declared_exposure: &[],
+        triggers: &[Trigger::FirstUse],
+        current_point: ExecutionPoint::OnDemand,
+        phase: PhaseDisposition::LazyOnFirstUse,
+        migration_wave: MigrationWave::None,
+        owns_exposure: false,
+        ..baseline_row()
+    };
+
+    let errors = ledger_errors_with_roots(&[baseline_row(), lazy], &census, &synthetic_roots());
+    assert_reports(&errors, "instrument failure");
+    assert_reports(&errors, "row synthetic.lazy_chain");
+    assert_reports(&errors, "was truncated");
+}
+
+#[test]
 fn a_graph_inside_the_bound_reports_no_truncation() {
     // Negative control: the ordinary fixture must not be called truncated, or
     // the rule above would fire on everything and discriminate nothing.

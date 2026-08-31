@@ -303,7 +303,7 @@ pub fn ledger_errors_with_roots(
     // A traversal cap that truncates silently is the same failure wearing a
     // different hat: the reachable set is short, and coverage would pass
     // against work the walk never got to.
-    errors.extend(bound_errors(census, roots));
+    errors.extend(bound_errors(rows, census, roots));
 
     if rows.is_empty() {
         errors.push(
@@ -744,27 +744,48 @@ fn call_site_errors(
     errors
 }
 
-/// Fail when the bounded traversal could not finish a root's reachable set.
+/// Fail when a bounded traversal could not finish a reachable set.
 ///
 /// `MAX_DEPTH` and `MAX_VISITED` are stated limitations of the census, but a
 /// limitation that fires without saying so is an instrument failure reported as
-/// a pass. Each root's frontier is inspected, and a cut edge to a function the
-/// walk never reached is a finding.
+/// a pass. Every frontier is inspected, and a cut edge to a function the walk
+/// never reached is a finding.
 ///
-/// At most three witnesses per root: the point is to say the graph outgrew the
-/// bound and where, not to print the frontier.
-fn bound_errors(census: &Census, roots: &[(&str, &str)]) -> Vec<String> {
+/// **Every** origin the checker walks from, not only the roots. `exposure_errors`,
+/// `phase_errors` and `static_surface_errors` each start a bounded traversal at
+/// the row's own cited function, and an `on_demand` row is by construction
+/// reachable from no root at all — so checking roots alone would leave exactly
+/// those traversals free to truncate in silence.
+///
+/// One report per distinct cut edge, three per origin: the point is to say the
+/// graph outgrew the bound and where, not to print the frontier once per row
+/// that happens to reach it.
+fn bound_errors(rows: &[InitOperationRow], census: &Census, roots: &[(&str, &str)]) -> Vec<String> {
     const MAX_WITNESSES: usize = 3;
-    let mut errors = Vec::new();
+
+    let mut origins: Vec<(String, usize)> = Vec::new();
     for (file, function) in roots {
-        let Some(root) = census.resolve(file, function) else {
-            continue;
-        };
+        if let Some(root) = census.resolve(file, function) {
+            origins.push((format!("{file}::{function}"), root));
+        }
+    }
+    for row in rows {
+        if let Some(index) = census.resolve(row.file, row.function) {
+            origins.push((format!("row {}", row.operation_id), index));
+        }
+    }
+
+    let mut reported: BTreeSet<String> = BTreeSet::new();
+    let mut errors = Vec::new();
+    for (label, origin) in origins {
         for witness in
-            census.truncation_witnesses(root, census::MAX_DEPTH).iter().take(MAX_WITNESSES)
+            census.truncation_witnesses(origin, census::MAX_DEPTH).iter().take(MAX_WITNESSES)
         {
+            if !reported.insert(witness.clone()) {
+                continue;
+            }
             errors.push(format!(
-                "instrument failure: the census traversal from `{file}::{function}` was truncated \
+                "instrument failure: the census traversal from `{label}` was truncated \
                  ({witness}), so the reachable set is incomplete and coverage cannot be established"
             ));
         }
