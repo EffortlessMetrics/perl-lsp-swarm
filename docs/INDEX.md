@@ -1,6 +1,7 @@
 # Documentation Index
 
-This page is the documentation front door for the `perl-lsp` workspace.
+This page is a curated documentation index for the `perl-lsp` workspace.
+For a shorter task-oriented route map, start with [README.md](README.md).
 
 ## Diataxis Quick Guide
 
