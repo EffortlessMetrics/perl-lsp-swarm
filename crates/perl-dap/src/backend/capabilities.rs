@@ -283,6 +283,66 @@ pub(crate) fn peer_bridge_hover_admission(
 /// profile cannot advertise one thing and enforce another.
 pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
 
+/// Whether the exact setExpression proof-and-promotion gate has passed (#9568).
+///
+/// DAP's `supportsSetExpression` promises that a `setExpression` request can
+/// assign to an arbitrary l-value in the *exact current-frame* location: bounded
+/// l-value admission, broker acknowledgement of the write, and read-back
+/// currentness. `handle_set_expression` interpolates client text into raw
+/// `p {lhs} = {rhs}` debugger commands against the debugger's *current* frame —
+/// none of that contract exists yet, so advertising the capability from
+/// `dap.core` (the previous wiring) invited editors to route assignments into
+/// an unproven mutation path.
+///
+/// Flipping this to `true` requires the re-enable gate recorded on #9568 with
+/// #9570 as the promotion boundary: exact current-frame location identity,
+/// bounded l-value admission, broker acknowledgement, read-back currentness,
+/// and exact public evidence. Nothing else — not `dap.core`, not
+/// `setVariable`/`evaluate` evidence, not handler presence, not a catalog row —
+/// may widen it.
+pub const SET_EXPRESSION_PROMOTION_PROVEN: bool = false;
+
+/// The single authority for the advertised `supportsSetExpression` value.
+///
+/// This deliberately consumes no catalog flag, backend flag, or handler-presence
+/// signal. Set-expression support is gated on a proof that does not exist yet,
+/// so the value is derived from [`SET_EXPRESSION_PROMOTION_PROVEN`] alone
+/// (#9568).
+#[must_use]
+pub const fn advertises_set_expression() -> bool {
+    SET_EXPRESSION_PROMOTION_PROVEN
+}
+
+/// Refusal message used when a `setExpression` request is declined (#9568).
+///
+/// Deterministic and input-independent: every rejected request — whatever its
+/// expression, value, frame, or format — receives this exact message, so the
+/// gate's output cannot leak anything about the input it refused.
+pub const SET_EXPRESSION_UNSUPPORTED_MESSAGE: &str = "setExpression is not supported: \
+     supportsSetExpression is advertised false because perl-dap has no exact current-frame \
+     l-value assignment proof yet (#9568)";
+
+/// Whether a mode must refuse a `setExpression` request as unsupported.
+///
+/// The invariant every mode holds: **a mode refuses setExpression exactly when
+/// it does not advertise it.** `advertised_set_expression` is the value that
+/// *this* mode puts on the wire for `supportsSetExpression`, so admission and
+/// advertisement can never disagree.
+///
+/// This matters at promotion time, not just today. If the refusal ignored the
+/// advertised value, flipping [`SET_EXPRESSION_PROMOTION_PROVEN`] would
+/// advertise the capability while the handler still rejected every request —
+/// the same capability-versus-behaviour contradiction #9568 exists to remove,
+/// only pointing the other way.
+///
+/// Modes stay independent: each passes its own advertised value, so promoting
+/// the native gate does not silently open an external-peer or mirror path that
+/// has no assignment proof of its own.
+#[must_use]
+pub(crate) fn refuse_set_expression(advertised_set_expression: bool) -> bool {
+    !advertised_set_expression
+}
+
 /// The negotiated DAP capability flags: catalog ∩ backend.
 ///
 /// Field names mirror the DAP `capabilities` payload keys the frontend emits in
@@ -558,5 +618,49 @@ mod tests {
     fn control_mode_defaults_to_mirror() {
         assert_eq!(ControlMode::default(), ControlMode::Mirror);
         assert_eq!(DebugBackendCapabilities::none().control_mode, ControlMode::Mirror);
+    }
+
+    /// The #9568 floor: the single setExpression authority is closed until the
+    /// #9570 promotion boundary passes, and it consumes no catalog signal.
+    #[test]
+    fn set_expression_authority_is_closed_until_promotion() {
+        assert!(
+            !advertises_set_expression(),
+            "setExpression must stay closed until #9568's re-enable gate passes"
+        );
+        // The authority is a constant function of the promotion constant only;
+        // assert both spellings agree so a future edit cannot decouple them.
+        assert_eq!(advertises_set_expression(), SET_EXPRESSION_PROMOTION_PROVEN);
+    }
+
+    /// #9568 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing `advertised` explicitly
+    /// exercises the flipped state without mutating the constant: when a mode
+    /// advertises setExpression it must stop refusing it; when it does not, it
+    /// must refuse. Anything else republishes the exact
+    /// capability-versus-behaviour contradiction this issue removes.
+    #[test]
+    fn set_expression_refusal_tracks_the_advertised_capability_in_both_directions() {
+        assert!(refuse_set_expression(false), "a mode that does not advertise setExpression must refuse it");
+        assert!(
+            !refuse_set_expression(true),
+            "a mode that advertises setExpression must stop refusing it, or promotion \
+             would advertise a capability the handler still rejects"
+        );
+    }
+
+    /// #9568: the refusal message is input-independent by construction.
+    ///
+    /// The gate treats every request identically, so the message must be a
+    /// single deterministic string with no interpolation seam.
+    #[test]
+    fn set_expression_refusal_message_is_deterministic() {
+        assert_eq!(
+            SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+            "setExpression is not supported: supportsSetExpression is advertised false \
+             because perl-dap has no exact current-frame l-value assignment proof yet (#9568)"
+        );
     }
 }

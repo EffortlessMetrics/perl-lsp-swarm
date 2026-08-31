@@ -1594,6 +1594,14 @@ mod value_format_family_tests {
         // A well-formed format deserializes cleanly: without a session the
         // handlers proceed to their normal "No debugger session" failure, NOT
         // to a format error - proving the option is consumed, not rejected.
+        //
+        // #9568: setExpression refuses at the capability floor before any
+        // session work, so its well-formed-format leg expects the authority
+        // refusal instead of "No debugger session". Typed deserialization is
+        // still proven here: a *malformed* format on the same command fails
+        // with "Invalid arguments" (see
+        // `mutation_and_evaluate_families_reject_unknown_format_options`),
+        // which runs before this same gate.
         let mut adapter = DebugAdapter::new();
         for (command, arguments) in [
             (
@@ -1601,14 +1609,21 @@ mod value_format_family_tests {
                 json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "hex": true } }),
             ),
             ("evaluate", json!({ "expression": "$x", "format": { "hex": true } })),
-            (
-                "setExpression",
-                json!({ "expression": "$x", "value": "5", "format": { "hex": true } }),
-            ),
         ] {
             let message = response_message(&mut adapter, command, arguments)?;
             assert_eq!(message, "No debugger session", "{command}: {message}");
         }
+        let set_expression_message = response_message(
+            &mut adapter,
+            "setExpression",
+            json!({ "expression": "$x", "value": "5", "format": { "hex": true } }),
+        )?;
+        assert_eq!(
+            set_expression_message,
+            crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+            "a well-formed format deserializes cleanly; the #9568 capability floor, \
+             not a format error, is what refuses setExpression"
+        );
         Ok(())
     }
 
