@@ -2155,7 +2155,7 @@ mod tests {
             #[cfg(unix)]
             let inode = Some(metadata.ino());
             #[cfg(not(unix))]
-            let inode = None;
+            let inode: Option<u64> = None;
             snapshots.push((entry.path().to_path_buf(), metadata.modified()?, inode));
         }
         legacyize_entry(&entry_root, &first.manifest_path, &archive)?;
@@ -2169,7 +2169,7 @@ mod tests {
             #[cfg(unix)]
             let current_inode = Some(metadata.ino());
             #[cfg(not(unix))]
-            let current_inode = None;
+            let current_inode: Option<u64> = None;
             assert_eq!(current_inode, inode, "runtime file identity changed during migration");
         }
         let parent = entry_root
