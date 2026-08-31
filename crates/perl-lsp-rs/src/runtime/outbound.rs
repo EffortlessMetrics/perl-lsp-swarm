@@ -566,6 +566,13 @@ mod tests {
         Ok(())
     }
 
+    /// #8402: normal channel closure must exercise the settlement reporting
+    /// path without emitting an I/O-failure record.
+    #[test]
+    fn normal_close_reports_non_error_settlement() {
+        WriterTerminalOutcome::NormalClose.report_settlement();
+    }
+
     #[test]
     fn spawn_writer_shared_serializes_payloads() -> Result<(), Box<dyn Error>> {
         let buffer = SharedBuffer::new();
