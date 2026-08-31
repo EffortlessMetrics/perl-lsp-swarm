@@ -658,6 +658,10 @@ fn code_lines(source: &str) -> Vec<String> {
 }
 
 /// Parse the Rust file with `syn` and return root re-export source paths.
+///
+/// Glob re-exports fail closed: a discarded `pub use api::*` would leave every
+/// public declaration of `api` classified as internal, so the inventory must
+/// refuse instead of silently undercounting live public API.
 fn syn_root_reexports(source: &str) -> Result<Vec<(String, String)>> {
     let file = syn::parse_file(source).wrap_err("failed to parse compat crate root with syn")?;
     let mut out = Vec::new();
@@ -666,7 +670,8 @@ fn syn_root_reexports(source: &str) -> Result<Vec<(String, String)>> {
             if !matches!(item.vis, SynVisibility::Public(_)) {
                 continue;
             }
-            collect_use_tree(&item.tree, Vec::new(), &mut out);
+            collect_use_tree(&item.tree, Vec::new(), &mut out)
+                .wrap_err("unsupported glob re-export in crate root")?;
         }
     }
     out.sort();
@@ -674,29 +679,45 @@ fn syn_root_reexports(source: &str) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
-fn collect_use_tree(tree: &syn::UseTree, prefix: Vec<String>, out: &mut Vec<(String, String)>) {
+fn collect_use_tree(
+    tree: &syn::UseTree,
+    prefix: Vec<String>,
+    out: &mut Vec<(String, String)>,
+) -> Result<()> {
     match tree {
         syn::UseTree::Path(path) => {
             let mut next = prefix;
             next.push(path.ident.to_string());
-            collect_use_tree(&path.tree, next, out);
+            collect_use_tree(&path.tree, next, out)
         }
         syn::UseTree::Name(name) => {
             if let Some(module) = prefix_to_module(&prefix) {
                 out.push((module, name.ident.to_string()));
             }
+            Ok(())
         }
         syn::UseTree::Rename(rename) => {
             if let Some(module) = prefix_to_module(&prefix) {
                 out.push((module, rename.ident.to_string()));
             }
+            Ok(())
         }
         syn::UseTree::Group(group) => {
             for item in &group.items {
-                collect_use_tree(item, prefix.clone(), out);
+                collect_use_tree(item, prefix.clone(), out)?;
             }
+            Ok(())
         }
-        syn::UseTree::Glob(_) => {}
+        syn::UseTree::Glob(_) => {
+            let mut shown = prefix.join("::");
+            if shown.is_empty() {
+                shown = "crate".to_string();
+            }
+            Err(color_eyre::eyre::eyre!(
+                "`pub use {shown}::*` cannot be inventoried without expansion; expand the glob \
+                 into named re-exports so every public symbol is classifiable"
+            ))
+        }
     }
 }
 
@@ -713,20 +734,49 @@ struct ItemMacroDetector {
     found: Option<String>,
 }
 
+impl ItemMacroDetector {
+    fn record(&mut self, name: String) {
+        if self.found.is_none() {
+            self.found = Some(name);
+        }
+    }
+
+    fn macro_path_segments(path: &syn::Path) -> String {
+        path.segments.iter().map(|segment| segment.ident.to_string()).collect::<Vec<_>>().join("::")
+    }
+}
+
 impl<'ast> Visit<'ast> for ItemMacroDetector {
     fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
-        if self.found.is_none() {
-            self.found = Some(
-                item.mac
-                    .path
-                    .segments
-                    .iter()
-                    .map(|segment| segment.ident.to_string())
-                    .collect::<Vec<_>>()
-                    .join("::"),
-            );
-        }
+        // A `macro_rules!` definition stores its own name in `ident`; the
+        // `mac.path` is the defining keyword. Invocations carry the invoked
+        // name in the path and no ident.
+        let name = item
+            .ident
+            .as_ref()
+            .map(|ident| ident.to_string())
+            .unwrap_or_else(|| Self::macro_path_segments(&item.mac.path));
+        self.record(name);
         syn::visit::visit_item_macro(self, item);
+    }
+
+    /// `impl { gen!(); }` can generate public methods; refuse it under the
+    /// same fail-closed policy as item macros.
+    fn visit_impl_item_macro(&mut self, item: &'ast syn::ImplItemMacro) {
+        self.record(Self::macro_path_segments(&item.mac.path));
+        syn::visit::visit_impl_item_macro(self, item);
+    }
+
+    /// Trait and foreign associated-item macros hide generated members the
+    /// same way; refuse them fail-closed.
+    fn visit_trait_item_macro(&mut self, item: &'ast syn::TraitItemMacro) {
+        self.record(Self::macro_path_segments(&item.mac.path));
+        syn::visit::visit_trait_item_macro(self, item);
+    }
+
+    fn visit_foreign_item_macro(&mut self, item: &'ast syn::ForeignItemMacro) {
+        self.record(Self::macro_path_segments(&item.mac.path));
+        syn::visit::visit_foreign_item_macro(self, item);
     }
 }
 
@@ -763,19 +813,25 @@ fn inherent_impl_name(item: &syn::ItemImpl) -> Option<String> {
     path.path.segments.last().map(|segment| segment.ident.to_string())
 }
 
-fn module_file_path(source_path: &Path, name: &str) -> Option<PathBuf> {
+/// Directory where an out-of-line child of the module defined in
+/// `source_path` resolves, per Rust module layout rules: beside `lib.rs`,
+/// `main.rs`, and `mod.rs`; beneath `<stem>/` for any other file name.
+fn module_children_dir(source_path: &Path) -> Option<PathBuf> {
     let parent = source_path.parent()?;
     let source_stem = source_path.file_stem()?.to_str()?;
-    let base = if source_stem == "lib" || source_stem == "main" {
-        parent.to_path_buf()
+    if matches!(source_stem, "lib" | "main" | "mod") {
+        Some(parent.to_path_buf())
     } else {
-        parent.join(source_stem)
-    };
-    let flat = base.join(format!("{name}.rs"));
+        Some(parent.join(source_stem))
+    }
+}
+
+fn module_file_path(module_dir: &Path, name: &str) -> Option<PathBuf> {
+    let flat = module_dir.join(format!("{name}.rs"));
     if flat.is_file() {
         Some(flat)
     } else {
-        let nested = base.join(name).join("mod.rs");
+        let nested = module_dir.join(name).join("mod.rs");
         nested.is_file().then_some(nested)
     }
 }
@@ -799,8 +855,36 @@ fn discover_syn_module(
             source_path.display()
         );
     }
+    let module_dir = module_children_dir(source_path).ok_or_else(|| {
+        color_eyre::eyre::eyre!("{} has no parent directory", source_path.display())
+    })?;
+    discover_syn_item_list(
+        source_path,
+        &module_dir,
+        module,
+        module_public,
+        root_reexports,
+        exports,
+        &file.items,
+    )
+}
 
-    for item in &file.items {
+/// The one walker for a parsed item list, whether the list is a whole module
+/// file or inline module content. `module_dir` is where an out-of-line child
+/// of this list resolves: beside the source file for `lib.rs`/`main.rs`/
+/// `mod.rs`, beneath the file's stem directory otherwise, and one component
+/// deeper per enclosing inline module. The caller has already run the
+/// fail-closed macro scan over the parsed file.
+fn discover_syn_item_list(
+    source_path: &Path,
+    module_dir: &Path,
+    module: &str,
+    module_public: bool,
+    root_reexports: &[(String, String)],
+    exports: &mut Vec<Export>,
+    items: &[Item],
+) -> Result<()> {
+    for item in items {
         if let Some((name, kind, declared)) = syn_item_declaration(item) {
             let reexported =
                 root_reexports.iter().any(|(path, exported)| path == module && exported == &name);
@@ -849,91 +933,15 @@ fn discover_syn_module(
         let child_module =
             if module == "crate" { child_name.clone() } else { format!("{module}::{child_name}") };
         let child_public = module_public && matches!(item_mod.vis, SynVisibility::Public(_));
-        if let Some((_, items)) = &item_mod.content {
-            let child_source = source_path.to_path_buf();
-            discover_syn_items(
-                &child_source,
-                &child_module,
-                child_public,
-                root_reexports,
-                exports,
-                items,
-            )?;
-        } else {
-            let child_path = module_file_path(source_path, &child_name).ok_or_else(|| {
-                color_eyre::eyre::eyre!(
-                    "cannot resolve module `{child_module}` declared in {}",
-                    source_path.display()
-                )
-            })?;
-            discover_syn_module(&child_path, &child_module, child_public, root_reexports, exports)?;
-        }
-    }
-    Ok(())
-}
-
-fn discover_syn_items(
-    source_path: &Path,
-    module: &str,
-    module_public: bool,
-    root_reexports: &[(String, String)],
-    exports: &mut Vec<Export>,
-    items: &[Item],
-) -> Result<()> {
-    let synthetic = syn::File { shebang: None, attrs: Vec::new(), items: items.to_vec() };
-    let mut detector = ItemMacroDetector { found: None };
-    detector.visit_file(&synthetic);
-    if let Some(name) = detector.found {
-        bail!(
-            "cannot inventory macro-generated items in {}: item macro `{name}` requires expansion",
-            source_path.display()
-        );
-    }
-    for item in items {
-        if let Some((name, kind, declared)) = syn_item_declaration(item) {
-            let reexported =
-                root_reexports.iter().any(|(path, exported)| path == module && exported == &name);
-            let visibility = if declared == Visibility::Public && (module_public || reexported) {
-                Visibility::Public
-            } else {
-                Visibility::Internal
-            };
-            exports.push(Export {
-                module: module.to_string(),
-                name,
-                kind,
-                visibility,
-                reexported_at_root: visibility == Visibility::Public && reexported,
-            });
-        }
-        if let Item::Impl(item_impl) = item {
-            if let Some(type_name) = inherent_impl_name(item_impl) {
-                for impl_item in &item_impl.items {
-                    let syn::ImplItem::Fn(method) = impl_item else { continue };
-                    let Some(declared) = syn_visibility(&method.vis) else { continue };
-                    let name = format!("{type_name}::{}", method.sig.ident);
-                    let visibility = if declared == Visibility::Public && module_public {
-                        Visibility::Public
-                    } else {
-                        Visibility::Internal
-                    };
-                    exports.push(Export {
-                        module: module.to_string(),
-                        name,
-                        kind: SymbolKind::Method,
-                        visibility,
-                        reexported_at_root: false,
-                    });
-                }
-            }
-        }
-        let Item::Mod(item_mod) = item else { continue };
-        let child_name = item_mod.ident.to_string();
-        let child_module = format!("{module}::{child_name}");
-        let child_public = module_public && matches!(item_mod.vis, SynVisibility::Public(_));
         if let Some((_, nested)) = &item_mod.content {
-            discover_syn_items(
+            // An inline module contributes a path component: an out-of-line
+            // child of `pub mod wrapper { pub mod inner; }` in `lib.rs`
+            // resolves at `wrapper/inner.rs` beneath this list's module
+            // directory, not beside the file.
+            let inline_dir = module_dir.join(&child_name);
+            discover_syn_item_list(
                 source_path,
+                &inline_dir,
                 &child_module,
                 child_public,
                 root_reexports,
@@ -941,9 +949,13 @@ fn discover_syn_items(
                 nested,
             )?;
         } else {
-            let path = module_file_path(source_path, &child_name)
-                .ok_or_else(|| color_eyre::eyre::eyre!("cannot resolve module `{child_module}`"))?;
-            discover_syn_module(&path, &child_module, child_public, root_reexports, exports)?;
+            let child_path = module_file_path(module_dir, &child_name).ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "cannot resolve module `{child_module}` declared in {}",
+                    source_path.display()
+                )
+            })?;
+            discover_syn_module(&child_path, &child_module, child_public, root_reexports, exports)?;
         }
     }
     Ok(())
@@ -3341,6 +3353,94 @@ impl<T> Wrapper<T> {
             .to_string();
         assert!(error.contains("macro-generated"), "unexpected error: {error}");
         assert!(error.contains("generated"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn syn_walk_rejects_root_glob_reexports_fail_closed() {
+        let error = syn_root_reexports("pub use api::*;\npub use convert::TreeError;\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("glob"), "unexpected error: {error}");
+        assert!(error.contains("api"), "error must name the glob source: {error}");
+        // The named re-export alongside the glob is irrelevant: one glob makes
+        // the whole root re-export set unclassifiable.
+        assert!(
+            error.contains("expansion") || error.contains("expand"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn syn_walk_resolves_children_of_mod_rs_from_its_parent_directory() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let src = temp.path().join("src");
+        fs::create_dir_all(&src)?;
+        fs::write(src.join("lib.rs"), "pub mod outer;\n")?;
+        fs::write(src.join("outer").join("mod.rs"), "pub mod inner;\npub fn outer_fn() {}\n")?;
+        fs::write(src.join("outer").join("inner.rs"), "pub fn external_fn() {}\n")?;
+        let lib_path = src.join("lib.rs");
+        let source = fs::read_to_string(&lib_path)?;
+        let reexports = syn_root_reexports(&source)?;
+        let mut exports = Vec::new();
+        discover_syn_module(&lib_path, "crate", true, &reexports, &mut exports)?;
+        assert!(
+            exports.iter().any(|e| e.module == "outer" && e.name == "outer_fn"),
+            "exports: {exports:?}"
+        );
+        assert!(
+            exports.iter().any(|e| e.module == "outer::inner" && e.name == "external_fn"),
+            "`src/outer/mod.rs` must resolve `mod inner;` as `src/outer/inner.rs`: {exports:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn syn_walk_resolves_inline_module_children_beneath_the_module_dir() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let src = temp.path().join("src");
+        fs::create_dir_all(src.join("wrapper"))?;
+        // `src/inner.rs` exists, but the out-of-line child of the inline
+        // module must resolve beneath `wrapper/`, never beside the file.
+        fs::write(src.join("inner.rs"), "pub fn decoy_fn() {}\n")?;
+        fs::write(src.join("lib.rs"), "pub mod wrapper { pub mod inner; }\n")?;
+        fs::write(src.join("wrapper").join("inner.rs"), "pub fn wrapper_inner_fn() {}\n")?;
+        let lib_path = src.join("lib.rs");
+        let source = fs::read_to_string(&lib_path)?;
+        let reexports = syn_root_reexports(&source)?;
+        let mut exports = Vec::new();
+        discover_syn_module(&lib_path, "crate", true, &reexports, &mut exports)?;
+        assert!(
+            exports.iter().any(|e| e.module == "wrapper::inner" && e.name == "wrapper_inner_fn"),
+            "exports: {exports:?}"
+        );
+        assert!(
+            !exports.iter().any(|e| e.name == "decoy_fn"),
+            "the sibling decoy must not be picked up as the inline child: {exports:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn syn_walk_refuses_associated_item_macros_fail_closed() {
+        for (form, macro_name) in [
+            ("pub struct Probe;\nimpl Probe { gen_methods!(); }", "gen_methods"),
+            ("pub trait Probe { gen_trait!(); }", "gen_trait"),
+            ("extern \"C\" { gen_foreign!(); }", "gen_foreign"),
+        ] {
+            let error = syn_exports(form).unwrap_err().to_string();
+            assert!(error.contains("macro-generated"), "unexpected error: {error}");
+            assert!(error.contains(macro_name), "error must name `{macro_name}`: {error}");
+        }
+    }
+
+    #[test]
+    fn syn_walk_gives_macro_rules_definitions_their_own_name() {
+        // A `macro_rules!` definition stores `generated` in `ItemMacro::ident`
+        // while `mac.path` is the defining keyword `macro_rules`; the refusal
+        // must name the definition, not the keyword.
+        let error = syn_exports("macro_rules! generated { () => {}; }").unwrap_err().to_string();
+        assert!(error.contains("`generated`"), "unexpected error: {error}");
+        assert!(!error.contains("`macro_rules`"), "unexpected error: {error}");
     }
 
     // -- checked-in state ---------------------------------------------------
