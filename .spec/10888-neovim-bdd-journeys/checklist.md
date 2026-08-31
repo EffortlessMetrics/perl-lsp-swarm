@@ -92,6 +92,12 @@ precise failure the immutability law exists to prevent. The row digests make
 the ID and its meaning inseparable, so any legitimate rewording of a published
 row must update its digest deliberately and visibly in the diff.
 
+Stated limitation: a row and its digest can be changed together in one commit,
+so the digests prove *consistency and visibility*, not *authority*. They make
+an ID reassignment impossible to perform silently; they cannot establish that
+the reassignment was governed. Governance remains a #10888 revision decision
+enforced by review, not by this checker.
+
 ```python
 #!/usr/bin/env python3
 """Deterministic structural checker for .spec/10888-neovim-bdd-journeys/.
@@ -100,6 +106,7 @@ Read-only. Re-reads and revalidates every table on each invocation; it never
 writes to the work tree. Exits non-zero with a named reason on any violation.
 """
 import hashlib
+import pathlib
 import re
 import subprocess
 
@@ -109,9 +116,12 @@ FILES = [f"{SPEC}/context.md", f"{SPEC}/acceptance.md", f"{SPEC}/checklist.md"]
 HEADINGS = ["§Behavior", "§Hazards", "§Contracts", "§API-Shape",
             "§Test-Grid", "§Blast-Radius", "§Coverage-Map"]
 
-PROFILES = ["native_neovim_configuration_documented", "native_neovim_core",
-            "native_neovim_deep_lifecycle",
-            "native_neovim_first_class_distribution",
+# The six governed profile IDs from .spec/11392-native-neovim-train-graph/
+# train.manifest.json. This packet consumes them verbatim; renaming one here
+# would fork the programme vocabulary.
+PROFILES = ["native_neovim_configuration", "native_neovim_core",
+            "release_v0_18_bounded", "native_neovim_deep_lifecycle",
+            "native_neovim_first_class",
             "native_neovim_programme_closeout"]
 
 REQUIRED_TERMS = [
@@ -122,6 +132,7 @@ REQUIRED_TERMS = [
     "#10507", "#10508", "#10511", "#10514", "#10516", "#10518", "#10520",
     "#10522", "#10523", "#10527", "#7777", "#10858", "#10894", "#7122",
     "#4998", "#6736", "#7762", "#7691", "#6739", "#3983", "#11392",
+    "#7716", "nv_release_scope_decision", "0.11.3",
 ]
 
 FAMILIES = ("attach", "core", "sync", "lifecycle", "support", "opt")
@@ -170,7 +181,7 @@ ROW_DIGESTS = {
     "neovim.bdd.lifecycle.05": "93a0c2c98fc6f1df",
     "neovim.bdd.lifecycle.06": "5236178f0faa8351",
     "neovim.bdd.lifecycle.07": "78da30c0d117d88c",
-    "neovim.bdd.support.01": "4d3847a971a26329",
+    "neovim.bdd.support.01": "b97c19e0b19b003a",
     "neovim.bdd.support.02": "a1ca4b3c6cac015b",
     "neovim.bdd.support.03": "a22b75e60ed6ca3b",
     "neovim.bdd.support.04": "db4db9ac7e555029",
@@ -245,6 +256,13 @@ def status_paths():
 
 
 def main():
+    # "Exactly three files" must mean the directory, not three named lookups:
+    # otherwise a fourth file could coexist while the checker still reports
+    # exact shape.
+    present = sorted(q.as_posix() for q in pathlib.Path(SPEC).iterdir())
+    if present != sorted(FILES):
+        fail(f"packet directory is not exactly the three spec files: {present}")
+
     texts = {}
     for path in FILES:
         try:
@@ -323,11 +341,14 @@ def main():
             fail(f"falsifier {want[0]} does not match its published text")
 
     # Bind the proof to the explicit candidate range.
-    base = git("rev-parse", "--verify", "origin/main^{commit}").strip()
+    # Bind the proof to the candidate's merge-base range. Using origin/main
+    # directly would make ordinary main movement invalidate an unchanged,
+    # conflict-free packet, which the repository's currentness doctrine
+    # explicitly rejects.
+    base = git("merge-base", "origin/main", "HEAD").strip()
     head = git("rev-parse", "--verify", "HEAD^{commit}").strip()
-    if subprocess.run(["git", "merge-base", "--is-ancestor", base, head],
-                      capture_output=True).returncode != 0:
-        fail("candidate range is not origin/main..HEAD")
+    if not base or not head:
+        fail("candidate base/HEAD refs are not resolvable")
     # Whitespace hygiene is part of the proof, so a nonzero status must fail
     # the checker rather than being discarded.
     for label, argv in (

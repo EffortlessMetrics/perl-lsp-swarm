@@ -155,9 +155,16 @@ neovim.bdd.sync.06–10    branch B `full_document_utf16`: UTF-16 selection,
                          no partial mutation, explicit recovery
 ```
 
-Both groups are published so the selected branch has an owner the instant
-#8129 rules. Publishing both asserts neither: the ruling makes exactly one
-group applicable and the other `not_applicable`.
+Both groups are published so each has a stable owner regardless of how the
+selection moves. The selection itself is **not this packet's to make**: it is
+governed by the `nv_release_scope_decision` selecting authority in #11392,
+whose allowed values are exactly `full_document_utf16` and `atomic_incremental`
+and whose current recorded value is `full_document_utf16`. That authority
+re-evaluates the selection whenever either branch materially lands, and a stale
+selection fails closed — which is precisely why both branch groups keep
+published IDs here rather than the losing branch being deleted. At any moment
+exactly one group is applicable and the other is `not_applicable` by that
+authority's value, never by an assertion in this packet.
 
 ### Feature: Neovim preserves parser and lifecycle truth
 
@@ -200,17 +207,22 @@ revision here; they do not cram unimplemented breadth into baseline examples.
 
 ## Claim profiles
 
-```text
-native_neovim_configuration_documented
-  documented native setup only; substrate; proves no behavior
-  aligns with the registered `neovim` tier already in
-  policy/lsp-client-support.toml (configuration_documented,
-  requires_actual_client_receipt = true, synthetic_profile = true)
+These are **not new IDs.** They are the six governed claim profiles already
+defined in `.spec/11392-native-neovim-train-graph/train.manifest.json` (#11392),
+consumed verbatim. Renaming one here, or inventing a parallel set, would fork
+the programme vocabulary and prevent downstream evidence from composing across
+the journey and train surfaces.
 
-native_neovim_core                       exactly attach.01–06 + core.01–10 (16 rows)
-native_neovim_deep_lifecycle             core + lifecycle.01–07 + the selected sync branch
-native_neovim_first_class_distribution   deep + support.01–08 stage laws
-native_neovim_programme_closeout         fan-in over terminal child propositions
+```text
+native_neovim_configuration       documented native setup only; substrate; proves no
+                                  behavior; aligns with the registered `neovim` tier in
+                                  policy/lsp-client-support.toml
+native_neovim_core                exactly attach.01–06 + core.01–10 (16 rows)
+release_v0_18_bounded             the one sync branch selected by nv_release_scope_decision
+                                  plus only the cells the bounded public claim requires
+native_neovim_deep_lifecycle      core + lifecycle.01–07 + the selected sync branch
+native_neovim_first_class         deep + support.01–08 stage laws
+native_neovim_programme_closeout  fan-in over terminal child propositions
 ```
 
 Laws:
@@ -266,8 +278,8 @@ is not a licence to normalize unsafe input:
 | Object | Owner | This packet |
 | --- | --- | --- |
 | Product controller | #7739 | consumed |
-| Train controller / topology | #10501, #11392 (`.spec/11392-native-neovim-train-graph/`) | consumed; no node added or renamed |
-| Text-sync envelope ruling | #8129 | consumed as a conditional; not decided here |
+| Train controller / topology | #10501, #11392 (`.spec/11392-native-neovim-train-graph/`) | consumed; claim-profile IDs and the #8129 selecting authority adopted verbatim; no node added or renamed |
+| Text-sync envelope ruling | #8129 via `nv_release_scope_decision` (#11392) | consumed as a governed selection; not decided here |
 | Activation/root + subject envelope | #10502 | consumed by reference; artifact absent on main |
 | Host observation leaves | #10504, #10505, #10506, #10507 | named as owners |
 | Version/platform rows | #10508 | named as owner |
@@ -358,9 +370,9 @@ name, or wall-clock timestamp. Runtime and transaction state stays in GitHub.
 ## Scope boundary
 
 In scope: exactly `context.md`, `acceptance.md`, and `checklist.md` under
-`.spec/10888-neovim-bdd-journeys/`, plus the mechanical
-`docs/policy/NON_RUST_INVENTORY.md` refresh that tracking three new files
-requires.
+`.spec/10888-neovim-bdd-journeys/`. `docs/policy/NON_RUST_INVENTORY.md` is
+explicitly out of scope: it is already stale on main under #14203/#14161 and
+its sanctioned owner is the post-merge regeneration job.
 
 Out of scope: Lua, Rust, or shell host implementation; fixture bytes; host
 automation or provisioning; semantic oracle generation; the #8129 release

@@ -82,14 +82,14 @@ ruling. Neither group is current until #8129 selects it and #10505 observes it.
 | `neovim.bdd.lifecycle.06` | A superseded parse or effect never publishes over a newer accepted generation | deep; actual host required | #10507 owner chain |
 | `neovim.bdd.lifecycle.07` | Closing and reopening the same URI with identical version and bytes creates a new document instance and restores no stale state; shutdown releases the exact owned work and state, not merely the process | deep; actual host required | #10507 owner chain |
 
-## §Behavior — support claims remain subject- and stage-bound (`native_neovim_first_class_distribution`)
+## §Behavior — support claims remain subject- and stage-bound (`native_neovim_first_class`)
 
 These are separation laws, not user gestures. Each states a distinctness that
 any downstream projection must preserve.
 
 | Scenario ID | Proposition | Profile / evidence tag | Evidence boundary (owner chain) |
 | --- | --- | --- | --- |
-| `neovim.bdd.support.01` | The 0.11 support floor and the current stable Neovim version are separate rows; neither substitutes for the other | distribution; stage law | #10508 version/platform rows |
+| `neovim.bdd.support.01` | The maintained support floor (Neovim 0.11.3, per `docs/EDITORS/NEOVIM_SETUP.md`) and the current stable Neovim version are separate rows; neither substitutes for the other, and no receipt certifies a broad `0.11+` matrix | distribution; stage law | #10508 version/platform rows; exact version cells owned by #7716 |
 | `neovim.bdd.support.02` | Linux, macOS, and Windows remain separate rows | distribution; stage law | #10508 |
 | `neovim.bdd.support.03` | Manual native configuration, upstream `nvim-lspconfig` registration, and Mason availability remain separate rows | distribution; stage law | #10516/#10518/#10520 install channels |
 | `neovim.bdd.support.04` | Release-archive, Cargo, Homebrew, and Mason installations remain separate rows | distribution; stage law | #10516/#10518/#10520 |
@@ -113,10 +113,11 @@ any downstream projection must preserve.
 
 | Profile | Membership rule | Ceiling |
 | --- | --- | --- |
-| `native_neovim_configuration_documented` | documented native setup only (`docs/EDITORS/NEOVIM_SETUP.md`) | substrate only; proves no behavior; matches the registered `neovim` tier |
+| `native_neovim_configuration` | documented native setup only (`docs/EDITORS/NEOVIM_SETUP.md`) | substrate only; proves no behavior; matches the registered `neovim` tier |
 | `native_neovim_core` | exactly the 16 rows of `attach.*` + `core.*` | bounded core; nothing else blocks or widens it |
 | `native_neovim_deep_lifecycle` | core + `lifecycle.01–07` + the one `sync.*` branch selected by #8129 | never a prerequisite of core |
-| `native_neovim_first_class_distribution` | deep + `support.01–08` stage laws | public stages require their own direct evidence |
+| `native_neovim_first_class` | deep + `support.01–08` stage laws | public stages require their own direct evidence |
+| `release_v0_18_bounded` | the one `sync.*` branch selected by `nv_release_scope_decision` plus only the cells the bounded public claim requires | selection is re-evaluated whenever either branch materially lands; a stale selection fails closed |
 | `native_neovim_programme_closeout` | fan-in over independently terminal child propositions | composes child results only; manufactures none |
 
 Laws: a stronger profile never erases a narrower valid one; optional rows are
@@ -169,10 +170,10 @@ No Rust or public API is introduced. Semantic contract terms defined here:
 | Item | Kind | Shape | Dup-risk / owner |
 | --- | --- | --- | --- |
 | `neovim.bdd.<family>.<nn>` | stable scenario ID namespace | 47 IDs, fixed families/order, immutable once published | none found on main; this packet |
-| `native_neovim_configuration_documented` | claim profile ID | documented native setup substrate | aligns with registered `neovim` tier name; binding is new here |
+| `native_neovim_configuration` | claim profile ID | documented native setup substrate | aligns with registered `neovim` tier name; binding is new here |
 | `native_neovim_core` | claim profile ID | membership = the 16 attach/core rows | none found; #10888 |
 | `native_neovim_deep_lifecycle` | claim profile ID | core + lifecycle + selected sync branch | none found; #10888 |
-| `native_neovim_first_class_distribution` | claim profile ID | deep + support stage laws | none found; #10888 |
+| `native_neovim_first_class` | claim profile ID | deep + support stage laws | none found; #10888 |
 | `native_neovim_programme_closeout` | claim profile ID | programme fan-in | none found; #10888 |
 
 ## §Test-Grid
