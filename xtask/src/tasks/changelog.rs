@@ -35,12 +35,29 @@
 //!
 //! A fragment that fails schema validation (including a missing, empty, or
 //! non-RFC-3339 `time:` — the #12549/#12648 incident class) is a *policy
-//! finding* naming the fragment. When any added fragment is malformed, the
-//! `changie batch --dry-run` render is skipped with an explicit INFO line: the
-//! renderer would crash on the malformed fragment repo-wide, which would bury
-//! the named findings under an exit-2 instrument failure that names nothing.
-//! "Fragment X is malformed" (above) and "render crashed" (exit 2) therefore
-//! never appear for the same run.
+//! finding* naming the fragment. When any fragment that would reach the
+//! renderer is malformed — whether added by this PR or pre-existing on disk —
+//! the `changie batch --dry-run` render is skipped with an explicit line
+//! naming the fragment(s): the renderer would crash on them repo-wide, which
+//! would bury the named findings under an exit-2 instrument failure that names
+//! nothing. "Fragment X is malformed" (above) and "render crashed" (exit 2)
+//! therefore never appear for the same run. Fragments deleted by the PR are
+//! excluded from validation: an absent path cannot crash the renderer.
+//!
+//! A malformed fragment is a *verdict-bearing* finding, symmetric with a
+//! missing disposition: past the blocking boundary it is a
+//! [`CheckOutcome::BlockingViolation`]; during the armed advisory soak it is
+//! an [`CheckOutcome::AdvisoryFinding`]; before any boundary it stays
+//! non-fatal (WARN only). Fragments deleted by the PR never escalate.
+//!
+//! Note on equivalence: this schema validation *approximates* renderer
+//! acceptance, it does not guarantee it. chrono's RFC 3339 parser (used here)
+//! and Changie's Go `yaml.v3` timestamp layout disagree on edge inputs (e.g.
+//! leap seconds, or a space separator with a `Z` offset), so an RFC-3339-valid
+//! `time:` can still be rejected by the real renderer. The staged/commit-tier
+//! gate (`commit_checks_changie`) runs the real renderer and remains the
+//! authority: it turns a render rejection into a Blocked verdict with named
+//! affected paths.
 //!
 //! ## The three-clock cutoff model
 //!
@@ -547,6 +564,10 @@ fn read_changed_files(
     base: &str,
 ) -> std::result::Result<Vec<String>, String> {
     if let Some(list) = changed_files {
+        // Caller-supplied lists (e.g. the changelog-advisory workflow) carry
+        // bare paths with no status. Deleted fragments are tolerated by the
+        // Fragment disposition: [`deleted_paths`] re-derives deletion status
+        // from git so an absent path is never treated as a malformed fragment.
         return std::fs::read_to_string(list)
             .map(|content| {
                 content
@@ -560,7 +581,10 @@ fn read_changed_files(
     }
     let out = Command::new("git")
         .current_dir(root)
-        .args(["diff", "--name-only", &format!("{base}...HEAD")])
+        // `--diff-filter=d` excludes deletions: a deleted fragment is absent
+        // on disk and cannot crash the renderer, so it must not be classified
+        // as an unreadable (malformed) fragment.
+        .args(["diff", "--name-only", "--diff-filter=d", &format!("{base}...HEAD")])
         .output()
         .map_err(|e| format!("failed to spawn `git diff`: {e}"))?;
     if !out.status.success() {
@@ -612,16 +636,9 @@ fn load_policy(root: &Path) -> Result<ChangelogPolicy> {
 /// from "the render instrument crashed" (issue #13484).
 fn check_fragment_file(root: &Path, rel: &str, cfg: &ChangieConfig, report: &mut Report) -> bool {
     let path = root.join(rel);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            report.warn(format!("could not read fragment {rel}: {e}"));
-            return true;
-        }
-    };
-    match serde_yaml_ng::from_str::<Fragment>(&content) {
-        Ok(frag) => {
-            let findings = validate_fragment(&frag, cfg);
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            let findings = fragment_content_findings(&content, cfg);
             if findings.is_empty() {
                 report.ok(format!("fragment {rel} is schema-valid"));
                 false
@@ -633,10 +650,64 @@ fn check_fragment_file(root: &Path, rel: &str, cfg: &ChangieConfig, report: &mut
             }
         }
         Err(e) => {
-            report.warn(format!("fragment {rel} does not parse as YAML: {e}"));
+            report.warn(format!("could not read fragment {rel}: {e}"));
             true
         }
     }
+}
+
+/// Schema findings for one fragment's file content: empty when the fragment
+/// parses and is schema-valid; one finding for a YAML parse failure; the
+/// validation findings otherwise. Shared by the per-PR reporter
+/// ([`check_fragment_file`]) and the repo-wide render guard
+/// ([`on_disk_malformed_fragments`]) so both name defects identically.
+fn fragment_content_findings(content: &str, cfg: &ChangieConfig) -> Vec<String> {
+    match serde_yaml_ng::from_str::<Fragment>(content) {
+        Ok(frag) => validate_fragment(&frag, cfg),
+        Err(e) => vec![format!("does not parse as YAML: {e}")],
+    }
+}
+
+/// Validate every on-disk unreleased fragment (not just this PR's) and return
+/// the malformed paths, reporting a WARN per finding. This is the repo-wide
+/// half of the #13484 guard: `render_disposition_projects` renders every
+/// project with unreleased fragments, so a pre-existing malformed fragment —
+/// not authored by this PR — would still crash `changie batch` and bury the
+/// findings under an unnamed exit-2 failure. Valid fragments are silent here
+/// (the PR's own fragments were already reported by [`check_fragment_file`]).
+fn on_disk_malformed_fragments(
+    root: &Path,
+    cfg: &ChangieConfig,
+    report: &mut Report,
+) -> Vec<String> {
+    let unreleased = root.join(UNRELEASED_DIR);
+    let Ok(entries) = std::fs::read_dir(&unreleased) else {
+        return Vec::new();
+    };
+    let mut malformed = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        let Some(rel) = path.strip_prefix(root).ok().and_then(|p| p.to_str()).map(str::to_string)
+        else {
+            continue;
+        };
+        let findings = std::fs::read_to_string(&path).map_or_else(
+            |_| vec!["could not read fragment".to_string()],
+            |content| fragment_content_findings(&content, cfg),
+        );
+        if findings.is_empty() {
+            continue;
+        }
+        for f in findings {
+            report.warn(format!("{rel}: {f}"));
+        }
+        malformed.push(rel);
+    }
+    malformed.sort();
+    malformed
 }
 
 /// Accumulates advisory findings for a single run.
@@ -675,6 +746,21 @@ pub fn check(
     self_test: bool,
     root: Option<PathBuf>,
 ) -> Result<CheckOutcome> {
+    let (outcome, report) = check_inner(base, changed_files, pr_body_file, self_test, root)?;
+    report.emit();
+    Ok(outcome)
+}
+
+/// [`check`] plus the accumulated [`Report`], so tests can assert report
+/// contents (named fragment findings, skip lines, render results) instead of
+/// scraping stdout. The CLI path uses [`check`], which emits the report.
+fn check_inner(
+    base: Option<String>,
+    changed_files: Option<PathBuf>,
+    pr_body_file: Option<PathBuf>,
+    self_test: bool,
+    root: Option<PathBuf>,
+) -> Result<(CheckOutcome, Report)> {
     let root = match root {
         Some(r) => r,
         None => crate::utils::project_root()?,
@@ -690,8 +776,7 @@ pub fn check(
 
     if self_test {
         run_self_test(&root, &cfg, &mut report).map_err(|e| eyre!(e))?;
-        report.emit();
-        return Ok(CheckOutcome::PolicySatisfied);
+        return Ok((CheckOutcome::PolicySatisfied, report));
     }
 
     let base = base.unwrap_or_else(|| "origin/main".to_string());
@@ -704,8 +789,7 @@ pub fn check(
 
     if changed.is_empty() {
         report.info("no changed files resolved (nothing to check)");
-        report.emit();
-        return Ok(CheckOutcome::PolicySatisfied);
+        return Ok((CheckOutcome::PolicySatisfied, report));
     }
 
     let changelog_paths = policy.changelog_paths();
@@ -713,21 +797,47 @@ pub fn check(
     let outcome = match &disposition {
         Disposition::Fragment(frags) => {
             report.ok(format!("disposition: {} Changie fragment(s) added", frags.len()));
+            let deleted = deleted_paths(&root, &base);
             let mut malformed = Vec::new();
             for rel in frags {
+                // A fragment deleted by this PR is absent on disk and cannot
+                // crash the renderer: exclude it from validation instead of
+                // counting the deletion as a malformed fragment (issue
+                // #13484 review). Soft-degraded `deleted_paths` (empty set)
+                // preserves the pre-existing advisory behavior.
+                if deleted.contains(rel) {
+                    report.info(format!(
+                        "fragment {rel} is deleted by this PR — nothing to validate, the \
+                         renderer cannot crash on an absent path"
+                    ));
+                    continue;
+                }
                 if check_fragment_file(&root, rel, &cfg, &mut report) {
                     malformed.push(rel.clone());
                 }
             }
-            if malformed.is_empty() {
+            // Repo-wide guard: the render walks every project with unreleased
+            // fragments, so a pre-existing malformed fragment (not authored by
+            // this PR) would crash `changie batch` and bury the named
+            // findings under an exit-2 instrument failure that names nothing.
+            let mut unrenderable = malformed.clone();
+            if unrenderable.is_empty() {
+                unrenderable = on_disk_malformed_fragments(&root, &cfg, &mut report);
+                if !unrenderable.is_empty() {
+                    report.info(format!(
+                        "skipping `changie batch --dry-run`: {} pre-existing malformed \
+                         fragment(s) on disk ({}) would crash the renderer — repair or \
+                         recreate them with `changie new` (or `cargo change`); this PR's \
+                         own fragments are valid.",
+                        unrenderable.len(),
+                        unrenderable.join(", ")
+                    ));
+                }
+            }
+            if unrenderable.is_empty() {
                 // Render each project that has unreleased fragments.
                 render_disposition_projects(&root, &mut report).map_err(|e| eyre!(e))?;
-            } else {
-                // Issue #13484: a malformed fragment crashes `changie batch`
-                // repo-wide. Skipping the render here is what keeps "fragment
-                // X is malformed" (the WARN lines above, a policy verdict) from
-                // being buried under "render crashed" (an exit-2 instrument
-                // failure that names no fragment).
+            } else if !malformed.is_empty() {
                 report.info(format!(
                     "skipping `changie batch --dry-run`: {} malformed fragment(s) reported \
                      above ({}) — the renderer would crash on them. This is a \
@@ -737,7 +847,30 @@ pub fn check(
                     malformed.join(", ")
                 ));
             }
-            CheckOutcome::PolicySatisfied
+            if malformed.is_empty() {
+                // This PR's fragments are schema-valid (a pre-existing
+                // on-disk fragment may still have forced the render skip, but
+                // it is not this PR's defect to escalate).
+                CheckOutcome::PolicySatisfied
+            } else {
+                // Verdict-bearing escalation, symmetric with `Disposition::
+                // Missing`: a malformed fragment past the blocking boundary is
+                // a BlockingViolation; during the armed advisory soak it is an
+                // AdvisoryFinding; before any boundary it stays non-fatal.
+                match boundary_state(&root, &policy, &base) {
+                    Boundary::Blocking => {
+                        report.warn(
+                            "BLOCKING: malformed Changie fragment(s) reported above and the \
+                             enforcement boundary (`blocking_enforced_from`) has been reached \
+                             for this PR's base. Repair or recreate the fragment(s) with \
+                             `changie new` (or `cargo change`).",
+                        );
+                        CheckOutcome::BlockingViolation
+                    }
+                    Boundary::Advisory => CheckOutcome::AdvisoryFinding,
+                    Boundary::NotArmed => CheckOutcome::PolicySatisfied,
+                }
+            }
         }
         Disposition::Exemption(reason) => {
             report.ok(format!("disposition: exemption — {reason}"));
@@ -790,8 +923,7 @@ pub fn check(
         report.warn(warning);
     }
 
-    report.emit();
-    Ok(outcome)
+    Ok((outcome, report))
 }
 
 /// Print the policy's enforcement mode and the three cutoff clocks.
@@ -842,6 +974,32 @@ fn is_ancestor(root: &Path, sha: &str, base: &str) -> Option<bool> {
         Some(1) => Some(false),
         _ => None,
     }
+}
+
+/// Paths deleted between `base` and `HEAD` in `root`'s git history. Empty on
+/// any git failure (unspawnable git, non-repo root) — a soft degrade, not an
+/// instrument failure: worst case a deleted fragment is validated as if it
+/// were present, which is the pre-existing advisory behavior. Caller-supplied
+/// changed-file lists carry bare paths with no status, so this re-derives
+/// deletion from git (issue #13484 review: a PR deleting a stale unreleased
+/// fragment must not count as a malformed-fragment finding).
+fn deleted_paths(root: &Path, base: &str) -> std::collections::HashSet<String> {
+    let Ok(out) = Command::new("git")
+        .current_dir(root)
+        .args(["diff", "--name-only", "--diff-filter=D", &format!("{base}...HEAD")])
+        .output()
+    else {
+        return Default::default();
+    };
+    if !out.status.success() {
+        return Default::default();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Resolve which policy boundary (if any) applies to a PR whose diff base is
@@ -1528,6 +1686,44 @@ body:
         Ok(list)
     }
 
+    /// [`write_policy`] with explicit enforcement mode and clock values, so a
+    /// test can arm the advisory soak and/or the blocking boundary at a real
+    /// commit SHA (pass `base = Some("HEAD")` to `check_inner` to reach them).
+    fn write_policy_with_clocks(
+        dir: &Path,
+        enforcement: &str,
+        advisory_expected_from: Option<&str>,
+        blocking_enforced_from: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        let advisory = advisory_expected_from.unwrap_or("");
+        let blocking = blocking_enforced_from.unwrap_or("");
+        std::fs::create_dir_all(dir.join("policy")).map_err(|e| e.to_string())?;
+        std::fs::write(
+            dir.join(POLICY_FILE),
+            format!(
+                r#"
+schema_version = 1
+enforcement = "{enforcement}"
+retrospective_covered_through = "da86c123a"
+advisory_expected_from = "{advisory}"
+blocking_enforced_from = "{blocking}"
+exemption_categories = ["tests", "ci", "refactor", "generated-status", "docs-no-contract-change", "deps", "release-prep", "changelog-tooling"]
+
+[[projects]]
+key = "product"
+label = "Product"
+changelog = "CHANGELOG.md"
+
+[[projects]]
+key = "vscode"
+label = "VS Code extension"
+changelog = "vscode-extension/CHANGELOG.md"
+"#
+            ),
+        )
+        .map_err(|e| e.to_string())
+    }
+
     /// Regression test for a real bug this PR's Correction 2 surfaced: TOML
     /// scopes bare `key = value` lines to the most recently opened table, so
     /// `exemption_categories` declared AFTER `[[projects]]` silently nests
@@ -1751,7 +1947,10 @@ changelog = "vscode-extension/CHANGELOG.md"
     /// policy verdict — never a repo-wide `changie batch` render crash surfacing
     /// as an exit-2 instrument failure that names no fragment. The render is
     /// skipped with an explicit INFO line instead, deterministically (regardless
-    /// of whether changie is installed).
+    /// of whether changie is installed). Asserts the report contents, not just
+    /// the verdict: the fragment path, the `time:` defect finding, and the
+    /// render skip must all be present (render-skip is observable even without
+    /// changie installed, because the skip happens before the render call).
     #[test]
     fn check_malformed_time_fragment_names_fragment_and_never_crashes_renderer()
     -> std::result::Result<(), String> {
@@ -1768,12 +1967,198 @@ changelog = "vscode-extension/CHANGELOG.md"
         )
         .map_err(|e| e.to_string())?;
         let list = write_changed_files(dir, &[fragment_path])?;
-        let outcome = check(None, Some(list), None, false, Some(dir.to_path_buf()))
+        let (outcome, report) = check_inner(None, Some(list), None, false, Some(dir.to_path_buf()))
             .map_err(|e| format!("malformed fragment must not be an instrument failure: {e}"))?;
         assert_eq!(
             outcome,
             CheckOutcome::PolicySatisfied,
             "an advisory malformed-fragment finding must stay a policy verdict (exit 0/1), not exit 2"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            rendered.contains(fragment_path),
+            "report must name the malformed fragment path; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("time:"),
+            "report must carry the `time:` defect finding; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("skipping `changie batch --dry-run`"),
+            "report must record the renderer skip; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("rendered OK"),
+            "no project may render when a PR fragment is malformed; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A malformed fragment past the blocking boundary escalates to a
+    /// BlockingViolation, symmetric with a missing disposition (issue #13484
+    /// review: schema-invalid fragments must not bypass blocking enforcement).
+    #[test]
+    fn check_malformed_fragment_after_blocking_boundary_is_blocking_violation()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "seed.txt"])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let sha = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&sha), Some(&sha))?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-12549-Added-135513.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime:\n  13:55:13\ncustom:\n  PR: \"12549\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[fragment_path])?;
+        let (outcome, report) =
+            check_inner(Some("HEAD".to_string()), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "malformed fragment past a reached blocking boundary must be a BlockingViolation, exit 1"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            rendered.contains("BLOCKING: malformed Changie fragment(s)"),
+            "blocking escalation must be reported; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A malformed fragment during the armed advisory soak is a reported
+    /// finding (AdvisoryFinding, exit 0) — non-blocking but verdict-bearing.
+    #[test]
+    fn check_malformed_fragment_during_soak_is_advisory_finding() -> std::result::Result<(), String>
+    {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "seed.txt"])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let sha = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-12549-Added-135513.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime:\n  13:55:13\ncustom:\n  PR: \"12549\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[fragment_path])?;
+        let (outcome, _) =
+            check_inner(Some("HEAD".to_string()), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "malformed fragment during the armed advisory soak must be an AdvisoryFinding, exit 0"
+        );
+        Ok(())
+    }
+
+    /// A PR that deletes a stale unreleased fragment must not count the
+    /// deletion as a malformed fragment: an absent path cannot crash the
+    /// renderer, so the check passes without a render-skip finding (issue
+    /// #13484 review).
+    #[test]
+    fn check_deleted_fragment_is_not_flagged_malformed() -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-stale-Added-111111.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add stale fragment"])?;
+        std::fs::remove_file(dir.join(fragment_path)).map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete stale fragment"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let (outcome, report) = check_inner(Some(base), None, None, false, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "a PR whose only change is a fragment deletion must pass"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("malformed"),
+            "a deleted fragment must not be classified malformed; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A pre-existing malformed fragment on disk (not authored by this PR)
+    /// must skip the render with a named finding instead of crashing
+    /// `changie batch` repo-wide as an unnamed exit-2 failure (issue #13484
+    /// review: repo-wide half of the render guard).
+    #[test]
+    fn check_preexisting_on_disk_malformed_fragment_skips_render_with_named_finding()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let stale_path = ".changes/unreleased/product-stale-Added-111111.yaml";
+        std::fs::write(
+            dir.join(stale_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime:\n  13:55:13\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let own_path = ".changes/unreleased/product-12549-Added-135514.yaml";
+        std::fs::write(
+            dir.join(own_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"12549\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[own_path])?;
+        let (outcome, report) = check_inner(None, Some(list), None, false, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "a pre-existing on-disk defect is not this PR's escalation to bear"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            rendered.contains("product-stale-Added-111111.yaml"),
+            "report must name the pre-existing malformed fragment; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("pre-existing malformed fragment(s) on disk"),
+            "report must record the repo-wide render skip; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("rendered OK"),
+            "no project may render when a pre-existing fragment is malformed; got:\n{rendered}"
         );
         Ok(())
     }
