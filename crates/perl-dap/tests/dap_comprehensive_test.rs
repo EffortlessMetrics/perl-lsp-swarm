@@ -71,8 +71,12 @@ fn test_dap_initialize() {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
             );
+            // #9573: hover is advertised false until a pure selected-frame
+            // inspection path exists. `unwrap_or(true)` so a missing key fails
+            // this assertion instead of passing vacuously.
             assert!(
-                body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(false)
+                !body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(true),
+                "supportsEvaluateForHovers must be false (#9573)"
             );
             assert!(
                 body.get("supportsFunctionBreakpoints").and_then(|v| v.as_bool()).unwrap_or(false)
