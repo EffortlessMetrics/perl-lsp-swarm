@@ -625,6 +625,7 @@ fn mutating_regex_targets_are_read_modify_write() {
             )
         }));
         assert_eq!(regex_node.access, expected_access, "access classification for {source}");
+        assert_eq!(graph.receipt.access_counts.get(regex_node.access.name()), Some(&1));
     }
 }
 
