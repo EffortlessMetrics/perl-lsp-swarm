@@ -338,17 +338,6 @@ impl PatternDetector for SourceFilterDetector {
 // Regex heredoc detector
 struct RegexHeredocDetector;
 
-/// Pattern for identifying heredocs inside regex code blocks.
-///
-/// `(?{ ... })` blocks containing a heredoc are multi-line by construction in
-/// real Perl, so the class is bounded by `}` alone rather than by a newline
-/// horizon. See the module docs for the governing measurement (#3597).
-static REGEX_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"\(\?\{[^}]*<<[^}]*\}") {
-        Ok(re) => re,
-        Err(_) => unreachable!("REGEX_HEREDOC_PATTERN regex failed to compile"),
-    });
-
 fn regex_code_block_matches(scan_code: &str) -> Vec<usize> {
     let mut matches = Vec::new();
     let mut search_from = 0;
