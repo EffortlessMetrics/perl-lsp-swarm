@@ -46,12 +46,12 @@ use tasks::{
     generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
     ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
-    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
-    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
-    perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    issue_plan, kwalitee_namespace_inventory, layer_check, lsp_318_claims, lsp_318_matrix,
+    lsp_ux_smoke, memory_trends, merge_ready, methodology_gate, metrics, module_train,
+    module_train_live, native_critic, native_format, native_neovim_train, native_product_surface,
+    native_tooling, oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema,
+    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
+    perl_core_harness, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
@@ -319,6 +319,22 @@ enum Commands {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Reconcile `policy/kwalitee-namespace-inventory.toml` against every live
+    /// `perl-kwalitee` / `perl_kwalitee` reference and report unresolved active
+    /// counts by migration target (#8752).
+    #[command(name = "kwalitee-inventory")]
+    KwaliteeInventory {
+        /// Validate only, and fail on unclassified or stale references.
+        #[arg(long)]
+        check: bool,
+        /// Print entry skeletons with current line hashes instead of checking.
+        #[arg(long)]
+        scaffold: bool,
+        /// Evaluate a different repository tree (for hermetic tests).
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Generate or check the protocol-type substrate and migration-denominator
@@ -5174,6 +5190,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
+        Commands::KwaliteeInventory { check, scaffold, root } => {
+            kwalitee_namespace_inventory::run(check, scaffold, root)
+        }
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)
         }

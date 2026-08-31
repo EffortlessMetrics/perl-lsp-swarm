@@ -104,6 +104,7 @@ pub mod integration_proof;
 pub mod integration_trigger;
 pub mod intent_diff_gate;
 pub mod issue_plan;
+pub mod kwalitee_namespace_inventory;
 pub mod layer_check;
 pub mod lsp_318_claims;
 pub mod lsp_318_matrix;
