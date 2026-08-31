@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/releases/exposed-surface-disposition.v1.schema.json",
+  "title": "Release exposed-surface disposition v1",
+  "description": "A release-only projection over canonical product authorities. It does not discover surfaces or replace their source contracts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "release", "repository_sha", "rows"],
+  "properties": {
+    "schema": {"const": "exposed_surface_disposition.v1"},
+    "release": {"type": "string", "minLength": 1},
+    "repository_sha": {"$ref": "#/$defs/sha"},
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/row"}
+    }
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "issueUrl": {
+      "type": ["string", "null"],
+      "pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+$"
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "row_id", "digest"],
+      "properties": {
+        "authority": {"$ref": "#/$defs/nonEmptyString"},
+        "row_id": {"$ref": "#/$defs/nonEmptyString"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "evidenceSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "repository_sha", "artifact_profile", "artifact_sha256", "journey_id", "receipt_ref"],
+      "properties": {
+        "kind": {"enum": ["installed_journey", "refusal_boundary", "artifact_absence"]},
+        "repository_sha": {"$ref": "#/$defs/sha"},
+        "artifact_profile": {"$ref": "#/$defs/nonEmptyString"},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "journey_id": {"$ref": "#/$defs/nonEmptyString"},
+        "receipt_ref": {"$ref": "#/$defs/nonEmptyString"}
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface_ref",
+        "artifact_profiles",
+        "exposure_class",
+        "effect_class",
+        "default_reachable",
+        "opt_in",
+        "ordinary_journey",
+        "failure_journeys",
+        "disposition",
+        "owner_issue",
+        "evidence_subjects",
+        "invalidation_paths",
+        "claim_effect"
+      ],
+      "properties": {
+        "surface_ref": {"$ref": "#/$defs/authority"},
+        "artifact_profiles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "exposure_class": {"$ref": "#/$defs/nonEmptyString"},
+        "effect_class": {
+          "enum": [
+            "source_mutation",
+            "process_execution",
+            "state_publication",
+            "network",
+            "installation_update",
+            "read_only_provider",
+            "file_generation",
+            "registration_activation",
+            "other"
+          ]
+        },
+        "default_reachable": {"type": "boolean"},
+        "opt_in": {"type": "boolean"},
+        "ordinary_journey": {"$ref": "#/$defs/nonEmptyString"},
+        "failure_journeys": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "disposition": {"enum": ["READY", "BOUNDED_PREVIEW", "DISABLED", "BLOCKED", "NOT_PROVEN"]},
+        "owner_issue": {"$ref": "#/$defs/issueUrl"},
+        "evidence_subjects": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/evidenceSubject"}
+        },
+        "invalidation_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "claim_effect": {"enum": ["retain", "limit", "remove_or_withhold"]}
+      }
+    }
+  }
+}

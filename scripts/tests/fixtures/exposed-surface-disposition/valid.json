@@ -1,0 +1,42 @@
+{
+  "release": "0.18.0-rc",
+  "repository_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "rows": [
+    {
+      "artifact_profiles": [
+        "vscode_public_beta"
+      ],
+      "claim_effect": "retain",
+      "default_reachable": true,
+      "disposition": "READY",
+      "effect_class": "read_only_provider",
+      "evidence_subjects": [
+        {
+          "artifact_profile": "vscode_public_beta",
+          "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "journey_id": "diagnostics-current-document",
+          "kind": "installed_journey",
+          "receipt_ref": "receipt://6056/diagnostics",
+          "repository_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "exposure_class": "product_supported",
+      "failure_journeys": [
+        "stale-document-generation"
+      ],
+      "invalidation_paths": [
+        "features.toml",
+        "vscode-extension/package.json"
+      ],
+      "opt_in": false,
+      "ordinary_journey": "diagnostics-current-document",
+      "owner_issue": null,
+      "surface_ref": {
+        "authority": "effective_lsp_surface",
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "row_id": "provider.diagnostics"
+      }
+    }
+  ],
+  "schema": "exposed_surface_disposition.v1"
+}
