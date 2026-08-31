@@ -162,7 +162,7 @@ fn active_stopped_session_stale_eval_ref_returns_honest_empty() -> TestResult {
 
     // Seed a Stopped session (passes the Running-state guard).
     // This is the critical difference from the no-session test above.
-    adapter.seed_stopped_session_with_frames_for_test(vec![]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![])?;
 
     // Stale eval_ref wire: EvalResult band, not in cache (cache was cleared on resume).
     let stale_eval_ref_wire: i64 = 1_000_001;
@@ -190,7 +190,7 @@ fn active_stopped_session_multiple_stale_eval_refs_all_honest_empty() -> TestRes
         return Ok(());
     }
     let mut adapter = DebugAdapter::new();
-    adapter.seed_stopped_session_with_frames_for_test(vec![]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![])?;
 
     // Range of eval_ref wire values across the EvalResult band.
     let stale_eval_refs: &[i64] =
@@ -223,7 +223,7 @@ fn active_stopped_session_scope_ref_not_affected_by_eval_ref_fix() -> TestResult
         return Ok(());
     }
     let mut adapter = DebugAdapter::new();
-    adapter.seed_stopped_session_with_frames_for_test(vec![]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![])?;
 
     // Scope ref: frame_id=1, Locals -> wire 11 (well within Scope band)
     let scope_ref_wire: i64 = 11;
@@ -288,7 +288,7 @@ fn stale_eval_ref_response_has_correct_dap_shape() -> TestResult {
         return Ok(());
     }
     let mut adapter = DebugAdapter::new();
-    adapter.seed_stopped_session_with_frames_for_test(vec![]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![])?;
 
     let response = adapter.handle_request(
         1,
@@ -427,7 +427,7 @@ fn active_stopped_session_stale_child_ref_returns_honest_empty() -> TestResult {
         return Ok(());
     }
     let mut adapter = DebugAdapter::new();
-    adapter.seed_stopped_session_with_frames_for_test(vec![]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![])?;
 
     // Child band: parent=0, index=1 → wire 2_000_000_001
     let stale_child_ref_wire: i64 = 2_000_000_001;
@@ -455,7 +455,7 @@ fn active_stopped_session_multiple_stale_child_refs_all_honest_empty() -> TestRe
         return Ok(());
     }
     let mut adapter = DebugAdapter::new();
-    adapter.seed_stopped_session_with_frames_for_test(vec![]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![])?;
 
     // Range of Child wire values: base, base+1, base+2, and a value with a non-zero parent.
     let stale_child_refs: &[i64] = &[2_000_000_000, 2_000_000_001, 2_000_000_002, 2_000_065_537];
@@ -483,7 +483,7 @@ fn stale_child_ref_response_has_correct_dap_shape() -> TestResult {
         return Ok(());
     }
     let mut adapter = DebugAdapter::new();
-    adapter.seed_stopped_session_with_frames_for_test(vec![]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![])?;
 
     // Child band base value
     let response = adapter.handle_request(

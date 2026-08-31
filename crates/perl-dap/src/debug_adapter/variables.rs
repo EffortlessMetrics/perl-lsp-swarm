@@ -988,9 +988,10 @@ mod hazard_invariant_tests {
     }
 
     #[test]
-    fn package_globals_and_noncurrent_scope_refs_are_rejected_before_query() {
+    fn package_globals_and_noncurrent_scope_refs_are_rejected_before_query()
+    -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
         use crate::types::StackFrame;
@@ -1005,7 +1006,7 @@ mod hazard_invariant_tests {
                 source_reference: None,
             },
             1,
-        )]);
+        )])?;
 
         let before_queries = a.debugger_query_count_for_test();
         for (frame_id, kind) in [
@@ -1025,15 +1026,17 @@ mod hazard_invariant_tests {
             before_queries,
             "unadmitted scope references must perform zero framed debugger queries"
         );
+        Ok(())
     }
 
     #[test]
-    fn cleared_session_does_not_revive_stale_scope_from_recent_output() {
+    fn cleared_session_does_not_revive_stale_scope_from_recent_output()
+    -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
-        a.seed_stopped_session_with_frames_for_test(vec![]);
+        a.seed_stopped_session_with_frames_for_test(vec![])?;
         a.push_recent_output_line_for_test("$stale = from-an-older-session");
         a.clear_active_session_state();
 
@@ -1041,15 +1044,16 @@ mod hazard_invariant_tests {
             variables_body_is_empty(&mut a, 11),
             "a scope ref must stay empty after its session is cleared"
         );
+        Ok(())
     }
 
     #[test]
-    fn unknown_reference_does_not_parse_recent_output() {
+    fn unknown_reference_does_not_parse_recent_output() -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
-        a.seed_stopped_session_with_frames_for_test(vec![]);
+        a.seed_stopped_session_with_frames_for_test(vec![])?;
         a.push_recent_output_line_for_test("$stale = from-an-unknown-reference");
 
         // 999_999 is in the valid wire range but is not a cache or scope
@@ -1058,6 +1062,7 @@ mod hazard_invariant_tests {
             variables_body_is_empty(&mut a, 999_999),
             "an unknown reference must not be correlated with recent output"
         );
+        Ok(())
     }
 
     // --- Fix #1338: stale EvalResult ref with Stopped session -> early short-circuit ---
@@ -1077,15 +1082,16 @@ mod hazard_invariant_tests {
     // Skip when perl is not on PATH (seed_stopped_session_with_frames_for_test
     // spawns perl -e 1 as a no-op child process).
     #[test]
-    fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty() {
+    fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
         // Skip if perl is not available on PATH.
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         // Seed a Stopped session so the Running-state guard does not trigger.
         // This exercises the cache-miss path and the new EvalResult short-circuit.
-        a.seed_stopped_session_with_frames_for_test(vec![]);
+        a.seed_stopped_session_with_frames_for_test(vec![])?;
 
         // EvalResult band wire values: stale after resume (not in cache).
         for eval_ref_wire in [1_000_000_i64, 1_000_001, 1_000_003, 1_100_000] {
@@ -1094,6 +1100,7 @@ mod hazard_invariant_tests {
                 "fix #1338: stopped session + stale eval_ref={eval_ref_wire} must return honest empty"
             );
         }
+        Ok(())
     }
 
     // --- Guard test: cached EvalResult is NOT short-circuited by the fix #1338 early return ---
@@ -1117,7 +1124,7 @@ mod hazard_invariant_tests {
         use crate::types::Variable;
 
         let mut a = adapter();
-        a.seed_stopped_session_with_frames_for_test(vec![]);
+        a.seed_stopped_session_with_frames_for_test(vec![]).map_err(|error| error.to_string())?;
 
         // An EvalResult wire value that IS in cache (simulates a fresh evaluate result
         // before resume — the client holds the ref and sends a variables request while
@@ -1357,7 +1364,7 @@ mod value_format_family_tests {
 
     /// Frame 1 as the exact current stopped frame, so the Locals scope wire
     /// reference for frame 1 (11) passes current-frame admission.
-    fn seed_current_frame(adapter: &DebugAdapter) {
+    fn seed_current_frame(adapter: &DebugAdapter) -> TestResult {
         adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
             1,
             "main::run",
@@ -1367,7 +1374,8 @@ mod value_format_family_tests {
                 source_reference: None,
             },
             3,
-        )]);
+        )])?;
+        Ok(())
     }
 
     fn seed_typed_roots(adapter: &DebugAdapter, wire: i32) {
@@ -1433,7 +1441,7 @@ mod value_format_family_tests {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
         // Rows are sorted by name: $f, $n, $neg, $s, $u, $zero.
@@ -1466,7 +1474,7 @@ mod value_format_family_tests {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
         // Hex first, then default on the same cached reference: the second
@@ -1490,7 +1498,7 @@ mod value_format_family_tests {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
         assert_eq!(
@@ -1507,7 +1515,7 @@ mod value_format_family_tests {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
 
         let lines = vec!["@arr = [10, 20]".to_string()];
         let (roots, children) = DebugAdapter::parse_scope_variables_from_lines(

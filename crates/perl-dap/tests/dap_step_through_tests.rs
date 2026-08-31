@@ -13,7 +13,7 @@
 //! - Variable and scope inspection after rejected stepping requests
 //! - Sequence monotonicity across stepping operations
 //!
-//! Run with: cargo test -p perl-dap --test dap_step_through_tests
+//! Run with: cargo test -p perl-dap --features test-helpers --test dap_step_through_tests
 
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_dap::types::{Source, StackFrame};
@@ -323,7 +323,8 @@ fn test_step_in_targets_is_refused_without_source_scans() -> Result<(), Box<dyn 
         "main",
         Source::new(source_path),
         3,
-    )]);
+    )])?;
+    let queries_before = adapter.debugger_query_count_for_test();
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
 
@@ -342,6 +343,11 @@ fn test_step_in_targets_is_refused_without_source_scans() -> Result<(), Box<dyn 
         }
         _ => return Err("Expected Response for stepInTargets".into()),
     }
+    assert_eq!(
+        adapter.debugger_query_count_for_test(),
+        queries_before,
+        "refused stepInTargets must not query the debugger after valid frame admission"
+    );
 
     Ok(())
 }

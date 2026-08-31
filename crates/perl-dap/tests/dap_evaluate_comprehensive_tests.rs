@@ -877,7 +877,7 @@ fn test_evaluate_stopped_session_frame_not_found_returns_error() -> TestResult {
         end_line: None,
         end_column: None,
     };
-    adapter.seed_stopped_session_with_frames_for_test(vec![frame]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![frame])?;
 
     // Request frameId=999 which is not in the session.
     let response = adapter.handle_request(
@@ -923,7 +923,7 @@ fn test_evaluate_stopped_session_frame_found_passes_validation() -> TestResult {
         end_line: None,
         end_column: None,
     };
-    adapter.seed_stopped_session_with_frames_for_test(vec![frame]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![frame])?;
 
     // frameId=1 is in the session — validation passes; the handler continues
     // to the session eval path.  With a live `perl -e 1` process that has
@@ -979,11 +979,11 @@ fn test_evaluate_stale_frameid_after_resume_rejected() -> TestResult {
         end_line: None,
         end_column: None,
     };
-    adapter.seed_stopped_session_with_frames_for_test(vec![frame]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![frame])?;
 
     // Phase 2: simulate resume clearing stack_frames by re-seeding with empty frames.
     // (In production: handle_continue/handle_next call session.stack_frames.clear())
-    adapter.seed_stopped_session_with_frames_for_test(vec![]);
+    adapter.seed_stopped_session_with_frames_for_test(vec![])?;
 
     // Phase 3: try to evaluate with the previously-valid frameId=42.
     // With empty stack_frames, this must fail with "Frame not found", not succeed.

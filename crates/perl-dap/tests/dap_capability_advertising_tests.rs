@@ -156,7 +156,7 @@ mod capability_tests {
             "main",
             Source::new(source_path),
             3,
-        )]);
+        )])?;
 
         match adapter.handle_request(2, "stepInTargets", Some(serde_json::json!({"frameId": 1}))) {
             DapMessage::Response { success, command, body, message, .. } => {

@@ -733,18 +733,21 @@ impl DebugAdapter {
     ///
     /// Only for use in tests; not part of the public API contract.
     #[cfg(any(test, feature = "test-helpers"))]
-    pub fn seed_stopped_session_with_frames_for_test(&self, frames: Vec<crate::types::StackFrame>) {
+    pub fn seed_stopped_session_with_frames_for_test(
+        &self,
+        frames: Vec<crate::types::StackFrame>,
+    ) -> Result<(), io::Error> {
         use std::process::{Command, Stdio};
-        let Ok(child) = Command::new("perl")
+        let child = Command::new("perl")
             .arg("-e")
             .arg("1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-        else {
-            return;
-        };
+            .map_err(|error| {
+                io::Error::other(format!("seed stopped session: spawn perl: {error}"))
+            })?;
         let mut session = lock_or_recover(&self.session, "debug_adapter.seed_stopped_session");
         *session = Some(DebugSession {
             process: child,
@@ -756,6 +759,7 @@ impl DebugAdapter {
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
         });
+        Ok(())
     }
 
     /// Seed captured stack-frame arguments for scope/variables protocol tests.
