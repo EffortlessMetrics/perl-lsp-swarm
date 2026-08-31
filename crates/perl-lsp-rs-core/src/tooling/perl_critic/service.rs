@@ -412,7 +412,7 @@ impl NativeCriticService {
         let raw_findings = registry.check_unfiltered(&context);
 
         let mut work = NativeCriticWorkReceipt {
-            rules_evaluated: registry.rule_ids().len(),
+            rules_evaluated: registry.enabled_rule_count(&critic_config),
             native_findings_collected: raw_findings.len(),
             observation_candidates_collected: subject.overlap_observations.len(),
             ..NativeCriticWorkReceipt::default()
@@ -555,6 +555,38 @@ mod tests {
         assert!(
             !first.findings().is_empty(),
             "the strict probe source must produce at least one row"
+        );
+    }
+
+    #[test]
+    fn work_receipt_counts_only_rules_enabled_by_policy() {
+        let source = STRICT_SOURCE;
+        let ast = parse(source);
+        let mut state = native_state(None);
+        let full = NativeCriticService::analyze(subject(
+            "file:///receipt-full.pm",
+            &ast,
+            source,
+            state.clone(),
+            critic_source_identity_for_uri("file:///receipt-full.pm", 1),
+        ));
+        if full.work().rules_evaluated == 0 {
+            return;
+        }
+        if let EffectiveCriticState::Native(config) = &mut state {
+            config.exclude = vec!["native.testing.require_use_strict".to_string()];
+        }
+        let filtered = NativeCriticService::analyze(subject(
+            "file:///receipt-filtered.pm",
+            &ast,
+            source,
+            state,
+            critic_source_identity_for_uri("file:///receipt-filtered.pm", 1),
+        ));
+        assert_eq!(
+            filtered.work().rules_evaluated + 1,
+            full.work().rules_evaluated,
+            "receipt must count executed rules, not the full registry"
         );
     }
 
