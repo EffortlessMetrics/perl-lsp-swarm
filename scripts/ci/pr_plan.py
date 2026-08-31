@@ -420,10 +420,9 @@ def select_lanes(
         for pack_id in risk_pack_ids:
             pack = risk_packs.get(pack_id, {})
             for lane_id in pack.get("deep_lanes", []):
-                # Coverage is a schedule/manual-only diagnostic lane. It must
-                # never become PR work through a risk-pack deep lane or the
-                # full-ci spend acknowledgement.
-                if lane_id in lanes and lane_id != "coverage":
+                # Schedule/manual-only diagnostic lanes are rejected by
+                # mark() based on their authoritative workflow/job identity.
+                if lane_id in lanes:
                     mark(lane_id, "deep-lane:full-ci")
 
     selected: list[dict[str, Any]] = []
