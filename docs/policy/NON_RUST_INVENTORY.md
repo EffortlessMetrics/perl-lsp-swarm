@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12503 |
-| Rust-family files | 3869 |
-| Non-Rust files | 8634 |
-| Allowlisted | 6397 |
+| Total tracked files | 12505 |
+| Rust-family files | 3870 |
+| Non-Rust files | 8635 |
+| Allowlisted | 6398 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 497 |
-| documentation | 2816 |
+| documentation | 2817 |
 | generated | 2 |
 | production | 348 |
 | test | 2067 |
@@ -5241,6 +5241,7 @@
 | `docs/project/status/native_tooling_readiness.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/neovim-didchange-latency-receipt.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/neovim_latency.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/project/status/oneliner_capability_matrix.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/parser.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/parser_accuracy_failure_packets.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/parser_accuracy_failure_worklist.md` | documentation | `non-rust-docs-tree` | docs |
