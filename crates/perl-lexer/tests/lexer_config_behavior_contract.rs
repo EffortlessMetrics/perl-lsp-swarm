@@ -402,21 +402,123 @@ fn simd_selection_sources(
     let mut offenders = Vec::new();
     for path in sources {
         let contents = std::fs::read_to_string(&path)?;
-        if path.file_name().and_then(std::ffi::OsStr::to_str) == Some("build.rs")
-            && contents.contains("OUT_DIR")
-        {
+        if path.file_name().and_then(std::ffi::OsStr::to_str) == Some("build.rs") {
             return Err(missing(format!(
                 "cannot verify OUT_DIR-generated Rust from build script {}; keep the simd gate closed until generated output is inspectable",
                 path.display()
             )));
         }
-        let compact: String =
-            contents.chars().filter(|character| !character.is_whitespace()).collect();
-        if compact.contains("feature=\"simd\"") {
+        if contains_simd_selection(&contents) {
             offenders.push(path);
         }
     }
     Ok(offenders)
+}
+
+fn contains_simd_selection(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    for (start, _) in source.match_indices("feature") {
+        let before_is_identifier = start
+            .checked_sub(1)
+            .and_then(|index| bytes.get(index))
+            .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
+        let after_feature = start + "feature".len();
+        let after_is_identifier = bytes
+            .get(after_feature)
+            .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
+        if before_is_identifier || after_is_identifier {
+            continue;
+        }
+        let Some(equal_start) = skip_rust_whitespace_and_comments(bytes, after_feature) else {
+            continue;
+        };
+        if bytes.get(equal_start) != Some(&b'=') {
+            continue;
+        }
+        let Some(value_start) = skip_rust_whitespace_and_comments(bytes, equal_start + 1) else {
+            continue;
+        };
+        if bytes.get(value_start..value_start + 6) == Some(b"\"simd\"") {
+            return true;
+        }
+    }
+    false
+}
+
+fn skip_rust_whitespace_and_comments(bytes: &[u8], mut index: usize) -> Option<usize> {
+    loop {
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        if bytes.get(index..index + 2) == Some(b"//") {
+            index += 2;
+            while bytes.get(index).is_some_and(|character| *character != b'\n') {
+                index += 1;
+            }
+            continue;
+        }
+        if bytes.get(index..index + 2) != Some(b"/*") {
+            return Some(index);
+        }
+        index += 2;
+        let mut depth = 1usize;
+        while depth > 0 {
+            if bytes.get(index..index + 2) == Some(b"/*") {
+                depth += 1;
+                index += 2;
+            } else if bytes.get(index..index + 2) == Some(b"*/") {
+                depth -= 1;
+                index += 2;
+            } else if bytes.get(index).is_some() {
+                index += 1;
+            } else {
+                return None;
+            }
+        }
+    }
+}
+
+fn validate_simd_readme_contract(readme: &str) -> R {
+    let simd_row = readme
+        .lines()
+        .find(|line| line.starts_with("| Cargo feature `simd` |"))
+        .ok_or_else(|| missing("README lost the Cargo feature simd configuration row"))?;
+    for required in [
+        "**Deprecated**",
+        "Compatibility no-op",
+        "no distinct implementation",
+        "No SIMD performance claim is made",
+        "#8749",
+    ] {
+        if !simd_row.contains(required) {
+            return Err(missing(format!(
+                "README simd row lost required deprecation wording: {required}"
+            )));
+        }
+    }
+    let lowercase = simd_row.to_ascii_lowercase();
+    for forbidden in [
+        "enabled",
+        "active",
+        "available",
+        "accelerat",
+        "vectorized",
+        "optimized",
+        "optimization",
+        "simd implementation",
+        "simd processing",
+        "simd scanner",
+        "simd capability",
+        "simd support",
+        "simd path",
+    ] {
+        if lowercase.contains(forbidden) {
+            return Err(missing(format!(
+                "README simd row contains a contradictory capability claim: {forbidden}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -424,7 +526,9 @@ fn simd_feature_stays_declared_empty_and_unreferenced() -> R {
     // The `simd` feature is a deprecated compatibility no-op (since 0.17.0,
     // removal owned by #8749). This gate fails if anyone gives the feature a
     // dependency list, selects it from code, or drops the no-op declaration —
-    // which would silently turn the advertised feature into a real claim.
+    // which would silently turn the advertised feature into a real claim. Any
+    // build script is rejected closed because its generated output is not
+    // statically inspectable here.
     let manifest = include_str!("../Cargo.toml");
     let features_block = manifest
         .split("[features]")
@@ -440,22 +544,7 @@ fn simd_feature_stays_declared_empty_and_unreferenced() -> R {
     );
 
     let readme = include_str!("../README.md");
-    let simd_row = readme
-        .lines()
-        .find(|line| line.starts_with("| Cargo feature `simd` |"))
-        .ok_or_else(|| missing("README lost the Cargo feature simd configuration row"))?;
-    for required in [
-        "**Deprecated**",
-        "Compatibility no-op",
-        "no distinct implementation",
-        "No SIMD performance claim is made",
-        "#8749",
-    ] {
-        assert!(
-            simd_row.contains(required),
-            "README simd row lost required deprecation wording: {required}"
-        );
-    }
+    validate_simd_readme_contract(readme)?;
 
     let package_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let offenders =
@@ -472,12 +561,13 @@ fn simd_gate_detects_selection_in_build_surface_fixture() -> R {
     let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("simd_feature_selection");
+        .join("simd_feature_selection")
+        .join("generated");
     let offenders = simd_selection_sources(&fixture_root, &[])?;
     assert_eq!(
         offenders,
-        vec![fixture_root.join("build.rs")],
-        "the negative control must detect a simd selection outside src"
+        vec![fixture_root.join("selector.rs")],
+        "the negative control must detect simd selection in a generated surface outside src"
     );
     Ok(())
 }
@@ -488,12 +578,34 @@ fn simd_gate_rejects_uninspectable_out_dir_generation_fixture() -> R {
         .join("tests")
         .join("fixtures")
         .join("simd_feature_generation");
+    let build_script = std::fs::read_to_string(fixture_root.join("build.rs"))?;
+    assert!(
+        build_script.contains("concat!(\"OUT\", \"_DIR\")"),
+        "fixture must exercise a dynamically constructed OUT_DIR key"
+    );
     let error = simd_selection_sources(&fixture_root, &[])
         .err()
         .ok_or_else(|| missing("OUT_DIR generation fixture unexpectedly passed the simd gate"))?;
     assert!(
         error.to_string().contains("OUT_DIR"),
         "OUT_DIR generation must remain an explicit uninspectable gate failure: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_rejects_contradictory_capability_claim() -> R {
+    let readme = include_str!("../README.md");
+    let contradictory = readme.replace(
+        "No SIMD performance claim is made.",
+        "No SIMD performance claim is made; SIMD acceleration is enabled.",
+    );
+    let error = validate_simd_readme_contract(&contradictory)
+        .err()
+        .ok_or_else(|| missing("contradictory README SIMD wording unexpectedly passed"))?;
+    assert!(
+        error.to_string().contains("enabled") || error.to_string().contains("accelerat"),
+        "README contradiction must identify the capability claim: {error}"
     );
     Ok(())
 }
