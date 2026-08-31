@@ -136,5 +136,3 @@ pub use source_syntax::{
     PayloadContradiction, PayloadTerminal, SegmentRecoveryCause, SourceSegment,
     SourceSegmentPayload, SourceSegmentation, StringDelimiter, StringForm, StringSyntax,
 };
-
-
