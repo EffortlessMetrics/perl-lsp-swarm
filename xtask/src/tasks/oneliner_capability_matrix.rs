@@ -701,6 +701,33 @@ fn char_literal_end(source: &str, quote: usize) -> Option<usize> {
 /// Qualifiers that may sit between an item's attributes and its keyword.
 const ITEM_QUALIFIERS: &[&str] = &["pub", "unsafe", "async", "default", "const"];
 
+/// `source` with every non-code byte replaced by a space, preserving byte
+/// offsets so indices remain interchangeable with the original.
+///
+/// The backward attribute and qualifier walks below are neighbourhood scans:
+/// they step over whitespace and read whatever token they land on. Anything
+/// non-code in the way stops them short — a comment between an attribute and
+/// its item, or between a visibility qualifier and its keyword — and a
+/// suppressed fixture then counts as running evidence.
+///
+/// Blanking first is what keeps that from being a list of special cases: the
+/// walks see the same token neighbourhood the compiler does, and `code_mask`
+/// stays the one place that decides what is code.
+fn blank_non_code(source: &str, code: &[bool]) -> String {
+    let mut blanked = String::with_capacity(source.len());
+    for (index, character) in source.char_indices() {
+        if character == '\n' || code.get(index).copied().unwrap_or(false) {
+            blanked.push(character);
+        } else {
+            // Space per byte, so every later index still addresses the same token.
+            for _ in 0..character.len_utf8() {
+                blanked.push(' ');
+            }
+        }
+    }
+    blanked
+}
+
 /// Byte index where an item's own tokens begin, stepping back over any
 /// visibility or modifier qualifiers before its keyword.
 ///
@@ -832,11 +859,12 @@ fn suppresses_execution(attributes: &str) -> bool {
 /// what to do rather than quietly over-counting.
 fn reject_suppressed_modules(source: &str) -> Result<()> {
     let code = code_mask(source);
+    let scan = blank_non_code(source, &code);
     for (index, _) in source.match_indices("mod ") {
         if !code.get(index).copied().unwrap_or(false) {
             continue;
         }
-        let attributes = preceding_attributes(source, item_start_before(source, index));
+        let attributes = preceding_attributes(&scan, item_start_before(&scan, index));
         if suppresses_execution(&attributes) {
             let name: String = source
                 .get(index + "mod ".len()..)
@@ -860,12 +888,13 @@ fn reject_suppressed_modules(source: &str) -> Result<()> {
 fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
     let mut evidence = CorpusEvidence::default();
     let code = code_mask(source);
+    let scan = blank_non_code(source, &code);
 
     for (index, _) in source.match_indices("command_line_oneliner!(") {
         if !code.get(index).copied().unwrap_or(false) {
             continue;
         }
-        if suppresses_execution(&preceding_attributes(source, index)) {
+        if suppresses_execution(&preceding_attributes(&scan, item_start_before(&scan, index))) {
             continue;
         }
         let Some(rest) = source.get(index + "command_line_oneliner!(".len()..) else {
@@ -921,7 +950,9 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
         // Anything between them must be whitespace or further attributes, so a
         // `#[test]` with no declaration of its own cannot borrow the name of a
         // later function.
-        let Some(gap) = rest.get("#[test]".len()..fn_offset) else {
+        // Read the gap from the blanked view: a `;` or a `#[ignore]` inside a
+        // comment there is not part of the declaration and must not decide it.
+        let Some(gap) = scan.get(index + "#[test]".len()..index + fn_offset) else {
             continue;
         };
         if gap.contains(['{', '}', ';']) {
@@ -930,7 +961,7 @@ fn extract_corpus_evidence(source: &str) -> CorpusEvidence {
         // A test that is ignored, cfg-disabled, or conditionally ignored does
         // not run, so it cannot evidence anything. Attributes may sit on either
         // side of `#[test]`, so both neighbourhoods are inspected.
-        if suppresses_execution(gap) || suppresses_execution(&preceding_attributes(source, index)) {
+        if suppresses_execution(gap) || suppresses_execution(&preceding_attributes(&scan, index)) {
             continue;
         }
         let Some(after_fn) = rest.get(fn_offset + "fn ".len()..) else {
@@ -1662,6 +1693,83 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
                 evidence.proof_tests.is_empty(),
                 "suppressed test was captured from {source:?}: {:?}",
                 evidence.proof_tests
+            );
+        }
+    }
+
+    /// A comment anywhere in the walked neighbourhood must not hide a
+    /// suppressing attribute.
+    ///
+    /// Each backward walk steps over whitespace and reads the token it lands
+    /// on. Before non-code was blanked, a comment between an attribute and its
+    /// item — or between a visibility qualifier and its keyword — ended the
+    /// walk early and the suppressed fixture counted as running evidence.
+    #[test]
+    fn comments_in_the_walk_neighbourhood_do_not_hide_suppression() {
+        for form in [
+            "#[cfg(feature = \"x\")]\npub /* later */ mod d {}\n",
+            "#[cfg(feature = \"x\")]\npub // later\nmod d {}\n",
+            "#[cfg(feature = \"x\")]\n// why this is off\nmod d {}\n",
+            "#[cfg(feature = \"x\")]\n/* why */ pub(crate) /* who */ mod d {}\n",
+        ] {
+            assert!(
+                reject_suppressed_modules(form).is_err(),
+                "a comment hid the suppressed module in {form:?}"
+            );
+        }
+
+        for source in [
+            "#[cfg(feature = \"x\")]\n// pending\ncommand_line_oneliner!(ghost, \"-e\", \"print 1;\");\n",
+            "#[cfg(feature = \"x\")]\n/* pending */\ncommand_line_oneliner!(ghost, \"-e\", \"print 1;\");\n",
+        ] {
+            let evidence = extract_corpus_evidence(source);
+            assert!(
+                evidence.switch_cases.is_empty(),
+                "a comment hid the suppression in {source:?}: {:?}",
+                evidence.switch_cases
+            );
+        }
+
+        for source in [
+            "#[ignore]\n// waiting on the oracle\n#[test]\nfn parked() {}\n",
+            "#[test]\n/* waiting */\n#[ignore]\nfn parked() {}\n",
+            "#[cfg(target_os = \"linux\")]\n// linux only\n#[test]\nfn parked() {}\n",
+        ] {
+            let evidence = extract_corpus_evidence(source);
+            assert!(
+                evidence.proof_tests.is_empty(),
+                "a comment hid the suppression in {source:?}: {:?}",
+                evidence.proof_tests
+            );
+        }
+
+        // Blanking must not cost a live fixture: the same shapes without the
+        // suppressing attribute still register.
+        let live = extract_corpus_evidence(
+            "// ordinary note\ncommand_line_oneliner!(live_case, \"-e\", \"print 1;\");\n\
+             #[test]\n// ordinary note\nfn live_proof() {}\n",
+        );
+        assert!(live.switch_cases.contains_key("live_case"), "{:?}", live.switch_cases);
+        assert!(live.proof_tests.contains("live_proof"), "{:?}", live.proof_tests);
+    }
+
+    /// Blanking preserves byte offsets, so indices stay interchangeable with
+    /// the original source. A shifted index would silently misread every walk.
+    #[test]
+    fn blanking_preserves_byte_offsets() {
+        for source in [
+            "let s = \"héllo ✓\"; // näive\nmod a {}\n",
+            "let r = r##\"raw ✓ \"# text\"##;\nmod b {}\n",
+            "/* ✓ block */ mod c {}\n",
+            "let c = '✓';\nmod d {}\n",
+        ] {
+            let blanked = blank_non_code(source, &code_mask(source));
+            assert_eq!(blanked.len(), source.len(), "offsets shifted for {source:?}");
+            let keyword = source.find("mod ").expect("keyword present");
+            assert_eq!(
+                blanked.get(keyword..keyword + 4),
+                Some("mod "),
+                "keyword moved for {source:?}"
             );
         }
     }
