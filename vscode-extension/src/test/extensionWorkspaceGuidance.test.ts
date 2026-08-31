@@ -3,9 +3,10 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
+  isIncludePathCandidateCovered,
+  runDiscoveredIncludePathGuidance,
+  runIncludePathValidation,
   suggestAiCompletionIfSupported,
-  suggestDiscoveredIncludePaths,
-  validateIncludePaths,
 } from '../extensionWorkspaceGuidance';
 
 const workspaceMock = vscode.workspace as unknown as { workspaceFolders: unknown };
@@ -56,7 +57,7 @@ test('does not prompt for absent built-in include paths', async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-default-'));
   mountWorkspace(workspaceDir, ['lib']);
 
-  await validateIncludePaths({ globalState: makeState() } as unknown as vscode.ExtensionContext);
+  await runIncludePathValidation({ globalState: makeState() } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
 });
@@ -66,7 +67,7 @@ test('creates safe missing include directories inside the workspace', async () =
   mountWorkspace(workspaceDir, ['generated/perl']);
   (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Create Missing Directories');
 
-  await validateIncludePaths({ globalState: makeState() } as unknown as vscode.ExtensionContext);
+  await runIncludePathValidation({ globalState: makeState() } as unknown as vscode.ExtensionContext);
 
   expect(fs.existsSync(path.join(workspaceDir, 'generated', 'perl'))).toBe(true);
   expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
@@ -86,7 +87,7 @@ test('does not offer or perform directory creation through a workspace symlink',
   mountWorkspace(workspaceDir, ['linked/escape']);
   (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Create Missing Directories');
 
-  await validateIncludePaths({ globalState: makeState() } as unknown as vscode.ExtensionContext);
+  await runIncludePathValidation({ globalState: makeState() } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
     expect.any(String),
@@ -102,8 +103,8 @@ test('reports directory creation failures without aborting guidance', async () =
   const state = makeState();
   (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Create Missing Directories');
 
-  await validateIncludePaths({ globalState: state } as unknown as vscode.ExtensionContext);
-  await validateIncludePaths({ globalState: state } as unknown as vscode.ExtensionContext);
+  await runIncludePathValidation({ globalState: state } as unknown as vscode.ExtensionContext);
+  await runIncludePathValidation({ globalState: state } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
     expect.stringContaining('Perl LSP: failed to create directory "blocked/child":'),
@@ -115,6 +116,14 @@ test('reports directory creation failures without aborting guidance', async () =
   ).toHaveLength(2);
 });
 
+test('configured ancestors cover candidates but configured descendants do not', () => {
+  const workspaceDir = path.join(path.sep, 'workspace');
+
+  expect(isIncludePathCandidateCovered(workspaceDir, ['src'], 'src/lib')).toBe(true);
+  expect(isIncludePathCandidateCovered(workspaceDir, ['src/lib'], 'src')).toBe(false);
+  expect(isIncludePathCandidateCovered(workspaceDir, ['./src'], 'src')).toBe(true);
+});
+
 test('dismissal is sticky for an unchanged discovered module layout', async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-cache-'));
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
@@ -123,8 +132,8 @@ test('dismissal is sticky for an unchanged discovered module layout', async () =
   mountWorkspace(workspaceDir, ['lib']);
   (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
 
-  await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
-  await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
+  await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
+  await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
 });
@@ -147,10 +156,10 @@ test('retries a discovered-path suggestion after an update failure', async () =>
     get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
     update,
   }));
-  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add to Include Paths');
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add for These Folders');
 
-  await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
-  await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
+  await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
+  await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
 
   expect(update).toHaveBeenCalledTimes(2);
   expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(2);
@@ -160,7 +169,7 @@ test('retries a discovered-path suggestion after an update failure', async () =>
   );
 });
 
-test('adds discovered module directories and caches the resulting layout', async () => {
+test('adds discovered module directories for the owning workspace folder', async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-add-'));
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
   fs.mkdirSync(path.join(workspaceDir, 'vendor'), { recursive: true });
@@ -179,19 +188,45 @@ test('adds discovered module directories and caches the resulting layout', async
     inspect: jest.fn(),
     update,
   }));
-  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add to Include Paths');
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add for These Folders');
 
-  await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
+  await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
 
   expect(update).toHaveBeenCalledWith(
     'includePaths',
     expect.arrayContaining(['src', 'vendor']),
-    vscode.ConfigurationTarget.Workspace,
+    vscode.ConfigurationTarget.WorkspaceFolder,
   );
   expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-    'Added src, vendor to perl-lsp.includePaths.',
+    'Added include paths for workspace: src, vendor.',
   );
   expect(globalState.update).toHaveBeenCalledWith(
+    expect.stringContaining('perl-lsp.includePathsSuggestion.'),
+    expect.any(String),
+  );
+});
+
+test('reports bounded discovery as incomplete rather than a complete empty scan', async () => {
+  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-budget-'));
+  const srcDir = path.join(workspaceDir, 'src');
+  fs.mkdirSync(srcDir, { recursive: true });
+  for (let index = 0; index < 220; index += 1) {
+    fs.writeFileSync(path.join(srcDir, `file-${index}.txt`), 'not perl\n');
+  }
+  const globalState = makeState();
+  mountWorkspace(workspaceDir, ['lib']);
+
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState,
+  } as unknown as vscode.ExtensionContext);
+
+  expect(reports).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ folder: 'workspace', discovered: [], complete: false }),
+    ]),
+  );
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  expect(globalState.update).not.toHaveBeenCalledWith(
     expect.stringContaining('perl-lsp.includePathsSuggestion.'),
     expect.any(String),
   );
