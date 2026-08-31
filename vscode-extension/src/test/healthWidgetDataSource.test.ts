@@ -294,7 +294,7 @@ describe('HealthWidgetDataSource — dispose', () => {
     source.dispose();
     source.dispose();
 
-    languages.setDiagnostics([[uri('/x.pl'), [diag(0)]]);
+    languages.setDiagnostics([[uri('/x.pl'), [diag(0)]]]);
     languages.fire([uri('/x.pl')]);
     workspace.setFileCounts([3, 0, 0, 0, 0]);
     workspace.fireCreate();
