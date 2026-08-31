@@ -1252,6 +1252,99 @@ class CommandLine(unittest.TestCase):
                 "trusted_default_branch", observer.LIVE_SOURCES
             )
 
+    def test_a_failed_write_does_not_publish_a_mismatched_output_set(
+        self,
+    ) -> None:
+        """Validation is not the only way a run can end up half-published.
+
+        Building every payload first stops an *invalid* authority reaching
+        disk, but an I/O failure partway through the writes would still leave
+        a fresh snapshot beside an authority from an earlier run — the
+        incoherent pair that check exists to prevent. Every payload is
+        therefore staged before any destination is replaced.
+        """
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle = root / "capture.json"
+            receipt = root / "static.json"
+            snapshot = root / "snapshot.json"
+            auth = root / "authority.json"
+            bundle.write_text(json.dumps(capture.to_bundle()), encoding="utf-8")
+            receipt.write_text(json.dumps(static_receipt()), encoding="utf-8")
+            # Evidence from an earlier run that must not be paired with a
+            # fresh snapshot.
+            snapshot.write_text('{"run": "earlier"}', encoding="utf-8")
+            auth.write_text('{"run": "earlier"}', encoding="utf-8")
+
+            real_stage = observer.stage_json
+            calls = []
+
+            def failing_stage(path, payload):
+                calls.append(path)
+                # Fail while staging the second output, after the first has
+                # already been staged successfully.
+                if len(calls) == 2:
+                    raise OSError(28, "No space left on device")
+                return real_stage(path, payload)
+
+            observer.stage_json = failing_stage
+            try:
+                with self.assertRaises(OSError):
+                    observer.main(
+                        [
+                            "assemble",
+                            "--capture",
+                            str(bundle),
+                            "--repository",
+                            REPOSITORY,
+                            "--authority-repository-id",
+                            str(REPOSITORY_ID),
+                            "--source",
+                            "connector",
+                            "--static-receipt",
+                            str(receipt),
+                            "--snapshot",
+                            str(snapshot),
+                            "--authority",
+                            str(auth),
+                        ]
+                    )
+            finally:
+                observer.stage_json = real_stage
+
+            # Neither destination was replaced, so the pair on disk is still
+            # the coherent earlier one rather than one new and one old file.
+            self.assertEqual(
+                json.loads(snapshot.read_text(encoding="utf-8")),
+                {"run": "earlier"},
+            )
+            self.assertEqual(
+                json.loads(auth.read_text(encoding="utf-8")),
+                {"run": "earlier"},
+            )
+            # And no staging file was left behind.
+            self.assertEqual(
+                sorted(p.name for p in root.iterdir()),
+                ["authority.json", "capture.json", "snapshot.json", "static.json"],
+            )
+
+    def test_a_long_destination_name_can_still_be_staged(self) -> None:
+        """`mkstemp` appends to the prefix it is given.
+
+        An unbounded prefix makes the staging name exceed NAME_MAX for a
+        destination whose own name is near the limit, so a perfectly valid
+        output path would produce no evidence file at all.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / ("o" * 250 + ".json")
+            observer.write_json(target, {"written": True})
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")), {"written": True}
+            )
+            self.assertEqual([p.name for p in root.iterdir()], [target.name])
+
     def test_no_output_is_written_when_the_authority_is_invalid(self) -> None:
         """A partial write pairs a fresh snapshot with a stale authority.
 

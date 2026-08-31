@@ -73,6 +73,10 @@ ANY_SOURCE_APP_ID = -1
 # bound would let an oversized or hostile response exhaust memory and kill the
 # observer; an over-long body is treated as an unreadable surface instead.
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# `mkstemp` appends ~12 characters to the prefix it is given. Bounding the
+# prefix keeps the staging name inside NAME_MAX for a destination whose own
+# name is near the limit.
+STAGING_PREFIX_MAX = 120
 
 # Closed vocabularies the reconciler enforces. An unknown value must not reach
 # the snapshot: the reconciler would reject the whole document as invalid
@@ -1101,25 +1105,41 @@ def build_authority(
 # --------------------------------------------------------------------------
 
 
-def write_json(path: Path, payload: Any) -> None:
-    """Write deterministic, key-sorted JSON, creating parent directories.
+def stage_json(path: Path, payload: Any) -> Path:
+    """Write deterministic, key-sorted JSON to a staging file beside `path`.
 
-    The write is staged beside the destination and renamed into place, so an
-    interrupted or failed write cannot leave a truncated evidence file that
-    still parses as the real thing.
+    Nothing at `path` is touched. Staging and committing are separate so a
+    caller writing several outputs can get every payload onto disk before it
+    replaces any destination.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     # The staging name is unique per call. A fixed one would let two runs
     # targeting the same output consume or delete each other's staging file,
-    # and publish a payload the other run produced.
+    # and publish a payload the other run produced. The prefix is bounded
+    # because mkstemp appends to it: a destination whose own name is near the
+    # filesystem limit would otherwise fail to stage at all.
     handle, staged_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
+        dir=path.parent, prefix=f"{path.name[:STAGING_PREFIX_MAX]}.", suffix=".tmp"
     )
     staged = Path(staged_name)
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(body)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+    return staged
+
+
+def write_json(path: Path, payload: Any) -> None:
+    """Write one JSON output, replacing the destination atomically.
+
+    An interrupted or failed write cannot leave a truncated evidence file
+    that still parses as the real thing.
+    """
+    staged = stage_json(path, payload)
+    try:
         os.replace(staged, path)
     finally:
         staged.unlink(missing_ok=True)
@@ -1171,8 +1191,22 @@ def emit(args: argparse.Namespace, capture: Capture) -> int:
         )
     if args.capture_bundle:
         outputs.append((args.capture_bundle, capture.to_bundle()))
-    for path, payload in outputs:
-        write_json(path, payload)
+    # Every payload reaches disk before any destination is replaced. Writing
+    # is where the failures live — a full disk, a bad path, a lost permission
+    # — so staging first keeps a half-written run from publishing a fresh
+    # snapshot beside an authority or bundle left over from an earlier one.
+    # The replace loop that follows is not one atomic transaction, which
+    # POSIX cannot give across several files; it is a short window of renames
+    # that have already had everything they need prepared.
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for path, payload in outputs:
+            staged.append((stage_json(path, payload), path))
+        for staged_path, path in staged:
+            os.replace(staged_path, path)
+    finally:
+        for staged_path, _ in staged:
+            staged_path.unlink(missing_ok=True)
 
     observation = snapshot["observation"]
     print(
