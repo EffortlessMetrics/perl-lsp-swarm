@@ -264,7 +264,7 @@ fn reclassify_into_body_context_is_unsupported() {
     );
 
     let mut buffered = TokenStream::from_vec(vec![
-        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token")
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
     ]);
     assert_eq!(
         buffered.apply_contextual(ContextualTokenOp::ReclassifyFromBoundary {
