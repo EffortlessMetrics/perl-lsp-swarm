@@ -570,7 +570,10 @@ fn capture_worktree_dirty(receipt_path: &Path) -> Result<bool> {
     // `-z` gives NUL-delimited, *unquoted* paths. The default porcelain
     // format C-quotes anything unusual (`?? "weird\tname.txt"`), which a
     // newline-and-substring reader would mis-parse.
-    let raw = capture_stdout_raw("git", &["status", "--porcelain", "-z"])?;
+    let raw = capture_stdout_raw(
+        "git",
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
+    )?;
     for entry in raw.split('\0') {
         // Each record is `XY <path>`; a rename contributes a bare second
         // record holding the original path, which has no status prefix.
@@ -1799,6 +1802,39 @@ tests::gamma: test
                 .flat_map(|item| Path::new(item).components())
                 .all(|component| component != Component::ParentDir),
             "git-status exclusions must not retain parent components: {excluded:?}"
+        );
+    }
+
+    #[test]
+    fn a_nested_untracked_receipt_is_not_mistaken_for_tree_drift() {
+        let Ok(root) = capture_stdout("git", &["rev-parse", "--show-toplevel"]) else {
+            panic!("repository root");
+        };
+        let probe_root =
+            PathBuf::from(root).join(format!("rsp-receipt-probe-{}", std::process::id()));
+        let path = probe_root.join("nested").join("..").join("rust-small.json");
+
+        let Ok(before) = capture_worktree_dirty(&path) else {
+            panic!("initial dirty capture");
+        };
+        let Some(parent) = path.parent() else {
+            panic!("receipt parent");
+        };
+        let Ok(()) = fs::create_dir_all(parent) else {
+            panic!("probe directory");
+        };
+        let Ok(()) = fs::write(&path, b"{}") else {
+            panic!("probe receipt");
+        };
+        let during = capture_worktree_dirty(&path);
+        let _ = fs::remove_dir_all(&probe_root);
+
+        let Ok(during) = during else {
+            panic!("dirty capture with receipt");
+        };
+        assert_eq!(
+            during, before,
+            "the receipt must not change the dirty signal, even inside a new untracked directory"
         );
     }
 
