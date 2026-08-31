@@ -466,18 +466,27 @@ pub enum PayloadContradiction {
         /// Index of the offending segment in recorded order.
         index: usize,
     },
-    /// A terminal proving empty source alongside a non-empty proven value.
+    /// A terminal proving empty source alongside a value that contradicts it.
     ///
     /// Distinct from
     /// [`PayloadContradiction::EmptyTerminalWithNonEmptyContent`], which
     /// compares the terminal against the *content region*. This compares it
     /// against the *value*, and is the only check that fires when the region is
-    /// correctly empty but the payload still claims proven text over it.
-    EmptyTerminalWithNonEmptyValue,
-    /// A terminated string whose content region leaves no room for a delimiter.
+    /// correctly empty but the payload still claims text over it.
     ///
-    /// A string's `raw_range` spans its delimiters, so proven-terminated
-    /// content must start after the opening one and end before the closing one.
+    /// Proven-empty source rejects a non-empty [`CookedValue::Proven`] or
+    /// [`CookedValue::Partial`] fragment, and any [`CookedValue::Dynamic`]
+    /// value, since an empty region leaves nothing to interpolate.
+    /// [`CookedValue::Unavailable`] stays legitimate: it claims nothing.
+    EmptyTerminalWithContradictoryValue,
+    /// A terminated string whose content leaves no room for its own syntax.
+    ///
+    /// A string's `raw_range` spans the quote operator and both delimiters, so
+    /// proven-terminated content must leave at least that many bytes at each
+    /// end: one byte per delimiter character, plus `q`, `qq`, or `qx` where the
+    /// form carries one. Whitespace is permitted between a quote operator and
+    /// its delimiter, so this is a lower bound rather than an exact width.
+    ///
     /// Only `Unterminated` may reach the right edge, having no closing
     /// delimiter to fit. Heredoc bodies carry no delimiters, so this is checked
     /// on strings alone.
@@ -527,9 +536,17 @@ fn payload_contradictions(
 
     // The region being correctly empty is not enough: the value is a separate
     // proposition, and an unsegmented payload has nothing else to contradict.
-    if terminal.proves_empty_content() && cooked.proven_text().is_some_and(|text| !text.is_empty())
-    {
-        found.push(PayloadContradiction::EmptyTerminalWithNonEmptyValue);
+    // Proven-empty source can carry no text by any route, so a non-empty
+    // fragment contradicts it whether or not the producer calls it proven, and
+    // an empty region leaves nothing for a runtime-dependent value to read.
+    // `Unavailable` stays legitimate: "not computed" is not a claim.
+    let value_contradicts_empty_source = match cooked {
+        CookedValue::Proven(text) | CookedValue::Partial(text) => !text.is_empty(),
+        CookedValue::Dynamic => true,
+        CookedValue::Unavailable => false,
+    };
+    if terminal.proves_empty_content() && value_contradicts_empty_source {
+        found.push(PayloadContradiction::EmptyTerminalWithContradictoryValue);
     }
 
     if matches!(terminal, PayloadTerminal::Complete)
@@ -799,6 +816,19 @@ impl StringForm {
             StringDelimiter::Paired { .. } => false,
         }
     }
+
+    /// Bytes of quote operator written before the opening delimiter.
+    ///
+    /// `q`, `qq`, and `qx` sit outside the delimiter pair and inside the
+    /// payload's raw range, so content cannot begin until after them.
+    #[must_use]
+    pub const fn operator_len(&self) -> usize {
+        match self {
+            Self::SingleQuoted | Self::DoubleQuoted | Self::Backtick => 0,
+            Self::QLiteral => 1,
+            Self::QqInterpolating | Self::QxCommand => 2,
+        }
+    }
 }
 
 /// The delimiter pair a quote-like payload was written with.
@@ -826,6 +856,33 @@ impl StringDelimiter {
     #[must_use]
     pub const fn is_paired(&self) -> bool {
         matches!(self, Self::Paired { .. })
+    }
+
+    /// Bytes the opening delimiter occupies in source.
+    ///
+    /// `SourceLocation` counts bytes, so a non-ASCII delimiter is wider than
+    /// one. `Unavailable` still reserves one byte: which character opened the
+    /// payload is unknown, but that one was written is not.
+    #[must_use]
+    pub const fn opening_len(&self) -> usize {
+        match self {
+            Self::Same { delimiter } => delimiter.len_utf8(),
+            Self::Paired { open, .. } => open.len_utf8(),
+            Self::Unavailable => 1,
+        }
+    }
+
+    /// Bytes the closing delimiter occupies in source.
+    ///
+    /// The counterpart of [`StringDelimiter::opening_len`]; a bracketing pair
+    /// may close with a different character, and a different width.
+    #[must_use]
+    pub const fn closing_len(&self) -> usize {
+        match self {
+            Self::Same { delimiter } => delimiter.len_utf8(),
+            Self::Paired { close, .. } => close.len_utf8(),
+            Self::Unavailable => 1,
+        }
     }
 }
 
@@ -870,13 +927,17 @@ impl StringSyntax {
         if !self.form.admits_delimiter(self.delimiter) {
             found.push(PayloadContradiction::FormDelimiterMismatch);
         }
-        // `raw_range` spans the delimiters. Malformed bounds are reported by the
-        // shared check above and compare meaninglessly, so skip them here.
+        // `raw_range` spans the quote operator and both delimiters. Malformed
+        // bounds are reported by the shared check above and compare
+        // meaninglessly, so skip them here.
+        let opening = self.form.operator_len() + self.delimiter.opening_len();
+        let closing = self.delimiter.closing_len();
         if self.terminal.is_terminated()
             && !is_malformed(self.raw_range)
             && let Some(content) = self.content_range
             && !is_malformed(content)
-            && (content.start <= self.raw_range.start || content.end >= self.raw_range.end)
+            && (content.start < self.raw_range.start.saturating_add(opening)
+                || content.end.saturating_add(closing) > self.raw_range.end)
         {
             found.push(PayloadContradiction::TerminatedStringWithoutDelimiterBytes);
         }
@@ -2320,9 +2381,32 @@ mod tests {
         string.segmentation = SourceSegmentation::Unavailable;
         string.cooked = CookedValue::Proven("abc".to_string());
         assert!(
-            string.contradictions().contains(&PayloadContradiction::EmptyTerminalWithNonEmptyValue)
+            string
+                .contradictions()
+                .contains(&PayloadContradiction::EmptyTerminalWithContradictoryValue)
         );
         assert_eq!(string.compat_value(), None);
+
+        // Calling the same text `Partial` rather than `Proven` does not make it
+        // compatible with source proven to hold nothing, and `Dynamic` has
+        // nothing to interpolate over an empty region.
+        for disposition in [CookedValue::Partial("abc".to_string()), CookedValue::Dynamic] {
+            let mut relabelled = empty_single_quoted_string();
+            relabelled.segmentation = SourceSegmentation::Unavailable;
+            relabelled.cooked = disposition.clone();
+            assert!(
+                relabelled
+                    .contradictions()
+                    .contains(&PayloadContradiction::EmptyTerminalWithContradictoryValue),
+                "{disposition:?} should contradict a proven-empty terminal"
+            );
+        }
+
+        // `Unavailable` claims nothing, so it stays compatible with it.
+        let mut not_computed = empty_single_quoted_string();
+        not_computed.segmentation = SourceSegmentation::Unavailable;
+        not_computed.cooked = CookedValue::Unavailable;
+        assert!(not_computed.is_coherent(), "{:?}", not_computed.contradictions());
 
         // The same axis on a heredoc, where the body region plays the content
         // role -- one checker, both payload shapes.
@@ -2332,7 +2416,7 @@ mod tests {
         assert!(
             empty_body
                 .contradictions()
-                .contains(&PayloadContradiction::EmptyTerminalWithNonEmptyValue)
+                .contains(&PayloadContradiction::EmptyTerminalWithContradictoryValue)
         );
         assert_eq!(empty_body.compat_content(), None);
 
@@ -2375,6 +2459,64 @@ mod tests {
         unterminated.terminal = PayloadTerminal::Unterminated;
         assert!(
             !unterminated
+                .contradictions()
+                .contains(&PayloadContradiction::TerminatedStringWithoutDelimiterBytes)
+        );
+
+        // A quote operator sits inside `raw_range` too: `q{abc}` is 0..6 with
+        // content 2..5, so content starting at 1 is inside the `q` itself and a
+        // one-byte strict-containment rule would have missed it.
+        let mut q_literal = plain_double_quoted_string();
+        q_literal.form = StringForm::QLiteral;
+        q_literal.delimiter = StringDelimiter::Paired { open: '{', close: '}' };
+        q_literal.raw_range = span(0, 6);
+        q_literal.content_range = Some(span(2, 5));
+        q_literal.segmentation = SourceSegmentation::Exact(vec![literal_segment(2, 5, "abc")]);
+        assert!(q_literal.is_coherent(), "{:?}", q_literal.contradictions());
+
+        let mut eats_the_operator = q_literal.clone();
+        eats_the_operator.content_range = Some(span(1, 5));
+        eats_the_operator.segmentation =
+            SourceSegmentation::Exact(vec![literal_segment(1, 5, "abc")]);
+        assert!(
+            eats_the_operator
+                .contradictions()
+                .contains(&PayloadContradiction::TerminatedStringWithoutDelimiterBytes)
+        );
+
+        // `qq` and `qx` spell two operator bytes, not one.
+        let mut qq_string = q_literal.clone();
+        qq_string.form = StringForm::QqInterpolating;
+        qq_string.raw_range = span(0, 7);
+        qq_string.content_range = Some(span(3, 6));
+        qq_string.segmentation = SourceSegmentation::Exact(vec![literal_segment(3, 6, "abc")]);
+        assert!(qq_string.is_coherent(), "{:?}", qq_string.contradictions());
+
+        let mut qq_short = qq_string.clone();
+        qq_short.content_range = Some(span(2, 6));
+        qq_short.segmentation = SourceSegmentation::Exact(vec![literal_segment(2, 6, "abc")]);
+        assert!(
+            qq_short
+                .contradictions()
+                .contains(&PayloadContradiction::TerminatedStringWithoutDelimiterBytes)
+        );
+
+        // `SourceLocation` counts bytes, so a multibyte delimiter reserves more
+        // than one of them.
+        let mut multibyte = q_literal.clone();
+        multibyte.delimiter = StringDelimiter::Paired { open: '\u{ab}', close: '\u{bb}' };
+        multibyte.raw_range = span(0, 8);
+        multibyte.content_range = Some(span(3, 6));
+        multibyte.segmentation = SourceSegmentation::Exact(vec![literal_segment(3, 6, "abc")]);
+        assert_eq!(multibyte.delimiter.opening_len(), 2);
+        assert!(multibyte.is_coherent(), "{:?}", multibyte.contradictions());
+
+        let mut splits_the_delimiter = multibyte.clone();
+        splits_the_delimiter.content_range = Some(span(2, 6));
+        splits_the_delimiter.segmentation =
+            SourceSegmentation::Exact(vec![literal_segment(2, 6, "abc")]);
+        assert!(
+            splits_the_delimiter
                 .contradictions()
                 .contains(&PayloadContradiction::TerminatedStringWithoutDelimiterBytes)
         );
