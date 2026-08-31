@@ -110,7 +110,11 @@ impl DebugAdapter {
             "supportsFunctionBreakpoints": supports_core,
             "supportsConditionalBreakpoints": supports_basic_breakpoints,
             "supportsHitConditionalBreakpoints": supports_hit_conditions,
-            "supportsEvaluateForHovers": supports_core,
+            // #9573: not `supports_core`. Hover is gated on a pure
+            // selected-frame inspection proof that does not exist yet, so the
+            // wire value comes from the single hover authority and no catalog
+            // row can widen it.
+            "supportsEvaluateForHovers": crate::backend::capabilities::advertises_evaluate_for_hovers(),
             "supportsStepBack": false,
             "supportsSetVariable": supports_core,
             "supportsRestartFrame": supports_restart_frame,
