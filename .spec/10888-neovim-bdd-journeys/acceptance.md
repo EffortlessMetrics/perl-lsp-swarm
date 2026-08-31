@@ -64,7 +64,7 @@ ruling. Neither group is current until #8129 selects it and #10505 observes it.
 
 | Scenario ID | User-visible behavior | Profile / evidence tag | Evidence boundary (owner chain) |
 | --- | --- | --- | --- |
-| `neovim.bdd.sync.06` | The advertised position encoding is UTF-16 and the change-sync kind matches the selected full-document envelope | bounded release (full-document branch); active only while #8129 selects branch B | #8129 ruling → #10505 branch observation → `editor_client_compat.v1` cell |
+| `neovim.bdd.sync.06` | The advertised position encoding is UTF-16 and the change-sync kind matches the selected full-document envelope | bounded release (full-document branch); active only while #8129 selects branch B | #8129 ruling → #8531 `nv_release_bounded_process_evidence` → `nv_release_bounded_v0_18_envelope` → `editor_client_compat.v1` cell; #10505 owns the atomic branch and never observes this one |
 | `neovim.bdd.sync.07` | Actual full-document change traffic from the built-in client is observed, not merely advertised | bounded release (full-document branch); conditional branch B | same chain |
 | `neovim.bdd.sync.08` | A ranged change notification is refused under the full-document envelope rather than partially applied | bounded release (full-document branch); conditional branch B | same chain |
 | `neovim.bdd.sync.09` | A refused notification leaves no partial mutation of server document state | bounded release (full-document branch); conditional branch B | same chain |
@@ -104,10 +104,10 @@ any downstream projection must preserve.
 | --- | --- | --- | --- |
 | `neovim.bdd.opt.01` | Upstream `nvim-lspconfig` ships the registration | external checkpoint input | submission/acceptance stages owned by #10511; internal merge cannot satisfy them |
 | `neovim.bdd.opt.02` | Mason publishes an installable package | external channel input | owner #10514 Mason registry track; availability never a core floor |
-| `neovim.bdd.opt.03` | Public release archive replay reproduces the journeys | stronger-profile input | direct stage owner #10508; local evidence never relabels upward |
+| `neovim.bdd.opt.03` | Public release archive replay reproduces the journeys | stronger-profile input | **no governed archive-replay owner exists in #11392**; permanently `not_proven` until one does. #10508 pins version/platform cells only and never supplies replay evidence; local evidence never relabels upward |
 | `neovim.bdd.opt.04` | Maintained version/platform matrix rows hold beyond the support floor | stronger-profile input | rows owned by #10508 |
 | `neovim.bdd.opt.05` | Virtual-document / upstream-dependent features work end-to-end | `consumes_if_available` input | existence cannot block or satisfy the core |
-| `neovim.bdd.opt.06` | `nvim-dap` debugging works against `perl-dap` | separate protocol rail | owner #10523; DAP evidence never fills an LSP scenario |
+| `neovim.bdd.opt.06` | `nvim-dap` debugging works against `perl-dap` | separate protocol rail | behavior owned by #7773 `nv_dap_preview_receipt_adjacent`; #10523 is the nonblocking exclusion gate, not the evidence producer; DAP evidence never fills an LSP scenario |
 
 ## Claim profiles (ledger membership)
 

@@ -113,6 +113,16 @@ duplicate `non_rust_inventory_check`, whose job it already is. The boundary is
 deliberate: the checker catches an omitted or hand-faked packet refresh; the
 gate owns whole-file equivalence.
 
+Stated limitation, owner chains: the checker digests each row's owner-chain cell,
+so a chain cannot change silently — but it cannot judge whether the cited owner
+actually produces that row's evidence. That is a semantic fit between a
+proposition and a `#11392` node's subject, and nothing here reads the manifest.
+Two review rounds found mis-routed owners for exactly this reason. An audit that
+confirms each cited issue owns *some* node is not the same check and must not be
+described as one: `opt.03` cited #10508, which owns a real node that pins
+version/platform cells and never produces archive-replay evidence. Owner-subject
+fit stays a review obligation on every ledger revision.
+
 Stated limitation, enforcement: no repository gate runs this checker. It is
 executed by extracting it from this file, which binds the documented and
 executed bytes to each other but not to CI, so a later ledger change can be
@@ -244,7 +254,7 @@ ROW_DIGESTS = {
     "neovim.bdd.sync.03": "087df18f02c9c85d",
     "neovim.bdd.sync.04": "516bc97b5338f5f2",
     "neovim.bdd.sync.05": "dfc3b58949b3feff",
-    "neovim.bdd.sync.06": "00407249caafabc7",
+    "neovim.bdd.sync.06": "e0066f569c916b38",
     "neovim.bdd.sync.07": "79a7596f55c251eb",
     "neovim.bdd.sync.08": "e8c26b53507658ff",
     "neovim.bdd.sync.09": "0946b2febe0e2d75",
@@ -266,10 +276,10 @@ ROW_DIGESTS = {
     "neovim.bdd.support.08": "5411a6c538655928",
     "neovim.bdd.opt.01": "173e8e7968d16764",
     "neovim.bdd.opt.02": "5751ab966cce4258",
-    "neovim.bdd.opt.03": "4e7d57f9874537a3",
+    "neovim.bdd.opt.03": "c59af250645ab76f",
     "neovim.bdd.opt.04": "e11adc269e551f73",
     "neovim.bdd.opt.05": "66c897131a0d5185",
-    "neovim.bdd.opt.06": "a62e775f1fd1dd84",
+    "neovim.bdd.opt.06": "800c91496af6650a",
 }
 
 EXPECTED_ROWS = [
