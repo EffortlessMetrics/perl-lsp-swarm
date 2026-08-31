@@ -21,12 +21,98 @@ mod compiler_operating_profile_oracle_adapter {
     };
     use xtask::compiler_profile_oracle_adapter::{
         self as adapter, ADAPTER_ID, ADAPTER_VERSION, SOURCE_FAMILY, SOURCE_SCHEMA_VERSION,
-        fixtures::{agreeing_receipt, comparison, fact},
     };
 
     // ---------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------
+
+    // Receipt construction is test-only. Production exposes adaptation, not a
+    // second fixture API that downstream evidence lanes could accidentally adopt.
+    /// A fully agreeing, hermetic, complete receipt.
+    fn agreeing_receipt() -> Value {
+        json!({
+            "schema_version": "oracle_receipt.v1",
+            "receipt_id": "oracle-receipt-0001",
+            "comparison_class": "IsaComposition",
+            "fixture_id": "isa-composition-basic",
+            "source_snapshot": {
+                "path_class": "public_test_fixture",
+                "fixture_source": "differential_oracle/isa_composition_basic.pl",
+                "content_hash": "sha256:2f1c9a"
+            },
+            "rust_extractor": {
+                "name": "perl-semantic-facts",
+                "version": "0.8.3",
+                "fact_model": "package-sub-table.v1"
+            },
+            "perl_oracle": {
+                "interpreter": "declared_fixture_perl",
+                "version": "v5.38.0",
+                "invocation_mode": "declared_fixture_command"
+            },
+            "module_path_authority": {
+                "authority": "declared_fixture_root",
+                "declared_roots": ["fixtures/differential_oracle/lib"],
+                "ambient_roots_reported": false
+            },
+            "environment": {
+                "denied": ["PERL5LIB", "PERL5OPT", "local::lib"],
+                "declared": ["PATH"],
+                "redacted_values": true
+            },
+            "ambient_inputs": [],
+            "generated_inputs": [],
+            "dynamic_boundaries": [],
+            "stale_facts": [],
+            "unsupported_effects": [],
+            "normalized_facts": {
+                "rust": [fact("fact-isa-1", "Child::ISA"), fact("fact-isa-2", "Child::new")],
+                "oracle": [fact("fact-isa-1", "Child::ISA"), fact("fact-isa-2", "Child::new")]
+            },
+            "comparisons": [
+                comparison("oracle_agrees", "fact-isa-1", "supports_promotion"),
+                comparison("oracle_agrees", "fact-isa-2", "supports_promotion")
+            ],
+            "provider_behavior_changed": false,
+            "editor_runtime_dependency": false,
+            "redaction": {
+                "private_paths_redacted": true,
+                "environment_values_redacted": true,
+                "raw_launch_payloads_redacted": true
+            },
+            "claim_boundary": "one fixture, one comparison class, test-only oracle evidence"
+        })
+    }
+
+    /// One fresh, high-confidence, explicit-source normalized fact.
+    fn fact(fact_id: &str, name: &str) -> Value {
+        json!({
+            "fact_id": fact_id,
+            "name": name,
+            "provenance": "ExplicitSource",
+            "confidence": "high",
+            "freshness": "fresh",
+            "fallback": "none",
+            "source_range": {
+                "path_class": "public_test_fixture",
+                "start_line": 3,
+                "start_character": 0,
+                "end_line": 3,
+                "end_character": 24
+            }
+        })
+    }
+
+    /// One typed comparison row.
+    fn comparison(result_class: &str, fact_id: &str, promotion_effect: &str) -> Value {
+        json!({
+            "result_class": result_class,
+            "fact_id": fact_id,
+            "promotion_effect": promotion_effect,
+            "message": "bounded explanatory text that is never parsed for semantics"
+        })
+    }
 
     fn adapt(receipt: &Value) -> Result<CompilerProfileObservationV1> {
         adapter::adapt_receipt_value(receipt)
@@ -1282,17 +1368,41 @@ mod compiler_operating_profile_oracle_adapter {
 
     #[test]
     fn falsifier_17_private_fixture_identity_never_crosses_the_boundary() -> Result<()> {
-        let observation = adapt(&agreeing_with(|receipt| {
+        let first = agreeing_with(|receipt| {
             receipt["source_snapshot"]["path_class"] = json!("redacted_private_fixture");
-            receipt["source_snapshot"]["fixture_source"] = json!("redacted-private-fixture-0007");
-        }))?;
+            receipt["source_snapshot"]["fixture_source"] = json!("redacted-private-fixture-alpha");
+        });
+        let second = agreeing_with(|receipt| {
+            receipt["source_snapshot"]["path_class"] = json!("redacted_private_fixture");
+            receipt["source_snapshot"]["fixture_source"] = json!("redacted-private-fixture-beta");
+        });
 
-        let canonical = observation.canonical_semantic_text()?;
-        assert!(
-            !canonical.contains("redacted-private-fixture-0007"),
-            "a redacted private fixture identity must not appear in normalized output"
+        let first_observation = adapt(&first)?;
+        let second_observation = adapt(&second)?;
+        let first_canonical = first_observation.canonical_semantic_text()?;
+        let second_canonical = second_observation.canonical_semantic_text()?;
+
+        for canonical in [&first_canonical, &second_canonical] {
+            assert!(
+                !canonical.contains("redacted-private-fixture-alpha")
+                    && !canonical.contains("redacted-private-fixture-beta"),
+                "a redacted private fixture identity must not appear in normalized output"
+            );
+            assert!(canonical.contains("redacted_private_fixture"), "the path class stays visible");
+        }
+        assert_eq!(
+            first_observation.subject, second_observation.subject,
+            "private source labels do not become normalized subject text"
         );
-        assert!(canonical.contains("redacted_private_fixture"), "the path class stays visible");
+        assert_ne!(
+            first_observation.receipt.digest, second_observation.receipt.digest,
+            "the private source receipt remains content-distinct through its digest"
+        );
+        assert_ne!(
+            first_observation.identity()?,
+            second_observation.identity()?,
+            "distinct canonical receipts remain distinct observations"
+        );
         Ok(())
     }
 
@@ -1673,44 +1783,6 @@ mod compiler_operating_profile_oracle_adapter {
             agreeing_with(|receipt| receipt["fixture_id"] = json!("isa-composition-diamond")),
         ]);
         assert!(duplicate.is_err(), "one receipt id owns exactly one observation");
-        Ok(())
-    }
-
-    #[test]
-    fn adapter_owned_invariants_hold_independently_of_the_schema() -> Result<()> {
-        // Both invariants are unreachable through a document the current schema
-        // accepts, so they are exercised on the decoded receipt directly: a future
-        // schema relaxation must not silently widen what this adapter accepts.
-        let mut receipt =
-            adapter::validate_receipt_json(&serde_json::to_string(&agreeing_receipt())?)?;
-        adapter::ensure_adapter_invariants(&receipt)?;
-
-        receipt.editor_runtime_dependency = true;
-        assert!(
-            adapter::ensure_adapter_invariants(&receipt).is_err(),
-            "the adapter rejects an editor-runtime receipt in its own right"
-        );
-
-        receipt.editor_runtime_dependency = false;
-        receipt.comparisons.clear();
-        assert!(
-            adapter::ensure_adapter_invariants(&receipt).is_err(),
-            "no agreement can be observed from an empty comparison set"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn the_receipt_digest_is_taken_over_canonical_receipt_text() -> Result<()> {
-        let receipt = adapter::validate_receipt_json(&serde_json::to_string(&agreeing_receipt())?)?;
-        let canonical = adapter::canonical_receipt_text(&receipt);
-
-        assert!(canonical.starts_with("oracle_receipt.v1\n"));
-        assert_eq!(
-            adapter::receipt_digest(&receipt)?.as_str(),
-            adapt(&agreeing_receipt())?.receipt.digest.as_str(),
-            "the envelope's receipt reference carries exactly this digest"
-        );
         Ok(())
     }
 

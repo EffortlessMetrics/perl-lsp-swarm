@@ -44,6 +44,9 @@
 //! - redaction is load-bearing: a false or leaking redaction flag is an
 //!   instrument/privacy failure ([`TerminalState::InstrumentFailed`]), never a
 //!   semantic pass or fail;
+//! - raw canonical receipt text remains implementation-private; public callers receive
+//!   descriptors, registries, or digest-bearing normalized observations, so redaction
+//!   cannot be bypassed through a convenience serializer;
 //! - normalized output is bounded and private-safe: no source bodies, raw
 //!   paths, raw environment values, launch payloads, full messages, or raw
 //!   logs cross the boundary — only hashes, path classes, bounded ids, typed
@@ -113,7 +116,7 @@ macro_rules! closed_vocabulary {
     ) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-        pub enum $name {
+        enum $name {
             $(
                 #[serde(rename = $tag)]
                 #[doc = concat!("Source vocabulary member `", $tag, "`.")]
@@ -123,17 +126,17 @@ macro_rules! closed_vocabulary {
 
         impl $name {
             /// The `$defs` name this vocabulary mirrors in the production schema.
-            pub const SCHEMA_DEF: &'static str = $schema_def;
+            const SCHEMA_DEF: &'static str = $schema_def;
 
             /// Stable source tag, identical to the schema enum member.
-            pub fn tag(self) -> &'static str {
+            fn tag(self) -> &'static str {
                 match self {
                     $(Self::$variant => $tag),+
                 }
             }
 
             /// Every member's source tag, for comparison against the schema.
-            pub fn schema_tags() -> ::std::collections::BTreeSet<&'static str> {
+            fn schema_tags() -> ::std::collections::BTreeSet<&'static str> {
                 ::std::collections::BTreeSet::from([$($tag),+])
             }
         }
@@ -228,7 +231,7 @@ closed_vocabulary! {
 /// and can never be upgraded to a public one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PathClass {
+enum PathClass {
     /// A public test fixture whose bounded source identity may be named.
     PublicTestFixture,
     /// A redacted private fixture; only its content hash and class may cross.
@@ -237,7 +240,7 @@ pub enum PathClass {
 
 impl PathClass {
     /// Stable source tag.
-    pub fn tag(self) -> &'static str {
+    fn tag(self) -> &'static str {
         match self {
             Self::PublicTestFixture => "public_test_fixture",
             Self::RedactedPrivateFixture => "redacted_private_fixture",
@@ -249,7 +252,7 @@ impl PathClass {
 /// are different subjects; `unknown` satisfies no exact oracle row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Interpreter {
+enum Interpreter {
     /// The declared fixture interpreter.
     DeclaredFixturePerl,
     /// An ambient system interpreter.
@@ -260,7 +263,7 @@ pub enum Interpreter {
 
 impl Interpreter {
     /// Stable source tag.
-    pub fn tag(self) -> &'static str {
+    fn tag(self) -> &'static str {
         match self {
             Self::DeclaredFixturePerl => "declared_fixture_perl",
             Self::SystemPerl => "system_perl",
@@ -273,7 +276,7 @@ impl Interpreter {
 /// evidence and can never become product runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum InvocationMode {
+enum InvocationMode {
     /// The declared fixture command.
     DeclaredFixtureCommand,
     /// A shadow test command.
@@ -284,7 +287,7 @@ pub enum InvocationMode {
 
 impl InvocationMode {
     /// Stable source tag.
-    pub fn tag(self) -> &'static str {
+    fn tag(self) -> &'static str {
         match self {
             Self::DeclaredFixtureCommand => "declared_fixture_command",
             Self::ShadowTestCommand => "shadow_test_command",
@@ -297,7 +300,7 @@ impl InvocationMode {
 /// hermetic exact row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ModuleAuthority {
+enum ModuleAuthority {
     /// A declared fixture root.
     DeclaredFixtureRoot,
     /// Declared module roots.
@@ -308,7 +311,7 @@ pub enum ModuleAuthority {
 
 impl ModuleAuthority {
     /// Stable source tag.
-    pub fn tag(self) -> &'static str {
+    fn tag(self) -> &'static str {
         match self {
             Self::DeclaredFixtureRoot => "declared_fixture_root",
             Self::DeclaredModuleRoots => "declared_module_roots",
@@ -320,7 +323,7 @@ impl ModuleAuthority {
 /// Closed ambient-input authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AmbientAuthority {
+enum AmbientAuthority {
     /// Reported only; not a declared input.
     ReportedOnly,
     /// An explicitly declared input.
@@ -331,7 +334,7 @@ pub enum AmbientAuthority {
 
 impl AmbientAuthority {
     /// Stable source tag.
-    pub fn tag(self) -> &'static str {
+    fn tag(self) -> &'static str {
         match self {
             Self::ReportedOnly => "reported_only",
             Self::DeclaredInput => "declared_input",
@@ -342,7 +345,7 @@ impl AmbientAuthority {
 
 /// Closed denied-environment key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-pub enum DeniedEnvironmentKey {
+enum DeniedEnvironmentKey {
     /// `PERL5LIB`.
     #[serde(rename = "PERL5LIB")]
     Perl5Lib,
@@ -358,10 +361,10 @@ impl DeniedEnvironmentKey {
     /// The closed set of startup inputs a hermetic oracle run must account
     /// for.  Every key here is either denied or explicitly declared; silence
     /// about one is not hermeticity.
-    pub const ALL: [Self; 3] = [Self::Perl5Lib, Self::Perl5Opt, Self::LocalLib];
+    const ALL: [Self; 3] = [Self::Perl5Lib, Self::Perl5Opt, Self::LocalLib];
 
     /// Stable source tag.
-    pub fn tag(self) -> &'static str {
+    fn tag(self) -> &'static str {
         match self {
             Self::Perl5Lib => "PERL5LIB",
             Self::Perl5Opt => "PERL5OPT",
@@ -378,222 +381,222 @@ impl DeniedEnvironmentKey {
 /// reconstructed from names, order, or other facts.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceRange {
+struct SourceRange {
     /// Path class of the range.
-    pub path_class: PathClass,
+    path_class: PathClass,
     /// Zero-based start line.
-    pub start_line: u32,
+    start_line: u32,
     /// Zero-based start character.
-    pub start_character: u32,
+    start_character: u32,
     /// Zero-based end line.
-    pub end_line: u32,
+    end_line: u32,
     /// Zero-based end character.
-    pub end_character: u32,
+    end_character: u32,
 }
 
 /// Bounded source snapshot identity.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceSnapshot {
+struct SourceSnapshot {
     /// Path class of the snapshot.
-    pub path_class: PathClass,
+    path_class: PathClass,
     /// Bounded fixture source identity.
-    pub fixture_source: String,
+    fixture_source: String,
     /// Content hash of the snapshot.
-    pub content_hash: String,
+    content_hash: String,
 }
 
 /// Rust extractor observation; producer identity is load-bearing.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RustExtractor {
+struct RustExtractor {
     /// Extractor name.
-    pub name: String,
+    name: String,
     /// Extractor version.
-    pub version: String,
+    version: String,
     /// Extractor fact model.
-    pub fact_model: String,
+    fact_model: String,
 }
 
 /// Real-Perl oracle observation.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PerlOracle {
+struct PerlOracle {
     /// Interpreter identity.
-    pub interpreter: Interpreter,
+    interpreter: Interpreter,
     /// Interpreter version.
-    pub version: String,
+    version: String,
     /// Invocation mode.
-    pub invocation_mode: InvocationMode,
+    invocation_mode: InvocationMode,
 }
 
 /// Module-path authority and declared roots.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ModulePathAuthority {
+struct ModulePathAuthority {
     /// Declared authority.
-    pub authority: ModuleAuthority,
+    authority: ModuleAuthority,
     /// Declared module roots.
-    pub declared_roots: Vec<String>,
+    declared_roots: Vec<String>,
     /// Whether ambient roots were reported.
-    pub ambient_roots_reported: bool,
+    ambient_roots_reported: bool,
 }
 
 /// Environment declaration; values are never carried, only bounded keys.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct EnvironmentDeclaration {
+struct EnvironmentDeclaration {
     /// Environment keys denied by the hermetic boundary.
-    pub denied: Vec<DeniedEnvironmentKey>,
+    denied: Vec<DeniedEnvironmentKey>,
     /// Environment keys declared present.
-    pub declared: Vec<String>,
+    declared: Vec<String>,
     /// Whether environment values were redacted.
-    pub redacted_values: bool,
+    redacted_values: bool,
 }
 
 /// One ambient input and its authority.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AmbientInput {
+struct AmbientInput {
     /// Bounded ambient input kind.
-    pub kind: String,
+    kind: String,
     /// Declared authority of the input.
-    pub authority: AmbientAuthority,
+    authority: AmbientAuthority,
 }
 
 /// One framework-generated input.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GeneratedInput {
+struct GeneratedInput {
     /// Generating framework.
-    pub framework: String,
+    framework: String,
     /// Provenance of the generated input.
-    pub provenance: FactProvenance,
+    provenance: FactProvenance,
     /// Source range, or null.
-    pub source_range: Option<SourceRange>,
+    source_range: Option<SourceRange>,
 }
 
 /// One dynamic boundary or unsupported effect.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BoundaryEntry {
+struct BoundaryEntry {
     /// Bounded boundary kind.
-    pub kind: String,
+    kind: String,
     /// Source range, or null.
-    pub source_range: Option<SourceRange>,
+    source_range: Option<SourceRange>,
 }
 
 /// One stale fact and its freshness.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StaleFact {
+struct StaleFact {
     /// Fact identity.
-    pub fact_id: String,
+    fact_id: String,
     /// Declared freshness.
-    pub freshness: Freshness,
+    freshness: Freshness,
 }
 
 /// One normalized fact.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NormalizedFact {
+struct NormalizedFact {
     /// Fact identity.
-    pub fact_id: String,
+    fact_id: String,
     /// Fact name.
-    pub name: String,
+    name: String,
     /// Fact provenance.
-    pub provenance: FactProvenance,
+    provenance: FactProvenance,
     /// Fact confidence.
-    pub confidence: Confidence,
+    confidence: Confidence,
     /// Fact freshness.
-    pub freshness: Freshness,
+    freshness: Freshness,
     /// Fallback state.
-    pub fallback: FallbackState,
+    fallback: FallbackState,
     /// Source range, or null.
-    pub source_range: Option<SourceRange>,
+    source_range: Option<SourceRange>,
 }
 
 /// Rust and oracle fact sets, kept independent and never merged.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NormalizedFacts {
+struct NormalizedFacts {
     /// Facts observed by the Rust extractor.
-    pub rust: Vec<NormalizedFact>,
+    rust: Vec<NormalizedFact>,
     /// Facts observed by the real-Perl oracle.
-    pub oracle: Vec<NormalizedFact>,
+    oracle: Vec<NormalizedFact>,
 }
 
 /// One typed comparison result.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ComparisonResult {
+struct ComparisonResult {
     /// Typed result class.
-    pub result_class: ResultClass,
+    result_class: ResultClass,
     /// Fact identity the comparison ranges over.
-    pub fact_id: String,
+    fact_id: String,
     /// Declared promotion effect.
-    pub promotion_effect: PromotionEffect,
+    promotion_effect: PromotionEffect,
     /// Explanatory message; never parsed for semantics.
-    pub message: String,
+    message: String,
 }
 
 /// Redaction flags; all three are load-bearing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Redaction {
+struct Redaction {
     /// Whether private paths were redacted.
-    pub private_paths_redacted: bool,
+    private_paths_redacted: bool,
     /// Whether environment values were redacted.
-    pub environment_values_redacted: bool,
+    environment_values_redacted: bool,
     /// Whether raw launch payloads were redacted.
-    pub raw_launch_payloads_redacted: bool,
+    raw_launch_payloads_redacted: bool,
 }
 
 /// A typed `oracle_receipt.v1` document.  Unknown fields and unknown
 /// vocabulary members fail closed at deserialization.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct OracleReceiptV1 {
+struct OracleReceiptV1 {
     /// Source schema tag; must equal [`SOURCE_SCHEMA_TAG`].
-    pub schema_version: String,
+    schema_version: String,
     /// Exact receipt identity.
-    pub receipt_id: String,
+    receipt_id: String,
     /// Exact comparison class.
-    pub comparison_class: ComparisonClass,
+    comparison_class: ComparisonClass,
     /// Exact fixture identity.
-    pub fixture_id: String,
+    fixture_id: String,
     /// Bounded source snapshot identity.
-    pub source_snapshot: SourceSnapshot,
+    source_snapshot: SourceSnapshot,
     /// Rust extractor observation.
-    pub rust_extractor: RustExtractor,
+    rust_extractor: RustExtractor,
     /// Real-Perl oracle observation.
-    pub perl_oracle: PerlOracle,
+    perl_oracle: PerlOracle,
     /// Module-path authority.
-    pub module_path_authority: ModulePathAuthority,
+    module_path_authority: ModulePathAuthority,
     /// Environment declaration.
-    pub environment: EnvironmentDeclaration,
+    environment: EnvironmentDeclaration,
     /// Ambient inputs.
-    pub ambient_inputs: Vec<AmbientInput>,
+    ambient_inputs: Vec<AmbientInput>,
     /// Framework-generated inputs.
-    pub generated_inputs: Vec<GeneratedInput>,
+    generated_inputs: Vec<GeneratedInput>,
     /// Dynamic boundaries.
-    pub dynamic_boundaries: Vec<BoundaryEntry>,
+    dynamic_boundaries: Vec<BoundaryEntry>,
     /// Stale facts.
-    pub stale_facts: Vec<StaleFact>,
+    stale_facts: Vec<StaleFact>,
     /// Unsupported effects.
-    pub unsupported_effects: Vec<BoundaryEntry>,
+    unsupported_effects: Vec<BoundaryEntry>,
     /// Independent Rust and oracle fact sets.
-    pub normalized_facts: NormalizedFacts,
+    normalized_facts: NormalizedFacts,
     /// Typed comparisons (non-empty).
-    pub comparisons: Vec<ComparisonResult>,
+    comparisons: Vec<ComparisonResult>,
     /// Observed provider-behavior flag; never permission or proof.
-    pub provider_behavior_changed: bool,
+    provider_behavior_changed: bool,
     /// Structural constant: oracle execution is test-only.
-    pub editor_runtime_dependency: bool,
+    editor_runtime_dependency: bool,
     /// Redaction flags.
-    pub redaction: Redaction,
+    redaction: Redaction,
     /// Declared claim boundary.
-    pub claim_boundary: String,
+    claim_boundary: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -725,7 +728,7 @@ where
 /// The schema is the structural authority for this receipt family, so it is
 /// actually compiled and applied: parsing the document as JSON alone would let
 /// a structurally invalid receipt reach adaptation.
-pub fn validate_receipt_value(value: &Value) -> Result<OracleReceiptV1> {
+fn validate_receipt_value(value: &Value) -> Result<OracleReceiptV1> {
     ensure_vocabulary_current()?;
 
     // An unknown or future source schema fails closed before any structural
@@ -764,7 +767,7 @@ pub fn validate_receipt_value(value: &Value) -> Result<OracleReceiptV1> {
 /// checks are unreachable through a document that satisfies the current
 /// schema; they exist so a future schema relaxation cannot silently widen what
 /// this adapter accepts.
-pub fn ensure_adapter_invariants(receipt: &OracleReceiptV1) -> Result<()> {
+fn ensure_adapter_invariants(receipt: &OracleReceiptV1) -> Result<()> {
     if receipt.editor_runtime_dependency {
         bail!(
             "oracle receipt {:?} declares an editor runtime dependency; oracle execution is \
@@ -879,13 +882,6 @@ fn ensure_unique_fact_ids(side: &str, facts: &[NormalizedFact]) -> Result<()> {
     Ok(())
 }
 
-/// Validate and decode one receipt document from JSON text.
-pub fn validate_receipt_json(text: &str) -> Result<OracleReceiptV1> {
-    let value: Value =
-        serde_json::from_str(text).context("oracle receipt is not well-formed JSON")?;
-    validate_receipt_value(&value)
-}
-
 // ---------------------------------------------------------------------------
 // Canonical receipt digest
 // ---------------------------------------------------------------------------
@@ -940,7 +936,7 @@ where
 /// Deterministic canonical text of one receipt.  Every order-insensitive
 /// collection is sorted, so non-semantic input ordering cannot change the
 /// receipt digest or the observation identity derived from it.
-pub fn canonical_receipt_text(receipt: &OracleReceiptV1) -> String {
+fn canonical_receipt_text(receipt: &OracleReceiptV1) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "{SOURCE_SCHEMA_TAG}");
     let _ = writeln!(out, "receipt_id={:?}", receipt.receipt_id);
@@ -1051,7 +1047,7 @@ pub fn canonical_receipt_text(receipt: &OracleReceiptV1) -> String {
 }
 
 /// Deterministic digest of one receipt's canonical text.
-pub fn receipt_digest(receipt: &OracleReceiptV1) -> Result<ObservationDigest> {
+fn receipt_digest(receipt: &OracleReceiptV1) -> Result<ObservationDigest> {
     ObservationDigest::from_hex(&sha256_hex(canonical_receipt_text(receipt).as_bytes()))
         .context("sha256 hex output must satisfy the digest invariant")
 }
@@ -1063,7 +1059,7 @@ pub fn receipt_digest(receipt: &OracleReceiptV1) -> Result<ObservationDigest> {
 /// The one observation class this adapter may emit: parser/compiler-internal
 /// fact production proven on the real-Perl oracle axis.  It is never provider,
 /// edit, execution, packaged, installed-host, actual-client, or EIR evidence.
-pub fn emitted_class() -> ObservationClass {
+fn emitted_class() -> ObservationClass {
     ObservationClass {
         family: ClaimFamily::ParserInternal,
         proof_class: ProofClass::RealPerlOracle,
@@ -1894,96 +1890,4 @@ pub fn adapt_receipts(values: &[Value]) -> Result<BTreeMap<String, CompilerProfi
         }
     }
     Ok(observations)
-}
-
-/// Bounded receipt fixtures used by this crate's proof and by the sibling
-/// evidence-set lanes.  They are synthetic public test fixtures: no private
-/// path, environment value, launch payload, or source body appears in them.
-pub mod fixtures {
-    use serde_json::{Value, json};
-
-    /// A fully agreeing, hermetic, complete receipt.
-    pub fn agreeing_receipt() -> Value {
-        json!({
-            "schema_version": "oracle_receipt.v1",
-            "receipt_id": "oracle-receipt-0001",
-            "comparison_class": "IsaComposition",
-            "fixture_id": "isa-composition-basic",
-            "source_snapshot": {
-                "path_class": "public_test_fixture",
-                "fixture_source": "differential_oracle/isa_composition_basic.pl",
-                "content_hash": "sha256:2f1c9a"
-            },
-            "rust_extractor": {
-                "name": "perl-semantic-facts",
-                "version": "0.8.3",
-                "fact_model": "package-sub-table.v1"
-            },
-            "perl_oracle": {
-                "interpreter": "declared_fixture_perl",
-                "version": "v5.38.0",
-                "invocation_mode": "declared_fixture_command"
-            },
-            "module_path_authority": {
-                "authority": "declared_fixture_root",
-                "declared_roots": ["fixtures/differential_oracle/lib"],
-                "ambient_roots_reported": false
-            },
-            "environment": {
-                "denied": ["PERL5LIB", "PERL5OPT", "local::lib"],
-                "declared": ["PATH"],
-                "redacted_values": true
-            },
-            "ambient_inputs": [],
-            "generated_inputs": [],
-            "dynamic_boundaries": [],
-            "stale_facts": [],
-            "unsupported_effects": [],
-            "normalized_facts": {
-                "rust": [fact("fact-isa-1", "Child::ISA"), fact("fact-isa-2", "Child::new")],
-                "oracle": [fact("fact-isa-1", "Child::ISA"), fact("fact-isa-2", "Child::new")]
-            },
-            "comparisons": [
-                comparison("oracle_agrees", "fact-isa-1", "supports_promotion"),
-                comparison("oracle_agrees", "fact-isa-2", "supports_promotion")
-            ],
-            "provider_behavior_changed": false,
-            "editor_runtime_dependency": false,
-            "redaction": {
-                "private_paths_redacted": true,
-                "environment_values_redacted": true,
-                "raw_launch_payloads_redacted": true
-            },
-            "claim_boundary": "one fixture, one comparison class, test-only oracle evidence"
-        })
-    }
-
-    /// One fresh, high-confidence, explicit-source normalized fact.
-    pub fn fact(fact_id: &str, name: &str) -> Value {
-        json!({
-            "fact_id": fact_id,
-            "name": name,
-            "provenance": "ExplicitSource",
-            "confidence": "high",
-            "freshness": "fresh",
-            "fallback": "none",
-            "source_range": {
-                "path_class": "public_test_fixture",
-                "start_line": 3,
-                "start_character": 0,
-                "end_line": 3,
-                "end_character": 24
-            }
-        })
-    }
-
-    /// One typed comparison row.
-    pub fn comparison(result_class: &str, fact_id: &str, promotion_effect: &str) -> Value {
-        json!({
-            "result_class": result_class,
-            "fact_id": fact_id,
-            "promotion_effect": promotion_effect,
-            "message": "bounded explanatory text that is never parsed for semantics"
-        })
-    }
 }
