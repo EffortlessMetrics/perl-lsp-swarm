@@ -265,6 +265,28 @@ where
     true
 }
 
+impl NodeKind {
+    /// Map every independent source span stored outside [`Node::location`]
+    /// in place.
+    ///
+    /// This is the in-place counterpart of the clone-path mapping engine
+    /// behind [`Node::clone_with_mapped_locations`]: incremental position
+    /// shifts call it so payload sub-spans move with the shift already
+    /// applied to [`Node::location`] instead of staying at their pre-shift
+    /// offsets. `map` must derive each result from the supplied location
+    /// only; invocation order is unspecified.
+    ///
+    /// Returns `false` when a recovery [`Token`] span cannot be remapped
+    /// without losing the token's validated byte width. The caller must then
+    /// discard the mutated tree rather than accept it.
+    pub fn map_payload_locations_in_place<F>(&mut self, map: F) -> bool
+    where
+        F: Fn(SourceLocation) -> SourceLocation,
+    {
+        map_payload_locations_with_recovery(self, &map, true)
+    }
+}
+
 fn preserve_location(location: SourceLocation) -> SourceLocation {
     location
 }
