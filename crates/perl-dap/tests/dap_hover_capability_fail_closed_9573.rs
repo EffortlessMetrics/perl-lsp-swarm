@@ -130,10 +130,18 @@ async fn other_evaluation_capabilities_do_not_promote_hover() -> Result<()> {
     let set_expression = body.get("supportsSetExpression").and_then(Value::as_bool);
     let set_variable = body.get("supportsSetVariable").and_then(Value::as_bool);
     assert_eq!(
-        (set_expression, set_variable),
-        (Some(true), Some(true)),
-        "precondition: sibling evaluation capabilities are advertised, so the hover \
+        set_expression,
+        Some(true),
+        "precondition: the sibling general evaluation capability is advertised, so the hover \
          assertion below is discriminating"
+    );
+    // #8354 closed setVariable after #9573 landed; pin the floor here so a
+    // later accidental widening shows up in this hover test too.
+    assert_eq!(
+        set_variable,
+        Some(false),
+        "#8354: setVariable must stay advertised false while its exact mutation \
+         proof is absent"
     );
 
     assert_eq!(

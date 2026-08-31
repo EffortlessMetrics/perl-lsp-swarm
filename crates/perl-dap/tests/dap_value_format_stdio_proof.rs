@@ -368,12 +368,9 @@ impl StdioSession {
         else {
             return Err("initialize over framed stdio failed".into());
         };
-        for capability in [
-            "supportsValueFormattingOptions",
-            "supportsSetVariable",
-            "supportsSetExpression",
-            "supportsCancelRequest",
-        ] {
+        for capability in
+            ["supportsValueFormattingOptions", "supportsSetExpression", "supportsCancelRequest"]
+        {
             if body.get(capability).and_then(Value::as_bool) != Some(true) {
                 return Err(format!(
                     "capability-set identity: `{capability}` must be advertised true in the \
@@ -381,6 +378,13 @@ impl StdioSession {
                 )
                 .into());
             }
+        }
+        // #8354: setVariable is pinned false by the exact-mutation floor and
+        // must not ride along with the other ValueFormat-session capabilities.
+        if body.get("supportsSetVariable").and_then(Value::as_bool) != Some(false) {
+            return Err("capability-set identity: `supportsSetVariable` must be advertised false \
+                 (#8354) in the same session that serves the ValueFormat rows"
+                .into());
         }
         session.wait_event("initialized")?;
 
@@ -803,7 +807,7 @@ fn write_receipt_to(
             },
             "capabilities": {
                 "supportsValueFormattingOptions": true,
-                "supportsSetVariable": true,
+                "supportsSetVariable": false,
                 "supportsSetExpression": true,
                 "supportsCancelRequest": true,
             },

@@ -175,7 +175,9 @@ fn test_session_lifecycle_terminate_without_session() {
 #[test]
 // AC:5.5
 fn test_set_variable_without_session_returns_error() {
-    // setVariable should fail clearly when no debugger session is active
+    // setVariable must fail clearly when no debugger session is active. Since
+    // #8354 the capability floor refuses before session lookup, so the
+    // refusal is the capability message, not the session message.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -194,8 +196,8 @@ fn test_set_variable_without_session_returns_error() {
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("No debugger session"),
-                "Error should mention missing session: {}",
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before session lookup: {}",
                 msg
             );
         }
@@ -206,7 +208,9 @@ fn test_set_variable_without_session_returns_error() {
 #[test]
 // AC:5.5
 fn test_set_variable_rejects_invalid_variable_name() {
-    // setVariable should reject names that could inject debugger commands
+    // setVariable must reject names that could inject debugger commands.
+    // Since #8354 the capability floor rejects every request before the name
+    // screening runs, so the refusal is the capability message.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -225,8 +229,8 @@ fn test_set_variable_rejects_invalid_variable_name() {
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("Invalid variable name"),
-                "Error should report invalid variable name: {}",
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before name screening: {}",
                 msg
             );
         }
@@ -239,7 +243,9 @@ fn test_set_variable_rejects_invalid_variable_name() {
 #[test]
 fn bdd_set_variable_rejects_system_call_in_value() {
     // WHEN a setVariable request contains `system(...)` in the value field
-    // THEN the adapter must reject it before sending any command to the debugger
+    // THEN the adapter must reject it before sending any command to the
+    // debugger. Since #8354 the capability floor rejects every request before
+    // value screening runs, which is strictly earlier than the #7271 screen.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -258,8 +264,8 @@ fn bdd_set_variable_rejects_system_call_in_value() {
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("unsafe value rejected"),
-                "Error must mention unsafe value rejection: {msg}"
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before value screening: {msg}"
             );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),

@@ -110,7 +110,12 @@ impl DebugAdapter {
             // row can widen it.
             "supportsEvaluateForHovers": crate::backend::capabilities::advertises_evaluate_for_hovers(),
             "supportsStepBack": false,
-            "supportsSetVariable": supports_core,
+            // #8354: not `supports_core`. setVariable is gated on an exact
+            // mutation proof that does not exist yet, so the wire value comes
+            // from the single setVariable authority and no catalog row can
+            // widen it.
+            "supportsSetVariable":
+                crate::backend::capabilities::advertises_set_variable(),
             "supportsRestartFrame": supports_restart_frame,
             "supportsGotoTargetsRequest": supports_core,
             "supportsStepInTargetsRequest": supports_step_in_targets,

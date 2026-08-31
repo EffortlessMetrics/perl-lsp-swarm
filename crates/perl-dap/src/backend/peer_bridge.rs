@@ -376,6 +376,10 @@ impl DapPeerBridge {
             // One source with the hover request gate (#9573), and gated on the
             // peer authority rather than the native one.
             "supportsEvaluateForHovers": self.advertised_evaluate_for_hovers(),
+            // #8354: pinned through the shared negotiation authority conjunct,
+            // so no catalog/backend/handler fact can widen the wire value while
+            // the exact mutation proof is absent. The adapter-side
+            // setVariable gate refuses on the same authority.
             "supportsSetVariable": negotiated.supports_set_variable,
         })
     }
