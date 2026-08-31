@@ -45,67 +45,67 @@
     },
     "makefile_pl_no_vcs": {
       "open_file_contract": "makefile_pl_no_vcs/script/probe.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     },
     "build_pl_no_vcs": {
       "open_file_contract": "build_pl_no_vcs/script/probe.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     },
     "cpanfile_no_vcs": {
       "open_file_contract": "cpanfile_no_vcs/script/probe.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     },
     "dist_ini_no_vcs": {
       "open_file_contract": "dist_ini_no_vcs/script/probe.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     },
     "perl_lsp_config_root": {
       "open_file_contract": "perl_lsp_config_root/script/probe.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     },
     "nested_makefile_under_git": {
       "open_file_contract": "nested_makefile_under_git/packages/inner/script/probe.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     },
     "nested_cpanfile_under_git": {
       "open_file_contract": "nested_cpanfile_under_git/services/inner/script/probe.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     },
     "outer_config_nested_distribution": {
       "open_file_contract": "outer_config_nested_distribution/dist/inner/script/probe.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     },
     "sibling_distributions": {
       "open_file_contract": "sibling_distributions/alpha/script/probe.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     },
     "git_worktree_shape": {
       "open_file_contract": "git_worktree_shape/worktree/script/probe.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     },
     "standalone_file": {
       "open_file_contract": "standalone_file/standalone.pl",
-      "observed": null,
+      "observations": [],
       "disposition": "hosted_pending",
       "disposition_reason": "no exact pinned-subject host run has executed yet; every fact remains unobserved rather than assumed"
     }
