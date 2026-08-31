@@ -79,6 +79,20 @@ mod tests {
             wait_for_frames(&buf, 1),
             "an unavailable diagnostic debouncer must fall back to immediate publication"
         );
+        let output = String::from_utf8_lossy(&buf.lock()).into_owned();
+        assert_eq!(
+            output.matches("\"method\":\"textDocument/publishDiagnostics\"").count(),
+            1,
+            "fallback must emit exactly one diagnostic notification: {output}"
+        );
+        assert!(
+            output.contains(uri),
+            "fallback must publish diagnostics for the requested document: {output}"
+        );
+        assert!(
+            server.diagnostic_debouncer.lock().is_none(),
+            "the permanently unavailable worker must be evicted after its first rejected admission"
+        );
     }
 
     /// didClose + didOpen of the SAME URI installs a brand-new document
