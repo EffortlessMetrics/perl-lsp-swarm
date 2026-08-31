@@ -417,6 +417,7 @@ fn simd_selection_sources(
     excluded_directories: &[&str],
 ) -> R<Vec<std::path::PathBuf>> {
     let canonical_root = std::fs::canonicalize(root)?;
+    reject_configured_build_script(root)?;
     let mut sources = Vec::new();
     collect_rust_sources(root, excluded_directories, &mut sources, true)?;
     let mut offenders = Vec::new();
@@ -539,11 +540,11 @@ fn cfg_selector_contexts(bytes: &[u8]) -> R<Vec<(usize, usize)>> {
         let Some(mut cursor) = skip_rust_whitespace_and_comments(bytes, name_end) else {
             continue;
         };
-        let is_cfg_macro = bytes.get(cursor) == Some(&b'!');
+        let is_cfg_macro = !is_cfg_attr && bytes.get(cursor) == Some(&b'!');
         if is_cfg_macro {
             cursor = skip_rust_whitespace_and_comments(bytes, cursor + 1)
                 .ok_or_else(|| missing("unterminated cfg! selector invocation"))?;
-        } else if !is_cfg_attr && !is_attribute_name(bytes, start) {
+        } else if is_cfg_attr && !is_attribute_name(bytes, start) {
             continue;
         }
         if bytes.get(cursor) != Some(&b'(') {
@@ -562,7 +563,49 @@ fn is_attribute_name(bytes: &[u8], start: usize) -> bool {
     if bytes.get(bracket) != Some(&b'[') {
         return false;
     }
-    previous_non_whitespace(bytes, bracket).is_some_and(|hash| bytes.get(hash) == Some(&b'#'))
+    let Some(prefix) = previous_non_whitespace(bytes, bracket) else {
+        return false;
+    };
+    if bytes.get(prefix) == Some(&b'#') {
+        return true;
+    }
+    bytes.get(prefix) == Some(&b'!')
+        && previous_non_whitespace(bytes, prefix).is_some_and(|hash| bytes.get(hash) == Some(&b'#'))
+}
+
+fn reject_configured_build_script(root: &std::path::Path) -> R {
+    let manifest = root.join("Cargo.toml");
+    let metadata = match std::fs::symlink_metadata(&manifest) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(missing(format!(
+            "cannot verify package manifest {}; keep the simd gate closed",
+            manifest.display()
+        )));
+    }
+    let contents = std::fs::read_to_string(&manifest)?;
+    let mut in_package = false;
+    for line in contents.lines() {
+        let line = line.split_once('#').map_or(line, |(code, _)| code).trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package
+            && line
+                .strip_prefix("build")
+                .is_some_and(|remainder| remainder.trim_start().starts_with('='))
+        {
+            return Err(missing(format!(
+                "cannot verify configured build script in {}; generated source is not inspectable, so keep the simd gate closed",
+                manifest.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn previous_non_whitespace(bytes: &[u8], mut index: usize) -> Option<usize> {
@@ -983,7 +1026,7 @@ fn validate_simd_readme_contract(readme: &str) -> R {
             )));
         }
     }
-    let lowercase = simd_row.to_ascii_lowercase();
+    let lowercase = readme.to_ascii_lowercase();
     for forbidden in [
         "enabled",
         "active",
@@ -999,10 +1042,13 @@ fn validate_simd_readme_contract(readme: &str) -> R {
         "simd support",
         "simd path",
         "simd is used",
+        "uses simd",
+        "simd acceleration",
+        "simd implementation",
     ] {
         if lowercase.contains(forbidden) {
             return Err(missing(format!(
-                "README simd row contains a contradictory capability claim: {forbidden}"
+                "README simd contract contains a contradictory capability claim: {forbidden}"
             )));
         }
     }
@@ -1120,6 +1166,23 @@ fn simd_gate_detects_raw_string_feature_selection() -> R {
 }
 
 #[test]
+fn simd_gate_detects_inner_attributes_and_ignores_cfg_attr_calls() -> R {
+    assert!(contains_simd_selection("#![cfg(feature = \"simd\")]")?);
+    assert!(contains_simd_selection("#![cfg_attr(feature = \"simd\", allow(dead_code))]")?);
+    assert!(!contains_simd_selection("fn cfg_attr(feature: &str) {}\ncfg_attr(\"simd\");")?);
+    assert!(!contains_simd_selection(
+        "macro_rules! cfg_attr { ($($item:tt)*) => {} }\ncfg_attr!(feature = \"simd\");"
+    )?);
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_inner_attribute");
+    let offenders = simd_selection_sources(&fixture_root, &[])?;
+    assert_eq!(offenders, vec![fixture_root.join("selector.rs")]);
+    Ok(())
+}
+
+#[test]
 fn simd_gate_rejects_uninspectable_out_dir_generation_fixture() -> R {
     let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -1141,17 +1204,20 @@ fn simd_gate_rejects_uninspectable_out_dir_generation_fixture() -> R {
 }
 
 #[test]
-fn simd_gate_rejects_custom_build_feature_environment_fixture() -> R {
+fn simd_gate_rejects_uninspectable_custom_build_script_fixture() -> R {
     let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("simd_feature_custom_build");
+    let build_script = std::fs::read_to_string(fixture_root.join("custom_build.rs"))?;
+    assert!(build_script.contains("CARGO_FEATURE_"));
+    assert!(!build_script.contains("CARGO_FEATURE_SIMD"));
     let error = simd_selection_sources(&fixture_root, &[])
         .err()
         .ok_or_else(|| missing("custom build-script feature environment unexpectedly passed"))?;
     assert!(
-        error.to_string().contains("CARGO_FEATURE_SIMD"),
-        "custom build-script feature handling must fail closed: {error}"
+        error.to_string().contains("configured build script"),
+        "custom build-script feature handling must fail closed beyond exact text matches: {error}"
     );
     Ok(())
 }
@@ -1159,15 +1225,12 @@ fn simd_gate_rejects_custom_build_feature_environment_fixture() -> R {
 #[test]
 fn simd_readme_guard_rejects_contradictory_capability_claim() -> R {
     let readme = include_str!("../README.md");
-    let contradictory = readme.replace(
-        "checked-in Rust sources or literal `include!` output",
-        "checked-in Rust sources or literal `include!` output; SIMD is used by the lexer.",
-    );
+    let contradictory = format!("{readme}\nThe lexer uses SIMD acceleration.\n");
     let error = validate_simd_readme_contract(&contradictory)
         .err()
         .ok_or_else(|| missing("contradictory README SIMD wording unexpectedly passed"))?;
     assert!(
-        error.to_string().contains("simd is used"),
+        error.to_string().contains("accelerat"),
         "README contradiction must identify the capability claim: {error}"
     );
     Ok(())

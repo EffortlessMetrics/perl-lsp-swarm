@@ -1,0 +1,4 @@
+[package]
+name = "simd-feature-custom-build-fixture"
+version = "0.0.0"
+build = "custom_build.rs"
