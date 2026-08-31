@@ -773,23 +773,60 @@ class EvidenceBinding(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             target = Path(raw) / "out.json"
             target.write_text('{"previous": true}', encoding="utf-8")
-            original = Path.write_text
+            import os as _os
 
-            def failing(self, data, encoding=None, **kwargs):
-                if self.name.endswith(".tmp"):
+            original = observer.os.fdopen
+
+            class FailingStream:
+                def __init__(self, fd: int) -> None:
+                    self._fd = fd
+
+                def __enter__(self) -> "FailingStream":
+                    return self
+
+                def __exit__(self, *exc) -> bool:
+                    _os.close(self._fd)
+                    return False
+
+                def write(self, data: str) -> int:
                     raise OSError("no space left on device")
-                return original(self, data, encoding=encoding, **kwargs)
 
-            Path.write_text = failing
+            observer.os.fdopen = lambda fd, *a, **k: FailingStream(fd)
             try:
                 with self.assertRaises(OSError):
                     observer.write_json(target, {"new": True})
             finally:
-                Path.write_text = original
+                observer.os.fdopen = original
             self.assertEqual(
                 target.read_text(encoding="utf-8"), '{"previous": true}'
             )
-            self.assertFalse((Path(raw) / "out.json.tmp").exists())
+            self.assertEqual(
+                list(Path(raw).glob("*.tmp")), [], "staging file left behind"
+            )
+
+    def test_each_write_stages_under_a_unique_name(self) -> None:
+        """A shared staging path lets one run publish another's payload."""
+        staged: list[str] = []
+        original = observer.tempfile.mkstemp
+
+        def recording(**kwargs):
+            handle, name = original(**kwargs)
+            staged.append(name)
+            return handle, name
+
+        observer.tempfile.mkstemp = recording
+        try:
+            with tempfile.TemporaryDirectory() as raw:
+                target = Path(raw) / "out.json"
+                for index in range(3):
+                    observer.write_json(target, {"n": index})
+                self.assertEqual(
+                    json.loads(target.read_text(encoding="utf-8")), {"n": 2}
+                )
+                self.assertEqual(list(Path(raw).glob("*.tmp")), [])
+        finally:
+            observer.tempfile.mkstemp = original
+        self.assertEqual(len(set(staged)), 3, f"reused staging name: {staged}")
 
     def test_non_success_static_receipt_cannot_be_bound(self) -> None:
         receipt = static_receipt()

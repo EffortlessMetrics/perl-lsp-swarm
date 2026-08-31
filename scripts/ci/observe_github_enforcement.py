@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1085,9 +1086,16 @@ def write_json(path: Path, payload: Any) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    staged = path.with_name(f"{path.name}.tmp")
+    # The staging name is unique per call. A fixed one would let two runs
+    # targeting the same output consume or delete each other's staging file,
+    # and publish a payload the other run produced.
+    handle, staged_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
+    )
+    staged = Path(staged_name)
     try:
-        staged.write_text(body, encoding="utf-8")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(body)
         os.replace(staged, path)
     finally:
         staged.unlink(missing_ok=True)
