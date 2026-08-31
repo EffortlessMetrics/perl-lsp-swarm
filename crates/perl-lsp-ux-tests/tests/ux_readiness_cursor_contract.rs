@@ -5,8 +5,8 @@
 mod active_document_readiness;
 
 use active_document_readiness::{
-    ACTIVE_DOCUMENT_READY_METHOD, ReadyObservation, generation_after,
-    ready_generation, ready_generations,
+    generation_after, ready_generation, ready_generations, ACTIVE_DOCUMENT_READY_METHOD,
+    ReadyObservation,
 };
 use perl_lsp_ux_tests::LspEvent;
 use serde_json::json;
@@ -25,11 +25,9 @@ fn readiness_cursor_rejects_historical_delayed_and_cross_uri_evidence() {
     let mut events = vec![ready(uri, json!(1)), ready(uri, json!(2))];
     let cursor = ready_generations(&events, uri).len();
 
-    assert!(generation_after(
-        &ready_generations(&events, uri),
-        cursor,
-        1,
-    ).is_none());
+    assert!(
+        generation_after(&ready_generations(&events, uri), cursor, 1).is_none()
+    );
 
     events.push(ready(uri, json!(2)));
     assert!(
