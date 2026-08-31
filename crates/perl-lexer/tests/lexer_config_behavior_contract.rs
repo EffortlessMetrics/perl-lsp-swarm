@@ -1044,14 +1044,17 @@ fn validate_simd_readme_contract(readme: &str) -> R {
             "simd processing",
             "simd scanner",
             "simd capability",
+            "simd backend",
             "simd support",
             "simd path",
             "simd is used",
             "uses simd",
             "simd acceleration",
-            "simd implementation",
         ] {
-            if line.contains(forbidden) {
+            if line
+                .match_indices(forbidden)
+                .any(|(match_start, _)| !simd_claim_is_negated(&line[..match_start]))
+            {
                 return Err(missing(format!(
                     "README simd contract contains a contradictory capability claim: {forbidden}"
                 )));
@@ -1064,6 +1067,15 @@ fn validate_simd_readme_contract(readme: &str) -> R {
         }
     }
     Ok(())
+}
+
+fn simd_claim_is_negated(prefix: &str) -> bool {
+    prefix
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '\'')
+        .filter(|word| !word.is_empty())
+        .rev()
+        .take(5)
+        .any(|word| matches!(word, "no" | "not" | "without" | "never" | "isn't" | "doesn't"))
 }
 
 #[test]
@@ -1254,6 +1266,28 @@ fn simd_readme_guard_rejects_contradictory_capability_claim() -> R {
     assert!(
         error.to_string().contains("accelerat"),
         "README contradiction must identify the capability claim: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_allows_negated_implementation_claim() -> R {
+    let readme = include_str!("../README.md");
+    let truthful = format!("{readme}\nNo SIMD implementation is used.\n");
+    validate_simd_readme_contract(&truthful)?;
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_rejects_simd_backend_claim() -> R {
+    let readme = include_str!("../README.md");
+    let contradictory = format!("{readme}\nThe lexer uses a SIMD backend.\n");
+    let error = validate_simd_readme_contract(&contradictory)
+        .err()
+        .ok_or_else(|| missing("contradictory README SIMD backend wording unexpectedly passed"))?;
+    assert!(
+        error.to_string().contains("simd backend"),
+        "README contradiction must identify the backend claim: {error}"
     );
     Ok(())
 }
