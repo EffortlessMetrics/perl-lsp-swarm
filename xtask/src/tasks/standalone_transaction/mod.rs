@@ -1094,7 +1094,9 @@ pub fn resolve_subject(
     }
     candidate.validate()?;
     if let Some(subject_target) = candidate.target() {
-        if subject_target.platform != intent.target.platform || subject_target.libc != intent.target.libc {
+        if subject_target.platform != intent.target.platform
+            || subject_target.libc != intent.target.libc
+        {
             return violation(
                 ContractViolation::OutcomeConflict,
                 "resolved subject target platform/libc disagrees with the intent",

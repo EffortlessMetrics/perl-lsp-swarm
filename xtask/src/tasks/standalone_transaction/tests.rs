@@ -412,7 +412,6 @@ fn resolver_seam_rejects_mode_selector_and_identity_drift() {
             .map(|_| ()),
         ContractViolation::OutcomeConflict,
     );
-
 }
 
 fn canonical_members(unit: ProductUnit) -> Vec<MemberIdentity> {
@@ -1364,14 +1363,9 @@ fn receipts_cannot_arrive_before_declared_predecessors() {
     let intent = base_intent();
     let (subject, subject_digest) = resolved_archive(&intent);
     let dag = archive_dag(intent.requested_product_unit);
-    let mut receipts = green_chain(
-        &intent.transaction_id,
-        &intent.attempt_id,
-        &subject,
-        &subject_digest,
-        &dag,
-    )
-    .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
+    let mut receipts =
+        green_chain(&intent.transaction_id, &intent.attempt_id, &subject, &subject_digest, &dag)
+            .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
     let predecessor = receipts.remove(0);
     receipts.insert(1, predecessor);
     expect_code(
@@ -1425,14 +1419,9 @@ fn candidate_disposition_follows_the_operation_and_receipts() {
         Applicability::Required,
         &[StageId::InstalledTransition],
     ));
-    let removed = folded(
-        &uninstall,
-        &uninstall_dag,
-        &uninstalled_subject,
-        &uninstalled_digest,
-        |_| {},
-    )
-    .unwrap_or_else(|error| fail(&format!("uninstall fold: {error}")));
+    let removed =
+        folded(&uninstall, &uninstall_dag, &uninstalled_subject, &uninstalled_digest, |_| {})
+            .unwrap_or_else(|error| fail(&format!("uninstall fold: {error}")));
     assert_eq!(removed.result, TerminalResult::Uninstalled);
     assert_eq!(removed.candidate_disposition, CandidateDisposition::NoneRemaining);
 
