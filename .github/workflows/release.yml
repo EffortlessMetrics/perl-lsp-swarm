@@ -640,6 +640,7 @@ jobs:
       - name: Dispatch primary publishers
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
           VERSION: ${{ needs.release-metadata.outputs.version }}
           TAG: ${{ needs.release-metadata.outputs.tag }}
           EXPECTED_SHA: ${{ github.sha }}
@@ -655,20 +656,20 @@ jobs:
           printf '%s' "$MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$'
           if [ "$SKIP_CRATES" != "true" ]; then
             gh api -X POST \
-              /repos/${{ github.repository }}/actions/workflows/publish-crates.yml/dispatches \
+              /repos/$REPOSITORY/actions/workflows/publish-crates.yml/dispatches \
               -f ref="$TAG" -F inputs[version]="$VERSION" -F inputs[dry_run]="false" \
               -F inputs[expected_sha]="$EXPECTED_SHA" -F inputs[candidate_run_id]="$CANDIDATE_RUN_ID" \
               -F inputs[manifest_sha256]="$MANIFEST_SHA256"
           fi
           if [ "$SKIP_EXTENSION" != "true" ]; then
             gh api -X POST \
-              /repos/${{ github.repository }}/actions/workflows/publish-extension.yml/dispatches \
+              /repos/$REPOSITORY/actions/workflows/publish-extension.yml/dispatches \
               -f ref="$TAG" -F inputs[version]="$VERSION" -F inputs[expected_sha]="$EXPECTED_SHA" \
               -F inputs[candidate_run_id]="$CANDIDATE_RUN_ID" -F inputs[manifest_sha256]="$MANIFEST_SHA256"
           fi
           if [ "$SKIP_DOCKER" != "true" ]; then
             gh api -X POST \
-              /repos/${{ github.repository }}/actions/workflows/docker-publish.yml/dispatches \
+              /repos/$REPOSITORY/actions/workflows/docker-publish.yml/dispatches \
               -f ref="$TAG" -F inputs[version]="$VERSION" -F inputs[push]="true" \
               -F inputs[expected_sha]="$EXPECTED_SHA" -F inputs[candidate_run_id]="$CANDIDATE_RUN_ID" \
               -F inputs[manifest_sha256]="$MANIFEST_SHA256"

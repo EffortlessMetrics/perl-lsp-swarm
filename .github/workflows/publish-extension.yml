@@ -50,6 +50,7 @@ jobs:
     steps:
       - name: Verify release eligibility handoff
         env:
+          GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA: ${{ github.event.inputs.expected_sha }}
           MANIFEST_SHA256: ${{ github.event.inputs.manifest_sha256 }}
           CANDIDATE_RUN_ID: ${{ github.event.inputs.candidate_run_id }}
@@ -59,7 +60,7 @@ jobs:
           printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$'
           printf '%s' "$CANDIDATE_RUN_ID" | grep -Eq '^[0-9]+$'
-          GH_TOKEN="${{ github.token }}" gh run download "$CANDIDATE_RUN_ID" \
+          gh run download "$CANDIDATE_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" --name release-terminal-candidate --dir release-candidate
           test -s release-candidate/terminal-artifact-manifest.json
           actual_manifest_sha256="$(sha256sum release-candidate/terminal-artifact-manifest.json | awk '{print $1}')"
