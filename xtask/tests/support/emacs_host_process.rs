@@ -187,9 +187,12 @@ pub fn run_owned_process(
     };
     // Timeout/force cleanup owns this run's candidate identity, not only the
     // host PID. Kill needle-matching survivors that were absent from the
-    // before-probe (never image-wide, never the pre-existing set). Descendants
-    // spawned with null stdio do not hold the host pipes; join_capture still
-    // unblocks on host EOF.
+    // before-probe (never image-wide, never the pre-existing set) before the
+    // after-probe so timeout cannot report those PIDs as still running.
+    // Descendants spawned with null stdio do not hold the host pipes;
+    // join_capture still unblocks on host EOF. Clean-exit leaks are observed
+    // first (cleanup Fail) and reaped after the after-probe so the ledger
+    // still names the leak.
     if (timed_out || kill_requested) && before_usable {
         reap_this_run_survivors(pid, &before_lines, &needle);
     }
@@ -267,15 +270,25 @@ pub fn run_owned_process(
         Some(Ok(text)) => text.clone(),
         _ => String::new(),
     };
+    let after_snapshot = match parse_probe(&after_raw) {
+        Ok(lines) => render_process_snapshot(&lines),
+        Err(_) => after_raw,
+    };
     let mut snapshot_persist_errors = Vec::new();
     for (path, raw) in [
         (layout.process_snapshot_before(), render_process_snapshot(&before_lines)),
-        (layout.process_snapshot_after(), after_raw),
+        (layout.process_snapshot_after(), after_snapshot),
     ] {
         let sanitized = sanitize_text(raw.as_bytes(), plan, layout);
         if let Err(error) = persist_text(&path, &sanitized) {
             snapshot_persist_errors.push(format!("{}: {error:#}", path.display()));
         }
+    }
+    if cleanup == CleanupResult::Fail && before_usable {
+        // The after-probe already recorded the leak as Fail. Reap this-run
+        // needle matches so a status-0 leak cannot remain running after
+        // run_owned_process returns. Do not re-probe: remediation is not Pass.
+        reap_this_run_survivors(pid, &before_lines, &needle);
     }
     if (timed_out || kill_requested || status.code() != Some(0)) && cleanup == CleanupResult::Pass {
         cleanup = CleanupResult::NotProven;
@@ -853,12 +866,13 @@ fn persist_text(path: &Path, text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Kill this-run candidate survivors after a force/timeout host kill.
+/// Kill this-run candidate survivors.
 /// Selection is `surviving_processes` (needle match absent from the before-probe)
 /// minus the already-waited host PID. This is not an image-wide Windows
 /// `taskkill` and does not touch pre-existing matches. Callers must skip this
 /// when the before-probe was unusable; an empty baseline would treat every
-/// match as this run's leak.
+/// match as this run's leak. Timeout/force call it before the after-probe;
+/// clean-exit Fail calls it afterward so the observed leak remains in the ledger.
 fn reap_this_run_survivors(host_pid: u32, before: &[ProcessProbeLine], needle: &str) {
     for _ in 0..10 {
         let Some(Ok(text)) = probe_process_table() else {

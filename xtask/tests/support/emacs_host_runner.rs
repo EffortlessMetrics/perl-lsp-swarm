@@ -504,9 +504,13 @@ pub fn parse_driver_events(bytes: &[u8], require_complete: bool) -> Result<Vec<D
     Ok(events)
 }
 
-/// Parse complete valid JSONL events and stop at the first invalid or
-/// truncated line. A partial trailing write must not erase barriers already
-/// observed. UTF-8 failure and an invalid first line yield an empty prefix.
+/// Parse the longest prefix of events that still validate as an in-progress
+/// driver stream. Stop at the first JSON, schema, sequence, safety, or
+/// lifecycle-order failure so a later syntactically valid
+/// `shutdown_completed` cannot mint a barrier the driver never established.
+/// An in-progress `host_action_started` is retained: completeness, not prefix
+/// recovery, requires every action to close. UTF-8 failure and an invalid
+/// first line yield an empty prefix.
 pub fn parse_driver_event_prefix(bytes: &[u8]) -> Vec<DriverEvent> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Vec::new();
@@ -517,7 +521,13 @@ pub fn parse_driver_event_prefix(bytes: &[u8]) -> Vec<DriverEvent> {
             continue;
         }
         match serde_json::from_str::<DriverEvent>(line) {
-            Ok(event) => events.push(event),
+            Ok(event) => {
+                events.push(event);
+                if validate_driver_events(&events, false).is_err() {
+                    events.pop();
+                    break;
+                }
+            }
             Err(_) => break,
         }
     }
@@ -587,9 +597,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
             }
         }
     }
-    ensure!(open_actions.is_empty(), "driver left host actions incomplete");
 
     if require_complete {
+        ensure!(open_actions.is_empty(), "driver left host actions incomplete");
         ensure!(
             !singleton.contains(&DriverEventKind::DriverFailed),
             "complete host run reported driver failure"

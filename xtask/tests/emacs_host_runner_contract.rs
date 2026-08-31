@@ -9,7 +9,7 @@ mod emacs_host_runner;
 use anyhow::{Context as _, Result, bail, ensure};
 use emacs_host_runner::{
     DRIVER_SCHEMA_VERSION, DriverEvent, DriverEventKind, RUN_PLAN_SCHEMA_VERSION,
-    default_not_proven_diagnostics, validate_driver_events,
+    default_not_proven_diagnostics, parse_driver_event_prefix, validate_driver_events,
 };
 use std::collections::BTreeMap;
 use xtask::editor_client_compat::{DiagnosticMode, DiagnosticsIdentity};
@@ -48,6 +48,16 @@ fn complete_events() -> Vec<DriverEvent> {
         event(10, DriverEventKind::ShutdownStarted),
         event(11, DriverEventKind::ShutdownCompleted),
     ]
+}
+
+fn events_jsonl(events: &[DriverEvent]) -> Result<String> {
+    let mut lines = Vec::new();
+    for event in events {
+        lines.push(
+            serde_json::to_string(event).context("serializing driver event for prefix fixture")?,
+        );
+    }
+    Ok(lines.join("\n"))
 }
 
 #[test]
@@ -119,6 +129,67 @@ fn schema_drift_is_rejected() {
     let mut drifted = complete_events();
     drifted[0].schema_version = "emacs_host_driver.v2".to_string();
     assert!(validate_driver_events(&drifted, true).is_err());
+}
+
+#[test]
+fn incomplete_prefix_may_leave_a_host_action_open() -> Result<()> {
+    let prefix = complete_events();
+    let open = &prefix[..7];
+    validate_driver_events(open, false)?;
+    assert!(validate_driver_events(open, true).is_err());
+    Ok(())
+}
+
+/// JSON-decodable is not lifecycle evidence. The prefix parser must stop at
+/// schema drift, a sequence gap, or a reordered lifecycle event so a later
+/// `shutdown_completed` cannot become `last_completed_barrier`.
+#[test]
+fn event_prefix_stops_at_semantic_invalidity() -> Result<()> {
+    let valid = &complete_events()[..5];
+    let valid_jsonl = events_jsonl(valid)?;
+
+    let mut wrong_schema = event(6, DriverEventKind::ShutdownCompleted);
+    wrong_schema.schema_version = "emacs_host_driver.v2".to_string();
+    let schema_stream = format!("{valid_jsonl}\n{}", serde_json::to_string(&wrong_schema)?);
+    let schema_prefix = parse_driver_event_prefix(schema_stream.as_bytes());
+    ensure!(
+        schema_prefix.len() == 5
+            && schema_prefix.last().map(|e| e.kind) == Some(DriverEventKind::WorkspaceReady),
+        "wrong schema after a valid prefix must not mint shutdown_completed, got {:?}",
+        schema_prefix.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+
+    let mut gapped = event(7, DriverEventKind::ShutdownCompleted);
+    gapped.sequence = 7;
+    let gap_stream = format!("{valid_jsonl}\n{}", serde_json::to_string(&gapped)?);
+    let gap_prefix = parse_driver_event_prefix(gap_stream.as_bytes());
+    ensure!(
+        gap_prefix.len() == 5,
+        "a sequence gap must drop the gapped shutdown event, got {} events",
+        gap_prefix.len()
+    );
+
+    let mut reordered = complete_events();
+    reordered.swap(1, 2);
+    for (index, observation) in reordered.iter_mut().enumerate() {
+        observation.sequence = (index + 1) as u64;
+    }
+    let reordered_prefix = parse_driver_event_prefix(events_jsonl(&reordered)?.as_bytes());
+    ensure!(
+        reordered_prefix.len() == 2
+            && reordered_prefix[0].kind == DriverEventKind::HostStarted
+            && reordered_prefix[1].kind == DriverEventKind::RegistrationSelected,
+        "reordered lifecycle events must keep only the ordered prefix, got {:?}",
+        reordered_prefix.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+
+    let open = parse_driver_event_prefix(events_jsonl(&complete_events()[..7])?.as_bytes());
+    ensure!(
+        open.len() == 7 && open.last().map(|e| e.kind) == Some(DriverEventKind::HostActionStarted),
+        "an in-progress host action must stay in the prefix, got {} events",
+        open.len()
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -960,12 +1031,41 @@ fn released_subject_never_searches_the_host_installation() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 use std::collections::BTreeSet;
+use std::process::{Command, Stdio};
 use xtask::editor_client_compat::{
     CapabilityBasis, CapabilityIdentity, CleanupResult, FailureClass, JourneyCell,
     ObservationResult, PositionEncodingBasis,
 };
 
 const FAKE_HOST_ENTRY_TEST: &str = "runner_support_fake_host_child_entry";
+
+fn descendant_still_running(pid: u32) -> bool {
+    if cfg!(windows) {
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .stdin(Stdio::null())
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+            .unwrap_or(true)
+    } else {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(true)
+    }
+}
+
+fn snapshot_uses_pid_args_lines(text: &str) -> bool {
+    text.lines().filter(|line| !line.trim().is_empty()).all(|line| {
+        let mut parts = line.splitn(2, ' ');
+        parts.next().is_some_and(|pid| pid.chars().all(|ch| ch.is_ascii_digit()))
+            && parts.next().is_some()
+    })
+}
 
 #[test]
 fn runner_support_fake_host_child_entry() {
@@ -1123,6 +1223,35 @@ fn clean_status_zero_run_passes_only_with_observed_clean_process_set() -> Result
     Ok(())
 }
 
+/// Parsed before/after process snapshots use the same `pid args` lines. An
+/// unparseable after-probe still keeps the raw forensic text.
+#[test]
+fn process_snapshots_use_pid_args_lines_when_parseable() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, layout) = emacs_host_runner::supervision_plan(root.path(), "snapfmt", 30_000)?;
+    let host_executable =
+        std::env::current_exe().context("locating this test binary for fake-host re-entry")?;
+    let mut command = emacs_host_runner::supervision_command(
+        &host_executable,
+        FAKE_HOST_ENTRY_TEST,
+        &plan,
+        &layout,
+        "clean",
+    )?;
+    let observation = emacs_host_runner::run_owned_process(&mut command, &plan, &layout)?;
+    ensure!(observation.status_code == Some(0));
+    ensure!(observation.cleanup == CleanupResult::Pass);
+    let before = fs::read_to_string(layout.process_snapshot_before())
+        .context("reading before process snapshot")?;
+    let after = fs::read_to_string(layout.process_snapshot_after())
+        .context("reading after process snapshot")?;
+    ensure!(
+        snapshot_uses_pid_args_lines(&before) && snapshot_uses_pid_args_lines(&after),
+        "durable snapshots must use pid-args lines when the probe parsed; before={before:?} after={after:?}"
+    );
+    Ok(())
+}
+
 /// A status-0 host that emits `shutdown_completed` while leaking its candidate
 /// descendant must fail cleanup. `shutdown_completed` is not cleanup proof.
 #[test]
@@ -1152,6 +1281,17 @@ fn clean_exit_with_leaked_candidate_descendant_fails_cleanup() -> Result<()> {
     ensure!(
         !observation.surviving_processes.is_empty(),
         "the surviving descendant must be recorded in the ledger"
+    );
+    let leaked_pids: Vec<u32> =
+        observation.surviving_processes.iter().map(|line| line.pid).collect();
+    ensure!(
+        leaked_pids.iter().all(|pid| !descendant_still_running(*pid)),
+        "run_owned_process must reap the observed clean-exit leak before returning; still running {:?}",
+        leaked_pids
+            .iter()
+            .copied()
+            .filter(|pid| descendant_still_running(*pid))
+            .collect::<Vec<_>>()
     );
     ensure!(
         !observation.passed_process_boundary(),
