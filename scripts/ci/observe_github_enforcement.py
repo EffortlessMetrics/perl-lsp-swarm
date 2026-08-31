@@ -65,6 +65,13 @@ RULESET_PAGE_SIZE = 100
 # does not satisfy "must be app N".
 ANY_SOURCE_APP_ID = -1
 
+# Closed vocabularies the reconciler enforces. An unknown value must not reach
+# the snapshot: the reconciler would reject the whole document as invalid
+# input, destroying every other surface's evidence with it. An unrepresentable
+# ruleset is reported individually instead.
+RULESET_ENFORCEMENT = ("active", "evaluate", "disabled")
+BYPASS_MODES = ("always", "pull_request")
+
 
 class ObserverError(RuntimeError):
     """Capture could not produce a well-formed observation."""
@@ -609,16 +616,19 @@ def classic_surface(
 
 
 def classic_checks(required: dict[str, Any]) -> list[dict[str, Any]]:
-    """Normalize classic `checks`/`contexts` into {context, app_id} rows."""
-    rows: dict[str, int | None] = {}
-    contexts = required.get("contexts")
-    if contexts is not None:
-        if not isinstance(contexts, list):
-            raise ObserverError("classic protection contexts must be a list")
-        for context in contexts:
-            if not isinstance(context, str) or not context:
-                raise ObserverError("classic protection context must be a string")
-            rows.setdefault(context, None)
+    """Normalize classic `checks`/`contexts` into {context, app_id} rows.
+
+    The contract's identity is the (context, app_id) pair, not the context
+    alone, so one context required from two different apps is two rows. Keying
+    by context would keep only the last and hide the other binding from
+    reconciliation.
+
+    `contexts` is the legacy view of the same requirements that `checks`
+    describes richly, so a context already named by `checks` is not re-added
+    with an empty app id.
+    """
+    pairs: set[tuple[str, int | None]] = set()
+    covered: set[str] = set()
     checks = required.get("checks")
     if checks is not None:
         if not isinstance(checks, list):
@@ -632,9 +642,22 @@ def classic_checks(required: dict[str, Any]) -> list[dict[str, Any]]:
             raw = check.get("app_id")
             if raw == ANY_SOURCE_APP_ID:
                 raw = None
-            rows[context] = app_identity(raw, "classic app_id")
+            pairs.add((context, app_identity(raw, "classic app_id")))
+            covered.add(context)
+    contexts = required.get("contexts")
+    if contexts is not None:
+        if not isinstance(contexts, list):
+            raise ObserverError("classic protection contexts must be a list")
+        for context in contexts:
+            if not isinstance(context, str) or not context:
+                raise ObserverError("classic protection context must be a string")
+            if context not in covered:
+                pairs.add((context, None))
     return [
-        {"context": context, "app_id": rows[context]} for context in sorted(rows)
+        {"context": context, "app_id": app_id}
+        for context, app_id in sorted(
+            pairs, key=lambda pair: (pair[0], -1 if pair[1] is None else pair[1])
+        )
     ]
 
 
@@ -740,6 +763,9 @@ def ruleset_item(ruleset_id: int, detail: ApiResult) -> dict[str, Any] | None:
     ):
         if not isinstance(value, str) or not value:
             raise ObserverError(f"ruleset {ruleset_id} is missing {field}")
+    if enforcement not in RULESET_ENFORCEMENT:
+        # A future GitHub enforcement state this contract cannot express.
+        return None
     strict, do_not_enforce, checks = ruleset_status_checks(payload, ruleset_id)
     return {
         "id": ruleset_id,
@@ -802,6 +828,10 @@ def bypass_actors(payload: dict[str, Any], ruleset_id: int) -> list[dict[str, An
             raise ObserverError(f"ruleset {ruleset_id} actor_type is missing")
         if not isinstance(bypass_mode, str) or not bypass_mode:
             raise ObserverError(f"ruleset {ruleset_id} bypass_mode is missing")
+        if bypass_mode not in BYPASS_MODES:
+            raise ObserverError(
+                f"ruleset {ruleset_id} bypass_mode is outside the contract"
+            )
         rows.append(
             {
                 "actor_type": actor_type,
@@ -837,7 +867,10 @@ def ruleset_status_checks(
         raise ObserverError(f"ruleset {ruleset_id} rules must be a list")
     strict: bool | None = None
     do_not_enforce: bool | None = None
-    rows: dict[str, int | None] = {}
+    # Identity is the (context, app_id) pair: two rules may require the
+    # same context from different apps, and collapsing by context would
+    # hide one of those bindings from reconciliation.
+    pairs: set[tuple[str, int | None]] = set()
     for rule in rules:
         if not isinstance(rule, dict):
             raise ObserverError(f"ruleset {ruleset_id} rule must be an object")
@@ -868,13 +901,28 @@ def ruleset_status_checks(
             # GitHub names the ruleset binding `integration_id`; the snapshot
             # contract carries it in `app_id` per enforcement source, which the
             # reconciler compares only against `ruleset_integration_id`.
-            rows[context] = app_identity(
-                check.get("integration_id"), "ruleset integration_id"
+            pairs.add(
+                (
+                    context,
+                    app_identity(
+                        check.get("integration_id"),
+                        "ruleset integration_id",
+                    ),
+                )
             )
     return (
         strict,
         do_not_enforce,
-        [{"context": context, "app_id": rows[context]} for context in sorted(rows)],
+        [
+            {"context": context, "app_id": app_id}
+            for context, app_id in sorted(
+                pairs,
+                key=lambda pair: (
+                    pair[0],
+                    -1 if pair[1] is None else pair[1],
+                ),
+            )
+        ],
     )
 
 
@@ -1025,12 +1073,17 @@ def load_json(path: Path, field: str) -> Any:
 def emit(args: argparse.Namespace, capture: Capture) -> int:
     """Assemble and write the snapshot, returning the observation exit code."""
     static_receipt = load_json(args.static_receipt, "static receipt")
+    # Every payload is built and validated before anything is written. A
+    # failure partway through would otherwise leave a fresh snapshot beside a
+    # stale authority from an earlier run — a pair that looks coherent and is
+    # not.
+    outputs: list[tuple[Path, Any]] = []
     snapshot = build_snapshot(
         capture,
         source=args.source,
         static_receipt=static_receipt,
     )
-    write_json(args.snapshot, snapshot)
+    outputs.append((args.snapshot, snapshot))
     if args.authority:
         if args.authority_repository_id is None:
             raise ObserverError(
@@ -1038,19 +1091,23 @@ def emit(args: argparse.Namespace, capture: Capture) -> int:
                 "must state repository identity independently of the "
                 "observation, so it cannot be taken from the capture"
             )
-        write_json(
-            args.authority,
-            build_authority(
-                producer=args.producer,
-                declared_repository=args.repository,
-                declared_repository_id=args.authority_repository_id,
-                declared_branch=args.branch,
-                max_age_seconds=args.max_observation_age_seconds,
-                max_future_skew_seconds=args.max_future_skew_seconds,
-            ),
+        outputs.append(
+            (
+                args.authority,
+                build_authority(
+                    producer=args.producer,
+                    declared_repository=args.repository,
+                    declared_repository_id=args.authority_repository_id,
+                    declared_branch=args.branch,
+                    max_age_seconds=args.max_observation_age_seconds,
+                    max_future_skew_seconds=args.max_future_skew_seconds,
+                ),
+            )
         )
     if args.capture_bundle:
-        write_json(args.capture_bundle, capture.to_bundle())
+        outputs.append((args.capture_bundle, capture.to_bundle()))
+    for path, payload in outputs:
+        write_json(path, payload)
 
     observation = snapshot["observation"]
     print(

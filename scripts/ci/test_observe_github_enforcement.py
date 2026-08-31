@@ -445,6 +445,58 @@ class RulesetObservation(unittest.TestCase):
         )
         self.assertNotEqual(snapshot["observation"]["permission"], "complete")
 
+    def test_one_ruleset_context_from_two_apps_keeps_both(self) -> None:
+        detail = json.loads(ruleset_detail_response())
+        detail["rules"][0]["parameters"]["required_status_checks"] = [
+            {"context": "Shared", "integration_id": APP_ID},
+            {"context": "Shared", "integration_id": 4242},
+        ]
+        snapshot = observe(transport(detail=(200, body(detail))))
+        self.assertEqual(
+            snapshot["rulesets"]["items"][0]["required_status_checks"],
+            [
+                {"context": "Shared", "app_id": 4242},
+                {"context": "Shared", "app_id": APP_ID},
+            ],
+        )
+        model.validate_snapshot(snapshot)
+
+    def test_unknown_enforcement_is_unrepresentable_not_invalid(self) -> None:
+        """A future enforcement state must not poison the whole snapshot.
+
+        The reconciler's vocabulary is closed, so emitting an unknown value
+        would make it reject the entire document as invalid input and destroy
+        every other surface's evidence along with it.
+        """
+        listing = json.loads(ruleset_list_response())
+        listing[0]["enforcement"] = "quantum"
+        detail = json.loads(ruleset_detail_response())
+        detail["enforcement"] = "quantum"
+        snapshot = observe(
+            transport(rulesets=(200, body(listing)), detail=(200, body(detail)))
+        )
+        self.assertEqual(snapshot["rulesets"]["items"], [])
+        self.assertIn(
+            f"{observer.RULESET_DETAIL_UNREPRESENTABLE}:{RULESET_ID}",
+            snapshot["observation"]["limitations"],
+        )
+        self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+        # The rest of the document still validates and reconciles.
+        model.validate_snapshot(snapshot)
+        result = model.reconcile(snapshot, static_receipt(), authority(snapshot))
+        self.assertEqual(result["status"], "NOT_PROVEN")
+
+    def test_unknown_bypass_mode_is_reported_not_emitted(self) -> None:
+        detail = json.loads(ruleset_detail_response())
+        detail["bypass_actors"][0]["bypass_mode"] = "sometimes"
+        snapshot = observe(transport(detail=(200, body(detail))))
+        self.assertEqual(snapshot["rulesets"]["items"], [])
+        self.assertIn(
+            f"{observer.RULESET_DETAIL_UNREADABLE}:{RULESET_ID}",
+            snapshot["observation"]["limitations"],
+        )
+        model.validate_snapshot(snapshot)
+
     def test_non_branch_rulesets_are_not_branch_enforcement(self) -> None:
         listing = body(
             [
@@ -611,6 +663,50 @@ class ClassicObservation(unittest.TestCase):
         snapshot = observe(transport(detail=(200, body(detail))))
         self.assertEqual(len(snapshot["rulesets"]["items"][0]["bypass_actors"]), 1)
         model.validate_snapshot(snapshot)
+
+    def test_one_context_from_two_apps_keeps_both_bindings(self) -> None:
+        """Identity is (context, app_id), not context alone.
+
+        Keying by context keeps only the last app, hiding a second, possibly
+        conflicting, enforcement binding from reconciliation.
+        """
+        payload = {
+            "required_status_checks": {
+                "strict": True,
+                "checks": [
+                    {"context": "Shared", "app_id": APP_ID},
+                    {"context": "Shared", "app_id": 4242},
+                ],
+            }
+        }
+        snapshot = observe(transport(classic=(200, body(payload))))
+        self.assertEqual(
+            snapshot["classic_branch_protection"]["required_status_checks"],
+            # sorted by (context, app_id), so the lower app id comes first
+            [
+                {"context": "Shared", "app_id": 4242},
+                {"context": "Shared", "app_id": APP_ID},
+            ],
+        )
+        model.validate_snapshot(snapshot)
+
+    def test_legacy_context_does_not_duplicate_a_richer_check(self) -> None:
+        """`contexts` is the legacy view of what `checks` describes richly."""
+        payload = {
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["Classic Required", "Legacy Only"],
+                "checks": [{"context": "Classic Required", "app_id": APP_ID}],
+            }
+        }
+        snapshot = observe(transport(classic=(200, body(payload))))
+        self.assertEqual(
+            snapshot["classic_branch_protection"]["required_status_checks"],
+            [
+                {"context": "Classic Required", "app_id": APP_ID},
+                {"context": "Legacy Only", "app_id": None},
+            ],
+        )
 
     def test_protection_without_status_checks_is_observed_and_empty(self) -> None:
         snapshot = observe(transport(classic=(200, body({"allow_forks": True}))))
@@ -970,6 +1066,48 @@ class CommandLine(unittest.TestCase):
                 ]
             )
             self.assertEqual(code, 2)
+
+    def test_no_output_is_written_when_the_authority_is_invalid(self) -> None:
+        """A partial write pairs a fresh snapshot with a stale authority.
+
+        That pair looks coherent to a consumer and is not, so nothing is
+        written until every requested payload has been built and validated.
+        """
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle = root / "capture.json"
+            receipt = root / "static.json"
+            snapshot = root / "snapshot.json"
+            auth = root / "authority.json"
+            bundle.write_text(json.dumps(capture.to_bundle()), encoding="utf-8")
+            receipt.write_text(json.dumps(static_receipt()), encoding="utf-8")
+            auth.write_text('{"stale": true}', encoding="utf-8")
+            code = observer.main(
+                [
+                    "assemble",
+                    "--capture",
+                    str(bundle),
+                    "--repository",
+                    REPOSITORY,
+                    "--authority-repository-id",
+                    "0",  # rejected: must be a positive integer
+                    "--source",
+                    "operator",
+                    "--static-receipt",
+                    str(receipt),
+                    "--snapshot",
+                    str(snapshot),
+                    "--authority",
+                    str(auth),
+                ]
+            )
+            self.assertEqual(code, 1)
+            self.assertFalse(snapshot.exists(), "snapshot written despite failure")
+            self.assertEqual(
+                auth.read_text(encoding="utf-8"), '{"stale": true}',
+                "pre-existing authority was overwritten",
+            )
 
     def test_missing_static_receipt_fails_closed(self) -> None:
         capture = observer.capture_live(REPOSITORY, "main", transport())
