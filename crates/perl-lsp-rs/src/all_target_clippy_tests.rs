@@ -284,6 +284,36 @@ fn group_words_without_lint_group_boundary_are_not_blankets() {
 }
 
 #[test]
+fn multiline_rustfmt_style_warning_blanket_is_forbidden() {
+    let carved = "#![allow(\n    warnings,\n)]\nfn production() {}\n";
+    let hits = panic_family_suppressions(carved);
+    assert_eq!(hits.len(), 1, "multiline allow(warnings) must not evade the ratchet");
+    assert!(hits[0].is_forbidden());
+    assert_eq!(
+        hits[0].lints,
+        vec![PanicFamilyLint::UnwrapUsed, PanicFamilyLint::ExpectUsed, PanicFamilyLint::Panic]
+    );
+}
+
+#[test]
+fn trivia_between_list_boundary_and_group_is_still_a_blanket() {
+    let carved = "#![allow( /* temporarily quiet */ warnings )]\nfn production() {}\n";
+    let hits = panic_family_suppressions(carved);
+    assert_eq!(hits.len(), 1, "a comment between ( and the group must not evade the ratchet");
+    assert!(hits[0].is_forbidden());
+}
+
+#[test]
+fn group_word_inside_a_name_after_a_list_element_is_not_a_blanket() {
+    let carved = "#![allow(clippy::internal_features, sandbox_restrictions)]\nfn production() {}\n";
+    let hits = panic_family_suppressions(carved);
+    assert!(
+        hits.is_empty(),
+        "a name containing the group word after a comma must not read as a group: {hits:?}"
+    );
+}
+
+#[test]
 fn item_level_expect_with_reason_is_allowed() {
     let allowed = r#"
 #[expect(clippy::panic, reason = "the handler under test must actually panic")]

@@ -311,24 +311,24 @@ pub(crate) fn lib_source(source: &str) -> String {
 /// True when the attribute body names a lint group that covers the whole
 /// panic family: `clippy::restriction` contains `unwrap_used`, `expect_used`,
 /// and `panic`, and the bare `warnings` group suppresses every Clippy warning
-/// including them. Group spellings match only with a path or list left
-/// boundary so names like `sandbox_restrictions` cannot match.
-fn group_covers_panic_family(body: &str, i: usize) -> bool {
+/// including them. Bare group spellings require `at_list_boundary` (true when
+/// only trivia separates the name from the list's `(`, a `,`, or the start of
+/// the body) so names like `sandbox_restrictions` cannot match; the
+/// tool-qualified `clippy::restriction` is unambiguous anywhere.
+fn group_covers_panic_family(body: &str, i: usize, at_list_boundary: bool) -> bool {
     let rest = rest_at(body, i);
-    let list_boundary =
-        |start: usize| start == 0 || matches!(body[..start].chars().next_back(), Some('(' | ','));
     if rest.starts_with("clippy::restriction")
         && !ident_continues(rest, "clippy::restriction".len())
     {
         return true;
     }
-    if rest.starts_with("restriction")
-        && !ident_continues(rest, "restriction".len())
-        && list_boundary(i)
-    {
+    if !at_list_boundary {
+        return false;
+    }
+    if rest.starts_with("restriction") && !ident_continues(rest, "restriction".len()) {
         return true;
     }
-    rest.starts_with("warnings") && !ident_continues(rest, "warnings".len()) && list_boundary(i)
+    rest.starts_with("warnings") && !ident_continues(rest, "warnings".len())
 }
 
 fn panic_family_lints_in(body: &str) -> Vec<PanicFamilyLint> {
@@ -336,13 +336,22 @@ fn panic_family_lints_in(body: &str) -> Vec<PanicFamilyLint> {
         [PanicFamilyLint::UnwrapUsed, PanicFamilyLint::ExpectUsed, PanicFamilyLint::Panic];
     let mut lints = Vec::new();
     let mut i = 0;
+    // Trivia (whitespace, comments, string literals) never updates this, so a
+    // rustfmt-style multiline element such as `allow(\n    warnings,\n)`
+    // still reads as a list element start.
+    let mut at_list_boundary = true;
     while i < body.len() {
         if let Some(end) = scan_comment_or_string(body, i) {
             i = end;
             continue;
         }
         let rest = rest_at(body, i);
-        let group_hit = group_covers_panic_family(body, i);
+        let ch = rest.chars().next().unwrap_or('\0');
+        if ch.is_whitespace() {
+            i += ch.len_utf8();
+            continue;
+        }
+        let group_hit = group_covers_panic_family(body, i, at_list_boundary);
         for lint in FAMILY {
             if lints.contains(&lint) {
                 continue;
@@ -355,7 +364,7 @@ fn panic_family_lints_in(body: &str) -> Vec<PanicFamilyLint> {
                 lints.push(lint);
             }
         }
-        let Some(ch) = rest.chars().next() else { break };
+        at_list_boundary = matches!(ch, '(' | ',');
         i += ch.len_utf8();
     }
     lints
