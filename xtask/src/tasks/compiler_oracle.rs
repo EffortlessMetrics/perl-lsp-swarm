@@ -434,9 +434,7 @@ for my $sub (qw(Oracle::Demo::proto)) {
     #[test]
     fn compiler_oracle_poll_failure_cleans_up_child() -> Result<()> {
         let mut command = isolated_perl_command();
-        command
-            .arg("-e")
-            .arg(r#"select undef, undef, undef, 2;"#);
+        command.arg("-e").arg(r#"select undef, undef, undef, 2;"#);
 
         let error = run_bounded_command_with_poll(
             &mut command,
@@ -454,8 +452,7 @@ for my $sub (qw(Oracle::Demo::proto)) {
             "the original polling error must remain visible: {message}"
         );
         assert!(
-            message.contains("child kill requested")
-                && message.contains("child reap attempted"),
+            message.contains("child kill requested") && message.contains("child reap attempted"),
             "poll failure must attempt direct-child cleanup: {message}"
         );
         Ok(())
