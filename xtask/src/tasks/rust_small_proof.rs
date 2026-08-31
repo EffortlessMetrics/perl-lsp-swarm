@@ -1785,10 +1785,7 @@ tests::gamma: test
 
     #[test]
     fn parent_components_are_normalized_before_matching_git_status_paths() {
-        let path = Path::new("evidence")
-            .join("nested")
-            .join("..")
-            .join("rust-small.json");
+        let path = Path::new("evidence").join("nested").join("..").join("rust-small.json");
         let Ok(excluded) = receipt_exclusions(&path) else {
             panic!("exclusions must resolve inside a git checkout");
         };
