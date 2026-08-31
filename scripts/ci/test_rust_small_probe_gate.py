@@ -58,6 +58,22 @@ def probe_expression(workflow: str) -> str:
     return block[if_match.end() : if_match.end() + shell_match.start()]
 
 
+def replace_probe_expression(workflow: str, expression: str) -> str:
+    block, block_start = step_block(workflow, PROBE_STEP)
+    if_match = re.search(r"(?m)^(?P<indent>[ \\t]+)if: >-[ \\t]*$", block)
+    if if_match is None:
+        raise AssertionError("main-red probe must use a multiline applicability expression")
+    shell_match = re.search(
+        rf"(?m)^{re.escape(if_match.group('indent'))}shell:",
+        block[if_match.end() :],
+    )
+    if shell_match is None:
+        raise AssertionError("main-red probe must declare its shell after the applicability expression")
+    expression_start = block_start + if_match.end()
+    expression_end = expression_start + shell_match.start()
+    return workflow[:expression_start] + expression + workflow[expression_end:]
+
+
 def should_probe(
     *,
     event_name: str,
@@ -155,21 +171,13 @@ class RustSmallProbeGateTests(unittest.TestCase):
                 "",
             ),
         }
-        probe_block, probe_start = step_block(self.workflow, PROBE_STEP)
-        start = probe_start
-        shell = probe_start + probe_block.index("        shell: bash\n")
         for name, mutated_expression in mutations.items():
             with self.subTest(name=name):
                 if mutated_expression == expression:
                     self.fail(
                         f"mutation {name!r} did not apply; update the mutation anchor"
                     )
-                broken = (
-                    self.workflow[:start]
-                    + "        if: >-\n"
-                    + mutated_expression
-                    + self.workflow[shell:]
-                )
+                broken = replace_probe_expression(self.workflow, mutated_expression)
                 with self.assertRaises(AssertionError):
                     validate_probe_gate(broken)
 
