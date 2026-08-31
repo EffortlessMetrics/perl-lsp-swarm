@@ -6,6 +6,8 @@ import * as vscode from 'vscode';
 const MAX_TEMPLATE_FILES = 128;
 const MAX_TEMPLATE_BYTES = 4 * 1024 * 1024;
 const DEMO_ENTRY_POINT = 'main.pl';
+const DEMO_METADATA_FILE = '.perl-lsp-demo-template.json';
+const DEMO_METADATA_SCHEMA = 'perl-lsp-demo-template.v1';
 
 interface TemplateEntry {
   readonly relativePath: string;
@@ -16,6 +18,12 @@ interface TemplateEntry {
 interface TemplateSnapshot {
   readonly digest: string;
   readonly entries: readonly TemplateEntry[];
+}
+
+interface DemoMetadata {
+  readonly schema: typeof DEMO_METADATA_SCHEMA;
+  readonly extensionVersion: string;
+  readonly templateDigest: string;
 }
 
 export type DemoProjectPreparation =
@@ -37,6 +45,39 @@ function safeVersion(value: unknown): string {
 function isWithinBase(base: string, candidate: string): boolean {
   const relative = path.relative(base, candidate);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function metadataFor(snapshot: TemplateSnapshot, extensionVersion: string): DemoMetadata {
+  return {
+    schema: DEMO_METADATA_SCHEMA,
+    extensionVersion,
+    templateDigest: snapshot.digest,
+  };
+}
+
+function parseMetadata(value: string): DemoMetadata {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error('existing demo metadata is not valid JSON');
+  }
+  if (parsed === null || typeof parsed !== 'object') {
+    throw new Error('existing demo metadata has the wrong shape');
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    record.schema !== DEMO_METADATA_SCHEMA ||
+    typeof record.extensionVersion !== 'string' ||
+    typeof record.templateDigest !== 'string'
+  ) {
+    throw new Error('existing demo metadata is incomplete or incompatible');
+  }
+  return {
+    schema: DEMO_METADATA_SCHEMA,
+    extensionVersion: record.extensionVersion,
+    templateDigest: record.templateDigest,
+  };
 }
 
 async function collectTemplate(templateRoot: string): Promise<TemplateSnapshot> {
@@ -103,7 +144,11 @@ async function collectTemplate(templateRoot: string): Promise<TemplateSnapshot> 
   return { digest, entries };
 }
 
-async function validateExistingDestination(destination: string): Promise<void> {
+async function validateExistingDestination(
+  destination: string,
+  snapshot: TemplateSnapshot,
+  extensionVersion: string,
+): Promise<void> {
   const destinationStat = await fs.promises.lstat(destination);
   if (!destinationStat.isDirectory() || destinationStat.isSymbolicLink()) {
     throw new Error('existing demo destination is not a regular directory');
@@ -114,11 +159,26 @@ async function validateExistingDestination(destination: string): Promise<void> {
   if (!entryStat.isFile() || entryStat.isSymbolicLink()) {
     throw new Error(`existing demo destination has no regular ${DEMO_ENTRY_POINT}`);
   }
+
+  const metadataPath = path.join(destination, DEMO_METADATA_FILE);
+  const metadataStat = await fs.promises.lstat(metadataPath);
+  if (!metadataStat.isFile() || metadataStat.isSymbolicLink()) {
+    throw new Error('existing demo destination has no regular template metadata');
+  }
+  const metadata = parseMetadata(await fs.promises.readFile(metadataPath, 'utf8'));
+  if (
+    metadata.schema !== DEMO_METADATA_SCHEMA ||
+    metadata.extensionVersion !== extensionVersion ||
+    metadata.templateDigest !== snapshot.digest
+  ) {
+    throw new Error('existing demo destination belongs to another template identity');
+  }
 }
 
 async function writeTemplateSnapshot(
   staging: string,
   snapshot: TemplateSnapshot,
+  extensionVersion: string,
 ): Promise<void> {
   for (const entry of snapshot.entries) {
     const relativeParts = entry.relativePath.split('/');
@@ -136,6 +196,10 @@ async function writeTemplateSnapshot(
       throw new Error(`demo copy verification failed for ${entry.relativePath}`);
     }
   }
+
+  const metadataPath = path.join(staging, DEMO_METADATA_FILE);
+  const metadataBytes = `${JSON.stringify(metadataFor(snapshot, extensionVersion), null, 2)}\n`;
+  await fs.promises.writeFile(metadataPath, metadataBytes, { flag: 'wx' });
 }
 
 async function destinationExists(destination: string): Promise<boolean> {
@@ -158,6 +222,10 @@ async function destinationExists(destination: string): Promise<boolean> {
 /**
  * Materialize one persistent user-owned demo project without mutating packaged
  * extension assets or overwriting an existing edited copy.
+ *
+ * The current implementation still relies on path-based Node filesystem calls
+ * while populating nested staging directories. The PR remains draft until the
+ * exact no-follow/reparse-safe destination writer required by #14456 is wired.
  */
 export async function prepareUserOwnedDemoProject(
   context: vscode.ExtensionContext,
@@ -179,21 +247,21 @@ export async function prepareUserOwnedDemoProject(
     const version = safeVersion(context.extension.packageJSON.version);
     const destination = path.join(
       demosRealPath,
-      `perl-lsp-demo-${version}-${snapshot.digest.slice(0, 12)}`,
+      `perl-lsp-demo-${version}-${snapshot.digest}`,
     );
     if (!isWithinBase(demosRealPath, destination)) {
       throw new Error('demo destination escaped the user-owned demo root');
     }
 
     if (await destinationExists(destination)) {
-      await validateExistingDestination(destination);
+      await validateExistingDestination(destination, snapshot, version);
       return { kind: 'existing', destination, templateDigest: snapshot.digest };
     }
 
     const staging = await fs.promises.mkdtemp(path.join(demosRealPath, '.demo-stage-'));
     try {
-      await writeTemplateSnapshot(staging, snapshot);
-      await validateExistingDestination(staging);
+      await writeTemplateSnapshot(staging, snapshot, version);
+      await validateExistingDestination(staging, snapshot, version);
       try {
         await fs.promises.rename(staging, destination);
       } catch (error: unknown) {
@@ -205,7 +273,7 @@ export async function prepareUserOwnedDemoProject(
           throw error;
         }
         await fs.promises.rm(staging, { recursive: true, force: true });
-        await validateExistingDestination(destination);
+        await validateExistingDestination(destination, snapshot, version);
         return { kind: 'existing', destination, templateDigest: snapshot.digest };
       }
       return { kind: 'created', destination, templateDigest: snapshot.digest };
