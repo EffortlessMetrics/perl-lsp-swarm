@@ -2971,6 +2971,38 @@ mod tests {
         violations.iter().map(|violation| violation.kind.as_str()).collect()
     }
 
+    #[test]
+    fn expiry_is_valid_on_expiration_date_and_excluded_afterward() -> Result<()> {
+        let mut entry = make_entry("expiring", None, Some("docs/a.txt"), "documentation");
+        entry.expires = Some("2026-08-31".to_string());
+        let entries = [entry];
+        let same_day = prepare_allow_entries_at(
+            &entries,
+            NaiveDate::from_ymd_opt(2026, 8, 31).ok_or_else(|| eyre!("invalid date"))?,
+        );
+        assert!(find_matching_prepared_entry("docs/a.txt", &same_day).is_some());
+        let next_day = prepare_allow_entries_at(
+            &entries,
+            NaiveDate::from_ymd_opt(2026, 9, 1).ok_or_else(|| eyre!("invalid date"))?,
+        );
+        assert!(find_matching_prepared_entry("docs/a.txt", &next_day).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn exact_path_expiry_does_not_use_glob_matching() -> Result<()> {
+        let mut entry = make_entry("literal", None, Some("docs/[a].txt"), "documentation");
+        entry.expires = Some("2026-01-01".to_string());
+        let entries = [entry];
+        let active = prepare_allow_entries_at(
+            &entries,
+            NaiveDate::from_ymd_opt(2026, 2, 1).ok_or_else(|| eyre!("invalid date"))?,
+        );
+        assert!(find_matching_prepared_entry("docs/[a].txt", &active).is_none());
+        assert!(find_matching_prepared_entry("docs/a.txt", &active).is_none());
+        Ok(())
+    }
+
     fn write_fixture(root: &Path, relative: &str, contents: &str) -> Result<()> {
         let path = root.join(relative);
         if let Some(parent) = path.parent() {
