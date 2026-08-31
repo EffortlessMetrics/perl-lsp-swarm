@@ -1,6 +1,11 @@
 //! Contract tests for ready-for-review RIPR workflow routing.
 
-use std::{fs, path::PathBuf, process::Command};
+use std::{
+    fs,
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_yaml_ng::Value;
@@ -10,10 +15,10 @@ mod workflow_bash;
 
 use workflow_bash::bash_executable;
 
-fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn project_root() -> Result<PathBuf> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .ok_or("CARGO_MANIFEST_DIR has no parent")?
+        .ok_or_else(|| anyhow!("CARGO_MANIFEST_DIR has no parent"))?
         .to_path_buf())
 }
 
@@ -36,7 +41,11 @@ fn evaluate_run_block() -> Result<String> {
         .ok_or_else(|| anyhow!("ripr gate Evaluate routed result run block is missing"))
 }
 
-fn run_gate_with_fake_gh(log: Option<&str>) -> Result<(std::process::Output, String, String)> {
+fn run_gate_with_fake_gh(
+    log: Option<&str>,
+    lookup_failures: u32,
+    fetch_failures: u32,
+) -> Result<(std::process::Output, String, Option<String>)> {
     let root = project_root()?;
     let sandbox = tempfile::tempdir().context("creating gate workflow sandbox")?;
     let classifier_dir = sandbox.path().join("scripts/ci");
@@ -46,23 +55,29 @@ fn run_gate_with_fake_gh(log: Option<&str>) -> Result<(std::process::Output, Str
         classifier_dir.join("classify-ripr-lane-termination"),
     )?;
     let summary = sandbox.path().join("summary.md");
-    let calls = sandbox.path().join("log-fetch-calls");
+    let lookup_calls = sandbox.path().join("job-lookup-calls");
+    let fetch_calls = sandbox.path().join("log-fetch-calls");
     let classification = sandbox.path().join("ripr-gate-classification.env");
     let run = evaluate_run_block()?;
     let fake = r#"
 sleep() { :; }
 gh() {
+  [ "$1" = "api" ] || return 1
   local url="$2"
   case "$url" in
     */jobs?per_page=100)
+      local count=0
+      if [ -f "$FAKE_LOOKUP_CALLS" ]; then count=$(cat "$FAKE_LOOKUP_CALLS"); fi
+      printf '%s' "$((count + 1))" > "$FAKE_LOOKUP_CALLS"
+      if [ "$count" -lt "$FAKE_LOOKUP_FAILURES" ]; then return 1; fi
       printf '98765\n'
       return
       ;;
     */logs)
       local count=0
-      if [ -f "$FAKE_CALLS" ]; then count=$(cat "$FAKE_CALLS"); fi
-      printf '%s' "$((count + 1))" > "$FAKE_CALLS"
-      if [ "$FAKE_FETCH" = "fail" ]; then return 1; fi
+      if [ -f "$FAKE_FETCH_CALLS" ]; then count=$(cat "$FAKE_FETCH_CALLS"); fi
+      printf '%s' "$((count + 1))" > "$FAKE_FETCH_CALLS"
+      if [ "$count" -lt "$FAKE_FETCH_FAILURES" ] || [ "$FAKE_FETCH" = "fail" ]; then return 1; fi
       printf '%s' "$FAKE_LOG"
       return
       ;;
@@ -71,8 +86,8 @@ gh() {
 }
 "#;
     let script = format!("{fake}\n{run}");
-    let output = Command::new(bash_executable())
-        .args(["--noprofile", "--norc", "-c", &script])
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
         .current_dir(sandbox.path())
         .env("ROUTE_RESULT", "success")
         .env("ROUTER_TARGET", "github")
@@ -86,18 +101,47 @@ gh() {
         .env("GITHUB_SHA", "0123456789abcdef0123456789abcdef01234567")
         .env("GITHUB_STEP_SUMMARY", &summary)
         .env("FAKE_FETCH", if log.is_some() { "success" } else { "fail" })
+        .env("FAKE_LOOKUP_FAILURES", lookup_failures.to_string())
+        .env("FAKE_FETCH_FAILURES", fetch_failures.to_string())
         .env("FAKE_LOG", log.unwrap_or(""))
-        .env("FAKE_CALLS", &calls)
-        .output()
+        .env("FAKE_LOOKUP_CALLS", &lookup_calls)
+        .env("FAKE_FETCH_CALLS", &fetch_calls)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("executing the real ripr gate run block")?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("bash stdin is unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output().context("waiting for the real ripr gate run block")?;
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let calls_text = fs::read_to_string(&calls).unwrap_or_default();
-    let classification_text = fs::read_to_string(&classification).unwrap_or_default();
-    Ok((output, format!("{combined}\n{calls_text}"), classification_text))
+    let lookup_text = match fs::read_to_string(&lookup_calls) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("reading fake job lookup count"),
+    };
+    let fetch_text = match fs::read_to_string(&fetch_calls) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("reading fake log fetch count"),
+    };
+    let classification_text = match fs::read_to_string(&classification) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    Ok((
+        output,
+        format!("{combined}\nlookup={lookup_text:?}\nfetch={fetch_text:?}"),
+        classification_text,
+    ))
 }
 
 #[test]
@@ -539,13 +583,12 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
 }
 
 #[test]
-fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed()
--> Result<(), Box<dyn std::error::Error>> {
+fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Result<()> {
     let evicted_log = concat!(
         "##[error]The runner has received a shutdown signal.\n",
         "##[error]The operation was canceled.\n"
     );
-    let (success, success_output, classification) = run_gate_with_fake_gh(Some(evicted_log))?;
+    let (success, success_output, classification) = run_gate_with_fake_gh(Some(evicted_log), 0, 0)?;
     if success.status.success() {
         bail!("a classified lane failure must keep the gate red");
     }
@@ -556,6 +599,8 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed()
             "successful log retrieval must reach the shared classifier and gate verdict:\n{success_output}"
         );
     }
+    let classification =
+        classification.ok_or_else(|| anyhow!("infra classification artifact is missing"))?;
     if !classification.contains("classification=infra-no-proof")
         || !classification.contains("run_id=4242")
     {
@@ -569,7 +614,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed()
         "##[error]The runner has received a shutdown signal.\n"
     );
     let (genuine, genuine_output, genuine_classification) =
-        run_gate_with_fake_gh(Some(genuine_failure_log))?;
+        run_gate_with_fake_gh(Some(genuine_failure_log), 0, 0)?;
     if genuine.status.success()
         || !genuine_output.contains("classification=ripr-failure")
         || !genuine_output.contains("RIPR_GATE_VERDICT=ripr-failure")
@@ -578,13 +623,13 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed()
             "a retrieved genuine gap must remain fail-closed even with teardown noise:\n{genuine_output}"
         );
     }
-    if !genuine_classification.is_empty() {
+    if genuine_classification.is_some() {
         bail!(
-            "a genuine ripr failure must not create an infra retry artifact:\n{genuine_classification}"
+            "a genuine ripr failure must not create an infra retry artifact:\n{genuine_classification:?}"
         );
     }
 
-    let (failed, failed_output, no_classification) = run_gate_with_fake_gh(None)?;
+    let (failed, failed_output, no_classification) = run_gate_with_fake_gh(None, 0, 0)?;
     if failed.status.success() {
         bail!("an unretrievable lane log must keep the gate red");
     }
@@ -596,13 +641,28 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed()
             "failed retrieval must emit an explicit fail-closed classification and warning:\n{failed_output}"
         );
     }
-    if !no_classification.is_empty() {
-        bail!("failed retrieval must not create an infra retry artifact:\n{no_classification}");
+    if no_classification.is_some() {
+        bail!("failed retrieval must not create an infra retry artifact:\n{no_classification:?}");
     }
-    let fetch_attempts =
-        failed_output.lines().last().ok_or("fake gh did not record log fetch attempts")?;
-    if fetch_attempts != "5" {
-        bail!("log retrieval retry must be bounded at five attempts, got {fetch_attempts}");
+    if !failed_output.contains("lookup=Some(\"1\")\nfetch=Some(\"5\")") {
+        bail!("log retrieval retry must be bounded at five attempts:\n{failed_output}");
+    }
+
+    let (retried, retried_output, retried_classification) =
+        run_gate_with_fake_gh(Some(evicted_log), 1, 1)?;
+    if retried.status.success()
+        || !retried_output.contains("classification=infra-no-proof")
+        || !retried_output.contains("lookup=Some(\"2\")\nfetch=Some(\"2\")")
+    {
+        bail!(
+            "transient lookup and log-fetch failures must recover before classification:\n{retried_output}"
+        );
+    }
+    if !retried_classification
+        .ok_or_else(|| anyhow!("retried classification artifact is missing"))?
+        .contains("classification=infra-no-proof")
+    {
+        bail!("retried successful evidence must produce an infra classification artifact");
     }
 
     Ok(())
