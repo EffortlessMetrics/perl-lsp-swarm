@@ -186,7 +186,7 @@ if [ "$LAST_STATUS" -ne 0 ] \
     pass "first-install commit fault leaves no broken selectors"
 else
     fail_case "first-install commit fault leaves no broken selectors" \
-        "status=$LAST_STATUS output=$LAST_OUTPUT"
+        "status=$LAST_STATUS output=$LAST_OUTPUT server=$(ls -ld "$(path_server)" 2>&1 || true) dap=$(ls -ld "$(path_dap)" 2>&1 || true)"
 fi
 
 setup_root
