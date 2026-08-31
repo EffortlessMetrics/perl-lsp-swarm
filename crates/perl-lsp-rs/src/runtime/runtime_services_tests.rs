@@ -101,6 +101,65 @@ mod tests {
     }
 
     #[test]
+    fn an_accepted_terminal_is_never_rewritten_by_a_later_accepted_terminal() {
+        // A settled lifetime keeps its FIRST causal outcome. Without this,
+        // the retained terminal -- and the typed reason a caller reads off
+        // it -- would depend on which caller happened to run last, despite
+        // this type retaining one terminal per lifetime.
+        let cases = [
+            // Completed must not decay into Cancelled.
+            (
+                ApplicationTaskClass::ParseWorker,
+                TaskTerminal::Completed,
+                TaskTerminal::Cancelled { reason: ShutdownReason::ServerDrop },
+            ),
+            // A cancellation must not be re-attributed to a different cause.
+            (
+                ApplicationTaskClass::DiagnosticDebounce,
+                TaskTerminal::Cancelled { reason: ShutdownReason::ClientShutdownRequest },
+                TaskTerminal::Cancelled { reason: ShutdownReason::ServerDrop },
+            ),
+            // Nor may a cancellation be laundered into a clean completion.
+            (
+                ApplicationTaskClass::FileWatcherDebounce,
+                TaskTerminal::Cancelled { reason: ShutdownReason::ClientShutdownRequest },
+                TaskTerminal::Completed,
+            ),
+        ];
+        for (class, first, later) in cases {
+            let services = RuntimeServices::new();
+            services.register_task(class).expect("registration succeeds");
+            services.record_terminal(class, first.clone()).expect("first terminal accepted");
+            services
+                .record_terminal(class, later)
+                .expect("a later record_terminal call is still accepted, but must not win");
+
+            let snapshot = services.settlement_snapshot();
+            assert_eq!(snapshot.settled, vec![(class, first)]);
+        }
+    }
+
+    #[test]
+    fn a_fault_still_dominates_an_already_accepted_terminal() {
+        // The negative control for the test above: preserving accepted
+        // terminals must not also freeze out a real failure discovered
+        // afterwards, which would reintroduce false-clean settlement.
+        let class = ApplicationTaskClass::ParseWorker;
+        let services = RuntimeServices::new();
+        services.register_task(class).expect("registration succeeds");
+        services
+            .record_terminal(class, TaskTerminal::Cancelled { reason: ShutdownReason::ServerDrop })
+            .expect("first terminal accepted");
+
+        let fault =
+            TaskTerminal::Failed { reason: "worker died after the stop request".to_string() };
+        services.record_terminal(class, fault.clone()).expect("terminal accepted");
+
+        let snapshot = services.settlement_snapshot();
+        assert_eq!(snapshot.settled, vec![(class, fault)]);
+    }
+
+    #[test]
     fn instrument_failed_class_blocks_a_complete_shutdown() {
         let services = RuntimeServices::new();
         services

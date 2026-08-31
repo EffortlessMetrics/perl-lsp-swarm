@@ -403,11 +403,28 @@ impl RuntimeServices {
 
     /// Record the terminal outcome of one registered task class.
     ///
-    /// Rejects an unregistered class with [`UnregisteredTask`]. A fault
-    /// terminal already on record (see [`TaskTerminal::is_failure`]) is
-    /// never overwritten by a later terminal, accepted or not: once a class
-    /// is known to have failed, timed out, or never spawned, that finding
-    /// survives for the life of this `RuntimeServices` instance.
+    /// Rejects an unregistered class with [`UnregisteredTask`].
+    ///
+    /// A task lifetime retains exactly one terminal outcome, fixed by the
+    /// first call that settles it. Two rules keep that true:
+    ///
+    /// - a fault already on record (see [`TaskTerminal::is_failure`]) is
+    ///   never overwritten by any later terminal: once a class is known to
+    ///   have failed, timed out, or never spawned, that finding survives;
+    /// - an accepted terminal already on record (see
+    ///   [`TaskTerminal::is_accepted`]) is never overwritten by another
+    ///   accepted terminal, so a settled class keeps its first causal
+    ///   outcome and its typed [`ShutdownReason`] instead of taking whichever
+    ///   caller happened to run last.
+    ///
+    /// A fault still dominates an accepted terminal, so a worker that is
+    /// later discovered to have failed is not papered over by an earlier
+    /// clean or cancelled record.
+    ///
+    /// Beginning a new lifetime for the class (see
+    /// [`RuntimeServices::begin_task_lifetime`]) clears the retained
+    /// terminal; that is the only way a settled class becomes settleable
+    /// again.
     pub(crate) fn record_terminal(
         &self,
         class: ApplicationTaskClass,
@@ -416,7 +433,12 @@ impl RuntimeServices {
         let mut tasks = self.tasks.lock();
         let record = tasks.get_mut(&class).ok_or(UnregisteredTask)?;
         match &record.terminal {
+            // A recorded fault survives every later terminal.
             Some(existing) if existing.is_failure() => {}
+            // The existing terminal is accepted (the arm above took every
+            // fault). A second accepted terminal must not rewrite the first
+            // causal outcome or its reason; a fault still wins.
+            Some(_) if terminal.is_accepted() => {}
             _ => record.terminal = Some(terminal),
         }
         Ok(())
