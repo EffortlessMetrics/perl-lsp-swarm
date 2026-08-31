@@ -57,6 +57,19 @@ def write_cross_config(
     return path
 
 
+def cross_container_override_names(target: str) -> tuple[str, ...]:
+    """Named container-selecting keys, as explicit regression subjects.
+
+    The enforcement boundary is the prefix scan; these are the specific keys
+    reviews found bypassing the pin (image, dockerfile, pre-build).
+    """
+    slug = target.upper().replace("-", "_")
+    keys = subject.CROSS_CONTAINER_KEYS
+    names = [f"CROSS_TARGET_{slug}_{key}" for key in keys]
+    names += [f"CROSS_BUILD_{key}" for key in keys]
+    return tuple(names)
+
+
 def cross_runner_outputs(calls: int) -> list[mock.Mock]:
     """Host rustc/cross probes for `calls` toolchain_digest invocations."""
     outputs: list[mock.Mock] = []
@@ -481,18 +494,20 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
                 )
             self.assertEqual(first, second)
 
-    def test_cross_image_override_names_follow_cross_naming(self) -> None:
-        names = subject.cross_image_override_names(CROSS_TARGET)
+    def test_cross_ambient_prefixes_follow_cross_naming(self) -> None:
         self.assertEqual(
-            names,
-            (
-                "CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE",
-                "CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_DOCKERFILE",
-                "CROSS_BUILD_DOCKERFILE",
+            subject.cross_ambient_prefixes(CROSS_TARGET),
+            ("CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_", "CROSS_BUILD_"),
+        )
+        # CROSS_CONFIG is this adapter's own input and must stay usable.
+        self.assertEqual(
+            subject.cross_ambient_overrides(
+                CROSS_TARGET, {"CROSS_CONFIG": "/x/Cross.toml"}
             ),
+            [],
         )
 
-    def test_ambient_image_override_cannot_bypass_the_pin(self) -> None:
+    def test_ambient_container_override_cannot_bypass_the_pin(self) -> None:
         """#7534: an env override selects the container, `Cross.toml` does not.
 
         Cross reads image selection from the environment before `Cross.toml`
@@ -504,7 +519,7 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             write_cross_config(root)
-            for name in subject.cross_image_override_names(CROSS_TARGET):
+            for name in cross_container_override_names(CROSS_TARGET):
                 for value in (
                     "ghcr.io/attacker/evil@sha256:" + "b" * 64,
                     "",  # cross reads an empty value as a selection too
@@ -515,7 +530,7 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
                         ):
                             with self.assertRaisesRegex(
                                 subject.BuildIdentityError,
-                                "ambient cross image override",
+                                "ambient cross configuration",
                             ):
                                 subject.toolchain_digest(
                                     root,
@@ -523,6 +538,33 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
                                     CROSS_TARGET,
                                     env={name: value},
                                 )
+
+    def test_unknown_future_cross_key_is_rejected_too(self) -> None:
+        """The guard is a prefix scan, not a list of keys to keep chasing.
+
+        Three separate bypasses (image, dockerfile, pre-build) were found by
+        enumerating names. A key cross adds tomorrow must fail closed without
+        anyone editing this file.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_cross_config(root)
+            slug = CROSS_TARGET.upper().replace("-", "_")
+            for name in (
+                f"CROSS_TARGET_{slug}_SOME_KEY_INVENTED_LATER",
+                "CROSS_BUILD_SOME_KEY_INVENTED_LATER",
+            ):
+                with self.subTest(variable=name):
+                    with mock.patch.object(
+                        subject, "run", side_effect=cross_runner_outputs(1)
+                    ):
+                        with self.assertRaisesRegex(
+                            subject.BuildIdentityError,
+                            "ambient cross configuration",
+                        ):
+                            subject.toolchain_digest(
+                                root, "cross", CROSS_TARGET, env={name: "x"}
+                            )
 
     def test_override_for_another_target_does_not_block_this_one(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -558,7 +600,7 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
                 )
             self.assertEqual(len(digest), 64)
 
-    def test_build_environment_strips_overrides_it_controls(self) -> None:
+    def test_build_environment_strips_ambient_overrides(self) -> None:
         mapping = valid_mapping()
         mapping["target"] = CROSS_TARGET
         identity = subject.ReleaseBuildIdentity.from_mapping(mapping)
@@ -566,7 +608,7 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
         polluted["CROSS_BUILD_DOCKERFILE"] = "Dockerfile.evil"
         with mock.patch.object(subject.os, "environ", polluted):
             with self.assertRaisesRegex(
-                subject.BuildIdentityError, "ambient cross image override"
+                subject.BuildIdentityError, "ambient cross configuration"
             ):
                 subject.build_environment(
                     identity, root=REPO_ROOT, runner="cross"
@@ -578,7 +620,7 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
             env = subject.build_environment(
                 identity, root=REPO_ROOT, runner="cross"
             )
-        for name in subject.cross_image_override_names(CROSS_TARGET):
+        for name in cross_container_override_names(CROSS_TARGET):
             self.assertNotIn(name, env)
 
     def test_cross_config_rejects_unpinned_target(self) -> None:
