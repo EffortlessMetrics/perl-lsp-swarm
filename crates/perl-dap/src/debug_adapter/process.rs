@@ -723,6 +723,12 @@ impl DebugAdapter {
         let termination_state = self.termination_state.clone();
         let operation_broker = self.operation_broker.clone();
         let session_generation = self.current_session_generation();
+        // The reader's session epoch in the broker's own id space. The
+        // launch-failure/EOF/read-error settles below are gated on it, so a
+        // stale reader still draining its pipe after a restart or attach
+        // replacement cannot settle the replacement session's pending
+        // operations (#8564 review).
+        let broker_session_generation = operation_broker.current_session_generation();
 
         thread::spawn(move || {
             // Perl's debugger prompt and evaluation output are emitted on stderr.
@@ -749,8 +755,9 @@ impl DebugAdapter {
                 tracing::warn!(
                     "No debugger output stream available - output reader thread exiting"
                 );
-                // Launch effectively failed for framed operations (#8564).
-                operation_broker.settle_all("launch_failed");
+                // Launch effectively failed for framed operations (#8564):
+                // settle only while this reader still owns the live session.
+                operation_broker.settle_all_if_current("launch_failed", broker_session_generation);
                 if let Some(ref sender) = sender {
                     emit_terminated_event(
                         sender,
@@ -798,8 +805,13 @@ impl DebugAdapter {
                         tracing::debug!("Perl debugger process terminated");
                         // Settle every pending framed operation first (#8564):
                         // waiters must observe SessionGone, not spin to their
-                        // timeout against a dead session.
-                        operation_broker.settle_all("debugger_eof");
+                        // timeout against a dead session. Gated on the reader's
+                        // spawn generation: a stale reader draining its pipe
+                        // after a restart or attach replacement must not clear
+                        // the replacement session's pending table (#8564
+                        // review).
+                        operation_broker
+                            .settle_all_if_current("debugger_eof", broker_session_generation);
                         // The debuggee exited mid-query: emit the logpoint with
                         // whatever values arrived rather than dropping it.
                         if let Some(pending) = pending_logpoint.take() {
@@ -1409,8 +1421,11 @@ impl DebugAdapter {
                     Err(e) => {
                         tracing::error!(error = %e, "Error reading from debugger");
                         // Same contract as the EOF arm above (#8564): settle
-                        // pending operations so waiters observe SessionGone.
-                        operation_broker.settle_all("read_error");
+                        // pending operations so waiters observe SessionGone —
+                        // gated on the reader's spawn generation for the same
+                        // stale-reader reason.
+                        operation_broker
+                            .settle_all_if_current("read_error", broker_session_generation);
                         // Same contract as the EOF arm above: a read failure during a
                         // framed value query must still surface the logpoint with
                         // whatever values arrived, not swallow it.

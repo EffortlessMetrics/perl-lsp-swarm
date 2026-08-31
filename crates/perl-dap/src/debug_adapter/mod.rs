@@ -581,7 +581,7 @@ impl DebugAdapter {
     }
 
     /// Convert u32 process/thread IDs to i32 (as required by Unix signal APIs) with saturation.
-    /// Values above [`u32::MAX`] are clamped to [`u32::MAX`] rather than wrapping to negatives.
+    /// Values above [`i32::MAX`] are clamped to [`i32::MAX`] rather than wrapping to negatives.
     // Windows builds do not call the Unix signal PID conversion paths.
     #[cfg_attr(windows, allow(dead_code))]
     fn u32_to_i32_saturating(value: u32) -> i32 {

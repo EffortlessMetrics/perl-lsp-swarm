@@ -4,17 +4,19 @@
 //!
 //! ```text
 //! typed operation
-//! → serialized native-debugger write
+//! → serialized submission and pending registration
 //! → operation identity
 //! → correlated output frame or terminal condition
 //! → typed result
 //! ```
 //!
 //! The broker owns operation identity, the pending-operation table, session
-//! generation, and the typed terminal outcomes. It wraps the current
-//! begin/end-marker query primitive: marker framing and the output scan move
-//! behind [`OperationBroker::await_framed_payload`] while observable behavior
-//! stays identical for existing callers.
+//! generation, and the typed terminal outcomes. It performs no transport
+//! write itself: callers write the framed markers to the debugger transport
+//! and submit the operation for correlation, and the broker wraps the
+//! begin/end-marker query primitive so that marker framing and the output
+//! scan move behind [`OperationBroker::await_framed_payload`] while
+//! observable behavior stays identical for existing callers.
 //!
 //! Deliberate migration debt (#8564): direct native-debugger writes outside
 //! this broker still exist. They are registered debt, not silent ownership —
@@ -239,8 +241,9 @@ impl OperationBroker {
         Self {
             pending: Mutex::new(PendingTable::default()),
             next_operation_id: AtomicU64::new(1),
-            // Session generations start above the frame-ID generations so the
-            // two id spaces can never collide in logs or receipts.
+            // Session generations and operation identities are distinct
+            // types that are never compared, so the two counters cannot be
+            // confused even though both start at 1.
             session_generation: AtomicU64::new(1),
         }
     }
@@ -253,17 +256,20 @@ impl OperationBroker {
 
     /// Submit one operation for correlation.
     ///
-    /// Serialized and bounded: submission takes the table lock only long
-    /// enough to register the entry, and the pending bound rejects excess
-    /// operations instead of queueing them without limit.
+    /// Serialized and bounded: generation validation, the pending bound, and
+    /// registration all run under one acquisition of the table lock, and the
+    /// pending bound rejects excess operations instead of queueing them
+    /// without limit. Validating under the same lock that
+    /// [`Self::settle_all`] clears and bumps under closes the
+    /// submit-versus-settle window: an operation can never be registered into
+    /// the live table of a session that has already been settled
+    /// (#8564 review). Operation identities are minted before validation, so
+    /// a refused submission leaves a gap in the id sequence; identities are
+    /// unique, never dense.
     pub(crate) fn submit(
         &self,
         spec: BrokerOperationSpec,
     ) -> Result<BrokerOperation, BrokerTerminal> {
-        if spec.session_generation != self.current_session_generation() {
-            return Err(BrokerTerminal::StaleGeneration);
-        }
-
         let id = OperationId(self.next_operation_id.fetch_add(1, Ordering::AcqRel));
         let operation = BrokerOperation {
             id,
@@ -275,6 +281,9 @@ impl OperationBroker {
         };
 
         let mut table = lock_or_recover(&self.pending, "operation_broker.pending");
+        if spec.session_generation != self.current_session_generation() {
+            return Err(BrokerTerminal::StaleGeneration);
+        }
         if table.fifo.len() >= MAX_PENDING_OPERATIONS {
             return Err(BrokerTerminal::Rejected(format!(
                 "broker pending bound exceeded ({MAX_PENDING_OPERATIONS})"
@@ -304,13 +313,51 @@ impl OperationBroker {
     /// Called on EOF, failed launch, disconnect, terminate, restart, and
     /// adapter drop. Waiters observe the removal from the table and the
     /// generation bump; nothing blocks and nothing panics.
+    ///
+    /// The clear and the generation bump run under one acquisition of the
+    /// pending-table lock — the same lock [`Self::submit`] validates and
+    /// registers under — so a submit can never interleave between the two
+    /// halves of the settle and land a stale operation in the live table
+    /// (#8564 review).
     pub(crate) fn settle_all(&self, reason: &'static str) {
+        self.settle_under_lock(reason, None);
+    }
+
+    /// Settle every pending operation as `SessionGone` only while `expected`
+    /// is still the current session generation, reporting whether the settle
+    /// applied.
+    ///
+    /// Reader threads capture the generation at spawn; a stale reader still
+    /// draining its pipe after a restart or attach replacement must not clear
+    /// the replacement session's pending table or advance its generation when
+    /// it finally observes EOF or a read error, so late settles from that
+    /// reader are skipped (#8564 review). [`Self::settle_all`] stays the
+    /// unconditional form for the generation-transition paths
+    /// (`begin_session_generation`, adapter drop) that always own the live
+    /// session.
+    pub(crate) fn settle_all_if_current(
+        &self,
+        reason: &'static str,
+        expected: SessionGeneration,
+    ) -> bool {
+        self.settle_under_lock(reason, Some(expected))
+    }
+
+    fn settle_under_lock(&self, reason: &'static str, expected: Option<SessionGeneration>) -> bool {
         {
             let mut table = lock_or_recover(&self.pending, "operation_broker.pending");
+            if expected.is_some_and(|expected| expected != self.current_session_generation()) {
+                tracing::debug!(
+                    reason,
+                    "operation broker skipped settle for a superseded session generation"
+                );
+                return false;
+            }
             table.fifo.clear();
+            self.session_generation.fetch_add(1, Ordering::AcqRel);
         }
-        self.session_generation.fetch_add(1, Ordering::AcqRel);
         tracing::debug!(reason, "operation broker settled all pending operations");
+        true
     }
 
     /// Await the framed payload for one submitted query operation.
@@ -460,12 +507,14 @@ mod tests {
         reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
     )]
     use super::super::patterns::{RecentOutputBuffer, RecentOutputLine};
+    use super::lock_or_recover;
     use super::{
         BrokerFacingLine, BrokerOperation, BrokerOperationSpec, BrokerTerminal, CancellationToken,
         OperationBroker, OperationClass,
     };
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// Short await budget for negative waits: long enough to survive poll
     /// scheduling on a loaded host, short enough to keep the suite fast.
@@ -630,8 +679,7 @@ mod tests {
     #[test]
     fn session_end_settles_waiters_without_panic_or_deadlock() {
         let broker = Arc::new(OperationBroker::new());
-        let operation =
-            broker.submit(query_spec(&broker, Duration::from_secs(60))).expect("submit");
+        let operation = broker.submit(query_spec(&broker, Duration::from_mins(1))).expect("submit");
         let (begin, end) = markers(&operation);
         let output = Arc::new(Mutex::new(RecentOutputBuffer::new()));
 
@@ -651,6 +699,122 @@ mod tests {
             matches!(terminal, BrokerTerminal::SessionGone(_)),
             "session end must settle the waiter: got {terminal:?}"
         );
+    }
+
+    #[test]
+    fn submit_racing_a_settle_never_queues_a_stale_generation_operation() {
+        // Regression (#8564 review P1): `submit` validated the session
+        // generation outside the pending-table lock while `settle_all`
+        // cleared the table and bumped the generation outside it. A submit
+        // that passed validation and was then parked on the table lock could
+        // insert its stale-generation operation into the live table AFTER the
+        // settle completed; the waiter then spun to its full budget and
+        // reported `TimedOut` instead of `SessionGone`. Validation and
+        // insertion must be atomic against the settle's clear-and-bump under
+        // one lock ordering.
+        for _ in 0..64 {
+            let broker = Arc::new(OperationBroker::new());
+            let racing_generation = broker.current_session_generation();
+
+            // Hold the table lock so the spawned submit must park at (or
+            // past) its validation point instead of completing.
+            let held = lock_or_recover(&broker.pending, "test hold pending");
+            let submitter = {
+                let broker = Arc::clone(&broker);
+                std::thread::spawn(move || {
+                    broker.submit(BrokerOperationSpec {
+                        class: OperationClass::Query,
+                        session_generation: racing_generation,
+                        suspension_generation: None,
+                        timeout: Duration::from_mins(1),
+                        cancellation: None,
+                    })
+                })
+            };
+
+            // Operation identities are minted before the table lock, so the
+            // advanced counter proves the submitter is in flight and contending
+            // for the lock rather than still waiting to run.
+            let parked = Instant::now() + Duration::from_secs(5);
+            while broker.next_operation_id.load(Ordering::Acquire) == 1 {
+                assert!(Instant::now() < parked, "submitter never reached the pending-table lock");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            // With the submitter in flight, run a full settle. The submitter
+            // must never queue its operation into the live table of the
+            // settled (bumped) generation.
+            drop(held);
+            broker.settle_all("restart");
+
+            let submitted = submitter.join().expect("submitter thread must not panic");
+            match submitted {
+                // Refused at the validation point because the settle won.
+                Err(BrokerTerminal::StaleGeneration) => {}
+                Ok(operation) => {
+                    // `Ok` is only acceptable when the insert happened while
+                    // the generation was still current (the settle then
+                    // retired it) — never when a stale operation survives in
+                    // the live table of a superseded session.
+                    let still_pending = lock_or_recover(&broker.pending, "test inspect pending")
+                        .fifo
+                        .iter()
+                        .any(|entry| entry.operation.id == operation.id);
+                    assert!(
+                        !still_pending
+                            || broker.current_session_generation() == operation.session_generation,
+                        "stale operation queued into the live table: operation generation \
+                         {:?}, current generation {:?}",
+                        operation.session_generation,
+                        broker.current_session_generation(),
+                    );
+                }
+                Err(other) => {
+                    assert!(
+                        matches!(other, BrokerTerminal::Rejected(_)),
+                        "unexpected submit outcome: {other:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stale_reader_settle_does_not_clear_a_newer_generation() {
+        // Regression (#8564 review P1): reader threads settle pending
+        // operations on EOF/read-error, but a reader that spawns, then loses
+        // its session to a restart or attach replacement, must not clear the
+        // replacement session's pending table or advance its generation when
+        // it finally drains its pipe. A settle is only applied while the
+        // caller's captured generation is still current.
+        let broker = OperationBroker::new();
+
+        // The reader captured its generation at spawn...
+        let reader_generation = broker.current_session_generation();
+
+        // ...but a replacement session advanced the epoch and queued its own
+        // operation before the stale reader observed EOF.
+        broker.settle_all("restart");
+        let replacement =
+            broker.submit(query_spec(&broker, Duration::from_mins(1))).expect("replacement submit");
+        let replacement_generation = broker.current_session_generation();
+
+        let settled = broker.settle_all_if_current("debugger_eof", reader_generation);
+        assert!(!settled, "a stale reader's settle must be skipped, not applied");
+        assert!(
+            broker.is_pending(replacement.id),
+            "the replacement session's pending operation must survive a stale reader's settle"
+        );
+        assert_eq!(
+            broker.current_session_generation(),
+            replacement_generation,
+            "a skipped settle must not advance the replacement session's generation"
+        );
+
+        // The live session's own settle path still applies and retires the
+        // operation.
+        assert!(broker.settle_all_if_current("terminated", replacement_generation));
+        assert!(!broker.is_pending(replacement.id));
     }
 
     #[test]
@@ -678,8 +842,7 @@ mod tests {
     #[test]
     fn settle_path_does_not_require_the_output_buffer_lock() {
         let broker = OperationBroker::new();
-        let operation =
-            broker.submit(query_spec(&broker, Duration::from_secs(60))).expect("submit");
+        let operation = broker.submit(query_spec(&broker, Duration::from_mins(1))).expect("submit");
         let output = Arc::new(Mutex::new(RecentOutputBuffer::new()));
 
         // Hold the output-buffer lock externally: the settle path touches only
