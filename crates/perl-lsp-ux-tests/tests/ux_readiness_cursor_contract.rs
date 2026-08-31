@@ -5,8 +5,8 @@
 mod active_document_readiness;
 
 use active_document_readiness::{
-    generation_after, ready_generation, ready_generations, ACTIVE_DOCUMENT_READY_METHOD,
-    ReadyObservation,
+    ACTIVE_DOCUMENT_READY_METHOD, ReadyObservation, generation_after, ready_generation,
+    ready_generations,
 };
 use perl_lsp_ux_tests::LspEvent;
 use serde_json::json;
@@ -25,9 +25,7 @@ fn readiness_cursor_rejects_historical_delayed_and_cross_uri_evidence() {
     let mut events = vec![ready(uri, json!(1)), ready(uri, json!(2))];
     let cursor = ready_generations(&events, uri).len();
 
-    assert!(
-        generation_after(&ready_generations(&events, uri), cursor, 1).is_none()
-    );
+    assert!(generation_after(&ready_generations(&events, uri), cursor, 1).is_none());
 
     events.push(ready(uri, json!(2)));
     assert!(
@@ -44,10 +42,7 @@ fn readiness_cursor_rejects_historical_delayed_and_cross_uri_evidence() {
     events.push(ready(uri, json!(1)));
     assert_eq!(
         generation_after(&ready_generations(&events, uri), cursor, 1),
-        Some(ReadyObservation {
-            generation: 1,
-            matching_ordinal: 4,
-        })
+        Some(ReadyObservation { generation: 1, matching_ordinal: 4 })
     );
 }
 
@@ -89,10 +84,7 @@ fn numeric_generation_does_not_claim_close_reopen_instance_identity() {
     let after_change = 2;
     assert_eq!(
         generation_after(&generations, after_change, 1),
-        Some(ReadyObservation {
-            generation: 1,
-            matching_ordinal: 3,
-        })
+        Some(ReadyObservation { generation: 1, matching_ordinal: 3 })
     );
     // The helper can prove only that another numeric generation-1 frame was
     // observed. It cannot prove whether that frame belongs to the old or new
