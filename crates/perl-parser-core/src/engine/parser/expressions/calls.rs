@@ -431,6 +431,16 @@ impl<'a> Parser<'a> {
                 args.push(s.parse_assignment_or_declaration()?);
 
                 if matches!(s.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
+                    // A fat comma auto-quotes the bareword on its left, exactly
+                    // as it does inside `parse_args`. Without this the
+                    // parenthesised and parenthesis-free spellings of the same
+                    // call disagree about whether the operand is a name or a
+                    // call of a same-named sub.
+                    if s.peek_kind() == Some(TokenKind::FatArrow)
+                        && let Some(arg) = args.last_mut()
+                    {
+                        Self::auto_quote_bareword_before_fat_comma(arg);
+                    }
                     s.tokens.next()?;
                 } else if Self::is_statement_terminator(s.peek_kind())
                     || s.is_statement_modifier_keyword()
