@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12518 |
-| Rust-family files | 3874 |
-| Non-Rust files | 8644 |
-| Allowlisted | 6407 |
-| Unclassified | 2237 |
+| Total tracked files | 12532 |
+| Rust-family files | 3885 |
+| Non-Rust files | 8647 |
+| Allowlisted | 6408 |
+| Unclassified | 2239 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 349 |
 | test | 2067 |
 | tooling | 672 |
-| unclassified | 2237 |
+| unclassified | 2239 |
 
 ## Unclassified files
 
@@ -83,6 +83,8 @@
 | `crates/perl-kwalitee/fixtures/legacy_receipt_v1.json` | `json` |
 | `crates/perl-kwalitee/legacy_indicator_migrations.toml` | `toml` |
 | `crates/perl-lexer/tests/fixtures/ripr_seam_proof_peek_char_unit.inc` | `inc` |
+| `crates/perl-lexer/tests/fixtures/simd_feature_includes/excluded/selector.inc` | `inc` |
+| `crates/perl-lexer/tests/fixtures/simd_feature_includes/payload.inc` | `inc` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/data_literal_preserve.expected-diagnostics.txt` | `txt` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/end_literal_preserve.expected-diagnostics.txt` | `txt` |
 | `crates/perl-lsp-perltidy/tests/fixtures/native_formatter/format_body_literal_preserve.expected-diagnostics.txt` | `txt` |

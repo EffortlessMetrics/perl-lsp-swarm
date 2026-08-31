@@ -382,7 +382,11 @@ jobs:
         shell: bash
         env:
           WINDOWS_TEST_CRATES: ${{ needs.platform-overrides.outputs.windows_test_crates }}
-        run: cargo test $WINDOWS_TEST_CRATES --locked --lib
+        run: |
+          cargo test $WINDOWS_TEST_CRATES --locked --lib
+          if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
+            cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
+          fi
 
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
   # Prevents committed conflict markers reaching master (see #7183).
