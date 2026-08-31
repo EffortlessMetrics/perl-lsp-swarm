@@ -133,11 +133,14 @@ def expect_failure(text: str, mutation: str) -> None:
             mutation,
         )
     elif mutation == "drop_server_identity":
-        mutated = replace_once(
-            text,
+        count = text.count("PERL_LSP_SERVER_SOURCE_SHA")
+        if count < 1:
+            raise WorkflowError(
+                "negative-control setup drop_server_identity found no source-identity binding"
+            )
+        mutated = text.replace(
             "PERL_LSP_SERVER_SOURCE_SHA",
             "REMOVED_SERVER_SOURCE_SHA",
-            mutation,
         )
     elif mutation == "add_publish":
         mutated = text + "\n# cargo publish\n"
