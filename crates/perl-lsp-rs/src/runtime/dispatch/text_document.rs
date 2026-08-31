@@ -4,7 +4,11 @@
 
 #[cfg(test)]
 use super::super::*;
-use super::super::{JsonRpcError, LspServer, Value, json};
+use super::super::{JsonRpcError, LspServer, Value};
+// `json!` is only used by the test-only fallback fast paths and the unit
+// tests; both are compiled out of production builds (#4628, #5108).
+#[cfg(any(test, feature = "test-fallbacks"))]
+use super::super::json;
 
 impl LspServer {
     // Text synchronization handlers
@@ -205,24 +209,12 @@ impl LspServer {
             };
         }
 
-        // Production path: try the real handler first. The compatibility
-        // fallback runs only when the failure carries no terminal protocol
-        // verdict (`references_fallback_eligible`): cancelled, stale, invalid,
-        // and internal-failure outcomes are refused and reach the client at
-        // their typed codes (#5108). The fallback receives the exact original
-        // request (`fallback_params`), and its provider and reason are logged.
-        let fallback_params = params.clone().unwrap_or_else(|| json!({}));
-        self.handle_references_with_request_id(params, request_id).or_else(|error| {
-            if !references_fallback_eligible(error.code) {
-                return Err(error);
-            }
-            tracing::warn!(
-                error = %error,
-                provider = "on_references",
-                "references handler error is fallback-eligible; running bounded text fallback"
-            );
-            self.on_references(fallback_params, request_id).map(Some)
-        })
+        // Production path: the canonical handler's outcome is terminal. The
+        // outer references compatibility fallback is removed (#5108): dispatch
+        // is an adapter, not a fallback planner, so cancelled, stale, invalid,
+        // and provider failures reach the client at their typed JSON-RPC codes
+        // instead of being relabeled as apparently-successful empty searches.
+        self.handle_references_with_request_id(params, request_id)
     }
 
     pub(super) fn handle_document_highlight_dispatch(
@@ -531,32 +523,6 @@ impl LspServer {
     }
 }
 
-/// Explicit eligibility predicate for the `textDocument/references`
-/// compatibility fallback (#5108).
-///
-/// The fallback may serve an answer only when the canonical handler failed
-/// without a terminal protocol verdict. Cancelled, stale, invalid, and
-/// internal-failure outcomes must reach the client at their typed JSON-RPC
-/// codes; they can never enter the fallback, because a fallback result would
-/// relabel the failure as an apparently-successful (possibly empty) search.
-fn references_fallback_eligible(code: i32) -> bool {
-    use crate::protocol::{
-        CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, PARSE_ERROR,
-        REQUEST_CANCELLED, SERVER_CANCELLED,
-    };
-
-    !matches!(
-        code,
-        REQUEST_CANCELLED
-            | SERVER_CANCELLED
-            | CONTENT_MODIFIED
-            | PARSE_ERROR
-            | INVALID_REQUEST
-            | INVALID_PARAMS
-            | INTERNAL_ERROR
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,17 +542,24 @@ mod tests {
         // In production code, every `std::env::var("LSP_TEST_FALLBACKS")` call
         // must be preceded by a `#[cfg(any(test, feature = "test-fallbacks"))]`
         // attribute.  We verify this by counting: the number of cfg attributes
-        // must equal the number of env var reads.
+        // must equal the number of env var reads plus the number of gated
+        // test-only imports (the `json` import used only by the gated fast
+        // paths and the unit tests).
         let cfg_count =
             production_source.matches("#[cfg(any(test, feature = \"test-fallbacks\"))]").count();
         let env_var_count =
             production_source.matches("std::env::var(\"LSP_TEST_FALLBACKS\")").count();
+        let gated_import_count = production_source
+            .matches("#[cfg(any(test, feature = \"test-fallbacks\"))]\nuse ")
+            .count();
 
         assert_eq!(
-            cfg_count, env_var_count,
-            "production code has {env_var_count} LSP_TEST_FALLBACKS env var reads but only \
-             {cfg_count} #[cfg(any(test, feature = \"test-fallbacks\"))] gates — \
-             every read must be gated (#4628)"
+            cfg_count,
+            env_var_count + gated_import_count,
+            "production code has {env_var_count} LSP_TEST_FALLBACKS env var reads and \
+             {gated_import_count} gated test-only imports but {cfg_count} \
+             #[cfg(any(test, feature = \"test-fallbacks\"))] gates — every read and import \
+             must be gated (#4628)"
         );
 
         // Additionally verify there are no bare `let use_fallback =` patterns
@@ -598,40 +571,68 @@ mod tests {
         );
     }
 
-    /// Static-analysis test: the production references fallback must stay
-    /// behind the explicit eligibility predicate
-    /// (`references_fallback_eligible`), so cancelled, stale, invalid, and
-    /// internal-failure outcomes can never enter it (#5108). The production
-    /// definition dispatch is a transparent adapter and must not regain any
-    /// error-to-empty fallback (see
-    /// `production_definition_dispatch_does_not_retry_errors_as_empty`).
+    /// Static-analysis test: production references dispatch must be a
+    /// transparent adapter over the canonical handler (#5108). The outer
+    /// compatibility fallback is removed: dispatch is an adapter, not a
+    /// fallback planner, so cancelled, stale, invalid, and provider failures
+    /// reach the client at their typed JSON-RPC codes instead of being
+    /// relabeled as apparently-successful empty searches.
     #[test]
-    fn production_references_fallback_requires_explicit_eligibility()
+    fn production_references_dispatch_does_not_retry_errors_as_empty()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = include_str!("text_document.rs");
-        let method_body = dispatch_method_source(source, "handle_references_cancellable_dispatch")?;
+        let production_source = source.split("#[cfg(test)]\nmod tests").next().unwrap_or(source);
+        let method_body =
+            dispatch_method_source(production_source, "handle_references_cancellable_dispatch")?;
 
-        // The fallback decision must go through the named eligibility
-        // predicate; a bare error-code comparison cannot express the contract.
         assert!(
-            method_body.contains("references_fallback_eligible(error.code)"),
-            "references production path must gate the fallback behind \
-             references_fallback_eligible (#5108)\n{method_body}"
+            method_body.contains("self.handle_references_with_request_id(params, request_id)"),
+            "production references dispatch must tail-call the canonical handler (#5108)\n{method_body}"
+        );
+        assert!(
+            !method_body.contains(".or_else"),
+            "production references dispatch must not regain an error-to-empty `.or_else` retry \
+             (#5108)\n{method_body}"
+        );
+        assert!(
+            !method_body.contains("on_references(json!({})"),
+            "production references dispatch must not replace errors with an empty-params \
+             fallback (#5108)\n{method_body}"
+        );
+        assert!(
+            method_body.contains("#[cfg(any(test, feature = \"test-fallbacks\"))]"),
+            "retained LSP_TEST_FALLBACKS path must stay cfg-gated (#4628)"
+        );
+        assert!(
+            method_body.contains("std::env::var(\"LSP_TEST_FALLBACKS\")"),
+            "test-only references fallback must remain behind LSP_TEST_FALLBACKS"
+        );
+        assert!(
+            method_body.contains("advertised_features.lock().references"),
+            "test-only references fallback must not run when the feature is unadvertised (#4628)"
         );
 
-        // The production path must not use a bare `or_else(|_|` that
-        // swallows all errors — it must inspect the error (#4628).
+        // The eligibility predicate and every reference to it are removed with
+        // the fallback: no deny-list "fallback-eligible" planning may return
+        // (#5108). Any future fallback must be an explicit allow-list, and
+        // dispatch must remain an adapter. The needle is split so this
+        // assertion does not reintroduce the literal it forbids.
         assert!(
-            !method_body.contains(".or_else(|_|"),
-            "references production path must not swallow all errors with or_else(|_| ...) \
-             — it must inspect the error (#4628)"
+            !source.contains(concat!("references_fallback_", "eligible")),
+            "the removed references fallback eligibility predicate must stay removed: \
+             dispatch is an adapter, not a fallback planner (#5108)"
         );
 
-        // The predicate itself must refuse cancellation; behavioral coverage
-        // is in `references_dispatch_preserves_cancellation`.
+        // The test-only provider stays compiled out of production builds,
+        // mirroring on_definition (#5108) and on_folding_range (#13981).
+        let handler_source = include_str!("../language/references.rs");
+        let handler_production =
+            handler_source.split("#[cfg(test)]\nmod tests").next().unwrap_or(handler_source);
         assert!(
-            !references_fallback_eligible(crate::protocol::REQUEST_CANCELLED),
-            "REQUEST_CANCELLED must never enter the references fallback (#5108)"
+            handler_production.contains(
+                "#[cfg(any(test, feature = \"test-fallbacks\"))]\n    pub(crate) fn on_references("
+            ),
+            "on_references must stay cfg-gated out of production builds (#5108)"
         );
         Ok(())
     }
@@ -654,23 +655,126 @@ mod tests {
         dispatch_method_source(source, "handle_folding_range_dispatch")
     }
 
-    /// Recurrence guard (#5108): no production dispatch in this file may call
-    /// a provider fallback with empty parameters. An empty-parameter fallback
-    /// receives no URI or position, can only answer `[]`, and therefore turns
-    /// any failure it catches into an apparently-successful empty search.
+    /// Recurrence guard (#5108), strengthened: no production dispatch source
+    /// may call a provider fallback with empty parameters — or synthesize
+    /// empty parameters for one. An empty-parameter fallback receives no URI
+    /// or position, can only answer `[]`, and therefore turns any failure it
+    /// catches into an apparently-successful empty search.
+    ///
+    /// Unlike the original single-file literal scan, this guard:
+    /// - walks every `.rs` file under `src/runtime/dispatch` (the original
+    ///   defect could have landed in any dispatch file);
+    /// - removes `#[cfg(any(test, feature = "test-fallbacks"))]`-gated blocks
+    ///   first, so the sanctioned test-only fast paths stay exempt while the
+    ///   remaining production text is scanned;
+    /// - forbids any reference to the test-only fallback providers in
+    ///   production dispatch text, so the empty-params object cannot hide in
+    ///   a variable, a reformatting, or a defaulting expression;
+    /// - matches whitespace-normalized needles, so the synthesis shapes the
+    ///   removed fallback used (`params.clone().unwrap_or_else(|| json!({}))`)
+    ///   cannot evade the scan by formatting.
     #[test]
-    fn production_dispatch_has_no_empty_param_fallbacks() {
-        let source = include_str!("text_document.rs");
-        let production_source = source.split("#[cfg(test)]\nmod tests").next().unwrap_or(source);
+    fn production_dispatch_has_no_empty_param_fallbacks() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::{fs, path::Path};
 
-        for forbidden in
-            ["on_definition(json!({}))", "on_references(json!({})", "on_folding_range(json!({}))"]
-        {
-            assert!(
-                !production_source.contains(forbidden),
-                "empty-parameter production fallback `{forbidden}` must not return (#5108)"
-            );
+        /// Remove `#[cfg(any(test, feature = "test-fallbacks"))]`-gated
+        /// blocks. The attribute gates one brace-bearing item (the `if`
+        /// fast path or a fallback `fn`); its extent is the first balanced
+        /// brace group after the attribute. Braceless gated items are left
+        /// in place rather than over-stripped.
+        fn strip_cfg_gated_blocks(source: &str) -> String {
+            const ATTR: &str = "#[cfg(any(test, feature = \"test-fallbacks\"))]";
+            let mut kept = String::with_capacity(source.len());
+            let mut rest = source;
+            while let Some(at) = rest.find(ATTR) {
+                kept.push_str(&rest[..at]);
+                let after_attr = &rest[at + ATTR.len()..];
+                let Some(open_rel) = after_attr.find('{') else {
+                    kept.push_str(after_attr);
+                    break;
+                };
+                if after_attr[..open_rel].contains(';') {
+                    // The attribute gates a braceless item (e.g. `use ...;`);
+                    // keep the text and keep scanning after this attribute.
+                    kept.push_str(ATTR);
+                    rest = after_attr;
+                    continue;
+                }
+                let mut depth = 0usize;
+                let mut block_end = None;
+                for (idx, ch) in after_attr[open_rel..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                block_end = Some(open_rel + idx + 1);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                rest = match block_end {
+                    Some(end) => &after_attr[end..],
+                    // Unbalanced remainder: treat all of it as gated.
+                    None => "",
+                };
+            }
+            kept.push_str(rest);
+            kept
         }
+
+        // Any reference to a test-only fallback provider in production
+        // dispatch text is a violation, whatever the parameters are built
+        // from (#5108).
+        const FALLBACK_PROVIDERS: [&str; 3] =
+            ["on_definition(", "on_references(", "on_folding_range("];
+        // Empty-params synthesis in production dispatch is the defect shape
+        // even without a provider call beside it. Needles are matched against
+        // whitespace-stripped text so reformatting cannot evade them.
+        const EMPTY_PARAM_SYNTHESIS: [&str; 3] =
+            ["unwrap_or(json!({}))", "unwrap_or_else(||json!({}))", "unwrap_or_else(|_|json!({}))"];
+
+        let dispatch_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/dispatch");
+        let mut scanned = 0usize;
+        let mut stack = vec![dispatch_dir];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    // Directory-named test modules are test-only by
+                    // construction; the scan is about production dispatch.
+                    if path.file_name().and_then(|name| name.to_str()) == Some("tests") {
+                        continue;
+                    }
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                    continue;
+                }
+                let source = fs::read_to_string(&path)?;
+                let production = source.split("#[cfg(test)]\nmod tests").next().unwrap_or(&source);
+                let stripped = strip_cfg_gated_blocks(production);
+                let compact: String = stripped.chars().filter(|c| !c.is_whitespace()).collect();
+                for needle in FALLBACK_PROVIDERS.iter().chain(EMPTY_PARAM_SYNTHESIS.iter()) {
+                    assert!(
+                        !compact.contains(needle),
+                        "production dispatch `{}` must not contain `{needle}` — dispatch is \
+                         an adapter, not a fallback planner (#5108)",
+                        path.display()
+                    );
+                }
+                scanned += 1;
+            }
+        }
+        assert!(
+            scanned >= 14,
+            "expected to scan every dispatch source file, only scanned {scanned}"
+        );
+        Ok(())
     }
 
     /// Production foldingRange dispatch must be a transparent adapter over the
@@ -923,8 +1027,10 @@ mod tests {
     }
 
     /// Behavioral falsifier (#5108): a references request with missing
-    /// URI/position remains a request error; the eligibility predicate refuses
-    /// it, so the compatibility fallback cannot relabel it as empty success.
+    /// URI/position remains a request error. The canonical INVALID_PARAMS
+    /// error is constructed and must reach the client untouched — the
+    /// dispatch layer has no compatibility fallback left to relabel it as an
+    /// apparently-successful empty search.
     #[test]
     #[serial_test::serial]
     fn references_dispatch_refuses_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
@@ -1001,8 +1107,9 @@ mod tests {
     }
 
     /// Behavioral falsifier (#5108): an older request version returns
-    /// CONTENT_MODIFIED from the references dispatch; the compatibility
-    /// fallback must not swallow it.
+    /// CONTENT_MODIFIED from the references dispatch. The canonical stale
+    /// error propagates untouched — dispatch has no fallback left that could
+    /// swallow it into an empty success.
     #[test]
     #[serial_test::serial]
     fn references_dispatch_preserves_content_modified() -> Result<(), Box<dyn std::error::Error>> {
@@ -1042,38 +1149,5 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    /// Unit test (#5108): the eligibility predicate must refuse every terminal
-    /// protocol outcome; only non-terminal failures may take the retained
-    /// compatibility fallback.
-    #[test]
-    fn references_fallback_eligibility_predicate_excludes_terminal_outcomes() {
-        use crate::protocol::{
-            CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, PARSE_ERROR,
-            REQUEST_CANCELLED, REQUEST_FAILED, SERVER_CANCELLED,
-        };
-
-        for code in [
-            REQUEST_CANCELLED,
-            SERVER_CANCELLED, // cancelled
-            CONTENT_MODIFIED, // stale
-            PARSE_ERROR,
-            INVALID_REQUEST,
-            INVALID_PARAMS, // invalid
-            INTERNAL_ERROR, // internal provider failure
-        ] {
-            assert!(
-                !references_fallback_eligible(code),
-                "terminal outcome {code} must never enter the references fallback (#5108)"
-            );
-        }
-
-        // A non-terminal failure may take the retained fallback, which
-        // answers from the exact original request.
-        assert!(
-            references_fallback_eligible(REQUEST_FAILED),
-            "a non-terminal failure must stay fallback-eligible (#5108)"
-        );
     }
 }
