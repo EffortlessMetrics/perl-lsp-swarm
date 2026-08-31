@@ -29,6 +29,7 @@ mod variable_cache;
 // Single-authority re-exports of the standard DAP command list, consumed
 // by the reload contract's protocol-surface collision check (#10097). The
 // list itself is enumerated only by tests.
+pub(crate) use dispatch::DapRequestRoute;
 #[cfg(test)]
 pub(crate) use dispatch::SUPPORTED_COMMANDS;
 pub(crate) use dispatch::is_supported_dap_command;

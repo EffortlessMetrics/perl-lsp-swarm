@@ -8,12 +8,15 @@ from typing import Any, Mapping
 from dap_authority_common import (
     DEBUG_ADAPTER_ROOT,
     DISPATCH_PATH,
+    PEER_DISPATCH_PATHS,
     SEND_EVENT_CALL_RE,
     SEND_EVENT_LITERAL_RE,
     AuthorityError,
     array_value,
     manifest_rows,
     parse_request_table,
+    parse_peer_dispatch_routes,
+    production_dispatch_sources,
     read_text,
     string_value,
 )
@@ -44,6 +47,39 @@ def _production_events(root: Path) -> set[str]:
     return events
 
 
+def _request_routes(row: Mapping[str, str]) -> list[dict[str, str]]:
+    routes = [
+        {
+            "route_id": f"{row['row_id']}.native",
+            "frontend": "native",
+            "syntax_owner": DISPATCH_PATH.as_posix(),
+            "handler": row["handler"],
+            "condition": "default (no external-peer runtime selector)",
+            "disposition": "handler_present",
+        }
+    ]
+    explicit = row["availability"] == "all_frontends"
+    for frontend, owner, selector in (
+        ("external_peer", PEER_DISPATCH_PATHS[0], "--external-peer"),
+        ("mirror_peer", PEER_DISPATCH_PATHS[1], "--external-peer-listen"),
+    ):
+        routes.append(
+            {
+                "route_id": f"{row['row_id']}.{frontend}",
+                "frontend": frontend,
+                "syntax_owner": owner.as_posix(),
+                "handler": (
+                    f"{'DapPeerBridge' if frontend == 'external_peer' else 'MirrorPeerBridge'}::dispatch"
+                    if explicit
+                    else "dynamic_compatibility_ack_success_empty"
+                ),
+                "condition": selector,
+                "disposition": "handler_present" if explicit else "not_proven",
+            }
+        )
+    return routes
+
+
 def validate_production_boundary(
     root: Path,
     manifest: Mapping[str, Any],
@@ -58,6 +94,28 @@ def validate_production_boundary(
     rows = _production_request_rows(root)
     commands = {row["command"] for row in rows}
     events = _production_events(root)
+
+    expected_owners = {DISPATCH_PATH, *PEER_DISPATCH_PATHS}
+    discovered_owners = production_dispatch_sources(root)
+    if discovered_owners != expected_owners:
+        raise AuthorityError(
+            "production request-dispatch source graph changed: "
+            f"expected={sorted(map(str, expected_owners))}, "
+            f"discovered={sorted(map(str, discovered_owners))}"
+        )
+    expected_peer_variants = {
+        row["variant"] for row in rows if row["availability"] == "all_frontends"
+    }
+    for path in PEER_DISPATCH_PATHS:
+        actual = parse_peer_dispatch_routes(
+            read_text(root / path, "DAP peer dispatch source"), path
+        )
+        if actual != expected_peer_variants:
+            raise AuthorityError(
+                f"{path} route/catalog mismatch: "
+                f"missing={sorted(expected_peer_variants - actual)}, "
+                f"unexpected={sorted(actual - expected_peer_variants)}"
+            )
 
     # The class declared beside the executable route must agree with the
     # pinned upstream schema. A row cannot claim to be standard DAP that
@@ -143,7 +201,10 @@ def validate_production_boundary(
                 "row_id": row["row_id"],
                 "command": row["command"],
                 "class": row["class"],
+                "availability": row["availability"],
+                "variant": row["variant"],
                 "handler": row["handler"],
+                "routes": _request_routes(row),
             }
             for row in sorted(rows, key=lambda row: row["row_id"])
         ],
@@ -153,4 +214,19 @@ def validate_production_boundary(
             {"kind": kind, "wire_name": name} for kind, name in sorted(production_extensions)
         ],
         "project_families": family_boundary,
+        "dispatch_sources": sorted(path.as_posix() for path in expected_owners),
+        "fallback_policies": [
+            {
+                "policy_id": "dap.fallback.external_peer.dynamic_compatibility_ack_success_empty",
+                "frontend": "external_peer",
+                "condition": "unknown command (not present in catalog)",
+                "disposition": "not_proven",
+            },
+            {
+                "policy_id": "dap.fallback.mirror_peer.dynamic_compatibility_ack_success_empty",
+                "frontend": "mirror_peer",
+                "condition": "unknown command (not present in catalog)",
+                "disposition": "not_proven",
+            },
+        ],
     }

@@ -32,7 +32,7 @@ use super::{
     StackTraceParams,
 };
 use crate::breakpoint_oracle::{AstBreakpointOracle, BreakpointOracle};
-use crate::debug_adapter::DapMessage;
+use crate::debug_adapter::{DapMessage, DapRequestRoute};
 use crate::model::{
     DebugBreakpoint, DebugEvent, DebugFunctionBreakpoint, DebugSource, FrameId, OutputCategory,
     StopReason, ThreadId, VariablesRef,
@@ -164,8 +164,10 @@ impl DapPeerBridge {
         arguments: Option<Value>,
     ) -> Vec<DapMessage> {
         let mut out = Vec::new();
-        match command {
-            "initialize" => {
+        match DapRequestRoute::from_command(command)
+            .filter(DapRequestRoute::available_in_peer_frontends)
+        {
+            Some(DapRequestRoute::Initialize) => {
                 let params = parse_initialize(arguments.as_ref());
                 match self.backend.initialize(params) {
                     Ok(()) => {
@@ -178,25 +180,27 @@ impl DapPeerBridge {
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "launch" => {
+            Some(DapRequestRoute::Launch) => {
                 let params = parse_launch(arguments.as_ref());
                 match self.backend.launch(params) {
                     Ok(_) => out.push(self.response(request_seq, command, true, None, None)),
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "attach" => {
+            Some(DapRequestRoute::Attach) => {
                 let params = parse_attach(arguments.as_ref());
                 match self.backend.attach(params) {
                     Ok(_) => out.push(self.response(request_seq, command, true, None, None)),
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "setBreakpoints" => match self.handle_set_breakpoints(arguments.as_ref()) {
+            Some(DapRequestRoute::SetBreakpoints) => match self
+                .handle_set_breakpoints(arguments.as_ref())
+            {
                 Ok(body) => out.push(self.response(request_seq, command, true, Some(body), None)),
                 Err(e) => out.push(self.error(request_seq, command, e)),
             },
-            "setFunctionBreakpoints" => {
+            Some(DapRequestRoute::SetFunctionBreakpoints) => {
                 match self.handle_set_function_breakpoints(arguments.as_ref()) {
                     Ok(body) => {
                         out.push(self.response(request_seq, command, true, Some(body), None))
@@ -204,7 +208,7 @@ impl DapPeerBridge {
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "continue" => {
+            Some(DapRequestRoute::Continue) => {
                 let tid = thread_id_arg(arguments.as_ref());
                 match self.backend.continue_thread(tid) {
                     Ok(r) => {
@@ -214,47 +218,57 @@ impl DapPeerBridge {
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "next" => self.step(request_seq, command, arguments.as_ref(), Step::Next, &mut out),
-            "stepIn" => self.step(request_seq, command, arguments.as_ref(), Step::In, &mut out),
-            "stepOut" => self.step(request_seq, command, arguments.as_ref(), Step::Out, &mut out),
-            "pause" => {
+            Some(DapRequestRoute::Next) => {
+                self.step(request_seq, command, arguments.as_ref(), Step::Next, &mut out)
+            }
+            Some(DapRequestRoute::StepIn) => {
+                self.step(request_seq, command, arguments.as_ref(), Step::In, &mut out)
+            }
+            Some(DapRequestRoute::StepOut) => {
+                self.step(request_seq, command, arguments.as_ref(), Step::Out, &mut out)
+            }
+            Some(DapRequestRoute::Pause) => {
                 let tid = thread_id_arg(arguments.as_ref());
                 match self.backend.pause(tid) {
                     Ok(()) => out.push(self.response(request_seq, command, true, None, None)),
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "stackTrace" => match self.handle_stack_trace(arguments.as_ref()) {
+            Some(DapRequestRoute::StackTrace) => {
+                match self.handle_stack_trace(arguments.as_ref()) {
+                    Ok(body) => {
+                        out.push(self.response(request_seq, command, true, Some(body), None))
+                    }
+                    Err(e) => out.push(self.error(request_seq, command, e)),
+                }
+            }
+            Some(DapRequestRoute::Scopes) => match self.handle_scopes(arguments.as_ref()) {
                 Ok(body) => out.push(self.response(request_seq, command, true, Some(body), None)),
                 Err(e) => out.push(self.error(request_seq, command, e)),
             },
-            "scopes" => match self.handle_scopes(arguments.as_ref()) {
+            Some(DapRequestRoute::Variables) => match self.handle_variables(arguments.as_ref()) {
                 Ok(body) => out.push(self.response(request_seq, command, true, Some(body), None)),
                 Err(e) => out.push(self.error(request_seq, command, e)),
             },
-            "variables" => match self.handle_variables(arguments.as_ref()) {
+            Some(DapRequestRoute::Evaluate) => match self.handle_evaluate(arguments.as_ref()) {
                 Ok(body) => out.push(self.response(request_seq, command, true, Some(body), None)),
                 Err(e) => out.push(self.error(request_seq, command, e)),
             },
-            "evaluate" => match self.handle_evaluate(arguments.as_ref()) {
-                Ok(body) => out.push(self.response(request_seq, command, true, Some(body), None)),
-                Err(e) => out.push(self.error(request_seq, command, e)),
-            },
-            "threads" => {
+            Some(DapRequestRoute::Threads) => {
                 // Perl's stock debugger is single-threaded; report one thread.
                 let body = json!({ "threads": [{ "id": 1, "name": "main" }] });
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
-            "configurationDone" => {
+            Some(DapRequestRoute::ConfigurationDone) => {
                 out.push(self.response(request_seq, command, true, None, None));
             }
-            "breakpointLocations" => {
+            Some(DapRequestRoute::BreakpointLocations) => {
                 // Answered locally from the AST oracle (the source file is on the
                 // same host as perl-dap), independent of the peer.
                 let body = handle_breakpoint_locations(arguments.as_ref());
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
-            "terminate" => {
+            Some(DapRequestRoute::Terminate) => {
                 // DAP `terminate` (the editor's Stop button when the adapter
                 // advertises `supportsTerminateRequest`): end the debuggee. In
                 // mirror mode the peer owns the process, so this is best-effort —
@@ -268,7 +282,7 @@ impl DapPeerBridge {
                 self.terminated_emitted = true;
                 out.push(self.event("terminated", None));
             }
-            "disconnect" => {
+            Some(DapRequestRoute::Disconnect) => {
                 let terminate = arguments
                     .as_ref()
                     .and_then(|a| a.get("terminateDebuggee"))
@@ -286,11 +300,11 @@ impl DapPeerBridge {
                     out.push(self.event("terminated", None));
                 }
             }
-            other => {
+            None | Some(_) => {
                 // Lenient: acknowledge unrecognized requests so a client is not
                 // wedged, but carry no body. (mirror-MVP behavior.)
-                tracing::warn!(command = other, "peer bridge: unhandled DAP request");
-                out.push(self.response(request_seq, other, true, None, None));
+                tracing::warn!(command, "peer bridge: unhandled DAP request");
+                out.push(self.response(request_seq, command, true, None, None));
             }
         }
         // Surface any events the backend queued while handling the request.

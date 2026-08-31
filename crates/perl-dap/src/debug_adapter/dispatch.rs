@@ -15,6 +15,15 @@ pub(crate) enum DapRequestClass {
     Extension,
 }
 
+/// Runtime frontends on which a request has an explicit handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DapRequestAvailability {
+    /// The native adapter, external-peer connect, and mirror-listen adapters.
+    AllFrontends,
+    /// Only the native adapter; peer frontends apply their compatibility fallback.
+    NativeOnly,
+}
+
 /// One executable production request row.
 ///
 /// A row exists if and only if `dispatch_request` routes its wire command:
@@ -28,6 +37,8 @@ pub(crate) struct DapRequestRow {
     pub(crate) command: &'static str,
     /// Whether the row is standard DAP or a project extension.
     pub(crate) class: DapRequestClass,
+    /// Which runtime-selected frontend owns an explicit route for this command.
+    pub(crate) availability: DapRequestAvailability,
 }
 
 /// Map a table class token to its typed variant.
@@ -40,6 +51,24 @@ macro_rules! dap_request_class {
     };
     (extension) => {
         DapRequestClass::Extension
+    };
+}
+
+macro_rules! dap_request_availability {
+    (all_frontends) => {
+        DapRequestAvailability::AllFrontends
+    };
+    (native_only) => {
+        DapRequestAvailability::NativeOnly
+    };
+}
+
+macro_rules! dap_request_peer_available {
+    (all_frontends) => {
+        true
+    };
+    (native_only) => {
+        false
     };
 }
 
@@ -77,8 +106,14 @@ macro_rules! dap_dispatch_call {
 /// not exist.
 macro_rules! dap_request_table {
     (
-        $( $class:ident $command:literal => $handler:ident $arity:tt ),* $(,)?
+        $( $class:ident $availability:ident $variant:ident $command:literal
+            => $handler:ident $arity:tt ),* $(,)?
     ) => {
+        /// Stable typed command identity shared by all production frontends.
+        pub(crate) enum DapRequestRoute {
+            $($variant),*
+        }
+
         /// Every executable production request row, in table order.
         pub(crate) const DAP_REQUEST_ROWS: &[DapRequestRow] = &[
             $(
@@ -86,6 +121,7 @@ macro_rules! dap_request_table {
                     row_id: concat!("dap.request.", $command),
                     command: $command,
                     class: dap_request_class!($class),
+                    availability: dap_request_availability!($availability),
                 },
             )*
         ];
@@ -95,6 +131,21 @@ macro_rules! dap_request_table {
         /// collision check (#10097) and the unknown-command suggester.
         pub(crate) const SUPPORTED_COMMANDS: [&str; DAP_REQUEST_ROWS.len()] =
             [$($command),*];
+
+        impl DapRequestRoute {
+            pub(crate) fn from_command(wire_command: &str) -> Option<Self> {
+                match wire_command {
+                    $($command => Some(Self::$variant),)*
+                    _ => None,
+                }
+            }
+
+            pub(crate) const fn available_in_peer_frontends(&self) -> bool {
+                match self {
+                    $(Self::$variant => dap_request_peer_available!($availability),)*
+                }
+            }
+        }
 
         impl DebugAdapter {
             pub(super) fn dispatch_request(
@@ -126,43 +177,43 @@ macro_rules! dap_request_table {
 }
 
 dap_request_table! {
-    standard "initialize" => handle_initialize(arguments),
-    standard "launch" => handle_launch(arguments),
-    standard "attach" => handle_attach(arguments),
-    standard "disconnect" => handle_disconnect(arguments),
-    standard "terminate" => handle_terminate(arguments),
-    standard "setBreakpoints" => handle_set_breakpoints(arguments),
-    standard "setFunctionBreakpoints" => handle_set_function_breakpoints(arguments),
-    standard "setExceptionBreakpoints" => handle_set_exception_breakpoints(arguments),
-    standard "configurationDone" => handle_configuration_done(),
-    standard "threads" => handle_threads(),
-    standard "stackTrace" => handle_stack_trace(arguments),
-    standard "scopes" => handle_scopes(arguments),
-    standard "variables" => handle_variables(arguments),
-    standard "setVariable" => handle_set_variable(arguments),
-    standard "continue" => handle_continue(arguments),
-    standard "next" => handle_next(arguments),
-    standard "stepIn" => handle_step_in(arguments),
-    standard "stepOut" => handle_step_out(arguments),
-    standard "pause" => handle_pause(arguments),
-    standard "evaluate" => handle_evaluate(arguments),
-    extension "inlineValues" => handle_inline_values(arguments),
-    standard "breakpointLocations" => handle_breakpoint_locations(arguments),
-    standard "source" => handle_source(arguments),
-    standard "loadedSources" => handle_loaded_sources(arguments),
-    standard "modules" => handle_modules(arguments),
-    standard "completions" => handle_completions(arguments),
-    standard "exceptionInfo" => handle_exception_info(arguments),
-    standard "restart" => handle_restart(arguments),
-    standard "setExpression" => handle_set_expression(arguments),
-    standard "dataBreakpointInfo" => handle_data_breakpoint_info(arguments),
-    standard "setDataBreakpoints" => handle_set_data_breakpoints(arguments),
-    standard "cancel" => handle_cancel(arguments),
-    standard "stepInTargets" => handle_step_in_targets(arguments),
-    standard "gotoTargets" => handle_goto_targets(arguments),
-    standard "goto" => handle_goto(arguments),
-    standard "restartFrame" => handle_restart_frame(arguments),
-    standard "terminateThreads" => handle_terminate_threads(arguments),
+    standard all_frontends Initialize "initialize" => handle_initialize(arguments),
+    standard all_frontends Launch "launch" => handle_launch(arguments),
+    standard all_frontends Attach "attach" => handle_attach(arguments),
+    standard all_frontends Disconnect "disconnect" => handle_disconnect(arguments),
+    standard all_frontends Terminate "terminate" => handle_terminate(arguments),
+    standard all_frontends SetBreakpoints "setBreakpoints" => handle_set_breakpoints(arguments),
+    standard all_frontends SetFunctionBreakpoints "setFunctionBreakpoints" => handle_set_function_breakpoints(arguments),
+    standard native_only SetExceptionBreakpoints "setExceptionBreakpoints" => handle_set_exception_breakpoints(arguments),
+    standard all_frontends ConfigurationDone "configurationDone" => handle_configuration_done(),
+    standard all_frontends Threads "threads" => handle_threads(),
+    standard all_frontends StackTrace "stackTrace" => handle_stack_trace(arguments),
+    standard all_frontends Scopes "scopes" => handle_scopes(arguments),
+    standard all_frontends Variables "variables" => handle_variables(arguments),
+    standard native_only SetVariable "setVariable" => handle_set_variable(arguments),
+    standard all_frontends Continue "continue" => handle_continue(arguments),
+    standard all_frontends Next "next" => handle_next(arguments),
+    standard all_frontends StepIn "stepIn" => handle_step_in(arguments),
+    standard all_frontends StepOut "stepOut" => handle_step_out(arguments),
+    standard all_frontends Pause "pause" => handle_pause(arguments),
+    standard all_frontends Evaluate "evaluate" => handle_evaluate(arguments),
+    extension native_only InlineValues "inlineValues" => handle_inline_values(arguments),
+    standard all_frontends BreakpointLocations "breakpointLocations" => handle_breakpoint_locations(arguments),
+    standard native_only Source "source" => handle_source(arguments),
+    standard native_only LoadedSources "loadedSources" => handle_loaded_sources(arguments),
+    standard native_only Modules "modules" => handle_modules(arguments),
+    standard native_only Completions "completions" => handle_completions(arguments),
+    standard native_only ExceptionInfo "exceptionInfo" => handle_exception_info(arguments),
+    standard native_only Restart "restart" => handle_restart(arguments),
+    standard native_only SetExpression "setExpression" => handle_set_expression(arguments),
+    standard native_only DataBreakpointInfo "dataBreakpointInfo" => handle_data_breakpoint_info(arguments),
+    standard native_only SetDataBreakpoints "setDataBreakpoints" => handle_set_data_breakpoints(arguments),
+    standard native_only Cancel "cancel" => handle_cancel(arguments),
+    standard native_only StepInTargets "stepInTargets" => handle_step_in_targets(arguments),
+    standard native_only GotoTargets "gotoTargets" => handle_goto_targets(arguments),
+    standard native_only Goto "goto" => handle_goto(arguments),
+    standard native_only RestartFrame "restartFrame" => handle_restart_frame(arguments),
+    standard native_only TerminateThreads "terminateThreads" => handle_terminate_threads(arguments),
 }
 
 /// Whether `command` is one of the DAP request names this adapter

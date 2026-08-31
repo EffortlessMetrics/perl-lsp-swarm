@@ -18,6 +18,8 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
+from dap_authority_common import PEER_DISPATCH_PATHS
+
 COMMIT = "a" * 40
 DOC = f"""# DAP Protocol Authority and Compatibility
 
@@ -227,14 +229,29 @@ class DapProtocolAuthorityTests(unittest.TestCase):
         # The class must agree with the pinned schema; the handler is a
         # valid Rust identifier derived from the wire name.
         handler = re.sub(r"[^a-z0-9]+", "_", command.lower()).strip("_")
+        variant = "".join(part.capitalize() for part in re.split(r"[^A-Za-z0-9]+", command))
         kind = "standard" if command in standard else "extension"
-        return f'    {kind} "{command}" => handle_{handler}(arguments),'
+        availability = "all_frontends" if command == "initialize" else "native_only"
+        return (
+            f'    {kind} {availability} {variant} "{command}" '
+            f'=> handle_{handler}(arguments),'
+        )
 
     # The macro definition the gate structurally validates. Fixtures carry it
     # verbatim so a test exercises the same exclusivity proof production does.
     MACRO_DEFINITION = """macro_rules! dap_request_class {
     (standard) => { DapRequestClass::Standard };
     (extension) => { DapRequestClass::Extension };
+}
+
+macro_rules! dap_request_availability {
+    (all_frontends) => { DapRequestAvailability::AllFrontends };
+    (native_only) => { DapRequestAvailability::NativeOnly };
+}
+
+macro_rules! dap_request_peer_available {
+    (all_frontends) => { true };
+    (native_only) => { false };
 }
 
 macro_rules! dap_dispatch_call {
@@ -244,10 +261,47 @@ macro_rules! dap_dispatch_call {
     ($adapter:expr, $handler:ident, $seq:expr, $request_seq:expr, $arguments:expr, ()) => {
         $adapter.$handler($seq, $request_seq)
     };
+    ($adapter:expr, $handler:ident, $seq:expr, $request_seq:expr, $arguments:expr, $other:tt) => {
+        compile_error!("invalid request arity")
+    };
 }
 
 macro_rules! dap_request_table {
-    ( $( $class:ident $command:literal => $handler:ident $arity:tt ),* $(,)? ) => {
+    ( $( $class:ident $availability:ident $variant:ident $command:literal
+        => $handler:ident $arity:tt ),* $(,)? ) => {
+        pub(crate) enum DapRequestRoute {
+            $($variant),*
+        }
+
+        pub(crate) const DAP_REQUEST_ROWS: &[DapRequestRow] = &[
+            $(
+                DapRequestRow {
+                    row_id: concat!("dap.request.", $command),
+                    command: $command,
+                    class: dap_request_class!($class),
+                    availability: dap_request_availability!($availability),
+                },
+            )*
+        ];
+
+        pub(crate) const SUPPORTED_COMMANDS: [&str; DAP_REQUEST_ROWS.len()] =
+            [$($command),*];
+
+        impl DapRequestRoute {
+            pub(crate) fn from_command(wire_command: &str) -> Option<Self> {
+                match wire_command {
+                    $($command => Some(Self::$variant),)*
+                    _ => None,
+                }
+            }
+
+            pub(crate) const fn available_in_peer_frontends(&self) -> bool {
+                match self {
+                    $(Self::$variant => dap_request_peer_available!($availability),)*
+                }
+            }
+        }
+
         impl DebugAdapter {
             pub(super) fn dispatch_request(
                 &mut self,
@@ -307,6 +361,37 @@ macro_rules! dap_request_table {
             else self._render_table(commands),
             encoding="utf-8",
         )
+
+        peer_source = """impl PeerBridge {
+    pub fn dispatch(
+        &mut self,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<Value>,
+    ) -> Vec<DapMessage> {
+        let mut out = Vec::new();
+        match DapRequestRoute::from_command(command)
+            .filter(DapRequestRoute::available_in_peer_frontends)
+        {
+            Some(DapRequestRoute::Initialize) => out.push(ok()),
+            None | Some(_) => {
+                tracing::warn!(command, "BRIDGE_MESSAGE");
+                out.push(self.response(request_seq, command, true, None, None));
+            }
+        }
+        out.extend(self.poll_events());
+        out
+    }
+}
+"""
+        messages = (
+            "peer bridge: unhandled DAP request",
+            "mirror bridge: unhandled DAP request",
+        )
+        for peer_path, message in zip(PEER_DISPATCH_PATHS, messages, strict=True):
+            path = self.root / peer_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(peer_source.replace("BRIDGE_MESSAGE", message), encoding="utf-8")
 
         event_source = self.root / MODULE.DEBUG_ADAPTER_ROOT / "events.rs"
         event_source.parent.mkdir(parents=True, exist_ok=True)
@@ -683,21 +768,48 @@ macro_rules! dap_request_table {
 
     def test_request_rows_are_derived_from_the_executable_table(self) -> None:
         production = self._production_rows()
+        rows_without_routes = [
+            {key: value for key, value in row.items() if key != "routes"}
+            for row in production["request_rows"]
+        ]
         self.assertEqual(
-            production["request_rows"],
+            rows_without_routes,
             [
                 {
                     "row_id": "dap.request.initialize",
                     "command": "initialize",
                     "class": "standard",
+                    "availability": "all_frontends",
+                    "variant": "Initialize",
                     "handler": "handle_initialize",
                 },
                 {
                     "row_id": "dap.request.inlineValues",
                     "command": "inlineValues",
                     "class": "extension",
+                    "availability": "native_only",
+                    "variant": "Inlinevalues",
                     "handler": "handle_inlinevalues",
                 },
+            ],
+        )
+        self.assertEqual(
+            [route["frontend"] for route in production["request_rows"][0]["routes"]],
+            ["native", "external_peer", "mirror_peer"],
+        )
+        self.assertEqual(
+            [route["frontend"] for route in production["request_rows"][1]["routes"]],
+            ["native", "external_peer", "mirror_peer"],
+        )
+        self.assertEqual(
+            [route["disposition"] for route in production["request_rows"][1]["routes"]],
+            ["handler_present", "not_proven", "not_proven"],
+        )
+        self.assertEqual(
+            [route["handler"] for route in production["request_rows"][1]["routes"][1:]],
+            [
+                "dynamic_compatibility_ack_success_empty",
+                "dynamic_compatibility_ack_success_empty",
             ],
         )
 
@@ -705,6 +817,100 @@ macro_rules! dap_request_table {
         before = self._production_rows()["request_rows"]
         self._write_production(commands=("inlineValues", "initialize"))
         self.assertEqual(before, self._production_rows()["request_rows"])
+
+    def test_exact_current_owners_and_convention_named_additions_are_governed(self) -> None:
+        missing = self.root / PEER_DISPATCH_PATHS[0]
+        missing.unlink()
+        self.assertAuthorityError(self._production_rows)
+
+        self._write_production()
+        extra = self.root / "crates/perl-dap/src/backend/extra_frontend.rs"
+        extra_owners = (
+            "pub fn handle_request(&mut self, command: &str) { match command { _ => {} } }\n",
+            "pub fn dispatch(&mut self, request: Request) { match request.command { _ => {} } }\n",
+        )
+        for source in extra_owners:
+            with self.subTest(source=source):
+                extra.write_text(source, encoding="utf-8")
+                self.assertAuthorityError(self._production_rows)
+        extra.unlink()
+
+    def test_peer_lookup_is_the_exclusive_dispatch_funnel(self) -> None:
+        path = self.root / PEER_DISPATCH_PATHS[0]
+        original = path.read_text(encoding="utf-8")
+        mutations = {
+            "literal_pre_route": (
+                "        let mut out = Vec::new();\n",
+                "        if command == \"vendor/reload\" { return Vec::new(); }\n"
+                "        let mut out = Vec::new();\n",
+            ),
+            "delegated_pre_route": (
+                "        let mut out = Vec::new();\n",
+                "        if let Some(out) = self.vendor_route(command) { return out; }\n"
+                "        let mut out = Vec::new();\n",
+            ),
+            "function_attribute": (
+                "    pub fn dispatch(\n",
+                "    #[external_route]\n    pub fn dispatch(\n",
+            ),
+            "fallback_delegates": (
+                "            None | Some(_) => {\n",
+                "            None | Some(_) => {\n"
+                "                self.vendor_route(command);\n",
+            ),
+        }
+        for label, (anchor, replacement) in mutations.items():
+            with self.subTest(mutation=label):
+                self.assertIn(anchor, original)
+                path.write_text(original.replace(anchor, replacement, 1), encoding="utf-8")
+                self.assertAuthorityError(self._production_rows)
+        path.write_text(original, encoding="utf-8")
+
+    def test_peer_route_must_match_catalog_availability(self) -> None:
+        path = self.root / PEER_DISPATCH_PATHS[0]
+        source = path.read_text(encoding="utf-8")
+        source = source.replace(
+            "            Some(DapRequestRoute::Initialize) => out.push(ok()),\n",
+            "",
+            1,
+        )
+        source = source.replace(
+            "            None | Some(_) => {\n",
+            "            None | Some(_) => {\n"
+            "                let _decoy = DapRequestRoute::Initialize;\n",
+            1,
+        )
+        path.write_text(source, encoding="utf-8")
+        self.assertAuthorityError(self._production_rows)
+
+    def test_peer_route_patterns_cannot_be_guarded_or_broadened(self) -> None:
+        path = self.root / PEER_DISPATCH_PATHS[0]
+        original = path.read_text(encoding="utf-8")
+        anchor = "            Some(DapRequestRoute::Initialize) => out.push(ok()),\n"
+        mutations = (
+            "            Some(DapRequestRoute::Initialize) if cfg!(windows) => out.push(ok()),\n",
+            "            Some(DapRequestRoute::Initialize) if self.ready => out.push(ok()),\n",
+            "            Some(DapRequestRoute::Initialize) | None => out.push(ok()),\n",
+        )
+        self.assertIn(anchor, original)
+        for mutation in mutations:
+            with self.subTest(pattern=mutation):
+                path.write_text(original.replace(anchor, mutation, 1), encoding="utf-8")
+                self.assertAuthorityError(self._production_rows)
+        path.write_text(original, encoding="utf-8")
+
+    def test_dynamic_peer_fallback_is_reported_separately(self) -> None:
+        production = self._production_rows()
+        self.assertEqual(
+            [policy["disposition"] for policy in production["fallback_policies"]],
+            ["not_proven", "not_proven"],
+        )
+        self.assertTrue(
+            all(
+                "dynamic_compatibility_ack_success_empty" in policy["policy_id"]
+                for policy in production["fallback_policies"]
+            )
+        )
 
     def test_out_of_table_routes_are_rejected_in_every_rust_arm_shape(self) -> None:
         # The realistic split-brain: a request routed outside the table is
@@ -775,6 +981,82 @@ macro_rules! dap_request_table {
                     )
                 )
                 self.assertAuthorityError(self._production_rows)
+
+    def test_generated_route_cannot_delegate_to_external_expansion(self) -> None:
+        definition = self.MACRO_DEFINITION.replace(
+            "$command => dap_dispatch_call!(",
+            "$command => crate::external_dispatch!(",
+            1,
+        )
+        self.assertNotEqual(definition, self.MACRO_DEFINITION)
+        self._write_production(
+            dispatch_source=self._render_table(
+                ("initialize", "inlineValues"), macro_definition=definition
+            )
+        )
+        self.assertAuthorityError(self._production_rows)
+
+    def test_reviewed_helper_and_route_lookup_cannot_drift(self) -> None:
+        mutations = {
+            "helper_delegates": (
+                "$adapter.$handler($seq, $request_seq, $arguments)",
+                "$adapter.vendor_route($seq, $request_seq, $arguments)",
+            ),
+            "wire_maps_to_wrong_variant": (
+                "$($command => Some(Self::$variant),)*",
+                '$("sneak" => Some(Self::$variant),)*',
+            ),
+            "peer_availability_inverted": (
+                "(all_frontends) => { true };",
+                "(all_frontends) => { false };",
+            ),
+        }
+        for label, (anchor, replacement) in mutations.items():
+            with self.subTest(mutation=label):
+                self.assertIn(anchor, self.MACRO_DEFINITION)
+                definition = self.MACRO_DEFINITION.replace(anchor, replacement, 1)
+                self._write_production(
+                    dispatch_source=self._render_table(
+                        ("initialize", "inlineValues"), macro_definition=definition
+                    )
+                )
+                self.assertAuthorityError(self._production_rows)
+
+    def test_generated_dispatch_rejects_cfg_and_other_attributes(self) -> None:
+        mutations = {
+            "function_attribute": (
+                "            pub(super) fn dispatch_request(",
+                "            #[external_route]\n"
+                "            pub(super) fn dispatch_request(",
+            ),
+            "cfg_gated_generated_arms": (
+                "                    $(\n"
+                "                        $command => dap_dispatch_call!(",
+                "                    $(\n"
+                "                        #[cfg(windows)]\n"
+                "                        $command => dap_dispatch_call!(",
+            ),
+        }
+        for label, (anchor, replacement) in mutations.items():
+            with self.subTest(mutation=label):
+                self.assertIn(anchor, self.MACRO_DEFINITION)
+                definition = self.MACRO_DEFINITION.replace(anchor, replacement, 1)
+                self._write_production(
+                    dispatch_source=self._render_table(
+                        ("initialize", "inlineValues"), macro_definition=definition
+                    )
+                )
+                self.assertAuthorityError(self._production_rows)
+
+    def test_cfg_gated_table_invocation_fails_closed(self) -> None:
+        source = self._render_table(("initialize", "inlineValues"))
+        source = source.replace(
+            "\ndap_request_table! {",
+            "\n#[cfg(windows)]\ndap_request_table! {",
+            1,
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
 
     def test_command_cannot_be_delegated_out_of_the_match(self) -> None:
         # Pinning the body's shape is not sufficient on its own: these keep
@@ -985,6 +1267,38 @@ macro_rules! dap_request_table {
             macro_definition=self.MACRO_DEFINITION + shadow,
         )
         self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_hand_written_supported_commands_cannot_restore_split_authority(self) -> None:
+        generated = (
+            "        pub(crate) const SUPPORTED_COMMANDS: "
+            "[&str; DAP_REQUEST_ROWS.len()] =\n"
+            "            [$($command),*];\n\n"
+        )
+        self.assertIn(generated, self.MACRO_DEFINITION)
+        definition = self.MACRO_DEFINITION.replace(generated, "", 1)
+        source = self._render_table(
+            ("initialize", "inlineValues"), macro_definition=definition
+        )
+        source += (
+            'pub(crate) const SUPPORTED_COMMANDS: [&str; 2] = '
+            '["initialize", "inlineValues"];\n'
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityError(self._production_rows)
+
+    def test_inventory_rows_must_be_generated_from_table_tokens(self) -> None:
+        definition = self.MACRO_DEFINITION.replace(
+            "                    command: $command,",
+            '                    command: "initialize",',
+            1,
+        )
+        self.assertNotEqual(definition, self.MACRO_DEFINITION)
+        self._write_production(
+            dispatch_source=self._render_table(
+                ("initialize", "inlineValues"), macro_definition=definition
+            )
+        )
         self.assertAuthorityError(self._production_rows)
 
     def test_a_missing_generator_macro_fails_closed(self) -> None:

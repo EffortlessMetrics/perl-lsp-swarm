@@ -26,6 +26,20 @@ DOC_PATHS = (
 )
 DISPATCH_PATH = Path("crates/perl-dap/src/debug_adapter/dispatch.rs")
 DEBUG_ADAPTER_ROOT = Path("crates/perl-dap/src/debug_adapter")
+PEER_DISPATCH_PATHS = (
+    Path("crates/perl-dap/src/backend/peer_bridge.rs"),
+    Path("crates/perl-dap/src/backend/peer_launch.rs"),
+)
+EXPECTED_PEER_FALLBACKS = {
+    PEER_DISPATCH_PATHS[0]: (
+        'tracing::warn!(command, "peer bridge: unhandled DAP request"); '
+        "out.push(self.response(request_seq, command, true, None, None));"
+    ),
+    PEER_DISPATCH_PATHS[1]: (
+        'tracing::warn!(command, "mirror bridge: unhandled DAP request"); '
+        "out.push(self.response(request_seq, command, true, None, None));"
+    ),
+}
 FORBIDDEN_DOC_PHRASES = (
     "JSON-RPC 2.0",
     "Schema Definitions Complete",
@@ -39,6 +53,8 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_TABLE_INVOCATION_RE = re.compile(r"\bdap_request_table\s*!\s*\{")
 REQUEST_TABLE_ROW_RE = re.compile(
     r"(?P<class>standard|extension)\s+"
+    r"(?P<availability>all_frontends|native_only)\s+"
+    r"(?P<variant>[A-Z][A-Za-z0-9]*)\s+"
     r'"(?P<command>[A-Za-z][A-Za-z0-9._/-]*)"\s*=>\s*'
     r"(?P<handler>[a-z_][a-z0-9_]*)\s*\(\s*(?:arguments\s*)?\)\s*,"
 )
@@ -54,9 +70,25 @@ ANY_MACRO_DEFINITION_RE = re.compile(r"\bmacro_rules\s*!\s*(?P<name>[A-Za-z_][A-
 # macro here could expand into routing the named-function checks never see,
 # so the set is closed and a new one has to be reviewed in deliberately.
 PERMITTED_MACRO_DEFINITIONS = frozenset(
-    {"dap_request_class", "dap_dispatch_call", "dap_request_table"}
+    {
+        "dap_request_class",
+        "dap_request_availability",
+        "dap_request_peer_available",
+        "dap_dispatch_call",
+        "dap_request_table",
+    }
 )
 DISPATCH_FN_RE = re.compile(r"\bfn\s+dispatch_request\b")
+PRODUCTION_DISPATCH_FN_RE = re.compile(
+    r"\bfn\s+(?:dispatch|dispatch_request|handle_request)\s*\(",
+)
+PEER_DISPATCH_FN_RE = re.compile(r"\bpub\s+fn\s+dispatch\s*\(")
+PEER_ROUTE_MATCH_RE = re.compile(
+    r"\bmatch\s+DapRequestRoute::from_command\s*\(\s*command\s*\)\s*"
+    r"\.filter\s*\(\s*DapRequestRoute::available_in_peer_frontends\s*\)"
+)
+SUPPORTED_COMMANDS_DEFINITION_RE = re.compile(r"\bconst\s+SUPPORTED_COMMANDS\b")
+REQUEST_ROWS_DEFINITION_RE = re.compile(r"\bconst\s+DAP_REQUEST_ROWS\b")
 # Constructs that could introduce a route inside the generated dispatch body.
 # The body is a fixed, tiny shape, so this is an allow-list check rather than
 # a hunt for known-bad spellings: anything that can branch, return early, or
@@ -69,6 +101,58 @@ COMMAND_IDENT_RE = re.compile(r"(?<![\w$])command(?!\w)")
 # derived from it: `match self.normalize(command)` would keep every
 # structural rule while remapping wire names away from the rows.
 EXPECTED_SCRUTINEE = "command"
+# The one generated row arm is pinned just like the fallback below. Merely
+# counting its arrow leaves the handler side open to an imported macro, and
+# permits a cfg attribute to remove every executable arm while the inventory
+# continues to report the table rows.
+EXPECTED_ROW_REPETITION = (
+    "$( $command => dap_dispatch_call!( self, $handler, seq, request_seq, "
+    "arguments, $arity ), )*"
+)
+EXPECTED_REQUEST_ROWS_PROJECTION = (
+    'pub(crate) const DAP_REQUEST_ROWS: &[DapRequestRow] = &[ $( DapRequestRow { '
+    'row_id: concat!("dap.request.", $command), command: $command, class: '
+    'dap_request_class!($class), availability: '
+    'dap_request_availability!($availability), }, )* ];'
+)
+EXPECTED_SUPPORTED_COMMANDS_PROJECTION = (
+    "pub(crate) const SUPPORTED_COMMANDS: [&str; DAP_REQUEST_ROWS.len()] = "
+    "[$($command),*];"
+)
+EXPECTED_ROUTE_ENUM_PROJECTION = "pub(crate) enum DapRequestRoute { $($variant),* }"
+EXPECTED_ROUTE_LOOKUP_PROJECTION = (
+    "impl DapRequestRoute { "
+    "pub(crate) fn from_command(wire_command: &str) -> Option<Self> { "
+    "match wire_command { $($command => Some(Self::$variant),)* _ => None, } } "
+    "pub(crate) const fn available_in_peer_frontends(&self) -> bool { "
+    "match self { $(Self::$variant => "
+    "dap_request_peer_available!($availability),)* } } }"
+)
+EXPECTED_SMALL_MACROS = {
+    "dap_request_class": (
+        "macro_rules! dap_request_class { (standard) => { "
+        "DapRequestClass::Standard }; (extension) => { "
+        "DapRequestClass::Extension }; }"
+    ),
+    "dap_request_availability": (
+        "macro_rules! dap_request_availability { (all_frontends) => { "
+        "DapRequestAvailability::AllFrontends }; (native_only) => { "
+        "DapRequestAvailability::NativeOnly }; }"
+    ),
+    "dap_request_peer_available": (
+        "macro_rules! dap_request_peer_available { (all_frontends) => { true }; "
+        "(native_only) => { false }; }"
+    ),
+}
+EXPECTED_ARGUMENTS_DISPATCH_ARM = (
+    "($adapter:expr, $handler:ident, $seq:expr, $request_seq:expr, "
+    "$arguments:expr, (arguments)) => { "
+    "$adapter.$handler($seq, $request_seq, $arguments) };"
+)
+EXPECTED_NO_ARGUMENTS_DISPATCH_ARM = (
+    "($adapter:expr, $handler:ident, $seq:expr, $request_seq:expr, "
+    "$arguments:expr, ()) => { $adapter.$handler($seq, $request_seq) };"
+)
 # The unknown-command arm is pinned by exact normalised text rather than by
 # an allow-list of sub-expressions. Allow-listing sub-expressions is
 # position-blind: `_ => self.route_unknown(Self::unknown_command_message(
@@ -81,6 +165,7 @@ EXPECTED_FALLBACK = (
     "command: command.to_string(), body: None, "
     "message: Some(Self::unknown_command_message(command)), },"
 )
+RUST_ATTRIBUTE_RE = re.compile(r"#\s*!?\s*\[")
 
 
 def _normalise_tokens(text: str) -> str:
@@ -288,6 +373,44 @@ def validate_generated_dispatch(text: str, masked: str) -> None:
             f"{missing}; routing must be generated by the reviewed macros"
         )
 
+    # Attributes can change whether a generator, the generated function, or
+    # one of its arms exists for a target/profile. Until rows carry explicit
+    # cfg metadata, the authority is deliberately unconditional. Reject both
+    # attributes within a macro definition and attributes attached directly
+    # to a definition from the preceding item boundary.
+    macro_matches = list(ANY_MACRO_DEFINITION_RE.finditer(masked))
+    for definition in macro_matches:
+        macro_body_open = masked.index("{", definition.end())
+        macro_body_close = _balanced(masked, macro_body_open)
+        previous_item_end = max(
+            masked.rfind("}", 0, definition.start()),
+            masked.rfind(";", 0, definition.start()),
+        )
+        governed = masked[previous_item_end + 1 : macro_body_close + 1]
+        if RUST_ATTRIBUTE_RE.search(governed):
+            name = definition.group("name")
+            raise AuthorityError(
+                f"attributes are not permitted on or inside {name}; request "
+                "rows do not yet represent cfg/profile conditions"
+            )
+        macro_source = _normalise_tokens(text[definition.start() : macro_body_close + 1])
+        name = definition.group("name")
+        expected_macro = EXPECTED_SMALL_MACROS.get(name)
+        if expected_macro is not None and macro_source != expected_macro:
+            raise AuthorityError(f"{name} no longer matches its reviewed typed mapping")
+        if name == "dap_dispatch_call":
+            if (
+                macro_source.count("=>") != 3
+                or EXPECTED_ARGUMENTS_DISPATCH_ARM not in macro_source
+                or EXPECTED_NO_ARGUMENTS_DISPATCH_ARM not in macro_source
+                or macro_source.count("$adapter.$handler(") != 2
+                or "compile_error!" not in macro_source
+            ):
+                raise AuthorityError(
+                    "dap_dispatch_call no longer maps the two reviewed arities "
+                    "directly to the row handler"
+                )
+
     definitions = list(MACRO_DEFINITION_RE.finditer(masked))
     if len(definitions) != 1:
         raise AuthorityError(
@@ -296,6 +419,48 @@ def validate_generated_dispatch(text: str, masked: str) -> None:
         )
     macro_open = masked.index("{", definitions[0].end())
     macro_close = _balanced(masked, macro_open)
+
+    # The inventory and every identity consumer must be projections of the
+    # same row tokens, not merely equal values today. Otherwise a hand-written
+    # constant can restore the split authority while value-based Rust tests
+    # and the extracted inventory remain green.
+    macro_source = _normalise_tokens(text[macro_open + 1 : macro_close])
+    if (
+        EXPECTED_ROUTE_ENUM_PROJECTION not in macro_source
+        or EXPECTED_ROUTE_LOOKUP_PROJECTION not in macro_source
+    ):
+        raise AuthorityError(
+            "DapRequestRoute is not the pinned command/availability projection "
+            "of dap_request_table row tokens"
+        )
+    projections = (
+        (
+            "DAP_REQUEST_ROWS",
+            REQUEST_ROWS_DEFINITION_RE,
+            EXPECTED_REQUEST_ROWS_PROJECTION,
+        ),
+        (
+            "SUPPORTED_COMMANDS",
+            SUPPORTED_COMMANDS_DEFINITION_RE,
+            EXPECTED_SUPPORTED_COMMANDS_PROJECTION,
+        ),
+    )
+    for name, definition_re, expected in projections:
+        occurrences = list(definition_re.finditer(masked))
+        if len(occurrences) != 1:
+            raise AuthorityError(
+                f"found {len(occurrences)} {name} definitions; exactly one generated "
+                "projection may own request identity"
+            )
+        if not macro_open < occurrences[0].start() < macro_close:
+            raise AuthorityError(
+                f"{name} is defined outside dap_request_table; it would be an "
+                "independently editable request authority"
+            )
+        if expected not in macro_source:
+            raise AuthorityError(
+                f"{name} is not the pinned projection of dap_request_table row tokens"
+            )
 
     functions = list(DISPATCH_FN_RE.finditer(masked))
     if len(functions) != 1:
@@ -359,6 +524,13 @@ def validate_generated_dispatch(text: str, masked: str) -> None:
     fallback_start = arms.find("_ =>")
     if fallback_start == -1:
         raise AuthorityError("generated dispatch body has no unknown-command fallback")
+    row_repetition = _normalise_tokens(arms[:fallback_start])
+    if row_repetition != EXPECTED_ROW_REPETITION:
+        raise AuthorityError(
+            "generated request arm does not match the pinned table-to-handler "
+            f"expansion; got {row_repetition[:120]!r}. Request rows must route "
+            "through dap_dispatch_call without attributes or external expansion"
+        )
     fallback = _normalise_tokens(arms[fallback_start:])
     if fallback != EXPECTED_FALLBACK:
         raise AuthorityError(
@@ -401,6 +573,16 @@ def parse_request_table(source: str) -> list[dict[str, str]]:
             "exactly one executable request authority may exist"
         )
 
+    previous_item_end = max(
+        masked.rfind("}", 0, invocations[0].start()),
+        masked.rfind(";", 0, invocations[0].start()),
+    )
+    if RUST_ATTRIBUTE_RE.search(masked[previous_item_end + 1 : invocations[0].start()]):
+        raise AuthorityError(
+            "attributes are not permitted on the dap_request_table invocation; "
+            "request rows do not yet represent cfg/profile conditions"
+        )
+
     validate_generated_dispatch(text, masked)
 
     open_index = invocations[0].end() - 1
@@ -437,6 +619,8 @@ def parse_request_table(source: str) -> list[dict[str, str]]:
                 "row_id": f"dap.request.{match.group('command')}",
                 "command": match.group("command"),
                 "class": match.group("class"),
+                "availability": match.group("availability"),
+                "variant": match.group("variant"),
                 "handler": match.group("handler"),
             }
         )
@@ -454,12 +638,148 @@ def parse_request_table(source: str) -> list[dict[str, str]]:
     handlers = [row["handler"] for row in rows]
     if len(set(handlers)) != len(handlers):
         raise AuthorityError("two request rows route to the same handler")
+    variants = [row["variant"] for row in rows]
+    if len(set(variants)) != len(variants):
+        raise AuthorityError("the executable request table contains duplicate route variants")
     for row in rows:
         if row["class"] not in REQUEST_CLASSES:
             raise AuthorityError(
                 f"request row {row['command']!r} has unknown class {row['class']!r}"
             )
     return rows
+
+
+def parse_peer_dispatch_routes(source: str, owner: Path) -> set[str]:
+    """Return the catalog variants explicitly handled by one peer frontend."""
+    text, masked = scan_rust_source(source)
+    functions = list(PEER_DISPATCH_FN_RE.finditer(masked))
+    if len(functions) != 1:
+        raise AuthorityError(
+            f"found {len(functions)} production dispatch functions in {owner}; expected one"
+        )
+    params_open = masked.index("(", functions[0].end() - 1)
+    params_close = _balanced(masked, params_open, "(", ")")
+    body_open = masked.index("{", params_close)
+    body_close = _balanced(masked, body_open)
+    body = text[body_open + 1 : body_close]
+    body_masked = masked[body_open + 1 : body_close]
+    previous_item_end = max(
+        masked.rfind("}", 0, functions[0].start()),
+        masked.rfind(";", 0, functions[0].start()),
+    )
+    if RUST_ATTRIBUTE_RE.search(masked[previous_item_end + 1 : functions[0].start()]):
+        raise AuthorityError(
+            f"attributes are not permitted on the production dispatch function in {owner}"
+        )
+    lookup = PEER_ROUTE_MATCH_RE.search(body_masked)
+    if lookup is None:
+        raise AuthorityError(
+            f"{owner} does not route through the canonical DapRequestRoute lookup"
+        )
+    match_open = body_masked.index("{", lookup.end())
+    match_close = _balanced(body_masked, match_open)
+    if _normalise_tokens(body[: lookup.start()]) != "let mut out = Vec::new();":
+        raise AuthorityError(
+            f"{owner} contains routing-capable syntax before the canonical request match"
+        )
+    if _normalise_tokens(body[match_close + 1 :]) != (
+        "out.extend(self.poll_events()); out"
+    ):
+        raise AuthorityError(
+            f"{owner} contains routing-capable syntax after the canonical request match"
+        )
+    arms_text = body[match_open + 1 : match_close]
+    arms_masked = body_masked[match_open + 1 : match_close]
+    stray = STRAY_MATCH_ARM_RE.search(body_masked)
+    if stray is not None:
+        raise AuthorityError(
+            f"{owner} contains a string-literal request arm outside the canonical catalog"
+        )
+    # Read only top-level match patterns. A variant mentioned harmlessly in an
+    # arm body must not compensate for deleting its executable route.
+    patterns: list[str] = []
+    boundary = 0
+    braces = parentheses = brackets = 0
+    index = 0
+    while index < len(arms_masked):
+        char = arms_masked[index]
+        if char == "{":
+            braces += 1
+        elif char == "}":
+            braces -= 1
+            # A block-valued match arm may omit its trailing comma. Once its
+            # outer block closes, the next top-level token starts a new arm.
+            if braces == parentheses == brackets == 0:
+                boundary = index + 1
+        elif char == "(":
+            parentheses += 1
+        elif char == ")":
+            parentheses -= 1
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets -= 1
+        elif (
+            char == "="
+            and index + 1 < len(arms_masked)
+            and arms_masked[index + 1] == ">"
+            and braces == parentheses == brackets == 0
+        ):
+            patterns.append(_normalise_tokens(arms_text[boundary:index]))
+            index += 1
+        elif char == "," and braces == parentheses == brackets == 0:
+            boundary = index + 1
+        index += 1
+    if not patterns or patterns[-1] != "None | Some(_)":
+        raise AuthorityError(
+            f"{owner} has no explicit final compatibility fallback arm; "
+            f"top-level patterns={patterns}"
+        )
+    fallback_match = re.search(r"None\s*\|\s*Some\s*\(\s*_\s*\)\s*=>\s*\{", arms_masked)
+    if fallback_match is None:
+        raise AuthorityError(f"{owner} has no parseable compatibility fallback body")
+    fallback_open = fallback_match.end() - 1
+    fallback_close = _balanced(arms_masked, fallback_open)
+    fallback_body = _normalise_tokens(arms_text[fallback_open + 1 : fallback_close])
+    expected_fallback = EXPECTED_PEER_FALLBACKS.get(owner)
+    if expected_fallback is None or fallback_body != expected_fallback:
+        raise AuthorityError(
+            f"{owner} compatibility fallback no longer matches its explicit "
+            "dynamic_compatibility_ack_success_empty policy"
+        )
+    variants: list[str] = []
+    for pattern in patterns[:-1]:
+        exact = re.fullmatch(
+            r"Some\s*\(\s*DapRequestRoute::(?P<variant>[A-Z][A-Za-z0-9]*)\s*\)",
+            pattern,
+        )
+        if exact is None:
+            raise AuthorityError(
+                f"{owner} request pattern {pattern!r} is guarded, conditional, "
+                "or broader than one typed catalog variant"
+            )
+        variants.append(exact.group("variant"))
+    if len(set(variants)) != len(variants):
+        raise AuthorityError(f"{owner} handles a catalog route variant more than once")
+    return set(variants)
+
+
+def production_dispatch_sources(root: Path) -> set[Path]:
+    """Discover convention-named dispatch owners alongside the exact pinned owners.
+
+    This is a guard for the current source graph, not proof that an arbitrarily
+    named future ingress is discoverable. Adding a differently named frontend
+    requires extending the explicit owner contract.
+    """
+    source_root = root / "crates/perl-dap/src"
+    owners: set[Path] = set()
+    if not source_root.is_dir():
+        raise AuthorityError(f"missing perl-dap production source root: {source_root}")
+    for path in source_root.rglob("*.rs"):
+        _, masked = scan_rust_source(read_text(path, "DAP production source"))
+        if PRODUCTION_DISPATCH_FN_RE.search(masked):
+            owners.add(path.relative_to(root))
+    return owners
 SEND_EVENT_CALL_RE = re.compile(r"\bself\.send_event\s*\(")
 SEND_EVENT_LITERAL_RE = re.compile(r'\s*"([A-Za-z][A-Za-z0-9]*)"')
 DEFINITION_REF_PREFIX = "#/definitions/"
