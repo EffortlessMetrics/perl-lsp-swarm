@@ -49,7 +49,6 @@ fn if_block_lowers_to_one_branch_node_with_void_context() {
     );
 }
 
-
 #[test]
 fn unless_block_lowers_to_one_branch_node() {
     // `unless ($x) { 1 }` lowers to BranchShell (same HIR variant as `if`).
