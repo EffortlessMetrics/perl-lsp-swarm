@@ -41,10 +41,32 @@ fn evaluate_run_block() -> Result<String> {
         .ok_or_else(|| anyhow!("ripr gate Evaluate routed result run block is missing"))
 }
 
+#[derive(Clone, Copy)]
+struct GateRoute<'a> {
+    router_target: &'a str,
+    cx53_result: &'a str,
+    cx43_result: &'a str,
+    github_result: &'a str,
+    fallback_result: &'a str,
+}
+
+impl<'a> GateRoute<'a> {
+    fn github_failure() -> Self {
+        Self {
+            router_target: "github",
+            cx53_result: "skipped",
+            cx43_result: "skipped",
+            github_result: "failure",
+            fallback_result: "skipped",
+        }
+    }
+}
+
 fn run_gate_with_fake_gh(
     log: Option<&str>,
     lookup_failures: u32,
     fetch_failures: u32,
+    route: GateRoute<'_>,
 ) -> Result<(std::process::Output, String, Option<String>)> {
     let root = project_root()?;
     let sandbox = tempfile::tempdir().context("creating gate workflow sandbox")?;
@@ -77,7 +99,10 @@ gh() {
       local count=0
       if [ -f "$FAKE_FETCH_CALLS" ]; then count=$(cat "$FAKE_FETCH_CALLS"); fi
       printf '%s' "$((count + 1))" > "$FAKE_FETCH_CALLS"
-      if [ "$count" -lt "$FAKE_FETCH_FAILURES" ] || [ "$FAKE_FETCH" = "fail" ]; then return 1; fi
+      if [ "$count" -lt "$FAKE_FETCH_FAILURES" ] || [ "$FAKE_FETCH" = "fail" ]; then
+        printf '%s' "$FAKE_PARTIAL_LOG"
+        return 1
+      fi
       printf '%s' "$FAKE_LOG"
       return
       ;;
@@ -90,12 +115,12 @@ gh() {
         .args(["--noprofile", "--norc", "-s"])
         .current_dir(sandbox.path())
         .env("ROUTE_RESULT", "success")
-        .env("ROUTER_TARGET", "github")
+        .env("ROUTER_TARGET", route.router_target)
         .env("ROUTER_REASON", "test")
-        .env("CX53_RESULT", "skipped")
-        .env("CX43_RESULT", "skipped")
-        .env("GITHUB_RESULT", "failure")
-        .env("FALLBACK_RESULT", "skipped")
+        .env("CX53_RESULT", route.cx53_result)
+        .env("CX43_RESULT", route.cx43_result)
+        .env("GITHUB_RESULT", route.github_result)
+        .env("FALLBACK_RESULT", route.fallback_result)
         .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
         .env("GITHUB_RUN_ID", "4242")
         .env("GITHUB_SHA", "0123456789abcdef0123456789abcdef01234567")
@@ -104,6 +129,7 @@ gh() {
         .env("FAKE_LOOKUP_FAILURES", lookup_failures.to_string())
         .env("FAKE_FETCH_FAILURES", fetch_failures.to_string())
         .env("FAKE_LOG", log.unwrap_or(""))
+        .env("FAKE_PARTIAL_LOG", "##[error]The runner has received a shutdown signal.\n")
         .env("FAKE_LOOKUP_CALLS", &lookup_calls)
         .env("FAKE_FETCH_CALLS", &fetch_calls)
         .stdin(Stdio::piped())
@@ -588,7 +614,8 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         "##[error]The runner has received a shutdown signal.\n",
         "##[error]The operation was canceled.\n"
     );
-    let (success, success_output, classification) = run_gate_with_fake_gh(Some(evicted_log), 0, 0)?;
+    let (success, success_output, classification) =
+        run_gate_with_fake_gh(Some(evicted_log), 0, 0, GateRoute::github_failure())?;
     if success.status.success() {
         bail!("a classified lane failure must keep the gate red");
     }
@@ -614,7 +641,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         "##[error]The runner has received a shutdown signal.\n"
     );
     let (genuine, genuine_output, genuine_classification) =
-        run_gate_with_fake_gh(Some(genuine_failure_log), 0, 0)?;
+        run_gate_with_fake_gh(Some(genuine_failure_log), 0, 0, GateRoute::github_failure())?;
     if genuine.status.success()
         || !genuine_output.contains("classification=ripr-failure")
         || !genuine_output.contains("RIPR_GATE_VERDICT=ripr-failure")
@@ -629,13 +656,15 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
 
-    let (failed, failed_output, no_classification) = run_gate_with_fake_gh(None, 0, 0)?;
+    let (failed, failed_output, no_classification) =
+        run_gate_with_fake_gh(None, 0, 0, GateRoute::github_failure())?;
     if failed.status.success() {
         bail!("an unretrievable lane log must keep the gate red");
     }
     if !failed_output.contains("classification=ripr-failure")
         || !failed_output.contains("was not retrievable after 5 attempts")
         || !failed_output.contains("RIPR_GATE_VERDICT=ripr-failure")
+        || failed_output.contains("verdict=infra-no-proof")
     {
         bail!(
             "failed retrieval must emit an explicit fail-closed classification and warning:\n{failed_output}"
@@ -649,7 +678,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     }
 
     let (retried, retried_output, retried_classification) =
-        run_gate_with_fake_gh(Some(evicted_log), 1, 1)?;
+        run_gate_with_fake_gh(Some(evicted_log), 1, 1, GateRoute::github_failure())?;
     if retried.status.success()
         || !retried_output.contains("classification=infra-no-proof")
         || !retried_output.contains("lookup=Some(\"2\")\nfetch=Some(\"2\")")
@@ -663,6 +692,63 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         .contains("classification=infra-no-proof")
     {
         bail!("retried successful evidence must produce an infra classification artifact");
+    }
+
+    for (route_name, route) in [
+        (
+            "cx53",
+            GateRoute {
+                router_target: "cx53",
+                cx53_result: "failure",
+                cx43_result: "skipped",
+                github_result: "skipped",
+                fallback_result: "skipped",
+            },
+        ),
+        (
+            "cx43",
+            GateRoute {
+                router_target: "cx43",
+                cx53_result: "skipped",
+                cx43_result: "failure",
+                github_result: "skipped",
+                fallback_result: "skipped",
+            },
+        ),
+    ] {
+        let (self_hosted, output, artifact) =
+            run_gate_with_fake_gh(Some(evicted_log), 0, 0, route)?;
+        let artifact = artifact.ok_or_else(|| anyhow!("{route_name} classification is missing"))?;
+        if self_hosted.status.success()
+            || !output.contains("classification=infra-no-proof")
+            || !output.contains("RIPR_GATE_VERDICT=infra-no-proof")
+            || !output.contains("lookup=Some(\"1\")\nfetch=Some(\"1\")")
+            || !artifact.contains(&format!("lane_name=ripr+ on {}", route_name.to_uppercase()))
+            || !artifact.contains("lane_job_id=98765")
+        {
+            bail!(
+                "{route_name} runner failure must select its job, classify its downloaded log, and publish the retry artifact:\n{output}\n{artifact}"
+            );
+        }
+    }
+
+    let fallback_route = GateRoute {
+        router_target: "cx53",
+        cx53_result: "failure",
+        cx43_result: "skipped",
+        github_result: "skipped",
+        fallback_result: "success",
+    };
+    let (fallback, fallback_output, fallback_artifact) =
+        run_gate_with_fake_gh(None, 0, 0, fallback_route)?;
+    if !fallback.status.success()
+        || !fallback_output.contains("CX53 disk preflight failed")
+        || !fallback_output.contains("lookup=Some(\"1\")\nfetch=Some(\"5\")")
+        || fallback_artifact.is_some()
+    {
+        bail!(
+            "successful disk-full fallback must preserve primary fail-closed retrieval and then take the fallback route without a retry artifact:\n{fallback_output}"
+        );
     }
 
     Ok(())
