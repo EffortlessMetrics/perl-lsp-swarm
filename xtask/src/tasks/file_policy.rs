@@ -412,6 +412,14 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         bail!("subject workflow removes the trusted exact-tree policy workflow");
     }
     let (_, bytes) = tree_file(root, subject_sha, ".github/workflows/non-rust-policy.yml")?;
+    let contract_version = |text: &str| -> Result<u64> {
+        text.lines()
+            .find_map(|line| line.trim().strip_prefix("# contract-version:"))
+            .map(str::trim)
+            .ok_or_else(|| eyre!("trusted workflow is missing # contract-version metadata"))?
+            .parse::<u64>()
+            .context("trusted workflow contract-version must be an integer")
+    };
     if !base_listing.is_empty() {
         let (_, base_bytes) = tree_file(root, base_sha, ".github/workflows/non-rust-policy.yml")?;
         if base_bytes != bytes {
@@ -421,6 +429,19 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         }
     }
     let text = String::from_utf8(bytes).context("subject workflow is not UTF-8")?;
+    if !base_listing.is_empty() {
+        let (_, base_bytes) = tree_file(root, base_sha, ".github/workflows/non-rust-policy.yml")?;
+        let base_text = String::from_utf8(base_bytes).context("base workflow is not UTF-8")?;
+        let base_version = contract_version(&base_text)?;
+        let subject_version = contract_version(&text)?;
+        if subject_version != base_version.saturating_add(1) {
+            bail!(
+                "trusted workflow changes require exactly one contract-version increment (base {base_version}, subject {subject_version})"
+            );
+        }
+    } else {
+        contract_version(&text)?;
+    }
     for required in [
         "pull_request_target:",
         "merge_group:",

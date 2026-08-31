@@ -1,3 +1,4 @@
+# contract-version: 1
 name: Non-Rust policy
 
 on:
