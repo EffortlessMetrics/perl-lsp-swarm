@@ -28,7 +28,7 @@
 //! is a defensive fallback for callers outside a real plan (e.g. ad hoc
 //! testing); every production call path has a captured OID to pass.
 
-use color_eyre::eyre::{Context, ContextCompat, Result, bail};
+use color_eyre::eyre::{Context, ContextCompat, Result, bail, eyre};
 use std::path::Path;
 use std::process::Command;
 
@@ -85,9 +85,11 @@ fn run_git_ok(root: &Path, args: &[&str]) -> Result<String> {
 ///   membership the same way (a `:<path>` spec has no ref component that
 ///   could be malformed).
 ///
-/// Entries are matched by exact path string, never by git's pathspec
-/// pattern semantics, so a query for `weird*name.rs` cannot be answered by
-/// an unrelated `weirdXname.rs` (and vice versa). A path recorded with a
+/// Entries are matched by exact path string under `--literal-pathspecs`,
+/// never by git's pathspec pattern semantics, so a query for `weird*name.rs`
+/// cannot be answered by an unrelated `weirdXname.rs` (and vice versa), and
+/// a path that begins with `:` (pathspec-magic syntax) is matched literally.
+/// A path recorded with a
 /// type-change mode (e.g. `120000` symlink) is present like any other
 /// entry — callers own mode policy (see [`list_staged_entries`]).
 fn staged_path_exists_in(root: &Path, tree_oid: Option<&str>, path: &str) -> Result<bool> {
@@ -101,13 +103,16 @@ fn staged_path_exists_in(root: &Path, tree_oid: Option<&str>, path: &str) -> Res
             if kind.trim() != "tree" {
                 bail!("staged snapshot `{oid}` is a {}, not a tree", kind.trim());
             }
-            let raw = run_git_ok(root, &["ls-tree", "-z", "--", oid, path])?;
-            Ok(parse_ls_tree_paths(&raw).iter().any(|entry| entry == path))
+            // `--literal-pathspecs` must precede the subcommand: a tracked
+            // filename may legally begin with `:` (pathspec-magic syntax),
+            // and the query is an exact path, never a pattern.
+            let raw = run_git_ok(root, &["--literal-pathspecs", "ls-tree", "-z", "--", oid, path])?;
+            Ok(parse_ls_tree_paths(&raw)?.iter().any(|entry| entry == path))
         }
         None => {
             let output = Command::new("git")
                 .current_dir(root)
-                .args(["ls-files", "-z", "--", path])
+                .args(["--literal-pathspecs", "ls-files", "-z", "--", path])
                 .output()
                 .with_context(|| format!("failed to check whether {path} is staged"))?;
             if !output.status.success() {
@@ -124,10 +129,28 @@ fn staged_path_exists_in(root: &Path, tree_oid: Option<&str>, path: &str) -> Res
 /// Repo-relative paths from `git ls-tree -z` output (records of the form
 /// `<mode> SP <type> SP <oid> TAB <path> NUL`; paths needing quotes in
 /// non-`-z` output are emitted raw under `-z`).
-fn parse_ls_tree_paths(raw: &str) -> Vec<String> {
+///
+/// Every nonempty record must carry the documented shape. A record without
+/// the TAB separator, or with incomplete `<mode> SP <type> SP <oid>`
+/// metadata, is an instrument failure (`Err`) — never a silently skipped
+/// entry — so output drift cannot turn a staged path into a clean absence.
+fn parse_ls_tree_paths(raw: &str) -> Result<Vec<String>> {
     raw.split('\0')
         .filter(|record| !record.is_empty())
-        .filter_map(|record| record.split_once('\t').map(|(_, path)| path.to_string()))
+        .map(|record| {
+            let (metadata, path) = record.split_once('\t').ok_or_else(|| {
+                eyre!("malformed `git ls-tree` record without a TAB separator: {record:?}")
+            })?;
+            let metadata: Vec<&str> = metadata.split(' ').collect();
+            let [mode, kind, oid] = metadata.as_slice() else {
+                bail!("malformed `git ls-tree` record metadata {metadata:?}: {record:?}");
+            };
+            let mode_is_octal = mode.len() == 6 && mode.bytes().all(|byte| byte.is_ascii_digit());
+            if !mode_is_octal || kind.is_empty() || oid.is_empty() {
+                bail!("malformed `git ls-tree` record metadata {metadata:?}: {record:?}");
+            }
+            Ok(path.to_string())
+        })
         .collect()
 }
 
@@ -544,6 +567,63 @@ mod tests {
             Ok(())
         }
 
+        /// Record `content` as a blob at `rel_path` inside a freshly minted
+        /// TREE object (`git hash-object -w` + `git mktree`) and return the
+        /// tree OID. Unlike [`Self::stage_blob_at`] this bypasses the index
+        /// entirely: git's index plumbing refuses `:`-prefixed paths, but
+        /// trees carrying them exist in the wild (fast-import, foreign
+        /// tooling), and membership queries against such a pinned snapshot
+        /// must still be answered literally.
+        fn pin_blob_at(&self, mode: &str, content: &str, rel_path: &str) -> Result<String> {
+            use std::io::Write;
+            use std::process::Stdio;
+
+            let mut child = Command::new("git")
+                .current_dir(self.root())
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .context("failed to spawn `git hash-object -w --stdin`")?;
+            child
+                .stdin
+                .take()
+                .context("git hash-object stdin was not piped")?
+                .write_all(content.as_bytes())
+                .context("failed to write blob content to git hash-object")?;
+            let output = child.wait_with_output().context("failed to wait for git hash-object")?;
+            if !output.status.success() {
+                bail!("git hash-object failed: {}", String::from_utf8_lossy(&output.stderr));
+            }
+            let blob = String::from_utf8(output.stdout)
+                .context("git hash-object output was not UTF-8")?
+                .trim()
+                .to_string();
+            let record = format!("{mode} blob {blob}\t{rel_path}\n");
+            let mut child = Command::new("git")
+                .current_dir(self.root())
+                .args(["mktree"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .context("failed to spawn `git mktree`")?;
+            child
+                .stdin
+                .take()
+                .context("git mktree stdin was not piped")?
+                .write_all(record.as_bytes())
+                .context("failed to write the record to git mktree")?;
+            let output = child.wait_with_output().context("failed to wait for git mktree")?;
+            if !output.status.success() {
+                bail!("git mktree failed: {}", String::from_utf8_lossy(&output.stderr));
+            }
+            let tree = String::from_utf8(output.stdout)
+                .context("git mktree output was not UTF-8")?
+                .trim()
+                .to_string();
+            Ok(tree)
+        }
+
         /// A repo initialized with an explicit object format (`"sha1"` or
         /// `"sha256"`) — for proving item 7 (the empty-tree OID must be
         /// derived for the repo's actual hash algorithm, not hardcoded to
@@ -645,12 +725,11 @@ mod tests {
         // The other half of item 6's distinction: a MALFORMED ref (not a
         // legitimate absence) must still surface as a real `Err`, so
         // read_staged_path_text can't be "fixed" for the Absent case by
-        // just swallowing every git failure. `git cat-file -e` reports a
-        // different, non-"does not exist" stderr shape for a syntactically
-        // invalid object name than it does for a valid-but-missing path
-        // (verified directly against the installed git before writing this
-        // assertion) — that's the signal spec_exists uses to tell the two
-        // apart.
+        // just swallowing every git failure. `git cat-file -t` on a
+        // syntactically invalid object name exits nonzero and lands in
+        // run_git_ok's `Err` branch, while a valid tree plus a never-staged
+        // path exits 0 with empty membership output — exit structure, not
+        // stderr prose, is what tells the two apart.
         let repo = TempRepo::init()?;
         repo.write("foo.rs", "fn main() {}\n")?;
         repo.add("foo.rs")?;
@@ -1008,6 +1087,70 @@ mod tests {
             ),
         }
         Ok(())
+    }
+
+    /// A query that begins with `:` is an exact path, never git pathspec
+    /// magic. The live index cannot legitimately hold such a path (git's
+    /// index plumbing refuses it), and the magic-stripped query must not be
+    /// answered by the differently named `literal.yaml` either. A pinned
+    /// tree CAN hold one (`git mktree`, fast-import, foreign tooling), and
+    /// membership must be answered literally — before `--literal-pathspecs`,
+    /// `git ls-tree` parsed `:(literal)` as magic and silently reported
+    /// Absent for a snapshot that contained the entry.
+    #[test]
+    fn colon_prefixed_staged_paths_are_answered_literally() -> Result<()> {
+        let repo = TempRepo::init()?;
+
+        repo.write("literal.yaml", "plain\n")?;
+        repo.add("literal.yaml")?;
+        match read_staged_path_text(repo.root(), ":literal.yaml", None)? {
+            StagedPathText::Absent => {}
+            other => bail!(
+                "a `:`-prefixed query must not be answered by the differently named \
+                 `literal.yaml`: got {other:?}"
+            ),
+        }
+
+        let tree = repo.pin_blob_at("100644", "payload\n", ":(literal)bad.yaml")?;
+        match read_staged_path_text(repo.root(), ":(literal)bad.yaml", Some(&tree))? {
+            StagedPathText::Present(text) => assert_eq!(text, "payload\n"),
+            other => bail!("a pinned `:(literal)bad.yaml` must be found literally, got {other:?}"),
+        }
+
+        let plain_tree = repo.pin_blob_at("100644", "plain\n", "literal.yaml")?;
+        match read_staged_path_text(repo.root(), ":literal.yaml", Some(&plain_tree))? {
+            StagedPathText::Absent => {}
+            other => bail!(
+                "a `:`-prefixed query must not match the plain `literal.yaml` entry: got {other:?}"
+            ),
+        }
+        Ok(())
+    }
+
+    /// A nonempty `ls-tree` record without the documented shape is an
+    /// instrument failure, never a silently discarded entry: output drift
+    /// must not be able to turn a staged path into a clean absence.
+    #[test]
+    fn malformed_ls_tree_records_are_instrument_failures_not_absence() {
+        assert!(parse_ls_tree_paths("").unwrap().is_empty());
+        let well_formed = "100644 blob 4f1c3f0d4bc31cf1a5e4d13d314a4a1c31d0225d\tok.rs\0";
+        assert_eq!(parse_ls_tree_paths(well_formed).unwrap(), vec!["ok.rs"]);
+
+        for malformed in [
+            // No TAB separator at all.
+            "100644 blob 4f1c3f0d4bc31cf1a5e4d13d314a4a1c31d0225d",
+            // Incomplete metadata: missing OID / type+OID fields.
+            "100644 blob\tpath.rs",
+            "100644\tpath.rs",
+            // Non-octal or short mode.
+            "10x644 blob 4f1c3f0d4bc31cf1a5e4d13d314a4a1c31d0225d\tpath.rs",
+            "10064 blob 4f1c3f0d4bc31cf1a5e4d13d314a4a1c31d0225d\tpath.rs",
+        ] {
+            assert!(
+                parse_ls_tree_paths(malformed).is_err(),
+                "malformed record {malformed:?} must be rejected, not skipped"
+            );
+        }
     }
 
     /// A type-changed (symlink) entry is PRESENT for content reads — its
