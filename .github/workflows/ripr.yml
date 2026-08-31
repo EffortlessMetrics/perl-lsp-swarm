@@ -1183,10 +1183,12 @@ jobs:
           lane_job_id=""
           if [ -n "$lane_name" ] && [ "$lane_result" != "success" ]; then
             # The Actions jobs listing can briefly lag the lane result.
-            # Keep this lookup bounded rather than silently skipping it.
+            # Keep this lookup bounded rather than silently skipping it. The
+            # per-request timeout is separate from the retry/backoff bound so
+            # a stalled GitHub API cannot consume the aggregator's budget.
             for attempt in 1 2 3 4 5; do
-            lane_job_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
-              --jq ".jobs[] | select(.name == \"${lane_name}\") | .id" | head -1 || true)
+              lane_job_id=$(timeout --signal=TERM --kill-after=5s 30s gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+                --jq ".jobs[] | select(.name == \"${lane_name}\") | .id" | head -1 || true)
               if [ -n "$lane_job_id" ]; then
                 break
               fi
@@ -1211,15 +1213,15 @@ jobs:
               lane_log=$(mktemp)
               fetched=false
               for attempt in 1 2 3 4 5; do
-                if gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
+                if timeout --signal=TERM --kill-after=5s 30s gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
                   fetched=true
                   clf_out=$(bash scripts/ci/classify-ripr-lane-termination "$lane_log") || clf_out=""
                   printf '%s\n' "$clf_out"
                   clf_class=$(printf '%s\n' "$clf_out" | sed -n 's/^classification=//p' | head -1)
                   if [ "${clf_class:-}" = "infra-no-proof" ]; then
                     lane_class="infra-no-proof"
+                  fi
                 fi
-              fi
                 if [ "$fetched" = "true" ]; then
                   break
                 fi

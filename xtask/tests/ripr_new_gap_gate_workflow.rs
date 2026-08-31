@@ -145,6 +145,11 @@ fn gate_lane_identity(route: GateRoute<'_>) -> (&'static str, &'static str) {
     }
 }
 
+fn fallback_quality_gate_command(check: bool) -> String {
+    let command = "cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base origin/main --ripr-head HEAD --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md";
+    if check { format!("{command} --check") } else { command.to_owned() }
+}
+
 fn run_gate_with_fake_gh(
     log: Option<&str>,
     lookup_failures: u32,
@@ -192,6 +197,7 @@ fn run_gate_with_fake_gh_logs(
     let lookup_calls = sandbox.path().join("job-lookup-calls");
     let fetch_calls = sandbox.path().join("log-fetch-calls");
     let fetch_urls = sandbox.path().join("log-fetch-urls");
+    let timeout_calls = sandbox.path().join("gh-timeout-calls");
     let jobs_response = sandbox.path().join("jobs.json");
     let classification = sandbox.path().join("ripr-gate-classification.env");
     require_real_jq()?;
@@ -214,6 +220,14 @@ fn run_gate_with_fake_gh_logs(
     let (job_name, job_id) = gate_lane_identity(route);
     let fake = r#"
 sleep() { :; }
+timeout() {
+  printf 'timeout %s\n' "$*" >> "$FAKE_TIMEOUT_CALLS"
+  [ "$1" = "--signal=TERM" ] || return 125
+  [ "$2" = "--kill-after=5s" ] || return 125
+  [ "$3" = "30s" ] || return 125
+  shift 3
+  "$@"
+}
 gh() {
   [ "$1" = "api" ] || return 1
   [ -n "${GH_TOKEN:-}" ] || return 1
@@ -303,6 +317,7 @@ gh() {
         .env("FAKE_LOOKUP_CALLS", &lookup_calls)
         .env("FAKE_FETCH_CALLS", &fetch_calls)
         .env("FAKE_FETCH_URLS", &fetch_urls)
+        .env("FAKE_TIMEOUT_CALLS", &timeout_calls)
         .env("FAKE_JOBS_RESPONSE", &jobs_response)
         .env("FAKE_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
         .env("FAKE_RUN_ID", "4242")
@@ -339,6 +354,11 @@ gh() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error).context("reading fake log fetch URLs"),
     };
+    let timeout_text = match fs::read_to_string(&timeout_calls) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("reading fake gh timeout calls"),
+    };
     let classification_text = match fs::read_to_string(&classification) {
         Ok(text) => Some(text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -347,7 +367,7 @@ gh() {
     Ok((
         output,
         format!(
-            "{combined}\nlookup={lookup_text:?}\nfetch={fetch_text:?}\nfetch_urls={fetch_urls_text:?}"
+            "{combined}\nlookup={lookup_text:?}\nfetch={fetch_text:?}\nfetch_urls={fetch_urls_text:?}\ntimeouts={timeout_text:?}"
         ),
         classification_text,
     ))
@@ -646,6 +666,7 @@ fn run_fallback_path(quality_gate_fails: bool) -> Result<(std::process::Output, 
     let checkout_marker = sandbox.path().join("checkout-marker");
     let github_env = sandbox.path().join("github-env");
     let summary = sandbox.path().join("summary.md");
+    let quality_receipt = sandbox.path().join("target/receipts/quality/quality-gate-ripr.json");
     let annotation = workflow_run_block("ripr-fallback", "Annotate failover reason")?
         .replace("${{ needs.route-ripr.outputs.target }}", "cx53");
     let normalize = workflow_run_block("ripr-fallback", "Normalize base ref")?;
@@ -680,22 +701,39 @@ git() {
   [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ] || return 1
   printf '%s\n' "$FAKE_HEAD"
 }
-cargo() {
-  printf 'cargo %s\n' "$*" >> "$FAKE_CALLS"
-  [ "$1" = "xtask" ] || return 0
-  case "$2" in
-    ripr-pr)
-      mkdir -p target/ripr/pr
-      printf '{"kind":"ripr-pr"}\n' > target/ripr/pr/repo-exposure.json
-      ;;
-    ripr-plus)
-      mkdir -p target/receipts/quality
-      printf '{"kind":"ripr-plus"}\n' > target/receipts/quality/ripr-plus.json
-      ;;
-    ripr-review-comments)
-      mkdir -p target/ripr/review
-      printf '{"kind":"review"}\n' > target/ripr/review/comments.json
-      ;;
+    cargo() {
+      printf 'cargo %s\n' "$*" >> "$FAKE_CALLS"
+      [ "$1" = "xtask" ] || return 0
+      case "$2" in
+        ripr-pr)
+          [ "$#" -eq 8 ] || [ "$#" -eq 9 ] || return 1
+          [ "$3" = "--base" ] && [ "$4" = "origin/main" ] || return 1
+          [ "$5" = "--head" ] && [ "$6" = "HEAD" ] || return 1
+          [ "$7" = "--pr-head" ] && [ "$8" = "$FAKE_PR_HEAD_SHA" ] || return 1
+          if [ "$#" -eq 9 ]; then [ "$9" = "--check" ] || return 1; fi
+          mkdir -p target/ripr/pr
+          printf '{"kind":"ripr-pr"}\n' > target/ripr/pr/repo-exposure.json
+          ;;
+        ripr-plus)
+          [ "$3" = "--receipt" ] && [ "$4" = "target/receipts/quality/ripr-plus.json" ] || return 1
+          if [ "$#" -eq 5 ]; then [ "$5" = "--check" ] || return 1; elif [ "$#" -ne 4 ]; then return 1; fi
+          mkdir -p target/receipts/quality
+          printf '{"kind":"ripr-plus"}\n' > target/receipts/quality/ripr-plus.json
+          ;;
+        ripr-review-comments)
+          [ "$3" = "--base" ] && [ "$4" = "origin/main" ] || return 1
+          [ "$5" = "--head" ] && [ "$6" = "HEAD" ] || return 1
+          [ "$7" = "--pr-head" ] && [ "$8" = "$FAKE_PR_HEAD_SHA" ] || return 1
+          if [ "$#" -eq 10 ]; then
+            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "600" ] || return 1
+          elif [ "$#" -eq 9 ]; then
+            [ "$9" = "--check" ] || return 1
+          else
+            return 1
+          fi
+          mkdir -p target/ripr/review
+          printf '{"kind":"review"}\n' > target/ripr/review/comments.json
+          ;;
     impacted-evidence)
       mkdir -p target/xtask/impacted-evidence
       printf '{"kind":"impacted"}\n' > target/xtask/impacted-evidence/receipt.json
@@ -708,10 +746,19 @@ cargo() {
       mkdir -p target/ripr/review
       printf 'fallback warning annotation\n' > target/ripr/review/annotations.txt
       ;;
-    quality-gate)
-      if [ "${FAKE_QUALITY_GATE:-pass}" = "fail" ]; then
-        return 1
-      fi
+        quality-gate)
+          [ "$3" = "--mode" ] && [ "$4" = "enforce-new-ripr" ] || return 1
+          [ "$5" = "--ripr-receipt" ] && [ "$6" = "target/receipts/quality/ripr-plus.json" ] || return 1
+          [ "$7" = "--ripr-pr-receipt" ] && [ "$8" = "target/ripr/pr/repo-exposure.json" ] || return 1
+          [ "$9" = "--review-receipt" ] && [ "${10}" = "target/ripr/review/comments.json" ] || return 1
+          [ "${11}" = "--ripr-base" ] && [ "${12}" = "origin/main" ] || return 1
+          [ "${13}" = "--ripr-head" ] && [ "${14}" = "HEAD" ] || return 1
+          [ "${15}" = "--receipt" ] && [ "${16}" = "target/receipts/quality/quality-gate-ripr.json" ] || return 1
+          [ "${17}" = "--summary" ] && [ "${18}" = "target/receipts/quality/quality-gate-ripr.md" ] || return 1
+          if [ "$#" -eq 19 ]; then [ "${19}" = "--check" ] || return 1; elif [ "$#" -ne 18 ]; then return 1; fi
+          if [ "${FAKE_QUALITY_GATE:-pass}" = "fail" ]; then
+            return 1
+          fi
       mkdir -p target/receipts/quality
       printf '{"kind":"quality-gate"}\n' > target/receipts/quality/quality-gate-ripr.json
       printf 'fallback quality gate summary\n' > target/receipts/quality/quality-gate-ripr.md
@@ -753,6 +800,7 @@ checkout_action
         )
         .env("FAKE_CHECKOUT_DEPTH", "0")
         .env("FAKE_QUALITY_GATE", if quality_gate_fails { "fail" } else { "pass" })
+        .env("FAKE_PR_HEAD_SHA", "0123456789abcdef0123456789abcdef01234567")
         .env("FAKE_HEAD", "0123456789abcdef0123456789abcdef01234567")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -774,10 +822,15 @@ checkout_action
     let calls_text = fs::read_to_string(&calls)?;
     let summary_text = fs::read_to_string(&summary)?;
     let env_text = fs::read_to_string(&github_env)?;
+    let quality_receipt_text = match fs::read_to_string(&quality_receipt) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("reading fallback quality-gate receipt"),
+    };
     Ok((
         output,
         format!(
-            "{combined}\ncheckout={checkout_text}calls={calls_text}summary={summary_text}env={env_text}"
+            "{combined}\ncheckout={checkout_text}calls={calls_text}summary={summary_text}env={env_text}quality_receipt={quality_receipt_text:?}"
         ),
     ))
 }
@@ -1188,6 +1241,8 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         );
     }
     let (fallback_path, fallback_path_output) = run_fallback_path(false)?;
+    let expected_quality_gate = fallback_quality_gate_command(false);
+    let expected_quality_gate_check = fallback_quality_gate_command(true);
     if !fallback_path.status.success()
         || !fallback_path_output.contains(
             "checkout=uses=actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 fetch-depth=0",
@@ -1195,13 +1250,14 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
         || !fallback_path_output.contains(
             "cargo xtask ripr-pr --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567",
         )
-        || !fallback_path_output.contains(
-            "cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json",
-        )
+        || !fallback_path_output.contains(&expected_quality_gate)
+        || !fallback_path_output.contains(&expected_quality_gate_check)
         || !fallback_path_output.contains("fallback PR evidence summary")
         || !fallback_path_output.contains("fallback quality gate summary")
         || !fallback_path_output.contains("fallback warning annotation")
         || !fallback_path_output.contains("env=BASE_REF=main")
+        || !fallback_path_output.contains("quality_receipt=Some(")
+        || !fallback_path_output.contains("\\\"kind\\\":\\\"quality-gate\\\"")
     {
         bail!(
             "the fallback must execute its checkout boundary, evidence generation, and quality-gate wiring:\n{fallback_path_output}"
@@ -1650,6 +1706,13 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
 
 #[test]
 fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Result<()> {
+    let run = evaluate_run_block()?;
+    let timeout_command = "timeout --signal=TERM --kill-after=5s 30s gh api";
+    if run.matches(timeout_command).count() != 2 {
+        bail!(
+            "both production GitHub API calls must use the bounded timeout command exactly once: {timeout_command}"
+        );
+    }
     let evicted_log = concat!(
         "##[error]The runner has received a shutdown signal.\n",
         "##[error]The operation was canceled.\n"
@@ -1661,9 +1724,10 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     }
     if !success_output.contains("classification=infra-no-proof")
         || !success_output.contains("RIPR_GATE_VERDICT=infra-no-proof")
+        || success_output.matches(timeout_command).count() != 2
     {
         bail!(
-            "successful log retrieval must reach the shared classifier and gate verdict:\n{success_output}"
+            "successful log retrieval must execute both bounded API calls, reach the shared classifier, and emit the gate verdict:\n{success_output}"
         );
     }
     let classification =
@@ -1715,6 +1779,11 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     }
     if !failed_output.contains("lookup=Some(\"1\")\nfetch=Some(\"5\")") {
         bail!("log retrieval retry must be bounded at five attempts:\n{failed_output}");
+    }
+    if failed_output.matches(timeout_command).count() != 6 {
+        bail!(
+            "failed retrieval must execute the bounded lookup once and bounded log fetch five times:\n{failed_output}"
+        );
     }
 
     let (retried, retried_output, retried_classification) =
@@ -1801,7 +1870,10 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
 
     let (fallback_execution, fallback_execution_output) = run_fallback_path(false)?;
     if !fallback_execution.status.success()
-        || !fallback_execution_output.contains("cargo xtask quality-gate")
+        || !fallback_execution_output.contains(&fallback_quality_gate_command(false))
+        || !fallback_execution_output.contains(&fallback_quality_gate_command(true))
+        || !fallback_execution_output.contains("quality_receipt=Some(")
+        || !fallback_execution_output.contains("\\\"kind\\\":\\\"quality-gate\\\"")
     {
         bail!(
             "fallback success result must come from the executed checkout/evidence/quality-gate path:\n{fallback_execution_output}"
@@ -1829,7 +1901,9 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
 
     let (fallback_failure_execution, fallback_failure_execution_output) = run_fallback_path(true)?;
     if fallback_failure_execution.status.success()
-        || !fallback_failure_execution_output.contains("cargo xtask quality-gate")
+        || !fallback_failure_execution_output.contains(&fallback_quality_gate_command(false))
+        || fallback_failure_execution_output.contains("quality_receipt=Some(")
+        || !fallback_failure_execution_output.contains("quality_receipt=None")
     {
         bail!(
             "fallback failure result must come from the executed quality-gate path:\n{fallback_failure_execution_output}"
