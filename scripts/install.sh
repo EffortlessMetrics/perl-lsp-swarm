@@ -1167,7 +1167,7 @@ Try one of:
     if [ "$_disposition" = "archive_pair_required" ]; then
         _incoming_pair=1
     fi
-    ensure_path_visible_selectors 1 "$_incoming_pair" || return
+    ensure_path_visible_selectors 1 "$_incoming_pair" 1 || return
     commit_current_selection "$_id" || return
     ensure_path_visible_selectors || return
 
