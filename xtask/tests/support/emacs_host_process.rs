@@ -855,6 +855,7 @@ fn render_process_snapshot(lines: &[ProcessProbeLine]) -> String {
 #[cfg(test)]
 mod process_tests {
     use super::*;
+    use anyhow::ensure;
 
     #[test]
     fn pre_existing_candidate_lines_are_detectable_in_the_before_probe() {
@@ -903,18 +904,22 @@ mod process_tests {
     }
 
     #[test]
-    fn process_snapshot_write_failure_is_surfaced() {
-        let tmp = tempfile::tempdir().expect("scratch directory");
+    fn process_snapshot_write_failure_is_surfaced() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
         let blocker = tmp.path().join("not-a-directory");
-        fs::write(&blocker, b"file").expect("create blocker file");
+        fs::write(&blocker, b"file")?;
         let dest = blocker.join("snapshot.txt");
-        let error =
-            persist_text(&dest, "1 /tmp/x\n").expect_err("write through a file parent must fail");
-        let rendered = format!("{error:#}");
-        assert!(
-            rendered.contains("writing process snapshot")
-                || rendered.contains("creating process snapshot parent"),
-            "the persist error must name the snapshot write, got {rendered}"
-        );
+        match persist_text(&dest, "1 /tmp/x\n") {
+            Ok(()) => bail!("write through a file parent must fail"),
+            Err(error) => {
+                let rendered = format!("{error:#}");
+                ensure!(
+                    rendered.contains("writing process snapshot")
+                        || rendered.contains("creating process snapshot parent"),
+                    "the persist error must name the snapshot write, got {rendered}"
+                );
+            }
+        }
+        Ok(())
     }
 }
