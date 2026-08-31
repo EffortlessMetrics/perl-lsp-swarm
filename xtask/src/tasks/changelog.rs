@@ -31,6 +31,17 @@
 //!   problems, not policy findings, and are never silently downgraded to a
 //!   passing exit.
 //!
+//! ## Malformed fragments never reach the renderer (issue #13484)
+//!
+//! A fragment that fails schema validation (including a missing, empty, or
+//! non-RFC-3339 `time:` — the #12549/#12648 incident class) is a *policy
+//! finding* naming the fragment. When any added fragment is malformed, the
+//! `changie batch --dry-run` render is skipped with an explicit INFO line: the
+//! renderer would crash on the malformed fragment repo-wide, which would bury
+//! the named findings under an exit-2 instrument failure that names nothing.
+//! "Fragment X is malformed" (above) and "render crashed" (exit 2) therefore
+//! never appear for the same run.
+//!
 //! ## The three-clock cutoff model
 //!
 //! See the comment block in `policy/changelog.toml` for the full rationale.
@@ -171,6 +182,13 @@ impl ChangelogPolicy {
 }
 
 /// A parsed Changie fragment (the fields this check cares about).
+///
+/// `time` is deliberately deserialized as a raw YAML [`Value`], not a `String`:
+/// the #13484 incident class (`product-12549`, `product-12648`) hand-authored
+/// `time:` with an empty value and the HH:MM:SS orphaned as bare YAML, which
+/// must surface as a *named fragment finding* here rather than as a type error
+/// on the whole document (or, worse, as a repo-wide `changie batch` render
+/// crash).
 #[derive(Debug, Deserialize)]
 pub(crate) struct Fragment {
     #[serde(default)]
@@ -181,6 +199,8 @@ pub(crate) struct Fragment {
     kind: String,
     #[serde(default)]
     body: String,
+    #[serde(default)]
+    time: serde_yaml_ng::Value,
     #[serde(default)]
     custom: BTreeMap<String, String>,
 }
@@ -236,7 +256,39 @@ pub(crate) fn validate_fragment(frag: &Fragment, cfg: &ChangieConfig) -> Vec<Str
         findings.push(format!("custom `Breaking` must be `no` or `yes`, got {breaking:?}"));
     }
 
+    validate_time_field(&frag.time, &mut findings);
+
     findings
+}
+
+/// Validate the `time:` field shape (issue #13484).
+///
+/// Changie's renderer unmarshals `time` as a timestamp and crashes repo-wide
+/// when it is missing, empty, or not RFC 3339 — and that crash used to surface
+/// as an instrument failure (exit 2) that named no fragment. Validating the
+/// shape here turns the crash into a finding that names the defect and the
+/// fragment.
+fn validate_time_field(time: &serde_yaml_ng::Value, findings: &mut Vec<String>) {
+    let missing = "missing or empty `time:` field — `changie batch` crashes repo-wide on it; \
+                   use an RFC 3339 timestamp such as `2026-08-30T12:34:56Z`";
+    match time {
+        serde_yaml_ng::Value::Null => findings.push(missing.to_string()),
+        serde_yaml_ng::Value::String(s) if s.trim().is_empty() => {
+            findings.push(missing.to_string());
+        }
+        serde_yaml_ng::Value::String(s) => {
+            if chrono::DateTime::parse_from_rfc3339(s).is_err() {
+                findings.push(format!(
+                    "`time:` value {s:?} is not RFC 3339 — changie's renderer would crash on it; \
+                     expected e.g. `2026-08-30T12:34:56Z`"
+                ));
+            }
+        }
+        other => findings.push(format!(
+            "`time:` must be an RFC 3339 timestamp string, got {other:?} — \
+             an orphaned/bare time line crashes `changie batch` repo-wide"
+        )),
+    }
 }
 
 /// A PR's changelog disposition.
@@ -551,16 +603,20 @@ fn load_policy(root: &Path) -> Result<ChangelogPolicy> {
     toml::from_str(&content).map_err(|e| eyre!("failed to parse {}: {e}", path.display()))
 }
 
-/// Load a fragment from disk and validate it; append findings to `report`.
+/// Read a fragment from disk and validate it; append findings to `report`.
 /// A malformed fragment is a POLICY finding (the author's input is invalid),
 /// not an instrument failure — the checker itself works fine.
-fn check_fragment_file(root: &Path, rel: &str, cfg: &ChangieConfig, report: &mut Report) {
+///
+/// Returns `true` when the fragment is malformed (unreadable, unparseable, or
+/// schema-invalid) so the caller can distinguish "fragment X is malformed"
+/// from "the render instrument crashed" (issue #13484).
+fn check_fragment_file(root: &Path, rel: &str, cfg: &ChangieConfig, report: &mut Report) -> bool {
     let path = root.join(rel);
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
             report.warn(format!("could not read fragment {rel}: {e}"));
-            return;
+            return true;
         }
     };
     match serde_yaml_ng::from_str::<Fragment>(&content) {
@@ -568,13 +624,18 @@ fn check_fragment_file(root: &Path, rel: &str, cfg: &ChangieConfig, report: &mut
             let findings = validate_fragment(&frag, cfg);
             if findings.is_empty() {
                 report.ok(format!("fragment {rel} is schema-valid"));
+                false
             } else {
                 for f in findings {
                     report.warn(format!("{rel}: {f}"));
                 }
+                true
             }
         }
-        Err(e) => report.warn(format!("fragment {rel} does not parse as YAML: {e}")),
+        Err(e) => {
+            report.warn(format!("fragment {rel} does not parse as YAML: {e}"));
+            true
+        }
     }
 }
 
@@ -652,11 +713,30 @@ pub fn check(
     let outcome = match &disposition {
         Disposition::Fragment(frags) => {
             report.ok(format!("disposition: {} Changie fragment(s) added", frags.len()));
+            let mut malformed = Vec::new();
             for rel in frags {
-                check_fragment_file(&root, rel, &cfg, &mut report);
+                if check_fragment_file(&root, rel, &cfg, &mut report) {
+                    malformed.push(rel.clone());
+                }
             }
-            // Render each project that has unreleased fragments.
-            render_disposition_projects(&root, &mut report).map_err(|e| eyre!(e))?;
+            if malformed.is_empty() {
+                // Render each project that has unreleased fragments.
+                render_disposition_projects(&root, &mut report).map_err(|e| eyre!(e))?;
+            } else {
+                // Issue #13484: a malformed fragment crashes `changie batch`
+                // repo-wide. Skipping the render here is what keeps "fragment
+                // X is malformed" (the WARN lines above, a policy verdict) from
+                // being buried under "render crashed" (an exit-2 instrument
+                // failure that names no fragment).
+                report.info(format!(
+                    "skipping `changie batch --dry-run`: {} malformed fragment(s) reported \
+                     above ({}) — the renderer would crash on them. This is a \
+                     fragment-authoring defect, not an instrument failure; repair or recreate \
+                     the fragment(s) with `changie new` (or `cargo change`) and rerun.",
+                    malformed.len(),
+                    malformed.join(", ")
+                ));
+            }
             CheckOutcome::PolicySatisfied
         }
         Disposition::Exemption(reason) => {
@@ -1027,6 +1107,7 @@ project: product
 component: Developer experience
 kind: Added
 body: A sufficiently long changelog body line.
+time: 2026-08-30T00:00:00Z
 custom:
   PR: "3768"
   Breaking: "no"
@@ -1101,6 +1182,90 @@ custom:
         frag.component = "Nonexistent area".to_string();
         let findings = validate_fragment(&frag, &cfg);
         assert!(findings.iter().any(|f| f.contains("unknown component")), "{findings:?}");
+    }
+
+    // --- time: field validation (issue #13484; #12549/#12648 incident class) ---
+
+    /// The exact #12549/#12648 hand-authoring signature: `time:` with an empty
+    /// value and the HH:MM:SS orphaned as bare YAML. This must be a named
+    /// fragment finding, not a whole-document type error or a render crash.
+    #[test]
+    fn empty_or_orphaned_time_is_flagged() {
+        let cfg = test_config();
+        let empty = r#"
+project: product
+component: Developer experience
+kind: Added
+body: A sufficiently long changelog body line.
+time:
+custom:
+  PR: "1"
+  Breaking: "no"
+"#;
+        let frag: Fragment = serde_yaml_ng::from_str(empty).expect("empty time parses");
+        let findings = validate_fragment(&frag, &cfg);
+        assert!(
+            findings.iter().any(|f| f.contains("`time:`") && f.contains("crashes repo-wide")),
+            "empty `time:` must produce a named finding: {findings:?}"
+        );
+
+        let orphaned = r#"
+project: product
+component: Developer experience
+kind: Added
+body: A sufficiently long changelog body line.
+time:
+  13:55:13
+custom:
+  PR: "1"
+  Breaking: "no"
+"#;
+        let frag: Fragment = serde_yaml_ng::from_str(orphaned).expect("orphaned time parses");
+        let findings = validate_fragment(&frag, &cfg);
+        assert!(
+            findings.iter().any(|f| f.contains("`time:`")),
+            "orphaned bare time line must produce a named finding: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn missing_time_field_is_flagged() {
+        let cfg = test_config();
+        let yaml = r#"
+project: product
+component: Developer experience
+kind: Added
+body: A sufficiently long changelog body line.
+custom:
+  PR: "1"
+  Breaking: "no"
+"#;
+        let frag: Fragment = serde_yaml_ng::from_str(yaml).expect("missing time parses");
+        let findings = validate_fragment(&frag, &cfg);
+        assert!(
+            findings.iter().any(|f| f.contains("missing or empty `time:`")),
+            "a fragment without `time:` must be flagged: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn non_rfc3339_time_is_flagged() {
+        let cfg = test_config();
+        let mut frag = good_fragment();
+        frag.time = serde_yaml_ng::Value::String("2026-08-30 13:55:13".to_string());
+        let findings = validate_fragment(&frag, &cfg);
+        assert!(
+            findings.iter().any(|f| f.contains("not RFC 3339")),
+            "a space-separated timestamp must be flagged: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn valid_rfc3339_time_is_accepted() {
+        let cfg = test_config();
+        let mut frag = good_fragment();
+        frag.time = serde_yaml_ng::Value::String("2026-08-30T13:55:13Z".to_string());
+        assert!(validate_fragment(&frag, &cfg).is_empty());
     }
 
     #[test]
@@ -1565,7 +1730,7 @@ changelog = "vscode-extension/CHANGELOG.md"
         std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
         std::fs::write(
             unreleased.join("product-1-Added-101010.yaml"),
-            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ncustom:\n  PR: \"1\"\n",
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n",
         )
         .map_err(|e| e.to_string())?;
         let list = write_changed_files(dir, &[".changes/unreleased/product-1-Added-101010.yaml"])?;
@@ -1578,6 +1743,38 @@ changelog = "vscode-extension/CHANGELOG.md"
             Err(e) => return Err(e.to_string()),
         };
         assert_eq!(outcome, CheckOutcome::PolicySatisfied);
+        Ok(())
+    }
+
+    /// Issue #13484 regression: a hand-authored fragment with an empty `time:`
+    /// (the #12549/#12648 signature) must be a *named policy finding* and a
+    /// policy verdict — never a repo-wide `changie batch` render crash surfacing
+    /// as an exit-2 instrument failure that names no fragment. The render is
+    /// skipped with an explicit INFO line instead, deterministically (regardless
+    /// of whether changie is installed).
+    #[test]
+    fn check_malformed_time_fragment_names_fragment_and_never_crashes_renderer()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-12549-Added-135513.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime:\n  13:55:13\ncustom:\n  PR: \"12549\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[fragment_path])?;
+        let outcome = check(None, Some(list), None, false, Some(dir.to_path_buf()))
+            .map_err(|e| format!("malformed fragment must not be an instrument failure: {e}"))?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "an advisory malformed-fragment finding must stay a policy verdict (exit 0/1), not exit 2"
+        );
         Ok(())
     }
 
