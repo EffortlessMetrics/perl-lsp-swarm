@@ -947,6 +947,22 @@ fn discover_syn_item_list(
                 exports,
                 nested,
             )?;
+        } else if let Some(custom) = module_path_attribute(item_mod) {
+            // `#[path = "..."]` modules live where the attribute says,
+            // relative to the directory containing the declaring file
+            // (Rust reference, module file path resolution).
+            let child_path = source_path.parent().unwrap_or(Path::new(".")).join(&custom);
+            let child_path = if child_path.is_file() {
+                child_path
+            } else {
+                return Err(color_eyre::eyre::eyre!(
+                    "module `{child_module}` declares `#[path = {custom:?}]` in {} but {} does \
+                     not exist",
+                    source_path.display(),
+                    child_path.display()
+                ));
+            };
+            discover_syn_module(&child_path, &child_module, child_public, root_reexports, exports)?;
         } else {
             let child_path = module_file_path(module_dir, &child_name).ok_or_else(|| {
                 color_eyre::eyre::eyre!(
@@ -958,6 +974,25 @@ fn discover_syn_item_list(
         }
     }
     Ok(())
+}
+
+/// The custom file path of an out-of-line module, from `#[path = "..."]`.
+fn module_path_attribute(item_mod: &syn::ItemMod) -> Option<String> {
+    item_mod.attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("path") {
+            return None;
+        }
+        match &attr.meta {
+            syn::Meta::NameValue(name_value) => match &name_value.value {
+                syn::Expr::Lit(expr_lit) => match &expr_lit.lit {
+                    syn::Lit::Str(lit_str) => Some(lit_str.value()),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    })
 }
 
 /// `pub mod <name>;` declarations in `lib.rs`.
@@ -3367,6 +3402,25 @@ impl<T> Wrapper<T> {
             error.contains("expansion") || error.contains("expand"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn syn_walk_resolves_path_attribute_modules() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let src = temp.path().join("src");
+        fs::create_dir_all(src.join("custom"))?;
+        fs::write(src.join("lib.rs"), "#[path = \"custom/renamed.rs\"]\npub mod relocated;\n")?;
+        fs::write(src.join("custom").join("renamed.rs"), "pub fn relocated_fn() {}\n")?;
+        let lib_path = src.join("lib.rs");
+        let source = fs::read_to_string(&lib_path)?;
+        let reexports = syn_root_reexports(&source)?;
+        let mut exports = Vec::new();
+        discover_syn_module(&lib_path, "crate", true, &reexports, &mut exports)?;
+        assert!(
+            exports.iter().any(|e| e.module == "relocated" && e.name == "relocated_fn"),
+            "`#[path]` modules must resolve via their declared file: {exports:?}"
+        );
+        Ok(())
     }
 
     #[test]
