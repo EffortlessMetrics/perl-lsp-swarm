@@ -348,10 +348,17 @@ fn checkpoint_identity_ignores_noop_configuration_variation() -> R {
             }
         }
         let flipped_checkpoint = source.checkpoint();
-        let back_on_default = PerlLexer::with_config(input, LexerConfig::default());
+        let expected_reverse = collect_remaining(&mut source);
+        let mut back_on_default = PerlLexer::with_config(input, LexerConfig::default());
         assert!(
             back_on_default.can_restore(&flipped_checkpoint),
             "default configuration must accept checkpoints captured under the no-op value"
+        );
+        back_on_default.restore(&flipped_checkpoint);
+        let reverse_replayed = collect_remaining(&mut back_on_default);
+        assert_eq!(
+            expected_reverse, reverse_replayed,
+            "reverse checkpoint replay changed under track_positions variation after {prefix_tokens} prefix token(s)"
         );
     }
     Ok(())
@@ -395,7 +402,17 @@ fn simd_selection_sources(
     let mut offenders = Vec::new();
     for path in sources {
         let contents = std::fs::read_to_string(&path)?;
-        if contents.contains("feature = \"simd\"") {
+        if path.file_name().and_then(std::ffi::OsStr::to_str) == Some("build.rs")
+            && contents.contains("OUT_DIR")
+        {
+            return Err(missing(format!(
+                "cannot verify OUT_DIR-generated Rust from build script {}; keep the simd gate closed until generated output is inspectable",
+                path.display()
+            )));
+        }
+        let compact: String =
+            contents.chars().filter(|character| !character.is_whitespace()).collect();
+        if compact.contains("feature=\"simd\"") {
             offenders.push(path);
         }
     }
@@ -423,10 +440,22 @@ fn simd_feature_stays_declared_empty_and_unreferenced() -> R {
     );
 
     let readme = include_str!("../README.md");
-    assert!(
-        readme.contains("Compatibility no-op") && readme.contains("#8749"),
-        "README must keep describing simd as a deprecated compatibility no-op with the removal owner"
-    );
+    let simd_row = readme
+        .lines()
+        .find(|line| line.starts_with("| Cargo feature `simd` |"))
+        .ok_or_else(|| missing("README lost the Cargo feature simd configuration row"))?;
+    for required in [
+        "**Deprecated**",
+        "Compatibility no-op",
+        "no distinct implementation",
+        "No SIMD performance claim is made",
+        "#8749",
+    ] {
+        assert!(
+            simd_row.contains(required),
+            "README simd row lost required deprecation wording: {required}"
+        );
+    }
 
     let package_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let offenders =
@@ -449,6 +478,22 @@ fn simd_gate_detects_selection_in_build_surface_fixture() -> R {
         offenders,
         vec![fixture_root.join("build.rs")],
         "the negative control must detect a simd selection outside src"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_gate_rejects_uninspectable_out_dir_generation_fixture() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_generation");
+    let error = simd_selection_sources(&fixture_root, &[])
+        .err()
+        .ok_or_else(|| missing("OUT_DIR generation fixture unexpectedly passed the simd gate"))?;
+    assert!(
+        error.to_string().contains("OUT_DIR"),
+        "OUT_DIR generation must remain an explicit uninspectable gate failure: {error}"
     );
     Ok(())
 }

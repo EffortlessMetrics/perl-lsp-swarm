@@ -44,13 +44,13 @@ pub struct LexerConfig {
     /// explicitly deprecated. Migration: remove `track_positions` from struct
     /// literals (or route the rest of the literal through
     /// `..LexerConfig::default()`); token kind, payload, text, and spans are
-    /// identical either way. The field itself is removed at the next semver
-    /// boundary by #8749 under the #6715 lexer-API program; removal keeps the
-    /// declared schedule and fails post-removal literals with standard
-    /// diagnostics.
+    /// identical either way. The field is planned for removal at a future
+    /// semver boundary by open issue #8749 under the #6715 lexer-API program.
+    /// This deprecation stage does not remove the field or establish that the
+    /// later boundary has landed.
     #[deprecated(
         since = "0.17.0",
-        note = "no runtime effect: token byte spans are always tracked (POSITIONS_ARE_ALWAYS_TRACKED); remove the field from literals, scheduled removal at the 0.18 boundary (#8749)"
+        note = "no runtime effect: token byte spans are always tracked (POSITIONS_ARE_ALWAYS_TRACKED); remove the field from literals, planned future removal under open issue #8749"
     )]
     pub track_positions: bool,
     /// Maximum zero-based offset admitted by shared cursor lookahead helpers.

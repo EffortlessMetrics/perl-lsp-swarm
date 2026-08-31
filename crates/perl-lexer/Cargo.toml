@@ -39,9 +39,9 @@ default = []
 # Deprecated compatibility no-op (since 0.17.0): the lexer selects no distinct
 # SIMD implementation and no code depends on this feature, so `--features simd`
 # builds are equivalent to the default build. Keeping the empty feature is
-# required so `--all-features` stays meaningful during the deprecation window.
-# Removal is scheduled at the next semver boundary (#8749, program #6715); no
-# SIMD performance claim is made or implied anywhere in this crate.
+# required so `--all-features` stays meaningful while #8229's deprecation window
+# remains open. Removal is planned for a future semver boundary under open issue
+# #8749 and program #6715; no SIMD performance claim is made or implied here.
 simd = []
 # Enable slow stress tests (regex fuzzing, etc.)
 slow_tests = []
