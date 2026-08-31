@@ -3324,4 +3324,119 @@ review_after = "2026-08-13"
             "consistent projection must verify"
         );
     }
+
+    fn commit_fixture(root: &Path, message: &str) -> Result<String> {
+        run_git(root, &["config", "user.email", "fixture@example.invalid"])?;
+        run_git(root, &["config", "user.name", "fixture"])?;
+        run_git(root, &["add", "-A"])?;
+        run_git(root, &["commit", "-qm", message])?;
+        let sha = git_object(root, &["rev-parse", "HEAD"])?;
+        Ok(String::from_utf8(sha)?.trim().to_string())
+    }
+
+    fn exact_fixture() -> Result<(tempfile::TempDir, String)> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(
+            temp.path(),
+            &[
+                ("README.md", "fixture\n"),
+                ("policy/non-rust-allowlist.toml", &readme_allowlist_toml()?),
+            ],
+        )?;
+        let base = commit_fixture(temp.path(), "base")?;
+        Ok((temp, base))
+    }
+
+    #[test]
+    fn exact_tree_rejects_new_unclassified_path_and_writes_receipt() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        write_fixture(temp.path(), "notes.txt", "new\n")?;
+        let subject = commit_fixture(temp.path(), "unclassified")?;
+        let receipt = temp.path().join("receipt.json");
+        let error = non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt)
+            .expect_err("new unclassified path must fail");
+        assert!(error.to_string().contains("notes.txt"));
+        let receipt: ExactTreePolicyReceipt = serde_json::from_str(&fs::read_to_string(receipt)?)?;
+        assert_eq!(receipt.new_unclassified_paths, vec!["notes.txt"]);
+        assert_eq!(receipt.outcome, "fail");
+        Ok(())
+    }
+
+    #[test]
+    fn exact_tree_catches_rename_and_allowlist_regressions() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        run_git(temp.path(), &["mv", "README.md", "notes.txt"])?;
+        let subject = commit_fixture(temp.path(), "rename")?;
+        let error = non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &subject,
+            None,
+            &temp.path().join("rename.json"),
+        )
+        .expect_err("rename into an unclassified path must fail");
+        assert!(error.to_string().contains("notes.txt"));
+
+        let (temp, base) = exact_fixture()?;
+        write_fixture(temp.path(), "policy/non-rust-allowlist.toml", "")?;
+        let subject = commit_fixture(temp.path(), "allowlist regression")?;
+        let error = non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &subject,
+            None,
+            &temp.path().join("allowlist.json"),
+        )
+        .expect_err("removing allowlist coverage must fail");
+        assert!(error.to_string().contains("README.md"));
+        Ok(())
+    }
+
+    #[test]
+    fn exact_tree_rejects_malformed_and_unrelated_subject_identity() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let error = non_rust_exact_tree(
+            temp.path(),
+            "not-a-sha",
+            &base,
+            None,
+            &temp.path().join("bad.json"),
+        )
+        .expect_err("malformed base must fail");
+        assert!(error.to_string().contains("git rev-parse"));
+        let error = non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &base,
+            Some("deadbeef"),
+            &temp.path().join("head.json"),
+        )
+        .expect_err("unrelated PR head must fail");
+        assert!(error.to_string().contains("does not contain PR head"));
+        Ok(())
+    }
+
+    #[test]
+    fn exact_tree_workflow_keeps_trusted_shadow_contract() -> Result<()> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..", ".github/workflows/non-rust-policy.yml");
+        let workflow = fs::read_to_string(root)?;
+        for required in [
+            "pull_request_target:",
+            "merge_group:",
+            "push:",
+            "workflow_dispatch:",
+            "permissions:\n  contents: read",
+            "ref: ${{ env.BASE_SHA }}",
+            "refs/pull/${{ github.event.pull_request.number }}/merge",
+            "merge-base --is-ancestor",
+            "Non-Rust policy exact-tree",
+            "if: always()",
+            "persist-credentials: false",
+        ] {
+            assert!(workflow.contains(required), "workflow missing `{required}`");
+        }
+        assert!(!workflow.contains("actions/checkout@v"), "actions must be pinned");
+        Ok(())
+    }
 }
