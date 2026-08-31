@@ -71,12 +71,10 @@
 //! let config = LexerConfig {
 //!     // Recognize interpolation islands in ordinary double-quoted strings.
 //!     parse_interpolation: true,
-//!     // Compatibility field: token byte spans are produced in every configuration.
-//!     track_positions: true,
 //!     // Shared cursor bound for character, byte, and fixed-pattern probes.
 //!     max_lookahead: LexerConfig::DEFAULT_MAX_LOOKAHEAD,
 //!     // No pre-scanned sub declarations for bareword/regex disambiguation.
-//!     symbol_table: None,
+//!     ..LexerConfig::default()
 //! };
 //!
 //! let mut lexer = PerlLexer::with_config("my $x = 1;", config);
