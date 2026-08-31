@@ -2169,7 +2169,6 @@ workflow_integration:
   job_mapping:
     ci-gate:
       gates:
-        - fmt
         - ignored_tests_check_refs
         - clippy_full
         - unit_foundation_full

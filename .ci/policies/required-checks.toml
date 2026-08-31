@@ -116,7 +116,7 @@ required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "Post-merge promotion target tracked by #6202 and #7087; live ruleset promotion is deferred until the candidate lands and merge-group evidence is current."
+reason = "Advisory receipt-producing dedicated formatter context. Live merge blocking is owned by the required Perl LSP Rust Small Result path (#9127/#12320). Duplicate meta-shard fmt execution is retired by #9959. Settings-app promotion of this context remains #7087 and is not claimed here."
 
 [[checks]]
 name = "Codecov / Patch 95"
