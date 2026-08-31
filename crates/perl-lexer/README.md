@@ -38,7 +38,7 @@ under open issue #8749:
 | `track_positions` | **Deprecated** (since 0.17.0, planned for future semver-boundary removal by open issue #8749). Compatibility field with no runtime effect. Token byte spans are always produced because parser and editor consumers require them. Migration: remove the field from struct literals (or route the rest of the literal through `..LexerConfig::default()`); token output is identical. |
 | `max_lookahead` | Maximum zero-based offset admitted by shared character, byte, and fixed-pattern cursor probes. `0` permits only the current offset/one-byte pattern; larger values can change identifier, operator, delimiter, numeric, Unicode, and BOM decisions. |
 | `symbol_table` | Optionally supplies file-local subroutine names for the declared bareword/regex ambiguity. |
-| Cargo feature `simd` | **Deprecated** (since 0.17.0, planned for future semver-boundary removal by open issue #8749). Compatibility no-op: no distinct implementation is selected by the checked-in Rust source scan. Build scripts are rejected closed because generated output is not inspectable by this contract. No SIMD performance claim is made. |
+| Cargo feature `simd` | **Deprecated** (since 0.17.0, planned for future semver-boundary removal by open issue #8749). Compatibility no-op: no `simd` selector was found by the checked-in Rust source scan. Build scripts and source includes are rejected closed unless their checked-in output remains inspectable by this contract. No SIMD performance claim is made. |
 
 Use `LexerConfig::DEFAULT_MAX_LOOKAHEAD`,
 `LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED`, and the query methods on
