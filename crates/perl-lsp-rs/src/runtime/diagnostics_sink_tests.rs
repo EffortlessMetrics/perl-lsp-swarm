@@ -57,18 +57,16 @@ mod tests {
     fn unavailable_diagnostic_debouncer_falls_back_to_immediate_publish() {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///diagnostic-debounce-fallback.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "my $value = 1;\n"
-                }
-            })))
-            .expect("didOpen should succeed");
-        assert!(wait_for_frames(&buf, 1), "initial open should publish diagnostics");
-        buf.lock().clear();
+        let text = "my $value = 1;\n";
+        server.documents.lock().insert(
+            uri.to_string(),
+            DocumentState::from_parts(
+                ropey::Rope::from_str(text),
+                text.to_string(),
+                1,
+                StdArc::new(AtomicU32::new(FIRST_ACCEPTED_DOCUMENT_GENERATION.get())),
+            ),
+        );
 
         server.install_diagnostic_debouncer(
             super::super::diagnostic_debounce::DiagnosticDebouncer::unavailable_for_test(),
