@@ -412,6 +412,14 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         bail!("subject workflow removes the trusted exact-tree policy workflow");
     }
     let (_, bytes) = tree_file(root, subject_sha, ".github/workflows/non-rust-policy.yml")?;
+    if !base_listing.is_empty() {
+        let (_, base_bytes) = tree_file(root, base_sha, ".github/workflows/non-rust-policy.yml")?;
+        if base_bytes != bytes {
+            bail!(
+                "subject workflow changes are blocked after bootstrap; update it only from trusted main"
+            );
+        }
+    }
     let text = String::from_utf8(bytes).context("subject workflow is not UTF-8")?;
     for required in [
         "pull_request_target:",
