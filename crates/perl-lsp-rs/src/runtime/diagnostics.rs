@@ -326,6 +326,12 @@ impl PullDiagnosticsOrchestrator {
                 position_encoding: match position_encoding {
                     perl_position_tracking::PositionEncoding::Utf8 => PullPositionEncoding::Utf8,
                     perl_position_tracking::PositionEncoding::Utf16 => PullPositionEncoding::Utf16,
+                    _ => {
+                        return Err(crate::protocol::JsonRpcError::new(
+                            crate::protocol::INVALID_REQUEST,
+                            "active position encoding is unsupported",
+                        ));
+                    }
                 },
                 markup_messages: markup_message_support,
             },
@@ -1799,12 +1805,18 @@ impl LspServer {
         };
         let position_encoding = match self.position_encoding_for_coordinates() {
             Ok(encoding) => encoding,
-            Err(_) => return,
+            Err(error) => return Err(error),
         };
         let identity_projection = DiagnosticProjectionFragment {
             position_encoding: match position_encoding {
                 perl_position_tracking::PositionEncoding::Utf8 => PullPositionEncoding::Utf8,
                 perl_position_tracking::PositionEncoding::Utf16 => PullPositionEncoding::Utf16,
+                _ => {
+                    return Err(crate::protocol::JsonRpcError::new(
+                        crate::protocol::INVALID_REQUEST,
+                        "active position encoding is unsupported",
+                    ));
+                }
             },
             markup_messages: markup_message_support,
         };
