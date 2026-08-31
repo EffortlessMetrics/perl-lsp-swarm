@@ -264,13 +264,15 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
             bail!("unknown classification {classification} in allow entry {id}");
         }
         let covered_by = table.get("covered_by");
-        let coverage = covered_by
-            .and_then(toml::Value::as_array)
-            .ok_or_else(|| eyre!("allow entry {id} covered_by must be a list of strings"))?;
-        if !coverage.iter().all(|item| item.as_str().is_some()) {
+        let coverage = covered_by.and_then(toml::Value::as_array);
+        if covered_by.is_some()
+            && coverage.is_none_or(|items| !items.iter().all(|item| item.as_str().is_some()))
+        {
             bail!("allow entry {id} covered_by must be a list of strings");
         }
-        if COVERAGE_REQUIRING_CLASSIFICATIONS.contains(&classification) && coverage.is_empty() {
+        if COVERAGE_REQUIRING_CLASSIFICATIONS.contains(&classification)
+            && coverage.is_none_or(Vec::is_empty)
+        {
             bail!("allow entry {id} requires at least one covered_by entry");
         }
         let mut dates = BTreeMap::new();
