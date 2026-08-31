@@ -1215,6 +1215,10 @@ mod tests {
             scopes("validate")
         );
         assert!(
+            !jobs.contains_key(Value::String("create-tag".to_string())),
+            "release orchestration must not define a create-tag job"
+        );
+        assert!(
             scopes("create-tag").is_empty(),
             "tag creation must remain inside the validated release transaction"
         );

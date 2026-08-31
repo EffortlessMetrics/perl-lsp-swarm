@@ -100,7 +100,7 @@ fn validate_release_graph(document: &Value) -> Result<()> {
     for required in [
         "release_terminal_manifest.py",
         "--check",
-        "terminal-artifact-manifest.json",
+        "dist/release-terminal-manifest.json",
         "attestation-subjects.sha256",
         "manifest_sha256",
         "candidate_run_id",
@@ -318,6 +318,7 @@ fn downstream_publishers_require_the_exact_eligibility_handoff() -> Result<()> {
             "candidate_run_id",
             "manifest_sha256",
             "release-terminal-candidate",
+            "dist/release-terminal-manifest.json",
             "actual_manifest_sha256",
         ] {
             ensure!(

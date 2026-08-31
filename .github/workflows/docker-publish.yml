@@ -72,8 +72,8 @@ jobs:
           printf '%s' "$CANDIDATE_RUN_ID" | grep -Eq '^[0-9]+$'
           gh run download "$CANDIDATE_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" --name release-terminal-candidate --dir release-candidate
-          test -s release-candidate/terminal-artifact-manifest.json
-          actual_manifest_sha256="$(sha256sum release-candidate/terminal-artifact-manifest.json | awk '{print $1}')"
+          test -s release-candidate/dist/release-terminal-manifest.json
+          actual_manifest_sha256="$(sha256sum release-candidate/dist/release-terminal-manifest.json | awk '{print $1}')"
           test "$actual_manifest_sha256" = "$MANIFEST_SHA256"
           echo "Accepted release eligibility handoff for $EXPECTED_SHA from run $CANDIDATE_RUN_ID."
 

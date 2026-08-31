@@ -513,9 +513,9 @@ jobs:
             --source-sha "$SOURCE_SHA" \
             --tag "$TAG" \
             --check
-          test -s candidate/terminal-artifact-manifest.json
+          test -s candidate/dist/release-terminal-manifest.json
           test -s candidate/attestation-subjects.sha256
-          manifest_sha256="$(sha256sum candidate/terminal-artifact-manifest.json | awk '{print $1}')"
+          manifest_sha256="$(sha256sum candidate/dist/release-terminal-manifest.json | awk '{print $1}')"
           printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
           printf 'candidate_run_id=%s\n' "$CANDIDATE_RUN_ID" >> "$GITHUB_OUTPUT"
           printf 'Publisher eligibility sealed for %s at run %s (manifest sha256:%s).\n' \
