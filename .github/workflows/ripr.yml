@@ -1182,20 +1182,52 @@ jobs:
           lane_class="ripr-failure"
           lane_job_id=""
           if [ -n "$lane_name" ] && [ "$lane_result" != "success" ]; then
+            # Keep both retrieval phases inside the five-minute aggregator job.
+            # The reserve covers classifier, summary, and artifact-upload work;
+            # the per-request timeout is capped by the same deadline rather than
+            # allowing two independent retry budgets to add up past it.
+            retrieval_budget_seconds=240
+            retrieval_started_at=$SECONDS
+            retrieval_deadline=$((retrieval_started_at + retrieval_budget_seconds))
+            bounded_gh_api() {
+              local remaining=$((retrieval_deadline - SECONDS))
+              if [ "$remaining" -le 0 ]; then
+                return 124
+              fi
+              local request_timeout=$remaining
+              if [ "$request_timeout" -gt 30 ]; then
+                request_timeout=30
+              fi
+              timeout --signal=TERM --kill-after=5s "${request_timeout}s" gh api "$@"
+            }
+            bounded_sleep() {
+              local delay="$1"
+              local remaining=$((retrieval_deadline - SECONDS))
+              if [ "$remaining" -le 0 ] || [ "$delay" -gt "$remaining" ]; then
+                return 124
+              fi
+              sleep "$delay"
+            }
             # The Actions jobs listing can briefly lag the lane result.
-            # Keep this lookup bounded rather than silently skipping it. The
-            # per-request timeout is separate from the retry/backoff bound so
-            # a stalled GitHub API cannot consume the aggregator's budget.
+            # Keep this lookup bounded rather than silently skipping it.
+            lane_lookup_output=$(mktemp)
             for attempt in 1 2 3 4 5; do
-              lane_job_id=$(timeout --signal=TERM --kill-after=5s 30s gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
-                --jq ".jobs[] | select(.name == \"${lane_name}\") | .id" | head -1 || true)
+              if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+                --jq ".jobs[] | select(.name == \"${lane_name}\") | .id" > "$lane_lookup_output"; then
+                lane_job_id=$(head -1 "$lane_lookup_output")
+              else
+                lane_job_id=""
+              fi
               if [ -n "$lane_job_id" ]; then
                 break
               fi
               if [ "$attempt" -lt 5 ]; then
-                sleep $((attempt * 5))
+                if ! bounded_sleep $((attempt * 5)); then
+                  break
+                fi
               fi
             done
+            rm -f "$lane_lookup_output"
             if [ -n "$lane_job_id" ]; then
               # Fetch first and classify only on a complete successful read:
               # a partial log carrying a signature after a failed fetch must
@@ -1213,7 +1245,7 @@ jobs:
               lane_log=$(mktemp)
               fetched=false
               for attempt in 1 2 3 4 5; do
-                if timeout --signal=TERM --kill-after=5s 30s gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
+                if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
                   fetched=true
                   clf_out=$(bash scripts/ci/classify-ripr-lane-termination "$lane_log") || clf_out=""
                   printf '%s\n' "$clf_out"
@@ -1226,7 +1258,9 @@ jobs:
                   break
                 fi
                 if [ "$attempt" -lt 5 ]; then
-                  sleep $((attempt * 5))
+                  if ! bounded_sleep $((attempt * 5)); then
+                    break
+                  fi
                 fi
               done
               if [ "$fetched" != "true" ]; then
@@ -1235,12 +1269,20 @@ jobs:
                 # emit an explicit machine-readable classification and
                 # diagnostic instead of silently skipping the classifier.
                 printf '%s\n' "classification=ripr-failure"
-                echo "::warning::lane log for ${lane_name} (job ${lane_job_id}) was not retrievable after 5 attempts; eviction classification skipped and the gate will fail closed"
+                if [ "$SECONDS" -ge "$retrieval_deadline" ]; then
+                  echo "::warning::lane log for ${lane_name} (job ${lane_job_id}) exceeded the ${retrieval_budget_seconds}s aggregate retrieval budget; eviction classification skipped and the gate will fail closed"
+                else
+                  echo "::warning::lane log for ${lane_name} (job ${lane_job_id}) was not retrievable after 5 attempts; eviction classification skipped and the gate will fail closed"
+                fi
               fi
               rm -f "$lane_log"
             else
               printf '%s\n' "classification=ripr-failure"
-              echo "::warning::job id for ${lane_name} was not retrievable after 5 attempts; eviction classification skipped and the gate will fail closed"
+              if [ "$SECONDS" -ge "$retrieval_deadline" ]; then
+                echo "::warning::job id for ${lane_name} exceeded the ${retrieval_budget_seconds}s aggregate retrieval budget; eviction classification skipped and the gate will fail closed"
+              else
+                echo "::warning::job id for ${lane_name} was not retrievable after 5 attempts; eviction classification skipped and the gate will fail closed"
+              fi
             fi
           fi
           report_lane_failure() {
