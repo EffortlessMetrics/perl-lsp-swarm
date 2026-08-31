@@ -908,9 +908,13 @@ fn a_request_url_cannot_carry_a_credential_into_the_receipt() -> Result<()> {
     // a query parameter or a fragment, and both shapes would otherwise ride an
     // off-plan URL into the per-surface record and the `unplanned_request_url`
     // blocker verbatim.
-    let smuggled_shapes: [(&str, &str); 2] = [
+    let smuggled_shapes: [(&str, &str); 3] = [
         ("query string", "https://evil.example/vsix?token=hunter2"),
         ("fragment", "https://evil.example/vsix#access_token=hunter2"),
+        // A URL that is all query strips to nothing; redaction must win over
+        // publishing an empty cell, because the receipt's URL contract
+        // requires a non-empty value.
+        ("bare query", "?token=hunter2"),
     ];
     for (label, smuggled_url) in smuggled_shapes {
         let smuggled_receipt = receipt_with(AVAILABLE_EXACT, |document| {
@@ -925,6 +929,9 @@ fn a_request_url_cannot_carry_a_credential_into_the_receipt() -> Result<()> {
         }
         if serialized.contains("evil.example/vsix?") || serialized.contains("evil.example/vsix#") {
             bail!("an off-plan URL kept its {label} in the durable receipt");
+        }
+        if smuggled_receipt.cells.iter().any(|cell| cell.url.is_empty()) {
+            bail!("an off-plan URL was published as an empty cell ({label})");
         }
     }
 

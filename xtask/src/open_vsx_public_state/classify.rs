@@ -1031,7 +1031,15 @@ fn publishable_url(url: &str, planned: Option<&str>) -> String {
     }
     match unsafe_reference(url) {
         Some(_) => REDACTED.to_owned(),
-        None => url.split(['?', '#']).next().unwrap_or(url).to_owned(),
+        // A URL that is all query/fragment (`"?token=…"`) strips to nothing,
+        // and the receipt's URL contract requires a non-empty value — fall
+        // back to redaction rather than publish an empty cell.
+        None => url
+            .split(['?', '#'])
+            .next()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(REDACTED)
+            .to_owned(),
     }
 }
 
