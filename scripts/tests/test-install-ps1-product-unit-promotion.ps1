@@ -354,7 +354,7 @@ try {
         if (($LastStatus -eq 0) -and (Assert-CompletePair -Server "server-b" -Dap "dap-b") -and $isFilePointer) {
             Pass-Case "file pointer plus cmd shims keep complete pairs"
         } else {
-            Fail-Case "unprivileged file pointer plus cmd shims keep complete pairs" "status=$LastStatus output=$LastOutput filePointer=$isFilePointer"
+            Fail-Case "file pointer plus cmd shims keep complete pairs" "status=$LastStatus output=$LastOutput filePointer=$isFilePointer"
         }
 } finally {
     Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
