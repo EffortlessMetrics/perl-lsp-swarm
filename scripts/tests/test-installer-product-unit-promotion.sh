@@ -117,11 +117,21 @@ else
 fi
 
 if grep -Eq 'trap rollback_new_path_selectors_on_signal INT TERM HUP' "$INSTALLER" \
-    && grep -Eq 'trap - INT TERM HUP' "$INSTALLER"; then
+    && grep -Fq 'restore_saved_signal_trap' "$INSTALLER" \
+    && grep -Fq 'committed_incoming_product_unit' "$INSTALLER"; then
     pass "selector window arms INT/TERM/HUP without touching EXIT"
 else
     fail_case "selector window arms INT/TERM/HUP without touching EXIT" \
         "$(grep -nE 'trap[[:space:]]' "$INSTALLER" || true)"
+fi
+
+if grep -Fq 'BASHPID' "$INSTALLER" \
+    && grep -Fq "sh -c 'echo \$PPID'" "$INSTALLER" \
+    && ! grep -Fq 'BASHPID:-$$' "$INSTALLER"; then
+    pass "signal inject uses BASHPID or PPID, not parent \$\$"
+else
+    fail_case "signal inject uses BASHPID or PPID, not parent \$\$" \
+        "$(grep -n 'BASHPID\|PPID' "$INSTALLER" || true)"
 fi
 
 if grep -Fq 'rm -f "${INSTALL_DIR}/${BIN_NAME}"' "$INSTALLER"; then
@@ -230,6 +240,34 @@ if [ "$LAST_STATUS" -ne 0 ] \
     pass "upgrade SIGTERM before commit preserves the old complete pair"
 else
     fail_case "upgrade SIGTERM before commit preserves the old complete pair" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT current=$(observe_current_product_unit 2>/dev/null || true)"
+fi
+
+setup_root
+stage_pair "$EXTRACT_DIR" "server-after" "dap-after"
+PERL_LSP_INSTALL_FAULT=signal_after_commit
+run_promote release
+unset PERL_LSP_INSTALL_FAULT
+if [ "$LAST_STATUS" -ne 0 ] \
+    && assert_complete_pair "server-after" "dap-after"; then
+    pass "first-install SIGTERM after commit keeps the published pair"
+else
+    fail_case "first-install SIGTERM after commit keeps the published pair" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT current=$(observe_current_product_unit 2>/dev/null || true) path=$(observe_path_visible_product_unit 2>/dev/null || true)"
+fi
+
+setup_root
+stage_pair "$EXTRACT_DIR" "server-a" "dap-a"
+run_promote release
+stage_pair "$EXTRACT_DIR" "server-b" "dap-b"
+PERL_LSP_INSTALL_FAULT=signal_after_commit
+run_promote release
+unset PERL_LSP_INSTALL_FAULT
+if [ "$LAST_STATUS" -ne 0 ] \
+    && assert_complete_pair "server-b" "dap-b"; then
+    pass "upgrade SIGTERM after commit keeps the new complete pair"
+else
+    fail_case "upgrade SIGTERM after commit keeps the new complete pair" \
         "status=$LAST_STATUS output=$LAST_OUTPUT current=$(observe_current_product_unit 2>/dev/null || true)"
 fi
 
@@ -553,10 +591,28 @@ fi
 
 _term_text="$(trap -p TERM)$(trap -p INT)$(trap -p HUP)"
 if [ -z "$_term_text" ]; then
-    pass "successful promotion disarms INT/TERM/HUP traps"
+    pass "successful promotion restores default INT/TERM/HUP traps"
 else
-    fail_case "successful promotion disarms INT/TERM/HUP traps" \
+    fail_case "successful promotion restores default INT/TERM/HUP traps" \
         "traps=$_term_text"
+fi
+
+setup_root
+stage_pair "$EXTRACT_DIR" "server-term" "dap-term"
+trap 'printf term-survived' TERM
+set +e
+install_binaries release >/dev/null
+_term_status=$?
+_term_saved="$(trap -p TERM)"
+trap - TERM
+set -e
+if [ "$_term_status" -eq 0 ] \
+    && assert_complete_pair "server-term" "dap-term" \
+    && [[ "$_term_saved" == *term-survived* ]]; then
+    pass "successful promotion restores the caller TERM trap"
+else
+    fail_case "successful promotion restores the caller TERM trap" \
+        "status=$_term_status trap=$_term_saved"
 fi
 
 if [ "$FAIL" -ne 0 ]; then

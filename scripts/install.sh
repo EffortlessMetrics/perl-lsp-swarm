@@ -51,8 +51,22 @@ warn()    { say "${YELLOW}warning:${NC} $1" >&2; }
 # First-install selector rollback is invoked from err() and from INT/TERM/HUP
 # during the selector-to-commit window so injected faults and signals drop
 # newly created PATH names without replacing the caller's EXIT trap (main
-# removes TMPDIR that way).
+# removes TMPDIR that way). Once current already names the incoming candidate,
+# those PATH names are live for that unit and must not be removed.
+committed_incoming_product_unit() {
+    local _store _cur
+    [ -n "${_plsp_incoming_id:-}" ] || return 1
+    _store="$(product_store_dir)"
+    [ -L "${_store}/current" ] || return 1
+    _cur="$(readlink "${_store}/current" 2>/dev/null || true)"
+    [ "$_cur" = "candidates/${_plsp_incoming_id}" ]
+}
 rollback_new_path_selectors() {
+    if committed_incoming_product_unit; then
+        _plsp_rollback_server=""
+        _plsp_rollback_dap=""
+        return 0
+    fi
     if [ -n "${_plsp_rollback_server:-}" ]; then
         rm -f -- "$_plsp_rollback_server"
     fi
@@ -62,18 +76,34 @@ rollback_new_path_selectors() {
     _plsp_rollback_server=""
     _plsp_rollback_dap=""
 }
+restore_saved_signal_trap() {
+    local _saved="$1" _sig="$2"
+    if [ -n "$_saved" ]; then
+        eval "$_saved"
+    else
+        trap - "$_sig"
+    fi
+}
 # Do not install an EXIT handler here: that would replace main's TMPDIR
 # cleanup. exit after rollback so the caller's EXIT trap still runs.
 rollback_new_path_selectors_on_signal() {
     rollback_new_path_selectors
-    trap - INT TERM HUP
+    disarm_new_path_selector_signal_rollback
     exit 1
 }
 arm_new_path_selector_signal_rollback() {
+    _plsp_prev_int="$(trap -p INT 2>/dev/null || true)"
+    _plsp_prev_term="$(trap -p TERM 2>/dev/null || true)"
+    _plsp_prev_hup="$(trap -p HUP 2>/dev/null || true)"
     trap rollback_new_path_selectors_on_signal INT TERM HUP
 }
 disarm_new_path_selector_signal_rollback() {
-    trap - INT TERM HUP
+    restore_saved_signal_trap "${_plsp_prev_int:-}" INT
+    restore_saved_signal_trap "${_plsp_prev_term:-}" TERM
+    restore_saved_signal_trap "${_plsp_prev_hup:-}" HUP
+    _plsp_prev_int=""
+    _plsp_prev_term=""
+    _plsp_prev_hup=""
 }
 err()     { rollback_new_path_selectors; say "${RED}error:${NC} $1" >&2; exit 1; }
 
@@ -892,12 +922,18 @@ product_store_dir() {
 }
 
 maybe_inject_install_fault() {
-    local _barrier="$1"
+    local _barrier="$1" _pid
     if [ "${PERL_LSP_INSTALL_FAULT:-}" = "signal_${_barrier}" ]; then
-        # Test-only: deliver TERM to this shell so the selector-window
-        # handlers run. BASHPID is the subshell under library-only tests;
-        # $$ is the installer process in ordinary execution.
-        kill -s TERM "${BASHPID:-$$}"
+        # Test-only: deliver TERM so the selector-window handlers run.
+        # Use BASHPID in this shell. Do not capture it from a helper via $(),
+        # which would be a different process. Bash 3.2 has no BASHPID; $$
+        # there is the parent harness, so ask a child for PPID instead.
+        if [ -n "${BASHPID:-}" ]; then
+            _pid="$BASHPID"
+        else
+            _pid="$(sh -c 'echo $PPID')"
+        fi
+        kill -s TERM "$_pid"
         return 0
     fi
     if [ "${PERL_LSP_INSTALL_FAULT:-}" = "$_barrier" ]; then
@@ -1046,6 +1082,9 @@ commit_current_selection() {
         atomic_symlink_replace "${_store}/previous" "$_old"
     fi
     atomic_symlink_replace "$_current" "candidates/${_id}"
+    if [ "$_allow_fault" = "1" ]; then
+        maybe_inject_install_fault "after_commit"
+    fi
 }
 
 ensure_path_visible_selectors() {
@@ -1220,20 +1259,25 @@ Try one of:
     # both PATH names together. If commit fails closed, drop names this attempt
     # created so a first install does not leave dangling commands. err() and
     # INT/TERM/HUP run the same rollback so injected faults and signals do not
-    # replace main's TMPDIR EXIT trap.
+    # replace main's TMPDIR EXIT trap. After current names this candidate,
+    # rollback becomes a no-op so a deferred signal cannot unpublish PATH.
+    _plsp_incoming_id="$_id"
     arm_new_path_selector_signal_rollback
     if ! ensure_path_visible_selectors 1 "$_incoming_pair" 0; then
         rollback_new_path_selectors
         disarm_new_path_selector_signal_rollback
+        _plsp_incoming_id=""
         return 1
     fi
     if ! commit_current_selection "$_id"; then
         rollback_new_path_selectors
         disarm_new_path_selector_signal_rollback
+        _plsp_incoming_id=""
         return 1
     fi
     _plsp_rollback_server=""
     _plsp_rollback_dap=""
+    _plsp_incoming_id=""
     disarm_new_path_selector_signal_rollback
     ensure_path_visible_selectors || return
 
