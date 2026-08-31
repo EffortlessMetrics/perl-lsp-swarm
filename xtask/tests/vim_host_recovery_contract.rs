@@ -644,6 +644,30 @@ fn the_stimulus_matcher_binds_only_the_serving_server_process() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn the_stimulus_matcher_handles_quoted_windows_paths_and_exe_suffixes() -> Result<()> {
+    use xtask::vim_host_recovery_run::unix_args_match_serving_server;
+
+    let needle = "c:/work tree/target/debug/perllsp";
+    ensure!(unix_args_match_serving_server(
+        r#""C:\work tree\target\debug\perllsp.exe" --stdio"#,
+        needle,
+    ));
+    ensure!(unix_args_match_serving_server(
+        r#"C:\work tree\target\debug\perllsp --stdio"#,
+        needle,
+    ));
+    ensure!(!unix_args_match_serving_server(
+        r#""C:\work tree\target\debug\perllsp.exe" --tcp"#,
+        needle,
+    ));
+    ensure!(!unix_args_match_serving_server(
+        r#"C:\other tree\target\debug\perllsp.exe --stdio"#,
+        needle,
+    ));
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Wire mining laws
 // ---------------------------------------------------------------------------
