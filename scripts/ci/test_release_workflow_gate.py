@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import pathlib
+import sys
 import unittest
 
 MODULE_PATH = pathlib.Path(__file__).with_name("release_workflow_gate.py")
@@ -13,6 +14,7 @@ SPEC = importlib.util.spec_from_file_location("release_workflow_gate", MODULE_PA
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"cannot load {MODULE_PATH}")
 MODULE = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 GateError = MODULE.GateError
@@ -87,7 +89,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_rejects_old_run_even_when_id_is_new_to_observer(self) -> None:
         selected = select_new_exact_run(
-            [run(2, created_at="2026-08-31T11:59:00Z")],
+            [run(2, created_at="2026-08-31T11:58:00Z")],
             prior_ids=set(),
             expected_sha=SHA,
             dispatch_started=START,
