@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12524 |
-| Rust-family files | 3869 |
-| Non-Rust files | 8655 |
-| Allowlisted | 6418 |
+| Total tracked files | 12530 |
+| Rust-family files | 3871 |
+| Non-Rust files | 8659 |
+| Allowlisted | 6422 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 497 |
-| documentation | 2822 |
+| documentation | 2824 |
 | generated | 2 |
 | production | 349 |
 | test | 2081 |
-| tooling | 667 |
+| tooling | 669 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -2353,6 +2353,7 @@
 | `.changes/unreleased/product-13890-Fixed-225841.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14076-Fixed-024700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14281-Fixed-014013.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -4460,6 +4461,7 @@
 | `docs/adr/0045-noncurrent-frame-mutation-disposition.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0046-loaded-module-reload-semantics.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/0047-dap-stdio-only-editor-transport.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/adr/0048-source-line-contract.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_001_AGENT_ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_002_API_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/adr/ADR_003_MISSING_DOCUMENTATION_INFRASTRUCTURE.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6611,6 +6613,7 @@
 | `scripts/ci/fixtures/product_defect.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/fixtures/review_gate.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/generate-coverage-pack-commands.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/hosted_formatter_producers.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/learned_estimate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/main_red_refusal.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/parser_facade_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6644,6 +6647,7 @@
 | `scripts/ci/test_evaluate_ci_gate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_gate_enforcement_app_bindings.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_generate_coverage_pack_commands.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_hosted_formatter_producers.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_learned_estimate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_main_red_refusal.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_parser_facade_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
