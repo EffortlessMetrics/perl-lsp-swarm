@@ -287,24 +287,63 @@ struct RegistrationObservation {
     path: String,
 }
 
+/// Strip ANSI CSI sequences and stray C0 controls from one framed line.
+///
+/// perl5db decorates its prompt (`  DB<2> ` wrapped in underline/bold
+/// escapes) and writes to stderr when stdin is not a terminal, so a real
+/// framed line arrives with control bytes around the payload. Marker
+/// fields are compared verbatim against the bound subject, so the
+/// decoration is removed before parsing rather than tolerated afterwards.
+fn sanitize_frame_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // CSI: ESC '[' parameters, terminated by a byte in @..~
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for inner in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&inner) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if c == '\t' || !c.is_control() {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Parse the registration marker out of framed output lines.
 ///
 /// Returns `None` when the marker is absent: an answer that does not carry
 /// the marker is not an observation, and is never read as "absent".
+///
+/// The path is everything after the state word to end of line, trimmed —
+/// **not** the next whitespace-delimited token. A module resolved under a
+/// directory containing a space (`/ws/my lib/App/Core.pm`) would otherwise
+/// parse as `/ws/my`, mismatch the bound subject, and refuse a perfectly
+/// current subject as `AmbiguousRuntimeMapping`.
 fn parse_registration(lines: &[String], marker: &str) -> Option<RegistrationObservation> {
     for line in lines {
+        let line = sanitize_frame_line(line);
         let Some(index) = line.find(marker) else {
             continue;
         };
-        let rest = line.get(index + marker.len()..).unwrap_or("");
-        let mut fields = rest.split_whitespace();
-        let state = fields.next()?;
-        let path = fields.next().unwrap_or("-");
+        let rest = line.get(index + marker.len()..).unwrap_or("").trim();
+        let (state, remainder) = match rest.split_once(char::is_whitespace) {
+            Some((state, remainder)) => (state, remainder.trim()),
+            None => (rest, ""),
+        };
         let present = match state {
             "present" => true,
             "absent" => false,
             _ => continue,
         };
+        let path = if remainder.is_empty() { "-" } else { remainder };
         return Some(RegistrationObservation { present, path: path.to_string() });
     }
     None
@@ -318,6 +357,7 @@ fn parse_registration(lines: &[String], marker: &str) -> Option<RegistrationObse
 /// never a success and never a clean failure.
 fn parse_mutation_ack(lines: &[String]) -> Option<bool> {
     for line in lines {
+        let line = sanitize_frame_line(line);
         let Some(index) = line.find(MUTATION_MARKER) else {
             continue;
         };
@@ -1413,32 +1453,11 @@ mod tests {
         }
         let mut merged = out_reader.join().unwrap_or_default();
         merged.extend_from_slice(&err_reader.join().unwrap_or_default());
-        Ok(LiveRun { stdout: strip_terminal_controls(&String::from_utf8_lossy(&merged)) })
-    }
-
-    /// Strip ANSI escape sequences and stray C0 controls from perl5db's
-    /// decorated prompt so marker fields parse cleanly.
-    fn strip_terminal_controls(raw: &str) -> String {
-        let mut out = String::with_capacity(raw.len());
-        let mut chars = raw.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\u{1b}' {
-                // CSI: ESC '[' ... final byte in @..~
-                if chars.peek() == Some(&'[') {
-                    chars.next();
-                    for inner in chars.by_ref() {
-                        if ('\u{40}'..='\u{7e}').contains(&inner) {
-                            break;
-                        }
-                    }
-                }
-                continue;
-            }
-            if c == '\n' || c == '\t' || !c.is_control() {
-                out.push(c);
-            }
-        }
-        out
+        // Assertions below read fields out of the merged stream, so the
+        // same production sanitizer the parser uses is applied per line.
+        let merged = String::from_utf8_lossy(&merged).into_owned();
+        let cleaned = merged.lines().map(sanitize_frame_line).collect::<Vec<String>>().join("\n");
+        Ok(LiveRun { stdout: cleaned })
     }
 
     /// Read one marker's trailing field out of live debuggee output.
@@ -1616,5 +1635,78 @@ mod tests {
         assert_eq!(parse_mutation_ack(&[format!("{MUTATION_MARKER} 2")]), None);
         assert_eq!(parse_mutation_ack(&[format!("{MUTATION_MARKER} 1")]), Some(true));
         assert_eq!(parse_mutation_ack(&[format!("{MUTATION_MARKER} 0")]), Some(false));
+    }
+
+    /// A resolved path containing spaces round-trips intact.
+    ///
+    /// Taking the next whitespace token as the path truncates
+    /// `/ws/my lib/App/Core.pm` to `/ws/my`, which mismatches the bound
+    /// subject and refuses a current subject as AmbiguousRuntimeMapping.
+    #[test]
+    fn paths_with_spaces_are_not_truncated() -> TestResult {
+        let spaced = "/ws/my lib/App/Core.pm";
+        assert_eq!(
+            parse_registration(&[format!("{READBACK_MARKER} present {spaced}")], READBACK_MARKER),
+            Some(RegistrationObservation { present: true, path: spaced.to_string() })
+        );
+
+        // End to end: a subject at a spaced path still reloads.
+        let subject = SubjectCandidate { resolved_runtime_path: spaced.to_string(), ..candidate() }
+            .bind()
+            .map_err(|_| "spaced subject must bind")?;
+        let plan = plan_reload(&subject, &admitted_observation())
+            .map_err(|_| "spaced subject must admit")?;
+        let mut channel = ScriptedChannel::new(
+            vec![
+                ScriptedChannel::ok(PREFLIGHT_MARKER, true, spaced),
+                ScriptedChannel::ok(READBACK_MARKER, true, spaced),
+            ],
+            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+        );
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let execution =
+            execute_reload(&plan, ReloadMechanism::IncDeletionAndRequire, &mut channel, &mut clock);
+        assert_eq!(
+            execution.outcome,
+            LoadedModuleReloadOutcome::Reloaded,
+            "a spaced resolved path must not be read as a different subject"
+        );
+
+        // A genuinely different path still refuses, so the fix did not
+        // turn the mapping check into a rubber stamp.
+        let mut moved = ScriptedChannel::new(
+            vec![ScriptedChannel::ok(PREFLIGHT_MARKER, true, "/ws/other lib/App/Core.pm")],
+            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+        );
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let execution =
+            execute_reload(&plan, ReloadMechanism::IncDeletionAndRequire, &mut moved, &mut clock);
+        assert_eq!(
+            execution.outcome,
+            LoadedModuleReloadOutcome::Refused {
+                disposition: LoadedModuleReloadEligibility::AmbiguousRuntimeMapping
+            }
+        );
+        assert!(moved.issued_mutations.is_empty());
+        Ok(())
+    }
+
+    /// perl5db's decorated prompt does not corrupt marker fields.
+    ///
+    /// Real captured shape: an underline/bold CSI run and a shift-in
+    /// control byte immediately precede the payload on the prompt line.
+    #[test]
+    fn ansi_decorated_frames_parse_cleanly() {
+        let decorated = format!(
+            "\u{1b}[4m  DB<2> \u{1b}[24m\u{1b}[1m\u{1b}[m\u{0f}{READBACK_MARKER} present {PATH}"
+        );
+        assert_eq!(
+            parse_registration(&[decorated], READBACK_MARKER),
+            Some(RegistrationObservation { present: true, path: PATH.to_string() })
+        );
+        let decorated_ack = format!("\u{1b}[4m  DB<3> \u{1b}[24m\u{0f}{MUTATION_MARKER} 1");
+        assert_eq!(parse_mutation_ack(&[decorated_ack]), Some(true));
+        // Sanitizing must not invent a marker where there is none.
+        assert_eq!(parse_mutation_ack(&["\u{1b}[4m  DB<4> \u{1b}[24m".to_string()]), None);
     }
 }
