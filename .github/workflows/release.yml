@@ -575,9 +575,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/release-tag-authority
-          mapfile -t ruleset_ids < <(gh api --paginate \
+          # Capture through a status-checked substitution: a process
+          # substitution would hide a paginated-request failure and let the
+          # gate validate an incomplete ruleset list.
+          ruleset_ids_json="$(gh api --paginate \
             "/repos/${GITHUB_REPOSITORY}/rulesets" \
-            --jq '.[] | select(.name == "release-tags" and .target == "tag") | .id')
+            --jq '.[] | select(.name == "release-tags" and .target == "tag") | .id')"
+          mapfile -t ruleset_ids <<< "$ruleset_ids_json"
           if [ "${#ruleset_ids[@]}" -ne 1 ]; then
             printf '::error::Expected exactly one active release-tags ruleset, found %s\n' "${#ruleset_ids[@]}"
             exit 1
@@ -620,9 +624,13 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          mapfile -t ruleset_ids < <(gh api --paginate \
+          # Capture through a status-checked substitution: a process
+          # substitution would hide a paginated-request failure and let the
+          # gate validate an incomplete ruleset list.
+          ruleset_ids_json="$(gh api --paginate \
             "/repos/${GITHUB_REPOSITORY}/rulesets" \
-            --jq '.[] | select(.name == "release-tags" and .target == "tag") | .id')
+            --jq '.[] | select(.name == "release-tags" and .target == "tag") | .id')"
+          mapfile -t ruleset_ids <<< "$ruleset_ids_json"
           if [ "${#ruleset_ids[@]}" -ne 1 ]; then
             printf '::error::Expected exactly one active release-tags ruleset, found %s\n' "${#ruleset_ids[@]}"
             exit 1
