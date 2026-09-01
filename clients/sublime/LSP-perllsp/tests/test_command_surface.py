@@ -325,6 +325,31 @@ class CommandSurfaceContractTests(unittest.TestCase):
         self.assertIn("Reason: nested diagnosis", rendered)
         self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
 
+    def test_deeply_nested_controls_are_rendered_before_bulk_branches(self) -> None:
+        result = {f"bulk{index:02d}": {"payload": "x" * 4090} for index in range(20)}
+        result["envelope"] = {"details": {"diagnosis": {"error": "deep failure"}}}
+        rendered = surface.format_result("Perl: Run Workspace Tests", result)
+        self.assertIn("Error: deep failure", rendered)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+    def test_nested_list_items_are_bounded_as_complete_items(self) -> None:
+        result = [
+            {f"field{index:02d}": "y" * 4090 for index in range(20)},
+            {"status": "failed", "error": "later item diagnosis"},
+        ]
+        rendered = surface.format_result("Perl: Run Workspace Tests", result)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+        self.assertIn("later item diagnosis", rendered)
+
+    def test_bounded_results_have_one_terminal_newline_and_exact_limit(self) -> None:
+        rendered = surface.format_result(
+            "Perl: Run Current File",
+            {"output": "z" * (surface.MAX_OUTPUT_CHARS * 4)},
+        )
+        self.assertTrue(rendered.endswith("\n"))
+        self.assertFalse(rendered.endswith("\n\n"))
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
     def test_global_bound_is_hard_after_rendering(self) -> None:
         rendered = surface.format_result(
             "Perl: Run Current File",

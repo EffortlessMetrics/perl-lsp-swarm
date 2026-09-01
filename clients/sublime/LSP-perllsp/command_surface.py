@@ -231,7 +231,7 @@ def _bounded_field(
     # Reserve the notice itself.  Error text commonly ends with the useful
     # compiler diagnosis, so retain both ends when it is a control field.
     notice = "\n… {} character(s) of this field omitted by LSP-perllsp."
-    omitted = len(text) - max_chars
+    omitted = max(1, len(text) - max_chars)
     while True:
         rendered_notice = notice.format(omitted)
         keep = max_chars - len(rendered_notice) - (3 if preserve_tail else 0)
@@ -267,7 +267,15 @@ def _append_value(
     if isinstance(value, (list, tuple)):
         lines.append(f"{prefix}{label}: {len(value)} item(s)")
         for index, item in enumerate(value[:50], start=1):
-            _append_value(lines, f"{index}", item, indent + 1, bound_fields=bound_fields)
+            # Bound each item as a unit.  Bounding only scalar leaves still
+            # permits one deeply nested mapping/list item to consume the
+            # complete envelope before later items (and their labels) render.
+            item_lines: list[str] = []
+            _append_value(item_lines, f"{index}", item, indent + 1, bound_fields=bound_fields)
+            rendered_item = "\n".join(item_lines)
+            if bound_fields:
+                rendered_item = _bounded_field(rendered_item)
+            lines.extend(rendered_item.splitlines())
         if len(value) > 50:
             lines.append(f"{prefix}  … {len(value) - 50} additional item(s) omitted")
         return
@@ -295,10 +303,21 @@ def _ordered_keys(value: Mapping) -> list[Any]:
     # A nested mapping can itself carry a control result.  Bring those
     # mappings forward too, otherwise a collection of large sibling payloads
     # can hide the nested diagnosis behind the final envelope bound.
+    def contains_control(candidate: Any) -> bool:
+        if not isinstance(candidate, Mapping):
+            return False
+        return any(
+            str(nested_key) in CONTROL_RESULT_KEYS or contains_control(nested_value)
+            for nested_key, nested_value in candidate.items()
+        )
+
+    # A control can be several mapping levels below the envelope.  Promote
+    # the whole branch before bulk siblings, then let its own invocation of
+    # _ordered_keys put the control row first within that branch.
     nested_controls = [
-        k for k in keys
-        if str(k) not in control_set and isinstance(value[k], Mapping)
-        and any(str(nested_key) in CONTROL_RESULT_KEYS for nested_key in value[k])
+        k
+        for k in keys
+        if str(k) not in control_set and contains_control(value[k])
     ]
     nested_set = {str(k) for k in nested_controls}
     rest = sorted(
