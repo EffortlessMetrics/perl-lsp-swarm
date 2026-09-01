@@ -3837,8 +3837,13 @@ profile = "recommended"
     fn perltidy_discoverable_on_path_still_yields_native_default() -> TestResult {
         const MARKER: &str = "PERL_LSP_WAVE_A1_PATH_CHILD";
         if std::env::var_os(MARKER).is_some() {
-            let name = if cfg!(windows) { "perltidy.exe" } else { "perltidy" };
-            let status = std::process::Command::new(name).status()?;
+            let status = if cfg!(windows) {
+                let comspec = std::env::var_os("ComSpec")
+                    .ok_or_else(|| "ComSpec is required for the Windows fixture".to_owned())?;
+                std::process::Command::new(comspec).args(["/C", "perltidy.cmd"]).status()?
+            } else {
+                std::process::Command::new("perltidy").status()?
+            };
             assert!(status.success(), "child PATH must discover perltidy");
             assert_eq!(ServerConfig::default().formatting_engine, FormatterMode::Native);
             return Ok(());
@@ -3846,7 +3851,7 @@ profile = "recommended"
         // Exercise executable discoverability with an explicit PATH input; the
         // test runner's environment is never changed.
         let dir = tempfile::tempdir()?;
-        let name = if cfg!(windows) { "perltidy.exe" } else { "perltidy" };
+        let name = if cfg!(windows) { "perltidy.cmd" } else { "perltidy" };
         let executable = dir.path().join(name);
         #[cfg(windows)]
         std::fs::write(&executable, b"@echo off\r\nexit /b 0\r\n")?;
