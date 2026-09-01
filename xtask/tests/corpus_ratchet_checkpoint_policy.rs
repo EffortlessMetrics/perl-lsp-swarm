@@ -79,7 +79,7 @@ shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}"#,
     ),
     (
         "Install just",
-        "taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d",
+        "taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf",
         "tool: just",
     ),
     (
