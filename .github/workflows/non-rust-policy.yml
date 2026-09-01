@@ -1,4 +1,4 @@
-# contract-version: 2
+# contract-version: 3
 name: Non-Rust policy
 
 on:
@@ -107,7 +107,7 @@ jobs:
           grep -q 'actions/upload-artifact@' "$workflow"
           grep -q 'if: always()' "$workflow"
           grep -q 'persist-credentials: false' "$workflow"
-          ! grep -Eq 'cargo run.*(pull_request|head\.sha|github\.event\.pull_request\.head)' "$workflow"
+          ! grep -Eq 'cargo[ ]run.*(pull_request|head\.sha|github\.event\.pull_request\.head)' "$workflow"
       - name: Run trusted exact-tree evaluator
         if: steps.bind.outcome == 'success'
         run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json
