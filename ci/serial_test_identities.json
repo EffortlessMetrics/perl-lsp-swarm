@@ -5,7 +5,7 @@
       "path": "crates/perl-dap/tests/debuggee_probe_hygiene.rs",
       "test_function": "probe_workspace_cleanup_covers_each_child_exit_path",
       "signals": "env_remove,env_set",
-      "accepted_reason": "Tracked #1269 audit long tail: process-environment behavior is exercised in a configured child process; retire this row when the parent remains mutation-free.",
+      "accepted_reason": "Tracked #1269 audit long tail: parent-process environment mutation remains; migrate this row to configured child-process execution before retiring it.",
       "state": "active",
       "remediation": "pending"
     },
