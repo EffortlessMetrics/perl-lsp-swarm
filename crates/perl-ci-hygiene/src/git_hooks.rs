@@ -101,11 +101,22 @@ if [ "$STAGED_INVENTORY_CHANGE" -eq 1 ]; then
         echo "❌ Cannot refresh non-Rust inventory: staged index has unmerged entries"
         exit 1
     }
-    INV_COMMIT="$(git commit-tree "$INV_TREE" -p HEAD -m 'pre-commit inventory refresh: staged tree')" || {
-        rm -rf "$INV_WT"
-        echo "❌ Cannot refresh non-Rust inventory: failed to materialize the staged tree"
-        exit 1
-    }
+    if git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+        INV_COMMIT="$(git commit-tree "$INV_TREE" -p HEAD -m 'pre-commit inventory refresh: staged tree')" || {
+            rm -rf "$INV_WT"
+            echo "❌ Cannot refresh non-Rust inventory: failed to materialize the staged tree"
+            exit 1
+        }
+    else
+        # Unborn HEAD (no commit yet, or an orphan branch): the root staged
+        # tree has no parent to point at, so materialize it without one
+        # instead of failing the refresh.
+        INV_COMMIT="$(git commit-tree "$INV_TREE" -m 'pre-commit inventory refresh: staged tree')" || {
+            rm -rf "$INV_WT"
+            echo "❌ Cannot refresh non-Rust inventory: failed to materialize the staged tree"
+            exit 1
+        }
+    fi
     cleanup_inv_wt() {
         git worktree remove --force "$INV_WT" >/dev/null 2>&1 || true
         rm -rf "$INV_WT" 2>/dev/null || true
@@ -730,6 +741,17 @@ mod tests {
         run_git(&repo, &["rm", "-q", "docs/policy/NON_RUST_INVENTORY.md"])?;
         fs::write(repo.join("unusual name;touch pwned.json"), "{}\n")?;
         run_git(&repo, &["add", "--", "unusual name;touch pwned.json"])?;
+        // A literal `\033` sequence discriminates `printf %q` from
+        // `printf %b` (#14330 review): %b would interpret it into a raw ESC
+        // byte in the echoed staged-path listing, while %q keeps the name
+        // literal. The assertion below fails if that regression lands.
+        // Unix-only: a backslash is a path separator on Windows, so the
+        // escape-like filename cannot exist there.
+        #[cfg(unix)]
+        {
+            fs::write(repo.join("esc-\\033[2J name.json"), "{}\n")?;
+            run_git(&repo, &["add", "--", "esc-\\033[2J name.json"])?;
+        }
 
         let bash = [
             PathBuf::from("bash"),
@@ -759,6 +781,12 @@ mod tests {
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("unusual"));
+        #[cfg(unix)]
+        assert!(
+            !stdout.contains('\x1b'),
+            "the echoed staged path must stay literal: a raw ESC byte means the \
+             listing regressed from %q to %b"
+        );
         assert!(!repo.join("pwned.json").exists());
         let calls = fs::read_to_string(&log)?;
         assert!(calls.contains("xtask non-rust inventory --write"));

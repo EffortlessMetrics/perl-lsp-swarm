@@ -1075,8 +1075,8 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
             "| `{}` | {} | `{}` | {} |\n",
             escape_markdown_cell(&r.path),
             r.category,
-            id,
-            owner
+            escape_markdown_cell(id),
+            escape_markdown_cell(owner)
         ));
     }
     out.push('\n');
@@ -1389,8 +1389,14 @@ fn parse_markdown_cells(line: &str) -> Option<Vec<String>> {
             }
             _ => {
                 if escaped {
-                    current.push('\\');
                     escaped = false;
+                    // The writer escapes exactly one character (`|` as
+                    // `\|`), so only that pair decodes to the raw value;
+                    // every other backslash sequence is preserved verbatim
+                    // so paths round-trip exactly (#14330 review).
+                    if ch != '|' {
+                        current.push('\\');
+                    }
                 }
                 current.push(ch);
             }
@@ -3503,6 +3509,17 @@ mod tests {
             parsed.into_iter().collect::<Vec<_>>(),
             vec!["docs/a|b.md"],
             "escape and parse must be exact inverses"
+        );
+
+        // A backslash that is not part of a `\|` escape stays verbatim, and
+        // the pipe after it still decodes (#14330 review).
+        let raw = "docs\\a|b.md";
+        let row = format!("| `{}` | documentation | `ab` | owner |\n", escape_markdown_cell(raw));
+        let parsed = inventory_row_paths(&row);
+        assert_eq!(
+            parsed.into_iter().collect::<Vec<_>>(),
+            vec![raw],
+            "non-escape backslashes must round-trip verbatim"
         );
     }
 
