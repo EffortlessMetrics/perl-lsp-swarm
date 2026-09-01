@@ -925,7 +925,7 @@ do
   -- first, the references-only server second; iteration order must not let
   -- the first server block the second. One open_document broadcast admits
   -- both servers.
-  local saw_request_from_second = false
+  local successful_trials = 0
   for _ = 1, 8 do
     lsp = fresh_module_load()
     local first = make_server("hoverfirst", merge_caps(SYNC, { hoverProvider = {} }))
@@ -941,11 +941,11 @@ do
     if #first.outbound == 0
       and #second.outbound == 1
       and second.outbound[1].method == "textDocument/references" then
-      saw_request_from_second = true
+      successful_trials = successful_trials + 1
     end
   end
-  ok(saw_request_from_second,
-    "case12: references-capable second server remains reachable under complementary servers")
+  ok(successful_trials == 8,
+    "case12: references-capable second server remains reachable in every complementary-server trial")
 end
 
 print(string.format("%d passed, %d failed", passed, failed))
