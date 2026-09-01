@@ -504,20 +504,4 @@ export async function suggestAiCompletionIfSupported(
   }
 }
 
-export async function openDemoProjectCommand(context: vscode.ExtensionContext): Promise<void> {
-  const demoPath = path.join(context.extensionPath, 'assets', 'demo-project');
-  if (!(await pathExists(path.join(demoPath, 'main.pl')))) {
-    void vscode.window.showErrorMessage(
-      'Perl LSP: demo project is not available in this installation.',
-    );
-    return;
-  }
-
-  await context.globalState.update('perl-lsp.demoProjectOpened', true);
-  void vscode.window.showInformationMessage(
-    'Opening the Perl demo project. Try code completion (Ctrl+Space) in main.pl, or hover over Utils / Database for go-to-definition.',
-  );
-  await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(demoPath), {
-    forceNewWindow: true,
-  });
-}
+export { openUserOwnedDemoProject as openDemoProjectCommand } from './demoProject';
