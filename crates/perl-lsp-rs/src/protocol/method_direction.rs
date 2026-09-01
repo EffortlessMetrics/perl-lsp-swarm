@@ -714,19 +714,24 @@ mod tests {
     /// The suffix is deliberately scanned with the same lexical rules as the
     /// module-brace scanner above; a textual split would truncate URLs and
     /// other valid production literals.
-    fn strip_line_comment(source: &str) -> &str {
+    fn strip_line_comment(source: &str) -> String {
         let bytes = source.as_bytes();
         let mut state = LexicalState::Normal;
         let mut index = 0;
+        let mut last_emit = 0;
+        let mut output = String::with_capacity(source.len());
         while index < bytes.len() {
             match state {
                 LexicalState::Normal => {
                     if bytes[index..].starts_with(b"//") {
-                        return &source[..index];
+                        output.push_str(&source[last_emit..index]);
+                        return output;
                     }
                     if bytes[index..].starts_with(b"/*") {
+                        output.push_str(&source[last_emit..index]);
                         state = LexicalState::BlockComment(1);
                         index += 2;
+                        last_emit = index;
                         continue;
                     }
                     if let Some((next, hashes)) = raw_string_start(bytes, index) {
@@ -758,6 +763,7 @@ mod tests {
                         index += 2;
                     } else if bytes[index..].starts_with(b"*/") {
                         index += 2;
+                        last_emit = index;
                         state = if depth == 1 {
                             LexicalState::Normal
                         } else {
@@ -787,7 +793,82 @@ mod tests {
                 }
             }
         }
-        source
+        output.push_str(&source[last_emit..]);
+        output
+    }
+
+    /// Return the last line of a balanced outer attribute.  Attributes such
+    /// as `#[path = concat!(...)]` may span lines; counting brackets while
+    /// respecting strings and comments keeps the module scan structural.
+    fn outer_attribute_end(lines: &[&str], start: usize) -> Option<usize> {
+        let first = lines.get(start)?.trim_start();
+        if !first.starts_with("#[") {
+            return None;
+        }
+        let mut depth = 0usize;
+        let mut quoted = false;
+        let mut escaped = false;
+        let mut block_comment = 0usize;
+        for line_index in start..lines.len() {
+            let bytes = lines[line_index].as_bytes();
+            let mut index = 0;
+            while index < bytes.len() {
+                if block_comment > 0 {
+                    if bytes[index..].starts_with(b"/*") {
+                        block_comment += 1;
+                        index += 2;
+                    } else if bytes[index..].starts_with(b"*/") {
+                        block_comment -= 1;
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                    continue;
+                }
+                if quoted {
+                    if escaped {
+                        escaped = false;
+                    } else if bytes[index] == b'\\' {
+                        escaped = true;
+                    } else if bytes[index] == b'"' {
+                        quoted = false;
+                    }
+                    index += 1;
+                    continue;
+                }
+                if bytes[index..].starts_with(b"//") {
+                    break;
+                }
+                if bytes[index..].starts_with(b"/*") {
+                    block_comment = 1;
+                    index += 2;
+                } else if bytes[index] == b'"' {
+                    quoted = true;
+                    index += 1;
+                } else if bytes[index] == b'[' {
+                    depth += 1;
+                    index += 1;
+                } else if bytes[index] == b']' {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(line_index);
+                    }
+                    index += 1;
+                } else {
+                    index += 1;
+                }
+            }
+        }
+        None
+    }
+
+    fn is_cfg_test_attribute(lines: &[&str], start: usize, end: usize) -> bool {
+        lines[start..=end]
+            .iter()
+            .flat_map(|line| line.chars())
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+            == "#[cfg(test)]"
     }
 
     fn scan_structural_braces(
@@ -905,50 +986,50 @@ mod tests {
 
     fn strip_test_modules(source: &str) -> String {
         let mut result = String::with_capacity(source.len());
-        let mut lines = source.lines().peekable();
-        while let Some(line) = lines.next() {
+        let lines: Vec<&str> = source.lines().collect();
+        let mut index = 0;
+        while index < lines.len() {
+            let line = lines[index];
             result.push_str(line);
             result.push('\n');
-            if line.trim() != "#[cfg(test)]" {
+            let Some(cfg_end) = outer_attribute_end(&lines, index) else {
+                index += 1;
+                continue;
+            };
+            if !is_cfg_test_attribute(&lines, index, cfg_end) {
+                index += 1;
                 continue;
             }
             // Outer attributes may intervene between cfg(test) and the module
             // declaration (notably #[path = "..."] on an external module).
-            // Inspect the whole contiguous attribute run before consuming it;
+            // Inspect the whole contiguous, possibly multiline attribute run;
             // otherwise a non-module item must remain visible to the scan.
-            let mut lookahead = lines.clone();
-            let mut intervening_attributes = 0;
-            let declaration = loop {
-                let Some(candidate) = lookahead.next() else { break None };
-                if let Some(declaration) = test_module_declaration(candidate.trim_start()) {
-                    break Some(declaration);
-                }
-                let trimmed = candidate.trim_start();
-                if trimmed.starts_with("#[")
-                    || trimmed.starts_with("///")
-                    || trimmed.starts_with("//!")
-                {
-                    intervening_attributes += 1;
-                    continue;
-                }
-                break None;
+            let mut declaration_line = cfg_end + 1;
+            while let Some(end) = outer_attribute_end(&lines, declaration_line) {
+                declaration_line = end + 1;
+            }
+            let Some(declaration_line_text) = lines.get(declaration_line) else {
+                index += 1;
+                continue;
             };
-            let Some(declaration) = declaration else { continue };
+            let Some(declaration) = test_module_declaration(declaration_line_text.trim_start())
+            else {
+                index += 1;
+                continue;
+            };
             // Consume the intervening attributes and module declaration. A `mod x;` declaration ends
             // here, including when trailing comments follow the semicolon; a
             // `mod x {` block is skipped by lexical brace counting.
-            for _ in 0..intervening_attributes {
-                let _ = lines.next();
-            }
-            let Some(mod_line) = lines.next() else { break };
+            let mod_line = *declaration_line_text;
             if matches!(declaration.kind, TestModuleKind::External) {
                 let mod_line = mod_line.trim_start();
                 let suffix = &mod_line[declaration.terminator_offset + 1..];
                 let suffix = strip_line_comment(suffix);
                 if !suffix.trim().is_empty() {
-                    result.push_str(suffix);
+                    result.push_str(&suffix);
                     result.push('\n');
                 }
+                index = declaration_line + 1;
                 continue;
             }
             let mut lexical_state = LexicalState::Normal;
@@ -958,29 +1039,42 @@ mod tests {
                 let suffix = &mod_line[offset + 1..];
                 let suffix = strip_line_comment(suffix);
                 if !suffix.trim().is_empty() {
-                    result.push_str(suffix);
+                    result.push_str(&suffix);
                     result.push('\n');
                 }
+                index = declaration_line + 1;
                 continue;
             }
             while depth > 0 {
-                match lines.next() {
-                    Some(inner) => {
-                        let (delta, close) =
-                            scan_structural_braces(inner, &mut lexical_state, depth);
-                        depth += delta;
-                        if let Some(offset) = close {
-                            let suffix = &inner[offset + 1..];
-                            let suffix = strip_line_comment(suffix);
-                            if !suffix.trim().is_empty() {
-                                result.push_str(suffix);
-                                result.push('\n');
-                            }
-                            break;
+                index += 1;
+                if let Some(inner) = lines.get(index) {
+                    let (delta, close) = scan_structural_braces(inner, &mut lexical_state, depth);
+                    depth += delta;
+                    // A line-start closing brace is unambiguous even when a
+                    // preceding line ended in a continued literal.
+                    let close = close.or_else(|| {
+                        inner
+                            .trim_start()
+                            .starts_with('}')
+                            .then_some(inner.len() - inner.trim_start().len())
+                    });
+                    if let Some(offset) = close {
+                        depth = 0;
+                        let suffix = &inner[offset + 1..];
+                        let suffix = strip_line_comment(suffix);
+                        if !suffix.trim().is_empty() {
+                            result.push_str(&suffix);
+                            result.push('\n');
                         }
+                        index += 1;
+                        break;
                     }
-                    None => break,
+                } else {
+                    break;
                 }
+            }
+            if depth == 0 && index == declaration_line {
+                index += 1;
             }
         }
         result
@@ -1012,11 +1106,17 @@ pub(crate) mod same_line; fn after_external() { send("production/after_external"
 #[cfg(test)]
 mod inline_same_line { const INLINE: &str = "inline/test"; } const INLINE_URL: &str = "https://example.test/inline"; fn after_inline() { send("production/after_inline"); } // trailing comment
 #[cfg(test)]
-pub(crate) mod external_with_url; const EXTERNAL_URL: &str = "https://example.test/external"; // trailing comment
+pub(crate) mod external_with_url; const EXTERNAL_URL: &str = "https://example.test/external"; /* fake route from a block comment: send("test/comment-leak") */ // trailing comment
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "fixtures/external_test.rs"]
 pub(in crate::protocol) mod attributed_external; const ATTRIBUTED_URL: &str = "https://example.test/attributed"; // trailing comment
+#[cfg(test)]
+#[path = concat!(
+    "fixtures/",
+    "multiline_external_test.rs",
+)]
+pub(crate) mod multiline_attributed_external; const MULTILINE_ATTRIBUTED_URL: &str = "https://example.test/multiline-attributed"; // trailing comment
 #[cfg(test)]
 pub(crate) mod lexical_forms {
     const CLOSE: &str = "}";
@@ -1027,7 +1127,7 @@ pub(crate) mod lexical_forms {
     const BYTE_RAW: &[u8] = br##("{ }")##;
     const CHARACTER: char = '}';
     const BYTE_CHARACTER: u8 = b'{';
-    const CONTINUED: &str = "opening\
+const CONTINUED: &str = "opening\
 ";
 }
 fn production() { send("production/after"); }
@@ -1042,6 +1142,7 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         }
         assert!(!stripped.contains("pub(crate) mod external;"));
         assert!(!stripped.contains("test/comment-leak"));
+        assert!(!stripped.contains("fake route from a block comment"));
         assert!(!stripped.contains("pub(crate) mod commented"));
         assert!(!stripped.contains("inline/test"));
         assert!(!stripped.contains("pub(crate) mod lexical_forms"));
@@ -1051,6 +1152,7 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         assert!(stripped.contains("https://example.test/inline"));
         assert!(stripped.contains("https://example.test/external"));
         assert!(stripped.contains("https://example.test/attributed"));
+        assert!(stripped.contains("https://example.test/multiline-attributed"));
         assert!(!stripped.contains("fixtures/external_test.rs"));
         assert!(!stripped.contains("pub(in crate::protocol) mod attributed_external"));
         assert!(stripped.contains("production/after"));
