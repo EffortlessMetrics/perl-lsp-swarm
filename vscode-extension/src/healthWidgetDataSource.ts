@@ -99,7 +99,7 @@ function isRelevantWorkspaceFile(uri: Uri): boolean {
     return false;
   }
   const path = ((uri.fsPath ?? uri.toString()) as string).replaceAll('\\', '/');
-  return !/(^|\/)(node_modules|\.git|target|\.vscode)(\/|$)/i.test(path);
+  return !/(^|\/)(node_modules|\.git|target|\.vscode)(\/|$)/.test(path);
 }
 
 /**
@@ -195,7 +195,6 @@ export class HealthWidgetDataSource {
         }
       };
       this.disposables.push(watcher.onDidCreate(watch));
-      this.disposables.push(watcher.onDidChange(watch));
       this.disposables.push(watcher.onDidDelete(watch));
     }
 
@@ -287,17 +286,11 @@ export class HealthWidgetDataSource {
       }
 
       if (this.disposed || generation !== this.fileCountGeneration) {
-        if (!this.disposed && this.fileCountInvalidated) {
-          await this.runFileCountScan(this.fileCountGeneration);
-        }
         return;
       }
       this.widget.setFileCount(identities.size, lowerBound);
     } catch {
       if (this.disposed || generation !== this.fileCountGeneration) {
-        if (!this.disposed && this.fileCountInvalidated) {
-          await this.runFileCountScan(this.fileCountGeneration);
-        }
         return;
       }
       this.fileCountPromise = undefined;

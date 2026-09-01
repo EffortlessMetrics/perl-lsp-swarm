@@ -249,9 +249,9 @@ export const workspace = {
     update: jest.fn(),
   })),
   createFileSystemWatcher: jest.fn(() => ({
-    onDidCreate: jest.fn(),
-    onDidChange: jest.fn(),
-    onDidDelete: jest.fn(),
+    onDidCreate: jest.fn(() => ({ dispose: jest.fn() })),
+    onDidChange: jest.fn(() => ({ dispose: jest.fn() })),
+    onDidDelete: jest.fn(() => ({ dispose: jest.fn() })),
     dispose: jest.fn(),
   })),
   onDidOpenTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
