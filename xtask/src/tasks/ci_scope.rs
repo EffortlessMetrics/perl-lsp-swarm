@@ -181,7 +181,10 @@ fn is_ci_config_file(file: &str) -> bool {
 /// planner and does not read arbitrary file contents while classifying a diff.
 /// The selected paths are the repository's known portability seams: shell
 /// hooks/scripts, the `perl-ci-hygiene` process-helper seam, URI and
-/// workspace-index code, and explicitly named Windows implementations.
+/// workspace-index code, and explicitly named Windows implementations. The
+/// Unix-only release-artifact integration target is one deliberate exception:
+/// it is included solely for Windows compile admission, while its Bash/chmod
+/// behavior remains Unix-owned and is not claimed as Windows runtime coverage.
 pub fn requires_windows_runner(files: &[String]) -> bool {
     files.iter().any(|file| {
         let normalized = file.replace('\\', "/").to_ascii_lowercase();

@@ -73,7 +73,19 @@ fn step_run_script(step: &str) -> Option<String> {
     for line in step.lines() {
         let trimmed = line.trim();
         if in_block {
-            script.push(trimmed);
+            if line.trim().is_empty() {
+                script.push(String::new());
+                continue;
+            }
+            // A block-scalar body is indented beneath `run: |`. The first
+            // non-indented line terminates the scalar, even when the step is
+            // the last step in the job and the enclosing job has trailing
+            // comments. Remove only YAML's fixed body indentation so shell
+            // indentation remains observable to the contract.
+            let Some(content) = line.strip_prefix("          ") else {
+                break;
+            };
+            script.push(content.to_string());
         } else if let Some(command) = trimmed.strip_prefix("run: ") {
             if command == "|" {
                 in_block = true;
@@ -275,6 +287,10 @@ fn windows_platform_smoke_compiles_integration_targets_without_running_them()
         "Windows portability smoke contract must not inspect the preceding cache-key step"
     );
     let run = step_run_script(smoke_step).ok_or("windows platform smoke has no run command")?;
+    assert!(
+        !run.contains("Conflict-marker guard"),
+        "run extraction must stop at the end of the YAML block scalar; command: {run}"
+    );
 
     assert!(
         run.contains("cargo test $WINDOWS_TEST_CRATES --locked --lib"),
