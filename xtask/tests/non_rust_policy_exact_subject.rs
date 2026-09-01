@@ -223,9 +223,12 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
         "        run: >-\n",
         "          echo \"${{ github.event.pull_request.head.sha }}\"\n\n",
     );
+    // Keep the original guard step and insert the hostile run as its own
+    // sequence item. This exercises the parser's step-boundary handling in
+    // addition to its block-scalar handling.
     let malicious_workflow = workflow_text.replacen(
         "      - name: Verify trusted workflow contract\n",
-        malicious_step,
+        &format!("{malicious_step}      - name: Verify trusted workflow contract\n"),
         1,
     );
     let malicious_path = guard_workflow.join("non-rust-policy.yml");
@@ -238,6 +241,12 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
     ensure!(
         !malicious_guard.status.success(),
         "trusted workflow guard must reject pull-request interpolation"
+    );
+    ensure!(
+        String::from_utf8_lossy(&malicious_guard.stderr)
+            .contains("trusted run body interpolates pull-request event data"),
+        "trusted workflow guard must report the interpolation reason; stderr: {}",
+        String::from_utf8_lossy(&malicious_guard.stderr)
     );
 
     let fixture = pr_fixture()?;
