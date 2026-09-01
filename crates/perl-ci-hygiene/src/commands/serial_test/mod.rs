@@ -834,26 +834,30 @@ fn complete_serial_site_inventories(
             scan.scan_file(index, directory, &[]);
         }
     }
-    fn normalize_sites(sites: &mut Vec<SerialSiteIdentity>) {
-        sites.sort();
-        sites.dedup();
-        let identities = sites.iter().fold(
-            BTreeMap::<(String, String), BTreeSet<String>>::new(),
-            |mut identities, site| {
-                let bare = site
-                    .test_function
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or(site.test_function.as_str())
-                    .to_owned();
-                identities
-                    .entry((site.path.clone(), bare))
-                    .or_default()
-                    .insert(site.test_function.clone());
-                identities
-            },
-        );
-        for site in sites.iter_mut() {
+    let serialized_keys: BTreeSet<_> =
+        scan.serialized_sites.iter().map(SerialSiteIdentity::key).collect();
+    let mut all_sites = scan.sites;
+    all_sites.extend(scan.serialized_sites);
+    let identities = all_sites.iter().fold(
+        BTreeMap::<(String, String), BTreeSet<String>>::new(),
+        |mut identities, site| {
+            let bare = site
+                .test_function
+                .rsplit("::")
+                .next()
+                .unwrap_or(site.test_function.as_str())
+                .to_owned();
+            identities
+                .entry((site.path.clone(), bare))
+                .or_default()
+                .insert(site.test_function.clone());
+            identities
+        },
+    );
+    let mut classified = all_sites
+        .drain(..)
+        .map(|mut site| {
+            let is_serialized = serialized_keys.contains(&site.key());
             let bare = site
                 .test_function
                 .rsplit("::")
@@ -866,19 +870,15 @@ fn complete_serial_site_inventories(
             {
                 site.test_function = bare;
             }
-        }
-        sites.sort();
-        sites.dedup();
-    }
-    let serialized_keys: BTreeSet<_> =
-        scan.serialized_sites.iter().map(SerialSiteIdentity::key).collect();
-    let mut all_sites = scan.sites;
-    all_sites.extend(scan.serialized_sites);
-    normalize_sites(&mut all_sites);
+            (site, is_serialized)
+        })
+        .collect::<Vec<_>>();
+    classified.sort_by(|(left, _), (right, _)| left.cmp(right));
+    classified.dedup_by(|(left, _), (right, _)| left == right);
     let mut unguarded = Vec::new();
     let mut serialized = Vec::new();
-    for site in all_sites {
-        if serialized_keys.contains(&site.key()) {
+    for (site, is_serialized) in classified {
+        if is_serialized {
             serialized.push(site);
         } else {
             unguarded.push(site);
