@@ -1,7 +1,7 @@
 impl<'a> Parser<'a> {
     /// Parse a complete program
     fn parse_program(&mut self) -> ParseResult<Node> {
-        let start = self.current_position();
+        let start = 0;
         let mut statements = Vec::new();
 
         while !self.tokens.is_eof() {
@@ -1582,6 +1582,11 @@ impl<'a> Parser<'a> {
                             // Also skip an optional fat arrow (`=>`) which Perl treats as a comma synonym.
                             if parsed_block_arg && !self.is_at_statement_end() {
                                 // Skip optional comma or fat arrow before the list
+                                if self.peek_kind() == Some(TokenKind::FatArrow)
+                                    && let Some(arg) = args.last_mut()
+                                {
+                                    Self::auto_quote_bareword_before_fat_comma(arg);
+                                }
                                 if matches!(self.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
                                     self.consume_token()?;
                                 }
@@ -1604,6 +1609,11 @@ impl<'a> Parser<'a> {
                                     && !self.peek_kind().is_some_and(TokenKind::is_low_precedence_word_operator)
                                 {
                                     // Skip optional comma or fat arrow
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                    }
                                     if matches!(self.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
                                         self.consume_token()?;
                                     }
@@ -1624,6 +1634,11 @@ impl<'a> Parser<'a> {
                                         break;
                                     }
 
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                    }
                                     self.consume_token()?; // consume comma or fat arrow
 
                                     // Handle `, =>` (comma then fat arrow) — consume

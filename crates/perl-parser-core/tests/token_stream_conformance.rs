@@ -192,6 +192,92 @@ fn hash_and_sub_sigils_as_identifier_tokens_keep_sigil_kind() {
     );
 }
 
+/// A payload-free, geometry-only lexer token: empty text over a non-empty
+/// span (`PerlLexer::with_body_tokens` emits `HeredocBody` this way, and the
+/// budget recoveries emit `UnknownRest` this way — #6717 keeps those
+/// payloads out of lexer tokens).
+fn geometry_only_token(token_type: TokenType, start: usize, end: usize) -> LexerToken {
+    LexerToken { token_type, text: Arc::from(""), start, end }
+}
+
+#[test]
+fn geometry_only_heredoc_body_survives_conversion_with_source() {
+    // `with_body_tokens` heredoc bodies are payload-free; the source-aware
+    // conversion must reconstruct the covered bytes so the typed
+    // `HeredocBody` token survives instead of silently degrading to `Eof`
+    // through the `unknown_or_eof` fallback chain (#14158 class sweep).
+    let source = "my $x = <<'END';\nbody\n";
+    // Span 17..21 covers "body" in the source above.
+    assert_eq!(&source[17..21], "body");
+    let converted = TokenStream::lexer_tokens_to_parser_tokens_from_source(
+        vec![geometry_only_token(TokenType::HeredocBody(Arc::from("")), 17, 21)],
+        source,
+    );
+    assert_eq!(converted.len(), 1);
+    assert_eq!(converted[0].kind(), TokenKind::HeredocBody);
+    assert_eq!(&*converted[0].text, "body");
+    assert_eq!(converted[0].start(), 17);
+    assert_eq!(converted[0].end(), 21);
+}
+
+#[test]
+fn producer_driven_heredoc_body_survives_conversion_with_source() {
+    // Producer-driven integration control for the test above: instead of
+    // hand-constructing the geometry-only token, run the real producer
+    // (`PerlLexer::with_body_tokens`) over heredoc source and feed its raw
+    // output through the conversion seam, so producer-span drift at the
+    // emitter can no longer pass unnoticed behind a synthetic fixture.
+    let source = "my $x = <<'END';\nbody line\nEND\nmy $after = 1;\n";
+    let mut lexer = PerlLexer::with_body_tokens(source);
+    let mut raw = Vec::new();
+    while let Some(token) = lexer.next_token() {
+        if matches!(token.token_type, TokenType::EOF) {
+            break;
+        }
+        raw.push(token);
+    }
+
+    let body_index = raw
+        .iter()
+        .position(|token| matches!(token.token_type, TokenType::HeredocBody(_)))
+        .expect("the producer must emit a HeredocBody token for this source");
+    assert!(
+        raw[body_index].text.is_empty(),
+        "the producer must emit the body payload-free for this fixture to discriminate"
+    );
+    let expected_body = &source[raw[body_index].start..raw[body_index].end];
+    let expected_start = raw[body_index].start;
+    let expected_end = raw[body_index].end;
+
+    let converted = TokenStream::lexer_tokens_to_parser_tokens_from_source(raw, source);
+    let converted_body = converted
+        .iter()
+        .find(|token| token.kind() == TokenKind::HeredocBody)
+        .expect("the converted stream must keep the typed HeredocBody");
+    assert_eq!(&*converted_body.text, expected_body, "covered bytes must be reconstructed");
+    assert_eq!(converted_body.start(), expected_start);
+    assert_eq!(converted_body.end(), expected_end);
+}
+
+#[test]
+fn geometry_only_unknown_rest_survives_conversion_with_source() {
+    // Budget-degraded `UnknownRest` (#14158): the typed token — and the
+    // `lexer_budget_exhausted` stop cause downstream — must survive
+    // source-aware conversion instead of collapsing to a silent `Eof`.
+    let source = "my $x = 1;\nunterminated regex trailing";
+    // Span 11..38 covers the remaining source after the budget cut.
+    assert_eq!(&source[11..38], "unterminated regex trailing");
+    let converted = TokenStream::lexer_tokens_to_parser_tokens_from_source(
+        vec![geometry_only_token(TokenType::UnknownRest, 11, 38)],
+        source,
+    );
+    assert_eq!(converted.len(), 1);
+    assert_eq!(converted[0].kind(), TokenKind::UnknownRest);
+    assert_eq!(&*converted[0].text, "unterminated regex trailing");
+    assert_eq!(converted[0].start(), 11);
+    assert_eq!(converted[0].end(), 38);
+}
+
 #[test]
 fn live_budget_recovery_keeps_geometry_only_unknown_rest() {
     let source = format!("/{};\n", "a".repeat(70_000));

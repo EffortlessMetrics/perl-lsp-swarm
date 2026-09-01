@@ -1306,7 +1306,7 @@ impl<'a> Parser<'a> {
 
             // Fat arrow: auto-quote bare identifiers and consume the =>
             if self.peek_kind() == Some(TokenKind::FatArrow) {
-                Self::autoquote_fat_arrow_key(&mut elem);
+                Self::auto_quote_bareword_before_fat_comma(&mut elem);
                 self.consume_token()?; // consume =>
                 elements.push(elem);
                 // Parse the value that follows =>
@@ -1334,7 +1334,7 @@ impl<'a> Parser<'a> {
                 // the auto-quoted key for the next pair.  Autoquote the
                 // last element and consume the `=>`.
                 if let Some(last) = elements.last_mut() {
-                    Self::autoquote_fat_arrow_key(last);
+                    Self::auto_quote_bareword_before_fat_comma(last);
                 }
                 self.consume_token()?; // consume chained =>
                 // Parse the value that follows the chained =>

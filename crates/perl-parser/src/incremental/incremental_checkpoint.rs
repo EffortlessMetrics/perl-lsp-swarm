@@ -108,21 +108,18 @@ impl TokenSegment {
     }
 }
 
-/// Keep a shifted cached parser token in the stream.
+/// Validate a shifted cached parser token for retention in the stream.
 ///
-/// Valid ordered geometry is preserved. After a negative byte shift that
-/// clamps to an illegally empty span, the token becomes synthetic `Unknown`
-/// (or EOF if even that constructor fails) instead of being dropped.
-fn retain_shifted_cached_token(token: &Token, start: usize, end: usize) -> Token {
-    match token.with_span(start, end) {
-        Ok(token) => token,
-        Err(_) => {
-            let ordered_start = start.min(end);
-            let ordered_end = start.max(end);
-            Token::unknown_at(token.text.clone(), ordered_start, ordered_end)
-                .unwrap_or_else(|_| Token::eof_at(ordered_start))
-        }
-    }
+/// Valid ordered geometry is preserved. A byte shift that clamps at zero
+/// (stale checkpoint positions meet new-coordinate deltas) can leave the span
+/// illegally empty or shorter than the cached payload; the reuse claim is then
+/// unprovable, so the token is refused (`None`) and the caller re-lexes the
+/// suffix. Silently substituting a synthetic `Unknown`/`EOF` token here would
+/// masquerade as end-of-stream mid-parse and erase the real suffix (#14158
+/// class sweep). Geometry-only cached tokens (`UnknownRest`, empty text over
+/// a non-empty span) stay geometry-only while the shifted span stays provable.
+fn retain_shifted_cached_token(token: &Token, start: usize, end: usize) -> Option<Token> {
+    token.with_span(start, end).ok()
 }
 
 /// Cache for parser tokens to avoid re-lexing.
@@ -726,6 +723,12 @@ impl CheckpointedIncrementalParser {
 
         let mut raw_relexed: Vec<perl_lexer::Token> = Vec::new();
         let mut bytes_relexed_this_phase = 0usize;
+        // A token whose start crosses `relex_end` is consumed by
+        // `next_token()` before the loop can inspect it. Phase 2 must not
+        // silently drop it: hold it here so the Phase 3 refusal fallback can
+        // prepend it to the tail re-lex instead of losing the boundary token
+        // (#14158 class: conversion seams must not swallow tokens).
+        let mut boundary_token: Option<perl_lexer::Token> = None;
 
         loop {
             match lexer.next_token() {
@@ -734,6 +737,7 @@ impl CheckpointedIncrementalParser {
                     let token_end = token.end;
                     let token_start = token.start;
                     if token_start >= relex_end {
+                        boundary_token = Some(token);
                         break;
                     }
                     raw_relexed.push(token);
@@ -757,24 +761,53 @@ impl CheckpointedIncrementalParser {
 
         if right_checkpoint.is_some() {
             let segments_after = self.token_cache.count_segments_with_tokens_after(relex_end);
-            self.stats.segments_reused_after += segments_after;
 
-            if let Some(cached) = self.token_cache.get_tokens_from(relex_end) {
+            let cached = self.token_cache.get_tokens_from(relex_end);
+            // Adjust byte positions to account for the inserted/removed bytes.
+            // Use max(0) to prevent underflow on negative shifts (#2457). A
+            // shift that clamps a cached token into geometry its payload
+            // cannot fill refuses the whole suffix reuse instead of silently
+            // synthesizing a mid-stream EOF token (#14158 class sweep) — the
+            // tail re-lex below re-lexes from the held boundary token, so no
+            // token is lost.
+            let shifted_suffix = cached.as_deref().map(|cached| {
+                cached
+                    .iter()
+                    .map(|token| {
+                        let start = (token.start() as isize + byte_shift).max(0) as usize;
+                        let end = (token.end() as isize + byte_shift).max(0) as usize;
+                        retain_shifted_cached_token(token, start, end)
+                    })
+                    .collect::<Option<Vec<Token>>>()
+            });
+
+            // `None` → no cached suffix; `Some(None)` → a shifted cached
+            // token failed its span invariants and the suffix reuse was
+            // refused. Either way the tail is re-lexed below rather than
+            // trusting degraded reuse (#14158 class sweep).
+            if let Some(Some(shifted)) = shifted_suffix {
+                self.stats.segments_reused_after += segments_after;
                 self.stats.cache_hits += 1;
-                for token in cached {
-                    // Adjust byte positions to account for the inserted/removed bytes.
-                    // Use max(0) to prevent underflow on negative shifts (#2457).
-                    let start = (token.start() as isize + byte_shift).max(0) as usize;
-                    let end = (token.end() as isize + byte_shift).max(0) as usize;
-                    parser_tokens.push(retain_shifted_cached_token(&token, start, end));
-                    self.stats.tokens_reused += 1;
-                }
+                let reused = shifted.len();
+                parser_tokens.extend(shifted);
+                self.stats.tokens_reused += reused;
             } else {
                 self.stats.cache_misses += 1;
                 self.stats.full_tail_fallbacks += 1;
-                // No cache hit — lex the remainder of the source.
+                // No cached suffix, or the cached suffix failed its shifted
+                // span invariants — either way, lex the remainder of the
+                // source rather than trusting degraded reuse. The suffix was
+                // NOT reused, so `segments_reused_after` is only counted on
+                // the successful arm above.
                 let mut raw_tail: Vec<perl_lexer::Token> = Vec::new();
                 let mut tail_bytes = 0usize;
+                // Reopen the tail with the held boundary token so the
+                // fallback re-lex is boundary-complete (#14158 class).
+                if let Some(boundary) = boundary_token.take() {
+                    tail_bytes += boundary.end - boundary.start;
+                    raw_tail.push(boundary);
+                    self.stats.tokens_relexed += 1;
+                }
                 while let Some(token) = lexer.next_token() {
                     if matches!(token.token_type, perl_lexer::TokenType::EOF) {
                         break;
@@ -840,6 +873,7 @@ mod tests {
     fn retain_shifted_cached_token_keeps_valid_geometry() {
         let token = Token::new_checked(TokenKind::Identifier, "x", 10, 11).expect("valid token");
         let shifted = retain_shifted_cached_token(&token, 4, 5);
+        let shifted = must_some(shifted);
         assert_eq!(shifted.kind(), TokenKind::Identifier);
         assert_eq!(shifted.start(), 4);
         assert_eq!(shifted.end(), 5);
@@ -847,13 +881,23 @@ mod tests {
     }
 
     #[test]
-    fn retain_shifted_cached_token_does_not_drop_clamped_empty_identifier() {
+    fn retain_shifted_cached_token_refuses_clamped_empty_span() {
+        // Negative shift clamped at byte 0 collapses the span to zero width
+        // while the cached payload still has text: the reuse claim is
+        // unprovable, so the token is refused (typed `None`) instead of
+        // silently synthesizing a mid-stream `EOF` (#14158 class sweep).
         let token = Token::new_checked(TokenKind::Identifier, "x", 1, 2).expect("valid token");
-        let shifted = retain_shifted_cached_token(&token, 0, 0);
-        assert_eq!(shifted.kind(), TokenKind::Eof);
-        assert_eq!(shifted.start(), 0);
-        assert_eq!(shifted.end(), 0);
-        assert_eq!(&*shifted.text, "");
+        assert!(retain_shifted_cached_token(&token, 0, 0).is_none());
+    }
+
+    #[test]
+    fn retain_shifted_cached_token_refuses_partially_clamped_span() {
+        // A partial clamp (start clamps to 0, end does not) shortens the span
+        // below the payload length; the mapped-kind token can no longer cover
+        // its span honestly, so the shift is refused rather than degraded to
+        // `Unknown`/`EOF`.
+        let token = Token::new_checked(TokenKind::Identifier, "abcde", 5, 10).expect("valid token");
+        assert!(retain_shifted_cached_token(&token, 0, 2).is_none());
     }
 
     #[test]

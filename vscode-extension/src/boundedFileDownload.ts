@@ -12,11 +12,18 @@ export interface BoundedFileDownloadOptions {
   maxRedirects?: number;
   followRedirect?: (location: string, remainingRedirects: number) => Promise<void>;
   createWriteStream?: (dest: string) => fs.WriteStream;
-  removePartialFile?: (dest: string) => void;
+  /** Resolves only after the destination cleanup has completed. */
+  removePartialFile?: (dest: string) => Promise<void>;
 }
 
-function defaultRemovePartialFile(dest: string): void {
-  fs.unlink(dest, () => {});
+async function defaultRemovePartialFile(dest: string): Promise<void> {
+  try {
+    fs.unlinkSync(dest);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
 }
 
 /**
@@ -58,6 +65,7 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
     let cancellation: DisposableLike | undefined;
     let timeoutId: NodeJS.Timeout | undefined;
     let settled = false;
+    let failureRejected = false;
     let receivedBytes = 0;
 
     const cleanup = (): void => {
@@ -67,17 +75,69 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
       }
     };
 
+    const rejectAfterPartialCleanup = async (error: Error): Promise<void> => {
+      if (failureRejected) {
+        return;
+      }
+      failureRejected = true;
+      let cleanupFailure: unknown;
+      try {
+        await removePartialFile(dest);
+      } catch {
+        // The native fallback below is authoritative for the cleanup result.
+      }
+      try {
+        // Always try the native fallback. existsSync follows symlinks, so a
+        // dangling destination would otherwise evade cleanup even though
+        // unlinkSync can remove the directory entry.
+        await defaultRemovePartialFile(dest);
+      } catch (fallbackError) {
+        cleanupFailure = fallbackError;
+      }
+      let destinationRemains = false;
+      try {
+        destinationRemains = fs.existsSync(dest);
+      } catch (existsError) {
+        cleanupFailure ??= existsError;
+      }
+      if (cleanupFailure !== undefined || destinationRemains) {
+        const reason =
+          cleanupFailure instanceof Error ? cleanupFailure.message : 'destination remains';
+        reject(
+          new Error(`${error.message}; partial file cleanup failed: ${reason}`, { cause: error }),
+        );
+        return;
+      }
+      reject(error);
+    };
+
     const fail = (error: Error): void => {
       if (settled) {
         return;
       }
       settled = true;
       cleanup();
-      if (file) {
-        file.destroy();
+      // Only the native WriteStream has a close lifecycle that guarantees the
+      // file handle is gone. Test/injected streams may expose EventEmitter's
+      // `once` without ever emitting `close`, so they must not block failure
+      // settlement indefinitely.
+      const stream = file;
+      const waitsForClose =
+        stream instanceof fs.WriteStream && stream.closed === false && stream.destroyed !== true;
+      if (!waitsForClose) {
+        stream?.destroy();
+        void rejectAfterPartialCleanup(error);
+        return;
       }
-      removePartialFile(dest);
-      reject(error);
+      // Use the destroy callback rather than only `close`: callers may provide
+      // a WriteStream with emitClose:false, which legitimately never emits it.
+      const destroyWithCallback = stream.destroy as unknown as (
+        error: Error | undefined,
+        callback: () => void,
+      ) => void;
+      destroyWithCallback.call(stream, undefined, () => {
+        void rejectAfterPartialCleanup(error);
+      });
     };
 
     const succeed = (): void => {

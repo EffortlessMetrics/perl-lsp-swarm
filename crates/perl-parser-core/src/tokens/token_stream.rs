@@ -45,6 +45,7 @@ use perl_lexer::{LexerMode, PerlLexer, Token as LexerToken, TokenType as LexerTo
 use perl_token::TokenSpanError;
 pub use perl_token::{Token, TokenKind};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 /// Backing source for the token stream â€” either a live lexer or pre-lexed tokens.
 enum TokenStreamInner<'a> {
@@ -159,6 +160,22 @@ impl<'a> TokenStream<'a> {
     /// assert!(matches!(stream.peek(), Ok(t) if t.kind() == TokenKind::My));
     /// ```
     pub fn lexer_tokens_to_parser_tokens(tokens: Vec<LexerToken>) -> Vec<Token> {
+        Self::lexer_tokens_to_parser_tokens_from_source(tokens, "")
+    }
+
+    /// Source-aware conversion of raw [`LexerToken`]s to parser [`Token`]s.
+    ///
+    /// Identical to [`Self::lexer_tokens_to_parser_tokens`] except that
+    /// payload-free geometry-only tokens (empty text over a non-empty span —
+    /// e.g. budget-degraded `UnknownRest`, or `HeredocBody` emitted for
+    /// folding consumers) have their covered bytes reconstructed from
+    /// `source`, so the typed token — and the `lexer_budget_exhausted` stop
+    /// cause downstream — survives conversion in pre-lexed (incremental)
+    /// pipelines too (#14158, class sweep).
+    pub fn lexer_tokens_to_parser_tokens_from_source(
+        tokens: Vec<LexerToken>,
+        source: &str,
+    ) -> Vec<Token> {
         tokens
             .into_iter()
             .filter(|t| {
@@ -167,7 +184,7 @@ impl<'a> TokenStream<'a> {
                     LexerTokenType::Whitespace | LexerTokenType::Newline | LexerTokenType::EOF
                 ) && !matches!(t.token_type, LexerTokenType::Comment(_))
             })
-            .map(Self::convert_lexer_token)
+            .map(|t| Self::convert_lexer_token(t, source))
             .collect()
     }
 
@@ -336,7 +353,14 @@ impl<'a> TokenStream<'a> {
                     ));
                 }
                 _ => {
-                    return Ok(Self::convert_lexer_token(lexer_token));
+                    // The live path deliberately keeps no source copy, so no
+                    // reconstruction happens here: payload-free geometry-only
+                    // tokens stay in the honest geometry-only representation
+                    // (`token_from_lexer_parts` builds `UnknownRest` via
+                    // `unknown_rest_at`). Source-aware reconstruction is the
+                    // public seam's job (`lexer_tokens_to_parser_tokens_from_source`,
+                    // #14158 class sweep).
+                    return Ok(Self::convert_lexer_token(lexer_token, ""));
                 }
             }
         }
@@ -362,7 +386,11 @@ impl<'a> TokenStream<'a> {
     ///
     /// Extracted from `next_token_from_lexer` to keep the match arm readable.
     ///
-    fn convert_lexer_token(token: LexerToken) -> Token {
+    /// `source` is the text the tokens were lexed from, when the caller has
+    /// it; it reconstructs the payload of payload-free geometry-only tokens
+    /// (see the tail of this function). Pass `""` when no source is available
+    /// (the live stream keeps no source copy; legacy conversion).
+    fn convert_lexer_token(token: LexerToken, source: &str) -> Token {
         let kind = match &token.token_type {
             // Keywords
             LexerTokenType::Keyword(kw) => match kw.as_ref() {
@@ -487,7 +515,30 @@ impl<'a> TokenStream<'a> {
 
         let start = token.start;
         let end = token.end;
-        token_from_lexer_parts(kind, token.text, start, end)
+        // Payload-free geometry-only tokens (#14158 class): the lexer emits
+        // some tokens as geometry-only events — empty text over a non-empty
+        // source span — to keep recovery and streaming bodies payload-free
+        // (#6717). Known producers are the `UnknownRest` budget recoveries
+        // (regex, global, heredoc) and the `HeredocBody` emission for folding
+        // consumers, but the shape is not kind-specific: the parser `Token`
+        // invariant requires text == span, so any empty-text token over a
+        // non-empty span fails `token_from_lexer_parts` validation and its
+        // fallback chain silently synthesizes `Eof`, erasing the typed token —
+        // and with it the `lexer_budget_exhausted` stop cause downstream.
+        // Reconstruct the covered bytes from the source this stream already
+        // owns; restoring the real bytes is strictly more faithful than any
+        // synthetic fallback. With no source available (""), geometry-only
+        // tokens keep their payload-free representation: `token_from_lexer_parts`
+        // constructs `UnknownRest` via `unknown_rest_at` without text.
+        let text = if token.text.is_empty()
+            && start < end
+            && let Some(covered) = source.get(start..end)
+        {
+            Arc::from(covered)
+        } else {
+            token.text
+        };
+        token_from_lexer_parts(kind, text, start, end)
     }
 }
 
