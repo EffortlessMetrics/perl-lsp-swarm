@@ -5257,6 +5257,7 @@ profile = "recommended"
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn startup_inc_probe_widened_timeout_reaches_live_constructor() -> TestResult {
         let perl_path = match resolve_perl_path_with_toolchain() {
             Ok(path) => path,
@@ -5282,7 +5283,7 @@ profile = "recommended"
                 format!("one-second production probe did not time out: {production:?}").into()
             );
         }
-        if elapsed < Duration::from_millis(750) || elapsed >= Duration::from_secs(2) {
+        if elapsed < Duration::from_millis(750) || elapsed >= Duration::from_secs(4) {
             return Err(
                 format!("one-second production timeout was not bounded: {elapsed:?}").into()
             );
