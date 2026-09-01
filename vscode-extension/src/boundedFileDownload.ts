@@ -83,8 +83,8 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
       let cleanupFailure: unknown;
       try {
         await removePartialFile(dest);
-      } catch (removeError) {
-        cleanupFailure = removeError;
+      } catch {
+        // The native fallback below is authoritative for the cleanup result.
       }
       try {
         // Always try the native fallback. existsSync follows symlinks, so a

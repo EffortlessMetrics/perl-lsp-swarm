@@ -213,7 +213,7 @@ describe('downloadBoundedFile', () => {
     expect(fs.existsSync(dest)).toBe(true);
   });
 
-  test('preserves the download error when fallback cleanup succeeds', async () => {
+  test('preserves the original download error when fallback cleanup succeeds', async () => {
     const dest = destPath();
     fs.writeFileSync(dest, 'stale destination');
     await expect(
@@ -237,7 +237,9 @@ describe('downloadBoundedFile', () => {
             },
           }),
       ),
-    ).rejects.toThrow('exceeded 12 compressed bytes');
+    ).rejects.toMatchObject({
+      message: 'Archive download exceeded 12 compressed bytes (declared 64)',
+    });
     expect(fs.existsSync(dest)).toBe(false);
   });
 
