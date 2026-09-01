@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12573 |
-| Rust-family files | 3906 |
-| Non-Rust files | 8667 |
-| Allowlisted | 6428 |
+| Total tracked files | 12577 |
+| Rust-family files | 3909 |
+| Non-Rust files | 8668 |
+| Allowlisted | 6429 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 499 |
-| documentation | 2833 |
+| documentation | 2834 |
 | generated | 2 |
 | production | 349 |
 | test | 2069 |
@@ -2358,6 +2358,7 @@
 | `.changes/unreleased/product-14076-Fixed-024700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14281-Fixed-014013.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14362-Added-000001.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
