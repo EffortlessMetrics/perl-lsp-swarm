@@ -8,6 +8,7 @@
 
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_tdd_support::{must, must_some};
+use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 
@@ -76,7 +77,7 @@ fn test_pause_session_present_signal_failure_returns_accurate_error() {
     // even though a "session" (attached pid) IS present.
     adapter.seed_attached_pid_for_test(999_999);
 
-    let response = adapter.handle_request(1, "pause", None);
+    let response = adapter.handle_request(1, "pause", Some(json!({"threadId": 999_999})));
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
@@ -121,7 +122,7 @@ fn test_pause_pid_attach_is_unsupported_without_signaling_parent()
     let mut adapter = DebugAdapter::new();
     adapter.seed_attached_pid_for_test(parent_pid);
 
-    let response = adapter.handle_request(1, "pause", None);
+    let response = adapter.handle_request(1, "pause", Some(json!({"threadId": parent_pid})));
     let DapMessage::Response { success, message, .. } = response else {
         return Err("expected a response for PID-attached pause".into());
     };
