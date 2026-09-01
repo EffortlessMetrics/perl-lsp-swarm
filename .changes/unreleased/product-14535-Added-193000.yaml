@@ -1,0 +1,21 @@
+project: product
+component: Developer experience
+kind: Added
+body: >-
+  Add `cargo xtask agent-candidate-handoff create|check|explain`, which exports
+  one exact local Git candidate as an immutable content-addressed
+  `agent_candidate_handoff.v1` envelope from a workspace with no authenticated
+  GitHub client and no usable remote. The validator imports the transported
+  object set into a temporary object database and re-derives the object
+  closure, commit, tree, ordered parents, file modes, renames, deletions, and
+  binary content, so a candidate can be reconstructed after the producing
+  workspace is gone. Credential-bearing content is refused rather than
+  redacted, repository identity is observed, declared, or NOT_PROVEN rather
+  than guessed, and every outcome is a distinct typed class with its own exit
+  code. Creating or checking a handoff publishes no branch, opens no pull
+  request, and claims no hosted check.
+time: 2026-09-01T19:30:00Z
+custom:
+  PR: "14535"
+  Slug: agent-candidate-handoff
+  Breaking: "no"
