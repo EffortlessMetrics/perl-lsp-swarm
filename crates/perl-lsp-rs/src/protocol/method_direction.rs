@@ -854,6 +854,7 @@ mod tests {
             let mut depth = delta;
             if let Some(offset) = close {
                 let suffix = &mod_line[offset + 1..];
+                let suffix = suffix.split_once("//").map_or(suffix, |(code, _)| code);
                 if !suffix.trim().is_empty() {
                     result.push_str(suffix);
                     result.push('\n');
@@ -868,6 +869,7 @@ mod tests {
                         depth += delta;
                         if let Some(offset) = close {
                             let suffix = &inner[offset + 1..];
+                            let suffix = suffix.split_once("//").map_or(suffix, |(code, _)| code);
                             if !suffix.trim().is_empty() {
                                 result.push_str(suffix);
                                 result.push('\n');
