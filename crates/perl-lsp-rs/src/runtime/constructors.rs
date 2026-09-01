@@ -554,7 +554,7 @@ mod tests {
         // loop turns that exact error into the typed first cause reported in
         // the settlement record asserted below.
         let mut probe_sink = FailingWriter;
-        let probe = probe_sink.write(&mut Vec::new());
+        let probe = probe_sink.write(&Vec::new());
         assert!(
             matches!(&probe, Err(err) if err.kind() == io::ErrorKind::ConnectionAborted),
             "controlled writer must fail writes with ConnectionAborted, got {probe:?}"

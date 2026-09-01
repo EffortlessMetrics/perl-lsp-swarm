@@ -5123,6 +5123,10 @@ print \"unreachable\\n\";\n";
 
     const MESSAGE_UNION_PARSE_ERROR_DOCUMENT: &str = "sub broken {\n";
 
+    #[expect(
+        clippy::expect_used,
+        reason = "test harness setup must fail the test loudly on dispatch regressions"
+    )]
     fn message_union_server(
         tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning,
         markup_message_support: bool,
@@ -5149,6 +5153,10 @@ print \"unreachable\\n\";\n";
         if cfg!(windows) { format!("file:///C:/tmp/{name}") } else { format!("file:///tmp/{name}") }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "test harness setup must fail the test loudly on dispatch regressions"
+    )]
     fn syntax_only_pull_items(markup_message_support: bool) -> Vec<Value> {
         let mut tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
         tuning.diagnostic_mode = perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly;
@@ -5170,6 +5178,10 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "pull results must fail the test loudly on message-union regressions"
+    )]
     fn syntax_only_pull_keeps_nonempty_string_message_without_markup() {
         let items = syntax_only_pull_items(false);
         assert_eq!(items.len(), 1, "exactly one parse error must be reported");
@@ -5183,6 +5195,10 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "pull results must fail the test loudly on message-union regressions"
+    )]
     fn syntax_only_pull_keeps_markupcontent_message_with_markup() {
         let string_items = syntax_only_pull_items(false);
         let markup_items = syntax_only_pull_items(true);
@@ -5213,6 +5229,10 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "pull serialization must fail the test loudly on message-union regressions"
+    )]
     fn merged_pull_internal_finding_keeps_message_union() {
         // `internal_diagnostic_to_json` is the merged document-pull
         // serializer for internal/native/external findings

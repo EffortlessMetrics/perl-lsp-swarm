@@ -2533,6 +2533,10 @@ mod tests {
     /// built. Constructing one by hand here would assert only that a
     /// formatter interpolates its argument; going through the provider is
     /// what makes the scope/availability divergence real.
+    #[expect(
+        clippy::expect_used,
+        reason = "fixture parsing and candidate lookup must fail the test loudly on drift"
+    )]
     fn rendered_documentation(source: &'static str, needle: &str, keyword: &str) -> String {
         use perl_lsp_rs_core::providers::dancer2::{
             RuntimeDancer2Module, canonical_file_facts, file_activations,
