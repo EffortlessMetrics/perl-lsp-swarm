@@ -165,7 +165,7 @@ describe('PerlDebugConfigurationProvider', () => {
       expect((configs as vscode.DebugConfiguration[]).length).toBeGreaterThanOrEqual(3);
     });
 
-    test('includes launch, attach by TCP, and attach by PID templates', () => {
+    test('includes launch and attach-by-TCP templates, and no PID template (#8109)', () => {
       const configs = provider.provideDebugConfigurations(undefined) as vscode.DebugConfiguration[];
 
       const hasLaunch = configs.some((c) => c.request === 'launch');
@@ -174,7 +174,9 @@ describe('PerlDebugConfigurationProvider', () => {
 
       expect(hasLaunch).toBe(true);
       expect(hasTCPAttach).toBe(true);
-      expect(hasPIDAttach).toBe(true);
+      // #8109: the adapter refuses processId attach fail-closed, so no
+      // template may advertise it.
+      expect(hasPIDAttach).toBe(false);
     });
 
     test('all configurations have type "perl"', () => {
