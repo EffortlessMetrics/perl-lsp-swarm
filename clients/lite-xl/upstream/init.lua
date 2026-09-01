@@ -2501,7 +2501,7 @@ function lsp.request_completion(doc, line, col, forced)
                 resolve = new_completion_resolve_state(server, symbol, subject),
                 -- Local patch (#11189): exact plain-insert target for
                 -- suffix-carrying keys (see the select-time fallback).
-                insert_text = label
+                insert_text = symbol.insertText or label
               },
               onselect = autocomplete_onselect
             }
@@ -3940,4 +3940,3 @@ end
 
 
 return lsp
-

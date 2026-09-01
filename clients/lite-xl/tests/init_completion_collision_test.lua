@@ -417,6 +417,29 @@ local function activate(dv)
 end
 
 -- ===========================================================================
+-- Case H: a plain completion may display a short label while requesting a
+-- different insertText. The fallback must preserve the protocol insertion
+-- target rather than silently inserting the presentation label.
+-- ===========================================================================
+do
+  local lsp = fresh_module_load()
+  local server = make_server("perllsp", PLAIN_COMPLETION_CAPS)
+  register(lsp, "perllsp", server)
+  local doc = make_doc("C:/proj/col7.pl", { "my $fn = 1;\n" }, 1, 6)
+
+  local items = open_completion(lsp, server, doc, {
+    { label = "fn", insertText = "function_call", kind = 3 },
+  })
+
+  local row = items["fn"]
+  ok(row ~= nil, "caseH: the display label remains the menu key")
+  ok(
+    row.data.insert_text == "function_call",
+    "caseH: the distinct protocol insertText is preserved for fallback"
+  )
+end
+
+-- ===========================================================================
 -- Case A: two valid items share one label. Both rows must exist under
 -- distinct internal keys, the first under the bare label, and each row must
 -- carry its own exact original CompletionItem. Red on main: the second item
