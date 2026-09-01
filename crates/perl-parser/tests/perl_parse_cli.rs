@@ -14,8 +14,8 @@ fn continued_read_failure_is_counted_and_reported() -> Result<(), Box<dyn std::e
         .arg("--continue")
         .arg("--stats")
         .arg("--quiet")
-        .arg(&valid)
         .arg(&missing)
+        .arg(&valid)
         .output()?;
 
     assert!(!output.status.success(), "continued read failure must keep a nonzero exit status");
