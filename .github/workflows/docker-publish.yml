@@ -53,7 +53,10 @@ jobs:
   verify-release-eligibility:
     name: Verify release eligibility handoff
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    # Matches the sibling publisher gates: the step downloads the full
+    # terminal candidate artifact (all platform archives plus SBOM and
+    # evidence), which must not trip a shorter job timeout.
+    timeout-minutes: 5
     permissions:
       actions: read
       contents: read

@@ -65,7 +65,13 @@ def checksum_entries(path: Path) -> dict[str, str]:
         parts = line.split(maxsplit=1)
         if len(parts) != 2 or not HEX64.fullmatch(parts[0]):
             raise ManifestError(f"malformed checksum row: {line!r}")
-        name = parts[1].lstrip("*./")
+        # Strip the binary-marker `*` and at most one `./` prefix. A charset
+        # lstrip would also rename subjects that legitimately start with `.`
+        # or `*` and validate the mangled name instead of the real row.
+        name = parts[1].strip()
+        if name.startswith("./"):
+            name = name[2:]
+        name = name.removeprefix("*")
         if not name or "/" in name or "\\" in name:
             raise ManifestError(f"checksum subject must be a flat file name: {name!r}")
         if name in entries:
