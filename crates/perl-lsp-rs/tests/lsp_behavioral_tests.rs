@@ -31,6 +31,8 @@ fn run_fallback_child(selector: &str) -> ChildResult<Output> {
     command.args(["--exact", selector, "--nocapture"]);
     command.env(FALLBACK_CHILD_MODE, selector);
     command.env("LSP_TEST_FALLBACKS", "1");
+    command.env("LSP_TEST_TIMEOUT_MS", "15000");
+    command.env("LSP_TEST_SHORT_MS", "5000");
     Ok(command.output()?)
 }
 
@@ -220,7 +222,11 @@ fn test_workspace_symbol_search() -> TestResult {
     const SELECTOR: &str = "test_workspace_symbol_search";
     if in_fallback_child(SELECTOR) {
         let (mut harness, workspace) = create_test_server()?;
-        let result = harness.request("workspace/symbol", json!({"query": "process"}))?;
+        let result = harness.request_with_timeout(
+            "workspace/symbol",
+            json!({"query": "process"}),
+            Duration::from_secs(10),
+        )?;
         let symbols = result.as_array().ok_or("Should return symbol array")?;
         assert!(!symbols.is_empty(), "Should find 'process' method");
         let process_symbol = symbols
@@ -247,7 +253,7 @@ fn test_extract_variable_returns_edits() -> TestResult {
     const SELECTOR: &str = "test_extract_variable_returns_edits";
     if in_fallback_child(SELECTOR) {
         let (mut harness, workspace) = create_test_server()?;
-        let result = harness.request(
+        let result = harness.request_with_timeout(
             "textDocument/codeAction",
             json!({
                 "textDocument": {"uri": workspace.uri("script.pl")},
@@ -257,6 +263,7 @@ fn test_extract_variable_returns_edits() -> TestResult {
                 },
                 "context": {"diagnostics": []}
             }),
+            Duration::from_secs(10),
         )?;
         let actions = result.as_array().ok_or("Should return action array")?;
         let extract_action = actions
@@ -423,12 +430,13 @@ fn test_completion_detail_formatting() -> TestResult {
     const SELECTOR: &str = "test_completion_detail_formatting";
     if in_fallback_child(SELECTOR) {
         let (mut harness, workspace) = create_test_server()?;
-        let result = harness.request(
+        let result = harness.request_with_timeout(
             "textDocument/completion",
             json!({
                 "textDocument": {"uri": workspace.uri("script.pl")},
                 "position": {"line": 7, "character": 6}
             }),
+            Duration::from_secs(10),
         )?;
         let items = if result.is_array() {
             result.as_array().ok_or("Expected array")?
