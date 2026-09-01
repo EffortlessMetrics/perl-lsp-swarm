@@ -369,7 +369,7 @@ where
 {
     match rename(temporary, destination) {
         Ok(()) => Ok(()),
-        Err(first_error) if destination.exists() => {
+        Err(first_error) if destination.is_file() => {
             let file_name =
                 destination.file_name().ok_or_else(|| eyre!("receipt path has no file name"))?;
             let backup = destination
@@ -535,6 +535,22 @@ mod tests {
         ensure!(result.is_err());
         ensure!(fs::read(&destination)? == b"prior receipt");
         ensure!(!backup.exists());
+        ensure!(temporary.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_directory_is_not_replaced_by_a_file() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("receipt.json");
+        let temporary = temp.path().join(".receipt.json.tmp");
+        fs::create_dir(&destination)?;
+        fs::write(&temporary, b"new receipt")?;
+
+        let result = replace_receipt_file(&temporary, &destination);
+
+        ensure!(result.is_err());
+        ensure!(destination.is_dir());
         ensure!(temporary.exists());
         Ok(())
     }
