@@ -382,20 +382,33 @@ def _ordered_items(value: Sequence[Any]) -> list[tuple[int, Any]]:
 def _bounded(text: str) -> str:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
+    # The notice consumes part of the output budget. Report source characters
+    # excluded by both the retained prefix and this notice.
     omitted = len(text) - MAX_OUTPUT_CHARS
-    notice = f"\n\n… {omitted} character(s) omitted by LSP-perllsp.\n"
-    return text[: MAX_OUTPUT_CHARS - len(notice)] + notice
+    while True:
+        notice = f"\n\n… {omitted} character(s) omitted by LSP-perllsp.\n"
+        keep = MAX_OUTPUT_CHARS - len(notice)
+        updated = len(text) - keep
+        if updated == omitted:
+            return text[:keep] + notice
+        omitted = updated
 
 
 def _bounded_with_tail(text: str) -> str:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
+    # Reserve the head/tail separator and terminal notice before calculating
+    # how many source characters were omitted.
     omitted = len(text) - MAX_OUTPUT_CHARS
-    notice = f"\n\n… {omitted} character(s) omitted by LSP-perllsp.\n"
-    keep = MAX_OUTPUT_CHARS - len(notice) - 3
-    head = keep // 2
-    tail = keep - head
-    return text[:head] + "\n…\n" + text[-tail:] + notice
+    while True:
+        notice = f"\n\n… {omitted} character(s) omitted by LSP-perllsp.\n"
+        keep = MAX_OUTPUT_CHARS - len(notice) - 3
+        updated = len(text) - keep
+        if updated == omitted:
+            head = keep // 2
+            tail = keep - head
+            return text[:head] + "\n…\n" + text[-tail:] + notice
+        omitted = updated
 
 
 def format_result(caption: str, result: Any) -> str:

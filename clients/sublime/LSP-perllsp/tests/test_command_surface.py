@@ -401,6 +401,23 @@ class CommandSurfaceContractTests(unittest.TestCase):
         )
         self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
 
+    def test_omission_notices_report_source_characters_excluded_by_the_notice(self) -> None:
+        source = "0123456789" * (surface.MAX_OUTPUT_CHARS // 10 + 100)
+
+        bounded = surface._bounded(source)
+        match = re.search(r"… (\d+) character\(s\) omitted by LSP-perllsp\.\n", bounded)
+        self.assertIsNotNone(match)
+        assert match is not None
+        prefix, _ = bounded.split("\n\n…", 1)
+        self.assertEqual(int(match.group(1)), len(source) - len(prefix))
+
+        with_tail = surface._bounded_with_tail(source)
+        match = re.search(r"… (\d+) character\(s\) omitted by LSP-perllsp\.\n$", with_tail)
+        self.assertIsNotNone(match)
+        assert match is not None
+        before_notice, _ = with_tail.rsplit("\n\n…", 1)
+        self.assertEqual(int(match.group(1)), len(source) - (len(before_notice) - 3))
+
     def test_navigation_target_is_deliberate(self) -> None:
         self.assertEqual(
             surface.navigation_target({"found": True, "path": "/workspace/t/example.t"}),
