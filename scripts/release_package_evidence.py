@@ -25,7 +25,13 @@ def digest_bytes(value: bytes) -> str:
 
 
 def digest(path: Path) -> str:
-    return digest_bytes(path.read_bytes())
+    # Stream in bounded chunks: release archives and build outputs can be far
+    # larger than a whole-file read wants to hold in memory.
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def canonical(value: object) -> bytes:
@@ -111,7 +117,7 @@ def build(
         expected_path_role = f"target/{target}/release/{file_name}"
         if path_role != expected_path_role:
             raise PackageEvidenceError(f"build receipt path is not canonical: {path_role}")
-        build_output = Path.cwd() / path_role
+        build_output = workspace / path_role
         if digest(build_output) != pre_strip:
             raise PackageEvidenceError(f"pre-strip build output digest mismatch: {executable}")
         packaged = package_dir / file_name

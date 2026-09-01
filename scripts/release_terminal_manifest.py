@@ -473,9 +473,13 @@ def build_manifest(candidate: Path, source_sha: str, tag: str) -> dict[str, Any]
     subjects.extend(["dist/SHA256SUMS", "dist/sbom-spdx.json", "dist/release-terminal-manifest.json"])
     if (candidate / "release_notes.md").is_file():
         subjects.append("release_notes.md")
+    # Resolve once so symlinks inside the candidate cannot escape the prefix
+    # stripped by relative_to, and so a relative candidate argument still
+    # yields canonical POSIX member paths.
+    candidate_root = candidate.resolve()
     actual_files = {
-        path.relative_to(candidate).as_posix()
-        for path in candidate.rglob("*")
+        path.relative_to(candidate_root).as_posix()
+        for path in candidate_root.rglob("*")
         if path.is_file()
     }
     admitted_files = set(subjects) | {"attestation-subjects.sha256"}
