@@ -568,7 +568,12 @@ mod tests {
 
     /// Remove trailing `#[cfg(test)] mod … { … }` regions so test-only string
     /// literals cannot satisfy or pollute production-inventory scans.
-    fn is_test_module_declaration(line: &str) -> bool {
+    enum TestModuleDeclaration {
+        External,
+        Inline,
+    }
+
+    fn test_module_declaration(line: &str) -> Option<TestModuleDeclaration> {
         let mut rest = line.trim_start();
 
         if let Some(after_pub) = rest.strip_prefix("pub")
@@ -576,25 +581,164 @@ mod tests {
         {
             rest = after_pub.trim_start();
             if rest.starts_with('(') {
-                let Some(close) = rest.find(')') else { return false };
+                let Some(close) = rest.find(')') else { return None };
                 rest = rest[close + 1..].trim_start();
             }
         }
 
-        let Some(after_mod) = rest.strip_prefix("mod") else { return false };
+        let Some(after_mod) = rest.strip_prefix("mod") else { return None };
         if !after_mod.chars().next().is_some_and(char::is_whitespace) {
-            return false;
+            return None;
         }
 
         let rest = after_mod.trim_start();
         let name_end = rest
             .find(|character: char| character.is_whitespace() || matches!(character, '{' | ';'));
-        let Some(name_end) = name_end else { return false };
+        let Some(name_end) = name_end else { return None };
         if name_end == 0 {
-            return false;
+            return None;
         }
 
-        matches!(rest[name_end..].trim_start().chars().next(), Some('{' | ';'))
+        match rest[name_end..].trim_start().chars().next() {
+            Some(';') => Some(TestModuleDeclaration::External),
+            Some('{') => Some(TestModuleDeclaration::Inline),
+            _ => None,
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum LexicalState {
+        Normal,
+        BlockComment(usize),
+        Quoted { delimiter: u8, escaped: bool },
+        RawString { hashes: usize },
+    }
+
+    fn raw_string_start(bytes: &[u8], index: usize) -> Option<(usize, usize)> {
+        let raw_index = match bytes.get(index) {
+            Some(b'r') => index,
+            Some(b'b') if bytes.get(index + 1) == Some(&b'r') => index + 1,
+            _ => return None,
+        };
+        let mut cursor = raw_index + 1;
+        while bytes.get(cursor) == Some(&b'#') {
+            cursor += 1;
+        }
+        (bytes.get(cursor) == Some(&b'"')).then_some((cursor + 1, cursor - raw_index - 1))
+    }
+
+    fn char_literal_ends_on_line(bytes: &[u8], start: usize) -> bool {
+        let mut index = start + 1;
+        while let Some(byte) = bytes.get(index) {
+            match byte {
+                b'\\' => index += 2,
+                b'\'' => return true,
+                b'\n' | b'\r' => return false,
+                _ => index += 1,
+            }
+        }
+        false
+    }
+
+    fn raw_string_ends_at(bytes: &[u8], index: usize, hashes: usize) -> bool {
+        bytes[index] == b'"'
+            && bytes
+                .get(index + 1..index + 1 + hashes)
+                .is_some_and(|closing| closing.iter().all(|byte| *byte == b'#'))
+    }
+
+    fn scan_structural_braces(line: &str, state: &mut LexicalState) -> i64 {
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        let mut depth_delta = 0;
+
+        while index < bytes.len() {
+            match *state {
+                LexicalState::Normal => {
+                    if bytes[index..].starts_with(b"//") {
+                        break;
+                    }
+                    if bytes[index..].starts_with(b"/*") {
+                        *state = LexicalState::BlockComment(1);
+                        index += 2;
+                        continue;
+                    }
+                    if let Some((next, hashes)) = raw_string_start(bytes, index) {
+                        *state = LexicalState::RawString { hashes };
+                        index = next;
+                        continue;
+                    }
+                    if matches!(bytes[index], b'b') && bytes.get(index + 1) == Some(&b'"') {
+                        *state = LexicalState::Quoted { delimiter: b'"', escaped: false };
+                        index += 2;
+                        continue;
+                    }
+                    if matches!(bytes[index], b'"') {
+                        *state = LexicalState::Quoted { delimiter: b'"', escaped: false };
+                        index += 1;
+                        continue;
+                    }
+                    if matches!(bytes[index], b'\'') && char_literal_ends_on_line(bytes, index) {
+                        *state = LexicalState::Quoted { delimiter: b'\'', escaped: false };
+                        index += 1;
+                        continue;
+                    }
+                    if bytes[index] == b'b'
+                        && bytes.get(index + 1) == Some(&b'\'')
+                        && char_literal_ends_on_line(bytes, index + 1)
+                    {
+                        *state = LexicalState::Quoted { delimiter: b'\'', escaped: false };
+                        index += 2;
+                        continue;
+                    }
+                    match bytes[index] {
+                        b'{' => depth_delta += 1,
+                        b'}' => depth_delta -= 1,
+                        _ => {}
+                    }
+                    index += 1;
+                }
+                LexicalState::BlockComment(depth) => {
+                    if bytes[index..].starts_with(b"/*") {
+                        *state = LexicalState::BlockComment(depth + 1);
+                        index += 2;
+                    } else if bytes[index..].starts_with(b"*/") {
+                        index += 2;
+                        if depth == 1 {
+                            *state = LexicalState::Normal;
+                        } else {
+                            *state = LexicalState::BlockComment(depth - 1);
+                        }
+                    } else {
+                        index += 1;
+                    }
+                }
+                LexicalState::Quoted { delimiter, escaped } => {
+                    if escaped {
+                        *state = LexicalState::Quoted { delimiter, escaped: false };
+                        index += 1;
+                    } else if bytes[index] == b'\\' {
+                        *state = LexicalState::Quoted { delimiter, escaped: true };
+                        index += 1;
+                    } else if bytes[index] == delimiter {
+                        *state = LexicalState::Normal;
+                        index += 1;
+                    } else {
+                        index += 1;
+                    }
+                }
+                LexicalState::RawString { hashes } => {
+                    if raw_string_ends_at(bytes, index, hashes) {
+                        *state = LexicalState::Normal;
+                        index += hashes + 1;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+        }
+
+        depth_delta
     }
 
     fn strip_test_modules(source: &str) -> String {
@@ -608,22 +752,22 @@ mod tests {
             }
             let Some(next) = lines.peek() else { break };
             let next_trimmed = next.trim_start();
-            if !is_test_module_declaration(next_trimmed) {
+            let Some(declaration) = test_module_declaration(next_trimmed) else {
                 continue;
-            }
+            };
             // Consume the attribute/mod pair. A `mod x;` declaration ends
-            // here; a `mod x {` block is skipped by brace counting.
+            // here, including when trailing comments follow the semicolon; a
+            // `mod x {` block is skipped by lexical brace counting.
             let Some(mod_line) = lines.next() else { break };
-            if mod_line.trim_end().ends_with(';') {
+            if matches!(declaration, TestModuleDeclaration::External) {
                 continue;
             }
-            let mut depth =
-                mod_line.matches('{').count() as i64 - mod_line.matches('}').count() as i64;
+            let mut lexical_state = LexicalState::Normal;
+            let mut depth = scan_structural_braces(mod_line, &mut lexical_state);
             while depth > 0 {
                 match lines.next() {
                     Some(inner) => {
-                        depth += inner.matches('{').count() as i64;
-                        depth -= inner.matches('}').count() as i64;
+                        depth += scan_structural_braces(inner, &mut lexical_state);
                     }
                     None => break,
                 }
@@ -648,9 +792,20 @@ pub(self) mod private { const PRIVATE: &str = "self/test"; }
 #[cfg(test)]
 pub(in crate::protocol) mod scoped { const SCOPED: &str = "scoped/test"; }
 #[cfg(test)]
-pub(crate) mod external;
+pub(crate) mod external; // a comment containing {
 #[cfg(test)]
 mod plain_external;
+#[cfg(test)]
+pub(crate) mod lexical_forms {
+    const CLOSE: &str = "}";
+    const OPEN: &str = "{";
+    // }
+    /* outer { /* nested } */ still inside */
+    const RAW: &str = r###("{ }")###;
+    const BYTE_RAW: &[u8] = br##("{ }")##;
+    const CHARACTER: char = '}';
+    const BYTE_CHARACTER: u8 = b'{';
+}
 fn production() { send("production/after"); }
 pub(crate) mod visible { const KEEP: &str = "visible/production"; }
 "#;
