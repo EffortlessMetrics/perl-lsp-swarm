@@ -94,7 +94,7 @@ fn test_startup_banner_has_allow_annotation() {
     if let (Some(allow), Some(func)) = (allow_line, fn_line) {
         assert!(
             allow < func,
-        "The clippy::print_stderr annotation (line {allow}) must appear \
+            "The clippy::print_stderr annotation (line {allow}) must appear \
              before startup_banner_with_quiet (line {func})."
         );
     }
