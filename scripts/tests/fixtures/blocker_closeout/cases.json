@@ -261,6 +261,11 @@
     "error": "installed acceptance receipt is not an installed evidence receipt"
   },
   {
+    "name": "reject_contradictory_optional_evidence_subject",
+    "updates": {"proof.observations.0.evidence_subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "error": "proof observation evidence subject SHA does not match subject_sha"
+  },
+  {
     "name": "reject_false_squash_review_relabeling",
     "updates": {"reviews.0.reviewed_head": "0d70248e3ec1ef90c6059f864b9a26fecad07db4"},
     "error": "current PR review head does not match modeled candidate head"

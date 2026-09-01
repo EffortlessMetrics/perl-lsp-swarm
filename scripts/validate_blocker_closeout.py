@@ -266,6 +266,12 @@ class ProofObservation:
         evidence_subject_sha = None
         if "evidence_subject_sha" in data:
             evidence_subject_sha = _sha(data["evidence_subject_sha"], f"{name}.evidence_subject_sha")
+            if evidence.kind == "repository_blob":
+                blob_match = REPOSITORY_REF.fullmatch(evidence.ref)
+                _require(
+                    blob_match is not None and blob_match.group(1) == evidence_subject_sha,
+                    f"{name} repository blob commit does not match evidence_subject_sha",
+                )
         if evidence.kind == "repository_receipt":
             receipt_match = REPOSITORY_REF.fullmatch(evidence.ref)
             _require(
@@ -569,9 +575,10 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
             _require(observation.subject_sha == observed_main_sha, "passed proof is cross-subject")
         elif observation.status == "failed":
             _require(observation.subject_sha == observed_main_sha, "failed proof is cross-subject")
+        if observation.evidence_subject_sha is not None:
+            _require(observation.evidence_subject_sha == observation.subject_sha, "proof observation evidence subject SHA does not match subject_sha")
         if observation.evidence.kind in {"github_check", "repository_blob"}:
             _require(observation.evidence_subject_sha is not None, f"proof observation requires evidence_subject_sha for {observation.evidence.kind}")
-            _require(observation.evidence_subject_sha == observation.subject_sha, "proof observation evidence subject SHA does not match subject_sha")
 
     claim_effect = _object(packet["claim_effect"], "claim_effect")
     _exact_keys(claim_effect, "claim_effect", {"preserves", "narrows", "limitations", "unchanged_claims"})

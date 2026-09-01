@@ -192,6 +192,17 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must not contain duplicate evidence"):
                 MODULE.validate_blocker_closeout(packet, lambda _ancestor, _subject: True)
 
+    def test_repository_blob_binds_commit_to_observation_subject(self) -> None:
+        observation = copy.deepcopy(self.base["proof"]["observations"][0])
+        observation.update({"proof_class": "mechanism", "claim_scope": "repository_mechanism", "evidence_subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})
+        observation["evidence"] = {
+            "kind": "repository_blob",
+            "ref": "repo:receipts/blob.json@638a0ea89b0415c02500787c8e5807cfe7fa4cff",
+            "digest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+        }
+        with self.assertRaisesRegex(ValueError, "repository blob commit does not match evidence_subject_sha"):
+            MODULE.ProofObservation.parse(observation, "proof.observations[0]")
+
     def test_blocked_and_not_proven_do_not_claim_closure_proof_coverage(self) -> None:
         cases = {case["name"]: case for case in self.cases}
         for name in ("valid_blocked", "valid_not_proven"):
