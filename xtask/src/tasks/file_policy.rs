@@ -573,14 +573,18 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         .get(key("steps"))
         .and_then(serde_yaml_ng::Value::as_sequence)
         .ok_or_else(|| eyre!("exact-tree job must define steps sequence"))?;
-    let step_run_contains = |needle: &str| {
-        steps.iter().any(|step| {
+    let bind_run = steps
+        .iter()
+        .find(|step| {
             step.as_mapping()
-                .and_then(|map| map.get(key("run")))
+                .and_then(|map| map.get(key("id")))
                 .and_then(serde_yaml_ng::Value::as_str)
-                .is_some_and(|run| run.contains(needle))
+                == Some("bind")
         })
-    };
+        .and_then(|step| step.get(key("run")))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .ok_or_else(|| eyre!("trusted workflow must define an id: bind run step"))?;
+    let bind_run_contains = |needle: &str| bind_run.contains(needle);
     if !steps.iter().any(|step| {
         let Some(map) = step.as_mapping() else { return false };
         map.get(key("uses"))
@@ -595,8 +599,21 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     }) {
         bail!("trusted workflow must checkout EVALUATOR_SHA in its checkout step");
     }
-    if !step_run_contains("git fetch --no-tags origin \"$SUBJECT_SHA\"")
-        || !step_run_contains("git update-ref refs/heads/non-rust-policy-subject")
+    let direct_subject_fetch = bind_run_contains("git fetch --no-tags origin \"$SUBJECT_SHA\"");
+    let synthetic_pr_subject = bind_run_contains(
+        "refs/pull/$PR_NUMBER/head:refs/remotes/origin/non-rust-policy-pr-head",
+    ) && bind_run_contains(
+        "git rev-parse refs/remotes/origin/non-rust-policy-pr-head^{commit}",
+    ) && bind_run_contains(
+        "test \"$(git rev-parse refs/remotes/origin/non-rust-policy-pr-head^{commit})\" = \"$PR_HEAD_SHA\"",
+    ) && bind_run_contains(
+        "git merge-tree --write-tree \"$BASE_SHA\" \"$PR_HEAD_SHA\"",
+    ) && bind_run_contains(
+        "git commit-tree \"$merge_tree\" -p \"$BASE_SHA\" -p \"$PR_HEAD_SHA\"",
+    ) && bind_run_contains("GIT_AUTHOR_DATE=2000-01-01T00:00:00Z")
+        && bind_run_contains("GIT_COMMITTER_DATE=2000-01-01T00:00:00Z");
+    if (!direct_subject_fetch && !synthetic_pr_subject)
+        || !bind_run_contains("git update-ref refs/heads/non-rust-policy-subject")
     {
         bail!("trusted workflow must bind the exact SUBJECT_SHA Git object");
     }
