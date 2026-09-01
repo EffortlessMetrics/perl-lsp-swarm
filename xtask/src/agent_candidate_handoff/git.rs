@@ -245,7 +245,15 @@ fn wait_with_deadline(child: &mut Child, label: &str) -> Result<Option<i32>, Str
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status.code()),
             Ok(None) => {}
-            Err(error) => return Err(format!("failed to await git {label}: {error}")),
+            Err(error) => {
+                // Returning here would leave the child running and its pipe
+                // threads attached, which is the leak the deadline arm below
+                // exists to prevent. A polling failure is not a reason to
+                // abandon the process.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("failed to await git {label}: {error}"));
+            }
         }
         if started.elapsed() >= GIT_DEADLINE {
             let _ = child.kill();

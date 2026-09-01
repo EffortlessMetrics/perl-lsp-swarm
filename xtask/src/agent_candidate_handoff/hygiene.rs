@@ -144,7 +144,12 @@ pub fn is_safe_repository_path(value: &str) -> bool {
     if value.is_empty() || value.len() > 4096 {
         return false;
     }
-    if value.starts_with('/') || value.contains('\\') || value.contains('\0') {
+    // `:` is refused for the same reason as a leading `/`: on Windows `C:name`
+    // is drive-relative, so a path carrying one escapes whatever root a
+    // consumer joins it onto. Git does not permit it in a tracked path there
+    // either, so nothing legitimate is lost.
+    if value.starts_with('/') || value.contains('\\') || value.contains('\0') || value.contains(':')
+    {
         return false;
     }
     !value.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..")

@@ -8,6 +8,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use super::check::{CheckReport, check_staged, describe_failure};
@@ -930,13 +931,15 @@ fn collect_proofs(
         // than "a string that looks like a token", and an envelope is handed
         // onward. Refusing the link is the boundary; naming the file directly
         // is always available to a caller who means it.
-        let metadata = fs::symlink_metadata(path).map_err(|error| {
+        let io = |error: std::io::Error| {
             (
                 HandoffOutcome::InstrumentFailure,
                 format!("could not read proof artifact `{}`: {error}", path.display()),
             )
-        })?;
-        if metadata.file_type().is_symlink() {
+        };
+        // Refuse a link on the path, because `File::open` would follow one.
+        let linkage = fs::symlink_metadata(path).map_err(io)?;
+        if linkage.file_type().is_symlink() {
             return Err((
                 HandoffOutcome::InstrumentFailure,
                 format!(
@@ -946,6 +949,14 @@ fn collect_proofs(
                 ),
             ));
         }
+
+        // Everything after that is decided on the open handle. Checking the
+        // path and then reading it again leaves a window in which the entry can
+        // be replaced with a link, so the bytes copied into the envelope need
+        // not be the bytes that were vetted — the same race the validator's own
+        // reader closes.
+        let mut file = fs::File::open(path).map_err(io)?;
+        let metadata = file.metadata().map_err(io)?;
         if !metadata.is_file() {
             return Err((
                 HandoffOutcome::InstrumentFailure,
@@ -962,12 +973,23 @@ fn collect_proofs(
                 ),
             ));
         }
-        let bytes = fs::read(path).map_err(|error| {
-            (
+        // One byte past the ceiling, so an artifact that grew after it was
+        // measured is refused rather than silently truncated into the envelope.
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.by_ref()
+            .take(MAX_PROOF_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(io)?;
+        if bytes.len() as u64 > MAX_PROOF_BYTES {
+            return Err((
                 HandoffOutcome::InstrumentFailure,
-                format!("could not read proof artifact `{}`: {error}", path.display()),
-            )
-        })?;
+                format!(
+                    "proof artifact `{}` grew past the {MAX_PROOF_BYTES}-byte ceiling while \
+                     it was being read",
+                    path.display()
+                ),
+            ));
+        }
 
         let id = proof_id_for(path)?;
         if prepared.iter().any(|existing| existing.reference.id == id) {

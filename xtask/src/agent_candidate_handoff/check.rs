@@ -240,9 +240,7 @@ fn check_envelope(envelope: &Path, stage: ReceiptStage) -> CheckReport {
     let manifest_bytes = match read_envelope_file(envelope, MANIFEST_FILE_NAME, MAX_DOCUMENT_BYTES)
     {
         Ok(bytes) => bytes,
-        Err(detail) => {
-            return builder.fail("manifest_parse", HandoffOutcome::InvalidManifest, detail);
-        }
+        Err(error) => return builder.fail("manifest_parse", error.outcome, error.detail),
     };
     let manifest: Manifest = match serde_json::from_slice(&manifest_bytes) {
         Ok(manifest) => manifest,
@@ -693,7 +691,8 @@ fn verify_receipt_agrees(
     manifest: &Manifest,
     stage: ReceiptStage,
 ) -> Result<(), String> {
-    let bytes = read_envelope_file(envelope, RECEIPT_FILE_NAME, MAX_DOCUMENT_BYTES)?;
+    let bytes = read_envelope_file(envelope, RECEIPT_FILE_NAME, MAX_DOCUMENT_BYTES)
+        .map_err(|error| error.detail)?;
     let receipt: ProducerReceipt = serde_json::from_slice(&bytes)
         .map_err(|error| format!("`{RECEIPT_FILE_NAME}` is not a valid receipt: {error}"))?;
 
@@ -783,6 +782,41 @@ fn collect_relative_files(
     Ok(())
 }
 
+/// Why an envelope file could not be delivered as bytes.
+///
+/// A file this validator cannot *read* and a file whose content breaks a rule
+/// are different facts with different repairs: one is an instrument that did
+/// not produce an answer, the other is a defective envelope. Collapsing them
+/// told automation the candidate was bad when the disk was.
+pub(super) struct EnvelopeReadError {
+    /// Outcome class this failure belongs to.
+    pub outcome: HandoffOutcome,
+    /// Bounded explanation.
+    pub detail: String,
+}
+
+impl EnvelopeReadError {
+    /// The file could not be read at all.
+    ///
+    /// A file that is simply *absent* is an envelope defect — the manifest
+    /// declared something the envelope does not contain. Anything else (a
+    /// permission refusal, a disk error) is the instrument failing to answer,
+    /// which is a different fact with a different repair.
+    fn unreadable(relative: &str, error: &std::io::Error) -> Self {
+        let outcome = if error.kind() == std::io::ErrorKind::NotFound {
+            HandoffOutcome::InvalidManifest
+        } else {
+            HandoffOutcome::InstrumentFailure
+        };
+        Self { outcome, detail: format!("`{relative}` is not readable: {error}") }
+    }
+
+    /// The file was read, and its shape breaks an envelope rule.
+    fn refused(detail: String) -> Self {
+        Self { outcome: HandoffOutcome::InvalidManifest, detail }
+    }
+}
+
 /// Read one manifest-declared envelope file without following a symbolic link
 /// and without reading past `limit` bytes.
 ///
@@ -793,14 +827,16 @@ pub(super) fn read_envelope_file(
     envelope: &Path,
     relative: &str,
     limit: u64,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, EnvelopeReadError> {
     let path = envelope.join(relative);
     // Refuse the link before opening: `File::open` follows one, so a symlink
     // must be rejected on the path itself.
     let linkage = fs::symlink_metadata(&path)
-        .map_err(|error| format!("`{relative}` is not readable: {error}"))?;
+        .map_err(|error| EnvelopeReadError::unreadable(relative, &error))?;
     if linkage.file_type().is_symlink() {
-        return Err(format!("`{relative}` is a symbolic link; an envelope must be self-contained"));
+        return Err(EnvelopeReadError::refused(format!(
+            "`{relative}` is a symbolic link; an envelope must be self-contained"
+        )));
     }
 
     // Everything else is decided on the *open handle*, not on the path. Reading
@@ -809,17 +845,17 @@ pub(super) fn read_envelope_file(
     // asking the handle what it is closes that window: the file this reads is
     // the file it measured.
     let mut file =
-        fs::File::open(&path).map_err(|error| format!("`{relative}` is not readable: {error}"))?;
+        fs::File::open(&path).map_err(|error| EnvelopeReadError::unreadable(relative, &error))?;
     let metadata =
-        file.metadata().map_err(|error| format!("`{relative}` is not readable: {error}"))?;
+        file.metadata().map_err(|error| EnvelopeReadError::unreadable(relative, &error))?;
     if !metadata.is_file() {
-        return Err(format!("`{relative}` is not a regular file"));
+        return Err(EnvelopeReadError::refused(format!("`{relative}` is not a regular file")));
     }
     if metadata.len() > limit {
-        return Err(format!(
+        return Err(EnvelopeReadError::refused(format!(
             "`{relative}` is {} bytes, above the {limit}-byte ceiling",
             metadata.len()
-        ));
+        )));
     }
 
     // Read one byte beyond the ceiling so a file that grew between the
@@ -828,9 +864,11 @@ pub(super) fn read_envelope_file(
     file.by_ref()
         .take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("`{relative}` is not readable: {error}"))?;
+        .map_err(|error| EnvelopeReadError::unreadable(relative, &error))?;
     if bytes.len() as u64 > limit {
-        return Err(format!("`{relative}` exceeds the {limit}-byte ceiling"));
+        return Err(EnvelopeReadError::refused(format!(
+            "`{relative}` exceeds the {limit}-byte ceiling"
+        )));
     }
     Ok(bytes)
 }
@@ -845,7 +883,8 @@ fn verify_transport(envelope: &Path, manifest: &Manifest) -> Result<Vec<u8>, Str
     let Some(file) = manifest.transport.files.first() else {
         return Err("no transport file is declared".to_string());
     };
-    let bytes = read_envelope_file(envelope, &file.name, MAX_ENVELOPE_FILE_BYTES)?;
+    let bytes = read_envelope_file(envelope, &file.name, MAX_ENVELOPE_FILE_BYTES)
+        .map_err(|error| error.detail)?;
     if bytes.len() as u64 != file.bytes {
         return Err(format!(
             "transport `{}` declares {} bytes but carries {}",
@@ -890,8 +929,8 @@ fn verify_proofs(envelope: &Path, manifest: &Manifest) -> Result<(), (HandoffOut
                 proof.id
             )));
         }
-        let bytes =
-            read_envelope_file(envelope, &proof.path, MAX_PROOF_BYTES).map_err(&malformed)?;
+        let bytes = read_envelope_file(envelope, &proof.path, MAX_PROOF_BYTES)
+            .map_err(|error| (error.outcome, error.detail))?;
         if bytes.len() as u64 != proof.bytes {
             return Err(corrupt(format!("proof `{}` does not match its declared size", proof.id)));
         }

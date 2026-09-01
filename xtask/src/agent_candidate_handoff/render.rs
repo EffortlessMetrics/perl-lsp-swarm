@@ -73,7 +73,7 @@ pub struct ExplainDocument {
 /// through the projection that the validator closes.
 pub fn explain(envelope: &Path) -> Result<ExplainDocument, (HandoffOutcome, String)> {
     let bytes = read_envelope_file(envelope, MANIFEST_FILE_NAME, MAX_DOCUMENT_BYTES)
-        .map_err(|detail| (HandoffOutcome::InvalidManifest, detail))?;
+        .map_err(|error| (error.outcome, error.detail))?;
     let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|error| {
         (HandoffOutcome::InvalidManifest, format!("`{MANIFEST_FILE_NAME}` is not valid: {error}"))
     })?;

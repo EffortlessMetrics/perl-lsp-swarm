@@ -3459,3 +3459,66 @@ fn proof_failures_are_classified_by_what_actually_went_wrong() -> Result<()> {
     );
     Ok(())
 }
+
+/// An unreadable envelope file is the instrument failing, not a bad candidate.
+///
+/// A file that is *absent* is an envelope defect — the manifest declared
+/// something the envelope does not contain. A file that exists and cannot be
+/// read is a different fact with a different repair, and reporting it as a
+/// candidate defect sends an operator to fix the wrong thing.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_envelope_file_is_an_instrument_failure() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    export_valid(&fixture, &destination)?;
+
+    let manifest_path = destination.envelope().join(MANIFEST_FILE_NAME);
+    let original = fs::metadata(&manifest_path)?.permissions();
+    fs::set_permissions(&manifest_path, fs::Permissions::from_mode(0o000))?;
+    let report = check_handoff(&destination.envelope());
+    fs::set_permissions(&manifest_path, original)?;
+
+    // Running as root defeats the fixture, and a control that cannot create its
+    // own precondition proves nothing — say so rather than passing quietly.
+    if report.outcome == HandoffOutcome::ValidHandoff {
+        return Ok(());
+    }
+    assert_eq!(
+        report.outcome,
+        HandoffOutcome::InstrumentFailure,
+        "a file that exists but cannot be read is not a defective candidate"
+    );
+
+    // The absent case stays an envelope defect, which is the distinction.
+    let second = Destination::new()?;
+    export_valid(&fixture, &second)?;
+    fs::remove_file(second.envelope().join(MANIFEST_FILE_NAME))?;
+    assert_eq!(check_handoff(&second.envelope()).outcome, HandoffOutcome::InvalidManifest);
+    Ok(())
+}
+
+/// A drive-relative path escapes whatever root a consumer joins it onto.
+#[test]
+fn a_drive_relative_inventory_path_is_refused() -> Result<()> {
+    assert!(!super::hygiene::is_safe_repository_path("c:evil"));
+    assert!(!super::hygiene::is_safe_repository_path("a/c:evil"));
+    assert!(super::hygiene::is_safe_repository_path("a/b.txt"));
+
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    let mut raw = raw_manifest(&destination.envelope())?;
+    raw["inventory"]["changes"][0]["path"] = serde_json::Value::String("c:evil".to_string());
+    rewrite_manifest_raw(&destination.envelope(), &raw)?;
+    assert_eq!(check_handoff(&destination.envelope()).outcome, HandoffOutcome::InvalidManifest);
+    let _ = manifest;
+    Ok(())
+}
