@@ -221,6 +221,45 @@ fn geometry_only_heredoc_body_survives_conversion_with_source() {
 }
 
 #[test]
+fn producer_driven_heredoc_body_survives_conversion_with_source() {
+    // Producer-driven integration control for the test above: instead of
+    // hand-constructing the geometry-only token, run the real producer
+    // (`PerlLexer::with_body_tokens`) over heredoc source and feed its raw
+    // output through the conversion seam, so producer-span drift at the
+    // emitter can no longer pass unnoticed behind a synthetic fixture.
+    let source = "my $x = <<'END';\nbody line\nEND\nmy $after = 1;\n";
+    let mut lexer = PerlLexer::with_body_tokens(source);
+    let mut raw = Vec::new();
+    while let Some(token) = lexer.next_token() {
+        if matches!(token.token_type, TokenType::EOF) {
+            break;
+        }
+        raw.push(token);
+    }
+
+    let body_index = raw
+        .iter()
+        .position(|token| matches!(token.token_type, TokenType::HeredocBody(_)))
+        .expect("the producer must emit a HeredocBody token for this source");
+    assert!(
+        raw[body_index].text.is_empty(),
+        "the producer must emit the body payload-free for this fixture to discriminate"
+    );
+    let expected_body = &source[raw[body_index].start..raw[body_index].end];
+    let expected_start = raw[body_index].start;
+    let expected_end = raw[body_index].end;
+
+    let converted = TokenStream::lexer_tokens_to_parser_tokens_from_source(raw, source);
+    let converted_body = converted
+        .iter()
+        .find(|token| token.kind() == TokenKind::HeredocBody)
+        .expect("the converted stream must keep the typed HeredocBody");
+    assert_eq!(&*converted_body.text, expected_body, "covered bytes must be reconstructed");
+    assert_eq!(converted_body.start(), expected_start);
+    assert_eq!(converted_body.end(), expected_end);
+}
+
+#[test]
 fn geometry_only_unknown_rest_survives_conversion_with_source() {
     // Budget-degraded `UnknownRest` (#14158): the typed token — and the
     // `lexer_budget_exhausted` stop cause downstream — must survive
