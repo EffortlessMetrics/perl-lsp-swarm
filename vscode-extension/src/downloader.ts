@@ -1451,8 +1451,16 @@ export class BinaryDownloader {
     return fs.createWriteStream(dest);
   }
 
-  private removePartialFile(dest: string): void {
-    fs.unlink(dest, () => {});
+  private removePartialFile(dest: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      fs.unlink(dest, (error: NodeJS.ErrnoException | null) => {
+        if (error && error.code !== 'ENOENT') {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
   }
 
   private async calculateSHA256(filePath: string): Promise<string> {
