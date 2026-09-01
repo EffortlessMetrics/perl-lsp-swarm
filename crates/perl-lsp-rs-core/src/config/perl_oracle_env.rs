@@ -730,6 +730,7 @@ mod tests {
     /// The perldoc oracle strips poisoned ambient env by default, while still
     /// allowing `PERL5LIB` only when the user explicitly enabled it.
     #[test]
+    #[serial_test::serial]
     fn for_perldoc_strips_poisoned_env_and_gates_perl5lib() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -840,6 +841,7 @@ mod tests {
     /// poisoned-env regression guard for the #8685 seam.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn for_language_probe_strips_perl5opt() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -877,6 +879,7 @@ mod tests {
     /// poisoned-env regression guard for the #8685 seam.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn for_language_probe_strips_perl5lib_when_disabled() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -967,6 +970,7 @@ mod tests {
     /// `for_module_resolution` strips PERL5OPT and respects PERL5LIB opt-in.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn for_module_resolution_strips_perl5opt_and_gates_perl5lib() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -1053,6 +1057,7 @@ mod tests {
     /// `for_dap_bridge` blocks poisoned ambient Perl env unless debug config opts in.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn for_dap_bridge_gates_perl5lib_and_perl5opt() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -1128,6 +1133,7 @@ mod tests {
     /// `for_dap_test_fixture` strips parent-process Perl env from actual Perl
     /// fixture invocations.
     #[test]
+    #[serial_test::serial]
     fn for_dap_test_fixture_strips_poisoned_env_from_invocation() -> TestResult {
         let _env_guard = env_lock()?;
         let Some(oracle) = PerlOracleEnv::for_dap_test_fixture() else {
@@ -1169,6 +1175,7 @@ mod tests {
     /// `for_startup_inc_probe` with `usePerl5lib=false` must strip PERL5LIB:
     /// regression guard for the #8493 incident.
     #[test]
+    #[serial_test::serial]
     fn for_startup_inc_probe_strips_when_use_perl5lib_false() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -1221,6 +1228,7 @@ mod tests {
     /// PERL5LIB is stripped by default (`allow_perl5lib=false`).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn perl_oracle_env_strips_perl5lib_by_default() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -1254,6 +1262,7 @@ mod tests {
     /// PERL5LIB passes through when `allow_perl5lib=true`.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn perl_oracle_env_allows_perl5lib_when_opted_in() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -1286,6 +1295,7 @@ mod tests {
     /// PERL5OPT is always stripped (no `allow_perl5opt` flag is true).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn perl_oracle_env_strips_perl5opt() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -1316,6 +1326,7 @@ mod tests {
     /// HOME is stripped (not in allow-set).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn perl_oracle_env_strips_home() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -1348,6 +1359,7 @@ mod tests {
     /// PERL_LOCAL_LIB_ROOT is stripped by default.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn perl_oracle_env_strips_local_lib() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
@@ -1407,6 +1419,7 @@ mod tests {
     /// (canonical acceptance test for the #8688 incident).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn for_version_probe_strips_poisoned_env() -> TestResult {
         let _env_guard = env_lock()?;
         let perl = match perl_path() {
