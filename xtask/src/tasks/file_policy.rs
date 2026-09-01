@@ -753,22 +753,28 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
         }
     }
     let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
+    if yaml
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("name")))
+        .and_then(serde_yaml_ng::Value::as_str)
+        != Some("Non-Rust policy")
+    {
+        bail!("preapproved v4 workflow must use the canonical name");
+    }
     let on = yaml
         .as_mapping()
         .and_then(|mapping| mapping.get(key("on")))
         .and_then(serde_yaml_ng::Value::as_mapping)
         .ok_or_else(|| eyre!("preapproved v4 workflow must define structured triggers"))?;
-    for event in ["pull_request_target", "merge_group", "push", "workflow_dispatch"] {
-        if !on.contains_key(key(event)) {
-            bail!("preapproved v4 workflow is missing structured {event} trigger");
-        }
-    }
-    if on.keys().any(|event| {
-        event.as_str().is_none_or(|name| {
-            !["pull_request_target", "merge_group", "push", "workflow_dispatch"].contains(&name)
-        })
-    }) {
-        bail!("preapproved v4 workflow contains an unapproved trigger");
+    let expected_on: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        "pull_request_target:\n  branches: [main, master]\n  types: [opened, synchronize, reopened, ready_for_review]\nmerge_group: {}\npush:\n  branches: [main, master]\nworkflow_dispatch:\n  inputs:\n    base_sha:\n      required: true\n      type: string\n    subject_sha:\n      required: true\n      type: string\n",
+    )?;
+    if on
+        != expected_on
+            .as_mapping()
+            .ok_or_else(|| eyre!("canonical trigger fixture is not a mapping"))?
+    {
+        bail!("preapproved v4 workflow trigger configuration is not canonical");
     }
     let permissions = yaml
         .as_mapping()
@@ -922,8 +928,7 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
         || propagate
             .as_mapping()
             .and_then(|map| map.get(key("continue-on-error")))
-            .and_then(serde_yaml_ng::Value::as_bool)
-            .is_some_and(|value| value)
+            .is_some_and(|value| value != &serde_yaml_ng::Value::Bool(false))
     {
         bail!("v4 must propagate retained materialization or evaluator failure");
     }
@@ -4209,10 +4214,20 @@ review_after = "2026-08-13"
         let workflow = r#"# contract-version: 4
 name: Non-Rust policy
 on:
-  pull_request_target: {}
+  pull_request_target:
+    branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group: {}
-  push: {}
-  workflow_dispatch: {}
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        required: true
+        type: string
+      subject_sha:
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
@@ -4250,22 +4265,37 @@ jobs:
         validate_v4_subject_workflow(workflow)?;
         let tampered = workflow.replace("run: exit 1", "run: cargo echo unapproved");
         ensure!(validate_v4_subject_workflow(&tampered).is_err());
-        for tampered in [
-            workflow
-                .replace("  pull_request_target: {}", "  pull_request_target: {}\n  ignored: {}"),
-            workflow.replace("  exact-tree:\n", "  exact-tree:\n    if: false\n"),
-            workflow.replace(
-                "        continue-on-error: true\n",
-                "        if: false\n        continue-on-error: true\n",
+        for (label, tampered) in [
+            (
+                "disabled trigger",
+                workflow.replace("branches: [main, master]", "branches: [release-only]"),
             ),
-            workflow.replace(
-                "        run: exit 1\n",
-                "        continue-on-error: true\n        run: exit 1\n",
+            ("disabled job", workflow.replace("  exact-tree:\n", "  exact-tree:\n    if: false\n")),
+            (
+                "disabled materializer",
+                workflow.replace(
+                    "        continue-on-error: true\n",
+                    "        if: false\n        continue-on-error: true\n",
+                ),
+            ),
+            (
+                "boolean propagation bypass",
+                workflow.replace(
+                    "        run: exit 1\n",
+                    "        continue-on-error: true\n        run: exit 1\n",
+                ),
+            ),
+            (
+                "expression propagation bypass",
+                workflow.replace(
+                    "        run: exit 1\n",
+                    "        continue-on-error: ${{ true }}\n        run: exit 1\n",
+                ),
             ),
         ] {
             ensure!(
                 validate_v4_subject_workflow(&tampered).is_err(),
-                "control-plane tampering must be rejected"
+                "control-plane tampering must be rejected: {label}"
             );
         }
         Ok(())

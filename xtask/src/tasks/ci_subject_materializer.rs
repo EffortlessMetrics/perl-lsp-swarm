@@ -5,7 +5,7 @@
 //! object and merged into a tree by Git.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
@@ -22,6 +22,7 @@ const PRODUCER: &str = "cargo-xtask-ci-subject-materializer";
 const MECHANISM: &str = "git-merge-tree-write-tree";
 const GIT_COMMIT_DATE: &str = "2000-01-01T00:00:00+0000";
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_RETAINED_GIT_OUTPUT: usize = 64 * 1024;
 
 #[derive(Debug, Serialize)]
 struct Receipt {
@@ -257,19 +258,47 @@ fn run_git_bounded(command: &mut Command, input: Option<&[u8]>) -> Result<Output
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let stdout = child.stdout.take().ok_or_else(|| eyre!("git stdout unavailable"))?;
+    let stderr = child.stderr.take().ok_or_else(|| eyre!("git stderr unavailable"))?;
+    let stdout_thread = thread::spawn(|| drain_output(stdout));
+    let stderr_thread = thread::spawn(|| drain_output(stderr));
     if let Some(input) = input {
         let mut stdin = child.stdin.take().ok_or_else(|| eyre!("git command stdin unavailable"))?;
-        stdin.write_all(input)?;
+        if let Err(error) = stdin.write_all(input) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_thread.join();
+            let _ = stderr_thread.join();
+            return Err(error.into());
+        }
         drop(stdin);
     }
-    wait_bounded(child)
+    let status = wait_bounded(&mut child)?;
+    let stdout = stdout_thread.join().map_err(|_| eyre!("git stdout reader panicked"))?;
+    let stderr = stderr_thread.join().map_err(|_| eyre!("git stderr reader panicked"))?;
+    Ok(Output { status, stdout, stderr })
 }
 
-fn wait_bounded(mut child: Child) -> Result<Output> {
+fn drain_output(mut reader: impl Read) -> Vec<u8> {
+    let mut retained = Vec::with_capacity(MAX_RETAINED_GIT_OUTPUT);
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                let remaining = MAX_RETAINED_GIT_OUTPUT.saturating_sub(retained.len());
+                retained.extend_from_slice(&buffer[..read.min(remaining)]);
+            }
+        }
+    }
+    retained
+}
+
+fn wait_bounded(child: &mut Child) -> Result<std::process::ExitStatus> {
     let deadline = Instant::now() + GIT_COMMAND_TIMEOUT;
     loop {
-        if child.try_wait()?.is_some() {
-            return child.wait_with_output().context("collecting git command output");
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
         }
         if Instant::now() >= deadline {
             child.kill()?;
@@ -319,10 +348,21 @@ fn stage_error(
 }
 
 fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_vec_pretty(receipt)?)?;
+    let parent =
+        path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let file_name = path.file_name().ok_or_else(|| eyre!("receipt path has no file name"))?;
+    let temporary =
+        parent.join(format!(".{}.tmp-{}", file_name.to_string_lossy(), std::process::id()));
+    fs::write(&temporary, serde_json::to_vec_pretty(receipt)?)?;
+    fs::rename(&temporary, path).or_else(|error| {
+        if path.exists() {
+            fs::remove_file(path)?;
+            fs::rename(&temporary, path)
+        } else {
+            Err(error)
+        }
+    })?;
     Ok(())
 }
 
@@ -432,6 +472,23 @@ mod tests {
         ensure!(value["outcome"] == "fail");
         ensure!(value["failure_stage"] == "event-input");
         ensure!(value["error"].as_str().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_git_runner_drains_and_caps_large_output() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let mut command = Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        if cfg!(windows) {
+            command.args(["/C", "for /L %i in (1,1,100000) do @echo x"]);
+        } else {
+            command.args(["-c", "yes x | head -c 200000"]);
+        }
+        command.current_dir(temp.path());
+        let output = run_git_bounded(&mut command, None)?;
+        ensure!(output.status.success());
+        ensure!(output.stdout.len() <= MAX_RETAINED_GIT_OUTPUT);
+        ensure!(output.stderr.is_empty());
         Ok(())
     }
 }
