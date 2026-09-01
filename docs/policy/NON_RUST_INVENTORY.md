@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12581 |
+| Total tracked files | 12582 |
 | Rust-family files | 3907 |
-| Non-Rust files | 8674 |
-| Allowlisted | 6435 |
+| Non-Rust files | 8675 |
+| Allowlisted | 6436 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 499 |
-| documentation | 2836 |
+| documentation | 2837 |
 | generated | 2 |
 | production | 349 |
 | test | 2069 |
@@ -6024,6 +6024,7 @@
 | `docs/releases/RELEASE_CLOSEOUT_AUDIT.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/TAG_PROVENANCE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/exposed-surface-authorities.v1.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/releases/exposed-surface-disposition.v1.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/exposed-surface-disposition.v1.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/release-scope.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/v0.10.0.md` | documentation | `non-rust-docs-tree` | docs |
