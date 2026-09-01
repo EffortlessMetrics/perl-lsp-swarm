@@ -709,6 +709,87 @@ mod tests {
                 .is_some_and(|closing| closing.iter().all(|byte| *byte == b'#'))
     }
 
+    /// Remove a trailing Rust line comment without mistaking `//` in a
+    /// string, raw string, character, or block comment for the comment start.
+    /// The suffix is deliberately scanned with the same lexical rules as the
+    /// module-brace scanner above; a textual split would truncate URLs and
+    /// other valid production literals.
+    fn strip_line_comment(source: &str) -> &str {
+        let bytes = source.as_bytes();
+        let mut state = LexicalState::Normal;
+        let mut index = 0;
+        while index < bytes.len() {
+            match state {
+                LexicalState::Normal => {
+                    if bytes[index..].starts_with(b"//") {
+                        return &source[..index];
+                    }
+                    if bytes[index..].starts_with(b"/*") {
+                        state = LexicalState::BlockComment(1);
+                        index += 2;
+                        continue;
+                    }
+                    if let Some((next, hashes)) = raw_string_start(bytes, index) {
+                        state = LexicalState::RawString { hashes };
+                        index = next;
+                        continue;
+                    }
+                    if matches!(bytes[index], b'b') && bytes.get(index + 1) == Some(&b'"') {
+                        state = LexicalState::Quoted { delimiter: b'"', escaped: false };
+                        index += 2;
+                        continue;
+                    }
+                    if bytes[index] == b'"' {
+                        state = LexicalState::Quoted { delimiter: b'"', escaped: false };
+                    } else if bytes[index] == b'\'' && char_literal_ends_on_line(bytes, index) {
+                        state = LexicalState::Quoted { delimiter: b'\'', escaped: false };
+                    } else if bytes[index] == b'b'
+                        && bytes.get(index + 1) == Some(&b'\'')
+                        && char_literal_ends_on_line(bytes, index + 1)
+                    {
+                        state = LexicalState::Quoted { delimiter: b'\'', escaped: false };
+                        index += 1;
+                    }
+                    index += 1;
+                }
+                LexicalState::BlockComment(depth) => {
+                    if bytes[index..].starts_with(b"/*") {
+                        state = LexicalState::BlockComment(depth + 1);
+                        index += 2;
+                    } else if bytes[index..].starts_with(b"*/") {
+                        index += 2;
+                        state = if depth == 1 {
+                            LexicalState::Normal
+                        } else {
+                            LexicalState::BlockComment(depth - 1)
+                        };
+                    } else {
+                        index += 1;
+                    }
+                }
+                LexicalState::Quoted { delimiter, escaped } => {
+                    if escaped {
+                        state = LexicalState::Quoted { delimiter, escaped: false };
+                    } else if bytes[index] == b'\\' {
+                        state = LexicalState::Quoted { delimiter, escaped: true };
+                    } else if bytes[index] == delimiter {
+                        state = LexicalState::Normal;
+                    }
+                    index += 1;
+                }
+                LexicalState::RawString { hashes } => {
+                    if raw_string_ends_at(bytes, index, hashes) {
+                        state = LexicalState::Normal;
+                        index += hashes + 1;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+        }
+        source
+    }
+
     fn scan_structural_braces(
         line: &str,
         state: &mut LexicalState,
@@ -842,7 +923,7 @@ mod tests {
             if matches!(declaration.kind, TestModuleKind::External) {
                 let mod_line = mod_line.trim_start();
                 let suffix = &mod_line[declaration.terminator_offset + 1..];
-                let suffix = suffix.split_once("//").map_or(suffix, |(code, _)| code);
+                let suffix = strip_line_comment(suffix);
                 if !suffix.trim().is_empty() {
                     result.push_str(suffix);
                     result.push('\n');
@@ -854,7 +935,7 @@ mod tests {
             let mut depth = delta;
             if let Some(offset) = close {
                 let suffix = &mod_line[offset + 1..];
-                let suffix = suffix.split_once("//").map_or(suffix, |(code, _)| code);
+                let suffix = strip_line_comment(suffix);
                 if !suffix.trim().is_empty() {
                     result.push_str(suffix);
                     result.push('\n');
@@ -869,7 +950,7 @@ mod tests {
                         depth += delta;
                         if let Some(offset) = close {
                             let suffix = &inner[offset + 1..];
-                            let suffix = suffix.split_once("//").map_or(suffix, |(code, _)| code);
+                            let suffix = strip_line_comment(suffix);
                             if !suffix.trim().is_empty() {
                                 result.push_str(suffix);
                                 result.push('\n');
@@ -908,7 +989,9 @@ pub(crate) mod commented /* comment containing { and } */ ;
 #[cfg(test)]
 pub(crate) mod same_line; fn after_external() { send("production/after_external"); }
 #[cfg(test)]
-mod inline_same_line { const INLINE: &str = "inline/test"; } fn after_inline() { send("production/after_inline"); }
+mod inline_same_line { const INLINE: &str = "inline/test"; } const INLINE_URL: &str = "https://example.test/inline"; fn after_inline() { send("production/after_inline"); } // trailing comment
+#[cfg(test)]
+pub(crate) mod external_with_url; const EXTERNAL_URL: &str = "https://example.test/external"; // trailing comment
 #[cfg(test)]
 pub(crate) mod lexical_forms {
     const CLOSE: &str = "}";
@@ -940,6 +1023,8 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         assert!(!stripped.contains("CONTINUED"));
         assert!(stripped.contains("production/after_external"));
         assert!(stripped.contains("production/after_inline"));
+        assert!(stripped.contains("https://example.test/inline"));
+        assert!(stripped.contains("https://example.test/external"));
         assert!(stripped.contains("production/after"));
         assert!(stripped.contains("pub(crate) mod visible"));
         assert!(stripped.contains("visible/production"));
