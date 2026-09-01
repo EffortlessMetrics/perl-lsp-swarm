@@ -71,28 +71,27 @@ describe('contributed setting ownership table (#14447)', () => {
   test('a resource-scoped setting that cannot be folder-owned records a defect and owner', () => {
     const undocumented = SETTING_OWNERSHIP.filter(
       (row) =>
-        row.manifestScope === 'resource' &&
-        row.semanticScope !== 'workspace-folder' &&
-        !row.scopeDefect,
+        row.manifestScope === 'resource' && row.semanticScope !== 'workspace-folder' && !row.defect,
     ).map((row) => row.key);
 
     expect(undocumented).toEqual([]);
 
     for (const row of SETTING_OWNERSHIP) {
-      if (row.scopeDefect) {
-        expect(row.scopeDefect.reason.length).toBeGreaterThan(0);
-        expect(row.scopeDefect.owner).toMatch(/^#\d+$/);
+      if (row.defect) {
+        expect(row.defect.reason.length).toBeGreaterThan(0);
+        expect(row.defect.owner).toMatch(/^#\d+$/);
       }
     }
   });
 
-  test('the known impossible resource scopes are exactly the recorded set', () => {
-    // Pinning the set keeps a newly introduced impossible scope from joining
-    // the existing ones silently. Correcting these published scopes is a
-    // user-visible breaking change owned by its own claim.
-    const defective = SETTING_OWNERSHIP.filter((row) => row.scopeDefect).map((row) => row.key);
+  test('the rows that are not honoured end to end are exactly the recorded set', () => {
+    // Pinning the set keeps a newly introduced unhonoured row from joining the
+    // existing ones silently. Correcting these is a user-visible breaking
+    // change or a new server payload, each owned by its own claim.
+    const defective = SETTING_OWNERSHIP.filter((row) => row.defect).map((row) => row.key);
 
     expect(defective).toEqual([
+      'perl-lsp.autoPopulateNewFiles',
       'perl-lsp.critic.enabled',
       'perl-lsp.critic.exclude',
       'perl-lsp.critic.include',
@@ -101,9 +100,25 @@ describe('contributed setting ownership table (#14447)', () => {
       'perl-lsp.enableFormatting',
       'perl-lsp.enableSemanticTokens',
       'perl-lsp.enableTestIntegration',
+      'perl-lsp.externalIncludePaths',
       'perl-lsp.perlcritic.enabled',
       'perl-lsp.perlcritic.severity',
+      'perl-lsp.perltidyConfig',
     ]);
+  });
+
+  test('a row claiming a server transport names a server consumer or a defect', () => {
+    // Guards the class of error these rows were corrected for: a transport
+    // recorded because it sounds right, rather than because the server end
+    // actually consumes the value.
+    const unproven = SETTING_OWNERSHIP.filter(
+      (row) =>
+        (row.transport === 'workspace/configuration' || row.transport === 'initialize') &&
+        row.owner === 'extension' &&
+        !row.defect,
+    ).map((row) => row.key);
+
+    expect(unproven).toEqual([]);
   });
 
   test('only settings the server reads per folder claim the pull transport', () => {

@@ -44,15 +44,17 @@ export type Transport =
   | 'local-only';
 
 /**
- * A manifest scope the extension and server cannot honour end to end.
+ * Something about a row the extension and server cannot honour end to end —
+ * a declared scope that cannot be preserved, or a transport that reaches the
+ * server but has no effect there.
  *
  * Recorded rather than silently corrected: changing a published setting's scope
- * is a user-visible breaking change and is owned by its own claim.
+ * or wiring a new server payload is its own claim.
  */
-export type ScopeDefect = {
-  /** Why the declared manifest scope cannot be preserved. */
+export type OwnershipDefect = {
+  /** Why the recorded row is not honoured end to end today. */
   readonly reason: string;
-  /** Issue that owns the corrective scope transition. */
+  /** Issue that owns the corrective change. */
   readonly owner: string;
 };
 
@@ -62,7 +64,7 @@ export type SettingOwnership = {
   readonly semanticScope: SemanticScope;
   readonly owner: RuntimeOwner;
   readonly transport: Transport;
-  readonly scopeDefect?: ScopeDefect;
+  readonly defect?: OwnershipDefect;
 };
 
 /**
@@ -77,7 +79,7 @@ export type SettingOwnership = {
  * per-folder Critic value cannot take effect today no matter how it is
  * transported.
  */
-const CRITIC_SESSION_STATE_DEFECT: ScopeDefect = {
+const CRITIC_SESSION_STATE_DEFECT: OwnershipDefect = {
   reason:
     'Declared `resource`, but the server holds one session-global Critic state ' +
     '(#8253). Folder-scoped `workspace/configuration` results are parsed by ' +
@@ -86,7 +88,7 @@ const CRITIC_SESSION_STATE_DEFECT: ScopeDefect = {
   owner: '#14447',
 };
 
-const STATIC_CAPABILITY_DEFECT: ScopeDefect = {
+const STATIC_CAPABILITY_DEFECT: OwnershipDefect = {
   reason:
     'Declared `resource` but selects the static initialize capability surface. One ' +
     'LanguageClient advertises one capability set, so the value cannot differ per folder.',
@@ -125,9 +127,16 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
   {
     key: 'perl-lsp.autoPopulateNewFiles',
     manifestScope: 'resource',
-    semanticScope: 'workspace-folder',
+    semanticScope: 'client-session',
     owner: 'extension',
     transport: 'local-only',
+    defect: {
+      reason:
+        'Declared `resource`, but the file-creation listener reads ' +
+        "getConfiguration('perl-lsp') once without a created-file URI before " +
+        'iterating the event, so a folder override is never selected.',
+      owner: '#14447',
+    },
   },
   {
     key: 'perl-lsp.autoUpdate',
@@ -149,7 +158,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'client-session',
     owner: 'server',
     transport: 'didChangeConfiguration',
-    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
+    defect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.critic.engine',
@@ -164,7 +173,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'client-session',
     owner: 'server',
     transport: 'didChangeConfiguration',
-    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
+    defect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.critic.include',
@@ -172,7 +181,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'client-session',
     owner: 'server',
     transport: 'didChangeConfiguration',
-    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
+    defect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.critic.profile',
@@ -180,7 +189,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'client-session',
     owner: 'server',
     transport: 'didChangeConfiguration',
-    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
+    defect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.critic.severity',
@@ -188,7 +197,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'client-session',
     owner: 'server',
     transport: 'didChangeConfiguration',
-    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
+    defect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.disabledFeatures',
@@ -210,7 +219,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'client-session',
     owner: 'server',
     transport: 'initialize',
-    scopeDefect: STATIC_CAPABILITY_DEFECT,
+    defect: STATIC_CAPABILITY_DEFECT,
   },
   {
     key: 'perl-lsp.enableSemanticTokens',
@@ -218,7 +227,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'client-session',
     owner: 'server',
     transport: 'initialize',
-    scopeDefect: STATIC_CAPABILITY_DEFECT,
+    defect: STATIC_CAPABILITY_DEFECT,
   },
   {
     key: 'perl-lsp.enableTestIntegration',
@@ -226,7 +235,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'client-session',
     owner: 'extension',
     transport: 'local-only',
-    scopeDefect: {
+    defect: {
       reason:
         'Declared `resource` but gates construction of the single Test Explorer ' +
         'controller, which is one per extension host rather than one per folder.',
@@ -239,6 +248,15 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'machine',
     owner: 'server',
     transport: 'workspace/configuration',
+    defect: {
+      reason:
+        'Travels the pull, but `apply_workspace_configuration_results` classifies ' +
+        'both the unscoped and the folder-scoped result item as ' +
+        'ExternalIncludePathAuthority::Untrusted, so every non-empty external root ' +
+        'is rejected with a warning (#4998). Only a server-owned trusted operator ' +
+        'adapter may admit these; that adapter is #10817.',
+      owner: '#10817',
+    },
   },
   {
     key: 'perl-lsp.featureProfile',
@@ -281,7 +299,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'client-session',
     owner: 'server',
     transport: 'didChangeConfiguration',
-    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
+    defect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.perlcritic.profile',
@@ -296,7 +314,7 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     semanticScope: 'client-session',
     owner: 'server',
     transport: 'didChangeConfiguration',
-    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
+    defect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.perlcritic.theme',
@@ -309,8 +327,16 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     key: 'perl-lsp.perltidyConfig',
     manifestScope: 'machine',
     semanticScope: 'machine',
-    owner: 'server',
-    transport: 'initialize',
+    owner: 'extension',
+    transport: 'local-only',
+    defect: {
+      reason:
+        'Names a server-side formatter config but never reaches the server: ' +
+        'initializationOptions carries only disabledFeatures, and neither ' +
+        'configuration transport includes this key. Today it only feeds local ' +
+        'coexistence advisories and formatter error text.',
+      owner: '#14447',
+    },
   },
   {
     key: 'perl-lsp.serverPath',
