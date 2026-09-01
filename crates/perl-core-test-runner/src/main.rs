@@ -2259,6 +2259,7 @@ fn one_line(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_parser_core::SourceLocation;
 
     type TestResult<T = ()> = Result<T>;
 
@@ -3796,6 +3797,77 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Fail);
         assert_eq!(result.bucket.as_deref(), Some("compile_effect"));
+        Ok(())
+    }
+
+    /// Build a PhaseBlock dynamic-boundary effect whose range covers exactly
+    /// `slice` within `source`. Direct classifier tests need an effect whose
+    /// slice is otherwise accepted: `CompileEffect` is `#[non_exhaustive]`,
+    /// so harvest a real effect from the observable `$^H = 1` fixture and pin
+    /// its range, letting each guard negative vary exactly one guard.
+    fn phase_block_effect_over(slice: &str, source: &str) -> TestResult<CompileEffect> {
+        let base = comp_form_scope_end_reference_effect_source(r"\&END");
+        let mut effects = compile_effects_for_source(&base)?;
+        effects.retain(|effect| effect.source_kind == CompileEffectSourceKind::PhaseBlock);
+        let Some(mut effect) = effects.pop() else {
+            bail!("fixture produced no PhaseBlock effect");
+        };
+        let start = source.find(slice).expect("slice must exist in source");
+        effect.range = SourceLocation { start, end: start + slice.len() };
+        Ok(effect)
+    }
+
+    fn inline_invocation(source: &str, display_path: &str) -> Invocation {
+        Invocation {
+            source: SourceInput::Inline(source.to_string()),
+            display_path: display_path.to_string(),
+        }
+    }
+
+    #[test]
+    fn classifier_form_scope_end_reference_accepts_exact_slice_on_owner_path() -> TestResult {
+        let source = "#!./perl\nBEGIN { \\&END }\n";
+        let effect = phase_block_effect_over(r"BEGIN { \&END }", source)?;
+        let invocation = inline_invocation(source, "comp/form_scope.t");
+
+        assert!(is_comp_form_scope_terminal_phase_boundary(&effect, &invocation, source));
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_form_scope_end_reference_path_guard_rejects_other_file() -> TestResult {
+        // Negative control varying only the display path against the accepted
+        // shape; a widened path guard flips this test.
+        let source = "#!./perl\nBEGIN { \\&END }\n";
+        let effect = phase_block_effect_over(r"BEGIN { \&END }", source)?;
+        let invocation = inline_invocation(source, "comp/hints.t");
+
+        assert!(!is_comp_form_scope_terminal_phase_boundary(&effect, &invocation, source));
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_form_scope_end_reference_slice_guard_rejects_changed_reference() -> TestResult {
+        // Negative control varying only the guarded reference; an accepted
+        // `\&CHECK` (or any widened reference set) flips this test.
+        let source = "#!./perl\nBEGIN { \\&CHECK }\n";
+        let effect = phase_block_effect_over(r"BEGIN { \&CHECK }", source)?;
+        let invocation = inline_invocation(source, "comp/form_scope.t");
+
+        assert!(!is_comp_form_scope_terminal_phase_boundary(&effect, &invocation, source));
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_form_scope_end_reference_slice_guard_rejects_augmented_block() -> TestResult {
+        // Negative control varying only the guarded slice: the observability
+        // helper's `; $^H = 1` changes the slice, so this documents that the
+        // classifier accepts only the exact `BEGIN { \&END }` text.
+        let source = "#!./perl\nBEGIN { \\&END; $^H = 1 }\n";
+        let effect = phase_block_effect_over(r"BEGIN { \&END; $^H = 1 }", source)?;
+        let invocation = inline_invocation(source, "comp/form_scope.t");
+
+        assert!(!is_comp_form_scope_terminal_phase_boundary(&effect, &invocation, source));
         Ok(())
     }
 
@@ -6033,7 +6105,11 @@ $test
         let mut parser = Parser::new(source);
         let output = parser.parse_with_recovery();
         if !output.diagnostics.is_empty() {
-            bail!("fixture produced parse diagnostics: {:?}", output.diagnostics);
+            bail!(
+                "fixture produced parse diagnostics: {:?} for source: {:?}",
+                output.diagnostics,
+                source
+            );
         }
         Ok(lower_ast(&output.ast).compile_effects())
     }
@@ -6046,7 +6122,7 @@ $test
                 && effect.dynamic_reason.as_deref()
                     == Some("phase block compile-time execution is recorded but not evaluated")
         }) {
-            bail!("expected a PhaseBlock compile effect, got {effects:?}");
+            bail!("expected a PhaseBlock compile effect for source {source:?}, got {effects:?}");
         }
         Ok(())
     }
