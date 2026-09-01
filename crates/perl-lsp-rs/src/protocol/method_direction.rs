@@ -566,6 +566,24 @@ mod tests {
     // the live source of this crate; neither depends on a hand-maintained
     // list of method names.
 
+    /// Strip a leading visibility qualifier (`pub`, `pub(crate)`,
+    /// `pub(super)`, `pub(in path)`) so `#[cfg(test)] pub(crate) mod … { … }`
+    /// regions are recognized exactly like bare `mod` declarations by
+    /// `strip_test_modules`.
+    fn strip_visibility_qualifier(line: &str) -> &str {
+        let Some(rest) = line.strip_prefix("pub") else {
+            return line;
+        };
+        let rest = rest.trim_start();
+        match rest.strip_prefix('(') {
+            Some(inner) => match inner.find(')') {
+                Some(end) => inner[end + 1..].trim_start(),
+                None => rest,
+            },
+            None => rest,
+        }
+    }
+
     /// Remove trailing `#[cfg(test)] mod … { … }` regions so test-only string
     /// literals cannot satisfy or pollute production-inventory scans.
     fn strip_test_modules(source: &str) -> String {
@@ -578,14 +596,10 @@ mod tests {
                 continue;
             }
             let Some(next) = lines.peek() else { break };
-            let next_trimmed = next.trim_start();
-            // A visibility-qualified declaration (`pub(crate) mod tests {`,
-            // `pub mod x;`, plain `mod x;`) counts as a mod header: check the
-            // opening/closing shape plus a `mod` token rather than matching
-            // the `mod` keyword at the start of the line.
-            let opens_like_module = next_trimmed.contains('{') || next_trimmed.ends_with(';');
-            let declares_mod = next_trimmed.split_whitespace().take(3).any(|token| token == "mod");
-            if !(opens_like_module && declares_mod) {
+            let next_trimmed = strip_visibility_qualifier(next.trim_start());
+            let is_mod_open = next_trimmed.starts_with("mod ")
+                && (next_trimmed.contains('{') || next_trimmed.ends_with(';'));
+            if !is_mod_open {
                 continue;
             }
             // Consume the attribute/mod pair. A `mod x;` declaration ends
@@ -700,6 +714,24 @@ mod tests {
                 "`{banned}` appears in routing code outside a comment (#8896)"
             );
         }
+    }
+
+    /// `#[cfg(test)]` regions declared with a visibility qualifier
+    /// (`pub(crate) mod tests`) must be stripped like bare `mod` regions;
+    /// `runtime/outbound.rs` uses exactly that shape (#14282) and an
+    /// unstripped region scans its test-only outbound sends as production
+    /// violations.
+    #[test]
+    fn strip_test_modules_removes_visibility_qualified_test_regions() {
+        let source = "#[cfg(test)]\npub(crate) mod tests {\n    \
+            sender.send_notification(\"slot/one\", json!({}))?;\n}\n\n\
+            fn keep() -> &'static str {\n    \"production\"\n}\n";
+        let stripped = strip_test_modules(source);
+        assert!(
+            !stripped.contains("slot/one"),
+            "visibility-qualified test region must be stripped"
+        );
+        assert!(stripped.contains("fn keep()"), "production code must survive");
     }
 
     fn core_method_constants() -> BTreeSet<(String, String)> {
