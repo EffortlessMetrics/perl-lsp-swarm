@@ -43,6 +43,10 @@
 //!     log_level: "info".to_string(),
 //!     mode: DapMode::Native,
 //!     workspace_root: None,
+//!     launch_authority: perl_dap::LaunchAuthorityStartup {
+//!         trusted_roots: vec![std::path::PathBuf::from("/workspace")],
+//!         allow_unbounded: None,
+//!     },
 //! };
 //! let mut server = DapServer::new(config)?;
 //! server.run()?;
@@ -190,6 +194,10 @@ pub use configuration::{
     create_launch_json_snippet,
 };
 pub use debug_adapter::{DapMessage, DebugAdapter};
+pub use security::{
+    LaunchAuthority, LaunchAuthorityError, LaunchAuthorityMode, LaunchAuthorityReceipt,
+    LaunchAuthoritySource, LaunchAuthorityStartup, TrustedRoot, UnboundedAcknowledgement,
+};
 pub use server::{DapConfig, DapMode, DapServer};
 
 pub use breakpoints::{BreakpointRecord, BreakpointStore, interpolate_logpoint_message};

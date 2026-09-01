@@ -26,6 +26,7 @@ fn initialize_adapter(adapter: &mut DebugAdapter) -> TestResult {
 #[test]
 fn test_command_injection_via_program_argument() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -71,6 +72,7 @@ fn test_command_injection_via_program_argument() -> TestResult {
 #[test]
 fn test_launch_with_nonexistent_file_errors_gracefully() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -97,6 +99,7 @@ fn test_launch_with_nonexistent_file_errors_gracefully() -> TestResult {
 #[test]
 fn test_launch_with_empty_program_rejected() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -127,6 +130,7 @@ fn test_launch_with_empty_program_rejected() -> TestResult {
 #[test]
 fn test_launch_with_whitespace_program_rejected() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -157,6 +161,7 @@ fn test_launch_with_whitespace_program_rejected() -> TestResult {
 #[test]
 fn test_launch_with_directory_rejected() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -187,6 +192,7 @@ fn test_launch_with_directory_rejected() -> TestResult {
 #[test]
 fn test_other_flag_injection_blocked() -> TestResult {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
     initialize_adapter(&mut adapter)?;
@@ -209,4 +215,24 @@ fn test_other_flag_injection_blocked() -> TestResult {
         }
     }
     Ok(())
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = LaunchAuthority::resolve(&LaunchAuthorityStartup {
+        trusted_roots: Vec::new(),
+        allow_unbounded: Some(UnboundedAcknowledgement::new(
+            LaunchAuthoritySource::CommandLine,
+            "test: unbounded session",
+        )),
+    })
+    .expect("test authority resolution");
+    adapter.set_launch_authority(authority);
 }

@@ -4,11 +4,12 @@ use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
     Arc, BreakpointHitOutcome, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS,
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
-    TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
-    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, dispatch_event,
-    emit_event_safe, error_re, exception_re, json, lock_or_recover, module_path_to_name, prompt_re,
-    security, stack_frame_re, thread, warning_re,
+    Instant, LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE, LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read,
+    RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender, TcpAttachConfig,
+    TcpAttachSession, TerminateArguments, TerminationState, Value, Write, ansi_escape_re,
+    catalog_has_feature, context_re, die_suffix_re, dispatch_event, emit_event_safe, error_re,
+    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
+    thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -196,54 +197,102 @@ impl DebugAdapter {
             // self-validating and defeats the workspace check entirely.
             let user_cwd = args.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
 
-            // Determine the workspace boundary for this launch.
+            // Launch-authority admission (#8656).
             //
-            // The server-configured root (set once via `set_workspace_root`,
-            // typically from `DapConfig.workspace_root` at server construction)
-            // is the source of truth. A launch-args `workspaceRoot` may NARROW
-            // that boundary but must never WIDEN it — otherwise a malicious or
-            // misconfigured client could hand itself a broader root than the
-            // server allows. If no server root is configured, a launch-args
-            // `workspaceRoot` is accepted as the boundary for this launch (there
-            // is nothing to widen relative to).
+            // Tier 1 — explicit authority: when the startup configuration
+            // resolved a launch authority, it is the only source of
+            // launch-path authority. Workspace-bound authority admits the
+            // `program` only inside a trusted root and lets a launch-args
+            // `workspaceRoot` only NARROW one; an explicitly unbounded
+            // authority admits any program and never synthesizes a boundary
+            // from launch arguments.
             //
-            // If neither is present, validation is skipped entirely (see the
-            // `None` handling in `launch_debugger`) — this preserves current
-            // behavior for existing users, since `DapConfig.workspace_root` is
-            // not yet populated from any CLI/editor-supplied source (tracked
-            // separately in #5345; that fail-open gap is intentionally out of
-            // scope for this fix).
-            let server_root =
-                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            // Tier 2 — legacy single-root contract: an adapter (or server)
+            // started without authority inputs keeps the historical
+            // narrowing-only `workspace_root` boundary. Its two historical
+            // fail-open paths are retired here: launch arguments can no
+            // longer CREATE the boundary, and a launch with neither
+            // authority nor a configured boundary is refused instead of
+            // running unvalidated.
             let launch_root_arg =
                 args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
-
-            let effective_root = match (server_root, launch_root_arg) {
-                (Some(server), Some(launch)) => match security::validate_path(&launch, &server) {
-                    Ok(narrowed) => Some(narrowed),
-                    Err(e) => {
+            let authority_installed = self.has_launch_authority();
+            let narrowed_root = if authority_installed {
+                let admission = self.admit_launch_against_authority(
+                    if program.trim().is_empty() { None } else { Some(Path::new(program)) },
+                    launch_root_arg.as_deref(),
+                );
+                match admission {
+                    Ok(narrowed) => {
+                        // The admitted launch begins a fresh authority
+                        // session: identity and mode stay immutable while the
+                        // session generation resets.
+                        let _ = self.begin_authority_session();
+                        narrowed
+                    }
+                    Err(message) => {
                         return DapMessage::Response {
                             seq,
                             request_seq,
                             success: false,
                             command: "launch".to_string(),
                             body: None,
-                            message: Some(format!(
-                                "The launch 'workspaceRoot' ('{}') is outside your workspace \
-                                     folder and cannot widen the server-configured boundary. \
-                                     Details: {}",
-                                launch.display(),
-                                e
-                            )),
+                            message: Some(message),
                         };
                     }
-                },
-                (Some(server), None) => Some(server),
-                (None, Some(launch)) => Some(launch),
-                (None, None) => None,
+                }
+            } else {
+                let server_root =
+                    lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+                match (server_root, launch_root_arg.clone()) {
+                    (Some(server), Some(launch)) => {
+                        match security::validate_path(&launch, &server) {
+                            Ok(narrowed) => Some(narrowed),
+                            Err(e) => {
+                                return DapMessage::Response {
+                                    seq,
+                                    request_seq,
+                                    success: false,
+                                    command: "launch".to_string(),
+                                    body: None,
+                                    message: Some(format!(
+                                        "The launch 'workspaceRoot' ('{}') is outside your \
+                                             workspace folder and cannot widen the \
+                                             server-configured boundary. Details: {}",
+                                        launch.display(),
+                                        e
+                                    )),
+                                };
+                            }
+                        }
+                    }
+                    (Some(server), None) => Some(server),
+                    (None, Some(_)) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE.to_string()),
+                        };
+                    }
+                    (None, None) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE.to_string()),
+                        };
+                    }
+                }
             };
 
-            if let Some(root) = effective_root {
+            // Keep the defense-in-depth workspace boundary aligned with the
+            // admitted narrowing root (workspace-bound authority only).
+            if let Some(root) = narrowed_root {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
@@ -2438,10 +2487,120 @@ mod tests {
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
         reserve_terminated_event, terminated_delivery_is_current,
     };
+    use crate::security::launch_authority::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
     use crate::tcp_attach::DapEvent;
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
+
+    fn workspace_bound_authority(root: &std::path::Path) -> LaunchAuthority {
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: vec![root.to_path_buf()],
+            allow_unbounded: None,
+        })
+        .expect("test authority resolution")
+    }
+
+    fn unbounded_test_authority() -> LaunchAuthority {
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test session",
+            )),
+        })
+        .expect("test authority resolution")
+    }
+
+    fn launch_failure_message(response: super::DapMessage) -> Option<String> {
+        match response {
+            super::DapMessage::Response { success, message, .. } if !success => message,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn launch_without_startup_authority_fails_closed() {
+        let mut adapter = DebugAdapter::new();
+        let _ = adapter.handle_initialize(1, 1, None);
+        let response =
+            adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": "script.pl" })));
+        let message = launch_failure_message(response)
+            .expect("a launch without startup authority must be refused");
+        assert!(
+            message.contains("no startup launch authority"),
+            "refusal should explain the missing authority; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_bound_authority_refuses_program_outside_trusted_roots() {
+        let root = tempfile::tempdir().expect("temp root");
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        let outside = tempfile::tempdir().expect("outside temp root");
+        let outside_script = outside.path().join("outside.pl");
+        std::fs::write(&outside_script, b"print 1;").expect("script");
+
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({ "program": outside_script.display().to_string() })),
+        );
+        let message = launch_failure_message(response)
+            .expect("a program outside every trusted root must be refused");
+        assert!(
+            message.contains("trusted root"),
+            "refusal should mention the trusted-root boundary; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn launch_args_workspace_root_cannot_create_authority() {
+        let root = tempfile::tempdir().expect("temp root");
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        let outside = tempfile::tempdir().expect("outside temp root");
+        let script = outside.path().join("script.pl");
+        std::fs::write(&script, b"print 1;").expect("script");
+
+        // A launch-args workspaceRoot outside the trusted roots must be
+        // refused instead of becoming the launch boundary.
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({
+                "program": script.display().to_string(),
+                "workspaceRoot": outside.path().display().to_string(),
+            })),
+        );
+        let message = launch_failure_message(response)
+            .expect("a launch-args workspaceRoot cannot create authority");
+        assert!(
+            message.contains("trusted root"),
+            "refusal should mention the trusted-root boundary; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn explicitly_unbounded_authority_is_recorded_and_admits_paths() {
+        let adapter = DebugAdapter::new();
+        let authority = unbounded_test_authority();
+        let receipt = authority.receipt();
+        assert_eq!(receipt.mode, "explicit_unbounded");
+        assert!(receipt.acknowledgement_identity.is_some());
+        adapter.set_launch_authority(authority);
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        // Admission succeeds and a session generation begins.
+        assert!(adapter.begin_authority_session().is_some());
+    }
 
     #[test]
     fn context_then_prompt_preserves_current_suspension_frame_id() -> Result<(), String> {
@@ -2967,6 +3126,23 @@ mod tests {
         let tmp_path = tmp.path().to_str().ok_or("temp path is not valid UTF-8")?.to_string();
 
         let mut adapter = DebugAdapter::new();
+
+        // Install an explicitly unbounded startup authority (#8656): this
+        // test targets the Perl-spawn error path, not boundary validation.
+        // Without an authority the launch is refused before any Perl check.
+        let authority = crate::security::launch_authority::LaunchAuthority::resolve(
+            &crate::security::launch_authority::LaunchAuthorityStartup {
+                trusted_roots: Vec::new(),
+                allow_unbounded: Some(
+                    crate::security::launch_authority::UnboundedAcknowledgement::new(
+                        crate::security::launch_authority::LaunchAuthoritySource::CommandLine,
+                        "test: reach the Perl spawn error path",
+                    ),
+                ),
+            },
+        )
+        .map_err(|e| format!("authority resolution failed: {e}"))?;
+        adapter.set_launch_authority(authority);
 
         // Initialize first (required by state machine validation)
         let _ = adapter.handle_initialize(1, 1, None);

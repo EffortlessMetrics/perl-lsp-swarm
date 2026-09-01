@@ -1,4 +1,5 @@
 use crate::debug_adapter::DebugAdapter;
+use crate::security::launch_authority::LaunchAuthority;
 use crate::server::config::DapConfig;
 
 /// Native DAP server lifecycle.
@@ -19,20 +20,42 @@ impl DapServer {
     ///
     /// # Arguments
     ///
-    /// * `config` - Server configuration including logging and workspace context.
+    /// * `config` - Server configuration including logging, workspace context,
+    ///   and the launch-authority startup inputs (#8656).
     ///
     /// # Errors
     ///
     /// Construction retains a result boundary for configuration and runtime
-    /// initialization failures.
+    /// initialization failures. When launch-authority inputs are configured,
+    /// they are validated here and invalid inputs (for example a missing
+    /// trusted root) reject startup before any debuggee process can spawn.
+    /// Without authority inputs the server still starts for boundary-free
+    /// management flows, and every launch request is refused fail-closed
+    /// (see `handle_launch`).
     pub fn new(config: DapConfig) -> anyhow::Result<Self> {
         let adapter = DebugAdapter::new();
-        // Wire the configured workspace boundary (if any) into the adapter so
-        // launch requests are validated against it. See
-        // `DebugAdapter::set_workspace_root` and `handle_launch` for the
-        // narrowing-only override rule applied to launch-args `workspaceRoot`.
+        // Resolve the launch-authority decision from the user/machine-owned
+        // startup inputs when any are configured. A configured
+        // `workspace_root` is a startup-owned boundary: it joins the
+        // trusted-root set so the historical workspace-bound behavior keeps
+        // working under the explicit contract.
+        let mut startup = config.launch_authority.clone();
         if let Some(root) = config.workspace_root.clone() {
+            if !startup.trusted_roots.iter().any(|listed| listed == &root) {
+                startup.trusted_roots.push(root.clone());
+            }
             adapter.set_workspace_root(root);
+        }
+        if !startup.trusted_roots.is_empty() || startup.allow_unbounded.is_some() {
+            let authority = LaunchAuthority::resolve(&startup).map_err(|error| {
+                anyhow::anyhow!("launch authority rejected at startup: {error}")
+            })?;
+            tracing::info!(
+                mode = authority.mode().label(),
+                authority_identity = %authority.identity(),
+                "launch authority resolved"
+            );
+            adapter.set_launch_authority(authority);
         }
         Ok(Self { config, adapter })
     }

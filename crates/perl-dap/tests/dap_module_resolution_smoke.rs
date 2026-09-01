@@ -124,6 +124,7 @@ fn test_module_breakpoint_accepted_without_session() -> TestResult {
     let (_dir, _script_str, module_str) = setup_fixtures()?;
 
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     adapter.handle_request(1, "initialize", None);
 
     let response = adapter.handle_request(
@@ -185,6 +186,7 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
     let timeout = smoke_timeout();
 
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -333,4 +335,24 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
     );
 
     Ok(())
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = LaunchAuthority::resolve(&LaunchAuthorityStartup {
+        trusted_roots: Vec::new(),
+        allow_unbounded: Some(UnboundedAcknowledgement::new(
+            LaunchAuthoritySource::CommandLine,
+            "test: unbounded session",
+        )),
+    })
+    .expect("test authority resolution");
+    adapter.set_launch_authority(authority);
 }

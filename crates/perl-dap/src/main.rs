@@ -261,6 +261,29 @@ struct Args {
     #[arg(long, value_name = "HOST:PORT")]
     external_peer: Option<String>,
 
+    /// Trusted root directory for workspace-bound launch authority (#8656).
+    /// Repeatable. Every debugged `program` must live inside one trusted root
+    /// unless `--allow-unbounded` is set. Mutually exclusive with
+    /// `--allow-unbounded`.
+    #[arg(long = "trusted-root", value_name = "DIR")]
+    trusted_root: Vec<PathBuf>,
+
+    /// Explicitly allow unbounded launch paths (#8656). This is a user-owned
+    /// acknowledgement recorded in the session authority receipt; launch
+    /// arguments and opened-project data can never set it. Mutually exclusive
+    /// with `--trusted-root`.
+    #[arg(long = "allow-unbounded", default_value_t = false)]
+    allow_unbounded: bool,
+
+    /// Operator note recorded with `--allow-unbounded` in the authority
+    /// receipt.
+    #[arg(
+        long = "unbounded-note",
+        value_name = "TEXT",
+        default_value = "operator enabled via CLI"
+    )]
+    unbounded_note: String,
+
     /// Listen for a mirror-mode external debugger peer to connect back (the
     /// `mode: "listen"` external-peer launch). Binds a loopback debugger-peer
     /// listener (a bare HOST or empty value allocates an ephemeral port), exposes
@@ -340,8 +363,26 @@ fn main() -> anyhow::Result<()> {
     // The shipped binary always runs the native adapter. External
     // implementations may be compared in repository-only conformance tooling,
     // but no alternate DAP server is reachable from this CLI or crate runtime.
-    let config =
-        DapConfig { log_level: args.log_level, mode: DapMode::Native, workspace_root: None };
+    //
+    // The launch-authority flags are user/machine-owned startup inputs
+    // (#8656): a server started with neither `--trusted-root` nor
+    // `--allow-unbounded` fails closed in `DapServer::new` before any
+    // debuggee process can spawn.
+    let launch_authority = perl_dap::LaunchAuthorityStartup {
+        trusted_roots: args.trusted_root.clone(),
+        allow_unbounded: args.allow_unbounded.then(|| {
+            perl_dap::UnboundedAcknowledgement::new(
+                perl_dap::LaunchAuthoritySource::CommandLine,
+                args.unbounded_note.clone(),
+            )
+        }),
+    };
+    let config = DapConfig {
+        log_level: args.log_level,
+        mode: DapMode::Native,
+        workspace_root: None,
+        launch_authority,
+    };
 
     let mut server = DapServer::new(config)?;
 

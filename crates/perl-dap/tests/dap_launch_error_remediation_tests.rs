@@ -19,6 +19,7 @@ fn initialize_adapter(adapter: &mut DebugAdapter) {
 #[test]
 fn launch_error_names_launch_json_perlpath_setting() -> anyhow::Result<()> {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     initialize_adapter(&mut adapter);
 
     let response = adapter.handle_request(
@@ -58,6 +59,7 @@ fn launch_error_names_launch_json_perlpath_setting() -> anyhow::Result<()> {
 #[test]
 fn launch_error_includes_perl_detection_info() -> anyhow::Result<()> {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     initialize_adapter(&mut adapter);
 
     let response = adapter.handle_request(
@@ -96,6 +98,7 @@ fn launch_error_includes_perl_detection_info() -> anyhow::Result<()> {
 #[test]
 fn repeated_launch_failures_keep_actionable_guidance() -> anyhow::Result<()> {
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     initialize_adapter(&mut adapter);
     let arguments = Some(json!({
         "program": "/nonexistent/path/to/script.pl"
@@ -157,6 +160,7 @@ fn launch_error_on_windows_links_strawberry_perl_when_perl_absent() -> anyhow::R
     // Only run this assertion when Perl is genuinely not available.
     if resolve_perl_path_with_toolchain().is_err() {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         initialize_adapter(&mut adapter);
 
         let response = adapter.handle_request(
@@ -184,4 +188,24 @@ fn launch_error_on_windows_links_strawberry_perl_when_perl_absent() -> anyhow::R
     // If Perl is found, the test passes vacuously — the "found" branch is tested by
     // the other tests above.
     Ok(())
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = LaunchAuthority::resolve(&LaunchAuthorityStartup {
+        trusted_roots: Vec::new(),
+        allow_unbounded: Some(UnboundedAcknowledgement::new(
+            LaunchAuthoritySource::CommandLine,
+            "test: unbounded session",
+        )),
+    })
+    .expect("test authority resolution");
+    adapter.set_launch_authority(authority);
 }

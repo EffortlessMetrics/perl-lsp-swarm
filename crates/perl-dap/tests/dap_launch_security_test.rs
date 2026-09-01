@@ -64,6 +64,15 @@ fn test_launch_allows_valid_path() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let workspace_root = temp_dir.path().to_path_buf();
 
+    // #8656: a launch is admitted only through explicit startup authority, so
+    // this test trusts the temp workspace at startup.
+    adapter.set_launch_authority(perl_dap::LaunchAuthority::resolve(
+        &perl_dap::LaunchAuthorityStartup {
+            trusted_roots: vec![workspace_root.clone()],
+            allow_unbounded: None,
+        },
+    )?);
+
     // Create a file *inside* the workspace
     let inside_script = workspace_root.join("good.pl");
     fs::write(&inside_script, "print 'good';")?;
@@ -157,8 +166,9 @@ fn test_configured_workspace_root_accepts_inside_script() -> Result<(), Box<dyn 
     Ok(())
 }
 
-/// A `workspaceRoot` field in the launch args provides the boundary when no
-/// server-configured root is present. Scripts outside the declared root are rejected.
+/// A `workspaceRoot` field in the launch args can no longer create a boundary
+/// when no server-configured root or startup authority is present (#8656):
+/// the launch is refused outright instead of trusting launch-controlled roots.
 #[test]
 fn test_launch_workspace_root_field_rejects_outside_script()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -182,11 +192,11 @@ fn test_launch_workspace_root_field_rejects_outside_script()
 
     match response {
         DapMessage::Response { success, message, .. } => {
-            assert!(!success, "Launch of out-of-workspace script must be rejected");
+            assert!(!success, "Launch with a launch-args-only root must be rejected");
             let msg = message.unwrap_or_default();
             assert!(
-                msg.contains("outside your workspace") || msg.contains("outside workspace"),
-                "Expected workspace-boundary rejection, got: {msg}"
+                msg.contains("cannot create one"),
+                "Expected launch-args-cannot-create-authority refusal, got: {msg}"
             );
         }
         other => return Err(format!("Expected Response, got: {other:?}").into()),

@@ -219,6 +219,7 @@ mod dap_golden_transcripts {
         assert!(sequence.iter().any(|m| m["command"] == "disconnect"));
 
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         send_and_expect_success(&mut adapter, 1, "initialize", None)?;
 
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.pl");
@@ -257,6 +258,7 @@ mod dap_golden_transcripts {
         // #898: execution-control handlers return failure without an active session.
         // This test validates the transcript structure and the no-session failure shape.
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         send_and_expect_no_session_failure(
             &mut adapter,
             1,
@@ -315,6 +317,7 @@ mod dap_golden_transcripts {
         assert!(messages.iter().any(|m| m["command"] == "variables"));
 
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         send_and_expect_success(&mut adapter, 1, "stackTrace", Some(json!({ "threadId": 1 })))?;
         send_and_expect_success(&mut adapter, 2, "scopes", Some(json!({ "frameId": 1 })))?;
         send_and_expect_success(
@@ -337,6 +340,7 @@ mod dap_golden_transcripts {
         assert_transcript_conformance("breakpoint_sequence.json", messages)?;
 
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         let response = adapter.handle_request(
             1,
             "setBreakpoints",
@@ -400,4 +404,24 @@ mod dap_golden_transcripts {
 
         Ok(())
     }
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = LaunchAuthority::resolve(&LaunchAuthorityStartup {
+        trusted_roots: Vec::new(),
+        allow_unbounded: Some(UnboundedAcknowledgement::new(
+            LaunchAuthoritySource::CommandLine,
+            "test: unbounded session",
+        )),
+    })
+    .expect("test authority resolution");
+    adapter.set_launch_authority(authority);
 }
