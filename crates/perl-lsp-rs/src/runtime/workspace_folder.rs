@@ -187,20 +187,25 @@ mod tests {
     fn refresh_workspace_metadata_adds_carmel_include_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
+        let mut config = WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string(), ".".to_string()];
+        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
+            .with_path(temp.path().to_path_buf())
+            .with_effective_workspace_config(config);
+
+        folder.refresh_workspace_metadata();
+
+        assert_eq!(folder.effective_workspace_config.include_paths, vec!["lib", "."]);
+
         std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
         std::fs::create_dir_all(temp.path().join("local"))?;
         std::fs::write(temp.path().join("local/.carmel"), "")?;
         std::fs::create_dir_all(temp.path().join("local/lib/perl5"))?;
-        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
-            .with_path(temp.path().to_path_buf());
-
         folder.refresh_workspace_metadata();
 
-        assert!(
-            folder
-                .effective_workspace_config
-                .include_paths
-                .contains(&"local/lib/perl5".to_string())
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", ".", "local/lib/perl5"]
         );
         Ok(())
     }

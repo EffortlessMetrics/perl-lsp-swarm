@@ -52,11 +52,6 @@ pub const CARMEL_ARTIFACT_EXPLANATION_CODE: &str = "carmel_artifact";
 pub const MANAGER_AMBIGUOUS_EXPLANATION_CODE: &str = "manager_ambiguous";
 
 /// Limitation code for an embedded dev-mode artifact entry that resolves
-/// inside the workspace root (the module's bounded probe authority) but was
-/// probed absent.
-pub const CARMEL_ARTIFACT_MISSING_LIMITATION: &str = "carmel_artifact_missing";
-
-/// Limitation code for an embedded dev-mode artifact entry that resolves
 /// outside the workspace root — an arbitrary absolute host path, a UNC
 /// device path, or a root-escaping relative entry. Such entries are
 /// classified lexically and never probed: their host existence stays
@@ -193,9 +188,9 @@ pub struct CarmelDetection {
     /// Dev-mode artifact candidates in producer order. Existence remains
     /// unknown because embedded paths are not trusted for filesystem probes.
     pub artifact_roots: Vec<CarmelArtifactRoot>,
-    /// Explicit limitations: unparsable dev state, missing workspace-bounded
-    /// artifacts, unprobed outside-workspace artifact entries, relocated
-    /// `base`.
+    /// Explicit limitations: unparsable dev state, unprobed artifact entries,
+    /// and relocated `base`. Artifact existence is intentionally not decided
+    /// by this untrusted-input facts layer.
     pub limitations: Vec<EnvironmentLimitation>,
 }
 
@@ -214,7 +209,10 @@ pub fn detect_carmel(workspace_root: &Path) -> CarmelDetection {
     let dev_state_present = workspace_root.join(DEV_STATE_MARKER).is_file();
     let rollout_sentinel_present = workspace_root.join(ROLLOUT_SENTINEL_MARKER).is_file();
 
-    let is_carmel = dev_state_present || rollout_sentinel_present;
+    // A marker without the project declaration is stale residue, not a
+    // project identity. Keep the marker facts visible, but do not derive
+    // Carmel roots or lock attribution from it.
+    let is_carmel = cpanfile_present && (dev_state_present || rollout_sentinel_present);
 
     let lock = if !snapshot_present {
         CarmelLockAttribution::Absent
@@ -228,19 +226,24 @@ pub fn detect_carmel(workspace_root: &Path) -> CarmelDetection {
         CarmelLockAttribution::Ambiguous
     };
 
-    let rollout_root = if rollout_sentinel_present { Some(ROLLOUT_INCLUDE_PATH) } else { None };
+    let rollout_root =
+        if is_carmel && rollout_sentinel_present { Some(ROLLOUT_INCLUDE_PATH) } else { None };
 
     let mut limitations = Vec::new();
     let mut dev_state = None;
     let mut artifact_roots = Vec::new();
 
-    if dev_state_present {
+    if is_carmel && dev_state_present {
         match read_bounded(&workspace_root.join(DEV_STATE_MARKER)) {
             Some(source) => match parse_mysetup_environment(&source) {
                 Some(facts) => {
                     match &facts.inc {
                         Some(inc) => {
                             for (source_order, entry) in inc.iter().enumerate() {
+                                // Embedded paths are untrusted facts. This
+                                // layer intentionally performs no host probe;
+                                // trusted consumers own any bounded probe and
+                                // may report missing state there.
                                 let exists = None;
                                 let detail = match classify_artifact_entry(entry, workspace_root) {
                                     ArtifactEntryOrigin::WorkspaceBounded => format!(
@@ -541,22 +544,53 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// Find the generated top-level declaration, ignoring comments and
-    /// string contents by requiring the declaration to begin a source line.
+    /// Find the generated top-level declaration while ignoring comments and
+    /// quoted strings. A line-start check alone is insufficient because a
+    /// multiline Perl string can contain a forged declaration at its own
+    /// line start.
     fn find_environment_declaration(&mut self) -> Option<()> {
         let needle = "our %environment";
         let mut offset = 0;
+        let mut quote = None;
+        let mut escaped = false;
+        let mut comment = false;
         for line in self.source.split_inclusive('\n') {
-            let leading = line.len() - line.trim_start_matches([' ', '\t']).len();
-            let candidate = &line[leading..];
-            if candidate.starts_with(needle)
-                && candidate
-                    .get(needle.len()..)
-                    .and_then(|rest| rest.chars().next())
-                    .is_some_and(|ch| ch == ' ' || ch == '\t' || ch == '=')
-            {
-                self.pos = offset + leading + needle.len();
-                return Some(());
+            if quote.is_none() && !comment {
+                let leading = line.len() - line.trim_start_matches([' ', '\t']).len();
+                let candidate = &line[leading..];
+                if candidate.starts_with(needle)
+                    && candidate
+                        .get(needle.len()..)
+                        .and_then(|rest| rest.chars().next())
+                        .is_some_and(|ch| ch == ' ' || ch == '\t' || ch == '=')
+                {
+                    self.pos = offset + leading + needle.len();
+                    return Some(());
+                }
+            }
+
+            for ch in line.chars() {
+                if comment {
+                    if ch == '\n' {
+                        comment = false;
+                    }
+                    continue;
+                }
+                if let Some(delimiter) = quote {
+                    if escaped {
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == delimiter {
+                        quote = None;
+                    }
+                    continue;
+                }
+                match ch {
+                    '#' => comment = true,
+                    '\'' | '"' => quote = Some(ch),
+                    _ => {}
+                }
             }
             offset += line.len();
         }
@@ -867,6 +901,45 @@ our %environment = (
     }
 
     #[test]
+    fn forged_anchor_inside_multiline_string_is_ignored() {
+        let source = concat!(
+            "our $text = '\n",
+            "our %environment = ( 'inc' => [ '/forged/blib/lib' ] );\n",
+            "';\n",
+            "package Real;\n",
+            "our %environment = ( 'inc' => [ '/real/blib/lib' ], 'base' => '/real' );\n"
+        );
+        let facts = parse_mysetup_environment(source).expect("real declaration is found");
+        assert_eq!(facts.inc.as_deref(), Some(["/real/blib/lib".to_string()].as_slice()));
+        assert_eq!(facts.base.as_deref(), Some("/real"));
+    }
+
+    #[test]
+    fn forged_anchor_after_inline_comment_is_ignored() {
+        let source = concat!(
+            "# generated text follows\n",
+            "# our %environment = ( 'inc' => [ '/forged/blib/lib' ] );\n",
+            "our %environment = ( 'inc' => [ '/real/blib/lib' ], 'base' => '/real' );\n"
+        );
+        let facts = parse_mysetup_environment(source).expect("real declaration is found");
+        assert_eq!(facts.inc.as_deref(), Some(["/real/blib/lib".to_string()].as_slice()));
+    }
+
+    #[test]
+    fn stale_carmel_markers_without_cpanfile_do_not_claim_identity() {
+        let fixture = Fixture::new("stale-marker");
+        fixture.write(".carmel/MySetup.pm", MYSETUP);
+        fixture.write("local/.carmel", "");
+
+        let detection = detect_carmel(&fixture.root);
+        assert!(!detection.cpanfile_present);
+        assert!(!detection.is_carmel);
+        assert_eq!(detection.rollout_root, None);
+        assert_eq!(detection.artifact_roots, Vec::new());
+        assert_eq!(detection.lock, CarmelLockAttribution::Absent);
+    }
+
+    #[test]
     fn ignores_environment_text_before_the_generated_declaration() {
         let source = concat!(
             "# our %environment = ( 'inc' => [ '/forged/blib/lib' ] );\n",
@@ -893,6 +966,7 @@ our %environment = (
     fn bounded_read_keeps_valid_prefix_when_cutting_utf8() -> Result<(), Box<dyn std::error::Error>>
     {
         let fixture = Fixture::new("utf8-boundary");
+        fixture.write("cpanfile", "requires 'JSON::PP';\n");
         fixture.dir(".carmel");
         let mut source = mysetup_with(&["/tmp/carmel/blib/lib".to_string()], "/tmp/project");
         source.push_str(
@@ -1003,13 +1077,10 @@ our %environment = (
                 == 2,
             "all embedded entries report unknown existence"
         );
-        assert!(
-            !detection
-                .limitations
-                .iter()
-                .any(|item| item.code == CARMEL_ARTIFACT_MISSING_LIMITATION),
-            "no untrusted entry is classified by a filesystem probe"
-        );
+        assert!(detection.limitations.iter().all(|item| {
+            item.code == CARMEL_ARTIFACT_UNVERIFIED_LIMITATION
+                || item.code == CARMEL_BASE_MISMATCH_LIMITATION
+        }));
     }
 
     #[test]
