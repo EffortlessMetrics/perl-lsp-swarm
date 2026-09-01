@@ -1290,22 +1290,39 @@ fn an_unknown_manifest_field_is_refused() -> Result<()> {
     Ok(())
 }
 
-/// The identity digest is what protects the claims Git objects cannot check.
+/// The identity digest is what protects the claims nothing else can check.
 ///
-/// Most tampering is caught earlier, by recomputation against the imported
-/// objects. Limitation codes are different: no object can confirm that an
-/// envelope's proof is local-only, so dropping that admission is exactly the
-/// claim-weakening edit the digest has to catch on its own.
+/// Most tampering is caught earlier: recomputation against the imported objects
+/// covers the commit and inventory, and `limitation_completeness` covers every
+/// admission a receiver can re-derive from the candidate's own facts.
+/// `remote_url_contained_credentials` is deliberately outside both. It is
+/// producer-only knowledge — the refused URL never enters the envelope, so no
+/// object and no later dimension can reconstruct it — which makes dropping it
+/// the claim-weakening edit only the seal can catch.
 #[test]
-fn dropping_a_limitation_without_resealing_breaks_the_identity_digest() -> Result<()> {
-    let fixture = Fixture::new()?;
+fn dropping_a_producer_only_limitation_breaks_the_identity_digest() -> Result<()> {
+    let token = synthetic_github_token();
+    let remote = format!("https://{}:{}@{}", "octocat", token, "github.com/acme/app.git");
+    let fixture = Fixture::with_remote(Some(&remote))?;
     fixture.write("a.txt", b"a\n")?;
     fixture.commit("root")?;
     let destination = Destination::new()?;
-    let manifest = export_valid(&fixture, &destination)?;
+    let manifest = create_handoff(&request(&fixture, &destination))
+        .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
     assert!(
-        manifest.limitations.contains(&LimitationCode::LocalProofOnly),
+        manifest.limitations.contains(&LimitationCode::RemoteUrlContainedCredentials),
         "the fixture must carry the admission the control removes"
+    );
+
+    // A refused remote leaves identity unproven, which is an honest boundary
+    // rather than a valid handoff. The untampered seal is still intact, so the
+    // digest verdict below is a change this control caused.
+    let baseline = check_handoff(&destination.envelope());
+    assert_eq!(baseline.outcome, HandoffOutcome::RepositoryIdentityNotProven);
+    assert!(
+        baseline.dimensions.iter().any(|dimension| dimension.id == "identity_digest"
+            && dimension.verdict == DimensionVerdict::Valid),
+        "the fixture's own seal must verify before the control breaks it"
     );
 
     let mut raw = raw_manifest(&destination.envelope())?;
@@ -1313,7 +1330,7 @@ fn dropping_a_limitation_without_resealing_breaks_the_identity_digest() -> Resul
         .as_array()
         .context("limitations array")?
         .iter()
-        .filter(|value| value.as_str() != Some("local_proof_only"))
+        .filter(|value| value.as_str() != Some("remote_url_contained_credentials"))
         .cloned()
         .collect();
     raw["limitations"] = serde_json::Value::Array(kept);
@@ -1330,6 +1347,16 @@ fn dropping_a_limitation_without_resealing_breaks_the_identity_digest() -> Resul
         digest.verdict,
         DimensionVerdict::Invalid,
         "no earlier dimension can see this edit, so the digest must"
+    );
+    let completeness = report
+        .dimensions
+        .iter()
+        .find(|dimension| dimension.id == "limitation_completeness")
+        .context("limitation_completeness dimension")?;
+    assert_eq!(
+        completeness.verdict,
+        DimensionVerdict::Valid,
+        "the control is only about the seal if the completeness check accepts the edit"
     );
     Ok(())
 }
@@ -1608,6 +1635,231 @@ fn an_unmodelled_entry_mode_is_refused_as_an_unsupported_class() {
         Err(HandoffOutcome::UnsupportedObjectClass),
         "an unmodelled mode is not a deletion"
     );
+}
+
+/// Comparing the manifest's declared set against the closure is still
+/// circular: a resealed pack can carry the whole valid closure *plus*
+/// undeclared objects, refresh its digest, and leave `object_ids` untouched.
+#[test]
+fn an_undeclared_object_carried_in_the_pack_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("base")?;
+    fixture.write("a.txt", b"b\n")?;
+    fixture.commit("candidate")?;
+    // A blob that belongs to no part of this candidate.
+    fixture.git(&["checkout", "--quiet", "-b", "unrelated"])?;
+    fixture.write("stray.txt", b"content that never belonged to the candidate\n")?;
+    fixture.commit("unrelated")?;
+    let stray = fixture.git(&["rev-parse", "HEAD:stray.txt"])?;
+    fixture.git(&["checkout", "--quiet", "main"])?;
+
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    assert!(!manifest.transport.object_ids.contains(&stray));
+
+    // Repack the declared closure *plus* the stray, leaving every manifest
+    // claim about the object set untouched, and reseal the byte facts.
+    let mut stdin = manifest.transport.object_ids.join("\n");
+    stdin.push('\n');
+    stdin.push_str(&stray);
+    let repacked = super::git::run_git_with_stdin(
+        fixture.path(),
+        &["pack-objects", "--stdout", "-q"],
+        stdin.as_bytes(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    assert!(repacked.succeeded());
+    fs::write(destination.envelope().join(PACK_FILE_NAME), &repacked.stdout_bytes)?;
+
+    let mut smuggled = manifest;
+    smuggled.transport.files[0].bytes = repacked.stdout_bytes.len() as u64;
+    smuggled.transport.files[0].sha256 = super::content_digest_hex(&repacked.stdout_bytes);
+    rewrite_manifest_resealed(&destination.envelope(), smuggled)?;
+
+    let report = check_handoff(&destination.envelope());
+    assert_eq!(
+        report.outcome,
+        HandoffOutcome::MissingObject,
+        "the objects actually imported must equal the candidate's closure: {:#?}",
+        report.dimensions
+    );
+    Ok(())
+}
+
+/// Limitations are the confidence boundaries a receiver acts on, and no Git
+/// object records them, so a resealed envelope could otherwise drop one.
+#[test]
+fn a_dropped_mandatory_limitation_is_refused_even_when_resealed() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    for dropped in [
+        LimitationCode::TransportedObjectsNotSecretScanned,
+        LimitationCode::LocalProofOnly,
+        LimitationCode::RootCommitDiffAgainstEmptyTree,
+    ] {
+        assert!(manifest.limitations.contains(&dropped), "{dropped:?} must be present to drop");
+        let mut stripped = manifest.clone();
+        stripped.limitations.retain(|code| *code != dropped);
+        rewrite_manifest_resealed(&destination.envelope(), stripped)?;
+
+        let report = check_handoff(&destination.envelope());
+        assert_eq!(
+            report.outcome,
+            HandoffOutcome::InvalidManifest,
+            "dropping {dropped:?} must be refused: {:#?}",
+            report.dimensions
+        );
+        let dimension = report
+            .dimensions
+            .iter()
+            .find(|dimension| dimension.id == "limitation_completeness")
+            .context("limitation_completeness dimension")?;
+        assert_eq!(dimension.verdict, DimensionVerdict::Invalid);
+    }
+    Ok(())
+}
+
+/// The producer refuses a credential-bearing proof, but a receiver cannot
+/// assume the producer ran: the envelope comes from the less-trusted side.
+#[test]
+fn a_credential_bearing_proof_is_refused_at_check() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    let candidate = fixture.commit("root")?;
+
+    let proof_root = tempfile::TempDir::new()?;
+    let proof_path = proof_root.path().join("proof.json");
+    fs::write(
+        &proof_path,
+        serde_json::to_vec(&serde_json::json!({ "commit": candidate, "tests": "passed" }))?,
+    )?;
+
+    let destination = Destination::new()?;
+    let mut inputs = request(&fixture, &destination);
+    inputs.proofs = vec![proof_path];
+    let manifest = create_handoff(&inputs)
+        .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+
+    // Substitute a payload the producer would have refused, then reseal.
+    let tainted = serde_json::to_vec(&serde_json::json!({
+        "commit": candidate,
+        "token": synthetic_github_token(),
+    }))?;
+    let proof_id = manifest.proof_references[0].id.clone();
+    fs::write(destination.envelope().join(PROOF_DIR_NAME).join(&proof_id), &tainted)?;
+
+    let mut resealed = manifest;
+    resealed.proof_references[0].bytes = tainted.len() as u64;
+    resealed.proof_references[0].sha256 = super::content_digest_hex(&tainted);
+    rewrite_manifest_resealed(&destination.envelope(), resealed)?;
+
+    assert_eq!(
+        check_handoff(&destination.envelope()).outcome,
+        HandoffOutcome::UnsafeContent,
+        "the receiver runs the same scan the producer does"
+    );
+    Ok(())
+}
+
+/// Isolation is a claim about the object database, so Git must not be able to
+/// reach the receiver's own objects while validating.
+#[test]
+fn the_local_env_list_covers_what_git_reports() -> Result<()> {
+    let repository = tempfile::TempDir::new()?;
+    let output = Command::new("git")
+        .args(["rev-parse", "--local-env-vars"])
+        .current_dir(repository.path())
+        .output()?;
+    assert!(output.status.success(), "git rev-parse --local-env-vars");
+
+    let reported: Vec<String> =
+        String::from_utf8_lossy(&output.stdout).split_whitespace().map(str::to_string).collect();
+    assert!(!reported.is_empty(), "git reported no repository-local variables");
+
+    let missing: Vec<&String> = reported
+        .iter()
+        .filter(|variable| !super::git::GIT_LOCAL_ENV_VARS.contains(&variable.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "git reports repository-local variables this seam does not clear: {missing:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_alternate_object_directory_cannot_satisfy_a_missing_object() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("seed.txt", b"seed\n")?;
+    fixture.commit("base")?;
+    fixture.write("image.bin", &[0u8, 1, 2, 3, 4, 5])?;
+    fixture.commit("add binary")?;
+
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    let binary_object = change_for(&manifest, "image.bin")
+        .and_then(|row| row.new_object.clone())
+        .context("binary object id")?;
+
+    // Drop the blob from both the pack and the declared set, then reseal.
+    let mut reduced = manifest;
+    reduced.transport.object_ids.retain(|id| *id != binary_object);
+    let stdin = reduced.transport.object_ids.join("\n");
+    let repacked = super::git::run_git_with_stdin(
+        fixture.path(),
+        &["pack-objects", "--stdout", "-q"],
+        stdin.as_bytes(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    assert!(repacked.succeeded());
+    fs::write(destination.envelope().join(PACK_FILE_NAME), &repacked.stdout_bytes)?;
+    reduced.transport.files[0].bytes = repacked.stdout_bytes.len() as u64;
+    reduced.transport.files[0].sha256 = super::content_digest_hex(&repacked.stdout_bytes);
+    rewrite_manifest_resealed(&destination.envelope(), reduced)?;
+
+    // Point Git at the producing repository's objects. If the seam leaked this
+    // variable through, the missing blob would resolve and the envelope would
+    // validate on this machine while being incomplete everywhere else.
+    // SAFETY: single-threaded within this test's scope; restored immediately.
+    let objects = fixture.path().join(".git").join("objects");
+    unsafe { std::env::set_var("GIT_ALTERNATE_OBJECT_DIRECTORIES", &objects) };
+    let report = check_handoff(&destination.envelope());
+    unsafe { std::env::remove_var("GIT_ALTERNATE_OBJECT_DIRECTORIES") };
+
+    assert_eq!(
+        report.outcome,
+        HandoffOutcome::MissingObject,
+        "the receiver's own object store must not complete an envelope: {:#?}",
+        report.dimensions
+    );
+    Ok(())
+}
+
+#[test]
+fn removing_the_executable_bit_is_also_an_inventory_fact() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("tool.sh", b"#!/bin/sh\n")?;
+    fixture.git(&["add", "--all"])?;
+    fixture.git(&["update-index", "--chmod=+x", "tool.sh"])?;
+    fixture.commit_staged("base executable")?;
+
+    fixture.git(&["update-index", "--chmod=-x", "tool.sh"])?;
+    fixture.commit_staged("drop the executable bit")?;
+
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    let row = change_for(&manifest, "tool.sh").context("tool.sh inventory row")?;
+    assert_eq!(row.old_mode.as_deref(), Some("100755"));
+    assert_eq!(row.new_mode.as_deref(), Some("100644"));
+    assert_eq!(row.entry_class, EntryClass::RegularFile);
+    assert_eq!(row.old_object, row.new_object, "only the mode changed");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,38 @@ const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
 /// Polling interval while waiting for a child to exit.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// Git's repository-local environment, cleared on every invocation.
+///
+/// `check` claims to validate a candidate using only the objects the envelope
+/// carries. Inheriting `GIT_ALTERNATE_OBJECT_DIRECTORIES` or
+/// `GIT_OBJECT_DIRECTORY` would break exactly that: Git could resolve a blob
+/// the transport omitted from the receiver's own store, and an incomplete
+/// envelope would validate on a machine that happened to have the object.
+///
+/// This mirrors `git rev-parse --local-env-vars`; the
+/// `local_env_list_matches_git` control fails if Git's own list grows past it.
+pub const GIT_LOCAL_ENV_VARS: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_INDEX_VERSION",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_INTERNAL_SUPER_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_DEFAULT_HASH",
+    "GIT_DEFAULT_REF_FORMAT",
+];
+
 /// Raw result of one Git invocation.
 #[derive(Debug)]
 pub struct GitOutput {
@@ -105,7 +137,11 @@ fn run_bounded(
         // Validation must never block on, or acquire, a credential. Every
         // command here is local plumbing, so a prompt would only ever be a
         // sign that something unexpected reached the network.
-        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    for variable in GIT_LOCAL_ENV_VARS {
+        command.env_remove(variable);
+    }
+    command
         .stdin(if stdin_bytes.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -216,9 +252,10 @@ fn spawn_capped_reader<R: Read + Send + 'static>(mut stream: R, cap: usize) -> C
             }
         };
         let _ = sender.send(outcome);
-        // Drain any remainder so the writer can finish and exit.
-        let mut sink = Vec::new();
-        let _ = stream.read_to_end(&mut sink);
+        // Drain any remainder so the writer can finish and exit. Copying into
+        // a sink keeps that drain O(1) in memory: buffering it would defeat
+        // the very ceiling this reader just enforced.
+        let _ = std::io::copy(&mut stream, &mut std::io::sink());
     });
     CappedReader { receiver, handle }
 }

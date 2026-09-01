@@ -19,9 +19,9 @@ use super::create::{
 use super::git::{is_full_object_id, run_git, run_git_with_stdin};
 use super::hygiene::{is_proof_id, is_repository_identity, is_safe_envelope_name, scan_secrets};
 use super::model::{
-    ChangeInventory, HANDOFF_MANIFEST_SCHEMA_V1, HANDOFF_RECEIPT_SCHEMA_V1, MANIFEST_FILE_NAME,
-    Manifest, PACK_FILE_NAME, PROOF_DIR_NAME, ProducerReceipt, RECEIPT_FILE_NAME,
-    RepositoryIdentityStatus, TransportFormat,
+    ChangeInventory, HANDOFF_MANIFEST_SCHEMA_V1, HANDOFF_RECEIPT_SCHEMA_V1, LimitationCode,
+    MANIFEST_FILE_NAME, Manifest, PACK_FILE_NAME, PROOF_DIR_NAME, ProducerReceipt,
+    RECEIPT_FILE_NAME, RepositoryIdentityStatus, TransportFormat,
 };
 use super::{HandoffOutcome, is_digest_hex};
 
@@ -102,6 +102,7 @@ const DIMENSION_IDS: &[&str] = &[
     // itself rather than collapsing everything into a closure mismatch.
     "commit_identity",
     "object_presence",
+    "limitation_completeness",
     "inventory_recomputation",
     "identity_digest",
     "repository_identity",
@@ -238,8 +239,8 @@ pub fn check_handoff(envelope: &Path) -> CheckReport {
     };
     builder.pass("transport_integrity", "declared transport sizes and digests match the bytes");
 
-    if let Err(detail) = verify_proofs(envelope, &manifest) {
-        return builder.fail("proof_binding", HandoffOutcome::ProofSubjectMismatch, detail);
+    if let Err((outcome, detail)) = verify_proofs(envelope, &manifest) {
+        return builder.fail("proof_binding", outcome, detail);
     }
     builder.pass("proof_binding", "declared proofs are content-addressed and subject-bound");
 
@@ -258,6 +259,11 @@ pub fn check_handoff(envelope: &Path) -> CheckReport {
         return builder.fail("object_presence", HandoffOutcome::MissingObject, detail);
     }
     builder.pass("object_presence", "the transport carries exactly the candidate's closure");
+
+    if let Err(detail) = verify_limitations(&manifest) {
+        return builder.fail("limitation_completeness", HandoffOutcome::InvalidManifest, detail);
+    }
+    builder.pass("limitation_completeness", "every limitation the candidate requires is declared");
 
     match recompute_inventory(isolated.path(), &manifest) {
         Ok(()) => builder
@@ -606,30 +612,48 @@ fn verify_transport(envelope: &Path, manifest: &Manifest) -> Result<Vec<u8>, Str
 /// only thing checked: an artifact that names a commit in its own payload is
 /// re-read here and must name this candidate. Otherwise a resealed envelope
 /// could carry another candidate's proof under a correct-looking binding.
-fn verify_proofs(envelope: &Path, manifest: &Manifest) -> Result<(), String> {
+fn verify_proofs(envelope: &Path, manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
+    let mismatch = |detail: String| (HandoffOutcome::ProofSubjectMismatch, detail);
     for proof in &manifest.proof_references {
         if proof.candidate_subject != manifest.candidate.commit {
-            return Err(format!(
+            return Err(mismatch(format!(
                 "proof `{}` is bound to {} but this candidate is {}",
                 proof.id, proof.candidate_subject, manifest.candidate.commit
-            ));
+            )));
         }
         if proof.bytes > MAX_ENVELOPE_FILE_BYTES {
-            return Err(format!("proof `{}` declares a size above the ceiling", proof.id));
+            return Err(mismatch(format!(
+                "proof `{}` declares a size above the ceiling",
+                proof.id
+            )));
         }
-        let bytes = read_envelope_file(envelope, &proof.path, MAX_ENVELOPE_FILE_BYTES)?;
+        let bytes = read_envelope_file(envelope, &proof.path, MAX_ENVELOPE_FILE_BYTES)
+            .map_err(&mismatch)?;
         if bytes.len() as u64 != proof.bytes {
-            return Err(format!("proof `{}` does not match its declared size", proof.id));
+            return Err(mismatch(format!("proof `{}` does not match its declared size", proof.id)));
         }
         if super::content_digest_hex(&bytes) != proof.sha256 {
-            return Err(format!("proof `{}` does not match its declared digest", proof.id));
+            return Err(mismatch(format!(
+                "proof `{}` does not match its declared digest",
+                proof.id
+            )));
         }
         if let Some(declared) = declared_proof_subject(&bytes)
             && declared != manifest.candidate.commit
         {
-            return Err(format!(
+            return Err(mismatch(format!(
                 "proof `{}` names candidate {declared} in its own payload",
                 proof.id
+            )));
+        }
+        // The producer refuses a credential-bearing proof, but a receiver
+        // cannot assume the producer ran: an envelope is supplied by the
+        // less-trusted party, so the same scan runs on this side too.
+        let text = String::from_utf8_lossy(&bytes);
+        if let Some(finding) = scan_secrets(&format!("proof.{}", proof.id), &text).first() {
+            return Err((
+                HandoffOutcome::UnsafeContent,
+                format!("proof `{}` contains {} material", proof.id, finding.kind),
             ));
         }
     }
@@ -729,20 +753,71 @@ fn verify_object_presence(odb: &Path, manifest: &Manifest) -> Result<(), String>
         ));
     }
 
-    let mut stdin = String::new();
-    for id in required.iter().chain(manifest.transport.object_ids.iter()) {
-        stdin.push_str(id);
-        stdin.push('\n');
+    // Comparing the manifest against itself would still be circular: a
+    // resealed pack can carry the whole valid closure *plus* undeclared
+    // objects, refresh its size and digest, and leave `object_ids` untouched.
+    // The object database was empty before this envelope's pack was imported,
+    // so enumerating it now yields exactly what the transport really carried.
+    let present =
+        run_git(odb, &["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"])?;
+    if !present.succeeded() {
+        return Err(format!("could not enumerate imported objects: {}", present.diagnostic()));
     }
-    let output = run_git_with_stdin(odb, &["cat-file", "--batch-check"], stdin.as_bytes())?;
-    if !output.succeeded() {
-        return Err(format!("could not inspect imported objects: {}", output.diagnostic()));
+    let carried: BTreeSet<String> = present.stdout.split_whitespace().map(str::to_string).collect();
+
+    if let Some(absent) = required.iter().find(|id| !carried.contains(*id)) {
+        return Err(format!("object {absent} is absent from the transport"));
     }
-    for line in output.stdout.lines() {
-        if line.ends_with(" missing") {
-            let id = line.split_whitespace().next().unwrap_or(line);
-            return Err(format!("object {id} is absent from the transport"));
-        }
+    if let Some(stowaway) = carried.iter().find(|id| !required.contains(*id)) {
+        return Err(format!(
+            "the transport carries object {stowaway}, which the candidate does not require"
+        ));
+    }
+    Ok(())
+}
+
+/// Limitation codes the candidate's own facts make mandatory.
+///
+/// Limitations are the confidence boundaries a receiver acts on, and nothing
+/// in the objects records them, so the semantic digest is their only guard —
+/// and that digest is recomputable by whoever edited the manifest. Deriving
+/// the mandatory set here means a resealed envelope cannot quietly drop an
+/// admission such as "these objects were not secret-scanned".
+fn mandatory_limitations(manifest: &Manifest) -> BTreeSet<LimitationCode> {
+    let mut required = BTreeSet::new();
+    required.insert(LimitationCode::LocalProofOnly);
+    required.insert(LimitationCode::TransportBytesNotVersionStable);
+    required.insert(LimitationCode::TransportedObjectsNotSecretScanned);
+    if manifest.candidate.is_root_commit {
+        required.insert(LimitationCode::RootCommitDiffAgainstEmptyTree);
+    }
+    if manifest.candidate.is_merge_commit {
+        required.insert(LimitationCode::MergeCommitDiffAgainstFirstParent);
+    }
+    if !manifest.inventory.gitlinks.is_empty() {
+        required.insert(LimitationCode::SubmoduleGitlinkNotTransported);
+    }
+    if manifest.repository_identity.status == RepositoryIdentityStatus::NotProven {
+        required.insert(LimitationCode::RepositoryIdentityNotProven);
+    }
+    // `RemoteUrlContainedCredentials` is producer-only knowledge — a receiver
+    // cannot derive it — so it is permitted but never required.
+    required
+}
+
+fn verify_limitations(manifest: &Manifest) -> Result<(), String> {
+    let declared: BTreeSet<LimitationCode> = manifest.limitations.iter().copied().collect();
+    if declared.len() != manifest.limitations.len() {
+        return Err("limitation codes are duplicated".to_string());
+    }
+    if !manifest.limitations.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err("limitation codes are not sorted".to_string());
+    }
+    let required = mandatory_limitations(manifest);
+    if let Some(missing) = required.difference(&declared).next() {
+        return Err(format!(
+            "the candidate's own facts require limitation `{missing:?}`, which is not declared"
+        ));
     }
     Ok(())
 }
