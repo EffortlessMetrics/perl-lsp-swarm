@@ -1006,7 +1006,7 @@ mod hazard_invariant_tests {
                 source_reference: None,
             },
             1,
-        )])?;
+        )]);
 
         let before_queries = a.debugger_query_count_for_test();
         for (frame_id, kind) in [
@@ -1036,7 +1036,7 @@ mod hazard_invariant_tests {
             return Ok(());
         }
         let mut a = adapter();
-        a.seed_stopped_session_with_frames_for_test(vec![])?;
+        a.seed_stopped_session_with_frames_for_test(vec![]);
         a.push_recent_output_line_for_test("$stale = from-an-older-session");
         a.clear_active_session_state();
 
@@ -1053,7 +1053,7 @@ mod hazard_invariant_tests {
             return Ok(());
         }
         let mut a = adapter();
-        a.seed_stopped_session_with_frames_for_test(vec![])?;
+        a.seed_stopped_session_with_frames_for_test(vec![]);
         a.push_recent_output_line_for_test("$stale = from-an-unknown-reference");
 
         // 999_999 is in the valid wire range but is not a cache or scope
@@ -1091,7 +1091,7 @@ mod hazard_invariant_tests {
         let mut a = adapter();
         // Seed a Stopped session so the Running-state guard does not trigger.
         // This exercises the cache-miss path and the new EvalResult short-circuit.
-        a.seed_stopped_session_with_frames_for_test(vec![])?;
+        a.seed_stopped_session_with_frames_for_test(vec![]);
 
         // EvalResult band wire values: stale after resume (not in cache).
         for eval_ref_wire in [1_000_000_i64, 1_000_001, 1_000_003, 1_100_000] {
@@ -1124,7 +1124,7 @@ mod hazard_invariant_tests {
         use crate::types::Variable;
 
         let mut a = adapter();
-        a.seed_stopped_session_with_frames_for_test(vec![]).map_err(|error| error.to_string())?;
+        a.seed_stopped_session_with_frames_for_test(vec![]);
 
         // An EvalResult wire value that IS in cache (simulates a fresh evaluate result
         // before resume — the client holds the ref and sends a variables request while
@@ -1374,7 +1374,7 @@ mod value_format_family_tests {
                 source_reference: None,
             },
             3,
-        )])?;
+        )]);
         Ok(())
     }
 

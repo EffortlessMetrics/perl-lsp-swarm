@@ -352,6 +352,53 @@ fn test_step_in_targets_is_refused_without_source_scans() -> Result<(), Box<dyn 
     Ok(())
 }
 
+#[test]
+// #9069 review (P1): targeted stepping is unsupported, so a `stepIn` that
+// carries a `targetId` must be refused before any debugger I/O — no `s`
+// write, no resume-state change, no cache clear, no `continued` event —
+// instead of silently looking honored while the whole-`s` operation runs.
+fn test_step_in_with_target_id_is_refused_before_debugger_io()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let script_path = dir.path().join("plain.pl");
+    fs::write(&script_path, "my $x = 1;\nprint $x;\n")?;
+
+    let mut adapter = make_adapter();
+    let source_path = script_path.to_str().ok_or("temporary source path is not valid UTF-8")?;
+    adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+        1,
+        "main",
+        Source::new(source_path),
+        1,
+    )])?;
+    let queries_before = adapter.debugger_query_count_for_test();
+
+    let response = adapter.handle_request(1, "stepIn", Some(json!({ "targetId": 3 })));
+    match response {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert_eq!(command, "stepIn");
+            assert!(
+                !success,
+                "stepIn with a targetId must be refused while targeted stepping is \
+                 unsupported (#9069)"
+            );
+            assert!(body.is_none(), "the refusal must carry no body");
+            assert!(
+                message.is_some_and(|m| m.contains("targetId")),
+                "the refusal must name the unsupported targetId: {message:?}"
+            );
+        }
+        _ => return Err("Expected Response for stepIn".into()),
+    }
+    assert_eq!(
+        adapter.debugger_query_count_for_test(),
+        queries_before,
+        "refused stepIn must not reach the debugger"
+    );
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 4. Variable and scope inspection after rejected stepping requests
 // ---------------------------------------------------------------------------

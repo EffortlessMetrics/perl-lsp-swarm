@@ -286,6 +286,28 @@ impl DebugAdapter {
         ) {
             return rejection;
         }
+        // #9069: while targeted stepping is unsupported, a supplied
+        // `targetId` must never silently look honored — the whole-`s`
+        // operation would step without the requested target. Refuse before
+        // any debugger I/O: no `s` write, no resume-state change, no cache
+        // clear, no `continued` event.
+        if let Some(args) = arguments.as_ref()
+            && args.get("targetId").is_some()
+        {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "stepIn".to_string(),
+                body: None,
+                message: Some(
+                    "`stepIn targetId` is not supported: targeted stepping is \
+                     unavailable, so the request is refused instead of stepping \
+                     without the requested target"
+                        .to_string(),
+                ),
+            };
+        }
         let has_session = if let Some(ref mut session) =
             *lock_or_recover(&self.session, "debug_adapter.session")
             && let Some(stdin) = session.process.stdin.as_mut()

@@ -214,6 +214,29 @@ impl DapPeerBridge {
         arguments: Option<Value>,
     ) -> Vec<DapMessage> {
         let mut out = Vec::new();
+        // #9069: a known route that is native-adapter-only must not fall
+        // through to the lenient mirror-MVP acknowledgement. The same request
+        // fails on the native adapter, so acknowledging it here would let an
+        // unsupported request appear successfully handled on external-peer
+        // sessions. Refuse it with a typed failure instead. Truly unknown
+        // commands keep the lenient ack so a client is not wedged.
+        if let Some(route) = DapRequestRoute::from_command(command)
+            && !route.available_in_peer_frontends()
+        {
+            tracing::warn!(command, "peer bridge: native-only DAP request refused");
+            out.push(self.response(
+                request_seq,
+                command,
+                false,
+                None,
+                Some(format!(
+                    "`{command}` is handled only by the native adapter and is not \
+                     supported on external-peer sessions"
+                )),
+            ));
+            out.extend(self.poll_events());
+            return out;
+        }
         match DapRequestRoute::from_command(command)
             .filter(DapRequestRoute::available_in_peer_frontends)
         {
@@ -1763,5 +1786,22 @@ mod tests {
             "the valid frames after the malformed one must still be processed: {commands:?}"
         );
         assert!(commands.contains(&"disconnect".to_string()), "commands: {commands:?}");
+    }
+    #[test]
+    fn native_only_step_in_targets_is_refused_not_acknowledged() -> Result<(), String> {
+        // #9069 review (P2): `stepInTargets` is native-only. It must fail on
+        // the peer bridge exactly as it fails on the native adapter — not
+        // disappear into the lenient mirror-MVP success acknowledgement.
+        let mut b = bridge();
+        let out = b.dispatch(7, "stepInTargets", Some(json!({ "frameId": 0 })));
+        assert_eq!(out.len(), 1, "the typed refusal, and nothing else: {out:?}");
+        let (cmd, ok, body) = as_response(&out[0])?;
+        assert_eq!(cmd, "stepInTargets");
+        assert!(
+            !ok,
+            "native-only stepInTargets must be refused on the peer bridge, not              acknowledged as success"
+        );
+        assert!(body.is_none(), "the refusal must carry no body");
+        Ok(())
     }
 }

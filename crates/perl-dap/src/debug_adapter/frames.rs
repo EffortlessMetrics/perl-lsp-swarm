@@ -448,7 +448,7 @@ mod pagination_tests {
     fn rejected_framed_snapshot_clears_prior_frames_and_arguments()
     -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "prior")])?;
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "prior")]);
         adapter.seed_stack_frame_arguments_for_test(1, vec!["prior_arg".to_string()]);
         let mut session = lock_or_recover(&adapter.session, "test.rejected_snapshot");
 
@@ -490,7 +490,7 @@ mod pagination_tests {
     fn arguments_scope_is_advertised_and_paginates_captured_values()
     -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(7, "main::run")])?;
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(7, "main::run")]);
         adapter.seed_stack_frame_arguments_for_test(
             7,
             vec!["$first".to_string(), "[1, 2]".to_string(), "\"a,b\"".to_string()],
@@ -547,7 +547,7 @@ mod pagination_tests {
             assert_eq!(body.get("scopes"), Some(&json!([])));
         }
 
-        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(7, "main::run")])?;
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(7, "main::run")]);
         for frame_id in [6_i64, 8] {
             let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": frame_id })));
             let DapMessage::Response { body: Some(body), .. } = response else {
@@ -579,7 +579,7 @@ mod pagination_tests {
     #[test]
     fn scopes_from_terminated_session_are_empty() -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
-        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::run")])?;
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::run")]);
         {
             let mut guard = lock_or_recover(&adapter.session, "test.terminated_session");
             let session = guard.as_mut().ok_or("test session was not seeded")?;
@@ -600,7 +600,7 @@ mod pagination_tests {
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
 
         let adapter = DebugAdapter::new();
-        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::run")])?;
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::run")]);
         let old_scope = VariableReference::Scope { frame_id: 1, kind: ScopeKind::Locals }
             .encode()
             .ok_or("old scope reference did not encode")?;
