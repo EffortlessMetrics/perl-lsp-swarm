@@ -3,8 +3,8 @@
 use super::{
     AstBreakpointValidator, BreakpointLocation, BreakpointLocationsArguments,
     BreakpointLocationsResponseBody, BreakpointValidator, DapMessage, DataBreakpointInfoArguments,
-    DataBreakpointInfoResponseBody, DataBreakpointRecord, DebugAdapter, HashMap, Ordering,
-    SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments,
+    DataBreakpointInfoResponseBody, DebugAdapter, HashMap, Ordering, SetDataBreakpointsArguments,
+    SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments,
     SetFunctionBreakpointsArguments, Value, Write, catalog_has_feature,
     is_valid_function_breakpoint_name, is_valid_set_variable_name, json, lock_or_recover,
 };

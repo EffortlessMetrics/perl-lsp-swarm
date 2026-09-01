@@ -336,6 +336,22 @@ sha = 'b6ff580856c41316412a0b9b60540fbc6f8c82cc'
 kind = 'release_tag'
 value = 'v2.86.7'
 
+# Verified against upstream on 2026-08-30:
+# taiki-e/install-action v2.87.2 -> 1ed6d7be6168f6c9046541087ff549b6bc581fdf
+[[pin]]
+action = 'taiki-e/install-action'
+sha = '1ed6d7be6168f6c9046541087ff549b6bc581fdf'
+kind = 'release_tag'
+value = 'v2.87.2'
+
+# Verified against upstream on 2026-08-30:
+# taiki-e/install-action v2.87.0 -> 37f7c5781271959fb65b6b35224e28652ff2b63d
+[[pin]]
+action = 'taiki-e/install-action'
+sha = '37f7c5781271959fb65b6b35224e28652ff2b63d'
+kind = 'release_tag'
+value = 'v2.87.0'
+
 # Verified against upstream on 2026-08-29:
 # github/codeql-action v4.37.8 -> db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
 [[pin]]

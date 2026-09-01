@@ -538,14 +538,6 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             bail!("subject workflow weakens trusted contract: missing {required}");
         }
     }
-    if text.lines().any(|line| {
-        line.contains("cargo run")
-            && (line.contains("pull_request.head")
-                || line.contains("pull_request.head.sha")
-                || line.contains("github.event.pull_request.head"))
-    }) {
-        bail!("subject workflow must not execute candidate source");
-    }
     if text.contains("actions/checkout@") && !text.contains("ref: ${{ env.EVALUATOR_SHA }}") {
         bail!("subject workflow must checkout the trusted evaluator SHA");
     }
@@ -573,6 +565,82 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         .get(key("steps"))
         .and_then(serde_yaml_ng::Value::as_sequence)
         .ok_or_else(|| eyre!("exact-tree job must define steps sequence"))?;
+    // Inspect executable Cargo commands structurally. The trusted contract
+    // step contains this validator's own examples and forbidden-pattern
+    // source text; scanning serialized YAML would mistake that source for a
+    // candidate-controlled invocation.
+    let forbidden = [
+        "pull_request.head",
+        "pull_request.head.sha",
+        "github.event.pull_request.head",
+        "refs/pull/${{",
+    ];
+    let is_contract_step = |step: &&serde_yaml_ng::Value| {
+        step.as_mapping().is_some_and(|map| {
+            map.get(key("id")).and_then(serde_yaml_ng::Value::as_str)
+                == Some("verify-trusted-workflow-contract")
+                && map.get(key("name")).and_then(serde_yaml_ng::Value::as_str)
+                    == Some("Verify trusted workflow contract")
+        })
+    };
+    let reserved_id_count = steps
+        .iter()
+        .filter(|step| {
+            step.as_mapping()
+                .and_then(|map| map.get(key("id")))
+                .and_then(serde_yaml_ng::Value::as_str)
+                == Some("verify-trusted-workflow-contract")
+        })
+        .count();
+    if reserved_id_count != 1 {
+        bail!("trusted workflow must define exactly one reserved contract-verification step ID");
+    }
+    let contract_steps = steps.iter().filter(is_contract_step).collect::<Vec<_>>();
+    if contract_steps.len() != 1 {
+        bail!("trusted workflow must define exactly one stable contract-verification step");
+    }
+    for step in steps {
+        let map =
+            step.as_mapping().ok_or_else(|| eyre!("trusted workflow step must be a mapping"))?;
+        if is_contract_step(&step) {
+            continue;
+        }
+        // Candidate-controlled refs can be smuggled through `env`/`with` and
+        // expanded by an otherwise innocuous `run` command. Inspect those
+        // executable inputs as well as the command body.
+        for key_name in ["env", "with"] {
+            if map.get(key(key_name)).is_some_and(|value| {
+                serde_yaml_ng::to_string(value)
+                    .is_ok_and(|text| forbidden.iter().any(|token| text.contains(token)))
+            }) {
+                bail!("subject workflow must not execute candidate source");
+            }
+        }
+        let Some(run) = map.get(key("run")).and_then(serde_yaml_ng::Value::as_str) else {
+            continue;
+        };
+        let lines = run.lines().collect::<Vec<_>>();
+        for (index, line) in lines.iter().enumerate() {
+            let normalized = line.trim();
+            let mut words = normalized.split_whitespace();
+            if words.next() != Some("cargo") || words.next() != Some("run") {
+                continue;
+            }
+            let mut command = normalized.to_string();
+            for continuation in lines.iter().skip(index + 1) {
+                let stripped = continuation.trim();
+                if stripped.starts_with("--") || command.ends_with('\\') {
+                    command.push('\n');
+                    command.push_str(stripped);
+                } else {
+                    break;
+                }
+            }
+            if forbidden.iter().any(|token| command.contains(token)) {
+                bail!("subject workflow must not execute candidate source");
+            }
+        }
+    }
     let bind_run = steps
         .iter()
         .find(|step| {
@@ -690,12 +758,13 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             }
         }
     }
-    if text.contains("refs/pull/${{") {
-        bail!("subject workflow must pass pull-request refs through environment data");
-    }
     let executable_text = steps
         .iter()
-        .filter_map(|step| step.as_mapping()?.get(key("run")))
+        .filter_map(|step| {
+            let map = step.as_mapping()?;
+            (!is_contract_step(&step)).then_some(map)
+        })
+        .filter_map(|step| step.get(key("run")))
         .filter_map(serde_yaml_ng::Value::as_str)
         .collect::<Vec<_>>();
     for forbidden in [
@@ -719,6 +788,7 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         "| bash",
         "| sh",
         "eval ",
+        "refs/pull/${{",
         "git fetch .*head",
     ] {
         if executable_text.iter().any(|run| run.contains(forbidden)) && forbidden != "refs/pull/" {
@@ -4092,7 +4162,12 @@ review_after = "2026-08-13"
                 &format!("{version_marker}{}", version + 1),
                 1,
             );
-            write_fixture(temp.path(), workflow_path, &(workflow + injected))?;
+            let workflow = workflow.replacen(
+                "      - name: Upload exact-tree receipt",
+                &(injected.to_string() + "      - name: Upload exact-tree receipt"),
+                1,
+            );
+            write_fixture(temp.path(), workflow_path, &workflow)?;
             let subject = commit_fixture(temp.path(), "untrusted workflow")?;
             let error = validate_subject_workflow(temp.path(), &base, &subject)
                 .expect_err("candidate checkout/import must be rejected");
@@ -4101,6 +4176,131 @@ review_after = "2026-08-13"
                 "unexpected error: {error}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_scans_executable_cargo_runs_not_validator_source() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let workflow = workflow.replacen(
+            "          run_bodies = []\n",
+            "          # cargo run github.event.pull_request.head.sha\n          run_bodies = []\n",
+            1,
+        );
+        let version_marker = "# contract-version: ";
+        let version = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(version_marker))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("fixture workflow must carry a contract-version");
+        let workflow = workflow.replacen(
+            &format!("{version_marker}{version}"),
+            &format!("{version_marker}{}", version + 1),
+            1,
+        );
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "validator source comment")?;
+        validate_subject_workflow(temp.path(), &base, &subject)?;
+
+        let (temp, base) = exact_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let version = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(version_marker))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("fixture workflow must carry a contract-version");
+        let workflow = workflow.replacen(
+            &format!("{version_marker}{version}"),
+            &format!("{version_marker}{}", version + 1),
+            1,
+        );
+        let workflow = workflow.replacen(
+            "run: cargo run --locked -p xtask -- non-rust exact-tree",
+            "run: cargo run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}",
+            1,
+        );
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "candidate interpolation")?;
+        let error = validate_subject_workflow(temp.path(), &base, &subject)
+            .expect_err("candidate-derived evaluator interpolation must fail closed");
+        assert!(
+            error.to_string().contains("must not execute candidate source"),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_rejects_candidate_refs_in_step_inputs_and_whitespace_variants() -> Result<()>
+    {
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let version_marker = "# contract-version: ";
+        for injected in [
+            "\n      - name: candidate ref input\n        env:\n          REF: refs/pull/${{ github.event.pull_request.number }}/head\n        run: echo \"$REF\"\n",
+            "\n      - name: candidate ref command\n        run: cargo  run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}\n",
+        ] {
+            let (temp, base) = exact_fixture()?;
+            let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+            let version = workflow
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(version_marker))
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .expect("fixture workflow must carry a contract-version");
+            let workflow = workflow.replacen(
+                &format!("{version_marker}{version}"),
+                &format!("{version_marker}{}", version + 1),
+                1,
+            );
+            let workflow = workflow.replacen(
+                "      - name: Upload exact-tree receipt",
+                &(injected.to_string() + "      - name: Upload exact-tree receipt"),
+                1,
+            );
+            write_fixture(temp.path(), workflow_path, &workflow)?;
+            let subject = commit_fixture(temp.path(), "candidate ref bypass")?;
+            let error = validate_subject_workflow(temp.path(), &base, &subject)
+                .expect_err("candidate-controlled ref must fail closed");
+            assert!(
+                error.to_string().contains("must not execute candidate source"),
+                "unexpected error: {error}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_rejects_duplicate_reserved_contract_id() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let version_marker = "# contract-version: ";
+        let version = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(version_marker))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .ok_or_else(|| eyre!("fixture workflow must carry a contract-version"))?;
+        let workflow = workflow.replacen(
+            &format!("{version_marker}{version}"),
+            &format!("{version_marker}{}", version + 1),
+            1,
+        );
+        let duplicate = "      - id: verify-trusted-workflow-contract\n        name: Unexpected duplicate\n        run: echo duplicate\n";
+        let workflow = workflow.replacen(
+            "      - name: Upload exact-tree receipt",
+            &(duplicate.to_string() + "      - name: Upload exact-tree receipt"),
+            1,
+        );
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "duplicate reserved workflow id")?;
+        let error = validate_subject_workflow(temp.path(), &base, &subject)
+            .expect_err("duplicate reserved workflow ID must fail closed");
+        assert!(
+            error.to_string().contains("exactly one reserved contract-verification step ID"),
+            "unexpected error: {error}"
+        );
         Ok(())
     }
 
