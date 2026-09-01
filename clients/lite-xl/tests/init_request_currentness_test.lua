@@ -861,5 +861,92 @@ do
     "case11: one explicit refusal message names the call-hierarchy owner")
 end
 
+-- ===========================================================================
+-- Case 12 (#9019): textDocument/references is gated by referencesProvider,
+-- not hoverProvider, across all four mixed-capability combinations, and a
+-- first active server without referencesProvider cannot make a later valid
+-- references provider unreachable by iteration order.
+-- ===========================================================================
+do
+  local SYNC = {
+    textDocumentSync = { openClose = true, change = 2, save = { includeText = false } },
+    positionEncoding = "utf-16",
+  }
+  local function merge_caps(base, extra)
+    local caps = {}
+    for k, v in pairs(base) do caps[k] = v end
+    for k, v in pairs(extra) do caps[k] = v end
+    return caps
+  end
+
+  -- hover=true, references=true -> request sent.
+  local lsp = fresh_module_load()
+  local both = make_server("perllsp", merge_caps(SYNC, { hoverProvider = {}, referencesProvider = {} }))
+  register(lsp, "perllsp", both)
+  local doc = make_doc("C:/proj/r1.pl", { "r\n" }, 1, 2)
+  open_admitted(lsp, doc, both)
+  lsp.request_references(doc, 1, 2)
+  ok(#both.outbound == 1 and both.outbound[1].method == "textDocument/references",
+    "case12: hover+references server receives the references request")
+  ok(both.outbound[1].params.context.includeDeclaration == true,
+    "case12: references request preserves context.includeDeclaration = true")
+
+  -- hover=false, references=true -> request sent.
+  lsp = fresh_module_load()
+  local refs_only = make_server("perllsp", merge_caps(SYNC, { referencesProvider = {} }))
+  register(lsp, "perllsp", refs_only)
+  doc = make_doc("C:/proj/r2.pl", { "r\n" }, 1, 2)
+  open_admitted(lsp, doc, refs_only)
+  lsp.request_references(doc, 1, 2)
+  ok(#refs_only.outbound == 1 and refs_only.outbound[1].method == "textDocument/references",
+    "case12: references-only server (no hover) still receives the request")
+
+  -- hover=true, references=false -> request not sent.
+  lsp = fresh_module_load()
+  local hover_only = make_server("perllsp", merge_caps(SYNC, { hoverProvider = {} }))
+  register(lsp, "perllsp", hover_only)
+  doc = make_doc("C:/proj/r3.pl", { "r\n" }, 1, 2)
+  open_admitted(lsp, doc, hover_only)
+  lsp.request_references(doc, 1, 2)
+  ok(#hover_only.outbound == 0,
+    "case12: hover-only server receives no references request (masked false positive)")
+
+  -- hover=false, references=false -> request not sent.
+  lsp = fresh_module_load()
+  local none = make_server("perllsp", merge_caps(SYNC, {}))
+  register(lsp, "perllsp", none)
+  doc = make_doc("C:/proj/r4.pl", { "r\n" }, 1, 2)
+  open_admitted(lsp, doc, none)
+  lsp.request_references(doc, 1, 2)
+  ok(#none.outbound == 0,
+    "case12: server with neither capability receives no references request")
+
+  -- Complementary ungrouped servers: the hover-only server is registered
+  -- first, the references-only server second; iteration order must not let
+  -- the first server block the second. One open_document broadcast admits
+  -- both servers.
+  local saw_request_from_second = false
+  for _ = 1, 8 do
+    lsp = fresh_module_load()
+    local first = make_server("hoverfirst", merge_caps(SYNC, { hoverProvider = {} }))
+    local second = make_server("refssecond", merge_caps(SYNC, { referencesProvider = {} }))
+    register(lsp, "hoverfirst", first)
+    register(lsp, "refssecond", second)
+    doc = make_doc("C:/proj/r5.pl", { "r\n" }, 1, 2)
+    lsp.open_document(doc)
+    drain(first, "textDocument/didOpen")
+    drain(second, "textDocument/didOpen")
+    doc.lsp_open = true
+    lsp.request_references(doc, 1, 2)
+    if #first.outbound == 0
+      and #second.outbound == 1
+      and second.outbound[1].method == "textDocument/references" then
+      saw_request_from_second = true
+    end
+  end
+  ok(saw_request_from_second,
+    "case12: references-capable second server remains reachable under complementary servers")
+end
+
 print(string.format("%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

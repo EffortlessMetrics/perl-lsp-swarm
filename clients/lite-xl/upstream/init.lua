@@ -2723,7 +2723,15 @@ function lsp.request_references(doc, line, col)
 
   for _, name in pairs(lsp.get_active_servers(doc.filename, true)) do
     local server = lsp.servers_running[name]
-    if server.capabilities.hoverProvider then
+    -- Local patch (#9019): gate references on the standard
+    -- referencesProvider capability, not hoverProvider; hover support says
+    -- nothing about textDocument/references. A server without
+    -- referencesProvider must not terminate the scan either: the first
+    -- active server that lacks it must not make a later valid references
+    -- provider unreachable solely because of iteration order
+    -- (complementary ungrouped servers; exclusive-group selection stays
+    -- with #10660).
+    if server.capabilities.referencesProvider then
       local request_params = get_buffer_position_params(doc, line, col)
       -- Local patch (#11165): no wire identity means no request.
       if not request_params then
@@ -2775,9 +2783,10 @@ function lsp.request_references(doc, line, col)
           end
         end
       })
+      -- Local patch (#9019): first references-capable server serves; the
+      -- scan continues past servers without referencesProvider.
       break
     end
-    break
   end
 end
 
