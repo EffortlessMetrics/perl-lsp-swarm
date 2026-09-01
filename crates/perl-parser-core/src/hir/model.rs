@@ -1851,7 +1851,10 @@ impl FrameworkAdapterRegistry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum FrameworkAdapterKind {
-    /// Exporter and Exporter::Tiny-style export declarations.
+    /// Declaration-based export mechanisms: Exporter and Exporter::Tiny's
+    /// `@EXPORT`/`@EXPORT_OK`/`%EXPORT_TAGS`, and Sub::Exporter's `-setup`
+    /// configuration. Sub::Exporter is an unrelated distribution; it shares
+    /// this adapter because it lowers to the same export declarations.
     ExporterFamily,
 }
 

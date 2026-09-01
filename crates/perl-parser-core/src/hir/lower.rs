@@ -1964,10 +1964,13 @@ impl Lowerer {
     /// - every other group is a tag (`Tag`), requested as `-name` or `:name`;
     /// - the implicit `all` group holds every `exports` name.
     ///
-    /// A configuration this function cannot enumerate statically (a computed
-    /// `exports` value, a group built from other group references, or a
-    /// `Sub::Exporter` usage with no literal `-setup` hash) records a dynamic
-    /// export boundary instead of a partial export list.
+    /// A configuration this function cannot enumerate statically records a
+    /// dynamic export boundary instead of a partial or unproven export list:
+    /// a computed `exports` or `groups` value, a group built from other group
+    /// references, a group naming something the `exports` configuration does
+    /// not declare, a setup that redirects installation away from the
+    /// importing package, or `Sub::Exporter` used with no literal `-setup`
+    /// hash.
     fn record_sub_exporter_setup(
         &mut self,
         args: &[String],
@@ -1988,22 +1991,37 @@ impl Lowerer {
             return;
         };
 
+        // A second `-setup` installs a new importer over the first, so the
+        // earlier configuration's names are stale rather than additional.
+        // Boundaries are left in place: they record what could not be read,
+        // which stays true, and they claim no exports.
+        self.stash_graph.export_declarations.retain(|declaration| {
+            declaration.package != package
+                || declaration.provenance != StashProvenance::DesugaredAst
+        });
+
+        // `into`, `into_level`, and `installer` send the generated importer's
+        // symbols somewhere other than the caller, so an ordinary `use` of
+        // this module does not install them into the importing package.
+        if let Some(key) = SUB_EXPORTER_INSTALL_REDIRECT_KEYS
+            .iter()
+            .find(|key| hash_entry_value(setup, key).is_some())
+        {
+            self.record_dynamic_stash_boundary(
+                Some(package),
+                Some((*key).to_string()),
+                range,
+                Some(item_id),
+                StashDynamicBoundaryKind::DynamicExportDeclaration,
+                "Sub::Exporter setup installs exports outside the importing package",
+            );
+            return;
+        }
+
         let export_names = match hash_entry_value(setup, "exports") {
             None => None,
             Some(value) => match sub_exporter_export_names(value) {
-                Some(names) => {
-                    self.stash_graph.export_declarations.push(ExportDeclaration {
-                        package: package.clone(),
-                        kind: ExportDeclarationKind::Optional,
-                        tag_name: None,
-                        symbols: names.clone(),
-                        range,
-                        declaration_item: Some(item_id),
-                        provenance: StashProvenance::DesugaredAst,
-                        confidence: StashConfidence::High,
-                    });
-                    Some(names)
-                }
+                Some(names) => Some(names),
                 None => {
                     self.record_dynamic_stash_boundary(
                         Some(package.clone()),
@@ -2018,6 +2036,28 @@ impl Lowerer {
             },
         };
 
+        let declared: &[String] = export_names.as_ref().map_or(&[], |exports| &exports.names);
+        let generated = export_names.as_ref().map(|exports| &exports.generated);
+        let confidence_of = |symbols: &[String]| {
+            generated.map_or(StashConfidence::High, |generated| {
+                sub_exporter_declaration_confidence(symbols, generated)
+            })
+        };
+
+        if !declared.is_empty() {
+            self.stash_graph.export_declarations.push(ExportDeclaration {
+                package: package.clone(),
+                kind: ExportDeclarationKind::Optional,
+                tag_name: None,
+                symbols: declared.to_vec(),
+                range,
+                declaration_item: Some(item_id),
+                provenance: StashProvenance::DesugaredAst,
+                confidence: confidence_of(declared),
+            });
+        }
+
+        let mut groups_are_static = true;
         let mut declared_all_group = false;
 
         if let Some(value) = hash_entry_value(setup, "groups") {
@@ -2034,28 +2074,58 @@ impl Lowerer {
                                 range,
                                 Some(item_id),
                                 StashDynamicBoundaryKind::DynamicExportDeclaration,
-                                "Sub::Exporter group is not statically enumerable",
+                                "Sub::Exporter group is not a static member list",
                             );
                             continue;
                         };
-                        let (kind, tag_name) = if name == "default" {
-                            (ExportDeclarationKind::Default, None)
-                        } else {
-                            (ExportDeclarationKind::Tag, Some(name))
-                        };
-                        self.stash_graph.export_declarations.push(ExportDeclaration {
-                            package: package.clone(),
-                            kind,
-                            tag_name,
-                            symbols: members,
-                            range,
-                            declaration_item: Some(item_id),
-                            provenance: StashProvenance::DesugaredAst,
-                            confidence: StashConfidence::High,
-                        });
+
+                        // A group may only name declared exports. Publishing a
+                        // member the `exports` configuration does not declare
+                        // would offer a symbol whose import Sub::Exporter
+                        // rejects — and with no enumerable `exports` there is
+                        // nothing to check against, so nothing is publishable.
+                        let mut symbols = members.names;
+                        let named = symbols.len();
+                        symbols.retain(|member| declared.contains(member));
+                        let complete = members.complete && symbols.len() == named;
+
+                        if !symbols.is_empty() {
+                            let (kind, tag_name) = if name == "default" {
+                                (ExportDeclarationKind::Default, None)
+                            } else {
+                                (ExportDeclarationKind::Tag, Some(name.clone()))
+                            };
+                            let confidence = confidence_of(&symbols);
+                            self.stash_graph.export_declarations.push(ExportDeclaration {
+                                package: package.clone(),
+                                kind,
+                                tag_name,
+                                symbols,
+                                range,
+                                declaration_item: Some(item_id),
+                                provenance: StashProvenance::DesugaredAst,
+                                confidence,
+                            });
+                        }
+
+                        // Members that did not resolve are recorded rather than
+                        // dropped silently, so the group reads as incomplete
+                        // instead of as an exact short list.
+                        if !complete {
+                            self.record_dynamic_stash_boundary(
+                                Some(package.clone()),
+                                Some(name),
+                                range,
+                                Some(item_id),
+                                StashDynamicBoundaryKind::DynamicExportDeclaration,
+                                "Sub::Exporter group has members that do not resolve \
+                                 to a declared export name",
+                            );
+                        }
                     }
                 }
                 None => {
+                    groups_are_static = false;
                     self.record_dynamic_stash_boundary(
                         Some(package.clone()),
                         Some("groups".to_string()),
@@ -2069,18 +2139,19 @@ impl Lowerer {
         }
 
         // Sub::Exporter creates an implicit `all` group over the `exports`
-        // list. Only synthesize it when the export list was fully enumerated
-        // and the configuration did not define `all` itself.
-        if let Some(names) = export_names.filter(|names| !declared_all_group && !names.is_empty()) {
+        // list. Synthesize it only when the export list was fully enumerated
+        // and the configuration could not have redefined `all` itself — a
+        // computed `groups` value may well carry its own.
+        if groups_are_static && !declared_all_group && !declared.is_empty() {
             self.stash_graph.export_declarations.push(ExportDeclaration {
                 package,
                 kind: ExportDeclarationKind::Tag,
                 tag_name: Some("all".to_string()),
-                symbols: names,
+                symbols: declared.to_vec(),
                 range,
                 declaration_item: Some(item_id),
                 provenance: StashProvenance::DesugaredAst,
-                confidence: StashConfidence::High,
+                confidence: confidence_of(declared),
             });
         }
     }
@@ -3003,12 +3074,55 @@ fn matching_delimiter(tokens: &[String], open: usize) -> Option<usize> {
     None
 }
 
+/// Names declared by a Sub::Exporter `exports` value.
+struct SubExporterExports {
+    /// Export names in declaration order.
+    names: Vec<String>,
+    /// Names whose value is a generator, so no `sub` of that name need exist
+    /// in this source.
+    generated: BTreeSet<String>,
+}
+
+/// Statically resolvable members of one Sub::Exporter group.
+struct SubExporterGroupMembers {
+    /// Member names in declaration order.
+    names: Vec<String>,
+    /// False when the group also holds members this pass cannot name: a
+    /// reference to another group, or a member carrying import options whose
+    /// installed name differs from the export name.
+    complete: bool,
+}
+
+/// Confidence for one lowered Sub::Exporter declaration.
+///
+/// A declaration is only `High` when every symbol in it is expected to have a
+/// `sub` of that name in source. A generator-backed export is exported under
+/// that name but need not be defined anywhere this tool can see, so a
+/// declaration containing one is `Medium` — live provider surfaces gate
+/// "compiler fact, high confidence" on `High`.
+fn sub_exporter_declaration_confidence(
+    symbols: &[String],
+    generated: &BTreeSet<String>,
+) -> StashConfidence {
+    if symbols.iter().any(|symbol| generated.contains(symbol)) {
+        StashConfidence::Medium
+    } else {
+        StashConfidence::High
+    }
+}
+
+/// Sub::Exporter setup keys that install the generated importer's symbols
+/// somewhere other than the importing package.
+const SUB_EXPORTER_INSTALL_REDIRECT_KEYS: &[&str] = &["into", "into_level", "installer"];
+
 /// Token slice inside a `use Sub::Exporter -setup => { ... }` configuration hash.
 ///
 /// The parser drops the `=>` after a leading `-flag`, so the opening brace
 /// follows `-setup` directly. Returns `None` when there is no literal hash.
 fn sub_exporter_setup_body(args: &[String]) -> Option<&[String]> {
-    let setup = args.iter().position(|arg| arg == "-setup")?;
+    // Perl keeps the last value for a repeated key, so a repeated `-setup`
+    // resolves to the last one for the same reason `hash_entry_value` does.
+    let setup = args.iter().rposition(|arg| arg == "-setup")?;
     let open = setup + 1;
     if args.get(open).map(String::as_str) != Some("{") {
         return None;
@@ -3020,8 +3134,10 @@ fn sub_exporter_setup_body(args: &[String]) -> Option<&[String]> {
 /// Value tokens for `key => <value>` at the top level of a hash body.
 ///
 /// A bracketed value includes its delimiters so callers can tell an arrayref
-/// from a hashref; any other value is a single token.
+/// from a hashref; any other value is a single token. A repeated key resolves
+/// to its last value, matching Perl's hash construction.
 fn hash_entry_value<'a>(body: &'a [String], key: &str) -> Option<&'a [String]> {
+    let mut found = None;
     let mut depth = 0usize;
     for index in 0..body.len() {
         match body[index].as_str() {
@@ -3032,10 +3148,11 @@ fn hash_entry_value<'a>(body: &'a [String], key: &str) -> Option<&'a [String]> {
                     continue;
                 }
                 let value = index + 2;
-                return match body.get(value).map(String::as_str) {
+                // Perl keeps the last value for a repeated hash key, so keep
+                // scanning rather than returning the first match.
+                found = match body.get(value).map(String::as_str) {
                     Some("{" | "[" | "(") => {
-                        let close = matching_delimiter(body, value)?;
-                        body.get(value..=close)
+                        matching_delimiter(body, value).and_then(|close| body.get(value..=close))
                     }
                     Some(_) => body.get(value..=value),
                     None => None,
@@ -3044,7 +3161,7 @@ fn hash_entry_value<'a>(body: &'a [String], key: &str) -> Option<&'a [String]> {
             _ => {}
         }
     }
-    None
+    found
 }
 
 /// Split a bracketed body into its top-level comma-separated entries.
@@ -3144,15 +3261,21 @@ fn is_sub_exporter_name(name: &str) -> bool {
 /// Accepts both documented forms — `[ qw(foo), bar => \&gen ]` and
 /// `{ foo => undef, bar => \&gen }` — and returns `None` for anything that
 /// cannot be enumerated without running Perl.
-fn sub_exporter_export_names(value: &[String]) -> Option<Vec<String>> {
+fn sub_exporter_export_names(value: &[String]) -> Option<SubExporterExports> {
     let body = bracketed_body(value, "[", "]").or_else(|| bracketed_body(value, "{", "}"))?;
 
     let mut names = Vec::new();
+    let mut generated = BTreeSet::new();
     for entry in comma_separated_entries(body) {
         // `name => <generator>`: the generator is dynamic, but the exported
-        // name itself is declared here.
+        // name itself is declared here. `undef` is Sub::Exporter's spelling
+        // for "no generator", so it stays source-anchored.
         if entry.get(1).map(String::as_str) == Some("=>") {
-            names.push(sub_exporter_single_name(&entry[0])?);
+            let name = sub_exporter_single_name(&entry[0])?;
+            if entry.get(2).map(String::as_str) != Some("undef") {
+                generated.insert(name.clone());
+            }
+            names.push(name);
             continue;
         }
 
@@ -3172,15 +3295,16 @@ fn sub_exporter_export_names(value: &[String]) -> Option<Vec<String>> {
     }
 
     dedup_preserving_order(&mut names);
-    Some(names)
+    Some(SubExporterExports { names, generated })
 }
 
 /// Group name to member list for a Sub::Exporter `groups` value.
 ///
-/// The outer `Option` is `None` when `groups` is not a literal hash. Each
-/// group's members are `None` when that one group cannot be enumerated (for
-/// example `default => [qw(-all)]`, which names another group).
-fn sub_exporter_group_bodies(value: &[String]) -> Option<Vec<(String, Option<Vec<String>>)>> {
+/// The outer `Option` is `None` when `groups` is not a literal hash. One
+/// group's members are `None` when that group's value is not a literal list.
+fn sub_exporter_group_bodies(
+    value: &[String],
+) -> Option<Vec<(String, Option<SubExporterGroupMembers>)>> {
     let body = bracketed_body(value, "{", "}")?;
 
     let mut groups = Vec::new();
@@ -3196,28 +3320,44 @@ fn sub_exporter_group_bodies(value: &[String]) -> Option<Vec<(String, Option<Vec
 }
 
 /// Statically enumerable members of one Sub::Exporter group.
-fn sub_exporter_group_members(value: &[String]) -> Option<Vec<String>> {
+fn sub_exporter_group_members(value: &[String]) -> Option<SubExporterGroupMembers> {
     let body = bracketed_body(value, "[", "]")?;
 
-    let mut members = Vec::new();
+    let mut names = Vec::new();
+    let mut complete = true;
     for entry in comma_separated_entries(body) {
+        // `rabbit => { -as => 'coney' }`: the group references an export but
+        // installs it under a different name, so the export name is not what
+        // a consumer of this group ends up with. The plain members beside it
+        // are still exactly known, so record the gap instead of discarding
+        // the whole group.
+        if entry.get(1).map(String::as_str) == Some("=>") {
+            complete = false;
+            continue;
+        }
+
         let [token] = entry else {
-            return None;
+            complete = false;
+            continue;
         };
         let expanded = sub_exporter_literal_names(token);
         if expanded.is_empty() {
-            return None;
+            complete = false;
+            continue;
         }
         for name in expanded {
-            if !is_sub_exporter_name(&name) {
-                return None;
+            // A `-name`/`:name` member names another group, whose contents
+            // this pass does not expand.
+            if is_sub_exporter_name(&name) {
+                names.push(name);
+            } else {
+                complete = false;
             }
-            members.push(name);
         }
     }
 
-    dedup_preserving_order(&mut members);
-    Some(members)
+    dedup_preserving_order(&mut names);
+    Some(SubExporterGroupMembers { names, complete })
 }
 
 fn static_names_from_arg(arg: &str) -> Vec<String> {

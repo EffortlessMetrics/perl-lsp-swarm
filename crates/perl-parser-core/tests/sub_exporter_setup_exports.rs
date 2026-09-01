@@ -97,7 +97,6 @@ fn setup_hash_declares_exports_default_group_and_tags() -> Result<(), String> {
     let declaration =
         first_declaration(&file, "My::Utils").ok_or("expected a My::Utils export declaration")?;
     assert_eq!(declaration.provenance, StashProvenance::DesugaredAst);
-    assert_eq!(declaration.confidence, StashConfidence::High);
     assert!(
         declaration.declaration_item.is_some(),
         "export declarations must anchor back to the use statement"
@@ -202,16 +201,124 @@ fn unrelated_setup_keys_do_not_become_exports() {
          use Sub::Exporter -setup => {\n\
              exports    => [qw(a)],\n\
              collectors => [qw(c)],\n\
-             into_level => 1,\n\
          };\n",
     );
 
     for (_, _, symbols) in declarations(&file, "My::Utils") {
         assert!(
-            !symbols.contains(&"c".to_string()) && !symbols.contains(&"into_level".to_string()),
-            "collectors and installer options are not exports: {symbols:?}"
+            !symbols.contains(&"c".to_string()) && !symbols.contains(&"collectors".to_string()),
+            "collector names are not exports: {symbols:?}"
         );
     }
+}
+
+#[test]
+fn a_group_member_the_exports_do_not_declare_is_not_published() {
+    // Sub::Exporter rejects a group naming something the exports configuration
+    // does not declare, so publishing it would offer a symbol whose import
+    // fails. The same holds when there is nothing to validate against.
+    for setup in [
+        "exports => [qw(a)], groups => { bad => [qw(b)] }",
+        "exports => $computed, groups => { bad => [qw(b)] }",
+        "groups => { bad => [qw(b)] }",
+    ] {
+        let file =
+            lower(&format!("package My::Utils;\nuse Sub::Exporter -setup => {{ {setup} }};\n"));
+
+        for (kind, tag, symbols) in declarations(&file, "My::Utils") {
+            assert!(
+                !symbols.contains(&"b".to_string()),
+                "{setup}: undeclared group member published as {kind:?}/{tag:?}: {symbols:?}"
+            );
+        }
+        assert!(
+            export_boundaries(&file, "My::Utils")
+                .iter()
+                .any(|(symbol, _)| symbol.as_deref() == Some("bad")),
+            "{setup}: expected a boundary naming the unresolved group"
+        );
+    }
+}
+
+#[test]
+fn a_setup_that_installs_elsewhere_publishes_no_exports() {
+    // `into`, `into_level`, and `installer` send the generated importer's
+    // symbols somewhere other than the caller, so an ordinary `use` of this
+    // module does not install them into the importing package.
+    for redirect in ["into => 'Other::Package'", "into_level => 1", "installer => \\&install"] {
+        let file = lower(&format!(
+            "package My::Utils;\n\
+             use Sub::Exporter -setup => {{ exports => [qw(a b)], {redirect} }};\n",
+        ));
+
+        assert!(
+            declarations(&file, "My::Utils").is_empty(),
+            "{redirect}: exports must not be published when installation is redirected"
+        );
+        assert_eq!(
+            export_boundaries(&file, "My::Utils")
+                .iter()
+                .map(|(_, reason)| reason.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Sub::Exporter setup installs exports outside the importing package"],
+            "{redirect}: expected exactly one install-redirect boundary"
+        );
+    }
+}
+
+#[test]
+fn a_second_setup_replaces_the_first_rather_than_adding_to_it() {
+    // A second `-setup` installs a new importer over the first, so the earlier
+    // configuration's names are stale, not additional.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(stale)] };\n\
+         use Sub::Exporter -setup => { exports => [qw(fresh)] };\n",
+    );
+
+    let published: Vec<String> =
+        declarations(&file, "My::Utils").into_iter().flat_map(|(_, _, s)| s).collect();
+    assert!(
+        published.contains(&"fresh".to_string()),
+        "the surviving setup's exports must be published: {published:?}"
+    );
+    assert!(
+        !published.contains(&"stale".to_string()),
+        "the replaced setup's exports must not survive: {published:?}"
+    );
+}
+
+#[test]
+fn a_repeated_setup_key_resolves_to_its_last_value() {
+    // Perl keeps the last value for a repeated hash key, so Sub::Exporter only
+    // ever sees the last one.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(stale)], exports => [qw(fresh)] };\n",
+    );
+
+    let published: Vec<String> =
+        declarations(&file, "My::Utils").into_iter().flat_map(|(_, _, s)| s).collect();
+    assert!(published.contains(&"fresh".to_string()), "{published:?}");
+    assert!(!published.contains(&"stale".to_string()), "{published:?}");
+}
+
+#[test]
+fn a_computed_groups_value_suppresses_the_implicit_all_tag() {
+    // A runtime `groups` value may define its own `all`, so synthesizing an
+    // exact high-confidence one from `exports` would over-claim.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(a b)], groups => $groups };\n",
+    );
+
+    assert!(
+        !declarations(&file, "My::Utils")
+            .iter()
+            .any(|(kind, tag, _)| *kind == ExportDeclarationKind::Tag
+                && tag.as_deref() == Some("all")),
+        "an implicit all tag must not be synthesized against a computed groups value"
+    );
 }
 
 #[test]
@@ -266,6 +373,100 @@ fn a_repeated_name_is_declared_once_regardless_of_position() -> Result<(), Strin
     Ok(())
 }
 
+#[test]
+fn a_generator_backed_export_is_not_a_high_confidence_declaration() -> Result<(), String> {
+    // A live completion candidate is gated on `Confidence::High` and labelled
+    // "compiler fact, high confidence". Sub::Exporter's `name => \&generator`
+    // form exports the name but guarantees no `sub` of that name in source, so
+    // the declaration carrying it must not claim High.
+    let generated = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [ qw(plain), built => \\&build ] };\n",
+    );
+    let declaration =
+        first_declaration(&generated, "My::Utils").ok_or("expected an export declaration")?;
+    assert_eq!(
+        declaration.confidence,
+        StashConfidence::Medium,
+        "a generator-backed export must not be declared at High confidence"
+    );
+
+    // The bareword form keeps High: Sub::Exporter's default generator does
+    // require a sub of that name to exist.
+    let anchored = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(plain other)] };\n",
+    );
+    let declaration =
+        first_declaration(&anchored, "My::Utils").ok_or("expected an export declaration")?;
+    assert_eq!(declaration.confidence, StashConfidence::High);
+
+    // `undef` is Sub::Exporter's spelling for "no generator".
+    let undef_generator = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => { plain => undef } };\n",
+    );
+    let declaration =
+        first_declaration(&undef_generator, "My::Utils").ok_or("expected an export declaration")?;
+    assert_eq!(declaration.confidence, StashConfidence::High);
+    Ok(())
+}
+
+#[test]
+fn a_group_keeps_its_plain_members_when_one_member_is_renamed() {
+    // Sub::Exporter::Tutorial's documented group form. `rabbit` is installed
+    // as `coney`, so the export name must not be published for this group —
+    // but `beef` and `lox` are exactly known and must survive.
+    let file = lower(
+        "package Food;\n\
+         use Sub::Exporter -setup => {\n\
+             exports => [qw(beef lox rabbit)],\n\
+             groups  => { default => [ qw(beef lox), rabbit => { -as => 'coney' } ] },\n\
+         };\n",
+    );
+
+    let default: Vec<Vec<String>> = declarations(&file, "Food")
+        .into_iter()
+        .filter(|(kind, _, _)| *kind == ExportDeclarationKind::Default)
+        .map(|(_, _, symbols)| symbols)
+        .collect();
+    assert_eq!(
+        default,
+        vec![vec!["beef".to_string(), "lox".to_string()]],
+        "statically known group members must survive a renamed sibling"
+    );
+    assert!(
+        export_boundaries(&file, "Food")
+            .iter()
+            .any(|(symbol, _)| symbol.as_deref() == Some("default")),
+        "the renamed member must still be recorded as an unresolved group member"
+    );
+}
+
+#[test]
+fn a_group_keeps_its_plain_members_beside_a_group_reference() {
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports => [qw(a b)],\n\
+             groups  => { default => [qw(a -all)] },\n\
+         };\n",
+    );
+
+    assert!(
+        declarations(&file, "My::Utils")
+            .iter()
+            .any(|(kind, _, symbols)| *kind == ExportDeclarationKind::Default
+                && symbols == &vec!["a".to_string()]),
+        "a member named beside a group reference is still exactly known"
+    );
+    assert!(
+        export_boundaries(&file, "My::Utils")
+            .iter()
+            .any(|(symbol, _)| symbol.as_deref() == Some("default"))
+    );
+}
+
 // --- negative controls: nothing enumerable, nothing claimed ----------------
 
 #[test]
@@ -312,7 +513,8 @@ fn a_group_naming_another_group_records_a_boundary_for_that_group() {
             export_boundaries(&file, "My::Utils"),
             vec![(
                 Some("default".to_string()),
-                "Sub::Exporter group is not statically enumerable".to_string()
+                "Sub::Exporter group has members that do not resolve to a declared export name"
+                    .to_string()
             )],
             "{reference}: expected one dynamic group boundary"
         );
