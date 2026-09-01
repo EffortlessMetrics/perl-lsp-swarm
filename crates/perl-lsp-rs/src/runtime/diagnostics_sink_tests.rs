@@ -97,7 +97,7 @@ mod tests {
             "fallback must publish diagnostics for the requested document: {output}"
         );
         assert!(
-            server.diagnostic_debouncer.lock().is_none(),
+            !server.diagnostic_debouncer_is_installed(),
             "the permanently unavailable worker must be evicted after its first rejected admission"
         );
     }

@@ -1040,6 +1040,14 @@ impl LspServer {
         }
     }
 
+    /// Whether a diagnostic debouncer is currently installed, forwarded to
+    /// the `RuntimeServices` owner that holds the slot (#10024). Replaces the
+    /// direct `self.diagnostic_debouncer` field read this refactor removed.
+    #[cfg(test)]
+    pub(crate) fn diagnostic_debouncer_is_installed(&self) -> bool {
+        self.runtime_services.diagnostic_debouncer_is_installed()
+    }
+
     /// Capture test/debug counters for async task and debounce pressure.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub fn runtime_pressure_snapshot(&self) -> RuntimePressureSnapshot {

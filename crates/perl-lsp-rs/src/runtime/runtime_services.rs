@@ -531,17 +531,33 @@ impl RuntimeServices {
     }
 
     /// Schedule `uri` on the installed diagnostic debouncer. Returns `false`
-    /// when no debouncer is installed so the caller can fall back to
-    /// immediate publication (unit-test path, unchanged from before this
-    /// PR).
+    /// when the caller must fall back to immediate publication: either no
+    /// debouncer is installed (unit-test path), or the installed one refused
+    /// the admission because its channel has no receiver.
+    ///
+    /// A refused admission also **evicts** the slot. That worker can never
+    /// publish again, so leaving it installed would route every later
+    /// `publish_diagnostics_debounced` into a dead channel and silently drop
+    /// the diagnostics (#14252). Evicting puts the immediate path in charge,
+    /// which is the fail-open behavior #14322 established.
     pub(crate) fn schedule_diagnostic_debounce(&self, uri: &str) -> bool {
-        let guard = self.diagnostic_debouncer.lock();
-        if let Some(ref debouncer) = *guard {
-            debouncer.schedule(uri);
-            true
-        } else {
-            false
+        let mut guard = self.diagnostic_debouncer.lock();
+        let Some(debouncer) = guard.as_ref() else {
+            return false;
+        };
+        if debouncer.schedule(uri) {
+            return true;
         }
+        *guard = None;
+        false
+    }
+
+    /// Whether a diagnostic debouncer is currently installed. Test-only
+    /// observation of the slot this component owns, replacing the direct
+    /// `LspServer.diagnostic_debouncer` field access that #10024 removed.
+    #[cfg(test)]
+    pub(crate) fn diagnostic_debouncer_is_installed(&self) -> bool {
+        self.diagnostic_debouncer.lock().is_some()
     }
 
     #[allow(dead_code)] // Read by test/debug runtime pressure snapshots.

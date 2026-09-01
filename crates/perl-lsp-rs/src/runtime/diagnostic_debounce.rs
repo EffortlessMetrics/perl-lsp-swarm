@@ -112,7 +112,19 @@ impl DiagnosticDebouncer {
     pub(crate) fn unavailable_for_test() -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         drop(rx);
-        Self { tx, pending_count: Arc::new(AtomicUsize::new(0)) }
+        // No worker thread was ever spawned, so this models the same
+        // instrument failure `with_interval` records when the spawn fails:
+        // not operational, nothing left running, and no clean exit to
+        // report. `RuntimeServices` therefore retains `InstrumentFailed`
+        // for a debouncer built this way, exactly as it would for a real
+        // spawn failure (#10024).
+        Self {
+            tx,
+            pending_count: Arc::new(AtomicUsize::new(0)),
+            worker: None,
+            operational: false,
+            clean_exit: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     #[allow(dead_code)] // Read by test/debug runtime pressure snapshots.
