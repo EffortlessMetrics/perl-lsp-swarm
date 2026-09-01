@@ -33,6 +33,12 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
 ///
 /// Replaces repeated inline `json!({...})` constructions with a single
 /// typed constructor so the Diagnostic shape is defined in one place.
+///
+/// `message` is the already-projected wire value: a JSON string when markup
+/// messages were not negotiated, or a `MarkupContent` object when they were
+/// (#9131). Callers must pass the union through unchanged — recovering it
+/// through string-only access such as `Value::as_str()` silently corrupts
+/// markup-capable output into an empty message.
 fn diagnostic_json(
     start_line: u32,
     start_char: u32,
@@ -41,7 +47,7 @@ fn diagnostic_json(
     severity: u32,
     code: &str,
     source: &str,
-    message: String,
+    message: Value,
 ) -> Value {
     json!({
         "range": {
@@ -948,7 +954,7 @@ impl LspServer {
                         severity,
                         code_str,
                         push_diagnostic_source(d.code.as_deref()),
-                        d.message.clone(),
+                        json!(d.message),
                     );
                     if !d.tags.is_empty() {
                         diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
@@ -1039,7 +1045,7 @@ impl LspServer {
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
-                        message,
+                        json!(message),
                     )
                 })
                 .collect()
@@ -1131,7 +1137,11 @@ impl LspServer {
                     if e.blocks_clean_parse() { 1 } else { 2 },
                     DiagnosticCode::ParseError.as_str(),
                     "perl-lsp",
-                    msg_val.as_str().unwrap_or("").to_string(),
+                    // Preserve the negotiated String | MarkupContent union
+                    // (#9131): coercing through `as_str()` dropped the object
+                    // shape and emitted an empty message for markup-capable
+                    // clients.
+                    msg_val,
                 )
             })
             .collect()
@@ -1292,7 +1302,7 @@ impl LspServer {
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
-                        message,
+                        json!(message),
                     )
                 })
                 .collect();
@@ -1680,7 +1690,10 @@ impl LspServer {
             severity,
             code_str,
             diagnostic_source(d.code.as_deref()),
-            message_val.as_str().unwrap_or("").to_string(),
+            // Preserve the negotiated String | MarkupContent union (#9131):
+            // merged document-pull findings must not be coerced back through
+            // string-only access when markup messages were negotiated.
+            message_val,
         );
 
         if !d.tags.is_empty() {
@@ -5558,5 +5571,152 @@ print \"unreachable\\n\";\n";
                 "unrelated pair {a:?}/{b:?} must keep the transport coincidence dedup"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // #9131 recurrence: the negotiated String | MarkupContent message
+    // union must survive syntax-only and merged document-pull
+    // serialization without string-only coercion. Reintroducing an
+    // `as_str().unwrap_or("")` recovery on the union flips the
+    // markup-capable assertions below to `""` and fails them.
+    // ------------------------------------------------------------------
+
+    const MESSAGE_UNION_PARSE_ERROR_DOCUMENT: &str = "sub broken {\n";
+
+    fn message_union_server(
+        tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning,
+        markup_message_support: bool,
+    ) -> LspServer {
+        let (server, _buffer) = make_server_with_capture_and_tuning(tuning);
+        let capabilities = if markup_message_support {
+            json!({
+                "textDocument": { "diagnostic": { "markupMessageSupport": true } }
+            })
+        } else {
+            json!({})
+        };
+        server
+            .test_handle_initialize_dispatch(Some(json!({
+                "processId": 1,
+                "capabilities": capabilities,
+            })))
+            .expect("initialize should succeed");
+        let _ = server.test_handle_initialized_dispatch();
+        server
+    }
+
+    fn message_union_uri(name: &str) -> String {
+        if cfg!(windows) { format!("file:///C:/tmp/{name}") } else { format!("file:///tmp/{name}") }
+    }
+
+    fn syntax_only_pull_items(markup_message_support: bool) -> Vec<Value> {
+        let mut tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        tuning.diagnostic_mode = perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly;
+        let server = message_union_server(tuning, markup_message_support);
+        let uri = message_union_uri("9131_syntax_only.pl");
+        server
+            .test_apply_did_open(&uri, MESSAGE_UNION_PARSE_ERROR_DOCUMENT, 1)
+            .expect("didOpen should succeed");
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": uri },
+            })))
+            .expect("syntax-only document pull should not error");
+        let items = report
+            .and_then(|r| r.get("items").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+        assert!(!items.is_empty(), "syntax-only pull must report parse errors; got {items:?}");
+        items
+    }
+
+    #[test]
+    fn syntax_only_pull_keeps_nonempty_string_message_without_markup() {
+        let items = syntax_only_pull_items(false);
+        assert_eq!(items.len(), 1, "exactly one parse error must be reported");
+        let item = &items[0];
+        assert_eq!(item["source"], "perl-lsp");
+        assert_eq!(item["severity"], 1, "a parse error that blocks a clean parse is severity 1");
+        let message = item["message"]
+            .as_str()
+            .expect("message must stay a JSON string when markup was not negotiated");
+        assert!(!message.is_empty(), "string message must be non-empty");
+    }
+
+    #[test]
+    fn syntax_only_pull_keeps_markupcontent_message_with_markup() {
+        let string_items = syntax_only_pull_items(false);
+        let markup_items = syntax_only_pull_items(true);
+        assert_eq!(markup_items.len(), 1, "exactly one parse error must be reported");
+        let item = &markup_items[0];
+
+        let message = &item["message"];
+        assert!(
+            message.is_object(),
+            "markup-capable syntax-only pull must keep the MarkupContent object; got {message}"
+        );
+        assert_eq!(message["kind"], "markdown");
+        let value = message["value"].as_str().expect("MarkupContent.value must be a string");
+        assert!(!value.is_empty(), "MarkupContent.value must be non-empty");
+
+        // Absent markup metadata falls back to the wrapper carrying the
+        // original message text, identical to the string-only transport.
+        let string_message = string_items[0]["message"]
+            .as_str()
+            .expect("string-only run must keep a string message");
+        assert_eq!(value, string_message, "message text must not change with capability state");
+
+        // Count, code, severity, range, and source are capability-invariant.
+        assert_eq!(item["severity"], string_items[0]["severity"]);
+        assert_eq!(item["code"], string_items[0]["code"]);
+        assert_eq!(item["source"], string_items[0]["source"]);
+        assert_eq!(item["range"], string_items[0]["range"]);
+    }
+
+    #[test]
+    fn merged_pull_internal_finding_keeps_message_union() {
+        // `internal_diagnostic_to_json` is the merged document-pull
+        // serializer for internal/native/external findings
+        // (document_report_to_json -> internal_diagnostic_to_json), so this
+        // exercises the exact branch the union coercion corrupted.
+        let doc = crate::state::DocumentState::new("print 'hello';\n", 1);
+        let server = LspServer::new();
+        let finding = InternalDiagnostic {
+            range: (0, 5),
+            severity: InternalDiagnosticSeverity::Warning,
+            code: Some("ValuesAndExpressions::ProhibitNoisyQuotes9131".to_string()),
+            message: "9131 merged critic finding".to_string(),
+            related_information: Vec::new(),
+            tags: Vec::new(),
+            suggestion: None,
+            fixable: false,
+            critic_observation: None,
+        };
+
+        let string_diag =
+            server.internal_diagnostic_to_json(&finding, &doc, "file:///test.pl", false);
+        let string_message = string_diag["message"]
+            .as_str()
+            .expect("message must stay a JSON string when markup was not negotiated");
+        assert!(!string_message.is_empty(), "string message must be non-empty");
+        assert_eq!(string_message, finding.message);
+
+        let markup_diag =
+            server.internal_diagnostic_to_json(&finding, &doc, "file:///test.pl", true);
+        let message = &markup_diag["message"];
+        assert!(
+            message.is_object(),
+            "markup-capable merged pull must keep the MarkupContent object; got {message}"
+        );
+        assert_eq!(message["kind"], "markdown");
+        let value = message["value"].as_str().expect("MarkupContent.value must be a string");
+        assert!(!value.is_empty(), "MarkupContent.value must be non-empty");
+        assert_eq!(value, string_message, "message text must not change with capability state");
+
+        // Count/code/severity/range/source invariants across capability states.
+        assert_eq!(markup_diag["code"], string_diag["code"]);
+        assert_eq!(markup_diag["severity"], string_diag["severity"]);
+        assert_eq!(markup_diag["source"], string_diag["source"]);
+        assert_eq!(markup_diag["range"], string_diag["range"]);
+        assert_eq!(markup_diag["code"], "ValuesAndExpressions::ProhibitNoisyQuotes9131");
     }
 }

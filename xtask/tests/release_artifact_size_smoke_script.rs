@@ -5,6 +5,12 @@
 //! the candidate's comparison silently consumes the baseline's receipt. These
 //! tests drive `scripts/ci/release_artifact_size_smoke.sh` with a stub cargo so
 //! that retention contract is proven here rather than only on a macOS runner.
+//!
+//! Unix-only by construction: the subject is a bash script and the fixtures
+//! stage executable bits through `PermissionsExt`. `#![cfg(unix)]` keeps the
+//! target compiling (as nothing) on other hosts so `cargo test -p xtask
+//! --all-targets` stays usable there.
+#![cfg(unix)]
 
 use std::{
     fs,
