@@ -87,11 +87,12 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
         cleanupFailure = removeError;
       }
       try {
-        if (fs.existsSync(dest)) {
-          await defaultRemovePartialFile(dest);
-        }
+        // Always try the native fallback. existsSync follows symlinks, so a
+        // dangling destination would otherwise evade cleanup even though
+        // unlinkSync can remove the directory entry.
+        await defaultRemovePartialFile(dest);
       } catch (fallbackError) {
-        cleanupFailure ??= fallbackError;
+        cleanupFailure = fallbackError;
       }
       let destinationRemains = false;
       try {

@@ -213,6 +213,67 @@ describe('downloadBoundedFile', () => {
     expect(fs.existsSync(dest)).toBe(true);
   });
 
+  test('preserves the download error when fallback cleanup succeeds', async () => {
+    const dest = destPath();
+    fs.writeFileSync(dest, 'stale destination');
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, {
+            'content-type': 'application/octet-stream',
+            'content-length': 64,
+          });
+          response.end('payload');
+        },
+        (url) =>
+          downloadBoundedFile({
+            requestFactory: (listener) => http.get(url, listener),
+            dest,
+            timeoutMs: 1000,
+            maxBytes: 12,
+            operationName: 'Archive download',
+            removePartialFile: async () => {
+              throw new Error('injected cleanup failure');
+            },
+          }),
+      ),
+    ).rejects.toThrow('exceeded 12 compressed bytes');
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
+  test('fallback removes a dangling destination symlink', async () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+    const dest = destPath();
+    fs.symlinkSync(path.join(tmpDir, 'missing-target'), dest);
+    expect(fs.existsSync(dest)).toBe(false);
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, {
+            'content-type': 'application/octet-stream',
+            'content-length': 64,
+          });
+          response.end('payload');
+        },
+        (url) =>
+          downloadBoundedFile({
+            requestFactory: (listener) => http.get(url, listener),
+            dest,
+            timeoutMs: 1000,
+            maxBytes: 12,
+            operationName: 'Archive download',
+            removePartialFile: async () => {
+              throw new Error('injected cleanup failure');
+            },
+          }),
+      ),
+    ).rejects.toThrow('exceeded 12 compressed bytes');
+    expect(fs.existsSync(dest)).toBe(false);
+    expect(() => fs.lstatSync(dest)).toThrow();
+  });
+
   test('deletes a partial dest when cancellation is signalled during transfer', async () => {
     const dest = destPath();
     const token = new TestCancellationToken();
