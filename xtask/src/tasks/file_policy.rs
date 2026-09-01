@@ -583,6 +583,18 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
                     == Some("Verify trusted workflow contract")
         })
     };
+    let reserved_id_count = steps
+        .iter()
+        .filter(|step| {
+            step.as_mapping()
+                .and_then(|map| map.get(key("id")))
+                .and_then(serde_yaml_ng::Value::as_str)
+                == Some("verify-trusted-workflow-contract")
+        })
+        .count();
+    if reserved_id_count != 1 {
+        bail!("trusted workflow must define exactly one reserved contract-verification step ID");
+    }
     let contract_steps = steps.iter().filter(is_contract_step).collect::<Vec<_>>();
     if contract_steps.len() != 1 {
         bail!("trusted workflow must define exactly one stable contract-verification step");
@@ -590,7 +602,6 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     for step in steps {
         let map =
             step.as_mapping().ok_or_else(|| eyre!("trusted workflow step must be a mapping"))?;
-        let name = map.get(key("name")).and_then(serde_yaml_ng::Value::as_str);
         if is_contract_step(&step) {
             continue;
         }
@@ -4257,6 +4268,72 @@ review_after = "2026-08-13"
                 "unexpected error: {error}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_rejects_duplicate_reserved_contract_id() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let version_marker = "# contract-version: ";
+        let version = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(version_marker))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .ok_or_else(|| eyre!("fixture workflow must carry a contract-version"))?;
+        let workflow = workflow.replacen(
+            &format!("{version_marker}{version}"),
+            &format!("{version_marker}{}", version + 1),
+            1,
+        );
+        let duplicate = "      - id: verify-trusted-workflow-contract\n        name: Unexpected duplicate\n        run: echo duplicate\n";
+        let workflow = workflow.replacen(
+            "      - name: Upload exact-tree receipt",
+            &(duplicate.to_string() + "      - name: Upload exact-tree receipt"),
+            1,
+        );
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "duplicate reserved workflow id")?;
+        let error = validate_subject_workflow(temp.path(), &base, &subject)
+            .expect_err("duplicate reserved workflow ID must fail closed");
+        assert!(
+            error.to_string().contains("exactly one reserved contract-verification step ID"),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_scans_same_name_with_unreserved_id() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let version_marker = "# contract-version: ";
+        let version = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(version_marker))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .ok_or_else(|| eyre!("fixture workflow must carry a contract-version"))?;
+        let workflow = workflow.replacen(
+            &format!("{version_marker}{version}"),
+            &format!("{version_marker}{}", version + 1),
+            1,
+        );
+        let same_name = "      - id: unreserved-step\n        name: Verify trusted workflow contract\n        run: cargo run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}\n";
+        let workflow = workflow.replacen(
+            "      - name: Upload exact-tree receipt",
+            &(same_name.to_string() + "      - name: Upload exact-tree receipt"),
+            1,
+        );
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "same-name unreserved workflow step")?;
+        let error = validate_subject_workflow(temp.path(), &base, &subject)
+            .expect_err("same-name step with an unreserved ID must be scanned");
+        assert!(
+            error.to_string().contains("must not execute candidate source"),
+            "unexpected error: {error}"
+        );
         Ok(())
     }
 
