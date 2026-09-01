@@ -870,9 +870,20 @@ fn complete_serial_site_inventories(
         sites.sort();
         sites.dedup();
     }
-    normalize_sites(&mut scan.sites);
-    normalize_sites(&mut scan.serialized_sites);
-    Ok((scan.sites, scan.serialized_sites))
+    let serialized_keys = scan.serialized_sites.iter().map(SerialSiteIdentity::key).collect();
+    let mut all_sites = scan.sites;
+    all_sites.extend(scan.serialized_sites);
+    normalize_sites(&mut all_sites);
+    let mut unguarded = Vec::new();
+    let mut serialized = Vec::new();
+    for site in all_sites {
+        if serialized_keys.contains(&site.key()) {
+            serialized.push(site);
+        } else {
+            unguarded.push(site);
+        }
+    }
+    Ok((unguarded, serialized))
 }
 
 /// Emit the current parallel-unsafe inventory as JSON. This is the measurement
@@ -2292,6 +2303,35 @@ fn mutates_after_every_lexical_class() {
         assert_eq!(repo.check(&path)?, 0);
         repo.write_test(UNANNOTATED_ENV_TEST)?;
         assert_eq!(repo.check(&path)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_guard_status_preserves_qualified_identity() -> Result<()> {
+        let repo = TempRepo::new("mixed-guard-status")?;
+        repo.write_test(
+            "mod first {\n    #[test]\n    fn same_name() {\n        std::env::set_var(\"A\", \"1\");\n    }\n}\nmod second {\n    #[test]\n    #[serial]\n    fn same_name() {\n        std::env::set_var(\"B\", \"1\");\n    }\n}\n",
+        )?;
+        let path = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [
+                registry_row(
+                    "crates/demo/tests/demo.rs",
+                    "first::same_name",
+                    "env_set",
+                    "active fixture",
+                    "active",
+                ),
+                registry_row(
+                    "crates/demo/tests/demo.rs",
+                    "second::same_name",
+                    "env_set",
+                    "serialized fixture",
+                    "retired",
+                ),
+            ]
+        }))?;
+        assert_eq!(repo.check(&path)?, 0);
         Ok(())
     }
 
