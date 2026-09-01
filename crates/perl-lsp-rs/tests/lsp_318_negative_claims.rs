@@ -678,6 +678,96 @@ fn dynamic_file_watcher_registration_uses_string_globs_not_relative_patterns() -
     Ok(())
 }
 
+/// #8897: document-filter `RelativePattern` (LSP 3.18) is not implemented.
+/// With every dynamic-registration surface enabled, the only registration that
+/// may carry a `RelativePattern` shape (`baseUri`) is the 3.17
+/// workspace/didChangeWatchedFiles watcher glob. Document-selector producers
+/// must never emit relative filters.
+#[test]
+fn document_filter_relative_pattern_is_never_emitted() -> TestResult {
+    let mut harness = LspHarness::new_with_tuning(RuntimeTuning::normal_defaults());
+    harness.initialize(Some(json!({
+        "workspace": {
+            "didChangeWatchedFiles": {
+                "dynamicRegistration": true,
+                "relativePatternSupport": true
+            }
+        },
+        "textDocument": {
+            "inlineCompletion": {
+                "dynamicRegistration": true
+            }
+        }
+    })))?;
+
+    let requests = harness.drain_server_requests(250);
+    assert!(!requests.is_empty(), "expected dynamic registrations to scan");
+
+    for request in &requests {
+        if request.get("method").and_then(Value::as_str) != Some("client/registerCapability") {
+            continue;
+        }
+        let registrations = request
+            .pointer("/params/registrations")
+            .and_then(Value::as_array)
+            .ok_or("registerCapability missing registrations")?;
+        for registration in registrations {
+            let method = registration.get("method").and_then(Value::as_str).unwrap_or("");
+            if method == "workspace/didChangeWatchedFiles" {
+                // The 3.17 watcher surface owns RelativePattern watcher globs;
+                // its gate is covered by the watcher registration tests.
+                continue;
+            }
+            let rendered = serde_json::to_string(registration)?;
+            assert!(
+                !rendered.contains("baseUri"),
+                "document-filter RelativePattern must never be emitted for {method}: {rendered}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// #8897: notebook document-filter `RelativePattern` (LSP 3.18) is not
+/// implemented. The server advertises no notebook document sync and must never
+/// emit notebook selectors carrying relative patterns.
+#[test]
+fn notebook_document_filter_relative_pattern_is_never_emitted() -> TestResult {
+    let mut harness = LspHarness::new_with_tuning(RuntimeTuning::normal_defaults());
+    let init = harness.initialize_ready(
+        "file:///workspace",
+        Some(json!({
+            "notebookDocument": {
+                "synchronization": {
+                    "dynamicRegistration": true
+                }
+            }
+        })),
+    )?;
+
+    let caps = init
+        .get("capabilities")
+        .ok_or_else(|| format!("initialize response missing capabilities: {init}"))?;
+    assert_absent(caps, "/notebookDocumentSync")?;
+
+    let requests = harness.drain_server_requests(250);
+    for request in &requests {
+        if request.get("method").and_then(Value::as_str) != Some("client/registerCapability") {
+            continue;
+        }
+        let rendered = serde_json::to_string(request)?;
+        assert!(
+            !rendered.contains("notebook"),
+            "notebook document-filter registrations must never be emitted: {rendered}"
+        );
+        assert!(
+            !rendered.contains("baseUri"),
+            "notebook RelativePattern filters must never be emitted: {rendered}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn folding_range_refresh_is_not_sent_without_client_support() -> TestResult {
     let output = OutputCapture::default();
