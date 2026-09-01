@@ -723,6 +723,12 @@ impl CheckpointedIncrementalParser {
 
         let mut raw_relexed: Vec<perl_lexer::Token> = Vec::new();
         let mut bytes_relexed_this_phase = 0usize;
+        // A token whose start crosses `relex_end` is consumed by
+        // `next_token()` before the loop can inspect it. Phase 2 must not
+        // silently drop it: hold it here so the Phase 3 refusal fallback can
+        // prepend it to the tail re-lex instead of losing the boundary token
+        // (#14158 class: conversion seams must not swallow tokens).
+        let mut boundary_token: Option<perl_lexer::Token> = None;
 
         loop {
             match lexer.next_token() {
@@ -731,6 +737,7 @@ impl CheckpointedIncrementalParser {
                     let token_end = token.end;
                     let token_start = token.start;
                     if token_start >= relex_end {
+                        boundary_token = Some(token);
                         break;
                     }
                     raw_relexed.push(token);
@@ -755,7 +762,6 @@ impl CheckpointedIncrementalParser {
 
         if right_checkpoint.is_some() {
             let segments_after = self.token_cache.count_segments_with_tokens_after(relex_end);
-            self.stats.segments_reused_after += segments_after;
 
             let cached = self.token_cache.get_tokens_from(relex_end);
             // Adjust byte positions to account for the inserted/removed bytes.
@@ -763,7 +769,8 @@ impl CheckpointedIncrementalParser {
             // shift that clamps a cached token into geometry its payload
             // cannot fill refuses the whole suffix reuse instead of silently
             // synthesizing a mid-stream EOF token (#14158 class sweep) — the
-            // tail is re-lexed below, so no token is lost.
+            // tail re-lex below re-lexes from the held boundary token, so no
+            // token is lost.
             let shifted_suffix = cached.as_deref().map(|cached| {
                 cached
                     .iter()
@@ -780,6 +787,7 @@ impl CheckpointedIncrementalParser {
             // refused. Either way the tail is re-lexed below rather than
             // trusting degraded reuse (#14158 class sweep).
             if let Some(Some(shifted)) = shifted_suffix {
+                self.stats.segments_reused_after += segments_after;
                 self.stats.cache_hits += 1;
                 let reused = shifted.len();
                 parser_tokens.extend(shifted);
@@ -789,9 +797,18 @@ impl CheckpointedIncrementalParser {
                 self.stats.full_tail_fallbacks += 1;
                 // No cached suffix, or the cached suffix failed its shifted
                 // span invariants — either way, lex the remainder of the
-                // source rather than trusting degraded reuse.
+                // source rather than trusting degraded reuse. The suffix was
+                // NOT reused, so `segments_reused_after` is only counted on
+                // the successful arm above.
                 let mut raw_tail: Vec<perl_lexer::Token> = Vec::new();
                 let mut tail_bytes = 0usize;
+                // Reopen the tail with the held boundary token so the
+                // fallback re-lex is boundary-complete (#14158 class).
+                if let Some(boundary) = boundary_token.take() {
+                    tail_bytes += boundary.end - boundary.start;
+                    raw_tail.push(boundary);
+                    self.stats.tokens_relexed += 1;
+                }
                 while let Some(token) = lexer.next_token() {
                     if matches!(token.token_type, perl_lexer::TokenType::EOF) {
                         break;
