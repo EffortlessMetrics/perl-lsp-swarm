@@ -630,8 +630,9 @@ impl DebugAdapter {
 
     /// Seed `attached_pid` with the given PID for testing.
     ///
-    /// Use a PID that is guaranteed not to exist (e.g. `999_999`) to drive the
-    /// "session present, signal delivery failed" path in `handle_pause`.
+    /// Use PID 0 to drive the "session present, signal delivery failed" path in
+    /// `handle_pause`; `send_interrupt_signal` rejects that reserved sentinel
+    /// before reaching the operating system.
     ///
     /// Only for use in tests; not part of the public API contract.
     #[cfg(any(test, feature = "test-helpers"))]
