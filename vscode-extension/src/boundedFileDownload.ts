@@ -12,10 +12,11 @@ export interface BoundedFileDownloadOptions {
   maxRedirects?: number;
   followRedirect?: (location: string, remainingRedirects: number) => Promise<void>;
   createWriteStream?: (dest: string) => fs.WriteStream;
-  removePartialFile?: (dest: string) => void;
+  /** Resolves only after the destination cleanup has completed. */
+  removePartialFile?: (dest: string) => Promise<void>;
 }
 
-function defaultRemovePartialFile(dest: string): void {
+async function defaultRemovePartialFile(dest: string): Promise<void> {
   try {
     fs.unlinkSync(dest);
   } catch (error) {
@@ -74,20 +75,20 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
       }
     };
 
-    const rejectAfterPartialCleanup = (error: Error): void => {
+    const rejectAfterPartialCleanup = async (error: Error): Promise<void> => {
       if (failureRejected) {
         return;
       }
       failureRejected = true;
       let cleanupFailure: unknown;
       try {
-        removePartialFile(dest);
+        await removePartialFile(dest);
       } catch (removeError) {
         cleanupFailure = removeError;
       }
       try {
         if (fs.existsSync(dest)) {
-          defaultRemovePartialFile(dest);
+          await defaultRemovePartialFile(dest);
         }
       } catch (fallbackError) {
         cleanupFailure ??= fallbackError;
@@ -124,11 +125,18 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
         stream instanceof fs.WriteStream && stream.closed === false && stream.destroyed !== true;
       if (!waitsForClose) {
         stream?.destroy();
-        rejectAfterPartialCleanup(error);
+        void rejectAfterPartialCleanup(error);
         return;
       }
-      stream.once('close', () => rejectAfterPartialCleanup(error));
-      stream.destroy();
+      // Use the destroy callback rather than only `close`: callers may provide
+      // a WriteStream with emitClose:false, which legitimately never emits it.
+      const destroyWithCallback = stream.destroy as unknown as (
+        error: Error | undefined,
+        callback: () => void,
+      ) => void;
+      destroyWithCallback.call(stream, undefined, () => {
+        void rejectAfterPartialCleanup(error);
+      });
     };
 
     const succeed = (): void => {
