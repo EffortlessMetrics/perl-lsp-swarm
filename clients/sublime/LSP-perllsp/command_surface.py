@@ -14,6 +14,11 @@ MAX_OUTPUT_CHARS = 64 * 1024
 # of alphabetical order so failure semantics never depend on key sorting.
 MAX_FIELD_CHARS = 4 * 1024
 
+# Result payloads come from an external server and may contain arbitrarily
+# nested JSON-like values. Refuse to descend indefinitely so hostile input
+# produces a bounded diagnostic instead of a recursion error.
+MAX_RENDER_DEPTH = 64
+
 # Top-level result keys that carry control/result semantics rather than bulk
 # material. They always render first, in this declared order.
 CONTROL_RESULT_KEYS = ("success", "status", "error", "reason", "nextAction")
@@ -252,8 +257,12 @@ def _append_value(
     indent: int = 0,
     *,
     bound_fields: bool = False,
+    depth: int = 0,
 ) -> None:
     prefix = "  " * indent
+    if depth >= MAX_RENDER_DEPTH:
+        lines.append(f"{prefix}{label}: … nested result omitted by LSP-perllsp.")
+        return
     if isinstance(value, Mapping):
         lines.append(f"{prefix}{label}:")
         if not value:
@@ -261,7 +270,12 @@ def _append_value(
             return
         for key in _ordered_keys(value):
             _append_value(
-                lines, _humanize(str(key)), value[key], indent + 1, bound_fields=bound_fields
+                lines,
+                _humanize(str(key)),
+                value[key],
+                indent + 1,
+                bound_fields=bound_fields,
+                depth=depth + 1,
             )
         return
     if isinstance(value, (list, tuple)):
@@ -275,7 +289,14 @@ def _append_value(
             # permits one deeply nested mapping/list item to consume the
             # complete envelope before later items (and their labels) render.
             item_lines: list[str] = []
-            _append_value(item_lines, f"{index}", item, indent + 1, bound_fields=bound_fields)
+            _append_value(
+                item_lines,
+                f"{index}",
+                item,
+                indent + 1,
+                bound_fields=bound_fields,
+                depth=depth + 1,
+            )
             rendered_item = "\n".join(item_lines)
             if bound_fields:
                 rendered_item = _bounded_field(rendered_item)
@@ -377,7 +398,9 @@ def format_result(caption: str, result: Any) -> str:
     if result is None:
         lines.append("Completed. The server returned no additional details.")
     elif isinstance(result, str):
-        lines.append(result)
+        # A top-level string is still one result field. Bound it independently
+        # of the envelope so a scalar cannot consume the display budget.
+        lines.append(_bounded_field(result))
     elif isinstance(result, Mapping):
         # Control/result semantics render ahead of bulk material so the
         # output bound below can never erase failure state or next actions;

@@ -294,6 +294,22 @@ class CommandSurfaceContractTests(unittest.TestCase):
         self.assertIn(value, rendered)
         self.assertNotIn("omitted by LSP-perllsp", rendered)
 
+    def test_top_level_string_result_is_bounded_as_its_own_field(self) -> None:
+        value = "x" * (surface.MAX_FIELD_CHARS + 100)
+        rendered = surface.format_result("Perl: Run Current File", value)
+        self.assertNotIn(value, rendered)
+        self.assertIn("omitted by LSP-perllsp", rendered)
+        # The field bound is independent of the much larger envelope bound.
+        self.assertLess(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+    def test_deeply_nested_result_is_gracefully_bounded(self) -> None:
+        result: object = "leaf"
+        for _ in range(1100):
+            result = {"nested": result}
+        rendered = surface.format_result("Perl: Run Current File", result)
+        self.assertIn("nested result omitted by LSP-perllsp", rendered)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
     def test_long_error_preserves_terminal_diagnosis(self) -> None:
         diagnosis = "FATAL: compilation failed at line 99"
         rendered = surface.format_result(
