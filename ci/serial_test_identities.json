@@ -174,40 +174,40 @@
       "test_function": "run_file_passes_perl5lib_when_use_perl5lib_true",
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
-      "state": "active",
-      "remediation": "pending"
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs/tests/execute_command_security_tests.rs",
       "test_function": "run_file_strips_perl5lib_when_use_perl5lib_false",
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
-      "state": "active",
-      "remediation": "pending"
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs/tests/execute_command_security_tests.rs",
       "test_function": "run_test_sub_strips_perl5lib_when_use_perl5lib_false",
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
-      "state": "active",
-      "remediation": "pending"
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs/tests/execute_command_security_tests.rs",
       "test_function": "test_command_exists_does_not_execute_candidate_binary",
       "signals": "env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
-      "state": "active",
-      "remediation": "pending"
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs/tests/execute_command_security_tests.rs",
       "test_function": "test_command_exists_does_not_execute_path_hijacked_which",
       "signals": "env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
-      "state": "active",
-      "remediation": "pending"
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs/tests/lsp_behavioral_tests.rs",
