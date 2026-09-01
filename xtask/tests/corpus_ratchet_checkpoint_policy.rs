@@ -6,7 +6,9 @@
 //! self-sustaining cycle from returning: the warm leg must end below the
 //! preemption envelope under an explicit budget, persist partial progress,
 //! report completion truthfully, and the gate chain must stay byte-identical
-//! and never enforce against partial state. Mutation controls are named per
+//! and never enforce against partial state. The bounded lane additionally keeps
+//! candidate runs restore-only and grants cache publication only to an explicit
+//! default-branch bounded dispatch (#13926). Mutation controls are named per
 //! `.spec/12823-corpus-cache-cycle/acceptance.md`.
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
@@ -28,10 +30,19 @@ const WARM_JOB: &str = "corpus-warm-full";
 const RATCHET_JOB: &str = "corpus-ratchet-full";
 const BOUNDED_JOB: &str = "corpus-ratchet-bounded";
 const PR_WRITER_JOB: &str = "open-ratchet-pr";
-const GOVERNED_JOBS: [&str; 4] = [BOUNDED_JOB, WARM_JOB, RATCHET_JOB, PR_WRITER_JOB];
+const GOVERNED_JOBS: [&str; 4] =
+    [BOUNDED_JOB, WARM_JOB, RATCHET_JOB, PR_WRITER_JOB];
 const INSTALL_STEP: &str = "Install CPAN corpus checkpoint";
 const CANONICAL_SAVE_STEP: &str = "Save CPAN corpus cache (canonical)";
 const CHECKPOINT_SAVE_STEP: &str = "Save CPAN corpus checkpoint (partial progress)";
+const BOUNDED_RUST_CACHE_STEP: &str = "Cache cargo dependencies";
+const BOUNDED_CORPUS_CACHE_SAVE_STEP: &str = "Save CPAN corpus cache (bounded)";
+const BOUNDED_RUST_CACHE_SAVE_IF: &str =
+    "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'bounded' && github.ref_name == github.event.repository.default_branch }}";
+const BOUNDED_CORPUS_CACHE_SAVE_IF: &str = r#"steps.cpan-bounded-install.outcome == 'success' &&
+github.event_name == 'workflow_dispatch' &&
+github.event.inputs.mode == 'bounded' &&
+github.ref_name == github.event.repository.default_branch"#;
 
 const FULL_JOB_GUARDS: &[(&str, &str)] = &[
     (
@@ -72,10 +83,11 @@ persist-credentials: false"#,
         "toolchain: 1.95.0",
     ),
     (
-        "Cache cargo dependencies",
+        BOUNDED_RUST_CACHE_STEP,
         "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
         r#"cache-on-failure: true
-shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}"#,
+shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
+save-if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'bounded' && github.ref_name == github.event.repository.default_branch }}"#,
     ),
     (
         "Install just",
@@ -92,7 +104,7 @@ restore-keys: |
 "#,
     ),
     (
-        "Save CPAN corpus cache (bounded)",
+        BOUNDED_CORPUS_CACHE_SAVE_STEP,
         "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
         r#"path: target/cpan-corpus-bounded
 key: cpan-corpus-bounded-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-50-distributions.txt') }}"#,
@@ -192,6 +204,21 @@ fn named_step<'a>(steps: &'a [Value], name: &str) -> Result<&'a Value> {
         .iter()
         .find(|step| step.get("name").and_then(Value::as_str) == Some(name))
         .ok_or_else(|| anyhow!("step `{name}` must exist"))
+}
+
+fn bounded_step_mut<'a>(workflow: &'a mut Value, step_name: &str) -> Result<&'a mut Value> {
+    workflow
+        .get_mut("jobs")
+        .and_then(Value::as_mapping_mut)
+        .and_then(|jobs| jobs.get_mut(Value::String(BOUNDED_JOB.into())))
+        .and_then(|bounded| bounded.get_mut("steps"))
+        .and_then(Value::as_sequence_mut)
+        .and_then(|steps| {
+            steps
+                .iter_mut()
+                .find(|step| step.get("name").and_then(Value::as_str) == Some(step_name))
+        })
+        .ok_or_else(|| anyhow!("bounded step `{step_name}` must exist"))
 }
 
 fn condition<'a>(step: &'a Value, step_name: &str) -> Result<Option<&'a str>> {
@@ -297,11 +324,11 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
     let expected_step_names = [
         "Checkout bounded analysis tree",
         "Install Rust toolchain",
-        "Cache cargo dependencies",
+        BOUNDED_RUST_CACHE_STEP,
         "Install just",
         "Restore CPAN corpus cache (bounded)",
         "Install CPAN corpus (bounded — top 50)",
-        "Save CPAN corpus cache (bounded)",
+        BOUNDED_CORPUS_CACHE_SAVE_STEP,
         "Verify bounded corpus path",
         "Sweep bounded corpus and emit receipt",
         "Upload bounded corpus receipt",
@@ -329,6 +356,33 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
             "bounded action step `{name}` inputs drifted: expected {expected_inputs:?}, found {actual_inputs:?}"
         );
     }
+
+    let rust_cache = named_step(steps, BOUNDED_RUST_CACHE_STEP)?;
+    let rust_save_if = rust_cache
+        .get("with")
+        .and_then(|inputs| inputs.get("save-if"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "bounded Rust cache must declare explicit default-branch bounded-dispatch save authority"
+            )
+        })?;
+    ensure!(
+        rust_save_if == BOUNDED_RUST_CACHE_SAVE_IF,
+        "bounded Rust cache save authority widened or drifted: {rust_save_if}"
+    );
+
+    let corpus_save = named_step(steps, BOUNDED_CORPUS_CACHE_SAVE_STEP)?;
+    let corpus_save_if = condition(corpus_save, BOUNDED_CORPUS_CACHE_SAVE_STEP)?.ok_or_else(|| {
+        anyhow!(
+            "bounded CPAN cache save must require install success and explicit default-branch bounded-dispatch authority"
+        )
+    })?;
+    ensure!(
+        corpus_save_if.trim_end() == BOUNDED_CORPUS_CACHE_SAVE_IF,
+        "bounded CPAN cache save authority widened or drifted: {corpus_save_if}"
+    );
+
     for (name, expected) in BOUNDED_RUN_STEPS {
         let step = named_step(steps, name)?;
         ensure!(
@@ -608,6 +662,102 @@ fn bounded_control_rejects_step_local_action_indirection() -> Result<()> {
         .err()
         .ok_or_else(|| anyhow!("step-level local action indirection must fail containment"))?;
     ensure!(error.to_string().contains("repository-local action"), "unexpected refusal: {error}");
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_missing_rust_cache_writer_guard() -> Result<()> {
+    let mut candidate = workflow()?;
+    let cache = bounded_step_mut(&mut candidate, BOUNDED_RUST_CACHE_STEP)?;
+    let inputs = cache
+        .get_mut("with")
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| anyhow!("bounded Rust cache inputs must be mutable"))?;
+    inputs.remove(&Value::String("save-if".into()));
+
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| anyhow!("missing bounded Rust cache save guard must fail"))?;
+    let message = error.to_string();
+    ensure!(
+        message.contains("inputs drifted") || message.contains("save authority"),
+        "unexpected refusal: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_ref_only_rust_cache_writer_guard() -> Result<()> {
+    let mut candidate = workflow()?;
+    let cache = bounded_step_mut(&mut candidate, BOUNDED_RUST_CACHE_STEP)?;
+    let inputs = cache
+        .get_mut("with")
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| anyhow!("bounded Rust cache inputs must be mutable"))?;
+    inputs.insert(
+        Value::String("save-if".into()),
+        Value::String(
+            "${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}"
+                .into(),
+        ),
+    );
+
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| anyhow!("ref-only bounded Rust cache guard must fail"))?;
+    ensure!(
+        error.to_string().contains("inputs drifted"),
+        "unexpected refusal: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_install_success_as_cpan_writer_authority() -> Result<()> {
+    let mut candidate = workflow()?;
+    let save = bounded_step_mut(&mut candidate, BOUNDED_CORPUS_CACHE_SAVE_STEP)?;
+    save.as_mapping_mut()
+        .ok_or_else(|| anyhow!("bounded CPAN save step must be a mapping"))?
+        .insert(
+            Value::String("if".into()),
+            Value::String("steps.cpan-bounded-install.outcome == 'success'".into()),
+        );
+
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| anyhow!("install success alone must not authorize a CPAN cache save"))?;
+    ensure!(
+        error.to_string().contains("authority widened or drifted"),
+        "unexpected refusal: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_feature_branch_dispatch_cpan_writer() -> Result<()> {
+    let mut candidate = workflow()?;
+    let save = bounded_step_mut(&mut candidate, BOUNDED_CORPUS_CACHE_SAVE_STEP)?;
+    save.as_mapping_mut()
+        .ok_or_else(|| anyhow!("bounded CPAN save step must be a mapping"))?
+        .insert(
+            Value::String("if".into()),
+            Value::String(
+                r#"steps.cpan-bounded-install.outcome == 'success' &&
+github.event_name == 'workflow_dispatch' &&
+github.event.inputs.mode == 'bounded'"#
+                    .into(),
+            ),
+        );
+
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| {
+            anyhow!("feature-branch bounded dispatch must not authorize a CPAN cache save")
+        })?;
+    ensure!(
+        error.to_string().contains("authority widened or drifted"),
+        "unexpected refusal: {error}"
+    );
     Ok(())
 }
 
