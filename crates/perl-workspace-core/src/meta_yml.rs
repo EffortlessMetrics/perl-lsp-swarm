@@ -21,8 +21,11 @@
 //! Everything outside the subset is an **explicit non-success state**, never a
 //! silent fallback: anchors/aliases, YAML tags, merge keys, block scalars
 //! (`|` / `>`), and multiple documents are reported as findings and refuse
-//! the parse. Duplicate keys are detected rather than last-value-accepted.
-//! Resource budgets (input bytes, nesting depth, node count) fail closed.
+//! the parse. Duplicate keys are detected rather than last-value-accepted,
+//! in block mappings and flow mappings alike. Resource budgets (input bytes,
+//! nesting depth, node count) fail closed: every mapping entry, sequence
+//! item, collection, and flow element charges the node budget, so flat
+//! documents cannot dodge it.
 //!
 //! Scalars deliberately keep their **source spelling** (versions like `1.5`
 //! stay the string `"1.5"`); only recognized v1.4/v2 fields are normalized
@@ -34,6 +37,8 @@
 //! No full spec-conformance verdict (that is #7176), no `META.json` ↔
 //! `META.yml` reconciliation, no Kwalitee metric, and no `Makefile.PL` /
 //! `Build.PL` / `dist.ini` extraction.
+
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -521,10 +526,12 @@ impl<'a> Parser<'a> {
                 // Nested block owned by this item.
                 let nested = self.parse_block(indent + 1)?;
                 items.push(nested);
-            } else if let Some(map) = try_split_map_entry(&rest)? {
+            } else if let Some((key, value)) = try_split_map_entry(&rest)? {
                 // `- key: value` — an inline mapping item; later `key: value`
                 // lines at the deeper indent belong to the same item.
-                let mut entries = vec![map];
+                let mut entries = vec![(key, value)];
+                let mut seen_keys: HashSet<String> = HashSet::new();
+                seen_keys.insert(entries[0].0.clone());
                 let item_indent = indent + (trimmed.len() - rest.len()) + 1;
                 while let Some(next_indent) = self.peek().map(|l| indentation(&l.text)) {
                     if next_indent <= indent || next_indent < item_indent.saturating_sub(1) {
@@ -532,23 +539,24 @@ impl<'a> Parser<'a> {
                     }
                     let entry = self.parse_map(next_indent)?;
                     let Yaml::Map(m) = entry else { break };
-                    entries.extend(m);
-                }
-                // Duplicate detection must span the inline first entry and
-                // every continuation entry of the same item.
-                for i in 0..entries.len() {
-                    if entries[..i].iter().any(|(k, _)| *k == entries[i].0) {
-                        return Err(MetaYmlFinding::new(
-                            MetaYmlFindingKind::DuplicateKey,
-                            Some(line.number),
-                            format!("duplicate key `{}` in a sequence mapping item", entries[i].0),
-                        ));
+                    // Duplicate detection must span the inline first entry and
+                    // every continuation entry of the same item; the set keeps
+                    // that check linear in the item size.
+                    for (k, v) in m {
+                        if !seen_keys.insert(k.clone()) {
+                            return Err(MetaYmlFinding::new(
+                                MetaYmlFindingKind::DuplicateKey,
+                                Some(line.number),
+                                format!("duplicate key `{k}` in a sequence mapping item"),
+                            ));
+                        }
+                        entries.push((k, v));
                     }
                 }
                 self.charge_nodes(entries.len())?;
                 items.push(Yaml::Map(entries));
             } else {
-                items.push(Yaml::scalar_or_flow(&rest, line.number)?);
+                items.push(self.parse_scalar_or_flow(&rest, line.number)?);
             }
         }
         Ok(Yaml::Seq(items))
@@ -556,6 +564,9 @@ impl<'a> Parser<'a> {
 
     fn parse_map(&mut self, indent: usize) -> Result<Yaml, MetaYmlFinding> {
         let mut entries: Vec<(String, Yaml)> = Vec::new();
+        // Set-based duplicate detection: a linear scan per insert made wide
+        // maps O(n^2) (60k entries cost seconds).
+        let mut seen_keys: HashSet<String> = HashSet::new();
         while let Some(line) = self.peek().cloned() {
             let line_indent = indentation(&line.text);
             if line_indent == usize::MAX {
@@ -589,17 +600,22 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             let value = if rest.is_empty() {
                 // Value is the nested block (or an empty scalar when the next
-                // line is a sibling).
+                // line is a sibling). Every entry charges a node — block
+                // values through their own parse_block, flow values through
+                // their elements — so flat maps cannot dodge the budget.
                 match self.peek() {
                     Some(next) if indentation(&next.text) > indent => {
                         self.parse_block(indent + 1)?
                     }
-                    _ => Yaml::Scalar(String::new()),
+                    _ => {
+                        self.charge_node_at(line.number)?;
+                        Yaml::Scalar(String::new())
+                    }
                 }
             } else {
-                Yaml::scalar_or_flow(&rest, line.number)?
+                self.parse_scalar_or_flow(&rest, line.number)?
             };
-            if entries.iter().any(|(k, _)| *k == key) {
+            if !seen_keys.insert(key.clone()) {
                 return Err(MetaYmlFinding::new(
                     MetaYmlFindingKind::DuplicateKey,
                     Some(line.number),
@@ -628,6 +644,104 @@ impl<'a> Parser<'a> {
             self.charge_node()?;
         }
         Ok(())
+    }
+
+    /// Charge one node against the node budget when the source line is known
+    /// directly (mapping entries, sequence scalar items, flow elements) so a
+    /// refusal points at the entry that crossed the budget.
+    fn charge_node_at(&mut self, line: usize) -> Result<(), MetaYmlFinding> {
+        self.nodes += 1;
+        if self.nodes > MAX_NODES {
+            return Err(MetaYmlFinding::new(
+                MetaYmlFindingKind::ResourceLimit,
+                Some(line),
+                format!("more than {MAX_NODES} YAML nodes"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Parse an inline scalar or flow-collection value. Scalars and every
+    /// flow node charge the budget, so flat documents fail closed.
+    fn parse_scalar_or_flow(&mut self, text: &str, line: usize) -> Result<Yaml, MetaYmlFinding> {
+        let trimmed = text.trim();
+        if trimmed.starts_with('[') {
+            return self.flow_seq(trimmed, line);
+        }
+        if trimmed.starts_with('{') {
+            return self.flow_map(trimmed, line);
+        }
+        self.charge_node_at(line)?;
+        Ok(Yaml::Scalar(unquote(trimmed)))
+    }
+
+    /// Parse a flow sequence `[a, b, [c]]` with the same budgets: the
+    /// collection and each element charge one node.
+    fn flow_seq(&mut self, text: &str, line: usize) -> Result<Yaml, MetaYmlFinding> {
+        let inner = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')).ok_or_else(|| {
+            MetaYmlFinding::new(
+                MetaYmlFindingKind::MalformedSyntax,
+                Some(line),
+                "unterminated flow sequence",
+            )
+        })?;
+        self.charge_node_at(line)?;
+        let mut items = Vec::new();
+        for part in split_flow(inner) {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            self.charge_node_at(line)?;
+            if part.starts_with('[') {
+                items.push(self.flow_seq(part, line)?);
+            } else if part.starts_with('{') {
+                items.push(self.flow_map(part, line)?);
+            } else {
+                items.push(Yaml::Scalar(unquote(part)));
+            }
+        }
+        Ok(Yaml::Seq(items))
+    }
+
+    /// Parse a flow map `{a: 1, b: 2}` with the same budgets as block
+    /// mappings: per-node charging and a typed duplicate-key refusal instead
+    /// of silent last-value-wins.
+    fn flow_map(&mut self, text: &str, line: usize) -> Result<Yaml, MetaYmlFinding> {
+        let inner = text.strip_prefix('{').and_then(|t| t.strip_suffix('}')).ok_or_else(|| {
+            MetaYmlFinding::new(
+                MetaYmlFindingKind::MalformedSyntax,
+                Some(line),
+                "unterminated flow mapping",
+            )
+        })?;
+        self.charge_node_at(line)?;
+        let mut entries = Vec::new();
+        let mut seen_keys: HashSet<String> = HashSet::new();
+        for part in split_flow(inner) {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            let Some((raw_key, value)) = part.split_once(':') else {
+                return Err(MetaYmlFinding::new(
+                    MetaYmlFindingKind::MalformedSyntax,
+                    Some(line),
+                    format!("flow mapping entry without ':': {part:.40}"),
+                ));
+            };
+            self.charge_node_at(line)?;
+            let key = unquote(raw_key.trim());
+            if !seen_keys.insert(key.clone()) {
+                return Err(MetaYmlFinding::new(
+                    MetaYmlFindingKind::DuplicateKey,
+                    Some(line),
+                    format!("duplicate key `{key}` in a flow mapping; last-value-wins is refused"),
+                ));
+            }
+            entries.push((key, Yaml::Scalar(unquote(value.trim()))));
+        }
+        Ok(Yaml::Map(entries))
     }
 
     fn peek(&self) -> Option<&Line<'a>> {
@@ -726,76 +840,12 @@ fn decode_double_quoted(text: &str) -> String {
 }
 
 impl Yaml {
-    fn scalar_or_flow(text: &str, line: usize) -> Result<Yaml, MetaYmlFinding> {
-        let trimmed = text.trim();
-        if trimmed.starts_with('[') {
-            return flow_seq(trimmed, line);
-        }
-        if trimmed.starts_with('{') {
-            return flow_map(trimmed, line);
-        }
-        Ok(Yaml::Scalar(unquote(trimmed)))
-    }
-
     fn as_scalar(&self) -> Option<&str> {
         match self {
             Yaml::Scalar(s) => Some(s),
             _ => None,
         }
     }
-}
-
-/// Parse a flow sequence `[a, b, [c]]` with the same budgets.
-fn flow_seq(text: &str, line: usize) -> Result<Yaml, MetaYmlFinding> {
-    let inner = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')).ok_or_else(|| {
-        MetaYmlFinding::new(
-            MetaYmlFindingKind::MalformedSyntax,
-            Some(line),
-            "unterminated flow sequence",
-        )
-    })?;
-    let mut items = Vec::new();
-    for part in split_flow(inner) {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        if part.starts_with('[') {
-            items.push(flow_seq(part, line)?);
-        } else if part.starts_with('{') {
-            items.push(flow_map(part, line)?);
-        } else {
-            items.push(Yaml::Scalar(unquote(part)));
-        }
-    }
-    Ok(Yaml::Seq(items))
-}
-
-/// Parse a flow map `{a: 1, b: 2}` with the same budgets.
-fn flow_map(text: &str, line: usize) -> Result<Yaml, MetaYmlFinding> {
-    let inner = text.strip_prefix('{').and_then(|t| t.strip_suffix('}')).ok_or_else(|| {
-        MetaYmlFinding::new(
-            MetaYmlFindingKind::MalformedSyntax,
-            Some(line),
-            "unterminated flow mapping",
-        )
-    })?;
-    let mut entries = Vec::new();
-    for part in split_flow(inner) {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        let Some((key, value)) = part.split_once(':') else {
-            return Err(MetaYmlFinding::new(
-                MetaYmlFindingKind::MalformedSyntax,
-                Some(line),
-                format!("flow mapping entry without ':': {part:.40}"),
-            ));
-        };
-        entries.push((unquote(key.trim()), Yaml::Scalar(unquote(value.trim()))));
-    }
-    Ok(Yaml::Map(entries))
 }
 
 /// Split a flow collection body on top-level commas.
@@ -1119,6 +1169,89 @@ build_requires:
         let wide = format!("name: {}\nversion: 1\n", "x".repeat(MAX_INPUT_BYTES + 1));
         let outcome = parse_meta_yml(fid(), &wide);
         assert_non_success(&outcome, MetaYmlFindingKind::ResourceLimit, "oversized input");
+    }
+
+    #[test]
+    fn flow_mapping_duplicate_keys_are_a_typed_finding() {
+        // Flow maps used to last-value-win duplicate keys silently; the
+        // contract ("detected rather than last-value-accepted") must hold for
+        // both collection styles.
+        let outcome = parse_meta_yml(fid(), "name: X\nversion: 1\nnested: {a: 1, a: 2}\n");
+        assert_non_success(&outcome, MetaYmlFindingKind::DuplicateKey, "flow duplicate key");
+
+        // The same refusal applies to flow maps nested in flow sequences.
+        let nested = parse_meta_yml(fid(), "name: X\nversion: 1\nnested: [{a: 1, a: 2}]\n");
+        assert_non_success(
+            &nested,
+            MetaYmlFindingKind::DuplicateKey,
+            "flow duplicate key inside a flow sequence",
+        );
+
+        // Well-formed flow mappings still parse cleanly.
+        let clean = parse_meta_yml(fid(), "name: X\nversion: 1\nnested: {a: 1, b: 2}\n");
+        assert_eq!(clean.state, MetaYmlParseState::Parsed, "{:?}", clean.findings);
+    }
+
+    #[test]
+    fn flat_documents_cannot_dodge_the_node_budget() {
+        // Nodes were once charged only per parse_block, so these flat shapes
+        // parsed clean with a dead 10k budget.
+        let mut flat_map = String::new();
+        for i in 0..10_500 {
+            flat_map.push_str(&format!("k{i}: {i}\n"));
+        }
+        let outcome = parse_meta_yml(fid(), &flat_map);
+        assert_non_success(&outcome, MetaYmlFindingKind::ResourceLimit, "flat map over budget");
+
+        let mut flat_seq = String::from("root:\n");
+        for i in 0..10_500 {
+            flat_seq.push_str(&format!("  - {i}\n"));
+        }
+        let outcome = parse_meta_yml(fid(), &flat_seq);
+        assert_non_success(&outcome, MetaYmlFindingKind::ResourceLimit, "flat seq over budget");
+
+        // Documents inside the budget still parse.
+        let mut within = String::new();
+        for i in 0..4_000 {
+            within.push_str(&format!("k{i}: {i}\n"));
+        }
+        let outcome = parse_meta_yml(fid(), &within);
+        assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{:?}", outcome.findings);
+    }
+
+    #[test]
+    fn wide_duplicate_detection_stays_linear() {
+        // 60k unique keys were previously quadratic in duplicate detection
+        // (~4s); the seen-key set keeps the whole parse well under a second,
+        // and the node budget bounds how far a flat document can run at all.
+        let mut wide = String::new();
+        for i in 0..60_000 {
+            wide.push_str(&format!("k{i}: 0\n"));
+        }
+        let start = std::time::Instant::now();
+        let outcome = parse_meta_yml(fid(), &wide);
+        let elapsed = start.elapsed();
+        assert_non_success(&outcome, MetaYmlFindingKind::ResourceLimit, "wide map over budget");
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "60k-entry parse must stay bounded, took {elapsed:?}"
+        );
+
+        // Duplicate detection at scale: 9k unique keys then a repeat, fast
+        // and still a typed refusal.
+        let mut dup_at_scale = String::new();
+        for i in 0..9_000 {
+            dup_at_scale.push_str(&format!("k{i}: 0\n"));
+        }
+        dup_at_scale.push_str("k0: 1\n");
+        let start = std::time::Instant::now();
+        let outcome = parse_meta_yml(fid(), &dup_at_scale);
+        let elapsed = start.elapsed();
+        assert_non_success(&outcome, MetaYmlFindingKind::DuplicateKey, "duplicate at scale");
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "9k-entry duplicate scan must stay linear, took {elapsed:?}"
+        );
     }
 
     #[test]
