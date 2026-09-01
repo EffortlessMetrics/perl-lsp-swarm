@@ -534,6 +534,53 @@ fn a_repeated_group_name_resolves_to_its_last_definition() {
     );
 }
 
+#[test]
+fn a_nested_as_option_does_not_suppress_the_setup() {
+    // The install-redirect check looks for `as` at the *top level* of the
+    // setup hash. `-as` appearing inside an entry's option hash is an
+    // import-time rename of one export, not a redirect of the exporter, and
+    // must leave the rest of the configuration published.
+    for setup in
+        ["exports => [ foo => { -as => 'bar' } ]", "exports => [qw(a)], collectors => [qw(as)]"]
+    {
+        let file =
+            lower(&format!("package My::Utils;\nuse Sub::Exporter -setup => {{ {setup} }};\n"));
+
+        assert!(
+            !declarations(&file, "My::Utils").is_empty(),
+            "{setup}: a nested `as` must not suppress the whole setup"
+        );
+        assert!(
+            !export_boundaries(&file, "My::Utils")
+                .iter()
+                .any(|(_, reason)| reason.contains("not shown to install")),
+            "{setup}: no install-redirect boundary should be recorded"
+        );
+    }
+}
+
+#[test]
+fn replacing_a_sub_exporter_setup_leaves_classic_exporter_facts_alone() {
+    // The replacement identifies prior Sub::Exporter declarations by their
+    // `DesugaredAst` provenance, which the classic `@EXPORT` path does not
+    // use. Pin that boundary so a future producer sharing the provenance —
+    // or a widening of the retain — is caught here rather than by silently
+    // dropping another mechanism's exports.
+    let file = lower(
+        "package My::Utils;\n\
+         our @EXPORT = qw(classic);\n\
+         use Sub::Exporter -setup => { exports => [qw(modern)] };\n",
+    );
+
+    let published: Vec<String> =
+        declarations(&file, "My::Utils").into_iter().flat_map(|(_, _, s)| s).collect();
+    assert!(
+        published.contains(&"classic".to_string()),
+        "a Sub::Exporter setup must not clear classic Exporter declarations: {published:?}"
+    );
+    assert!(published.contains(&"modern".to_string()), "{published:?}");
+}
+
 // --- negative controls: nothing enumerable, nothing claimed ----------------
 
 #[test]
