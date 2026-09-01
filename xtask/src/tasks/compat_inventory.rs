@@ -911,12 +911,12 @@ fn discover_syn_item_list(
                 let reexported = root_reexports
                     .iter()
                     .any(|(path, exported)| path == module && exported == &name);
-                let visibility =
-                    if declared == Visibility::Public && (module_public || reexported) {
-                        Visibility::Public
-                    } else {
-                        Visibility::Internal
-                    };
+                let visibility = if declared == Visibility::Public && (module_public || reexported)
+                {
+                    Visibility::Public
+                } else {
+                    Visibility::Internal
+                };
                 exports.push(Export {
                     module: module.to_string(),
                     name,
