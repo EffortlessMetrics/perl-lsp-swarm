@@ -221,19 +221,36 @@ def _scalar(value: Any) -> str:
     return str(value)
 
 
-def _bounded_field(text: str) -> str:
+def _bounded_field(text: str, *, preserve_tail: bool = False) -> str:
     """Bound one rendered scalar field so bulk material cannot consume the
     global budget and erase control fields rendered after it."""
     if len(text) <= MAX_FIELD_CHARS:
         return text
+    # Reserve the notice itself.  Error text commonly ends with the useful
+    # compiler diagnosis, so retain both ends when it is a control field.
+    notice = "\n… {} character(s) of this field omitted by LSP-perllsp."
     omitted = len(text) - MAX_FIELD_CHARS
-    return (
-        text[:MAX_FIELD_CHARS]
-        + f"\n… {omitted} character(s) of this field omitted by LSP-perllsp."
-    )
+    while True:
+        rendered_notice = notice.format(omitted)
+        keep = MAX_FIELD_CHARS - len(rendered_notice) - (3 if preserve_tail else 0)
+        updated = len(text) - keep
+        if updated == omitted:
+            if preserve_tail:
+                head = keep // 2
+                tail = keep - head
+                return text[:head] + "\n…\n" + text[-tail:] + rendered_notice
+            return text[:keep] + rendered_notice
+        omitted = updated
 
 
-def _append_value(lines: list[str], label: str, value: Any, indent: int = 0) -> None:
+def _append_value(
+    lines: list[str],
+    label: str,
+    value: Any,
+    indent: int = 0,
+    *,
+    bound_fields: bool = False,
+) -> None:
     prefix = "  " * indent
     if isinstance(value, Mapping):
         lines.append(f"{prefix}{label}:")
@@ -241,27 +258,54 @@ def _append_value(lines: list[str], label: str, value: Any, indent: int = 0) -> 
             lines.append(f"{prefix}  (empty)")
             return
         for key in _ordered_keys(value):
-            _append_value(lines, _humanize(str(key)), value[key], indent + 1)
+            _append_value(
+                lines, _humanize(str(key)), value[key], indent + 1, bound_fields=bound_fields
+            )
         return
     if isinstance(value, (list, tuple)):
         lines.append(f"{prefix}{label}: {len(value)} item(s)")
         for index, item in enumerate(value[:50], start=1):
-            _append_value(lines, f"{index}", item, indent + 1)
+            _append_value(lines, f"{index}", item, indent + 1, bound_fields=bound_fields)
         if len(value) > 50:
             lines.append(f"{prefix}  … {len(value) - 50} additional item(s) omitted")
         return
     if isinstance(value, str) and "\n" in value:
         lines.append(f"{prefix}{label}:")
         rendered_lines = value.splitlines()
-        if sum(len(line) + 2 + len(prefix) for line in rendered_lines) > MAX_FIELD_CHARS:
-            bounded = _bounded_field(value)
-            lines.extend(f"{prefix}  {line}" for line in bounded.splitlines())
+        if bound_fields and sum(len(line) + 2 + len(prefix) for line in rendered_lines) > MAX_FIELD_CHARS:
+            notice = f"… {len(value)} character(s) of this field omitted by LSP-perllsp."
+            budget = MAX_FIELD_CHARS - len(prefix) - 2 - len(notice) - 4
+            def take(source: list[str], allowance: int = budget) -> tuple[list[str], int]:
+                selected: list[str] = []
+                used = 0
+                for line in source:
+                    cost = len(prefix) + 2 + len(line) + 1
+                    if used + cost > max(0, allowance):
+                        break
+                    selected.append(line)
+                    used += cost
+                return selected, used
+
+            preserve_tail = label.lower() in {"error", "reason"}
+            if preserve_tail:
+                head, _ = take(rendered_lines, budget // 2)
+                tail, _ = take(list(reversed(rendered_lines)), budget - budget // 2)
+                tail.reverse()
+                while head and tail and head[-1] == tail[0]:
+                    tail.pop(0)
+                head = head + (["…"] if tail else []) + tail
+            else:
+                head, _ = take(rendered_lines)
+            lines.extend(f"{prefix}  {line}" for line in head)
+            lines.append(f"{prefix}  … field content omitted by LSP-perllsp.")
             return
         lines.extend(f"{prefix}  {line}" for line in rendered_lines)
         return
     rendered_scalar = _scalar(value)
-    if len(rendered_scalar) > MAX_FIELD_CHARS:
-        rendered_scalar = _bounded_field(rendered_scalar)
+    if bound_fields and len(rendered_scalar) > MAX_FIELD_CHARS:
+        rendered_scalar = _bounded_field(
+            rendered_scalar, preserve_tail=label.lower() in {"error", "reason"}
+        )
     lines.append(f"{prefix}{label}: {rendered_scalar}")
 
 
@@ -272,15 +316,38 @@ def _ordered_keys(value: Mapping) -> list[Any]:
     keys = list(value)
     control_present = [k for k in CONTROL_RESULT_KEYS if k in keys]
     control_set = {str(k) for k in control_present}
-    rest = sorted((k for k in keys if str(k) not in control_set), key=str)
-    return control_present + rest
+    # A nested mapping can itself carry a control result.  Bring those
+    # mappings forward too, otherwise a collection of large sibling payloads
+    # can hide the nested diagnosis behind the final envelope bound.
+    nested_controls = [
+        k for k in keys
+        if str(k) not in control_set and isinstance(value[k], Mapping)
+        and any(str(nested_key) in CONTROL_RESULT_KEYS for nested_key in value[k])
+    ]
+    nested_set = {str(k) for k in nested_controls}
+    rest = sorted(
+        (k for k in keys if str(k) not in control_set and str(k) not in nested_set), key=str
+    )
+    return control_present + sorted(nested_controls, key=str) + rest
 
 
 def _bounded(text: str) -> str:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
     omitted = len(text) - MAX_OUTPUT_CHARS
-    return text[:MAX_OUTPUT_CHARS] + f"\n\n… {omitted} character(s) omitted by LSP-perllsp.\n"
+    notice = f"\n\n… {omitted} character(s) omitted by LSP-perllsp.\n"
+    return text[: MAX_OUTPUT_CHARS - len(notice)] + notice
+
+
+def _bounded_with_tail(text: str) -> str:
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text
+    omitted = len(text) - MAX_OUTPUT_CHARS
+    notice = f"\n\n… {omitted} character(s) omitted by LSP-perllsp.\n"
+    keep = MAX_OUTPUT_CHARS - len(notice) - 3
+    head = keep // 2
+    tail = keep - head
+    return text[:head] + "\n…\n" + text[-tail:] + notice
 
 
 def format_result(caption: str, result: Any) -> str:
@@ -299,12 +366,18 @@ def format_result(caption: str, result: Any) -> str:
         _append_value(lines, "Results", result)
     else:
         lines.append(_scalar(result))
-    return _bounded("\n".join(lines).rstrip() + "\n")
+    rendered = "\n".join(lines).rstrip() + "\n"
+    if len(rendered) > MAX_OUTPUT_CHARS:
+        lines = [caption, "=" * len(caption), ""]
+        for key in _ordered_keys(result) if isinstance(result, Mapping) else []:
+            _append_value(lines, _humanize(str(key)), result[key], bound_fields=True)
+        rendered = "\n".join(lines).rstrip() + "\n"
+    return _bounded(rendered)
 
 
 def format_error(caption: str, command_id: str, error: Any) -> str:
     message = getattr(error, "message", None) or str(error)
-    return _bounded(
+    return _bounded_with_tail(
         f"{caption}\n{'=' * len(caption)}\n\n"
         f"Server command: {command_id}\n"
         f"Status: failed\n"

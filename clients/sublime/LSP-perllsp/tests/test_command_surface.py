@@ -236,12 +236,16 @@ class CommandSurfaceContractTests(unittest.TestCase):
             {
                 "a_bulk": "z" * (surface.MAX_OUTPUT_CHARS * 4),
                 "success": False,
+                "status": "failed",
                 "error": "interpreter missing",
+                "reason": "the interpreter was not found",
                 "nextAction": "install Perl",
             },
         )
         self.assertIn("Success: no", adversarial)
         self.assertIn("Error: interpreter missing", adversarial)
+        self.assertIn("Status: failed", adversarial)
+        self.assertIn("Reason: the interpreter was not found", adversarial)
         self.assertIn("Next Action: install Perl", adversarial)
 
         # Nested bulk material is bounded too, so a giant detail row cannot
@@ -266,7 +270,52 @@ class CommandSurfaceContractTests(unittest.TestCase):
         self.assertIn("all green", first)
         self.assertIn("Note: kept", first)
         self.assertNotIn("omitted by LSP-perllsp", first)
-        self.assertEqual(first, surface.format_result("Perl: Run Current File", result))
+        reordered = {"note": "kept", "stdout": "all green\n", "success": True}
+        self.assertEqual(first, surface.format_result("Perl: Run Current File", reordered))
+
+    def test_scalar_keeps_complete_value_when_envelope_fits(self) -> None:
+        value = "x" * (surface.MAX_FIELD_CHARS + 100)
+        rendered = surface.format_result("Perl: Run Current File", {"output": value})
+        self.assertIn(value, rendered)
+        self.assertNotIn("omitted by LSP-perllsp", rendered)
+
+    def test_long_error_preserves_terminal_diagnosis(self) -> None:
+        diagnosis = "FATAL: compilation failed at line 99"
+        rendered = surface.format_result(
+            "Perl: Run Current File",
+            {"success": False, "error": "warning\n" * 1000 + diagnosis},
+        )
+        self.assertIn(diagnosis, rendered)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+        error = type("ServerError", (), {"message": "warning\n" * 10000 + diagnosis})()
+        rendered_error = surface.format_error("Perl: Run Current File", "perl.runFile", error)
+        self.assertIn(diagnosis, rendered_error)
+        self.assertLessEqual(len(rendered_error), surface.MAX_OUTPUT_CHARS)
+
+    def test_multiline_field_budget_includes_indentation_and_notice(self) -> None:
+        rendered = surface.format_result(
+            "Perl: Run Current File",
+            {"details": {"output": "a\n" * 30000}, "success": True},
+        )
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+        self.assertIn("field content omitted by LSP-perllsp", rendered)
+
+    def test_nested_control_fields_survive_many_bulk_siblings(self) -> None:
+        result = {"success": False, "nextAction": "fix"}
+        result.update({f"bulk{index:02d}": {"text": "x" * 4090} for index in range(20)})
+        result["deep"] = {"success": False, "reason": "nested diagnosis"}
+        rendered = surface.format_result("Perl: Run Workspace Tests", result)
+        self.assertIn("Success: no", rendered)
+        self.assertIn("Reason: nested diagnosis", rendered)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+    def test_global_bound_is_hard_after_rendering(self) -> None:
+        rendered = surface.format_result(
+            "Perl: Run Current File",
+            {"success": False, "output": "z" * (surface.MAX_OUTPUT_CHARS * 4)},
+        )
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
 
     def test_navigation_target_is_deliberate(self) -> None:
         self.assertEqual(
