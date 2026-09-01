@@ -153,6 +153,21 @@ created = "2026-08-26"
 review_after = "2027-02-26"
 
 [[allow]]
+id = "non-rust-ripr-facts-packet-goldens"
+glob = "crates/perl-ripr-facts/tests/golden/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ripr/facts-producer"
+reason = "Golden ripr-perl-facts-v1 packets captured from the pre-split producer, pinning packet bytes, ordering, ids and fingerprints across the #9271 module split. They are the zero-drift oracle for the #4747 v2 migration train: regenerating them by hand would defeat their purpose, so they change only when a reviewed emission change is intended."
+covered_by = [
+  "cargo test -p perl-ripr-facts --test packet_characterization --locked",
+]
+created = "2026-08-31"
+review_after = "2027-02-28"
+
+[[allow]]
 id = "non-rust-agent-review-packet-golden-markdown"
 glob = "fixtures/agent_review_packet/golden/*.md"
 kind = "test_fixture"
@@ -1243,6 +1258,23 @@ covered_by = [
 ]
 created = "2026-08-08"
 review_after = "2026-11-08"
+
+[[allow]]
+id = "non-rust-blocker-closeout-schema"
+path = "schemas/blocker_closeout.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned terminal blocker-closeout packet schema binding semantic-controller, merged contribution, current review, proof, and claim-effect identities for release freeze fan-in (#13858)."
+covered_by = [
+  "python -m unittest scripts/tests/test-validate-blocker-closeout.py",
+  "python scripts/validate_blocker_closeout.py --packet scripts/tests/fixtures/blocker_closeout/valid_resolved.json --repository .",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-30"
+review_after = "2026-11-30"
 
 # =============================================================================
 # Receipts / status / metrics

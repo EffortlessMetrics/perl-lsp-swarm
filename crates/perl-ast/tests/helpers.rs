@@ -236,7 +236,15 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         Node::new(NodeKind::Readline { filehandle: None }, loc()),
         Node::new(NodeKind::Glob { pattern: "*".to_string() }, loc()),
         Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc()),
-        Node::new(NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }, loc()),
+        Node::new(
+            NodeKind::DataSection {
+                marker: "__DATA__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
+            loc(),
+        ),
         Node::new(
             NodeKind::Class {
                 name: "Foo".to_string(),

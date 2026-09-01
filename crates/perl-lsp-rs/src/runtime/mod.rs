@@ -200,8 +200,10 @@ pub struct LspServer {
     ///
     /// `Drop` swaps `outbound` with a closed sender, drops the live sender to
     /// close the channel, then joins this thread so buffered bytes are flushed
-    /// before the server is deallocated.
-    outbound_writer_handle: Option<std::thread::JoinHandle<()>>,
+    /// before the server is deallocated. The join resolves to the writer's
+    /// terminal outcome; Drop records it as structured settlement evidence
+    /// (#8402).
+    outbound_writer_handle: Option<std::thread::JoinHandle<outbound::WriterTerminalOutcome>>,
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
     /// Cancelled request IDs
@@ -1434,10 +1436,10 @@ impl LspServer {
 
     /// Publish diagnostics with trailing-edge debouncing.
     ///
-    /// If a debouncer is installed (normal runtime via Scheduler), the publication
-    /// is deferred until a quiet period elapses. If no debouncer is installed
-    /// (unit tests that construct LspServer directly), falls through to immediate
-    /// publication.
+    /// If a working debouncer is installed (normal runtime via Scheduler), the
+    /// publication is deferred until a quiet period elapses. If no debouncer is
+    /// installed, or its worker has already become unavailable, falls through to
+    /// immediate publication.
     ///
     /// When [`RuntimeTuning::diagnostic_debounce_is_immediate`] is true (e.g. e2e
     /// mode), the debouncer is bypassed and diagnostics publish synchronously —
