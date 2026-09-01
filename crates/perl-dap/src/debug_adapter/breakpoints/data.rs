@@ -186,7 +186,9 @@ mod tests {
         assert!(context_qualified_watchpoint_refusal(&args(None, None)).is_none());
     }
 
-    fn legacy_record(data_id: &str) -> crate::debug_adapter::data_breakpoints::DataBreakpointRecord {
+    fn legacy_record(
+        data_id: &str,
+    ) -> crate::debug_adapter::data_breakpoints::DataBreakpointRecord {
         crate::debug_adapter::data_breakpoints::DataBreakpointRecord {
             data_id: data_id.to_string(),
             access_type: Some("write".to_string()),
