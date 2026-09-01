@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12558 |
-| Rust-family files | 3893 |
-| Non-Rust files | 8665 |
-| Allowlisted | 6426 |
+| Total tracked files | 12573 |
+| Rust-family files | 3906 |
+| Non-Rust files | 8667 |
+| Allowlisted | 6428 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2833 |
 | generated | 2 |
 | production | 349 |
-| test | 2067 |
+| test | 2069 |
 | tooling | 676 |
 | unclassified | 2239 |
 
@@ -4258,6 +4258,8 @@
 | `crates/perl-regex/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-ripr-facts/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `crates/perl-ripr-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_no_diff.json` | test | `non-rust-ripr-facts-packet-goldens` | ripr/facts-producer |
+| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_with_diff.json` | test | `non-rust-ripr-facts-packet-goldens` | ripr/facts-producer |
 | `crates/perl-semantic-analyzer/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-analyzer/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-semantic-analyzer/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
