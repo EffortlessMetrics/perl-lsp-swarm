@@ -18,6 +18,7 @@ use super::{
     create_handoff, explain,
 };
 use anyhow::{Context, Result, bail};
+use serial_test::serial;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1811,6 +1812,7 @@ fn the_local_env_list_covers_what_git_reports() -> Result<()> {
 }
 
 #[test]
+#[serial]
 fn an_alternate_object_directory_cannot_satisfy_a_missing_object() -> Result<()> {
     let fixture = Fixture::new()?;
     fixture.write("seed.txt", b"seed\n")?;
@@ -1843,7 +1845,10 @@ fn an_alternate_object_directory_cannot_satisfy_a_missing_object() -> Result<()>
     // Point Git at the producing repository's objects. If the seam leaked this
     // variable through, the missing blob would resolve and the envelope would
     // validate on this machine while being incomplete everywhere else.
-    // SAFETY: single-threaded within this test's scope; restored immediately.
+    // `#[serial]` is load-bearing, not decoration: this mutates the *process*
+    // environment, and any test running `check_handoff` concurrently would see
+    // it. Two tests here do this, so both are serialised.
+    // SAFETY: no other test runs concurrently; restored immediately.
     let objects = fixture.path().join(".git").join("objects");
     unsafe { std::env::set_var("GIT_ALTERNATE_OBJECT_DIRECTORIES", &objects) };
     let report = check_handoff(&destination.envelope());
@@ -2789,6 +2794,7 @@ fn the_inventory_admits_rename_detection_is_a_heuristic() -> Result<()> {
 /// — so an incomplete envelope validated on whichever machine happened to hold
 /// the blob, which is precisely the claim this format makes it cannot.
 #[test]
+#[serial]
 fn global_git_configuration_cannot_complete_an_incomplete_envelope() -> Result<()> {
     let fixture = Fixture::new()?;
     fixture.write("seed.txt", b"seed\n")?;
@@ -2850,7 +2856,8 @@ fn global_git_configuration_cannot_complete_an_incomplete_envelope() -> Result<(
         "the template must really seed an alternates file, or this control proves nothing"
     );
 
-    // SAFETY: single-threaded within this test's scope; restored immediately.
+    // SAFETY: `#[serial]` keeps this process-wide mutation off every other
+    // test; restored immediately below.
     unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", &config) };
     let report = check_handoff(&destination.envelope());
     unsafe { std::env::remove_var("GIT_CONFIG_GLOBAL") };
