@@ -2721,7 +2721,10 @@ end
 function lsp.request_references(doc, line, col)
   if not doc.lsp_open then return end
 
-  for _, name in pairs(lsp.get_active_servers(doc.filename, true)) do
+  -- get_active_servers returns an ordered array. Preserve that order here so
+  -- a non-provider is observably considered before a later provider; using
+  -- pairs would make the regression depend on hash traversal order.
+  for _, name in ipairs(lsp.get_active_servers(doc.filename, true)) do
     local server = lsp.servers_running[name]
     -- Local patch (#9019): gate references on the standard
     -- referencesProvider capability, not hoverProvider; hover support says
@@ -3911,4 +3914,3 @@ end
 
 
 return lsp
-

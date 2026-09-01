@@ -931,6 +931,14 @@ do
     lsp = fresh_module_load()
     local first = make_server("hoverfirst", merge_caps(SYNC, { hoverProvider = {} }))
     local second = make_server("refssecond", merge_caps(SYNC, { referencesProvider = {} }))
+    local first_capability_checks = 0
+    setmetatable(first.capabilities, {
+      __index = function(_, key)
+        if key == "referencesProvider" then
+          first_capability_checks = first_capability_checks + 1
+        end
+      end,
+    })
     register(lsp, "hoverfirst", first)
     register(lsp, "refssecond", second)
     -- Pin the active-server order so the regression is discriminating: the
@@ -949,6 +957,8 @@ do
       and second.outbound[1].method == "textDocument/references" then
       successful_trials = successful_trials + 1
     end
+    ok(first_capability_checks > 0,
+      "case12: ordered trial inspects the non-provider server before the provider")
   end
   ok(successful_trials == trial_count,
     "case12: references-capable second server remains reachable in every complementary-server trial")
