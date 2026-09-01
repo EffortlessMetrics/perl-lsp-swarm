@@ -33,16 +33,17 @@ fn workflow() -> Result<Value> {
 }
 
 fn bind_run_block() -> Result<String> {
+    named_run_block("Fetch and bind subject Git object")
+}
+
+fn named_run_block(step_name: &str) -> Result<String> {
     workflow()?
         .get("jobs")
         .and_then(|jobs| jobs.get("exact-tree"))
         .and_then(|job| job.get("steps"))
         .and_then(Value::as_sequence)
         .and_then(|steps| {
-            steps.iter().find(|step| {
-                step.get("name").and_then(Value::as_str)
-                    == Some("Fetch and bind subject Git object")
-            })
+            steps.iter().find(|step| step.get("name").and_then(Value::as_str) == Some(step_name))
         })
         .and_then(|step| step.get("run"))
         .and_then(Value::as_str)
@@ -188,6 +189,28 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
     ] {
         ensure!(run.contains(required), "binding run block missing `{required}`");
     }
+    let workflow_text =
+        fs::read_to_string(project_root().join(".github/workflows/non-rust-policy.yml"))?;
+    ensure!(
+        workflow_text.contains("python3 - \"$workflow\"")
+            && workflow_text.contains("run_bodies")
+            && workflow_text.contains("github\\.event\\.pull_request"),
+        "trusted workflow must structurally inspect executable run bodies"
+    );
+    let guard = named_run_block("Verify trusted workflow contract")?;
+    let guard_output = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &guard])
+        .current_dir(project_root())
+        .output()
+        .context("executing trusted workflow contract guard")?;
+    if !guard_output.status.success() {
+        bail!(
+            "trusted workflow guard failed with {:?}\nstdout:\n{}\nstderr:\n{}",
+            guard_output.status.code(),
+            String::from_utf8_lossy(&guard_output.stdout),
+            String::from_utf8_lossy(&guard_output.stderr)
+        );
+    }
 
     let fixture = pr_fixture()?;
     let output_path = fixture.trusted.join("github-output");
@@ -220,6 +243,27 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
         .find_map(|line| line.strip_prefix("subject_sha="))
         .ok_or_else(|| anyhow!("binding must emit subject_sha"))?;
     ensure!(subject_sha != "0000000000000000000000000000000000000000");
+
+    // If the pull-request ref has moved since the event was captured, the
+    // binding must fail before creating or exporting a synthetic subject.
+    write(&output_path, "")?;
+    write(&env_path, "")?;
+    let stale = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &run])
+        .current_dir(&fixture.trusted)
+        .env("BASE_SHA", &fixture.base_sha)
+        .env("PR_HEAD_SHA", "1111111111111111111111111111111111111111")
+        .env("PR_NUMBER", "42")
+        .env("SUBJECT_SHA", "0000000000000000000000000000000000000000")
+        .env("GITHUB_OUTPUT", &output_path)
+        .env("GITHUB_ENV", &env_path)
+        .output()
+        .context("executing stale-head subject-binding block")?;
+    ensure!(!stale.status.success(), "stale PR head must fail closed");
+    ensure!(
+        fs::read_to_string(&output_path)?.is_empty(),
+        "stale PR head must not export a synthetic subject"
+    );
 
     // The synthetic subject is reproducible across reruns, independent of
     // wall-clock metadata on the runner.

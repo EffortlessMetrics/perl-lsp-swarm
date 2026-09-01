@@ -128,7 +128,55 @@ jobs:
           grep -q 'actions/upload-artifact@' "$workflow"
           grep -q 'if: always()' "$workflow"
           grep -q 'persist-credentials: false' "$workflow"
-          ! grep -Eq 'cargo run.*(pull_request|head\.sha|github\.event\.pull_request\.head)' "$workflow"
+          # Inspect executable run bodies only.  Event metadata is expected in
+          # trusted environment declarations, while direct interpolation in a
+          # command would allow candidate-controlled code or refs to reach the
+          # evaluator.  Keeping the pattern in a variable also prevents this
+          # guard from matching its own source text.
+          python3 - "$workflow" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          run_bodies = []
+          step = None
+          index = 0
+          while index < len(lines):
+              line = lines[index]
+              if line.startswith("      - name:"):
+                  step_name = line.removeprefix("      - name: ")
+                  step = []
+                  index += 1
+                  while index < len(lines) and not lines[index].startswith("      - name:"):
+                      step.append(lines[index])
+                      index += 1
+                  for offset, item in enumerate(step):
+                      match = re.match(r"^        run:\s?(.*)$", item)
+                      if not match:
+                          continue
+                      body = match.group(1)
+                      if body in ("|", ">", "|-"):
+                          body = "\n".join(
+                              content[10:] if len(content) >= 10 else ""
+                              for content in step[offset + 1 :]
+                              if content.startswith("          ")
+                          )
+                      run_bodies.append((step_name, body))
+                  continue
+              index += 1
+
+          forbidden = re.compile(
+              r"(?:\$\{\{\s*)?github\.event\.pull_request\.(?:head(?:\.sha)?|merge_commit_sha)"
+          )
+          offenders = [
+              (name, body)
+              for name, body in run_bodies
+              if name != "Verify trusted workflow contract" and forbidden.search(body)
+          ]
+          if offenders:
+              raise SystemExit("trusted run body interpolates pull-request event data")
+          PY
       - name: Run trusted exact-tree evaluator
         if: steps.bind.outcome == 'success'
         run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json

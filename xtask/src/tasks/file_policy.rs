@@ -595,7 +595,17 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     }) {
         bail!("trusted workflow must checkout EVALUATOR_SHA in its checkout step");
     }
-    if !step_run_contains("git fetch --no-tags origin \"$SUBJECT_SHA\"")
+    let direct_subject_fetch = step_run_contains("git fetch --no-tags origin \"$SUBJECT_SHA\"");
+    let synthetic_pr_subject = step_run_contains(
+        "refs/pull/$PR_NUMBER/head:refs/remotes/origin/non-rust-policy-pr-head",
+    ) && step_run_contains(
+        "git rev-parse refs/remotes/origin/non-rust-policy-pr-head^{commit}",
+    ) && step_run_contains(
+        "test \"$(git rev-parse refs/remotes/origin/non-rust-policy-pr-head^{commit})\" = \"$PR_HEAD_SHA\"",
+    ) && step_run_contains(
+        "git commit-tree \"$merge_tree\" -p \"$BASE_SHA\" -p \"$PR_HEAD_SHA\"",
+    );
+    if (!direct_subject_fetch && !synthetic_pr_subject)
         || !step_run_contains("git update-ref refs/heads/non-rust-policy-subject")
     {
         bail!("trusted workflow must bind the exact SUBJECT_SHA Git object");
