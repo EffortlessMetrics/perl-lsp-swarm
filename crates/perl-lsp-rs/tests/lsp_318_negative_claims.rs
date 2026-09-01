@@ -9,6 +9,7 @@ mod support;
 use parking_lot::Mutex;
 use perl_lsp::LspServer;
 use perl_lsp::server::MessageType;
+use perl_lsp_rs_core::governance::FeatureProfile;
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
 use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
 use serde_json::{Value, json};
@@ -685,7 +686,7 @@ fn dynamic_file_watcher_registration_uses_string_globs_not_relative_patterns() -
 /// must never emit relative filters.
 #[test]
 fn document_filter_relative_pattern_is_never_emitted() -> TestResult {
-    let mut harness = LspHarness::new_with_tuning(RuntimeTuning::normal_defaults());
+    let mut harness = LspHarness::new_with_feature_profile(FeatureProfile::All);
     harness.initialize(Some(json!({
         "workspace": {
             "didChangeWatchedFiles": {
@@ -703,6 +704,7 @@ fn document_filter_relative_pattern_is_never_emitted() -> TestResult {
     let requests = harness.drain_server_requests(250);
     assert!(!requests.is_empty(), "expected dynamic registrations to scan");
 
+    let mut saw_watcher = false;
     for request in &requests {
         if request.get("method").and_then(Value::as_str) != Some("client/registerCapability") {
             continue;
@@ -714,8 +716,20 @@ fn document_filter_relative_pattern_is_never_emitted() -> TestResult {
         for registration in registrations {
             let method = registration.get("method").and_then(Value::as_str).unwrap_or("");
             if method == "workspace/didChangeWatchedFiles" {
-                // The 3.17 watcher surface owns RelativePattern watcher globs;
-                // its gate is covered by the watcher registration tests.
+                saw_watcher = true;
+                let watchers = registration
+                    .pointer("/registerOptions/watchers")
+                    .and_then(Value::as_array)
+                    .ok_or("watcher registration missing watchers")?;
+                assert!(
+                    watchers.iter().any(|watcher| {
+                        watcher
+                            .pointer("/globPattern/baseUri")
+                            .and_then(Value::as_str)
+                            .is_some()
+                    }),
+                    "relative-pattern capable clients must receive a watcher baseUri: {registration}"
+                );
                 continue;
             }
             let rendered = serde_json::to_string(registration)?;
@@ -725,6 +739,7 @@ fn document_filter_relative_pattern_is_never_emitted() -> TestResult {
             );
         }
     }
+    assert!(saw_watcher, "expected the allowed watcher RelativePattern registration");
     Ok(())
 }
 
@@ -733,7 +748,7 @@ fn document_filter_relative_pattern_is_never_emitted() -> TestResult {
 /// emit notebook selectors carrying relative patterns.
 #[test]
 fn notebook_document_filter_relative_pattern_is_never_emitted() -> TestResult {
-    let mut harness = LspHarness::new_with_tuning(RuntimeTuning::normal_defaults());
+    let mut harness = LspHarness::new_with_feature_profile(FeatureProfile::All);
     let init = harness.initialize_ready(
         "file:///workspace",
         Some(json!({
@@ -748,7 +763,10 @@ fn notebook_document_filter_relative_pattern_is_never_emitted() -> TestResult {
     let caps = init
         .get("capabilities")
         .ok_or_else(|| format!("initialize response missing capabilities: {init}"))?;
-    assert_absent(caps, "/notebookDocumentSync")?;
+    assert!(
+        caps.pointer("/notebookDocumentSync").is_some(),
+        "FeatureProfile::All should exercise the notebook producer path: {caps}"
+    );
 
     let requests = harness.drain_server_requests(250);
     for request in &requests {
