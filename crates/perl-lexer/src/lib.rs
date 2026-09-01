@@ -108,20 +108,22 @@
 //!
 //! - **Kind**: [`TokenType::UnknownRest`], classified as a recovery token.
 //! - **Text**: empty. Over-budget recovery must never copy the unbounded
-//!   source remainder (which can span the rest of the file). Consumers that
-//!   need the payload reconstruct it from source they already hold at their
-//!   own seam — the parser's `TokenStream` conversion owns that step.
+//!   source remainder (which can span the rest of the file). No current
+//!   consumer reconstructs the payload: the parser's `TokenStream` conversion
+//!   preserves the empty text and collapsed span, so payload reconstruction
+//!   remains deferred work at the consumer seam.
 //! - **Span**: `[token_start, input.len())`, the full degraded region, so
 //!   downstream trees can honestly mark the remainder as unparsed.
 //! - **Termination**: the next token is `EOF`, and nothing follows it.
 //! - **Determinism**: identical source and configuration produce identical
 //!   tokens (#6717).
 //!
-//! Two budget stops are documented exceptions because their payloads are
-//! bounded — boundedness, not token kind, is the dividing line between
-//! payload-free and payload-carrying recovery:
+//! Two bounded-payload shapes are documented exceptions to the uniform
+//! budget-stop shape — boundedness, not token kind, is the dividing line
+//! between payload-free budget stops and payload-carrying recovery:
 //!
-//! - A heredoc that reaches EOF *inside* its budget retains its body payload
+//! - A heredoc that reaches EOF *inside* its budget is bounded unterminated
+//!   recovery, not a budget stop: it retains its body payload
 //!   (`text == &input[body_start..]`) because the body is budget-bounded
 //!   (`<= MAX_HEREDOC_BYTES`).
 //! - `try_heredoc` at `MAX_HEREDOC_DEPTH` pending heredocs emits
@@ -232,11 +234,11 @@ impl<'a> PerlLexer<'a> {
     /// Over-budget heredoc recovery (#6717): geometry-only `UnknownRest` with
     /// empty text over `[body_start, input.len())`. The unbounded remainder is
     /// deliberately not copied; the EOF-inside-budget arm in [`Self::next_token`]
-    /// is the only payload-carrying over-budget `UnknownRest`, and only
-    /// because its body stays within `MAX_HEREDOC_BYTES`. `try_heredoc`'s
-    /// `MAX_HEREDOC_DEPTH` stop is the other bounded-payload budget stop (a
-    /// payload-carrying `Error` over the header text). Pinned by
-    /// `tests/budget_recovery_contract.rs`.
+    /// is the only payload-carrying `UnknownRest`, and it is bounded
+    /// unterminated recovery rather than a budget stop — its body stays within
+    /// `MAX_HEREDOC_BYTES`. `try_heredoc`'s `MAX_HEREDOC_DEPTH` stop is the
+    /// other bounded-payload shape (a payload-carrying `Error` over the header
+    /// text). Pinned by `tests/budget_recovery_contract.rs`.
     fn heredoc_budget_recovery(&mut self, body_start: usize) -> Token {
         self.pending_heredocs.remove(0);
         self.position = self.input.len();

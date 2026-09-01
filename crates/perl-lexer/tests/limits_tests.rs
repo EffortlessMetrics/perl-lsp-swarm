@@ -143,13 +143,23 @@ fn limits_interpolation_excessive_nesting_uses_local_recovery() -> TestResult {
         matches!(parts.first(), Some(StringPart::Expression(text)) if text.as_ref() == expected_expression),
         "depth rejection must stop the expression at MAX_DELIM_NEST"
     );
+    // A faulty recovery could discard the braces above the limit and the tail
+    // text yet still emit a semicolon, so pin the surviving remainder exactly.
+    // The expression part carries "$" plus MAX_DELIM_NEST braces (the
+    // interpolation's own opener included), so 127 of the 200 input braces are
+    // consumed and 73 survive into the literal remainder.
+    let expected_remainder = format!("{}tail", "{".repeat(200 - MAX_DELIM_NEST + 1));
     assert!(
-        string_token.end < input.len(),
-        "local recovery must not consume the trailing semicolon"
+        matches!(parts.get(1), Some(StringPart::Literal(text)) if text.as_ref() == expected_remainder),
+        "local recovery must preserve the post-limit braces and tail text in the string literal"
     );
-    assert!(
-        tokens.iter().any(|token| matches!(token.token_type, TokenType::Semicolon)),
-        "local delimiter recovery must leave the trailing statement delimiter reachable"
+    let semicolon = tokens
+        .iter()
+        .find(|token| matches!(token.token_type, TokenType::Semicolon))
+        .ok_or("local delimiter recovery must leave the trailing statement delimiter reachable")?;
+    assert_eq!(
+        string_token.end, semicolon.start,
+        "the recovered string must end immediately before the reachable semicolon"
     );
     assert!(
         !tokens.iter().any(|token| matches!(token.token_type, TokenType::UnknownRest)),

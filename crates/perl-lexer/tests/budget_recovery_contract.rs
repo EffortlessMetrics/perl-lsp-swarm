@@ -9,11 +9,12 @@
 //! reconstruct it from source they already hold (the parser `TokenStream`
 //! conversion owns that step).
 //!
-//! Two budget stops are documented exceptions because their payloads stay
-//! bounded; boundedness — not token kind — is the dividing line between the
-//! shapes:
+//! Two bounded-payload shapes are documented exceptions to the uniform
+//! budget-stop shape; boundedness — not token kind — is the dividing line
+//! between the shapes:
 //!
-//! - a heredoc that reaches EOF *inside* its budget keeps its body payload
+//! - a heredoc that reaches EOF *inside* its budget is bounded unterminated
+//!   recovery, not a budget stop: it keeps its body payload
 //!   (`<= MAX_HEREDOC_BYTES`); pinned at the bottom of this file;
 //! - `try_heredoc` at `MAX_HEREDOC_DEPTH` pending heredocs emits a
 //!   payload-carrying `Error("Heredoc nesting too deep")` over the
@@ -121,7 +122,8 @@ fn heredoc_byte_budget_stop_is_geometry_only() -> R {
     assert_geometry_only_over_budget_recovery(&source, HEREDOC_HEADER.len(), path)
 }
 
-/// One of the two documented exceptions: EOF reached *inside* the heredoc
+/// One of the two documented bounded-payload exceptions — bounded
+/// unterminated recovery, not a budget stop: EOF reached *inside* the heredoc
 /// budget keeps its budget-bounded body payload.
 #[test]
 fn eof_inside_heredoc_budget_keeps_bounded_payload() -> R {
@@ -175,6 +177,42 @@ fn eof_at_exact_heredoc_budget_keeps_bounded_payload() -> R {
         recovery.1.len(),
         MAX_HEREDOC_BYTES,
         "{path}: the retained payload pins the <= MAX_HEREDOC_BYTES boundary"
+    );
+    assert_eq!((recovery.2, recovery.3), (body_start, source.len()));
+    assert!(
+        matches!(tokens.get(index + 1).map(|token| &token.0), Some(TokenType::EOF)),
+        "{path}: terminal EOF must immediately follow the recovery token"
+    );
+    Ok(())
+}
+
+/// The same `<=` boundary across the heredoc scan's per-line check sites: a
+/// multi-line body whose final line ends exactly at `MAX_HEREDOC_BYTES` with
+/// no trailing newline must retain its full payload. Regressing any of the
+/// scan's over-budget comparisons from `>` to `>=` re-fires on a line that
+/// ends exactly at the budget, silently swapping the retained payload for the
+/// geometry-only shape while the single-line fixtures above still pass.
+#[test]
+fn eof_at_exact_multiline_heredoc_budget_keeps_bounded_payload() -> R {
+    let path = "EOF at exact multiline heredoc budget";
+    let body = format!("ab\n{}", "y".repeat(MAX_HEREDOC_BYTES - 3));
+    assert_eq!(body.len(), MAX_HEREDOC_BYTES);
+    let source = format!("{HEREDOC_HEADER}{body}");
+    let body_start = HEREDOC_HEADER.len();
+
+    let tokens = signatures(&source);
+    let index = recovery_index(&tokens, path)?;
+    let recovery = &tokens[index];
+
+    assert_eq!(
+        &*recovery.1,
+        &source[body_start..],
+        "{path}: the exactly-at-budget multi-line body payload is retained"
+    );
+    assert_eq!(
+        recovery.1.len(),
+        MAX_HEREDOC_BYTES,
+        "{path}: the multi-line payload pins the <= boundary at the scan's per-line checks"
     );
     assert_eq!((recovery.2, recovery.3), (body_start, source.len()));
     assert!(
