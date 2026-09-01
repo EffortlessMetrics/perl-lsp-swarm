@@ -457,8 +457,16 @@ fn read_bounded(path: &Path) -> Option<String> {
 #[must_use]
 pub fn parse_mysetup_environment(source: &str) -> Option<MySetupFacts> {
     let mut scanner = Scanner::new(source);
-    scanner.find_anchor("%environment")?;
-    scanner.skip_until('(')?;
+    scanner.find_environment_declaration()?;
+    scanner.skip_separators();
+    if !scanner.consume_char('=') {
+        return None;
+    }
+    scanner.skip_separators();
+    if scanner.peek() != Some('(') {
+        return None;
+    }
+    scanner.bump();
 
     let mut facts = MySetupFacts::default();
     loop {
@@ -533,18 +541,36 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// Find a literal needle from the current position; park behind it.
-    fn find_anchor(&mut self, needle: &str) -> Option<()> {
-        let from = self.source[self.pos..].find(needle)?;
-        self.pos += from + needle.len();
-        Some(())
+    /// Find the generated top-level declaration, ignoring comments and
+    /// string contents by requiring the declaration to begin a source line.
+    fn find_environment_declaration(&mut self) -> Option<()> {
+        let needle = "our %environment";
+        let mut offset = 0;
+        for line in self.source.split_inclusive('\n') {
+            let leading = line.len() - line.trim_start_matches([' ', '\t']).len();
+            let candidate = &line[leading..];
+            if candidate.starts_with(needle)
+                && candidate
+                    .get(needle.len()..)
+                    .and_then(|rest| rest.chars().next())
+                    .is_some_and(|ch| ch == ' ' || ch == '\t' || ch == '=')
+            {
+                self.pos = offset + leading + needle.len();
+                return Some(());
+            }
+            offset += line.len();
+        }
+        None
     }
 
-    /// Advance to just after the next occurrence of `target`.
-    fn skip_until(&mut self, target: char) -> Option<()> {
-        let from = self.source[self.pos..].find(target)?;
-        self.pos += from + target.len_utf8();
-        Some(())
+    /// Consume one exact character.
+    fn consume_char(&mut self, expected: char) -> bool {
+        if self.peek() == Some(expected) {
+            self.bump();
+            true
+        } else {
+            false
+        }
     }
 
     /// Skip whitespace, newlines, and commas.
@@ -838,6 +864,20 @@ our %environment = (
     #[test]
     fn missing_anchor_is_explicit_none() {
         assert!(parse_mysetup_environment("package Other; 1;").is_none());
+    }
+
+    #[test]
+    fn ignores_environment_text_before_the_generated_declaration() {
+        let source = concat!(
+            "# our %environment = ( 'inc' => [ '/forged/blib/lib' ] );\n",
+            "our %environment = (\n",
+            "  'inc' => [ '/real/blib/lib' ],\n",
+            "  'base' => '/real',\n",
+            ");\n"
+        );
+        let facts = parse_mysetup_environment(source).expect("generated declaration parses");
+        assert_eq!(facts.inc.as_deref(), Some(["/real/blib/lib".to_string()].as_slice()));
+        assert_eq!(facts.base.as_deref(), Some("/real"));
     }
 
     #[test]

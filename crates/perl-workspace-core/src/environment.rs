@@ -1923,6 +1923,27 @@ mod tests {
     }
 
     #[test]
+    fn schema_v1_snapshots_are_rejected_after_the_v2_contract_bump()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(PROJECT_ENVIRONMENT_SCHEMA_VERSION, 2);
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(input(
+                    "include.configured",
+                    EnvironmentInputAuthority::UserConfiguration,
+                    "lib",
+                    "client",
+                ))
+                .build()?;
+        let mut value = serde_json::to_value(&snapshot)?;
+        value["schema_version"] = serde_json::Value::from(1_u32);
+        let error = serde_json::from_value::<ProjectEnvironmentSnapshot>(value)
+            .expect_err("v1 snapshots must not gain v2 authority implicitly");
+        assert!(error.to_string().contains("unsupported project environment schema version"));
+        Ok(())
+    }
+
+    #[test]
     fn snapshot_round_trips_through_validated_deserialize() -> Result<(), Box<dyn std::error::Error>>
     {
         let snapshot =
