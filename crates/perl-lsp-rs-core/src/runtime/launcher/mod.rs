@@ -72,12 +72,16 @@ pub fn logging_filter(
 /// (max 5 files) **in addition to** stderr. Invalid `RUST_LOG` values fall
 /// back to `default_filter`.
 pub fn init_logging(default_filter: &str) {
-    init_logging_with_env_lookup(default_filter, std::env::var);
+    init_logging_with_env_lookup(default_filter, process_env_var);
+}
+
+fn process_env_var(key: &str) -> Result<String, std::env::VarError> {
+    std::env::var(key)
 }
 
 fn init_logging_with_env_lookup(
     default_filter: &str,
-    get: impl Fn(&str) -> Result<String, std::env::VarError>,
+    get: fn(&str) -> Result<String, std::env::VarError>,
 ) {
     init_logging_with_log_path(default_filter, get("PERL_LSP_LOG_FILE").ok());
 }
@@ -1344,14 +1348,14 @@ pub fn format_startup_banner(version: &str, profile: FeatureProfile, is_socket: 
     reason = "Startup banner fires before the tracing subscriber is configured — intentional stderr output"
 )]
 pub fn startup_banner(version: &str, profile: FeatureProfile, transport: TransportMode) {
-    startup_banner_with_env_lookup(version, profile, transport, std::env::var);
+    startup_banner_with_env_lookup(version, profile, transport, process_env_var);
 }
 
 fn startup_banner_with_env_lookup(
     version: &str,
     profile: FeatureProfile,
     transport: TransportMode,
-    get: impl Fn(&str) -> Result<String, std::env::VarError>,
+    get: fn(&str) -> Result<String, std::env::VarError>,
 ) {
     startup_banner_with_quiet(version, profile, transport, get("PERL_LSP_QUIET").is_ok());
 }
@@ -1363,7 +1367,7 @@ fn startup_banner_with_quiet(
     quiet: bool,
 ) {
     if quiet {
-        return Ok(());
+        return;
     }
     eprintln!("{}", format_startup_banner(version, profile, transport.is_socket()));
 }
@@ -1436,8 +1440,8 @@ mod tests {
             tracing::info!(target: "wave_a1", "{TOKEN}");
             return Ok(());
         }
-        let dir = tempfile::tempdir().map_err(|e| e.to_string()).expect("tempdir");
-        let output = std::process::Command::new(std::env::current_exe().expect("test exe"))
+        let dir = tempfile::tempdir()?;
+        let output = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
                 "runtime::launcher::tests::init_logging_does_not_panic_with_log_file",
@@ -1445,25 +1449,13 @@ mod tests {
             ])
             .env(MARKER, "1")
             .env("PERL_LSP_LOG_FILE", dir.path().join("wave-a1.log"))
-            .output()
-            .expect("spawn logging child");
+            .output()?;
         assert!(output.status.success(), "logging child failed: {output:?}");
         let found = std::fs::read_dir(dir.path())?
             .filter_map(Result::ok)
             .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
             .any(|contents| contents.contains(TOKEN));
         assert!(found, "rolling log must contain marker {TOKEN}");
-        return Ok(());
-        #[allow(unreachable_code)]
-        {
-            // The public wrapper owns environment/configuration lookup; this
-            // smoke test ensures the call remains safe after initialization.
-            super::init_logging_with_env_lookup("debug", |key| {
-                assert_eq!(key, "PERL_LSP_LOG_FILE");
-                Ok("fixture.log".to_owned())
-            });
-            super::init_logging("debug");
-        }
         Ok(())
     }
 
@@ -1989,7 +1981,7 @@ mod tests {
             );
             return Ok(());
         }
-        let quiet = std::process::Command::new(std::env::current_exe().expect("test exe"))
+        let quiet = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
                 "runtime::launcher::tests::startup_banner_suppressed_by_quiet_env",
@@ -2012,26 +2004,6 @@ mod tests {
             .output()?;
         assert!(suppressed.status.success());
         assert!(!String::from_utf8_lossy(&suppressed.stderr).contains("wave-a1-banner-token"));
-        return;
-        #[allow(unreachable_code)]
-        {
-            // startup_banner must not panic when PERL_LSP_QUIET is set.
-            // The transport argument must propagate through without crashing.
-            super::startup_banner_with_env_lookup(
-                "0.12.0",
-                super::FeatureProfile::current(),
-                super::TransportMode::Stdio,
-                |key| {
-                    assert_eq!(key, "PERL_LSP_QUIET");
-                    Ok("1".to_owned())
-                },
-            );
-            super::startup_banner(
-                "0.12.0",
-                super::FeatureProfile::current(),
-                super::TransportMode::Stdio,
-            );
-        }
         Ok(())
     }
 
