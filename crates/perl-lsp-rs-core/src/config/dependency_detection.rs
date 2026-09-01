@@ -63,7 +63,7 @@ pub fn detect_dependency_include_paths(workspace_root: &Path) -> Vec<String> {
     let snapshot_locked = workspace_root.join("cpanfile.snapshot").is_file();
     let carton_locked = workspace_root.join("carton.lock").is_file();
     let carmel_dev_state = workspace_root.join(CARMEL_DEV_STATE).is_file();
-    let carmel_rolled_out = workspace_root.join(CARMEL_ROLLOUT_SENTINEL).exists();
+    let carmel_rolled_out = workspace_root.join(CARMEL_ROLLOUT_SENTINEL).is_file();
 
     // A `cpanfile.snapshot` shares Carton's format with no producer field.
     // When `.carmel/MySetup.pm` identifies the producer as Carmel, the
@@ -126,6 +126,15 @@ mod tests {
             detect_dependency_include_paths(workspace.path()),
             vec![LOCAL_INSTALL_INCLUDE_PATH]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rollout_directory_does_not_add_include_path() -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::create_dir_all(workspace.path().join(CARMEL_ROLLOUT_SENTINEL))?;
+        assert!(detect_dependency_include_paths(workspace.path()).is_empty());
         Ok(())
     }
 

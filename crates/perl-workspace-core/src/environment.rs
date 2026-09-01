@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{Digest, fnv1a};
 
 /// Schema version for [`ProjectEnvironmentSnapshot`].
-pub const PROJECT_ENVIRONMENT_SCHEMA_VERSION: u32 = 1;
+pub const PROJECT_ENVIRONMENT_SCHEMA_VERSION: u32 = 2;
 
 const ENVIRONMENT_INPUT_ID_DOMAIN: &str = "project_environment.input.v1";
 const INCLUDE_ENTRY_ID_DOMAIN: &str = "project_environment.include.v1";

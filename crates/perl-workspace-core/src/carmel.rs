@@ -224,7 +224,7 @@ pub fn detect_carmel(workspace_root: &Path) -> CarmelDetection {
     let cpanfile_present = workspace_root.join(CPANFILE_MARKER).is_file();
     let snapshot_present = workspace_root.join(CPANFILE_SNAPSHOT_MARKER).is_file();
     let dev_state_present = workspace_root.join(DEV_STATE_MARKER).is_file();
-    let rollout_sentinel_present = workspace_root.join(ROLLOUT_SENTINEL_MARKER).exists();
+    let rollout_sentinel_present = workspace_root.join(ROLLOUT_SENTINEL_MARKER).is_file();
 
     let is_carmel = dev_state_present || rollout_sentinel_present;
 
@@ -255,7 +255,7 @@ pub fn detect_carmel(workspace_root: &Path) -> CarmelDetection {
                             for (source_order, entry) in inc.iter().enumerate() {
                                 let exists = match classify_artifact_entry(entry, workspace_root) {
                                     ArtifactEntryOrigin::WorkspaceBounded { resolved } => {
-                                        let exists = resolved.exists();
+                                        let exists = resolved.is_dir();
                                         if !exists {
                                             limitations.push(EnvironmentLimitation {
                                                 code: CARMEL_ARTIFACT_MISSING_LIMITATION
@@ -435,6 +435,7 @@ fn read_bounded(path: &Path) -> Option<String> {
         return None;
     }
     let bound = metadata.len().min(DEV_STATE_READ_LIMIT) as usize;
+    let truncated = metadata.len() > bound as u64;
     let mut file = std::fs::File::open(path).ok()?;
     let mut buffer = vec![0u8; bound];
     let mut total = 0;
@@ -445,7 +446,21 @@ fn read_bounded(path: &Path) -> Option<String> {
             Err(_) => return None,
         }
     }
-    String::from_utf8(buffer[..total].to_vec()).ok()
+    buffer.truncate(total);
+    match String::from_utf8(buffer) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            // A bounded read may end in the middle of a valid UTF-8 codepoint.
+            // Preserve the complete valid prefix, but continue rejecting any
+            // malformed sequence occurring before the truncation boundary.
+            let utf8 = error.utf8_error();
+            if truncated && utf8.error_len().is_none() {
+                String::from_utf8(error.into_bytes()[..utf8.valid_up_to()].to_vec()).ok()
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// Parse the embedded environment of a generated `.carmel/MySetup.pm`.
@@ -601,7 +616,12 @@ impl<'a> Scanner<'a> {
                 '\\' => {
                     let escaped = self.peek()?;
                     self.bump();
-                    value.push(escaped);
+                    if escaped == '\'' || escaped == '\\' {
+                        value.push(escaped);
+                    } else {
+                        value.push('\\');
+                        value.push(escaped);
+                    }
                 }
                 _ => value.push(ch),
             }
@@ -836,6 +856,15 @@ our %environment = (
     }
 
     #[test]
+    fn preserves_backslashes_other_than_perl_quote_escapes() {
+        let source =
+            "our %environment = ( 'inc' => [ 'C:\\\\temp\\\\lib\\\\n' ], 'base' => 'C:\\\\work' );";
+        let facts = parse_mysetup_environment(source).expect("anchor found");
+        assert_eq!(facts.inc.as_deref(), Some(["C:\\temp\\lib\\n".to_string()].as_slice()));
+        assert_eq!(facts.base.as_deref(), Some("C:\\work"));
+    }
+
+    #[test]
     fn missing_anchor_is_explicit_none() {
         assert!(parse_mysetup_environment("package Other; 1;").is_none());
     }
@@ -847,6 +876,31 @@ our %environment = (
         let facts = parse_mysetup_environment(source).expect("anchor found");
         assert!(facts.inc.is_none(), "malformed array must not read as empty");
         assert_eq!(facts.base.as_deref(), Some("/x"));
+    }
+
+    #[test]
+    fn bounded_read_keeps_valid_prefix_when_cutting_utf8() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fixture = Fixture::new("utf8-boundary");
+        fixture.dir(".carmel");
+        let mut source = mysetup_with(&["/tmp/carmel/blib/lib".to_string()], "/tmp/project");
+        source.push_str(
+            &" ".repeat((DEV_STATE_READ_LIMIT as usize - 1).saturating_sub(source.len())),
+        );
+        source.push('é');
+        std::fs::write(fixture.root.join(DEV_STATE_MARKER), source.as_bytes())?;
+        let detection = detect_carmel(&fixture.root);
+        assert_eq!(
+            detection.dev_state.as_ref().and_then(|facts| facts.inc.as_ref()).map(Vec::len),
+            Some(1)
+        );
+        assert!(
+            !detection
+                .limitations
+                .iter()
+                .any(|item| item.code == CARMEL_DEV_STATE_UNPARSABLE_LIMITATION)
+        );
+        Ok(())
     }
 
     #[test]
@@ -1043,6 +1097,17 @@ our %environment = (
         assert_eq!(detection.rollout_root, Some(ROLLOUT_INCLUDE_PATH));
         assert!(detection.artifact_roots.is_empty());
         assert_eq!(ROLLOUT_ROOT_AUTHORITY, EnvironmentInputAuthority::WorkspaceConvention);
+    }
+
+    #[test]
+    fn rollout_directory_is_not_a_sentinel() {
+        let fixture = Fixture::new("rollout-directory");
+        fixture.write(CPANFILE_MARKER, "requires 'JSON';\n");
+        fixture.dir(ROLLOUT_SENTINEL_MARKER);
+        let detection = detect_carmel(&fixture.root);
+        assert!(!detection.rollout_sentinel_present);
+        assert!(!detection.is_carmel);
+        assert_eq!(detection.rollout_root, None);
     }
 
     #[test]
