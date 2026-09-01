@@ -1228,6 +1228,28 @@ enum Commands {
         root: Option<PathBuf>,
     },
 
+    /// Materialize a deterministic trusted-base PR integration subject (#14512).
+    CiSubjectMaterialize {
+        #[arg(long)]
+        event_name: Option<String>,
+        #[arg(long)]
+        event_path: Option<PathBuf>,
+        #[arg(long)]
+        repository: Option<String>,
+        #[arg(long)]
+        github_sha: Option<String>,
+        #[arg(long)]
+        base_sha: Option<String>,
+        #[arg(long)]
+        head_sha: Option<String>,
+        #[arg(long)]
+        receipt: PathBuf,
+        #[arg(long)]
+        env_file: Option<PathBuf>,
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
     /// Run the thin exact-head repository contract advisory (issue #3987).
     CiContract {
         /// Base git ref or full SHA for the evaluated range.
@@ -5569,6 +5591,27 @@ fn run_cli(cli: Cli) -> Result<()> {
             base_sha,
             head_sha,
             receipt,
+            root,
+        }),
+        Commands::CiSubjectMaterialize {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            env_file,
+            root,
+        } => tasks::ci_subject_materializer::run(tasks::ci_subject_materializer::Config {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            env_file,
             root,
         }),
         Commands::CiContract { base, head, subject, receipt, summary } => {

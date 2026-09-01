@@ -510,6 +510,10 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
                 "trusted workflow changes require exactly one contract-version increment (base {base_version}, subject {subject_version})"
             );
         }
+        if !subject_matches_base && subject_version == 4 {
+            validate_v4_subject_workflow(&text)?;
+            return Ok(());
+        }
     } else {
         contract_version(&text)?;
     }
@@ -725,6 +729,160 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             bail!(
                 "subject workflow must not execute or import candidate-derived content: {forbidden}"
             );
+        }
+    }
+    Ok(())
+}
+
+fn validate_v4_subject_workflow(text: &str) -> Result<()> {
+    let yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(text).context("parsing preapproved v4 workflow YAML")?;
+    for required in [
+        "pull_request_target:",
+        "merge_group:",
+        "push:",
+        "workflow_dispatch:",
+        "permissions:\n  contents: read",
+        "ref: ${{ env.EVALUATOR_SHA }}",
+        "persist-credentials: false",
+        "actions/upload-artifact@",
+        "if: always()",
+    ] {
+        if !text.contains(required) {
+            bail!("preapproved v4 workflow is missing {required}");
+        }
+    }
+    let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
+    let jobs = yaml
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("jobs")))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("preapproved v4 workflow must define jobs mapping"))?;
+    if jobs.len() != 1 {
+        bail!("preapproved v4 workflow must define only the exact-tree job");
+    }
+    let job = jobs
+        .get(key("exact-tree"))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("preapproved v4 workflow must define exact-tree job"))?;
+    let steps = job
+        .get(key("steps"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .ok_or_else(|| eyre!("preapproved v4 exact-tree job must define steps"))?;
+    if steps.len() != 5 {
+        bail!("preapproved v4 exact-tree job must contain exactly five steps");
+    }
+    let step_run = |step: &serde_yaml_ng::Value| {
+        step.as_mapping()
+            .and_then(|map| map.get(key("run")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .map(str::trim)
+            .map(str::to_owned)
+    };
+    let step_name = |step: &serde_yaml_ng::Value| {
+        step.as_mapping()
+            .and_then(|map| map.get(key("name")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .map(str::to_owned)
+    };
+    let step_id = |step: &serde_yaml_ng::Value| {
+        step.as_mapping()
+            .and_then(|map| map.get(key("id")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .map(str::to_owned)
+    };
+    let checkout = steps.first().ok_or_else(|| eyre!("v4 checkout step is missing"))?;
+    if !checkout
+        .as_mapping()
+        .and_then(|map| map.get(key("uses")))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .is_some_and(|uses| uses.starts_with("actions/checkout@"))
+        || !checkout
+            .as_mapping()
+            .and_then(|map| map.get(key("with")))
+            .and_then(serde_yaml_ng::Value::as_mapping)
+            .and_then(|with| with.get(key("ref")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_some_and(|reference| reference == "${{ env.EVALUATOR_SHA }}")
+    {
+        bail!("v4 must checkout the trusted evaluator SHA first");
+    }
+    let materializer = steps.get(1).ok_or_else(|| eyre!("v4 materializer step is missing"))?;
+    let materializer_run = step_run(materializer);
+    if step_name(materializer).as_deref() != Some("Materialize trusted PR subject")
+        || step_id(materializer).as_deref() != Some("materialize")
+        || materializer_run.as_deref()
+            != Some(
+                "cargo run --locked -p xtask -- ci-subject-materialize --event-name \"$GITHUB_EVENT_NAME\" --event-path \"$GITHUB_EVENT_PATH\" --repository \"$GITHUB_REPOSITORY\" --receipt target/policy/ci-subject-materialization.json --env-file \"$GITHUB_ENV\"",
+            )
+        || !materializer
+            .as_mapping()
+            .and_then(|map| map.get(key("continue-on-error")))
+            .and_then(serde_yaml_ng::Value::as_bool)
+            .is_some_and(|value| value)
+    {
+        bail!("v4 materializer must be the exact trusted invocation");
+    }
+    let evaluator = steps.get(2).ok_or_else(|| eyre!("v4 evaluator step is missing"))?;
+    let expected_evaluator = "cargo run --locked -p xtask -- non-rust exact-tree --base-sha \"$BASE_SHA\" --subject-sha \"$SUBJECT_SHA\" ${PR_HEAD_SHA:+--pr-head-sha \"$PR_HEAD_SHA\"} --event-name \"$GITHUB_EVENT_NAME\" --repository \"$GITHUB_REPOSITORY\" --receipt target/policy/non-rust-policy-exact-tree.json";
+    let evaluator_run = step_run(evaluator);
+    if step_name(evaluator).as_deref() != Some("Run trusted exact-tree evaluator")
+        || evaluator_run.as_deref() != Some(expected_evaluator)
+        || evaluator
+            .as_mapping()
+            .and_then(|map| map.get(key("if")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_none_or(|condition| condition.trim() != "steps.materialize.outcome == 'success'")
+    {
+        bail!("v4 evaluator must be the exact trusted invocation");
+    }
+    let upload = steps.get(3).ok_or_else(|| eyre!("v4 receipt upload step is missing"))?;
+    if !upload
+        .as_mapping()
+        .and_then(|map| map.get(key("uses")))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .is_some_and(|uses| uses.starts_with("actions/upload-artifact@"))
+        || upload
+            .as_mapping()
+            .and_then(|map| map.get(key("if")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_none_or(|condition| !condition.contains("always()"))
+    {
+        bail!("v4 must always upload receipts");
+    }
+    let propagate = steps.get(4).ok_or_else(|| eyre!("v4 propagation step is missing"))?;
+    if step_name(propagate).as_deref() != Some("Propagate subject or policy failure")
+        || step_run(propagate).as_deref() != Some("exit 1")
+        || propagate
+            .as_mapping()
+            .and_then(|map| map.get(key("if")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_none_or(|condition| condition.trim() != "always() && (steps.materialize.outcome == 'failure' || steps.evaluate.outcome == 'failure')")
+    {
+        bail!("v4 must propagate retained materialization or evaluator failure");
+    }
+    for step in steps {
+        if let Some(uses) = step
+            .as_mapping()
+            .and_then(|map| map.get(key("uses")))
+            .and_then(serde_yaml_ng::Value::as_str)
+        {
+            let allowed = uses.starts_with("actions/checkout@")
+                || uses.starts_with("actions/upload-artifact@");
+            if !allowed {
+                bail!("v4 adds an unapproved action: {uses}");
+            }
+            let reference = uses.split_once('@').map(|(_, value)| value.trim()).unwrap_or_default();
+            if reference.len() != 40 || !reference.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                bail!("v4 action must use a full commit SHA: {uses}");
+            }
+        }
+        if let Some(run) = step_run(step)
+            && run != materializer_run.clone().unwrap_or_default()
+            && run != evaluator_run.clone().unwrap_or_default()
+            && run != "exit 1"
+        {
+            bail!("v4 contains an unapproved executable step");
         }
     }
     Ok(())
@@ -3978,6 +4136,45 @@ review_after = "2026-08-13"
         )?;
         let base = commit_fixture(temp.path(), "base")?;
         Ok((temp, base))
+    }
+
+    #[test]
+    fn preapproved_v4_workflow_rejects_extra_executable_steps() -> Result<()> {
+        let workflow = r#"# contract-version: 4
+name: Non-Rust policy
+on:
+  pull_request_target: {}
+  merge_group: {}
+  push: {}
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  exact-tree:
+    steps:
+      - name: Checkout trusted evaluator
+        uses: actions/checkout@0123456789012345678901234567890123456789
+        with:
+          ref: ${{ env.EVALUATOR_SHA }}
+      - name: Materialize trusted PR subject
+        id: materialize
+        continue-on-error: true
+        run: 'cargo run --locked -p xtask -- ci-subject-materialize --event-name "$GITHUB_EVENT_NAME" --event-path "$GITHUB_EVENT_PATH" --repository "$GITHUB_REPOSITORY" --receipt target/policy/ci-subject-materialization.json --env-file "$GITHUB_ENV"'
+      - name: Run trusted exact-tree evaluator
+        id: evaluate
+        if: steps.materialize.outcome == 'success'
+        run: 'cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json'
+      - name: Upload exact-tree receipt
+        if: always()
+        uses: actions/upload-artifact@0123456789012345678901234567890123456789
+      - name: Propagate subject or policy failure
+        if: "always() && (steps.materialize.outcome == 'failure' || steps.evaluate.outcome == 'failure')"
+        run: exit 1
+"#;
+        validate_v4_subject_workflow(workflow)?;
+        let tampered = workflow.replace("run: exit 1", "run: cargo echo unapproved");
+        ensure!(validate_v4_subject_workflow(&tampered).is_err());
+        Ok(())
     }
 
     #[test]

@@ -135,13 +135,13 @@ impl std::error::Error for SubjectResolutionError {}
 type SubjectResult<T> = std::result::Result<T, SubjectResolutionError>;
 
 #[derive(Debug, Clone)]
-struct SubjectInput {
-    repository: String,
-    event_kind: CiEventKind,
-    resolution_source: SubjectResolutionSource,
-    diff_mode: SubjectDiffMode,
-    base_sha: String,
-    head_sha: String,
+pub(crate) struct SubjectInput {
+    pub(crate) repository: String,
+    pub(crate) event_kind: CiEventKind,
+    pub(crate) resolution_source: SubjectResolutionSource,
+    pub(crate) diff_mode: SubjectDiffMode,
+    pub(crate) base_sha: String,
+    pub(crate) head_sha: String,
 }
 
 pub fn run(config: CiSubjectConfig) -> Result<()> {
@@ -200,7 +200,7 @@ pub fn load_and_resolve(path: &Path, root: &Path) -> Result<ResolvedCiSubject> {
     Ok(resolved)
 }
 
-fn input_from_config(config: &CiSubjectConfig) -> SubjectResult<SubjectInput> {
+pub(crate) fn input_from_config(config: &CiSubjectConfig) -> SubjectResult<SubjectInput> {
     let event_name = config
         .event_name
         .clone()
@@ -442,7 +442,7 @@ fn ensure_checkout_head(root: &Path, expected: &str) -> SubjectResult<()> {
     Ok(())
 }
 
-fn validate_sha(value: &str, label: &str) -> SubjectResult<()> {
+pub(crate) fn validate_sha(value: &str, label: &str) -> SubjectResult<()> {
     if value == ZERO_SHA {
         return Err(subject_error(SubjectErrorCode::ZeroSha, format!("{label} SHA is all zero")));
     }
@@ -455,7 +455,7 @@ fn validate_sha(value: &str, label: &str) -> SubjectResult<()> {
     Ok(())
 }
 
-fn ensure_commit(root: &Path, sha: &str) -> SubjectResult<()> {
+pub(crate) fn ensure_commit(root: &Path, sha: &str) -> SubjectResult<()> {
     match object_type(root, sha) {
         Ok(kind) if kind == "commit" => return Ok(()),
         Ok(kind) => {
@@ -567,7 +567,7 @@ fn tree_sha(root: &Path, commit: &str) -> SubjectResult<String> {
     Ok(tree)
 }
 
-fn git_stdout(root: &Path, args: &[&str]) -> SubjectResult<String> {
+pub(crate) fn git_stdout(root: &Path, args: &[&str]) -> SubjectResult<String> {
     let output = Command::new("git").args(args).current_dir(root).output().map_err(|error| {
         subject_error(
             SubjectErrorCode::ObjectUnavailable,
@@ -732,7 +732,10 @@ fn write_failure_receipt(path: &Path, error: &SubjectResolutionError) -> Result<
     fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
 }
 
-fn subject_error(code: SubjectErrorCode, message: impl Into<String>) -> SubjectResolutionError {
+pub(crate) fn subject_error(
+    code: SubjectErrorCode,
+    message: impl Into<String>,
+) -> SubjectResolutionError {
     SubjectResolutionError { code, message: message.into() }
 }
 
