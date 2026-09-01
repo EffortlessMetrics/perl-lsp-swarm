@@ -541,14 +541,40 @@ impl RuntimeServices {
     /// the diagnostics (#14252). Evicting puts the immediate path in charge,
     /// which is the fail-open behavior #14322 established.
     pub(crate) fn schedule_diagnostic_debounce(&self, uri: &str) -> bool {
-        let mut guard = self.diagnostic_debouncer.lock();
-        let Some(debouncer) = guard.as_ref() else {
-            return false;
+        let evicted = {
+            let mut guard = self.diagnostic_debouncer.lock();
+            let Some(debouncer) = guard.as_ref() else {
+                return false;
+            };
+            if debouncer.schedule(uri) {
+                return true;
+            }
+            guard.take()
         };
-        if debouncer.schedule(uri) {
-            return true;
+
+        // The evicted handle is the ONLY witness to this worker's exit, so
+        // classify it here or the class becomes permanently unobservable and
+        // `begin_application_shutdown` reports `TimedOut` for a worker that
+        // actually died -- collapsing two states #10024 requires to stay
+        // distinct. Recorded after the slot guard is released: `install_*`
+        // takes `tasks` and then the slot, so classifying under the slot lock
+        // would invert that order.
+        if let Some(debouncer) = evicted {
+            let terminal = match (debouncer.has_exited(), debouncer.exited_cleanly()) {
+                // The loop unwound instead of returning: the worker died.
+                (true, false) => TaskTerminal::Failed {
+                    reason: "diagnostic debounce worker exited abnormally".to_string(),
+                },
+                // The loop returned normally; its receiver dropped with it.
+                (true, true) => TaskTerminal::Completed,
+                // Receiver gone while the thread lingers: nothing this
+                // debouncer can do will ever publish again.
+                (false, _) => TaskTerminal::InstrumentFailed {
+                    reason: "diagnostic debounce channel closed with no receiver".to_string(),
+                },
+            };
+            let _ = self.record_terminal(ApplicationTaskClass::DiagnosticDebounce, terminal);
         }
-        *guard = None;
         false
     }
 

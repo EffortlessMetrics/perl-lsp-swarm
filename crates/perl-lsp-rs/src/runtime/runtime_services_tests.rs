@@ -443,6 +443,58 @@ mod tests {
     }
 
     #[test]
+    fn evicting_a_dead_diagnostic_debouncer_still_settles_as_failed_not_timed_out() {
+        // Evicting the refused debouncer (the #14322 fail-open path) discards
+        // the ONLY handle carrying its exit state. If eviction does not
+        // classify first, the class becomes unobservable and shutdown reports
+        // `TimedOut` for a worker that actually DIED -- collapsing two states
+        // #10024 requires to stay distinct.
+        let services = RuntimeServices::new();
+        services.install_diagnostic_debouncer(DiagnosticDebouncer::with_interval(
+            Duration::from_millis(1),
+            |uri: &str| {
+                // Genuine unwind; explicit `panic!` is denied even in
+                // cfg(test) code by this crate's clippy configuration.
+                let boom: [u8; 0] = [];
+                let _ = boom[uri.len()];
+            },
+        ));
+
+        // Drive the panic, then wait for the worker thread to actually unwind
+        // so its receiver is gone and the next admission is refused.
+        assert!(services.schedule_diagnostic_debounce("file:///panics.pl"));
+        let refused = (0..500).any(|_| {
+            if services.schedule_diagnostic_debounce("file:///again.pl") {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            } else {
+                true
+            }
+        });
+        assert!(refused, "a panicked worker's channel must eventually refuse admission");
+
+        // The refusal evicted the slot; settlement must still know it died.
+        let outcome = services.begin_application_shutdown(
+            ShutdownReason::ClientShutdownRequest,
+            Instant::now() + Duration::from_secs(5),
+        );
+        assert_eq!(
+            outcome,
+            ApplicationShutdown::Failed,
+            "an evicted dead worker must settle as Failed, never as a timeout"
+        );
+        assert_eq!(
+            services.settlement_snapshot().settled,
+            vec![(
+                ApplicationTaskClass::DiagnosticDebounce,
+                TaskTerminal::Failed {
+                    reason: "diagnostic debounce worker exited abnormally".to_string()
+                }
+            )]
+        );
+    }
+
+    #[test]
     fn a_worker_that_died_settles_as_failed_not_as_an_orderly_stop() {
         // Exit is not the same as orderly exit. A debouncer whose callback
         // panicked has also "exited", and treating that as `Cancelled` would
