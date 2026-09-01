@@ -136,7 +136,7 @@ pub struct CollectionSnapshot {
     pub total_nodes_visited: usize,
     /// Total retained bytes accepted into the snapshot, including node names,
     /// kind labels, and rendered scalar text.
-    pub total_rendered_bytes: usize,
+    pub total_retained_bytes: usize,
     /// The first global truncation observed, if any.
     pub truncation: Option<TruncationReason>,
 }
@@ -202,7 +202,7 @@ pub fn capture_snapshot(root: SourceValue<'_>, budget: SnapshotBudget) -> Collec
     let root_node = build_node(root, 0, &mut cursor);
     CollectionSnapshot {
         total_nodes_visited: cursor.visited,
-        total_rendered_bytes: cursor.rendered_bytes,
+        total_retained_bytes: cursor.rendered_bytes,
         truncation: cursor.truncation,
         root: root_node,
     }
@@ -223,8 +223,8 @@ fn build_node(value: SourceValue<'_>, depth: usize, cursor: &mut BudgetCursor) -
 
     if !charge_bytes(cursor, value.name.len().saturating_add(value.kind_label.len())) {
         return SnapshotNode {
-            name: value.name.to_string(),
-            kind_label: value.kind_label.to_string(),
+            name: String::new(),
+            kind_label: String::new(),
             rendered: None,
             children: Vec::new(),
             outcome: NodeOutcome::Truncated(TruncationReason::TotalByteLimit),
@@ -248,7 +248,7 @@ fn build_node(value: SourceValue<'_>, depth: usize, cursor: &mut BudgetCursor) -
     };
 
     // Container expansion under the depth and per-container limits.
-    if depth >= cursor.budget.max_depth {
+    if depth >= cursor.budget.max_depth && !source_children.is_empty() {
         cursor.record_truncation(TruncationReason::DepthLimit);
         return SnapshotNode {
             name: value.name.to_string(),
@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(snapshot.root.children[0].rendered.as_deref(), Some("1"));
         assert_eq!(snapshot.truncation, None);
         assert_eq!(snapshot.total_nodes_visited, 3);
-        assert_eq!(snapshot.total_rendered_bytes, 28);
+        assert_eq!(snapshot.total_retained_bytes, 28);
     }
 
     #[test]
@@ -503,6 +503,30 @@ mod tests {
 
         assert_eq!(snapshot.root.outcome, NodeOutcome::Complete);
         assert_eq!(snapshot.root.rendered, None);
+    }
+
+    #[test]
+    fn empty_containers_at_depth_limit_remain_complete() {
+        let empty: [SourceValue<'_>; 0] = [];
+        let root = SourceValue::container("@empty", "array", &empty);
+        let budget = SnapshotBudget { max_depth: 0, ..SnapshotBudget::defaults() };
+        let snapshot = capture_snapshot(root, budget);
+
+        assert_eq!(snapshot.root.outcome, NodeOutcome::Complete);
+        assert_eq!(snapshot.truncation, None);
+    }
+
+    #[test]
+    fn rejected_metadata_is_not_retained_or_counted() {
+        let root = SourceValue::scalar("very-long-name", "value");
+        let budget = SnapshotBudget { max_total_bytes: 1, ..SnapshotBudget::defaults() };
+        let snapshot = capture_snapshot(root, budget);
+
+        assert_eq!(snapshot.root.name, "");
+        assert_eq!(snapshot.root.kind_label, "");
+        assert_eq!(snapshot.root.rendered, None);
+        assert_eq!(snapshot.total_retained_bytes, 0);
+        assert_eq!(snapshot.truncation, Some(TruncationReason::TotalByteLimit));
     }
 
     #[test]
