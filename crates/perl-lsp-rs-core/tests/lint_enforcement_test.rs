@@ -69,15 +69,15 @@ fn test_lib_has_cfg_attr_allow_in_test_mode() {
 #[test]
 fn test_startup_banner_has_allow_annotation() {
     let source = read_source(&launcher_mod_path());
-    // The expect annotation must appear before the function definition.
+    // The expect annotation must appear before the helper that emits stderr.
     // rustfmt may expand the attribute to multi-line format; search for the lint name
     // directly since it must appear in both single-line and multi-line forms.
     let allow_line = find_line_number(&source, "clippy::print_stderr");
-    let fn_line = find_line_number(&source, "pub fn startup_banner(");
+    let fn_line = find_line_number(&source, "fn startup_banner_with_quiet(");
 
     assert!(
         allow_line.is_some(),
-        "src/runtime/launcher/mod.rs: startup_banner is missing its \
+        "src/runtime/launcher/mod.rs: startup_banner_with_quiet is missing its \
          #[expect(clippy::print_stderr, reason = ...)] annotation.\n\
          The eprintln! in startup_banner fires before the tracing subscriber is configured \
          and is the one intentional exception in this crate. \
@@ -94,8 +94,8 @@ fn test_startup_banner_has_allow_annotation() {
     if let (Some(allow), Some(func)) = (allow_line, fn_line) {
         assert!(
             allow < func,
-            "The clippy::print_stderr annotation (line {allow}) must appear \
-             before pub fn startup_banner (line {func})."
+        "The clippy::print_stderr annotation (line {allow}) must appear \
+             before startup_banner_with_quiet (line {func})."
         );
     }
 }
