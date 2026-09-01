@@ -132,6 +132,8 @@ mod tests {
     fn prompt_does_not_duplicate_when_blank_rows_follow_the_previous_line() {
         // Blank lines after the closest previous non-empty line must not
         // hide the duplicate: the code row is already in preceding_lines.
+        // "use strict;" exists only in preceding_lines, so its presence is
+        // what makes this test fail on the pre-change implementation.
         let ctx = PreparedInlineCompletionContext {
             prefix: "if ($ready) {".to_string(),
             current_line: "if ($ready) {".to_string(),
@@ -145,6 +147,10 @@ mod tests {
             ..PreparedInlineCompletionContext::default()
         };
         let (_, user) = build_fim_prompt(&ctx);
+        assert!(
+            user.contains("use strict;"),
+            "preceding-only row must reach the prompt, got: {user}"
+        );
         assert_eq!(
             user.matches("my $y = 2;").count(),
             1,

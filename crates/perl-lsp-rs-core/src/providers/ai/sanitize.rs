@@ -75,25 +75,35 @@ fn first_non_empty_line_bounds(raw: &str) -> Option<(usize, usize)> {
 }
 
 /// Byte bounds `(start, end)` of the line beginning at `cursor` plus the
-/// cursor for the following line. The line content excludes its `\r\n` or
-/// `\n` terminator; `next` always advances past it, so scans terminate.
+/// cursor for the following line. Lines terminate at LF, at CRLF (the CR is
+/// excluded from the content), or at a bare CR; `next` always advances past
+/// the terminator, so scans terminate.
 fn line_bounds(raw: &str, cursor: usize) -> Option<((usize, usize), usize)> {
     if cursor >= raw.len() {
         return None;
     }
-    match raw[cursor..].find('\n') {
-        Some(pos) => {
-            let line_end = cursor + pos;
-            let next = line_end + 1;
-            let content_end = if line_end > cursor && raw.as_bytes()[line_end - 1] == b'\r' {
-                line_end - 1
-            } else {
-                line_end
-            };
-            Some(((cursor, content_end), next))
+    let bytes = raw.as_bytes();
+    let mut i = cursor;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                // LF terminator; a immediately preceding CR belongs to this
+                // terminator, not to the line content.
+                let content_end = if i > cursor && bytes[i - 1] == b'\r' { i - 1 } else { i };
+                return Some(((cursor, content_end), i + 1));
+            }
+            b'\r' => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                    // CRLF: one terminator, content excludes the CR.
+                    return Some(((cursor, i), i + 2));
+                }
+                // Bare CR terminator.
+                return Some(((cursor, i), i + 1));
+            }
+            _ => i += 1,
         }
-        None => Some(((cursor, raw.len()), raw.len())),
     }
+    Some(((cursor, raw.len()), raw.len()))
 }
 
 /// Offset just past the line terminator at `line_end`.
@@ -209,14 +219,11 @@ pub fn sanitize_streaming_text(cumulative: &str) -> String {
         }
         // Trailing bare backtick run: it may still grow into the closing
         // marker, and the separator in front of it would be stripped with it.
-        let line_start = sanitized[..end].rfind('\n').map_or(0, |pos| pos + 1);
+        let line_start = sanitized[..end].rfind(['\n', '\r']).map_or(0, |pos| pos + 1);
         if incomplete_fence_marker_candidate(&sanitized[line_start..end]) {
             end = line_start;
-            if end > 0 && bytes[end - 1] == b'\n' {
+            while end > 0 && matches!(bytes[end - 1], b'\n' | b'\r') {
                 end -= 1;
-                if end > 0 && bytes[end - 1] == b'\r' {
-                    end -= 1;
-                }
             }
         }
         return sanitized[..end].to_string();
@@ -244,11 +251,12 @@ fn wrapper_closes(raw: &str) -> bool {
 }
 
 /// True when the first non-empty line of `raw` opens a fence, i.e. the
-/// boundary rule would treat the output as a leading wrapper.
+/// boundary rule would treat the output as a leading wrapper. Centralized on
+/// the same bounds + run-length helpers the boundary strip uses so the
+/// streaming and boundary predicates cannot drift.
 fn first_non_empty_line_opens_fence(raw: &str) -> bool {
-    raw.lines()
-        .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| line.trim_start().starts_with("```"))
+    first_non_empty_line_bounds(raw)
+        .is_some_and(|(start, end)| opening_fence_run_length(&raw[start..end]).is_some())
 }
 
 #[cfg(test)]
@@ -456,6 +464,22 @@ mod tests {
     }
 
     #[test]
+    fn cr_only_fenced_block_is_stripped() {
+        // A CR-only fenced candidate must strip exactly the wrapper and its
+        // separator, never collapse to an empty completion.
+        assert_eq!(sanitize_completion_text("```perl\rmy $x = 1;\r```"), "my $x = 1;");
+        assert_eq!(sanitize_completion_text("```perl\rmy $x = 1;"), "my $x = 1;");
+        assert_eq!(sanitize_completion_text("```\r\r```"), "");
+    }
+
+    #[test]
+    fn streaming_cr_only_fenced_candidate_never_retracts() {
+        let raw = "```perl\rmy $x = 1;\r```";
+        let emissions = assert_stream_monotone(raw);
+        assert_eq!(emissions.last(), Some(&"my $x = 1;".to_string()));
+    }
+
+    #[test]
     fn closing_fence_with_info_string_is_not_a_closer() {
         // A marker carrying fence info text is content, never a closing
         // marker, so the wrapper stays open (unterminated at this cut).
@@ -469,7 +493,7 @@ mod tests {
         // the line-ending x blank-prefix x wrapper x content x tail matrix,
         // not only the hand-picked cases above. A regression here either
         // hangs (scan that cannot advance) or trips the retraction assert.
-        let line_endings = ["\n", "\r\n"];
+        let line_endings = ["\n", "\r\n", "\r"];
         let blank_prefixes = ["", "\n", "  \n", "\r\n"];
         let wrappers = ["```perl\n", "````\n"];
         let bodies = ["my $x = 1;", "a;\n\nb;\n", "print <<'E';\n```\nE;"];
