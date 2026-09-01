@@ -8,7 +8,7 @@
 
 mod cpan_test_helpers;
 
-use cpan_test_helpers::{assert_clean_parse, assert_has_error, parse};
+use cpan_test_helpers::{assert_clean_parse, assert_has_blocking_error, parse};
 use perl_parser_core::{Node, NodeKind};
 use perl_tdd_support::must_some;
 
@@ -105,8 +105,8 @@ fn unparenthesized_chained_range_is_not_a_clean_parse() {
     // Perl 5.40.1: `1 .. 2 .. 3;` is a syntax error near `2 ..`. The chained
     // form must surface a blocking diagnostic and/or Error/Missing node — it
     // must not silently publish the pre-#13903 clean left-folded AST.
-    assert_has_error("my $x = $a .. $b .. $c;", "range");
-    assert_has_error("1 .. 2 .. 3;", "range");
+    assert_has_blocking_error("my $x = $a .. $b .. $c;", "range");
+    assert_has_blocking_error("1 .. 2 .. 3;", "range");
 }
 
 #[test]
@@ -139,5 +139,5 @@ fn range_remains_inside_ternary_condition() {
 fn chained_range_after_symbolic_operator_is_still_rejected() {
     // The second `..` must not sneak back in through a symbolic-operator
     // operand at the same precedence level.
-    assert_has_error("$a || $b .. $c .. $d;", "range");
+    assert_has_blocking_error("$a || $b .. $c .. $d;", "range");
 }
