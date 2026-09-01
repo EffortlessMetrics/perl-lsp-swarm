@@ -578,13 +578,27 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         if name == Some("Verify trusted workflow contract") {
             continue;
         }
+        // Candidate-controlled refs can be smuggled through `env`/`with` and
+        // expanded by an otherwise innocuous `run` command. Inspect those
+        // executable inputs as well as the command body.
+        for key_name in ["env", "with"] {
+            if map
+                .get(key(key_name))
+                .is_some_and(|value| serde_yaml_ng::to_string(value).is_ok_and(|text| {
+                    forbidden.iter().any(|token| text.contains(token))
+                }))
+            {
+                bail!("subject workflow must not execute candidate source");
+            }
+        }
         let Some(run) = map.get(key("run")).and_then(serde_yaml_ng::Value::as_str) else {
             continue;
         };
         let lines = run.lines().collect::<Vec<_>>();
         for (index, line) in lines.iter().enumerate() {
             let normalized = line.trim();
-            if !normalized.starts_with("cargo run ") {
+            let mut words = normalized.split_whitespace();
+            if words.next() != Some("cargo") || words.next() != Some("run") {
                 continue;
             }
             let mut command = normalized.to_string();
@@ -4187,6 +4201,40 @@ review_after = "2026-08-13"
             error.to_string().contains("must not execute candidate source"),
             "unexpected error: {error}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_rejects_candidate_refs_in_step_inputs_and_whitespace_variants()
+        -> Result<()>
+    {
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let version_marker = "# contract-version: ";
+        for injected in [
+            "\n      - name: candidate ref input\n        env:\n          REF: refs/pull/${{ github.event.pull_request.number }}/head\n        run: echo \"$REF\"\n",
+            "\n      - name: candidate ref command\n        run: cargo  run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}\n",
+        ] {
+            let (temp, base) = exact_fixture()?;
+            let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+            let version = workflow
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(version_marker))
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .expect("fixture workflow must carry a contract-version");
+            let workflow = workflow.replacen(
+                &format!("{version_marker}{version}"),
+                &format!("{version_marker}{}", version + 1),
+                1,
+            );
+            write_fixture(temp.path(), workflow_path, &(workflow + injected))?;
+            let subject = commit_fixture(temp.path(), "candidate ref bypass")?;
+            let error = validate_subject_workflow(temp.path(), &base, &subject)
+                .expect_err("candidate-controlled ref must fail closed");
+            assert!(
+                error.to_string().contains("must not execute candidate source"),
+                "unexpected error: {error}"
+            );
+        }
         Ok(())
     }
 
