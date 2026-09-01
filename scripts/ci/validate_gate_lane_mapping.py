@@ -88,6 +88,10 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_lsp_core_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_full": {"lanes": ["merge_gate_shards"]},
     "unit_dap_support_full": {"lanes": ["merge_gate_shards"]},
+    # The must-context guard runs in the required merge-gate shard. Keep this
+    # explicit so gate-policy additions cannot silently leave the
+    # policy/economics mapping incomplete.
+    "must_context_check": {"lanes": ["merge_gate_shards"]},
     "compile_all_targets": {"lanes": ["check_all_targets"]},
     "lsp_smoke": {"lanes": ["ux_tests"]},
 
