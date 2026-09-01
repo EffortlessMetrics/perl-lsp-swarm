@@ -1074,13 +1074,76 @@ mod mock_streaming_completion_tests {
                 .is_some_and(|is_final| is_final),
             "error path should emit a final progress frame"
         );
-        assert_eq!(
-            final_progress["params"]["value"]["items"][0]["insertText"], "1",
-            "error path should preserve final cumulative text"
+        // A typed provider failure means the failed provider text is never
+        // published as the final candidate: with fallback configured the
+        // deterministic route owns the final content, so the failed partial
+        // text ("1") must not survive into the final frame. The deterministic
+        // route legitimately yields an empty list for this prefix in the
+        // harness, so absence of "1" is the discriminating assertion here;
+        // the sibling no-fallback test pins the empty-final outcome
+        // positively.
+        let final_items = final_progress["params"]["value"]["items"]
+            .as_array()
+            .expect("final progress frame should carry items");
+        assert!(
+            final_items.iter().all(|item| item["insertText"] != "1"),
+            "failed provider text must not be finalized, got: {final_items:?}"
         );
         assert!(
             final_progress["params"]["value"]["sequence"].as_u64().is_some(),
             "final progress frame should carry sequence"
+        );
+    }
+
+    #[test]
+    fn streaming_completion_provider_failure_without_fallback_ends_empty() {
+        // Without a configured fallback, a provider failure after partial
+        // text ends the stream with an empty final: the failed text is
+        // never published, but the terminal isFinal notification still
+        // reaches the client.
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, false);
+        server.test_install_ai_backend(Some(Arc::new(MockErrorChunkBackend)));
+
+        let uri = "file:///streaming-provider-failure-no-fallback.pl";
+        open_doc(&server, uri, "my $value = ");
+
+        let result = request_streaming_completion(&server, uri, 12, "stream-fail-no-fb");
+        assert!(result.is_null());
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let progress = loop {
+            let progress = wait_for_progress_messages(
+                &capture,
+                "stream-fail-no-fb",
+                Duration::from_millis(50),
+            );
+            let has_final = progress.iter().any(|frame| {
+                frame
+                    .pointer("/params/value/isFinal")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|is_final| is_final)
+            });
+            if has_final || Instant::now() >= deadline {
+                break progress;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let final_progress =
+            progress.last().expect("error path should emit at least one progress frame");
+        assert!(
+            final_progress
+                .pointer("/params/value/isFinal")
+                .and_then(Value::as_bool)
+                .is_some_and(|is_final| is_final),
+            "provider failure must still emit a terminal isFinal frame"
+        );
+        let final_items = final_progress["params"]["value"]["items"]
+            .as_array()
+            .expect("final progress frame should carry items");
+        assert!(
+            final_items.is_empty(),
+            "failed provider text must not be finalized without fallback, got: {final_items:?}"
         );
     }
 
