@@ -409,6 +409,30 @@ fn split_lines_for_range_validation(source: &str) -> Vec<&str> {
     result
 }
 
+#[cfg(test)]
+mod line_geometry_tests {
+    use super::split_lines_for_range_validation;
+
+    #[test]
+    fn split_lines_strips_terminators_and_keeps_trailing_empty() -> Result<(), String> {
+        let cases = [
+            ("", vec![""]),
+            ("a\nb", vec!["a", "b"]),
+            ("a\rb", vec!["a", "b"]),
+            ("a\r\nb", vec!["a", "b"]),
+            ("a\nb\n", vec!["a", "b", ""]),
+            ("a\r\nb\r\n", vec!["a", "b", ""]),
+        ];
+        for (source, expected) in cases {
+            let actual = split_lines_for_range_validation(source);
+            if actual != expected {
+                return Err(format!("unexpected line geometry for {source:?}: {actual:?}"));
+            }
+        }
+        Ok(())
+    }
+}
+
 fn utf16_len(source: &str) -> u32 {
     source.encode_utf16().count() as u32
 }
