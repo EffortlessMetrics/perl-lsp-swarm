@@ -261,11 +261,13 @@ fn test_set_array_element_returns_success_with_new_value() -> TestResult {
 // ── Test 3: invalid name rejected with success=false ─────────────────────────
 
 /// Sending `setVariable` with a name that lacks a Perl sigil must return
-/// `success=false` with a descriptive error message (not a crash or empty
-/// message).  This exercises the `is_valid_set_variable_name` guard path in
-/// `handle_set_variable`.
+/// `success=false` with the #8354 capability refusal. Since #8354 the
+/// fail-closed gate fires before the `is_valid_set_variable_name` guard in
+/// `handle_set_variable`, so the discriminating content here is that a
+/// sigil-less name is refused by the capability floor — it can never reach
+/// the name guard, and must not be answered by any deeper machinery.
 ///
-/// This test does NOT need a live session — the guard fires before any
+/// This test does NOT need a live session — the gate fires before any
 /// debugger interaction.
 #[test]
 fn test_set_variable_invalid_name_rejected_no_session() -> TestResult {
@@ -292,13 +294,13 @@ fn test_set_variable_invalid_name_rejected_no_session() -> TestResult {
             assert!(!success, "setVariable with invalid name 'no_sigil' must return success=false");
             let msg = message.ok_or("error response must include a non-empty message")?;
             assert!(!msg.is_empty(), "error message for invalid name must be non-empty");
-            // The message should hint at the validation failure.
+            // The refusal must be the #8354 capability floor specifically. A
+            // generic "mentions variable anywhere" check is vacuous: the
+            // capability message itself contains "setVariable".
             assert!(
-                msg.to_lowercase().contains("invalid")
-                    || msg.to_lowercase().contains("sigil")
-                    || msg.to_lowercase().contains("variable")
-                    || msg.to_lowercase().contains("name"),
-                "error message for invalid name should mention the name problem, got: {msg:?}"
+                msg.contains("supportsSetVariable"),
+                "invalid-name request must be refused by the #8354 capability floor, \
+                 not by a deeper guard or a session error, got: {msg:?}"
             );
         }
         other => return Err(format!("expected Response for setVariable, got: {other:?}").into()),
@@ -309,10 +311,13 @@ fn test_set_variable_invalid_name_rejected_no_session() -> TestResult {
 // ── Test 4: unsafe value rejected with success=false ─────────────────────────
 
 /// Sending `setVariable` with a value that contains a statement separator (`;`)
-/// must return `success=false` with a descriptive error.  This exercises the
-/// `contains_unquoted_statement_separator` guard path.
+/// must return `success=false` with the #8354 capability refusal. Since #8354
+/// the fail-closed gate fires before the
+/// `contains_unquoted_statement_separator` guard, so the discriminating
+/// content here is that an injection-shaped value is refused by the capability
+/// floor — it can never reach the separator guard or the broker.
 ///
-/// Does not need a live session — the guard fires before debugger interaction.
+/// Does not need a live session — the gate fires before debugger interaction.
 #[test]
 fn test_set_variable_statement_separator_in_value_rejected() -> TestResult {
     use perl_dap::debug_adapter::DebugAdapter;
@@ -340,6 +345,14 @@ fn test_set_variable_statement_separator_in_value_rejected() -> TestResult {
             );
             let msg = message.ok_or("error response must include a non-empty message")?;
             assert!(!msg.is_empty(), "error message for unsafe value must be non-empty");
+            // The refusal must be the #8354 capability floor specifically:
+            // the gate fires before the separator guard, so a deeper-path
+            // message here would mean the gate was bypassed.
+            assert!(
+                msg.contains("supportsSetVariable"),
+                "statement-separator value must be refused by the #8354 capability floor, \
+                 got: {msg:?}"
+            );
         }
         other => return Err(format!("expected Response for setVariable, got: {other:?}").into()),
     }
@@ -348,8 +361,11 @@ fn test_set_variable_statement_separator_in_value_rejected() -> TestResult {
 
 // ── Test 5: missing variables_reference rejected with success=false ───────────
 
-/// `setVariable` with `variablesReference <= 0` must return `success=false`.
-/// This exercises the argument-guard path before any session lookup.
+/// `setVariable` with `variablesReference <= 0` must return `success=false`
+/// with the #8354 capability refusal. Since #8354 the fail-closed gate fires
+/// before the argument-guard and session-lookup paths, so the discriminating
+/// content here is that a degenerate reference is refused by the capability
+/// floor — identically to any other request shape.
 #[test]
 fn test_set_variable_zero_variables_reference_rejected() -> TestResult {
     use perl_dap::debug_adapter::DebugAdapter;
@@ -371,8 +387,15 @@ fn test_set_variable_zero_variables_reference_rejected() -> TestResult {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "setVariable");
             assert!(!success, "setVariable with variablesReference=0 must return success=false");
-            let msg = message.ok_or("error response must include a non-empty message")?;
+            let msg = message.ok_or("error response must be non-empty")?;
             assert!(!msg.is_empty(), "error message must be non-empty");
+            // The refusal must be the #8354 capability floor specifically:
+            // the gate fires before the reference guard, so a deeper-path
+            // message here would mean the gate was bypassed.
+            assert!(
+                msg.contains("supportsSetVariable"),
+                "variablesReference=0 must be refused by the #8354 capability floor, got: {msg:?}"
+            );
         }
         other => return Err(format!("expected Response for setVariable, got: {other:?}").into()),
     }
@@ -495,8 +518,15 @@ fn test_set_variable_newline_in_name_rejected() -> TestResult {
                 !success,
                 "setVariable with newline in name must return success=false (injection guard)"
             );
-            let msg = message.ok_or("error response must include a non-empty message")?;
+            let msg = message.ok_or("error response must be non-empty")?;
             assert!(!msg.is_empty(), "error message must be non-empty");
+            // The refusal must be the #8354 capability floor specifically:
+            // the gate fires before the newline guard, so a deeper-path
+            // message here would mean the gate was bypassed.
+            assert!(
+                msg.contains("supportsSetVariable"),
+                "newline-in-name must be refused by the #8354 capability floor, got: {msg:?}"
+            );
         }
         other => return Err(format!("expected Response for setVariable, got: {other:?}").into()),
     }
