@@ -932,6 +932,11 @@ do
     local second = make_server("refssecond", merge_caps(SYNC, { referencesProvider = {} }))
     register(lsp, "hoverfirst", first)
     register(lsp, "refssecond", second)
+    -- Pin the active-server order so the regression is discriminating: the
+    -- pre-fix unconditional break must encounter the hover-only server first.
+    lsp.get_active_servers = function()
+      return { "hoverfirst", "refssecond" }
+    end
     doc = make_doc("C:/proj/r5.pl", { "r\n" }, 1, 2)
     lsp.open_document(doc)
     drain(first, "textDocument/didOpen")
