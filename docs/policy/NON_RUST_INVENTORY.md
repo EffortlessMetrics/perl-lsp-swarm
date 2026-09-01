@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12573 |
-| Rust-family files | 3906 |
-| Non-Rust files | 8667 |
-| Allowlisted | 6428 |
+| Total tracked files | 12581 |
+| Rust-family files | 3907 |
+| Non-Rust files | 8674 |
+| Allowlisted | 6435 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,9 +17,9 @@
 | Category | Count |
 |---|---|
 | config | 499 |
-| documentation | 2833 |
+| documentation | 2835 |
 | generated | 2 |
-| production | 349 |
+| production | 354 |
 | test | 2069 |
 | tooling | 676 |
 | unclassified | 2239 |
@@ -2358,6 +2358,7 @@
 | `.changes/unreleased/product-14076-Fixed-024700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14281-Fixed-014013.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14362-Added-000001.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2525,6 +2526,7 @@
 | `.changes/unreleased/vscode-11780-Changed-233600.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-11909-Performance-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-12808-Security-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/vscode-14447-Fixed-193000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-3904-Changed-232653.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-4712-Fixed-002852.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-4732-Fixed-091746.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -8436,6 +8438,8 @@
 | `vscode-extension/src/commandResults.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationMigrationRegistry.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationMigrationRuntime.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/configurationOwnership.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/configurationPull.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/crashRecoveryArbiter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/criticCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/debugAdapter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8519,6 +8523,9 @@
 | `vscode-extension/src/test/configuration.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/configurationMigrationRegistry.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/configurationMigrationRuntime.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/configurationOwnership.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/configurationPull.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/configurationTransportWiring.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/crashRecoveryArbiter.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/crashRecoveryGeneration.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/criticCommandGroup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
