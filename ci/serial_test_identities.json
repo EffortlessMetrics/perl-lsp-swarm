@@ -15,7 +15,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -23,7 +23,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -31,7 +31,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -39,7 +39,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -47,7 +47,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -55,7 +55,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -63,7 +63,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -71,7 +71,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -79,7 +79,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -87,7 +87,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -95,7 +95,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -103,7 +103,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -111,7 +111,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
@@ -119,7 +119,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/platform.rs",
@@ -127,7 +127,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/platform.rs",
@@ -135,7 +135,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
@@ -143,7 +143,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
@@ -151,7 +151,7 @@
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
       "state": "retired",
-      "remediation": "serialized"
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs/src/execute_command/tests.rs",
