@@ -913,7 +913,7 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
             .as_mapping()
             .and_then(|map| map.get(key("if")))
             .and_then(serde_yaml_ng::Value::as_str)
-            .is_none_or(|condition| !condition.contains("always()"))
+            .is_none_or(|condition| condition.trim() != "always()")
     {
         bail!("v4 must always upload receipts");
     }
@@ -4290,6 +4290,13 @@ jobs:
                 workflow.replace(
                     "        run: exit 1\n",
                     "        continue-on-error: ${{ true }}\n        run: exit 1\n",
+                ),
+            ),
+            (
+                "disabled receipt upload",
+                workflow.replace(
+                    "        if: always()\n        uses: actions/upload-artifact@",
+                    "        if: always() && false\n        uses: actions/upload-artifact@",
                 ),
             ),
         ] {
