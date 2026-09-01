@@ -113,16 +113,10 @@ impl LineIndex {
         // one-past-content position), but the first byte of the *next* line
         // must not resolve through this line (#9837).  This mirrors the
         // boundary rule of `position_to_byte` and `position_to_byte_checked`.
-        let line_end = self.line_starts.get(line + 1).map_or(self.text_len, |next_start| {
-            let line_end = next_start.saturating_sub(1);
-            if line_end > line_start
-                && text.as_bytes().get(line_end.saturating_sub(1)..*next_start) == Some(b"\r\n")
-            {
-                line_end.saturating_sub(1)
-            } else {
-                line_end
-            }
-        });
+        let line_end = self
+            .line_starts
+            .get(line + 1)
+            .map_or(self.text_len, |next_start| next_start.saturating_sub(1));
         let line_text = text.get(line_start..line_end)?;
 
         // Walk the line, accumulating UTF-16 units until we reach `column`.
