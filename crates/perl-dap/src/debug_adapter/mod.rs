@@ -132,13 +132,15 @@ pub struct DebugAdapter {
     /// Attached process ID for PID-based attach mode.
     ///
     /// #8109: production can no longer store a PID — `handle_attach` refuses
-    /// every `processId` request before mutation, so this is unreachable from
-    /// any live attach path. It is retained only behind the
+    /// every `processId` request before mutation and `launch` never writes
+    /// this field, so no live attach path can set it. The field is dead in
+    /// production but still read: `handle_threads` fabricates a synthetic
+    /// "Attached Process" entry from it and `handle_configuration_done`
+    /// checks its presence, so those readers are reachable only through the
     /// `seed_attached_pid_for_test` boundary (`cfg(any(test,
-    /// feature = "test-helpers"))`) so the synthetic PID fallback branches in
-    /// stack/evaluate rendering stay exercised by invalid-negative tests.
-    /// Removing the field together with those fallback branches is owned by
-    /// the #8109 follow-up once #6684 defines the real attach journey.
+    /// feature = "test-helpers"))`). Deleting the field together with those
+    /// synthetic readers is owned by the #8109 follow-up once #6684 defines
+    /// the real attach journey.
     attached_pid: Arc<Mutex<Option<u32>>>,
     /// TCP attach session (for connecting to running debugger)
     tcp_session: Arc<Mutex<Option<TcpAttachSession>>>,
@@ -1407,9 +1409,9 @@ print "result: $final\n";
             _ => return Err("Expected response".into()),
         }
 
-        // Give any (forbidden) event emission a moment to land, then require
-        // the channel to still be empty.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // handle_request is synchronous, so any (forbidden) event emission
+        // would already be queued in the channel by the time it returns;
+        // require the channel to be empty without sleeping.
         match rx.try_recv() {
             Ok(event) => {
                 return Err(format!("refused processId attach emitted an event: {event:?}").into());

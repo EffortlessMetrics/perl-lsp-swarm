@@ -682,7 +682,7 @@ fn test_refused_pid_attach_leaves_no_session_to_leak() -> TestResult {
             assert_eq!(*command, "attach");
             assert!(!success, "PID attach must be refused (#8109)");
             assert!(body.is_none(), "refusal must not carry an attach body");
-            let msg = message.clone().ok_or("Expected refusal message")?;
+            let msg = message.as_deref().ok_or("Expected refusal message")?;
             assert!(msg.contains("not supported"), "refusal must name the disposition: {msg}");
         }
         other => return Err(format!("Expected attach response, got {other:?}").into()),

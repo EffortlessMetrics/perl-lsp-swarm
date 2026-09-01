@@ -1774,8 +1774,8 @@ impl DebugAdapter {
                 command: "attach".to_string(),
                 body: None,
                 message: Some(
-                    "Missing attach arguments. Provide either 'processId' for process attachment \
-                     or 'host' and 'port' for TCP attachment."
+                    "Missing attach arguments. Provide 'host' and 'port' for TCP attachment; \
+                     attach by processId is not supported (#8109)."
                         .to_string(),
                 ),
             }
