@@ -1,5 +1,15 @@
 [
   {
+    "name": "reject_schema_loose_semver_leading_zero",
+    "updates": {"release": "01.0.0"},
+    "error": "semantic version"
+  },
+  {
+    "name": "reject_schema_loose_semver_empty_prerelease",
+    "updates": {"release": "1.0.0-.."},
+    "error": "semantic version"
+  },
+  {
     "name": "valid_bounded_limitation",
     "updates": {
       "status": "bounded_limitation",
@@ -234,6 +244,11 @@
     "error": "landed integration candidate head contradicts implementation contribution"
   },
   {
+    "name": "reject_mismatched_integration_receipt_subject",
+    "updates": {"landed_integrations.0.evidence.ref": "repo:receipts/example-integration.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "error": "landed integration receipt SHA does not match landed_sha"
+  },
+  {
     "name": "reject_merge_without_candidate_to_landed_ancestry",
     "ancestor_result": false,
     "updates": {"landed_integrations.0.kind": "merge"},
@@ -243,7 +258,12 @@
     "name": "reject_squash_that_relabels_landed_sha_as_candidate",
     "updates": {
       "implementation_contributions.0.candidate_head_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
-      "landed_integrations.0.candidate_head_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4"
+      "implementation_contributions.0.merged_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+      "merged_shas": ["0d70248e3ec1ef90c6059f864b9a26fecad07db4"],
+      "landed_integrations.0.candidate_head_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+      "landed_integrations.0.landed_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+      "landed_integrations.0.evidence.ref": "repo:receipts/example-integration.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+      "reviews.0.reviewed_head": "0d70248e3ec1ef90c6059f864b9a26fecad07db4"
     },
     "error": "squash integration must distinguish candidate head from landed SHA"
   },
@@ -285,6 +305,11 @@
   {
     "name": "reject_private_worktree_reference",
     "updates": {"reviews.0.current_head_synthesis.ref": "repo:C:/Users/agent/.codex/worktrees/private/review.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4"},
+    "error": "private or worktree path"
+  },
+  {
+    "name": "reject_repo_prefixed_absolute_private_path",
+    "updates": {"reviews.0.current_head_synthesis.ref": "repo:/home/agent/private/review.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4"},
     "error": "private or worktree path"
   }
 ]

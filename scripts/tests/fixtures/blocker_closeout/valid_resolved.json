@@ -16,14 +16,14 @@
     }
   },
   "status": "resolved",
-  "observed_main_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+  "observed_main_sha": "638a0ea89b0415c02500787c8e5807cfe7fa4cff",
   "implementation_prs": [90002],
-  "merged_shas": ["0d70248e3ec1ef90c6059f864b9a26fecad07db4"],
+  "merged_shas": ["638a0ea89b0415c02500787c8e5807cfe7fa4cff"],
   "implementation_contributions": [
     {
       "implementation_pr": 90002,
       "candidate_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "merged_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+      "merged_sha": "638a0ea89b0415c02500787c8e5807cfe7fa4cff",
       "claim_ids": ["example.installed", "example.product"],
       "relation": "implements",
       "evidence": {
@@ -37,11 +37,11 @@
     {
       "implementation_pr": 90002,
       "candidate_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "landed_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+      "landed_sha": "638a0ea89b0415c02500787c8e5807cfe7fa4cff",
       "kind": "squash",
       "evidence": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/example-integration.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+        "ref": "repo:receipts/example-integration.json@638a0ea89b0415c02500787c8e5807cfe7fa4cff",
         "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
       }
     }
@@ -69,20 +69,20 @@
       {
         "id": "installed.behavior",
         "claim_ids": ["example.installed"],
-        "subject_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+        "subject_sha": "638a0ea89b0415c02500787c8e5807cfe7fa4cff",
         "status": "passed",
         "proof_class": "installed_acceptance",
         "claim_scope": "installed_user_behavior",
         "evidence": {
           "kind": "repository_receipt",
-          "ref": "repo:receipts/example-installed.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+          "ref": "repo:receipts/example-installed.json@638a0ea89b0415c02500787c8e5807cfe7fa4cff",
           "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
         }
       },
       {
         "id": "product.behavior",
         "claim_ids": ["example.product"],
-        "subject_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+        "subject_sha": "638a0ea89b0415c02500787c8e5807cfe7fa4cff",
         "status": "passed",
         "proof_class": "product_test",
         "claim_scope": "product_behavior",

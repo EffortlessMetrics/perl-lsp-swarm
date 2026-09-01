@@ -109,11 +109,61 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
     def test_schema_metadata_and_closed_terminal_vocabulary_match_the_model(self) -> None:
         self.assertEqual(self.schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
         self.assertEqual(self.schema["title"], MODULE.SCHEMA_VERSION)
+        self.assertEqual(self.schema["properties"]["release"]["pattern"], MODULE.SEMVER.pattern)
         self.assertEqual(
             set(self.schema["properties"]["status"]["enum"]),
             MODULE.TERMINAL_STATUSES,
         )
         MODULE.validate_blocker_closeout(self.base, lambda _ancestor, _subject: True)
+
+    def test_schema_and_validator_closed_vocabularies_stay_in_sync(self) -> None:
+        defs = self.schema["$defs"]
+        self.assertEqual(
+            set(defs["durable_evidence"]["properties"]["kind"]["enum"]),
+            MODULE.EVIDENCE_KINDS,
+        )
+        self.assertEqual(
+            set(defs["controller_claim"]["properties"]["proof_class"]["enum"]),
+            MODULE.PROOF_CLASSES,
+        )
+        self.assertEqual(
+            set(defs["controller_claim"]["properties"]["claim_scope"]["enum"]),
+            MODULE.CLAIM_SCOPES,
+        )
+        self.assertEqual(
+            set(defs["proof_observation"]["properties"]["status"]["enum"]),
+            MODULE.PROOF_STATUSES,
+        )
+        self.assertEqual(
+            set(defs["proof_observation"]["properties"]["proof_class"]["enum"]),
+            MODULE.PROOF_CLASSES,
+        )
+        self.assertEqual(
+            set(defs["proof_observation"]["properties"]["claim_scope"]["enum"]),
+            MODULE.CLAIM_SCOPES,
+        )
+
+        schema_matrix: dict[tuple[str, str], set[str]] = {}
+        for rule in defs["proof_observation"]["allOf"]:
+            condition = rule["if"]["properties"]["proof_class"]
+            proof_classes = {condition["const"]} if "const" in condition else set(condition["enum"])
+            claim_scope = rule["then"]["properties"]["claim_scope"]["const"]
+            evidence_kind = rule["then"]["properties"]["evidence"]["properties"]["kind"]
+            evidence_kinds = {evidence_kind["const"]} if "const" in evidence_kind else set(evidence_kind["enum"])
+            for proof_class in proof_classes:
+                schema_matrix[(proof_class, claim_scope)] = evidence_kinds
+        self.assertEqual(schema_matrix, MODULE.PROOF_AUTHORITY_MATRIX)
+
+    def test_schema_semver_pattern_matches_validator_at_edge_boundaries(self) -> None:
+        pattern = re.compile(self.schema["properties"]["release"]["pattern"])
+        for release in ("0.0.0", "1.2.3", "1.2.3-0alpha", "1.2.3-rc.1"):
+            with self.subTest(release=release):
+                self.assertIsNotNone(pattern.fullmatch(release))
+                self.assertIsNotNone(MODULE.SEMVER.fullmatch(release))
+        for release in ("01.2.3", "1.2.3-..", "1.2.3-rc.."):
+            with self.subTest(release=release):
+                self.assertIsNone(pattern.fullmatch(release))
+                self.assertIsNone(MODULE.SEMVER.fullmatch(release))
 
     def test_valid_terminal_states_are_first_class(self) -> None:
         valid_cases = [case for case in self.cases if case["name"].startswith("valid_")]

@@ -26,7 +26,7 @@
   ],
   "properties": {
     "schema_version": {"const": "blocker_closeout.v1"},
-    "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
+    "release": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$"},
     "blocker_id": {"type": "string", "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"},
     "controller_issue": {"type": "integer", "minimum": 1},
     "semantic_controller": {"$ref": "#/$defs/semantic_controller"},
@@ -87,11 +87,11 @@
         "digest": {"$ref": "#/$defs/digest"}
       },
       "allOf": [
-        {"if": {"properties": {"kind": {"const": "github_issue"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+$"}}}},
-        {"if": {"properties": {"kind": {"const": "github_issue_comment"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+#issuecomment-[0-9]+$"}}}},
-        {"if": {"properties": {"kind": {"const": "github_pull"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[0-9]+$"}}}},
-        {"if": {"properties": {"kind": {"const": "github_review"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[0-9]+#pullrequestreview-[0-9]+$"}}}},
-        {"if": {"properties": {"kind": {"const": "github_check"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/[0-9]+/job/[0-9]+$"}}}},
+        {"if": {"properties": {"kind": {"const": "github_issue"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[1-9][0-9]*$"}}}},
+        {"if": {"properties": {"kind": {"const": "github_issue_comment"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[1-9][0-9]*#issuecomment-[1-9][0-9]*$"}}}},
+        {"if": {"properties": {"kind": {"const": "github_pull"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[1-9][0-9]*$"}}}},
+        {"if": {"properties": {"kind": {"const": "github_review"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[1-9][0-9]*#pullrequestreview-[1-9][0-9]*$"}}}},
+        {"if": {"properties": {"kind": {"const": "github_check"}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/[1-9][0-9]*/job/[1-9][0-9]*$"}}}},
         {"if": {"properties": {"kind": {"enum": ["repository_blob", "repository_receipt"]}}, "required": ["kind"]}, "then": {"properties": {"ref": {"pattern": "^repo:[^@\\s]+@[0-9a-f]{40}$"}}}}
       ]
     },

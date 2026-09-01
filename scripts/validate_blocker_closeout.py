@@ -22,7 +22,7 @@ SCHEMA_VERSION = "blocker_closeout.v1"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 IDENTIFIER = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
-SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9A-Za-z][0-9A-Za-z-]*)(?:\.(?:0|[1-9A-Za-z][0-9A-Za-z-]*))*)?$")
+SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$")
 TERMINAL_STATUSES = {"resolved", "bounded_limitation", "blocked", "not_proven"}
 PROOF_STATUSES = {
     "passed",
@@ -65,14 +65,14 @@ PROOF_AUTHORITY_MATRIX = {
     ("fixture", "repository_mechanism"): {"repository_blob", "repository_receipt"},
 }
 PRIVATE_REF = re.compile(
-    r"(?:(?:^|repo:)[A-Za-z]:[\\/]|^/tmp/|^/home/|\.codex(?:[\\/]|$)|worktrees?(?:[\\/]|$)|^repo:(?:/|[A-Za-z]:[\\/]))",
+    r"(?:(?:^|repo:)(?:[A-Za-z]:[\\/]|/)|(?:^|[\\/])(?:\.codex|worktrees?)(?:[\\/]|$)|(?:^|repo:)/(?:tmp|home)(?:[\\/]|$))",
     re.IGNORECASE,
 )
-ISSUE_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/([0-9]+)$")
-ISSUE_COMMENT_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/([0-9]+)#issuecomment-[0-9]+$")
-PULL_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/pull/([0-9]+)$")
-PULL_REVIEW_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/pull/([0-9]+)#pullrequestreview-[0-9]+$")
-CHECK_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/[0-9]+/job/[0-9]+$")
+ISSUE_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/([1-9][0-9]*)$")
+ISSUE_COMMENT_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/([1-9][0-9]*)#issuecomment-[1-9][0-9]*$")
+PULL_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/pull/([1-9][0-9]*)$")
+PULL_REVIEW_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/pull/([1-9][0-9]*)#pullrequestreview-[1-9][0-9]*$")
+CHECK_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/[1-9][0-9]*/job/[1-9][0-9]*$")
 REPOSITORY_REF = re.compile(r"^repo:[^@\s]+@([0-9a-f]{40})$")
 EVIDENCE_REF_PATTERNS = {
     "github_issue": ISSUE_REF,
