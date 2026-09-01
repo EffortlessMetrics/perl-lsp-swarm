@@ -1,4 +1,4 @@
-# contract-version: 3
+# contract-version: 4
 name: Non-Rust policy
 
 on:
