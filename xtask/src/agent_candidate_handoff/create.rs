@@ -77,6 +77,7 @@ pub fn create_handoff_with_validator(
             "the requested path is not an inspectable Git worktree".to_string(),
         ));
     }
+    require_supported_object_format(repository)?;
 
     let commit = resolve_commit(repository, &request.candidate)?;
     let candidate = read_commit_identity(repository, &commit)?;
@@ -152,6 +153,34 @@ pub fn create_handoff_with_validator(
     staging.publish(&request.out, &manifest)?;
 
     Ok(manifest)
+}
+
+/// Refuse a repository whose object format this version cannot represent.
+///
+/// `agent_candidate_handoff.v1` fixes object ids at 40 hex characters,
+/// throughout the manifest and its digest. A SHA-256 repository's ids are
+/// perfectly canonical at 64, so reporting them as malformed would blame the
+/// repository for a limit of this format. Naming the limit is the honest
+/// refusal, and it leaves room for a v2 that carries the hash algorithm.
+fn require_supported_object_format(repository: &Path) -> Result<(), (HandoffOutcome, String)> {
+    let output = run_git(repository, &["rev-parse", "--show-object-format"])
+        .map_err(|error| (HandoffOutcome::InstrumentFailure, error))?;
+    // Git versions without the flag predate SHA-256 repositories entirely, so
+    // silence here means SHA-1.
+    if !output.succeeded() {
+        return Ok(());
+    }
+    let format = output.stdout.trim();
+    if format.is_empty() || format == "sha1" {
+        return Ok(());
+    }
+    Err((
+        HandoffOutcome::UnsupportedObjectClass,
+        format!(
+            "this repository uses the `{format}` object format; \
+             `agent_candidate_handoff.v1` represents 40-hex SHA-1 object ids only"
+        ),
+    ))
 }
 
 /// A staged envelope that is removed unless it is explicitly published.
@@ -866,12 +895,35 @@ fn collect_proofs(
         // Check the size before the read, not after. A proof artifact is
         // caller-supplied and unbounded; reading it first and rejecting it
         // afterwards would already have allocated whatever it pointed at.
-        let metadata = fs::metadata(path).map_err(|error| {
+        // `symlink_metadata`, not `metadata`: a `--proof` argument pointing at
+        // a link would otherwise be followed, copying whatever it targets into
+        // the envelope. The secret scan catches recognised credential shapes,
+        // but "a file the caller did not mean to publish" is a much larger set
+        // than "a string that looks like a token", and an envelope is handed
+        // onward. Refusing the link is the boundary; naming the file directly
+        // is always available to a caller who means it.
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
             (
                 HandoffOutcome::InstrumentFailure,
                 format!("could not read proof artifact `{}`: {error}", path.display()),
             )
         })?;
+        if metadata.file_type().is_symlink() {
+            return Err((
+                HandoffOutcome::InstrumentFailure,
+                format!(
+                    "proof artifact `{}` is a symbolic link; name the file itself so the \
+                     envelope carries what the caller chose",
+                    path.display()
+                ),
+            ));
+        }
+        if !metadata.is_file() {
+            return Err((
+                HandoffOutcome::InstrumentFailure,
+                format!("proof artifact `{}` is not a regular file", path.display()),
+            ));
+        }
         if metadata.len() > MAX_PROOF_BYTES {
             return Err((
                 HandoffOutcome::InstrumentFailure,
@@ -910,6 +962,12 @@ fn collect_proofs(
                 return Err((
                     HandoffOutcome::ProofSubjectMismatch,
                     format!("proof `{id}` names more than one candidate"),
+                ));
+            }
+            ProofSubject::Unusable => {
+                return Err((
+                    HandoffOutcome::ProofSubjectMismatch,
+                    format!("proof `{id}` states a subject that is not a full object id"),
                 ));
             }
             ProofSubject::Stated(_) | ProofSubject::Unstated => {}
@@ -970,6 +1028,9 @@ pub enum ProofSubject {
     Stated(String),
     /// The artifact names more than one candidate and contradicts itself.
     Conflicting,
+    /// A recognised subject key holds a value that is not a canonical object
+    /// id — abbreviated, uppercase, or malformed.
+    Unusable,
 }
 
 /// Read the candidate a JSON proof artifact claims to be about.
@@ -989,8 +1050,12 @@ pub fn declared_proof_subject(bytes: &[u8]) -> ProofSubject {
         let Some(text) = object.get(*key).and_then(serde_json::Value::as_str) else {
             continue;
         };
+        // A recognised key with a malformed value is *not* an absent subject.
+        // Treating it as absent let the producer stamp the candidate onto
+        // evidence that named something else in an abbreviated or uppercase
+        // form — rebinding stale proof rather than refusing it.
         if !is_full_object_id(text) {
-            continue;
+            return ProofSubject::Unusable;
         }
         match &found {
             // Stopping at the first recognised key let an artifact name this

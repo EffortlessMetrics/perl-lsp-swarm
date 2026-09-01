@@ -171,6 +171,14 @@ fn run_bounded(
     for variable in GIT_LOCAL_ENV_VARS {
         command.env_remove(variable);
     }
+    // Set rather than cleared, and deliberately after the loop that clears the
+    // rest. `refs/replace` makes Git serve substitute content under an
+    // original object's id, which is precisely the deception this format must
+    // not transport: the manifest would describe replacement content while the
+    // pack carried the literal object, and the envelope would fail its own
+    // recomputation. Clearing the variable *enables* replacement, so the list
+    // above must not have the last word on this one.
+    command.env("GIT_NO_REPLACE_OBJECTS", "1");
     command
         .stdin(if stdin_bytes.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())

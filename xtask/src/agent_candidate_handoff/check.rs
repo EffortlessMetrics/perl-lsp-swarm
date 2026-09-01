@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read as _;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -794,11 +795,23 @@ pub(super) fn read_envelope_file(
     limit: u64,
 ) -> Result<Vec<u8>, String> {
     let path = envelope.join(relative);
-    let metadata = fs::symlink_metadata(&path)
+    // Refuse the link before opening: `File::open` follows one, so a symlink
+    // must be rejected on the path itself.
+    let linkage = fs::symlink_metadata(&path)
         .map_err(|error| format!("`{relative}` is not readable: {error}"))?;
-    if metadata.file_type().is_symlink() {
+    if linkage.file_type().is_symlink() {
         return Err(format!("`{relative}` is a symbolic link; an envelope must be self-contained"));
     }
+
+    // Everything else is decided on the *open handle*, not on the path. Reading
+    // after a separate stat leaves a window in which the entry can be swapped,
+    // so the bytes verified need not be the bytes described. Opening once and
+    // asking the handle what it is closes that window: the file this reads is
+    // the file it measured.
+    let mut file =
+        fs::File::open(&path).map_err(|error| format!("`{relative}` is not readable: {error}"))?;
+    let metadata =
+        file.metadata().map_err(|error| format!("`{relative}` is not readable: {error}"))?;
     if !metadata.is_file() {
         return Err(format!("`{relative}` is not a regular file"));
     }
@@ -808,7 +821,18 @@ pub(super) fn read_envelope_file(
             metadata.len()
         ));
     }
-    fs::read(&path).map_err(|error| format!("`{relative}` is not readable: {error}"))
+
+    // Read one byte beyond the ceiling so a file that grew between the
+    // measurement and the read is refused rather than silently truncated.
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.by_ref()
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("`{relative}` is not readable: {error}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("`{relative}` exceeds the {limit}-byte ceiling"));
+    }
+    Ok(bytes)
 }
 
 /// Read the transport and confirm it is the bytes the manifest declares.
@@ -883,6 +907,12 @@ fn verify_proofs(envelope: &Path, manifest: &Manifest) -> Result<(), (HandoffOut
             ProofSubject::Conflicting => {
                 return Err(mismatch(format!(
                     "proof `{}` names more than one candidate in its own payload",
+                    proof.id
+                )));
+            }
+            ProofSubject::Unusable => {
+                return Err(mismatch(format!(
+                    "proof `{}` states a subject that is not a full object id",
                     proof.id
                 )));
             }

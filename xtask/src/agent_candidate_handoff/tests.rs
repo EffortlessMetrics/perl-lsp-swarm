@@ -3213,3 +3213,106 @@ fn the_validator_uses_the_same_proof_ceiling_as_the_producer() -> Result<()> {
     assert_eq!(report.outcome, HandoffOutcome::InvalidManifest);
     Ok(())
 }
+
+/// A replacement ref must not decide what the envelope carries.
+///
+/// `refs/replace` makes Git serve substitute content under an original object's
+/// id. That is exactly the deception this format must not transport: the
+/// manifest would describe the replacement while the pack carried the literal
+/// object. `GIT_NO_REPLACE_OBJECTS` is *set* rather than cleared, because
+/// clearing it enables replacement.
+#[test]
+fn a_replacement_ref_does_not_change_what_is_exported() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"original\n")?;
+    fixture.commit("original subject")?;
+    let original = fixture.git(&["rev-parse", "HEAD"])?.trim().to_string();
+
+    // A second commit with different content and a different message, then a
+    // replacement pointing the original id at it.
+    fixture.write("a.txt", b"substitute\n")?;
+    fixture.commit("substitute subject")?;
+    let substitute = fixture.git(&["rev-parse", "HEAD"])?.trim().to_string();
+    fixture.git(&["replace", "-f", &original, &substitute])?;
+
+    // Prove the fixture is a real lever: with replacement active, ordinary Git
+    // reads of the original id return the substitute's message.
+    let replaced = fixture.git(&["show", "-s", "--format=%s", &original])?;
+    assert!(
+        replaced.contains("substitute"),
+        "the replacement must actually be in effect, or this control proves nothing"
+    );
+
+    let destination = Destination::new()?;
+    let mut requested = request(&fixture, &destination);
+    requested.candidate = original.clone();
+    let manifest = create_handoff(&requested)
+        .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+
+    assert_eq!(manifest.candidate.commit, original);
+    assert_eq!(
+        manifest.candidate.message.trim(),
+        "original subject",
+        "the envelope must describe the literal object, not its replacement"
+    );
+    assert_eq!(check_handoff(&destination.envelope()).outcome, HandoffOutcome::ValidHandoff);
+    Ok(())
+}
+
+/// A `--proof` argument naming a symlink would publish whatever it points at.
+///
+/// The secret scan catches recognised credential shapes, but "a file the caller
+/// did not mean to publish" is a much larger set than "a string that looks like
+/// a token", and an envelope is handed onward.
+#[test]
+fn a_symlinked_proof_artifact_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    let elsewhere = tempfile::TempDir::new()?;
+    let private = elsewhere.path().join("private-material.json");
+    fs::write(&private, br#"{"note":"not meant for an envelope"}"#)?;
+    let link = fixture.path().join("proof.json");
+    if !link_manifest(&private, &link)? {
+        return Ok(());
+    }
+
+    let destination = Destination::new()?;
+    let mut requested = request(&fixture, &destination);
+    requested.proofs = vec![link];
+    let Err((outcome, detail)) = create_handoff(&requested) else {
+        bail!("a symlinked proof would publish its target, and must be refused");
+    };
+    assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
+    assert!(detail.contains("symbolic link"), "the refusal must name the reason: {detail}");
+    assert!(!destination.envelope().exists(), "nothing is published");
+    Ok(())
+}
+
+/// A recognised subject key holding a non-canonical value is refused, not ignored.
+///
+/// Treating it as an absent subject let the producer stamp this candidate onto
+/// evidence that named something else in abbreviated or uppercase form —
+/// rebinding stale proof rather than refusing it.
+#[test]
+fn a_proof_subject_that_is_not_a_full_object_id_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let head = fixture.git(&["rev-parse", "HEAD"])?.trim().to_string();
+
+    for value in [head[..12].to_string(), head.to_uppercase(), "not-an-object-id".to_string()] {
+        let proof = fixture.path().join("report.json");
+        fs::write(&proof, serde_json::to_vec(&serde_json::json!({ "commit": value }))?)?;
+        let destination = Destination::new()?;
+        let mut requested = request(&fixture, &destination);
+        requested.proofs = vec![proof];
+
+        let Err((outcome, _)) = create_handoff(&requested) else {
+            bail!("`{value}` is a stated subject this format cannot verify, and must be refused");
+        };
+        assert_eq!(outcome, HandoffOutcome::ProofSubjectMismatch, "for value `{value}`");
+    }
+    Ok(())
+}
