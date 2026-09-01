@@ -10,7 +10,7 @@ use std::{
     process::{Command, Output},
 };
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use serde_yaml_ng::Value;
 use tempfile::TempDir;
 
