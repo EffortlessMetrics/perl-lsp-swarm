@@ -71,6 +71,15 @@ pub struct RepositoryIdentity {
     pub status: RepositoryIdentityStatus,
     /// Lowercase `owner/name`, absent when the identity is not proven.
     pub value: Option<String>,
+    /// Lowercase hosting authority the identity was observed on.
+    ///
+    /// `owner/name` alone is not a repository: `acme/app` on two different
+    /// forges is two different repositories, and a publisher handed the bare
+    /// pair could target the wrong one. An observed identity therefore always
+    /// carries the host it was read from. A caller-declared identity carries
+    /// none, because the caller named no host, and an unproven identity carries
+    /// none because there is nothing to name.
+    pub host: Option<String>,
     /// Origin of the claim.
     pub source: RepositoryIdentitySource,
 }

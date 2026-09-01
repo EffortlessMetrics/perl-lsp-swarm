@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::check::{CheckReport, check_handoff, describe_failure};
+use super::check::{CheckReport, check_staged, describe_failure};
 use super::git::{git_version, is_full_object_id, run_git, run_git_with_stdin};
 use super::hygiene::{
     is_proof_id, is_repository_identity, repository_identity_from_remote, scan_secrets,
@@ -54,7 +54,7 @@ pub struct CreateRequest {
 /// `Ok` return means the envelope has already been proved reconstructable
 /// rather than merely written.
 pub fn create_handoff(request: &CreateRequest) -> Result<Manifest, (HandoffOutcome, String)> {
-    create_handoff_with_validator(request, check_handoff)
+    create_handoff_with_validator(request, check_staged)
 }
 
 /// [`create_handoff`] with an injectable validator, so the failure path can be
@@ -147,25 +147,51 @@ pub fn create_handoff_with_validator(
 }
 
 /// A staged envelope that is removed unless it is explicitly published.
-struct StagedEnvelope {
+///
+/// Cleanup is owned by the type rather than written at each error site. Every
+/// failure between creating the staging directory and renaming it — a write
+/// error, a refused validation, an early return added later — drops this value
+/// and removes the directory, so a partially written envelope cannot survive a
+/// failed export and be mistaken for a real one.
+pub(super) struct StagedEnvelope {
     directory: PathBuf,
+    published: bool,
+}
+
+impl Drop for StagedEnvelope {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
 }
 
 impl StagedEnvelope {
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.directory
     }
 
-    fn discard(self) {
-        let _ = fs::remove_dir_all(&self.directory);
+    /// Construct a staging handle directly, for proving the cleanup invariant.
+    ///
+    /// The production path always goes through `stage_envelope`; this exists so
+    /// the ownership rule can be tested at the point that owns it.
+    #[cfg(test)]
+    pub(super) fn for_test(directory: PathBuf, published: bool) -> Self {
+        Self { directory, published }
     }
+
+    /// Drop the staging directory without publishing it.
+    ///
+    /// The removal itself happens in `Drop`; naming the intent at the call site
+    /// keeps the refusal path readable.
+    fn discard(self) {}
 
     /// Write the validated receipt, then move the directory into place.
     ///
     /// The rename is the publication step and is atomic on the destination's
     /// own filesystem, so a reader never observes a half-written envelope.
     fn publish(
-        self,
+        mut self,
         destination: &Path,
         manifest: &Manifest,
     ) -> Result<(), (HandoffOutcome, String)> {
@@ -182,15 +208,18 @@ impl StagedEnvelope {
         };
         let receipt_json =
             canonical_json(&receipt).map_err(|error| (HandoffOutcome::InstrumentFailure, error))?;
+        // Both failure paths leave `published` false, so `Drop` removes the
+        // staging directory on the way out.
         if let Err(error) = fs::write(self.directory.join(RECEIPT_FILE_NAME), receipt_json) {
-            let _ = fs::remove_dir_all(&self.directory);
             return Err(failed(error, "write the validated receipt"));
         }
-
         if let Err(error) = fs::rename(&self.directory, destination) {
-            let _ = fs::remove_dir_all(&self.directory);
             return Err(failed(error, "publish the envelope"));
         }
+
+        // The directory no longer exists under its staging name; claiming it
+        // does would make `Drop` remove whatever later occupies that path.
+        self.published = true;
         Ok(())
     }
 }
@@ -253,7 +282,23 @@ pub fn read_commit_identity(
         ));
     }
 
-    let mut lines = output.stdout.splitn(9, '\n');
+    // Read the bytes, not Git's lossy text projection. `GitOutput::stdout` is
+    // built with `from_utf8_lossy`, so a commit whose message or identity is
+    // Latin-1 or otherwise non-UTF-8 would arrive with U+FFFD substituted and
+    // be retained under a field documented as verbatim. The validator recomputes
+    // through the same reader, so the two would agree and the envelope would
+    // pass while misrepresenting the candidate. Refusing is the honest outcome,
+    // and it matches how non-UTF-8 paths are already handled.
+    let text = std::str::from_utf8(&output.stdout_bytes).map_err(|_| {
+        (
+            HandoffOutcome::UnsupportedObjectClass,
+            format!(
+                "commit {commit} carries non-UTF-8 metadata, which this format cannot retain verbatim"
+            ),
+        )
+    })?;
+
+    let mut lines = text.splitn(9, '\n');
     let mut next = |field: &str| -> Result<String, (HandoffOutcome, String)> {
         lines.next().map(str::to_string).ok_or_else(|| {
             (HandoffOutcome::InstrumentFailure, format!("commit {commit} did not report `{field}`"))
@@ -353,6 +398,9 @@ fn resolve_repository_identity(
         return Ok(RepositoryIdentity {
             status: RepositoryIdentityStatus::Declared,
             value: Some(normalized),
+            // The caller named an `owner/name`, not a host. Inventing one would
+            // turn their declaration into an observation.
+            host: None,
             source: RepositoryIdentitySource::CallerDeclared,
         });
     }
@@ -361,10 +409,11 @@ fn resolve_repository_identity(
         .map_err(|error| (HandoffOutcome::InstrumentFailure, error))?;
     if output.succeeded() {
         match repository_identity_from_remote(output.stdout.trim()) {
-            Ok(Some(value)) => {
+            Ok(Some(identity)) => {
                 return Ok(RepositoryIdentity {
                     status: RepositoryIdentityStatus::Observed,
-                    value: Some(value),
+                    value: Some(identity.value),
+                    host: Some(identity.host),
                     source: RepositoryIdentitySource::GitRemoteOrigin,
                 });
             }
@@ -381,6 +430,7 @@ fn resolve_repository_identity(
     Ok(RepositoryIdentity {
         status: RepositoryIdentityStatus::NotProven,
         value: None,
+        host: None,
         source: RepositoryIdentitySource::Unavailable,
     })
 }
@@ -837,7 +887,7 @@ fn stage_envelope(
         fs::remove_dir_all(&staging).map_err(|error| io(error, "a stale staging directory"))?;
     }
     fs::create_dir_all(&staging).map_err(|error| io(error, "the staging directory"))?;
-    let staged = StagedEnvelope { directory: staging };
+    let staged = StagedEnvelope { directory: staging, published: false };
 
     let write =
         |relative: &Path, bytes: &[u8], what: &str| -> Result<(), (HandoffOutcome, String)> {

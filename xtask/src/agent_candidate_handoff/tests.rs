@@ -5,14 +5,17 @@
 //! a textual patch, trusts the producer's own manifest, or quietly depends on
 //! the source workspace still existing.
 
-use super::create::compute_identity_digest;
+use super::check::{CHECK_REPORT_SCHEMA_V1, check_staged};
+use super::create::{SELF_CHECK_PENDING, SELF_CHECK_VALIDATED, compute_identity_digest};
+use super::create::{StagedEnvelope, create_handoff_with_validator};
 use super::model::{
     ChangeStatus, EntryClass, GitlinkDisposition, HANDOFF_RECEIPT_SCHEMA_V1, LimitationCode,
     MANIFEST_FILE_NAME, Manifest, PACK_FILE_NAME, PROOF_DIR_NAME, ProducerReceipt,
     RECEIPT_FILE_NAME, RepositoryIdentityStatus,
 };
 use super::{
-    CreateRequest, DimensionVerdict, HandoffOutcome, canonical_json, check_handoff, create_handoff,
+    CheckReport, CreateRequest, DimensionVerdict, HandoffOutcome, canonical_json, check_handoff,
+    create_handoff, explain,
 };
 use anyhow::{Context, Result, bail};
 use std::fs;
@@ -125,6 +128,12 @@ impl Destination {
     fn envelope(&self) -> PathBuf {
         self.root.path().join("handoff")
     }
+
+    /// The directory the envelope is published into, where a staging directory
+    /// would also appear.
+    fn root(&self) -> &Path {
+        self.root.path()
+    }
 }
 
 fn request(fixture: &Fixture, destination: &Destination) -> CreateRequest {
@@ -167,7 +176,10 @@ fn rewrite_manifest_resealed(envelope: &Path, mut manifest: Manifest) -> Result<
         schema_version: HANDOFF_RECEIPT_SCHEMA_V1.to_string(),
         candidate_identity_digest: manifest.candidate_identity_digest.clone(),
         candidate_commit: manifest.candidate.commit.clone(),
-        producer_self_check: "validated_after_write".to_string(),
+        // The strong adversary reseals the receipt the way a published envelope
+        // carries it, so no control below can pass merely because the receipt
+        // looked unpublished.
+        producer_self_check: SELF_CHECK_VALIDATED.to_string(),
         limitations: manifest.limitations.clone(),
     };
     let receipt_json = canonical_json(&receipt).map_err(anyhow::Error::msg)?;
@@ -1333,8 +1345,17 @@ fn dropping_a_producer_only_limitation_breaks_the_identity_digest() -> Result<()
         .filter(|value| value.as_str() != Some("remote_url_contained_credentials"))
         .cloned()
         .collect();
-    raw["limitations"] = serde_json::Value::Array(kept);
+    raw["limitations"] = serde_json::Value::Array(kept.clone());
     rewrite_manifest_raw(&destination.envelope(), &raw)?;
+    // Reseal the receipt to agree with the edited manifest, leaving the stale
+    // digest as the single remaining inconsistency. Without this the receipt
+    // cross-check would catch the edit first and the control would no longer be
+    // about the seal.
+    let receipt_path = destination.envelope().join(RECEIPT_FILE_NAME);
+    let mut receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(&receipt_path)?).context("parsing receipt")?;
+    receipt["limitations"] = serde_json::Value::Array(kept);
+    fs::write(&receipt_path, serde_json::to_string_pretty(&receipt)?)?;
 
     let report = check_handoff(&destination.envelope());
     assert_eq!(report.outcome, HandoffOutcome::InvalidManifest);
@@ -1383,10 +1404,7 @@ fn a_failed_self_check_publishes_no_envelope() -> Result<()> {
         report
     }
 
-    let outcome = super::create::create_handoff_with_validator(
-        &request(&fixture, &destination),
-        always_invalid,
-    );
+    let outcome = create_handoff_with_validator(&request(&fixture, &destination), always_invalid);
     let Err((outcome, _)) = outcome else {
         bail!("a refused self-check must not publish an envelope");
     };
@@ -2021,5 +2039,338 @@ fn an_existing_destination_is_never_overwritten() -> Result<()> {
         bail!("an envelope is immutable and must not be rewritten in place");
     };
     assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Review-driven controls: fail-open seams closed after the second review of
+// #14535
+// ---------------------------------------------------------------------------
+
+/// `explain` reads the same untrusted envelopes the validator does.
+///
+/// Skipping transport verification is a deliberate feature of the projection.
+/// Skipping the reader's bounds is not: an oversized or link-bearing manifest
+/// would otherwise get in through `explain` after `check` closed the door.
+#[test]
+fn explain_refuses_a_manifest_the_validator_would_refuse() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    export_valid(&fixture, &destination)?;
+    assert!(explain(&destination.envelope()).is_ok(), "the sound envelope must still explain");
+
+    // Replace the manifest with a symbolic link to a manifest outside the
+    // envelope. `check` refuses this; `explain` must not read through it.
+    let outside = destination.root().join("outside-manifest.json");
+    fs::copy(destination.envelope().join(MANIFEST_FILE_NAME), &outside)?;
+    fs::remove_file(destination.envelope().join(MANIFEST_FILE_NAME))?;
+    std::os::unix::fs::symlink(&outside, destination.envelope().join(MANIFEST_FILE_NAME))?;
+
+    let Err((outcome, detail)) = explain(&destination.envelope()) else {
+        bail!("explain must not read a manifest through a symbolic link");
+    };
+    assert_eq!(outcome, HandoffOutcome::InvalidManifest);
+    assert!(detail.contains("symbolic link"), "the refusal must name the reason: {detail}");
+    Ok(())
+}
+
+/// A commit message this format cannot retain verbatim is refused, not mangled.
+///
+/// Git's text projection substitutes U+FFFD for bytes that are not UTF-8. The
+/// validator recomputes through the same reader, so a lossy message would
+/// round-trip and the envelope would pass while misrepresenting the candidate
+/// to every human who reads it. Refusing is the only honest outcome.
+#[test]
+fn a_non_utf8_commit_message_is_refused_rather_than_silently_mangled() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    // `git commit` re-encodes a message it judges non-UTF-8, so it cannot
+    // produce this object. Writing the commit verbatim with `hash-object` does,
+    // and it is also the honest fixture: a receiver validates whatever object
+    // exists, however it was created.
+    let tree = fixture.git(&["rev-parse", "HEAD^{tree}"])?.trim().to_string();
+    let mut raw_commit = format!(
+        "tree {tree}\n\
+         author Fixture Author <fixture@example.invalid> 1600000000 +0000\n\
+         committer Fixture Author <fixture@example.invalid> 1600000000 +0000\n\n\
+         subject with a raw "
+    )
+    .into_bytes();
+    // 0xFF is not valid UTF-8 in any position.
+    raw_commit.push(0xFF);
+    raw_commit.extend_from_slice(b" byte\n");
+    let commit_file = fixture.path().join("raw-commit.bin");
+    fs::write(&commit_file, &raw_commit)?;
+    let commit = fixture
+        .git(&["hash-object", "-t", "commit", "-w", "--", "raw-commit.bin"])?
+        .trim()
+        .to_string();
+    fixture.git(&["update-ref", "refs/heads/main", &commit])?;
+
+    let destination = Destination::new()?;
+    let Err((outcome, detail)) = create_handoff(&request(&fixture, &destination)) else {
+        bail!("a non-UTF-8 commit message cannot be retained verbatim and must be refused");
+    };
+    assert_eq!(outcome, HandoffOutcome::UnsupportedObjectClass);
+    assert!(detail.contains("non-UTF-8"), "the refusal must name the reason: {detail}");
+    assert!(!destination.envelope().exists(), "a refused export publishes nothing");
+    Ok(())
+}
+
+/// `owner/name` alone does not name a repository.
+///
+/// The same pair exists on every forge, so an observed identity that dropped
+/// the host would hand a publisher a target it could resolve to the wrong
+/// repository entirely.
+#[test]
+fn an_observed_identity_records_the_host_it_was_read_from() -> Result<()> {
+    let fixture = Fixture::with_remote(Some("https://gitlab.com/acme/app.git"))?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    assert_eq!(manifest.repository_identity.status, RepositoryIdentityStatus::Observed);
+    assert_eq!(manifest.repository_identity.value.as_deref(), Some("acme/app"));
+    assert_eq!(
+        manifest.repository_identity.host.as_deref(),
+        Some("gitlab.com"),
+        "an observed identity must say which forge it names"
+    );
+    Ok(())
+}
+
+/// A local clone path locates a repository; it does not identify one.
+///
+/// `file:///srv/mirrors/acme/app.git` has the same final two segments as every
+/// other mirror of every other `acme/app`, and no hosting authority to tell
+/// them apart. That is `NOT_PROVEN`, not an observation.
+#[test]
+fn a_remote_with_no_hosting_authority_proves_no_identity() -> Result<()> {
+    for remote in ["file:///srv/mirrors/acme/app.git", "/srv/mirrors/acme/app.git", "../app.git"] {
+        let fixture = Fixture::with_remote(Some(remote))?;
+        fixture.write("a.txt", b"a\n")?;
+        fixture.commit("root")?;
+        let destination = Destination::new()?;
+        let manifest = create_handoff(&request(&fixture, &destination))
+            .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+
+        assert_eq!(
+            manifest.repository_identity.status,
+            RepositoryIdentityStatus::NotProven,
+            "`{remote}` names no hosting authority and must prove no identity"
+        );
+        assert_eq!(manifest.repository_identity.value, None);
+        assert_eq!(manifest.repository_identity.host, None);
+    }
+    Ok(())
+}
+
+/// The SCP remote form still carries a host, and it is retained.
+#[test]
+fn the_scp_remote_form_yields_a_host_and_an_identity() -> Result<()> {
+    let fixture = Fixture::with_remote(Some("git@github.com:Acme/App.git"))?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    assert_eq!(manifest.repository_identity.status, RepositoryIdentityStatus::Observed);
+    assert_eq!(manifest.repository_identity.value.as_deref(), Some("acme/app"));
+    assert_eq!(manifest.repository_identity.host.as_deref(), Some("github.com"));
+    Ok(())
+}
+
+/// Claim strength is a closed tuple, not four fields that happen to agree.
+///
+/// Each case below is internally plausible and fully resealed. Accepting any of
+/// them would let a resealed envelope present a caller's guess as something the
+/// producer observed, or an observation with no forge behind it.
+#[test]
+fn a_forged_repository_claim_strength_is_refused() -> Result<()> {
+    let cases: &[(&str, &str, Option<&str>, Option<&str>)] = &[
+        // A caller's declaration presented as an observation.
+        ("observed", "caller_declared", Some("acme/app"), None),
+        // An observation with no host behind it.
+        ("observed", "git_remote_origin", Some("acme/app"), None),
+        // An unproven identity that nonetheless names a host.
+        ("not_proven", "unavailable", None, Some("github.com")),
+        // A declared identity dressed up with a host it never had.
+        ("declared", "caller_declared", Some("acme/app"), Some("github.com")),
+    ];
+
+    for (status, source, value, host) in cases {
+        let fixture = Fixture::with_remote(Some("https://github.com/acme/app.git"))?;
+        fixture.write("a.txt", b"a\n")?;
+        fixture.commit("root")?;
+        let destination = Destination::new()?;
+        export_valid(&fixture, &destination)?;
+
+        let mut raw = raw_manifest(&destination.envelope())?;
+        raw["repository_identity"]["status"] = serde_json::Value::String((*status).to_string());
+        raw["repository_identity"]["source"] = serde_json::Value::String((*source).to_string());
+        raw["repository_identity"]["value"] = match value {
+            Some(text) => serde_json::Value::String((*text).to_string()),
+            None => serde_json::Value::Null,
+        };
+        raw["repository_identity"]["host"] = match host {
+            Some(text) => serde_json::Value::String((*text).to_string()),
+            None => serde_json::Value::Null,
+        };
+        rewrite_manifest_raw(&destination.envelope(), &raw)?;
+
+        let report = check_handoff(&destination.envelope());
+        assert_eq!(
+            report.outcome,
+            HandoffOutcome::InvalidManifest,
+            "`{status}` from `{source}` with value {value:?} and host {host:?} must be refused"
+        );
+        let shape = report
+            .dimensions
+            .iter()
+            .find(|dimension| dimension.id == "manifest_shape")
+            .context("manifest_shape dimension")?;
+        assert_eq!(
+            shape.verdict,
+            DimensionVerdict::Invalid,
+            "the tuple is a shape fact and must be refused as one"
+        );
+    }
+    Ok(())
+}
+
+/// A published envelope must carry the receipt a successful check produced.
+///
+/// The producer writes `pending` while staging and rewrites it only after its
+/// own validation passes. A published directory still carrying `pending` was
+/// either never validated or lifted out of staging by hand, and accepting it
+/// would make the receipt's whole self-check claim decorative.
+#[test]
+fn a_published_envelope_carrying_a_pending_receipt_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    export_valid(&fixture, &destination)?;
+
+    let receipt_path = destination.envelope().join(RECEIPT_FILE_NAME);
+    let mut receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(&receipt_path)?).context("parsing receipt")?;
+    assert_eq!(receipt["producer_self_check"].as_str(), Some(SELF_CHECK_VALIDATED));
+    receipt["producer_self_check"] = serde_json::Value::String(SELF_CHECK_PENDING.to_string());
+    fs::write(&receipt_path, serde_json::to_string_pretty(&receipt)?)?;
+
+    let report = check_handoff(&destination.envelope());
+    assert_eq!(report.outcome, HandoffOutcome::InvalidManifest);
+    let closure = report
+        .dimensions
+        .iter()
+        .find(|dimension| dimension.id == "envelope_closure")
+        .context("envelope_closure dimension")?;
+    assert!(
+        closure.detail.contains(SELF_CHECK_VALIDATED),
+        "the refusal must name the token it required: {}",
+        closure.detail
+    );
+
+    // The same directory is a legitimate *staging* directory, which is exactly
+    // the distinction the two entry points exist to keep.
+    assert_ne!(
+        check_staged(&destination.envelope()).outcome,
+        HandoffOutcome::InvalidManifest,
+        "a pending receipt is honest before publication"
+    );
+    Ok(())
+}
+
+/// A receipt that repeats the digest but contradicts the admissions is not an
+/// agreeing receipt.
+#[test]
+fn a_receipt_contradicting_the_manifest_limitations_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    export_valid(&fixture, &destination)?;
+
+    let receipt_path = destination.envelope().join(RECEIPT_FILE_NAME);
+    let mut receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(&receipt_path)?).context("parsing receipt")?;
+    receipt["limitations"] = serde_json::Value::Array(vec![]);
+    fs::write(&receipt_path, serde_json::to_string_pretty(&receipt)?)?;
+
+    let report = check_handoff(&destination.envelope());
+    assert_eq!(report.outcome, HandoffOutcome::InvalidManifest);
+    Ok(())
+}
+
+/// A failed export leaves nothing behind, including its staging directory.
+///
+/// Cleanup is owned by `StagedEnvelope`'s `Drop`, so this holds for the refusal
+/// path and for any write failure or early return between staging and the
+/// publishing rename.
+#[test]
+fn a_refused_export_leaves_no_staging_directory() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+
+    let refuse = |envelope: &Path| CheckReport {
+        schema_version: CHECK_REPORT_SCHEMA_V1.to_string(),
+        envelope: envelope.to_string_lossy().into_owned(),
+        candidate_commit: None,
+        candidate_identity_digest: None,
+        dimensions: Vec::new(),
+        outcome: HandoffOutcome::InvalidManifest,
+    };
+    let outcome = create_handoff_with_validator(&request(&fixture, &destination), refuse);
+    assert!(outcome.is_err(), "a refusing validator must not publish");
+    assert!(!destination.envelope().exists(), "no envelope is published");
+
+    let leftovers: Vec<String> = fs::read_dir(destination.root())?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a refused export must leave no staging directory behind, found {leftovers:?}"
+    );
+    Ok(())
+}
+
+/// Staging cleanup belongs to the type, not to each error site.
+///
+/// The refused-export control above only exercises the validator's own refusal
+/// path, which was already cleaned up explicitly. This one covers what that
+/// misses: any *other* failure between creating the staging directory and the
+/// publishing rename — a write error, an instrument failure, an early return
+/// added by a later change — leaves the value dropped rather than handled, and
+/// the directory must go with it. Forcing a real `fs::write` failure at that
+/// exact point needs a filesystem fault injector, so the invariant is proven on
+/// the type that owns it.
+#[test]
+fn an_unpublished_staging_directory_is_removed_when_it_is_dropped() -> Result<()> {
+    let root = tempfile::TempDir::new().context("creating a staging root")?;
+
+    // Dropped without publishing, as every failure path between staging and the
+    // rename does.
+    let abandoned = root.path().join("abandoned");
+    fs::create_dir_all(&abandoned)?;
+    fs::write(abandoned.join(MANIFEST_FILE_NAME), b"partial")?;
+    drop(StagedEnvelope::for_test(abandoned.clone(), false));
+    assert!(!abandoned.exists(), "an unpublished staging directory must not survive its owner");
+
+    // Marked published, as `publish` does once the rename has moved the
+    // directory out from under this path. Removing it then would delete
+    // whatever else came to occupy the name.
+    let published = root.path().join("published");
+    fs::create_dir_all(&published)?;
+    drop(StagedEnvelope::for_test(published.clone(), true));
+    assert!(published.exists(), "a published envelope must never be removed by its own cleanup");
     Ok(())
 }

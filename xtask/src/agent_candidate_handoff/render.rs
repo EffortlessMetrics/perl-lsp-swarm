@@ -5,12 +5,11 @@
 //! proves that a candidate can be reconstructed; it never proves the candidate
 //! was published, reviewed, or checked. Every projection says so explicitly.
 
-use std::fs;
 use std::path::Path;
 
 use serde::Serialize;
 
-use super::check::{CheckReport, DimensionVerdict};
+use super::check::{CheckReport, DimensionVerdict, MAX_DOCUMENT_BYTES, read_envelope_file};
 use super::model::{LimitationCode, MANIFEST_FILE_NAME, Manifest, RepositoryIdentityStatus};
 use super::{HandoffOutcome, canonical_json};
 
@@ -51,13 +50,15 @@ pub struct ExplainDocument {
 }
 
 /// Read a manifest and describe it without validating the transport.
+///
+/// `explain` skips transport verification, but it does not skip the reader's
+/// bounds: it is pointed at the same untrusted envelopes `check` is, so it uses
+/// the validator's own size-capped, symlink-refusing read. Reading the manifest
+/// unboundedly here would give an oversized or link-bearing envelope a way in
+/// through the projection that the validator closes.
 pub fn explain(envelope: &Path) -> Result<ExplainDocument, (HandoffOutcome, String)> {
-    let bytes = fs::read(envelope.join(MANIFEST_FILE_NAME)).map_err(|error| {
-        (
-            HandoffOutcome::InvalidManifest,
-            format!("`{MANIFEST_FILE_NAME}` is not readable: {error}"),
-        )
-    })?;
+    let bytes = read_envelope_file(envelope, MANIFEST_FILE_NAME, MAX_DOCUMENT_BYTES)
+        .map_err(|detail| (HandoffOutcome::InvalidManifest, detail))?;
     let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|error| {
         (HandoffOutcome::InvalidManifest, format!("`{MANIFEST_FILE_NAME}` is not valid: {error}"))
     })?;

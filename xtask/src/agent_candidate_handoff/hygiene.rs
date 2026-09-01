@@ -173,6 +173,34 @@ pub fn is_repository_identity(value: &str) -> bool {
     acceptable(owner) && acceptable(name)
 }
 
+/// Whether `value` is a lowercase host name a repository identity may name.
+///
+/// This is a shape check, not an allowlist: the format records which host an
+/// identity came from so a consumer can decide whether that host is one it is
+/// authorized to publish to. Deciding that here would bake one forge's policy
+/// into a general transport.
+#[must_use]
+pub fn is_repository_host(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.contains('.')
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && !value.contains("..")
+        && value
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'))
+}
+
+/// A repository identity read from a remote URL, with the host it names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemoteIdentity {
+    /// Lowercase hosting authority, without userinfo or port.
+    pub host: String,
+    /// Lowercase `owner/name`.
+    pub value: String,
+}
+
 /// Why a remote URL could not be used as an identity source.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemoteIdentityError {
@@ -196,24 +224,45 @@ impl std::error::Error for RemoteIdentityError {}
 ///
 /// A credential-bearing URL is an error rather than a redacted value, so the
 /// caller records the refusal as a limitation and no URL bytes are retained.
-pub fn repository_identity_from_remote(url: &str) -> Result<Option<String>, RemoteIdentityError> {
+pub fn repository_identity_from_remote(
+    url: &str,
+) -> Result<Option<RemoteIdentity>, RemoteIdentityError> {
     let trimmed = url.trim();
     if url_carries_credentials(trimmed) {
         return Err(RemoteIdentityError::CredentialsPresent);
     }
-    // Strip scheme-and-host for URL forms, or the `host:` prefix for SCP form.
-    let path = if let Some(scheme_end) = trimmed.find("://") {
+    // Split the hosting authority from the path, for URL forms and for the SCP
+    // form (`host:owner/name`) alike. Both halves are load-bearing: the path
+    // supplies `owner/name`, and the authority is what makes that pair name one
+    // repository rather than one per forge.
+    let (authority, path) = if let Some(scheme_end) = trimmed.find("://") {
+        let scheme = trimmed[..scheme_end].to_lowercase();
         let after_scheme = &trimmed[scheme_end + 3..];
-        match after_scheme.find('/') {
-            Some(index) => &after_scheme[index + 1..],
+        // `file://` and other pathname schemes carry no hosting authority, so
+        // they can locate a clone but cannot establish which repository it is.
+        if scheme == "file" {
+            return Ok(None);
+        }
+        match after_scheme.split_once('/') {
+            Some((authority, path)) => (authority, path),
             None => return Ok(None),
         }
     } else {
         match trimmed.split_once(':') {
-            Some((_, path)) => path,
-            None => return Ok(None),
+            // A bare Windows drive letter or a relative path is not an
+            // authority; requiring a dot keeps this to real host names.
+            Some((authority, path)) if authority.contains('.') => (authority, path),
+            _ => return Ok(None),
         }
     };
+
+    // Userinfo is already refused above; a port is not part of repository
+    // identity and is dropped rather than retained.
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host).to_lowercase();
+    if host.is_empty() || !host.contains('.') {
+        return Ok(None);
+    }
 
     let path = path.trim_start_matches('/').trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
@@ -223,6 +272,9 @@ pub fn repository_identity_from_remote(url: &str) -> Result<Option<String>, Remo
     let [.., owner, name] = segments.as_slice() else {
         return Ok(None);
     };
-    let candidate = format!("{}/{}", owner.to_lowercase(), name.to_lowercase());
-    Ok(is_repository_identity(&candidate).then_some(candidate))
+    let value = format!("{}/{}", owner.to_lowercase(), name.to_lowercase());
+    if !is_repository_identity(&value) {
+        return Ok(None);
+    }
+    Ok(Some(RemoteIdentity { host, value }))
 }

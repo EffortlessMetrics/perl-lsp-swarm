@@ -13,15 +13,17 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::create::{
-    build_inventory, collect_gitlinks, compute_identity_digest, declared_proof_subject,
-    read_commit_identity,
+    SELF_CHECK_PENDING, SELF_CHECK_VALIDATED, build_inventory, collect_gitlinks,
+    compute_identity_digest, declared_proof_subject, read_commit_identity,
 };
 use super::git::{is_full_object_id, run_git, run_git_with_stdin};
-use super::hygiene::{is_proof_id, is_repository_identity, is_safe_envelope_name, scan_secrets};
+use super::hygiene::{
+    is_proof_id, is_repository_host, is_repository_identity, is_safe_envelope_name, scan_secrets,
+};
 use super::model::{
     ChangeInventory, HANDOFF_MANIFEST_SCHEMA_V1, HANDOFF_RECEIPT_SCHEMA_V1, LimitationCode,
     MANIFEST_FILE_NAME, Manifest, PACK_FILE_NAME, PROOF_DIR_NAME, ProducerReceipt,
-    RECEIPT_FILE_NAME, RepositoryIdentityStatus, TransportFormat,
+    RECEIPT_FILE_NAME, RepositoryIdentitySource, RepositoryIdentityStatus, TransportFormat,
 };
 use super::{HandoffOutcome, is_digest_hex};
 
@@ -183,10 +185,35 @@ impl Builder {
     }
 }
 
+/// Which receipt a validation run is entitled to expect.
+///
+/// The producer validates its own staging directory *before* it writes the
+/// validated receipt, so the two callers legitimately see different receipts.
+/// Naming the distinction keeps the published path strict rather than widening
+/// it to accommodate the internal one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReceiptStage {
+    /// A staging directory the producer has not published yet.
+    Staged,
+    /// A published envelope, which must carry a validated receipt.
+    Published,
+}
+
 /// Validate one envelope with no network access, no credentials, and no
 /// dependence on the producing workspace.
 #[must_use]
 pub fn check_handoff(envelope: &Path) -> CheckReport {
+    check_envelope(envelope, ReceiptStage::Published)
+}
+
+/// Validate a staging directory on the producer's own pre-publication path.
+#[must_use]
+pub fn check_staged(envelope: &Path) -> CheckReport {
+    check_envelope(envelope, ReceiptStage::Staged)
+}
+
+#[must_use]
+fn check_envelope(envelope: &Path, stage: ReceiptStage) -> CheckReport {
     let mut builder = Builder::new(envelope);
 
     let manifest_bytes = match read_envelope_file(envelope, MANIFEST_FILE_NAME, MAX_DOCUMENT_BYTES)
@@ -223,7 +250,7 @@ pub fn check_handoff(envelope: &Path) -> CheckReport {
     // certifying bytes it never read.
     builder.pass("content_safety", "no credential material in retained manifest strings");
 
-    if let Err(detail) = verify_envelope_closure(envelope, &manifest) {
+    if let Err(detail) = verify_envelope_closure(envelope, &manifest, stage) {
         return builder.fail("envelope_closure", HandoffOutcome::InvalidManifest, detail);
     }
     builder.pass(
@@ -420,7 +447,39 @@ fn validate_shape(manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
         }
     }
 
-    match (&manifest.repository_identity.status, &manifest.repository_identity.value) {
+    // Status, source, value, and host are one closed tuple, not four
+    // independent fields. Checking them separately would let a resealed
+    // manifest upgrade a caller's declaration into an observation, or present
+    // an observed identity with no host — claims whose strength a reader would
+    // otherwise take at face value.
+    let identity = &manifest.repository_identity;
+    match (identity.status, identity.source) {
+        (RepositoryIdentityStatus::Observed, RepositoryIdentitySource::GitRemoteOrigin) => {
+            let Some(host) = &identity.host else {
+                return Err(invalid(
+                    "an observed repository identity must name the host it was read from"
+                        .to_string(),
+                ));
+            };
+            if !is_repository_host(host) {
+                return Err(invalid(format!("`{host}` is not a lowercase host name")));
+            }
+        }
+        (RepositoryIdentityStatus::Declared, RepositoryIdentitySource::CallerDeclared)
+        | (RepositoryIdentityStatus::NotProven, RepositoryIdentitySource::Unavailable) => {
+            if identity.host.is_some() {
+                return Err(invalid(
+                    "only an observed repository identity may name a host".to_string(),
+                ));
+            }
+        }
+        (status, source) => {
+            return Err(invalid(format!(
+                "repository identity status `{status:?}` cannot come from source `{source:?}`"
+            )));
+        }
+    }
+    match (identity.status, &identity.value) {
         (RepositoryIdentityStatus::NotProven, Some(_)) => {
             return Err(invalid(
                 "an unproven repository identity must not carry a value".to_string(),
@@ -473,7 +532,11 @@ fn find_unsafe_content(manifest: &Manifest) -> Option<String> {
 }
 
 /// Reject any byte in the envelope the manifest does not account for.
-fn verify_envelope_closure(envelope: &Path, manifest: &Manifest) -> Result<(), String> {
+fn verify_envelope_closure(
+    envelope: &Path,
+    manifest: &Manifest,
+    stage: ReceiptStage,
+) -> Result<(), String> {
     let mut declared: BTreeSet<String> = BTreeSet::new();
     declared.insert(MANIFEST_FILE_NAME.to_string());
     declared.insert(RECEIPT_FILE_NAME.to_string());
@@ -496,7 +559,7 @@ fn verify_envelope_closure(envelope: &Path, manifest: &Manifest) -> Result<(), S
         return Err(format!("`{absent}` is declared but absent from the envelope"));
     }
 
-    verify_receipt_agrees(envelope, manifest)
+    verify_receipt_agrees(envelope, manifest, stage)
 }
 
 /// Require the producer receipt to describe the manifest it sits beside.
@@ -505,7 +568,11 @@ fn verify_envelope_closure(envelope: &Path, manifest: &Manifest) -> Result<(), S
 /// from the objects regardless — but two documents in one envelope that name
 /// different candidates is a malformed envelope, most likely a manifest
 /// swapped in after the fact.
-fn verify_receipt_agrees(envelope: &Path, manifest: &Manifest) -> Result<(), String> {
+fn verify_receipt_agrees(
+    envelope: &Path,
+    manifest: &Manifest,
+    stage: ReceiptStage,
+) -> Result<(), String> {
     let bytes = read_envelope_file(envelope, RECEIPT_FILE_NAME, MAX_DOCUMENT_BYTES)?;
     let receipt: ProducerReceipt = serde_json::from_slice(&bytes)
         .map_err(|error| format!("`{RECEIPT_FILE_NAME}` is not a valid receipt: {error}"))?;
@@ -521,6 +588,38 @@ fn verify_receipt_agrees(envelope: &Path, manifest: &Manifest) -> Result<(), Str
     }
     if receipt.candidate_identity_digest != manifest.candidate_identity_digest {
         return Err("the receipt and the manifest name different candidate identities".to_string());
+    }
+    // A receipt that repeats the digest but contradicts the limitation list is
+    // not an agreeing receipt. Limitations are the manifest's admissions, and a
+    // receipt is the producer's statement that it validated *those* admissions.
+    if receipt.limitations != manifest.limitations {
+        return Err("the receipt and the manifest declare different limitations".to_string());
+    }
+    match stage {
+        // Before publication the producer has not yet run its own check, so
+        // `pending` is the only honest token; `create` validates in this mode.
+        ReceiptStage::Staged => {
+            if receipt.producer_self_check != SELF_CHECK_PENDING
+                && receipt.producer_self_check != SELF_CHECK_VALIDATED
+            {
+                return Err(format!(
+                    "receipt self-check `{}` is not a recognised token",
+                    receipt.producer_self_check
+                ));
+            }
+        }
+        // A published envelope carries the receipt `publish` rewrote after the
+        // check passed. Accepting `pending` here would let a directory that was
+        // never validated — or one lifted out of staging — read as one that was.
+        ReceiptStage::Published => {
+            if receipt.producer_self_check != SELF_CHECK_VALIDATED {
+                return Err(format!(
+                    "receipt self-check is `{}`, not `{SELF_CHECK_VALIDATED}`; this envelope was \
+                     never published by a successful producer check",
+                    receipt.producer_self_check
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -567,7 +666,11 @@ fn collect_relative_files(
 /// Reading through a link would let an envelope validate using bytes outside
 /// its own directory, so it would stop being reconstructable the moment that
 /// external target moved — exactly the property the format exists to provide.
-fn read_envelope_file(envelope: &Path, relative: &str, limit: u64) -> Result<Vec<u8>, String> {
+pub(super) fn read_envelope_file(
+    envelope: &Path,
+    relative: &str,
+    limit: u64,
+) -> Result<Vec<u8>, String> {
     let path = envelope.join(relative);
     let metadata = fs::symlink_metadata(&path)
         .map_err(|error| format!("`{relative}` is not readable: {error}"))?;
