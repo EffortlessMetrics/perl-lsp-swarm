@@ -72,12 +72,13 @@ fn test_pause_no_session_returns_guidance_message() {
 #[test]
 fn test_pause_session_present_signal_failure_returns_accurate_error() {
     let mut adapter = DebugAdapter::new();
-    // Seed an attached_pid that cannot receive signals (999_999 is virtually
-    // guaranteed not to exist). This makes send_interrupt_signal return false
-    // even though a "session" (attached pid) IS present.
-    adapter.seed_attached_pid_for_test(999_999);
+    // PID 0 is a test-only fail-closed sentinel: send_interrupt_signal rejects
+    // it before reaching the OS, so this test cannot signal an unrelated
+    // same-user process while a session remains present.
+    let attached_pid = 0;
+    adapter.seed_attached_pid_for_test(attached_pid);
 
-    let response = adapter.handle_request(1, "pause", Some(json!({"threadId": 999_999})));
+    let response = adapter.handle_request(1, "pause", Some(json!({"threadId": attached_pid})));
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
