@@ -7,7 +7,7 @@ impl<'a> Parser<'a> {
         while !self.tokens.is_eof() {
             self.check_cancelled()?;
 
-            // Check for UnknownRest token (lexer budget exceeded)
+                // Check for a geometry-only UnknownRest token (lexer budget exceeded)
             if matches!(self.peek_kind(), Some(TokenKind::UnknownRest)) {
                 let t = self.consume_token()?;
                 statements.push(Node::new(
@@ -18,7 +18,6 @@ impl<'a> Parser<'a> {
                 // the terminal cause at this exact branch so the Ok path of
                 // `parse_with_recovery` cannot report a clean completion for
                 // an AST whose remainder is explicitly unparsed.
-                self.operation.record_terminal(ParseStopCause::LexerBudgetExhausted);
                 break; // Stop parsing but preserve earlier nodes
             }
 

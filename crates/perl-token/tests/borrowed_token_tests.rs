@@ -37,6 +37,77 @@ fn token_ref_to_owned_token_is_explicit() -> TestResult {
 }
 
 #[test]
+fn externally_mutated_token_ref_text_cannot_create_invalid_owned_token() -> TestResult {
+    let mut borrowed = TokenRef::new_checked(TokenKind::UnknownRest, "", 40, 96)?;
+    borrowed.text = "mutated payload";
+
+    let owned = borrowed.to_owned_token();
+
+    assert_eq!(owned.kind(), TokenKind::UnknownRest);
+    assert_eq!(owned.span(), ordered_span(40, 96));
+    assert!(owned.text.is_empty());
+    assert!(owned.is_geometry_only());
+    Ok(())
+}
+
+#[test]
+fn externally_mutated_token_ref_equal_width_payload_stays_geometry_only() -> TestResult {
+    let equal_width_payload = "x".repeat(56);
+    let mut borrowed = TokenRef::new_checked(TokenKind::UnknownRest, "", 40, 96)?;
+    borrowed.text = &equal_width_payload;
+
+    let owned = borrowed.to_owned_token();
+
+    assert_eq!(owned.kind(), TokenKind::UnknownRest);
+    assert_eq!(owned.span(), ordered_span(40, 96));
+    assert!(owned.text.is_empty());
+    assert!(owned.is_geometry_only());
+    Ok(())
+}
+
+#[test]
+fn payload_bearing_unknown_rest_round_trips_through_token_ref() -> TestResult {
+    let payload = "remainder";
+    let borrowed = TokenRef::new_checked(TokenKind::UnknownRest, payload, 40, 49)?;
+
+    let owned = borrowed.to_owned_token();
+
+    assert_eq!(owned.kind(), TokenKind::UnknownRest);
+    assert_eq!(owned.span(), ordered_span(40, 49));
+    assert_eq!(&*owned.text, payload);
+    assert!(!owned.is_geometry_only());
+    Ok(())
+}
+
+#[test]
+fn owned_geometry_only_unknown_rest_provenance_survives_text_mutation() -> TestResult {
+    let mut token = Token::unknown_rest_at(40, 96)?;
+    token.text = Arc::from("x".repeat(56));
+
+    assert!(token.is_geometry_only());
+    let borrowed = token.as_ref_token();
+    assert!(borrowed.is_geometry_only());
+    let rebuilt = borrowed.to_owned_token();
+    assert!(rebuilt.text.is_empty());
+    assert!(rebuilt.is_geometry_only());
+    assert!(token.with_span(100, 156)?.text.is_empty());
+    assert!(token.with_kind(TokenKind::UnknownRest)?.text.is_empty());
+    Ok(())
+}
+
+#[test]
+fn owned_payload_bearing_unknown_rest_remains_payload_bearing_after_valid_mutation() -> TestResult {
+    let mut token = Token::new_checked(TokenKind::UnknownRest, "abc", 40, 43)?;
+    token.text = Arc::from("xyz");
+
+    assert!(!token.is_geometry_only());
+    let rebuilt = token.as_ref_token().to_owned_token();
+    assert_eq!(&*rebuilt.text, "xyz");
+    assert!(!rebuilt.is_geometry_only());
+    Ok(())
+}
+
+#[test]
 fn token_from_token_ref_matches_constructor() -> TestResult {
     let borrowed = TokenRef::new_checked(TokenKind::Number, "42", 20, 22)?;
     let from_impl: Token = borrowed.into();

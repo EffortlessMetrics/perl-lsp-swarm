@@ -277,3 +277,40 @@ fn geometry_only_unknown_rest_survives_conversion_with_source() {
     assert_eq!(converted[0].start(), 11);
     assert_eq!(converted[0].end(), 38);
 }
+
+#[test]
+fn live_budget_recovery_keeps_geometry_only_unknown_rest() {
+    let source = format!("/{};\n", "a".repeat(70_000));
+    let mut stream = TokenStream::new(&source);
+    let token = stream.peek().expect("live stream should expose recovery token");
+
+    assert_eq!(token.kind(), TokenKind::UnknownRest);
+    assert!(token.text.is_empty());
+    assert!(token.is_geometry_only());
+    assert!(token.start() < token.end());
+    assert_eq!(token.end(), source.len());
+}
+
+#[test]
+fn buffered_budget_recovery_keeps_geometry_without_source_copy() {
+    let source = format!("/{};\n", "a".repeat(70_000));
+    let mut lexer = PerlLexer::new(&source);
+    let mut raw = Vec::new();
+    while let Some(token) = lexer.next_token() {
+        raw.push(token);
+    }
+    let recovery = raw
+        .iter()
+        .find(|token| matches!(token.token_type, TokenType::UnknownRest))
+        .expect("over-budget regex should emit UnknownRest");
+    assert!(recovery.text.is_empty());
+
+    let converted = TokenStream::lexer_tokens_to_parser_tokens(raw);
+    let token = converted
+        .iter()
+        .find(|token| token.kind() == TokenKind::UnknownRest)
+        .expect("buffered conversion must preserve UnknownRest");
+    assert!(token.text.is_empty());
+    assert!(token.is_geometry_only());
+    assert_eq!(token.end() - token.start(), source.len() - token.start());
+}

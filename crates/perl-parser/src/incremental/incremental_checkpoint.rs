@@ -116,9 +116,10 @@ impl TokenSegment {
 /// unprovable, so the token is refused (`None`) and the caller re-lexes the
 /// suffix. Silently substituting a synthetic `Unknown`/`EOF` token here would
 /// masquerade as end-of-stream mid-parse and erase the real suffix (#14158
-/// class sweep).
+/// class sweep). Geometry-only cached tokens (`UnknownRest`, empty text over
+/// a non-empty span) stay geometry-only while the shifted span stays provable.
 fn retain_shifted_cached_token(token: &Token, start: usize, end: usize) -> Option<Token> {
-    Token::new_checked(token.kind(), token.text.clone(), start, end).ok()
+    token.with_span(start, end).ok()
 }
 
 /// Cache for parser tokens to avoid re-lexing.
@@ -599,8 +600,7 @@ impl CheckpointedIncrementalParser {
 
         // Convert raw lexer tokens to parser tokens (trivia-filtered + kind-mapped)
         // and cache them for reuse in incremental reparses.
-        let parser_tokens =
-            TokenStream::lexer_tokens_to_parser_tokens_from_source(raw_tokens, &self.source);
+        let parser_tokens = TokenStream::lexer_tokens_to_parser_tokens(raw_tokens);
 
         if let (Some(first), Some(last)) = (parser_tokens.first(), parser_tokens.last()) {
             let start = first.start();
@@ -752,8 +752,7 @@ impl CheckpointedIncrementalParser {
         }
         self.stats.bytes_relexed += bytes_relexed_this_phase;
 
-        let converted =
-            TokenStream::lexer_tokens_to_parser_tokens_from_source(raw_relexed, &self.source);
+        let converted = TokenStream::lexer_tokens_to_parser_tokens(raw_relexed);
         newly_lexed_parser_tokens.extend(converted.iter().cloned());
         parser_tokens.extend(converted);
 
@@ -818,8 +817,7 @@ impl CheckpointedIncrementalParser {
                     self.stats.tokens_relexed += 1;
                 }
                 self.stats.tail_fallback_bytes += tail_bytes;
-                let tail_converted =
-                    TokenStream::lexer_tokens_to_parser_tokens_from_source(raw_tail, &self.source);
+                let tail_converted = TokenStream::lexer_tokens_to_parser_tokens(raw_tail);
                 newly_lexed_parser_tokens.extend(tail_converted.iter().cloned());
                 parser_tokens.extend(tail_converted);
             }
@@ -1113,6 +1111,30 @@ mod tests {
         let mut full = CheckpointedIncrementalParser::new();
         let full_tree = must(full.parse(expected_source));
         assert_eq!(incremental_tree, full_tree, "incremental tree diverged from fresh full parse");
+    }
+
+    #[test]
+    fn checkpoint_incremental_recovery_token_keeps_shifted_geometry() {
+        let source = format!("{} /{};\n", "my $x = 1;\n".repeat(40), "a".repeat(70_000));
+        let mut parser = CheckpointedIncrementalParser::new();
+        must(parser.parse(source));
+
+        let edit = SimpleEdit { start: 8, end: 9, new_text: "22".to_owned() };
+        let new_tree = must(parser.apply_edit(&edit));
+        let recovery = parser
+            .token_cache
+            .segments
+            .iter()
+            .flat_map(|segment| segment.tokens.iter())
+            .find(|token| token.kind() == TokenKind::UnknownRest)
+            .expect("checkpoint cache should retain budget recovery");
+
+        assert!(recovery.is_geometry_only());
+        assert_eq!(recovery.end(), parser.source.len());
+        assert_eq!(recovery.text.len(), 0);
+
+        let mut full = CheckpointedIncrementalParser::new();
+        assert_eq!(new_tree, must(full.parse(parser.source.clone())));
     }
 
     #[test]

@@ -8,11 +8,15 @@ use crate::{TokenKind, TokenSpan, TokenSpanError};
 /// Unlike [`Token`], this type borrows source text and does not allocate.
 /// Convert to [`Token`] explicitly with [`TokenRef::to_owned_token`] or `From`.
 ///
-/// Geometry fields are private. `text` remains a public field because replacing
-/// it cannot create a reversed or illegally empty span. `kind` is a read
-/// accessor: assignment on an empty EOF would otherwise bypass empty-span
-/// policy. Use [`TokenRef::new_checked`] / [`TokenRef::with_kind`] to change
-/// kind.
+/// Geometry fields are private. `text` remains a public field for compatibility;
+/// replacing it cannot create reversed geometry, and [`TokenRef::to_owned_token`]
+/// validates the replacement before creating an owned token. A replacement with
+/// the wrong width is canonicalized to a safe recovery token instead of being
+/// allowed to create an invalid [`Token`]. The private provenance bit preserves
+/// the distinction between a constructor-created payload-free `UnknownRest` and
+/// a valid payload-bearing one across `Copy`; `kind` is a read accessor: assignment
+/// on an empty EOF would otherwise bypass empty-span policy. Use
+/// [`TokenRef::new_checked`] / [`TokenRef::with_kind`] to change kind.
 ///
 /// This struct is `#[non_exhaustive]`: additional fields may be added later.
 /// Downstream crates cannot use struct literals. That marker is the #2898
@@ -48,6 +52,8 @@ pub struct TokenRef<'src> {
     pub text: &'src str,
     start: usize,
     end: usize,
+    /// Whether this view originated as payload-free recovery geometry.
+    geometry_only: bool,
 }
 
 impl<'src> TokenRef<'src> {
@@ -56,7 +62,8 @@ impl<'src> TokenRef<'src> {
     /// Rules:
     /// - `start <= end`
     /// - zero-length spans are accepted for EOF and explicit synthetic unknown tokens
-    /// - `text.len()` must equal `end - start`
+    /// - `text.len()` must equal `end - start`, except for the explicit
+    ///   geometry-only `UnknownRest` representation
     ///
     /// [`TokenRef::try_new`] is an alias of this constructor.
     pub fn new_checked(
@@ -67,8 +74,16 @@ impl<'src> TokenRef<'src> {
     ) -> Result<Self, TokenSpanError> {
         let span = TokenSpan::try_new(start, end)?;
         validate_non_empty_span(kind, span.start(), span.is_empty())?;
-        validate_text_span_width(text.len(), span)?;
-        Ok(Self { kind, text, start: span.start(), end: span.end() })
+        if !(kind == TokenKind::UnknownRest && text.is_empty() && !span.is_empty()) {
+            validate_text_span_width(text.len(), span)?;
+        }
+        Ok(Self {
+            kind,
+            text,
+            start: span.start(),
+            end: span.end(),
+            geometry_only: kind == TokenKind::UnknownRest && text.is_empty() && !span.is_empty(),
+        })
     }
 
     /// Create a borrowed token view with checked span invariants.
@@ -119,13 +134,56 @@ impl<'src> TokenRef<'src> {
     }
 
     /// Convert this borrowed token view into an owned [`Token`].
+    ///
+    /// The public `text` field can be changed after construction, so this
+    /// conversion preserves the payload for normal tokens only after revalidating
+    /// its width. A constructor-created geometry-only `UnknownRest` remains
+    /// payload-free even if its public `text` is later replaced with an equal- or
+    /// wrong-width slice. A valid payload-bearing `UnknownRest` round-trips when
+    /// its replacement remains width-valid; malformed replacements become
+    /// geometry-only `UnknownRest` (or EOF for an empty span). This preserves the
+    /// infallible, compatibility-oriented API without allowing a malformed
+    /// `Token` to escape.
     pub fn to_owned_token(self) -> Token {
-        Token::from_valid_parts(self.kind, Arc::from(self.text), self.start, self.end)
+        if self.kind == TokenKind::UnknownRest {
+            if self.geometry_only || self.text.len() != self.len() {
+                return match Token::unknown_rest_at(self.start, self.end) {
+                    Ok(token) => token,
+                    Err(_) => Token::eof_at(self.start),
+                };
+            }
+            return Token::from_valid_parts(self.kind, Arc::from(self.text), self.start, self.end);
+        }
+
+        if self.text.len() == self.len() {
+            return Token::from_valid_parts(self.kind, Arc::from(self.text), self.start, self.end);
+        }
+
+        if self.start < self.end {
+            return match Token::unknown_rest_at(self.start, self.end) {
+                Ok(token) => token,
+                Err(_) => Token::eof_at(self.start),
+            };
+        }
+
+        Token::eof_at(self.start)
+    }
+
+    /// Return whether this is a payload-free `UnknownRest` recovery token.
+    ///
+    /// Its byte geometry identifies the unparsed remainder, while `text` is
+    /// intentionally empty so budget recovery does not retain the remainder.
+    pub fn is_geometry_only(self) -> bool {
+        self.geometry_only
     }
 
     /// Clone this view with a new token kind, enforcing empty-span policy.
     pub fn with_kind(self, kind: TokenKind) -> Result<Self, TokenSpanError> {
-        Self::new_checked(kind, self.text, self.start, self.end)
+        let mut token = Self::new_checked(kind, self.text, self.start, self.end)?;
+        if self.geometry_only && kind == TokenKind::UnknownRest {
+            token.geometry_only = true;
+        }
+        Ok(token)
     }
 }
 
@@ -198,6 +256,8 @@ pub struct Token {
     pub text: Arc<str>,
     start: usize,
     end: usize,
+    /// Whether this token originated as payload-free recovery geometry.
+    geometry_only: bool,
 }
 
 impl Token {
@@ -206,7 +266,8 @@ impl Token {
     /// Rules:
     /// - `start <= end`
     /// - zero-length spans are accepted for EOF and explicit synthetic unknown tokens
-    /// - `text.len()` must equal `end - start`
+    /// - `text.len()` must equal `end - start`, except for the explicit
+    ///   geometry-only `UnknownRest` representation
     ///
     /// [`Token::try_new`] is an alias of this constructor.
     pub fn new_checked(
@@ -218,7 +279,9 @@ impl Token {
         let span = TokenSpan::try_new(start, end)?;
         validate_non_empty_span(kind, span.start(), span.is_empty())?;
         let text = text.into();
-        validate_text_span_width(text.as_ref().len(), span)?;
+        if !(kind == TokenKind::UnknownRest && text.is_empty() && !span.is_empty()) {
+            validate_text_span_width(text.as_ref().len(), span)?;
+        }
         Ok(Self::from_valid_parts(kind, text, span.start(), span.end()))
     }
 
@@ -262,13 +325,26 @@ impl Token {
     ) -> Self {
         debug_assert!(end >= start);
         debug_assert!(end > start || allows_empty_span(kind));
-        debug_assert!(text.as_ref().len() == end.saturating_sub(start));
-        Self { kind, text, start, end }
+        debug_assert!(
+            text.as_ref().len() == end.saturating_sub(start)
+                || (kind == TokenKind::UnknownRest && text.is_empty() && start < end)
+        );
+        let geometry_only = kind == TokenKind::UnknownRest && text.is_empty() && start < end;
+        Self { kind, text, start, end, geometry_only }
     }
 
     /// Create an EOF token at `pos`.
     pub fn eof_at(pos: usize) -> Self {
         Self::from_valid_parts(TokenKind::Eof, Arc::from(""), pos, pos)
+    }
+
+    /// Create a payload-free `UnknownRest` token over `start..end`.
+    ///
+    /// The lexer uses this representation when a budget prevents it from
+    /// retaining the remaining source. The span is exact; the public `text`
+    /// field is deliberately empty. Empty and reversed spans are rejected.
+    pub fn unknown_rest_at(start: usize, end: usize) -> Result<Self, TokenSpanError> {
+        Self::new_checked(TokenKind::UnknownRest, Arc::from(""), start, end)
     }
 
     /// Create an unknown (synthetic) token at `start..end`.
@@ -315,12 +391,20 @@ impl Token {
 
     /// Clone this token with a new checked span.
     pub fn with_span(&self, start: usize, end: usize) -> Result<Self, TokenSpanError> {
-        Self::new_checked(self.kind, Arc::clone(&self.text), start, end)
+        if self.is_geometry_only() {
+            Self::unknown_rest_at(start, end)
+        } else {
+            Self::new_checked(self.kind, Arc::clone(&self.text), start, end)
+        }
     }
 
     /// Clone this token with a new token kind, enforcing empty-span policy.
     pub fn with_kind(&self, kind: TokenKind) -> Result<Self, TokenSpanError> {
-        Self::new_checked(kind, Arc::clone(&self.text), self.start, self.end)
+        if self.is_geometry_only() && kind == TokenKind::UnknownRest {
+            Self::unknown_rest_at(self.start, self.end)
+        } else {
+            Self::new_checked(kind, Arc::clone(&self.text), self.start, self.end)
+        }
     }
 
     /// Return the token span length in bytes.
@@ -352,6 +436,11 @@ impl Token {
         self.start == self.end
     }
 
+    /// Return whether this is a payload-free `UnknownRest` recovery token.
+    pub fn is_geometry_only(&self) -> bool {
+        self.geometry_only
+    }
+
     /// Return a human-readable display name for this token.
     pub fn display_name(&self) -> &'static str {
         self.kind.display_name()
@@ -359,7 +448,13 @@ impl Token {
 
     /// Return a borrowed token view over this token.
     pub fn as_ref_token(&self) -> TokenRef<'_> {
-        TokenRef { kind: self.kind, text: self.text.as_ref(), start: self.start, end: self.end }
+        TokenRef {
+            kind: self.kind,
+            text: self.text.as_ref(),
+            start: self.start,
+            end: self.end,
+            geometry_only: self.geometry_only,
+        }
     }
 }
 

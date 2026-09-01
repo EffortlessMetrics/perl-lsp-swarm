@@ -64,10 +64,6 @@ enum TokenStreamInner<'a> {
 /// Provides three-token lookahead, transparent trivia skipping (in lexer mode),
 /// and statement-boundary state management used by the recursive-descent parser.
 pub struct TokenStream<'a> {
-    /// Source text the live-lexer path lexes. Used only to reconstruct the
-    /// payload of budget-degraded `UnknownRest` tokens (see
-    /// [`Self::convert_lexer_token`]); buffered mode never consults it.
-    input: &'a str,
     inner: TokenStreamInner<'a>,
     buffered_eof_pos: usize,
     peeked: Option<Token>,
@@ -79,7 +75,6 @@ impl<'a> TokenStream<'a> {
     /// Create a new token stream from source code.
     pub fn new(input: &'a str) -> Self {
         TokenStream {
-            input,
             inner: TokenStreamInner::Lexer(Box::new(PerlLexer::new(input))),
             buffered_eof_pos: input.len(),
             peeked: None,
@@ -127,7 +122,6 @@ impl<'a> TokenStream<'a> {
 
         TokenStream {
             // Buffered tokens are already converted; `input` is never consulted.
-            input: "",
             inner: TokenStreamInner::Buffered(VecDeque::from(tokens)),
             buffered_eof_pos,
             peeked: None,
@@ -334,12 +328,7 @@ impl<'a> TokenStream<'a> {
     /// Get the next token from the backing source.
     fn next_token(&mut self) -> ParseResult<Token> {
         match &mut self.inner {
-            TokenStreamInner::Lexer(lexer) => {
-                // Copy the source reference first: it outlives the `self.inner`
-                // borrow and feeds budget-token payload reconstruction.
-                let input = self.input;
-                Self::next_token_from_lexer(lexer, input)
-            }
+            TokenStreamInner::Lexer(lexer) => Self::next_token_from_lexer(lexer),
             TokenStreamInner::Buffered(buf) => {
                 Self::next_token_from_buf(buf, &mut self.buffered_eof_pos)
             }
@@ -347,7 +336,7 @@ impl<'a> TokenStream<'a> {
     }
 
     /// Drain the next non-trivia token from the live lexer.
-    fn next_token_from_lexer(lexer: &mut PerlLexer<'_>, source: &str) -> ParseResult<Token> {
+    fn next_token_from_lexer(lexer: &mut PerlLexer<'_>) -> ParseResult<Token> {
         // Skip whitespace and comments
         loop {
             let lexer_token = lexer.next_token().ok_or(ParseError::UnexpectedEof)?;
@@ -364,7 +353,14 @@ impl<'a> TokenStream<'a> {
                     ));
                 }
                 _ => {
-                    return Ok(Self::convert_lexer_token(lexer_token, source));
+                    // The live path deliberately keeps no source copy, so no
+                    // reconstruction happens here: payload-free geometry-only
+                    // tokens stay in the honest geometry-only representation
+                    // (`token_from_lexer_parts` builds `UnknownRest` via
+                    // `unknown_rest_at`). Source-aware reconstruction is the
+                    // public seam's job (`lexer_tokens_to_parser_tokens_from_source`,
+                    // #14158 class sweep).
+                    return Ok(Self::convert_lexer_token(lexer_token, ""));
                 }
             }
         }
@@ -390,9 +386,10 @@ impl<'a> TokenStream<'a> {
     ///
     /// Extracted from `next_token_from_lexer` to keep the match arm readable.
     ///
-    /// `source` is the text the live lexer is consuming; it reconstructs the
-    /// payload of payload-free geometry-only tokens (see the tail of this
-    /// function). Pass `""` when no source is available (legacy conversion).
+    /// `source` is the text the tokens were lexed from, when the caller has
+    /// it; it reconstructs the payload of payload-free geometry-only tokens
+    /// (see the tail of this function). Pass `""` when no source is available
+    /// (the live stream keeps no source copy; legacy conversion).
     fn convert_lexer_token(token: LexerToken, source: &str) -> Token {
         let kind = match &token.token_type {
             // Keywords
@@ -530,7 +527,9 @@ impl<'a> TokenStream<'a> {
         // and with it the `lexer_budget_exhausted` stop cause downstream.
         // Reconstruct the covered bytes from the source this stream already
         // owns; restoring the real bytes is strictly more faithful than any
-        // synthetic fallback.
+        // synthetic fallback. With no source available (""), geometry-only
+        // tokens keep their payload-free representation: `token_from_lexer_parts`
+        // constructs `UnknownRest` via `unknown_rest_at` without text.
         let text = if token.text.is_empty()
             && start < end
             && let Some(covered) = source.get(start..end)
@@ -557,6 +556,12 @@ fn token_from_lexer_parts(
     end: usize,
 ) -> Token {
     let text = text.into();
+    if kind == TokenKind::UnknownRest && text.is_empty() && start < end {
+        return match Token::unknown_rest_at(start, end) {
+            Ok(token) => token,
+            Err(_) => unknown_or_eof(text, start, end),
+        };
+    }
     match Token::new_checked(kind, std::sync::Arc::clone(&text), start, end) {
         Ok(token) => token,
         Err(TokenSpanError::TextLengthMismatch { text_len, span_len, .. })

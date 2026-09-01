@@ -25,6 +25,7 @@ use std::sync::{
 
 use perl_parser_core::{
     BudgetTracker, Node, NodeKind, ParseError, ParseOutput, ParseStopCause, Parser, SourceLocation,
+    TokenKind, TokenStream,
 };
 
 // ---------------------------------------------------------------------------
@@ -490,6 +491,54 @@ fn lexer_budget_exhaustion_sets_typed_stop_cause() {
         "within-budget regex must complete cleanly, got {:?}",
         clean_output.stop_cause()
     );
+}
+
+/// A lexer-budget `UnknownRest` can occur below the statement boundary.  Each
+/// expression context must preserve the typed lexer cause instead of turning
+/// the truncation into an ordinary unexpected-expression recovery.
+#[test]
+fn nested_lexer_budget_exhaustion_preserves_typed_stop_cause() {
+    let oversized_regex = "a".repeat(70_000);
+    let cases = [
+        ("assignment", format!("my $x = /{oversized_regex}/;")),
+        ("call argument", format!("consume(/{oversized_regex}/);")),
+        ("condition", format!("if (/{oversized_regex}/) {{ my $x = 1; }}")),
+        ("block statement", format!("sub f {{ /{oversized_regex}/; }}")),
+    ];
+
+    for (context, source) in cases {
+        let mut parser = Parser::new(&source);
+        let output = parser.parse_with_recovery();
+        assert_eq!(
+            output.stop_cause().as_ref().map(ParseStopCause::as_str),
+            Some("lexer_budget_exhausted"),
+            "nested {context} truncation must preserve the typed lexer cause",
+        );
+        assert!(output.terminated_early(), "nested {context} truncation must terminate early");
+    }
+}
+
+/// An unterminated heredoc also produces `UnknownRest`, but retains its source
+/// payload and is not a lexer-budget termination. The parser must preserve
+/// that distinction when the token is consumed at its public token boundary.
+#[test]
+fn unterminated_heredoc_unknown_rest_is_not_budget_exhaustion() {
+    let source = "my $x = <<EOF;\nbody without a terminator\n";
+    let mut stream = TokenStream::new(source);
+    let heredoc = loop {
+        let token = stream.next().expect("token stream should emit a token");
+        if token.kind() == TokenKind::UnknownRest {
+            break token;
+        }
+    };
+    assert!(!heredoc.text.is_empty(), "unterminated heredoc must retain payload");
+    assert!(!heredoc.is_geometry_only(), "unterminated heredoc must retain its payload provenance");
+
+    let mut parser = Parser::from_tokens(vec![heredoc], source);
+    let output = parser.parse_with_recovery();
+
+    assert_eq!(output.stop_cause(), None);
+    assert!(!output.terminated_early());
 }
 
 /// Deep expression recursion trips `check_recursion()` (the production

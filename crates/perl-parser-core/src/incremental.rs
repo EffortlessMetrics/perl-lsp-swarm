@@ -229,8 +229,7 @@ impl IncrementalState {
         if raw_relexed.last().is_some_and(|token| token.end > new_relex_end) {
             return self.full_reparse(new_source, Some(FallbackReason::CacheBoundaryUnavailable));
         }
-        let reparsed =
-            TokenStream::lexer_tokens_to_parser_tokens_from_source(raw_relexed, new_source);
+        let reparsed = TokenStream::lexer_tokens_to_parser_tokens(raw_relexed);
         if replay_crosses_cached_suffix(&reparsed, &suffix) {
             return self.full_reparse(new_source, Some(FallbackReason::CacheBoundaryUnavailable));
         }
@@ -405,7 +404,7 @@ fn lex_full(source: &str) -> (Vec<Token>, Vec<LexerCheckpoint>) {
         }
     }
 
-    (TokenStream::lexer_tokens_to_parser_tokens_from_source(raw_tokens, source), checkpoints)
+    (TokenStream::lexer_tokens_to_parser_tokens(raw_tokens), checkpoints)
 }
 
 fn merge_checkpoints(
@@ -453,7 +452,7 @@ fn contains_format_declaration(source: &str) -> bool {
 fn shift_token(token: &Token, delta: isize) -> Option<Token> {
     let start = shift_offset(token.start(), delta);
     let end = shift_offset(token.end(), delta);
-    Token::new_checked(token.kind(), token.text.clone(), start, end).ok()
+    token.with_span(start, end).ok()
 }
 
 fn replay_crosses_cached_suffix(replayed: &[Token], suffix: &[Token]) -> bool {
@@ -697,5 +696,26 @@ mod tests {
         assert_eq!(state.metrics().fallback, Some(FallbackReason::EditTooLarge));
         assert!(state.metrics().full_parse);
         assert!(state.metrics().tokens_relexed > 0);
+    }
+
+    #[test]
+    fn incremental_replay_preserves_shifted_budget_recovery_geometry() {
+        let source = format!("{} /{};\n", "my $x = 1;\n".repeat(40), "a".repeat(70_000));
+        let edit_start = must_some(source.find("= 1")) + 2;
+        let new_source = source.replacen("= 1", "= 22", 1);
+        let edit = IncrementalEdit::new(edit_start, edit_start + 1, "22");
+
+        let mut state = IncrementalState::new(&source);
+        let _ = must(state.reparse(&new_source, &edit));
+
+        let recovery = state
+            .tokens
+            .iter()
+            .find(|token| token.kind() == TokenKind::UnknownRest)
+            .expect("incremental cache should retain budget recovery");
+        assert!(recovery.is_geometry_only());
+        assert_eq!(recovery.end(), new_source.len());
+        assert_eq!(recovery.start(), new_source.find('/').expect("regex delimiter"));
+        assert_eq!(recovery.text.len(), 0);
     }
 }

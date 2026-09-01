@@ -518,12 +518,18 @@ impl<'a> Parser<'a> {
             Ok(node) => (node, self.operation.take_terminal()),
             Err(e) => {
                 // If parse() returned Err, it was a non-recoverable error (e.g. cancellation,
-                // recursion limit, or nesting limit). Record the typed stop cause at this branch —
-                // the cause is not reconstructed from diagnostics later. Any operation-scoped
-                // cause stored before the terminal error is superseded by it and dropped, so
-                // nothing leaks into a later operation on this same parser.
-                let cause = ParseStopCause::from_parse_error(&e);
-                let _ = self.operation.take_terminal();
+                // recursion limit, or nesting limit). Preserve a lexer-budget cause recorded
+                // while a nested parser branch consumed `UnknownRest`; that token can otherwise
+                // surface as a generic syntax error (for example as a quote delimiter).
+                let recorded_cause = self.operation.take_terminal();
+                let error_cause = ParseStopCause::from_parse_error(&e);
+                let cause = if matches!(recorded_cause, Some(ParseStopCause::LexerBudgetExhausted))
+                    && !error_cause.is_cancelled()
+                {
+                    ParseStopCause::LexerBudgetExhausted
+                } else {
+                    error_cause
+                };
 
                 // Ensure the terminal error is recorded in the diagnostic vector, but only
                 // once — `Cancelled` in particular can already be present from prior work.
