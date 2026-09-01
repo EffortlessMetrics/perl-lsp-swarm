@@ -1079,6 +1079,10 @@ pub(crate) mod commented /* comment containing { and } */ ;
 #[cfg(test)]
 pub(crate) mod same_line; fn after_external() { send("production/after_external"); }
 #[cfg(test)]
+mod compact { fn send() { client.send_request("test-only/compact"); } } fn after_compact() {
+    send("production/after_compact");
+}
+#[cfg(test)]
 pub(crate) mod lexical_forms {
     const CLOSE: &str = "}";
     const OPEN: &str = "{";
@@ -1116,11 +1120,13 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         assert!(!stripped.contains("test-only/name-comment"));
         assert!(!stripped.contains("test-only/block-comment"));
         assert!(!stripped.contains("test-only/scoped-comment"));
+        assert!(!stripped.contains("test-only/compact"));
         assert!(!stripped.contains("pub(crate) mod commented"));
         assert!(!stripped.contains("pub(crate) mod lexical_forms"));
         assert!(!stripped.contains("CONTINUED"));
         assert!(!stripped.contains("test-only/multiline"));
         assert!(stripped.contains("production/after_external"));
+        assert!(stripped.contains("production/after_compact"));
         assert!(stripped.contains("production/after_multiline"));
         assert!(stripped.contains("production/after"));
         assert!(stripped.contains("pub(crate) mod visible"));
