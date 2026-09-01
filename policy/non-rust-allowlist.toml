@@ -153,6 +153,7 @@ created = "2026-08-26"
 review_after = "2027-02-26"
 
 [[allow]]
+<<<<<<< HEAD
 id = "non-rust-semantic-facts-dancer2-dsl-oracle-tsv"
 path = "crates/perl-semantic-facts/tests/data/dancer2_two_x_dsl_registry_oracle.tsv"
 kind = "test_fixture_data"
@@ -165,6 +166,20 @@ covered_by = [
   "cargo test -p perl-semantic-facts --all-targets --locked",
 ]
 created = "2026-08-30"
+=======
+id = "non-rust-ripr-facts-packet-goldens"
+glob = "crates/perl-ripr-facts/tests/golden/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ripr/facts-producer"
+reason = "Golden ripr-perl-facts-v1 packets captured from the pre-split producer, pinning packet bytes, ordering, ids and fingerprints across the #9271 module split. They are the zero-drift oracle for the #4747 v2 migration train: regenerating them by hand would defeat their purpose, so they change only when a reviewed emission change is intended."
+covered_by = [
+  "cargo test -p perl-ripr-facts --test packet_characterization --locked",
+]
+created = "2026-08-31"
+>>>>>>> origin/main
 review_after = "2027-02-28"
 
 [[allow]]
