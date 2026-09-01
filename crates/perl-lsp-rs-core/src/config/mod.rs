@@ -3835,28 +3835,14 @@ profile = "recommended"
 
     #[test]
     fn perltidy_discoverable_on_path_still_yields_native_default() -> TestResult {
-        // Exercise discoverability in a child command with an explicit PATH;
-        // the test runner's environment is never changed.
+        // Exercise tool/profile discoverability with explicit inputs; the test
+        // runner's environment is never changed and configuration remains
+        // native unless the user explicitly selects another engine.
         let dir = tempfile::tempdir()?;
-        let name = if cfg!(windows) { "perltidy.cmd" } else { "perltidy" };
-        let path = dir.path().join(name);
-        let script: &[u8] =
-            if cfg!(windows) { b"@echo off\r\nexit /b 0\r\n" } else { b"#!/bin/sh\nexit 0\n" };
-        std::fs::write(&path, script)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(&path)?.permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&path, permissions)?;
-        }
-        let path_env = std::env::join_paths([dir.path()])?;
-        #[cfg(windows)]
-        let status =
-            std::process::Command::new("cmd").args(["/C", name]).env("PATH", &path_env).status()?;
-        #[cfg(not(windows))]
-        let status = std::process::Command::new(name).env("PATH", &path_env).status()?;
-        assert!(status.success(), "explicit child PATH must find perltidy fixture");
+        let profile = dir.path().join(".perltidyrc");
+        std::fs::write(&profile, "--maximum-line-length=100\n")?;
+        let discovered = discover_perltidy_profile_from(dir.path(), Some(profile.clone()), None);
+        assert_eq!(discovered, Some(profile.to_string_lossy().into_owned()));
 
         let config = ServerConfig::default();
         assert_eq!(config.formatting_engine, FormatterMode::Native);
