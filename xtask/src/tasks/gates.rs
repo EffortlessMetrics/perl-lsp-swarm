@@ -1607,7 +1607,17 @@ fn run_gate_plan(
         // is recorded as typed skip rows (saved work) instead of vanishing from
         // the receipt. Receipts, logs, and the blocking failure are all still
         // produced; nothing becomes advisory and no timeout moved.
-        if gate.short_circuit && is_blocking_gate_status(&result.status) && gate.required {
+        //
+        // Scoped to pr_fast plans (#14409 review): merge-gate and nightly
+        // plans inherit the focused pr_fast gates, but their remaining tiers
+        // are the independent backstop evidence for those runs, so a focused
+        // pr_fast failure must let them execute instead of retiring them as
+        // skip rows.
+        if plan.tier == GateTier::PrFast
+            && gate.short_circuit
+            && is_blocking_gate_status(&result.status)
+            && gate.required
+        {
             // The failing gate keeps its plan-order receipt row first; the
             // remaining planned gates follow as typed saved-work rows.
             results.push(result);
@@ -7186,13 +7196,26 @@ error: aborting due to previous error
                 "unit_control_plane_bins",
                 "cargo test -p xtask --locked --bin xtask -- tasks::gates:: tasks::ci_scope:: \
                  tasks::workflow_policy_lint:: tasks::workflow_trigger_lint:: \
-                 tasks::generated_files:: tasks::badges:: -- --test-threads=1",
+                 -- --test-threads=1",
                 vec!["xtask"],
             ),
         ] {
             let gate = &policy.gates[gate_index(name)?];
             assert_eq!(gate.tier, "pr_fast", "focused gate '{name}' tier drifted");
             assert_eq!(gate.command, expected_command, "focused gate '{name}' command drifted");
+            // Denominator honesty (#14409 review): the bin-target projection
+            // names only owners that publish bin-target unit tests. The
+            // generated-inventory and badge owners have no `#[test]` functions
+            // in `--bin xtask`; their proof lives in the `xtask/tests/`
+            // integration suites the broad `unit_routed_full` cohort runs.
+            if name == "unit_control_plane_bins" {
+                assert!(
+                    !gate.command.contains("tasks::generated_files::")
+                        && !gate.command.contains("tasks::badges::"),
+                    "focused bin-target gate '{name}' must not claim owners without \
+                     bin-target unit tests"
+                );
+            }
             assert!(gate.required, "focused gate '{name}' must stay required");
             assert!(
                 gate.short_circuit,
@@ -7306,6 +7329,52 @@ error: aborting due to previous error
         );
         assert!(receipt.gates[1].log_path.is_some());
         assert_eq!(receipt.summary.overall_status, "pass");
+        Ok(())
+    }
+
+    /// (#14409 review — tier scope) `short_circuit` is a pr_fast-only
+    /// behavior. Merge-gate and nightly plans inherit the focused pr_fast
+    /// gates, but their remaining tiers are the independent backstop evidence
+    /// for those runs, so a focused pr_fast failure there must let them
+    /// execute: no skip rows, no early stop, real execution evidence for every
+    /// remaining gate.
+    #[test]
+    fn short_circuit_does_not_fire_outside_pr_fast_plans() -> color_eyre::eyre::Result<()> {
+        for tier in [GateTier::MergeGate, GateTier::Nightly] {
+            let label = tier.to_string();
+            let focused_fails = short_circuit_pr_gate("gate_focused_fails", "exit 1");
+            let backstop =
+                pr_gate("gate_backstop_still_runs", GatePlanningRole::AlwaysOn, "exit 0");
+            let policy = policy_with_gates(vec![focused_fails.clone(), backstop.clone()]);
+            let plan = static_gate_plan(
+                tier.clone(),
+                "HEAD".to_string(),
+                vec![focused_fails, backstop],
+                None,
+            );
+            let config = GateRunnerConfig {
+                tier,
+                output_format: OutputFormat::Summary,
+                fail_fast: false,
+                ..GateRunnerConfig::default()
+            };
+
+            let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+            assert_eq!(receipt.gates.len(), 2, "{label}: both gates must be recorded");
+            assert_eq!(receipt.gates[0].gate_name, "gate_focused_fails");
+            assert_eq!(receipt.gates[0].status, "fail");
+            assert_eq!(
+                receipt.gates[1].status, "pass",
+                "{label}: the backstop must run, not be short-circuited into a skip row"
+            );
+            assert!(
+                receipt.gates[1].log_path.is_some(),
+                "{label}: the backstop needs real execution evidence"
+            );
+            assert_eq!(receipt.summary.failed, 1);
+            assert_eq!(receipt.summary.skipped, 0, "{label}: no saved-work skip rows");
+        }
         Ok(())
     }
 }

@@ -543,6 +543,9 @@ pub fn expand_from_root(
 
 /// Semantic digest over the canonical policy rows: sorted by gate id, so
 /// source reordering cannot move it, while tier/role/quarantine movement does.
+/// `short_circuit` is hashed too (#14409 review): it changes execution (a
+/// failed required gate retires the remaining pr_fast plan), so two policies
+/// that differ only in it must not publish the same identity.
 fn policy_digest(policy: &GatePolicy) -> String {
     let mut rows: Vec<&super::GateDefinition> = policy.gates.iter().collect();
     rows.sort_by(|left, right| left.name.cmp(&right.name));
@@ -555,6 +558,8 @@ fn policy_digest(policy: &GatePolicy) -> String {
         hasher.update([if gate.required { b'r' } else { b'a' }]);
         hasher.update([0x1f]);
         hasher.update([if gate.quarantine { b'q' } else { b'.' }]);
+        hasher.update([0x1f]);
+        hasher.update([if gate.short_circuit { b's' } else { b'.' }]);
         hasher.update([0x1e]);
     }
     hex(&hasher.finalize())
@@ -1049,6 +1054,13 @@ mod route_profile_spec {
         // Policy digest has the same order-independence / movement property.
         assert_eq!(policy_digest(&full_policy()), policy_digest(&reordered),);
         assert_ne!(policy_digest(&full_policy()), policy_digest(&moved));
+        // `short_circuit` movement changes the published identity too (#14409
+        // review): two policies that differ only in the field execute
+        // differently — a failed required gate retires the remaining pr_fast
+        // plan — so the digest must see the drift.
+        let mut toggled = full_policy();
+        toggled.gates[0].short_circuit = !toggled.gates[0].short_circuit;
+        assert_ne!(policy_digest(&full_policy()), policy_digest(&toggled));
     }
 
     #[test]
