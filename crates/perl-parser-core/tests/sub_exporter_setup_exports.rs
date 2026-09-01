@@ -886,3 +886,60 @@ fn a_renamed_group_member_is_still_withheld_beside_a_plain_options_member() {
         )]
     );
 }
+
+#[test]
+fn a_group_member_with_a_computed_option_key_is_withheld() {
+    // A key that is not a literal cannot be shown *not* to evaluate to `-as`,
+    // so it proves nothing about the installed name. The member stays
+    // unresolved and the group reads as incomplete, rather than publishing a
+    // name a consumer may never receive.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports => [qw(item other)],\n\
+             groups  => { default => [ qw(other), item => { $option => 'coney' } ] },\n\
+         };\n",
+    );
+
+    assert_eq!(
+        declarations(&file, "My::Utils")
+            .into_iter()
+            .filter(|(kind, _, _)| *kind == ExportDeclarationKind::Default)
+            .map(|(_, _, symbols)| symbols)
+            .collect::<Vec<_>>(),
+        vec![vec!["other".to_string()]],
+        "a computed option key withholds the member it decorates"
+    );
+    assert_eq!(
+        export_boundaries(&file, "My::Utils"),
+        vec![(
+            Some("default".to_string()),
+            "Sub::Exporter group has members that do not resolve \
+             to a declared export name"
+                .to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_quoted_literal_option_key_still_publishes_its_member() {
+    // The control in the other direction: tightening the rule to literal keys
+    // must not withdraw the quoted spelling of an ordinary generator argument.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports => [qw(item)],\n\
+             groups  => { default => [ item => { 'width' => 72 } ] },\n\
+         };\n",
+    );
+
+    assert_eq!(
+        declarations(&file, "My::Utils")
+            .into_iter()
+            .filter(|(kind, _, _)| *kind == ExportDeclarationKind::Default)
+            .map(|(_, _, symbols)| symbols)
+            .collect::<Vec<_>>(),
+        vec![vec!["item".to_string()]]
+    );
+    assert!(export_boundaries(&file, "My::Utils").is_empty());
+}

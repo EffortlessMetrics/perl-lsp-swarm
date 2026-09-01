@@ -3383,17 +3383,22 @@ fn sub_exporter_group_bodies(
 /// Sub::Exporter spells its directives with a leading dash, and `-as` is the
 /// one that renames what is installed — `reformat => { -as => 'email_format',
 /// width => 72 }` shows both kinds side by side, where `width` is a generator
-/// argument. An option hash carrying no dashed key therefore carries no
-/// directive at all, so the member installs under its own name. Resting on
-/// "a rename directive is dashed" rather than on a list of which dashed
-/// options exist keeps this sound without enumerating them.
+/// argument. An option hash whose keys are all literal bare names therefore
+/// carries no directive at all, so the member installs under its own name.
+/// Resting on "a rename directive is dashed" rather than on a list of which
+/// dashed options exist keeps this sound without enumerating them.
 fn sub_exporter_member_keeps_its_name(value: &[String]) -> bool {
     let Some(body) = bracketed_body(value, "{", "}") else {
         return false;
     };
-    comma_separated_entries(body)
-        .iter()
-        .all(|entry| entry.first().is_some_and(|key| !unquote_literal(key).starts_with('-')))
+    comma_separated_entries(body).iter().all(|entry| {
+        // Every entry must be a readable `key => value` pair whose key is a
+        // literal bare name. A computed key — `$option`, an interpolation, a
+        // concatenation, a call — cannot be shown *not* to evaluate to `-as`,
+        // so it is not proof of anything and leaves the member unresolved.
+        entry.get(1).map(String::as_str) == Some("=>")
+            && entry.first().is_some_and(|key| is_sub_exporter_name(unquote_literal(key)))
+    })
 }
 
 /// Statically enumerable members of one Sub::Exporter group.
