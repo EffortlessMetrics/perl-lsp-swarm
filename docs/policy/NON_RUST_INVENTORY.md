@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12565 |
-| Rust-family files | 3894 |
-| Non-Rust files | 8671 |
-| Allowlisted | 6432 |
+| Total tracked files | 12581 |
+| Rust-family files | 3907 |
+| Non-Rust files | 8674 |
+| Allowlisted | 6435 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 499 |
-| documentation | 2835 |
+| documentation | 2836 |
 | generated | 2 |
 | production | 349 |
-| test | 2067 |
+| test | 2069 |
 | tooling | 680 |
 | unclassified | 2239 |
 
@@ -2358,6 +2358,7 @@
 | `.changes/unreleased/product-14076-Fixed-024700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14281-Fixed-014013.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14362-Added-000001.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -4258,6 +4259,8 @@
 | `crates/perl-regex/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-ripr-facts/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `crates/perl-ripr-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_no_diff.json` | test | `non-rust-ripr-facts-packet-goldens` | ripr/facts-producer |
+| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_with_diff.json` | test | `non-rust-ripr-facts-packet-goldens` | ripr/facts-producer |
 | `crates/perl-semantic-analyzer/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-analyzer/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-semantic-analyzer/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
