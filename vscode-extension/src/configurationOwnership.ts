@@ -67,6 +67,27 @@ export type SettingOwnership = {
   readonly scopeDefect?: ScopeDefect;
 };
 
+/**
+ * Critic settings are declared `resource`, but the server keeps exactly one
+ * accepted Critic state per session (#8253).
+ *
+ * `workspace/configuration` results are applied by
+ * `WorkspaceConfig::update_from_value_with_context`, which reads only the
+ * `workspace` key and has no Critic field; Critic is parsed exclusively by
+ * `ServerConfig::update_from_value`, reachable from the
+ * `workspace/didChangeConfiguration` push and the lifecycle paths. So a
+ * per-folder Critic value cannot take effect today no matter how it is
+ * transported.
+ */
+const CRITIC_SESSION_STATE_DEFECT: ScopeDefect = {
+  reason:
+    'Declared `resource`, but the server holds one session-global Critic state ' +
+    '(#8253). Folder-scoped `workspace/configuration` results are parsed by ' +
+    'WorkspaceConfig, which has no Critic field, so only the session-wide ' +
+    'didChangeConfiguration push can take effect.',
+  owner: '#14447',
+};
+
 const STATIC_CAPABILITY_DEFECT: ScopeDefect = {
   reason:
     'Declared `resource` but selects the static initialize capability surface. One ' +
@@ -127,44 +148,49 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
   {
     key: 'perl-lsp.critic.enabled',
     manifestScope: 'resource',
-    semanticScope: 'workspace-folder',
+    semanticScope: 'client-session',
     owner: 'server',
-    transport: 'workspace/configuration',
+    transport: 'didChangeConfiguration',
+    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.critic.engine',
     manifestScope: 'machine',
     semanticScope: 'machine',
     owner: 'server',
-    transport: 'workspace/configuration',
+    transport: 'didChangeConfiguration',
   },
   {
     key: 'perl-lsp.critic.exclude',
     manifestScope: 'resource',
-    semanticScope: 'workspace-folder',
+    semanticScope: 'client-session',
     owner: 'server',
-    transport: 'workspace/configuration',
+    transport: 'didChangeConfiguration',
+    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.critic.include',
     manifestScope: 'resource',
-    semanticScope: 'workspace-folder',
+    semanticScope: 'client-session',
     owner: 'server',
-    transport: 'workspace/configuration',
+    transport: 'didChangeConfiguration',
+    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.critic.profile',
     manifestScope: 'resource',
-    semanticScope: 'workspace-folder',
+    semanticScope: 'client-session',
     owner: 'server',
-    transport: 'workspace/configuration',
+    transport: 'didChangeConfiguration',
+    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.critic.severity',
     manifestScope: 'resource',
-    semanticScope: 'workspace-folder',
+    semanticScope: 'client-session',
     owner: 'server',
-    transport: 'workspace/configuration',
+    transport: 'didChangeConfiguration',
+    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.disabledFeatures',
@@ -254,30 +280,32 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
   {
     key: 'perl-lsp.perlcritic.enabled',
     manifestScope: 'resource',
-    semanticScope: 'workspace-folder',
+    semanticScope: 'client-session',
     owner: 'server',
-    transport: 'workspace/configuration',
+    transport: 'didChangeConfiguration',
+    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.perlcritic.profile',
     manifestScope: 'machine',
     semanticScope: 'machine',
     owner: 'server',
-    transport: 'workspace/configuration',
+    transport: 'didChangeConfiguration',
   },
   {
     key: 'perl-lsp.perlcritic.severity',
     manifestScope: 'resource',
-    semanticScope: 'workspace-folder',
+    semanticScope: 'client-session',
     owner: 'server',
-    transport: 'workspace/configuration',
+    transport: 'didChangeConfiguration',
+    scopeDefect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
     key: 'perl-lsp.perlcritic.theme',
     manifestScope: 'machine',
     semanticScope: 'machine',
     owner: 'server',
-    transport: 'workspace/configuration',
+    transport: 'didChangeConfiguration',
   },
   {
     key: 'perl-lsp.perltidyConfig',
@@ -342,18 +370,6 @@ const OWNERSHIP_BY_KEY = new Map(SETTING_OWNERSHIP.map((row) => [row.key, row]))
 /** Ownership row for a fully qualified `perl-lsp.*` key, when one exists. */
 export function settingOwnership(key: string): SettingOwnership | undefined {
   return OWNERSHIP_BY_KEY.get(key);
-}
-
-/**
- * Keys the server learns through its per-folder `workspace/configuration` pull.
- *
- * Returned unqualified (without the `perl-lsp.` prefix) because that is how
- * they are read from a scoped `WorkspaceConfiguration`.
- */
-export function folderScopedServerSettingKeys(): string[] {
-  return SETTING_OWNERSHIP.filter((row) => row.transport === 'workspace/configuration').map((row) =>
-    row.key.slice('perl-lsp.'.length),
-  );
 }
 
 /**

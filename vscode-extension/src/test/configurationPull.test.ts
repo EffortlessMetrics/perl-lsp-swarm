@@ -218,23 +218,60 @@ describe('workspace/configuration folder ownership (#14447)', () => {
     expect(result[2]).toEqual({});
   });
 
-  test('response arity always matches request arity', async () => {
-    installScopedConfiguration({ '': {} });
+  test('arity and order survive perl and non-perl items interleaved', async () => {
+    // Sized to catch an accumulate-by-push implementation: with delegation
+    // interleaved between perl items, appending in encounter order would put
+    // the delegated answers at the wrong indexes.
+    installScopedConfiguration({
+      '': {},
+      [FOLDER_A]: { includePaths: ['a/lib'] },
+      [FOLDER_B]: { includePaths: ['b/lib'] },
+    });
 
+    const next = jest.fn(() => [null, { one: true }, null, { two: true }, null]);
     const result = await resolvePerlConfiguration(
       {
         items: [
-          { section: PERL_CONFIGURATION_SECTION },
           { scopeUri: FOLDER_A, section: PERL_CONFIGURATION_SECTION },
+          { scopeUri: FOLDER_A, section: 'editor' },
+          { section: PERL_CONFIGURATION_SECTION },
+          { scopeUri: FOLDER_B, section: 'files' },
           { scopeUri: FOLDER_B, section: PERL_CONFIGURATION_SECTION },
         ],
       },
       undefined,
-      jest.fn(),
+      next,
     );
 
-    expect(result).toHaveLength(3);
-    expect(result.every((entry) => entry !== undefined)).toBe(true);
+    expect(result).toHaveLength(5);
+    expect(result[0]).toEqual({ workspace: { includePaths: ['a/lib'] } });
+    expect(result[1]).toEqual({ one: true });
+    expect(result[2]).toEqual({});
+    expect(result[3]).toEqual({ two: true });
+    expect(result[4]).toEqual({ workspace: { includePaths: ['b/lib'] } });
+  });
+
+  test('a malformed delegate response cannot shorten or corrupt the answer', async () => {
+    installScopedConfiguration({ '': {}, [FOLDER_A]: { includePaths: ['a/lib'] } });
+
+    for (const malformed of [undefined, null, 'not-an-array', [], [{ only: 1 }]]) {
+      const result = await resolvePerlConfiguration(
+        {
+          items: [
+            { scopeUri: FOLDER_A, section: PERL_CONFIGURATION_SECTION },
+            { scopeUri: FOLDER_A, section: 'editor' },
+          ],
+        },
+        undefined,
+        jest.fn(() => malformed),
+      );
+
+      // Arity is owed to the server regardless of what the delegate returns,
+      // and the perl item must keep its own answer.
+      expect(result).toHaveLength(2);
+      expect(result[0]).toEqual({ workspace: { includePaths: ['a/lib'] } });
+      expect(result[1]).toBeNull();
+    }
   });
 
   test('pull and push describe the same scope identically', async () => {

@@ -2,7 +2,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
-  folderScopedServerSettingKeys,
   resolveResourceWriteTarget,
   SETTING_OWNERSHIP,
   settingOwnership,
@@ -99,18 +98,29 @@ describe('contributed setting ownership table (#14447)', () => {
     const defective = SETTING_OWNERSHIP.filter((row) => row.scopeDefect).map((row) => row.key);
 
     expect(defective).toEqual([
+      'perl-lsp.critic.enabled',
+      'perl-lsp.critic.exclude',
+      'perl-lsp.critic.include',
+      'perl-lsp.critic.profile',
+      'perl-lsp.critic.severity',
       'perl-lsp.enableFormatting',
       'perl-lsp.enableSemanticTokens',
       'perl-lsp.enableTestIntegration',
+      'perl-lsp.perlcritic.enabled',
+      'perl-lsp.perlcritic.severity',
     ]);
   });
 
-  test('server-pulled keys are exposed unqualified for scoped reads', () => {
-    const keys = folderScopedServerSettingKeys();
+  test('only settings the server reads per folder claim the pull transport', () => {
+    // `WorkspaceConfig::update_from_value_with_context` — the function that
+    // applies a `workspace/configuration` result item — reads exactly one key,
+    // `workspace`, and has no Critic field. Claiming any other setting travels
+    // that transport would assert folder ownership the server cannot honour.
+    const pulled = SETTING_OWNERSHIP.filter(
+      (row) => row.transport === 'workspace/configuration',
+    ).map((row) => row.key);
 
-    expect(keys).toContain('includePaths');
-    expect(keys).toContain('critic.severity');
-    expect(keys.every((key) => !key.startsWith('perl-lsp.'))).toBe(true);
+    expect(pulled).toEqual(['perl-lsp.externalIncludePaths', 'perl-lsp.includePaths']);
   });
 
   test('settingOwnership resolves a known key and refuses an unknown one', () => {
