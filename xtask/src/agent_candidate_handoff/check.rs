@@ -13,8 +13,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::create::{
-    SELF_CHECK_PENDING, SELF_CHECK_VALIDATED, build_inventory, collect_gitlinks,
-    compute_identity_digest, declared_proof_subject, read_commit_identity,
+    MAX_PROOF_BYTES, ProofSubject, SELF_CHECK_PENDING, SELF_CHECK_VALIDATED, build_inventory,
+    collect_gitlinks, compute_identity_digest, declared_proof_subject, read_commit_identity,
 };
 use super::git::{is_full_object_id, run_git, run_git_with_stdin};
 use super::hygiene::{
@@ -291,7 +291,7 @@ fn check_envelope(envelope: &Path, stage: ReceiptStage) -> CheckReport {
     }
     builder.pass("proof_binding", "declared proofs are content-addressed and subject-bound");
 
-    let isolated = match import_isolated(&pack_bytes) {
+    let isolated = match import_isolated(pack_bytes) {
         Ok(isolated) => isolated,
         Err((outcome, detail)) => return builder.fail("object_import", outcome, detail),
     };
@@ -718,11 +718,10 @@ fn verify_receipt_agrees(
         // Before publication the producer has not yet run its own check, so
         // `pending` is the only honest token; `create` validates in this mode.
         ReceiptStage::Staged => {
-            if receipt.producer_self_check != SELF_CHECK_PENDING
-                && receipt.producer_self_check != SELF_CHECK_VALIDATED
-            {
+            if receipt.producer_self_check != SELF_CHECK_PENDING {
                 return Err(format!(
-                    "receipt self-check `{}` is not a recognised token",
+                    "receipt self-check is `{}`, not `{SELF_CHECK_PENDING}`; a staging \
+                     directory has not been validated yet by definition",
                     receipt.producer_self_check
                 ));
             }
@@ -852,14 +851,17 @@ fn verify_proofs(envelope: &Path, manifest: &Manifest) -> Result<(), (HandoffOut
                 proof.id, proof.candidate_subject, manifest.candidate.commit
             )));
         }
-        if proof.bytes > MAX_ENVELOPE_FILE_BYTES {
+        // The producer's ceiling is the format's ceiling. Accepting a larger
+        // artifact here would mean an envelope this validator calls valid
+        // could never have been produced by `create`.
+        if proof.bytes > MAX_PROOF_BYTES {
             return Err(mismatch(format!(
                 "proof `{}` declares a size above the ceiling",
                 proof.id
             )));
         }
-        let bytes = read_envelope_file(envelope, &proof.path, MAX_ENVELOPE_FILE_BYTES)
-            .map_err(&mismatch)?;
+        let bytes =
+            read_envelope_file(envelope, &proof.path, MAX_PROOF_BYTES).map_err(&mismatch)?;
         if bytes.len() as u64 != proof.bytes {
             return Err(mismatch(format!("proof `{}` does not match its declared size", proof.id)));
         }
@@ -869,13 +871,22 @@ fn verify_proofs(envelope: &Path, manifest: &Manifest) -> Result<(), (HandoffOut
                 proof.id
             )));
         }
-        if let Some(declared) = declared_proof_subject(&bytes)
-            && declared != manifest.candidate.commit
-        {
-            return Err(mismatch(format!(
-                "proof `{}` names candidate {declared} in its own payload",
-                proof.id
-            )));
+        match declared_proof_subject(&bytes) {
+            ProofSubject::Stated(declared) if declared != manifest.candidate.commit => {
+                return Err(mismatch(format!(
+                    "proof `{}` names candidate {declared} in its own payload",
+                    proof.id
+                )));
+            }
+            // An artifact naming two different candidates cannot be evidence
+            // for either, whichever key a reader happens to look at first.
+            ProofSubject::Conflicting => {
+                return Err(mismatch(format!(
+                    "proof `{}` names more than one candidate in its own payload",
+                    proof.id
+                )));
+            }
+            ProofSubject::Stated(_) | ProofSubject::Unstated => {}
         }
         // The producer refuses a credential-bearing proof, but a receiver
         // cannot assume the producer ran: an envelope is supplied by the
@@ -908,7 +919,7 @@ impl IsolatedOdb {
 /// Isolation is the point: the database starts empty and is destroyed with
 /// the returned value, so anything resolvable inside it came from this
 /// envelope and nowhere else.
-fn import_isolated(pack_bytes: &[u8]) -> Result<IsolatedOdb, (HandoffOutcome, String)> {
+fn import_isolated(pack_bytes: Vec<u8>) -> Result<IsolatedOdb, (HandoffOutcome, String)> {
     let instrument = |detail: String| (HandoffOutcome::InstrumentFailure, detail);
 
     let directory = tempfile::TempDir::new().map_err(|error| {
@@ -929,7 +940,7 @@ fn import_isolated(pack_bytes: &[u8]) -> Result<IsolatedOdb, (HandoffOutcome, St
     // successfully does not confirm the `git_pack_v2` the manifest declares.
     // The header is the only place that claim can be checked, and an unchecked
     // format claim is exactly the kind a resealed envelope would exploit.
-    verify_pack_version(pack_bytes)?;
+    verify_pack_version(&pack_bytes)?;
 
     let imported = run_git_with_stdin(directory.path(), &["index-pack", "--stdin"], pack_bytes)
         .map_err(&instrument)?;

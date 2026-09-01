@@ -445,36 +445,51 @@ fn resolve_tree(repository: &Path, commit: &str) -> Result<String, (HandoffOutco
 
 /// Establish which repository the candidate belongs to, or prove none.
 ///
-/// A caller's declaration short-circuits the remote read, because it is a
-/// different and weaker claim that must not be presented as an observation.
+/// The observation is preferred and the caller's declaration is the fallback,
+/// which is what `CreateRequest` documents: a declaration is a weaker claim,
+/// and taking it while a readable remote sat right there could put a wrong
+/// repository in the manifest for a consumer to publish to.
+///
+/// A declaration that *contradicts* a readable remote is refused rather than
+/// silently resolved either way. The caller's intent and the workspace
+/// disagree, and quietly picking one of them is the failure this field exists
+/// to prevent.
 fn resolve_repository_identity(
     repository: &Path,
     request: &CreateRequest,
     limitations: &mut BTreeSet<LimitationCode>,
 ) -> Result<RepositoryIdentity, (HandoffOutcome, String)> {
-    if let Some(declared) = &request.declared_repository_identity {
-        let normalized = declared.trim().to_lowercase();
-        if !is_repository_identity(&normalized) {
-            return Err((
-                HandoffOutcome::InstrumentFailure,
-                format!("`{declared}` is not a lowercase owner/name repository identity"),
-            ));
+    let declared = match &request.declared_repository_identity {
+        Some(declared) => {
+            let normalized = declared.trim().to_lowercase();
+            if !is_repository_identity(&normalized) {
+                return Err((
+                    HandoffOutcome::InstrumentFailure,
+                    format!("`{declared}` is not a lowercase owner/name repository identity"),
+                ));
+            }
+            Some(normalized)
         }
-        return Ok(RepositoryIdentity {
-            status: RepositoryIdentityStatus::Declared,
-            value: Some(normalized),
-            // The caller named an `owner/name`, not a host. Inventing one would
-            // turn their declaration into an observation.
-            host: None,
-            source: RepositoryIdentitySource::CallerDeclared,
-        });
-    }
+        None => None,
+    };
 
     let output = run_git(repository, &["config", "--get", "remote.origin.url"])
         .map_err(|error| (HandoffOutcome::InstrumentFailure, error))?;
     if output.succeeded() {
         match repository_identity_from_remote(output.stdout.trim()) {
             Ok(Some(identity)) => {
+                if let Some(declared) = &declared
+                    && *declared != identity.value
+                {
+                    return Err((
+                        HandoffOutcome::InstrumentFailure,
+                        format!(
+                            "the configured remote names `{}` but `{declared}` was declared; \
+                             refusing rather than choosing one",
+                            identity.value
+                        ),
+                    ));
+                }
                 return Ok(RepositoryIdentity {
                     status: RepositoryIdentityStatus::Observed,
                     value: Some(identity.value),
@@ -489,6 +504,18 @@ fn resolve_repository_identity(
                 limitations.insert(LimitationCode::RemoteUrlContainedCredentials);
             }
         }
+    }
+
+    // No remote could be read. This is where a declaration belongs.
+    if let Some(value) = declared {
+        return Ok(RepositoryIdentity {
+            status: RepositoryIdentityStatus::Declared,
+            value: Some(value),
+            // The caller named an `owner/name`, not a host. Inventing one would
+            // turn their declaration into an observation.
+            host: None,
+            source: RepositoryIdentitySource::CallerDeclared,
+        });
     }
 
     limitations.insert(LimitationCode::RepositoryIdentityNotProven);
@@ -772,7 +799,7 @@ fn build_pack(
         stdin.push('\n');
     }
     let output =
-        run_git_with_stdin(repository, &["pack-objects", "--stdout", "-q"], stdin.as_bytes())
+        run_git_with_stdin(repository, &["pack-objects", "--stdout", "-q"], stdin.into_bytes())
             .map_err(|error| (HandoffOutcome::InstrumentFailure, error))?;
     if !output.succeeded() {
         return Err((
@@ -872,13 +899,20 @@ fn collect_proofs(
 
         // A proof that names a different candidate is stale evidence, not
         // this candidate's proof, and must not be silently rebound.
-        if let Some(declared) = declared_proof_subject(&bytes)
-            && declared != commit
-        {
-            return Err((
-                HandoffOutcome::ProofSubjectMismatch,
-                format!("proof `{id}` names candidate {declared}, not {commit}"),
-            ));
+        match declared_proof_subject(&bytes) {
+            ProofSubject::Stated(declared) if declared != commit => {
+                return Err((
+                    HandoffOutcome::ProofSubjectMismatch,
+                    format!("proof `{id}` names candidate {declared}, not {commit}"),
+                ));
+            }
+            ProofSubject::Conflicting => {
+                return Err((
+                    HandoffOutcome::ProofSubjectMismatch,
+                    format!("proof `{id}` names more than one candidate"),
+                ));
+            }
+            ProofSubject::Stated(_) | ProofSubject::Unstated => {}
         }
 
         let text = String::from_utf8_lossy(&bytes);
@@ -927,21 +961,47 @@ fn proof_id_for(path: &Path) -> Result<String, (HandoffOutcome, String)> {
     Ok(id)
 }
 
+/// What a proof artifact says about the candidate it proves.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProofSubject {
+    /// The artifact names no candidate: opaque evidence, bound by the manifest.
+    Unstated,
+    /// The artifact names exactly one candidate, consistently.
+    Stated(String),
+    /// The artifact names more than one candidate and contradicts itself.
+    Conflicting,
+}
+
 /// Read the candidate a JSON proof artifact claims to be about.
 ///
 /// Non-JSON and subject-free artifacts return `None`: they are carried as
 /// opaque evidence bound by the manifest, not silently rejected.
-pub fn declared_proof_subject(bytes: &[u8]) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    let object = value.as_object()?;
+pub fn declared_proof_subject(bytes: &[u8]) -> ProofSubject {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return ProofSubject::Unstated;
+    };
+    let Some(object) = value.as_object() else {
+        return ProofSubject::Unstated;
+    };
+
+    let mut found: Option<String> = None;
     for key in PROOF_SUBJECT_KEYS {
-        if let Some(text) = object.get(*key).and_then(serde_json::Value::as_str)
-            && is_full_object_id(text)
-        {
-            return Some(text.to_string());
+        let Some(text) = object.get(*key).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !is_full_object_id(text) {
+            continue;
+        }
+        match &found {
+            // Stopping at the first recognised key let an artifact name this
+            // candidate in one field and a different commit in another, and be
+            // accepted on the strength of whichever came first.
+            Some(existing) if existing != text => return ProofSubject::Conflicting,
+            Some(_) => {}
+            None => found = Some(text.to_string()),
         }
     }
-    None
+    found.map_or(ProofSubject::Unstated, ProofSubject::Stated)
 }
 
 /// Write the envelope into a staging directory beside its destination.

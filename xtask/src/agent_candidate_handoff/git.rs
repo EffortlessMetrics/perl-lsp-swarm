@@ -124,12 +124,16 @@ pub fn run_git(repository: &Path, arguments: &[&str]) -> Result<GitOutput, Strin
 }
 
 /// Run Git with `stdin_bytes` written to the child's standard input.
+///
+/// Takes ownership rather than copying. The largest caller hands over a whole
+/// candidate pack, and cloning it here would hold two copies of a transport
+/// that is already allowed to reach [`MAX_GIT_OUTPUT_BYTES`].
 pub fn run_git_with_stdin(
     repository: &Path,
     arguments: &[&str],
-    stdin_bytes: &[u8],
+    stdin_bytes: Vec<u8>,
 ) -> Result<GitOutput, String> {
-    run_bounded(repository, arguments, Some(stdin_bytes.to_vec()))
+    run_bounded(repository, arguments, Some(stdin_bytes))
 }
 
 /// Spawn Git and collect its streams under a deadline and an output cap.

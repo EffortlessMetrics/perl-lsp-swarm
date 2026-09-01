@@ -897,7 +897,7 @@ fn omitting_a_binary_object_from_the_transport_fails() -> Result<()> {
     let repacked = super::git::run_git_with_stdin(
         fixture.path(),
         &["pack-objects", "--stdout", "-q"],
-        stdin.as_bytes(),
+        stdin.into_bytes(),
     )
     .map_err(anyhow::Error::msg)?;
     assert!(repacked.succeeded(), "repacking the reduced object set");
@@ -1521,7 +1521,7 @@ fn an_object_outside_the_candidate_closure_is_refused() -> Result<()> {
     let repacked = super::git::run_git_with_stdin(
         fixture.path(),
         &["pack-objects", "--stdout", "-q"],
-        stdin.as_bytes(),
+        stdin.into_bytes(),
     )
     .map_err(anyhow::Error::msg)?;
     assert!(repacked.succeeded());
@@ -1685,7 +1685,7 @@ fn an_undeclared_object_carried_in_the_pack_is_refused() -> Result<()> {
     let repacked = super::git::run_git_with_stdin(
         fixture.path(),
         &["pack-objects", "--stdout", "-q"],
-        stdin.as_bytes(),
+        stdin.into_bytes(),
     )
     .map_err(anyhow::Error::msg)?;
     assert!(repacked.succeeded());
@@ -1833,7 +1833,7 @@ fn an_alternate_object_directory_cannot_satisfy_a_missing_object() -> Result<()>
     let repacked = super::git::run_git_with_stdin(
         fixture.path(),
         &["pack-objects", "--stdout", "-q"],
-        stdin.as_bytes(),
+        stdin.into_bytes(),
     )
     .map_err(anyhow::Error::msg)?;
     assert!(repacked.succeeded());
@@ -1845,10 +1845,13 @@ fn an_alternate_object_directory_cannot_satisfy_a_missing_object() -> Result<()>
     // Point Git at the producing repository's objects. If the seam leaked this
     // variable through, the missing blob would resolve and the envelope would
     // validate on this machine while being incomplete everywhere else.
-    // `#[serial]` is load-bearing, not decoration: this mutates the *process*
-    // environment, and any test running `check_handoff` concurrently would see
-    // it. Two tests here do this, so both are serialised.
-    // SAFETY: no other test runs concurrently; restored immediately.
+    // `#[serial]` serialises this against the module's other environment-
+    // mutating control. It does *not* stop unannotated tests running
+    // concurrently, so it is not what makes this safe for them: every
+    // `run_git` invocation now clears or overrides these variables on the
+    // child explicitly, so a concurrent test cannot observe this one's value.
+    // SAFETY: restored immediately below; see above for why concurrent tests
+    // are unaffected.
     let objects = fixture.path().join(".git").join("objects");
     unsafe { std::env::set_var("GIT_ALTERNATE_OBJECT_DIRECTORIES", &objects) };
     let report = check_handoff(&destination.envelope());
@@ -2819,7 +2822,7 @@ fn global_git_configuration_cannot_complete_an_incomplete_envelope() -> Result<(
     let repacked = super::git::run_git_with_stdin(
         fixture.path(),
         &["pack-objects", "--stdout", "-q"],
-        stdin.as_bytes(),
+        stdin.into_bytes(),
     )
     .map_err(anyhow::Error::msg)?;
     assert!(repacked.succeeded());
@@ -2856,8 +2859,10 @@ fn global_git_configuration_cannot_complete_an_incomplete_envelope() -> Result<(
         "the template must really seed an alternates file, or this control proves nothing"
     );
 
-    // SAFETY: `#[serial]` keeps this process-wide mutation off every other
-    // test; restored immediately below.
+    // SAFETY: restored immediately below. `#[serial]` orders this against the
+    // module's other environment-mutating control; unannotated tests are
+    // unaffected because production sets this variable on every child
+    // explicitly rather than inheriting it.
     unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", &config) };
     let report = check_handoff(&destination.envelope());
     unsafe { std::env::remove_var("GIT_CONFIG_GLOBAL") };
@@ -3032,5 +3037,141 @@ fn the_manifest_admits_repository_identity_is_the_producers_word() -> Result<()>
         "the dimension must not claim more than it proved: {}",
         identity.detail
     );
+    Ok(())
+}
+
+/// A declaration is the fallback for an unreadable remote, not an override.
+///
+/// `CreateRequest` documents the field that way, but the code took the
+/// declaration first and never looked at origin — so a caller passing a stale
+/// or wrong value while a perfectly readable remote sat there put the wrong
+/// repository in the manifest for a consumer to publish to.
+#[test]
+fn a_readable_remote_is_preferred_over_a_caller_declaration() -> Result<()> {
+    let fixture = Fixture::with_remote(Some("https://github.com/acme/app.git"))?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    // Agreeing declaration: the observation still wins, and keeps its host.
+    let destination = Destination::new()?;
+    let mut requested = request(&fixture, &destination);
+    requested.declared_repository_identity = Some("acme/app".to_string());
+    let manifest = create_handoff(&requested)
+        .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+    assert_eq!(manifest.repository_identity.status, RepositoryIdentityStatus::Observed);
+    assert_eq!(manifest.repository_identity.host.as_deref(), Some("github.com"));
+
+    // Contradicting declaration: refused rather than silently resolved.
+    let conflicting = Destination::new()?;
+    let mut requested = request(&fixture, &conflicting);
+    requested.declared_repository_identity = Some("other/repo".to_string());
+    let Err((outcome, detail)) = create_handoff(&requested) else {
+        bail!("a declaration contradicting a readable remote must not be resolved silently");
+    };
+    assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
+    assert!(detail.contains("other/repo"), "the refusal must name both claims: {detail}");
+    assert!(detail.contains("acme/app"), "the refusal must name both claims: {detail}");
+
+    // With no readable remote, the declaration is exactly what it is for.
+    let bare = Fixture::with_remote(None)?;
+    bare.write("a.txt", b"a\n")?;
+    bare.commit("root")?;
+    let fallback = Destination::new()?;
+    let mut requested = request(&bare, &fallback);
+    requested.declared_repository_identity = Some("acme/app".to_string());
+    let manifest = create_handoff(&requested)
+        .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+    assert_eq!(manifest.repository_identity.status, RepositoryIdentityStatus::Declared);
+    assert_eq!(manifest.repository_identity.host, None);
+    Ok(())
+}
+
+/// A proof naming two different candidates is evidence for neither.
+///
+/// Stopping at the first recognised key let an artifact name this candidate in
+/// one field and something else in another, and be accepted on the strength of
+/// whichever the reader happened to check first.
+#[test]
+fn a_proof_naming_two_candidates_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let head = fixture.git(&["rev-parse", "HEAD"])?.trim().to_string();
+    let other = "0".repeat(40);
+
+    let proof = fixture.path().join("report.json");
+    fs::write(&proof, serde_json::to_vec(&serde_json::json!({ "commit": head, "sha": other }))?)?;
+
+    let destination = Destination::new()?;
+    let mut requested = request(&fixture, &destination);
+    requested.proofs = vec![proof];
+    let Err((outcome, detail)) = create_handoff(&requested) else {
+        bail!("a self-contradicting proof must not be accepted for either candidate");
+    };
+    assert_eq!(outcome, HandoffOutcome::ProofSubjectMismatch);
+    assert!(detail.contains("more than one"), "the refusal must name the reason: {detail}");
+
+    // A proof that names the same candidate under several keys is consistent,
+    // not contradictory, and stays acceptable.
+    let agreeing = fixture.path().join("agreeing.json");
+    fs::write(&agreeing, serde_json::to_vec(&serde_json::json!({ "commit": head, "sha": head }))?)?;
+    let second = Destination::new()?;
+    let mut requested = request(&fixture, &second);
+    requested.proofs = vec![agreeing];
+    create_handoff(&requested)
+        .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+    Ok(())
+}
+
+/// A staging directory has not been validated, by definition.
+#[test]
+fn a_staging_directory_claiming_validation_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    export_valid(&fixture, &destination)?;
+
+    // A published envelope carries the validated token; asking the staged
+    // entry point about it must refuse, because staging never carries that.
+    let report = check_staged(&destination.envelope());
+    assert_eq!(report.outcome, HandoffOutcome::InvalidManifest);
+    let closure = report
+        .dimensions
+        .iter()
+        .find(|dimension| dimension.id == "envelope_closure")
+        .context("envelope_closure dimension")?;
+    assert!(
+        closure.detail.contains(SELF_CHECK_PENDING),
+        "the refusal must name the token it required: {}",
+        closure.detail
+    );
+    Ok(())
+}
+
+/// The validator enforces the producer's proof ceiling, not a larger one.
+///
+/// A looser bound here would mean an envelope this validator calls valid could
+/// never have been produced by `create`.
+#[test]
+fn the_validator_uses_the_same_proof_ceiling_as_the_producer() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    let mut raw = raw_manifest(&destination.envelope())?;
+    raw["proof_references"] = serde_json::Value::Array(vec![serde_json::json!({
+        "id": "report.json",
+        "path": "proof/report.json",
+        "bytes": super::create::MAX_PROOF_BYTES + 1,
+        "sha256": "0".repeat(64),
+        "candidate_subject": manifest.candidate.commit.clone(),
+    })]);
+    rewrite_manifest_raw(&destination.envelope(), &raw)?;
+
+    let report = check_handoff(&destination.envelope());
+    assert_eq!(report.outcome, HandoffOutcome::InvalidManifest);
     Ok(())
 }
