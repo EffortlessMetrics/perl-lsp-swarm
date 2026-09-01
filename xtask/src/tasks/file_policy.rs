@@ -569,8 +569,12 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     // step contains this validator's own examples and forbidden-pattern
     // source text; scanning serialized YAML would mistake that source for a
     // candidate-controlled invocation.
-    let forbidden =
-        ["pull_request.head", "pull_request.head.sha", "github.event.pull_request.head"];
+    let forbidden = [
+        "pull_request.head",
+        "pull_request.head.sha",
+        "github.event.pull_request.head",
+        "refs/pull/${{",
+    ];
     for step in steps {
         let map =
             step.as_mapping().ok_or_else(|| eyre!("trusted workflow step must be a mapping"))?;
@@ -582,12 +586,10 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         // expanded by an otherwise innocuous `run` command. Inspect those
         // executable inputs as well as the command body.
         for key_name in ["env", "with"] {
-            if map
-                .get(key(key_name))
-                .is_some_and(|value| serde_yaml_ng::to_string(value).is_ok_and(|text| {
-                    forbidden.iter().any(|token| text.contains(token))
-                }))
-            {
+            if map.get(key(key_name)).is_some_and(|value| {
+                serde_yaml_ng::to_string(value)
+                    .is_ok_and(|text| forbidden.iter().any(|token| text.contains(token)))
+            }) {
                 bail!("subject workflow must not execute candidate source");
             }
         }
@@ -4138,7 +4140,12 @@ review_after = "2026-08-13"
                 &format!("{version_marker}{}", version + 1),
                 1,
             );
-            write_fixture(temp.path(), workflow_path, &(workflow + injected))?;
+            let workflow = workflow.replacen(
+                "      - name: Upload exact-tree receipt",
+                &(injected.to_string() + "      - name: Upload exact-tree receipt"),
+                1,
+            );
+            write_fixture(temp.path(), workflow_path, &workflow)?;
             let subject = commit_fixture(temp.path(), "untrusted workflow")?;
             let error = validate_subject_workflow(temp.path(), &base, &subject)
                 .expect_err("candidate checkout/import must be rejected");
@@ -4205,8 +4212,7 @@ review_after = "2026-08-13"
     }
 
     #[test]
-    fn trusted_workflow_rejects_candidate_refs_in_step_inputs_and_whitespace_variants()
-        -> Result<()>
+    fn trusted_workflow_rejects_candidate_refs_in_step_inputs_and_whitespace_variants() -> Result<()>
     {
         let workflow_path = ".github/workflows/non-rust-policy.yml";
         let version_marker = "# contract-version: ";
@@ -4226,7 +4232,12 @@ review_after = "2026-08-13"
                 &format!("{version_marker}{}", version + 1),
                 1,
             );
-            write_fixture(temp.path(), workflow_path, &(workflow + injected))?;
+            let workflow = workflow.replacen(
+                "      - name: Upload exact-tree receipt",
+                &(injected.to_string() + "      - name: Upload exact-tree receipt"),
+                1,
+            );
+            write_fixture(temp.path(), workflow_path, &workflow)?;
             let subject = commit_fixture(temp.path(), "candidate ref bypass")?;
             let error = validate_subject_workflow(temp.path(), &base, &subject)
                 .expect_err("candidate-controlled ref must fail closed");
