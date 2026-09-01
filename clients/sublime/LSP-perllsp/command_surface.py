@@ -221,18 +221,20 @@ def _scalar(value: Any) -> str:
     return str(value)
 
 
-def _bounded_field(text: str, *, preserve_tail: bool = False) -> str:
+def _bounded_field(
+    text: str, *, max_chars: int = MAX_FIELD_CHARS, preserve_tail: bool = False
+) -> str:
     """Bound one rendered scalar field so bulk material cannot consume the
     global budget and erase control fields rendered after it."""
-    if len(text) <= MAX_FIELD_CHARS:
+    if len(text) <= max_chars:
         return text
     # Reserve the notice itself.  Error text commonly ends with the useful
     # compiler diagnosis, so retain both ends when it is a control field.
     notice = "\n… {} character(s) of this field omitted by LSP-perllsp."
-    omitted = len(text) - MAX_FIELD_CHARS
+    omitted = len(text) - max_chars
     while True:
         rendered_notice = notice.format(omitted)
-        keep = MAX_FIELD_CHARS - len(rendered_notice) - (3 if preserve_tail else 0)
+        keep = max_chars - len(rendered_notice) - (3 if preserve_tail else 0)
         updated = len(text) - keep
         if updated == omitted:
             if preserve_tail:
@@ -270,43 +272,17 @@ def _append_value(
             lines.append(f"{prefix}  … {len(value) - 50} additional item(s) omitted")
         return
     if isinstance(value, str) and "\n" in value:
-        lines.append(f"{prefix}{label}:")
         rendered_lines = value.splitlines()
-        if bound_fields and sum(len(line) + 2 + len(prefix) for line in rendered_lines) > MAX_FIELD_CHARS:
-            notice = f"… {len(value)} character(s) of this field omitted by LSP-perllsp."
-            budget = MAX_FIELD_CHARS - len(prefix) - 2 - len(notice) - 4
-            def take(source: list[str], allowance: int = budget) -> tuple[list[str], int]:
-                selected: list[str] = []
-                used = 0
-                for line in source:
-                    cost = len(prefix) + 2 + len(line) + 1
-                    if used + cost > max(0, allowance):
-                        break
-                    selected.append(line)
-                    used += cost
-                return selected, used
-
-            preserve_tail = label.lower() in {"error", "reason"}
-            if preserve_tail:
-                head, _ = take(rendered_lines, budget // 2)
-                tail, _ = take(list(reversed(rendered_lines)), budget - budget // 2)
-                tail.reverse()
-                while head and tail and head[-1] == tail[0]:
-                    tail.pop(0)
-                head = head + (["…"] if tail else []) + tail
-            else:
-                head, _ = take(rendered_lines)
-            lines.extend(f"{prefix}  {line}" for line in head)
-            lines.append(f"{prefix}  … field content omitted by LSP-perllsp.")
-            return
-        lines.extend(f"{prefix}  {line}" for line in rendered_lines)
+        field = "\n".join([f"{prefix}{label}:"] + [f"{prefix}  {line}" for line in rendered_lines])
+        if bound_fields:
+            field = _bounded_field(field, preserve_tail=label.lower() in {"error", "reason"})
+        lines.extend(field.splitlines())
         return
     rendered_scalar = _scalar(value)
-    if bound_fields and len(rendered_scalar) > MAX_FIELD_CHARS:
-        rendered_scalar = _bounded_field(
-            rendered_scalar, preserve_tail=label.lower() in {"error", "reason"}
-        )
-    lines.append(f"{prefix}{label}: {rendered_scalar}")
+    field = f"{prefix}{label}: {rendered_scalar}"
+    if bound_fields:
+        field = _bounded_field(field, preserve_tail=label.lower() in {"error", "reason"})
+    lines.append(field)
 
 
 def _ordered_keys(value: Mapping) -> list[Any]:
@@ -367,7 +343,7 @@ def format_result(caption: str, result: Any) -> str:
         for key in _ordered_keys(result):
             _append_value(lines, _humanize(str(key)), result[key], bound_fields=True)
     elif isinstance(result, (list, tuple)):
-        _append_value(lines, "Results", result)
+        _append_value(lines, "Results", result, bound_fields=True)
     else:
         lines.append(_scalar(result))
     rendered = "\n".join(lines).rstrip() + "\n"

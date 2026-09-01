@@ -278,7 +278,15 @@ class CommandSurfaceContractTests(unittest.TestCase):
         rendered = surface.format_result("Perl: Run Current File", {"output": value})
         self.assertNotIn(value, rendered)
         self.assertIn("omitted by LSP-perllsp", rendered)
-        self.assertLessEqual(len(rendered), surface.MAX_FIELD_CHARS + 200)
+        output_line = next(line for line in rendered.splitlines() if line.startswith("Output: "))
+        self.assertLessEqual(len(output_line), surface.MAX_FIELD_CHARS)
+
+    def test_top_level_list_items_bound_the_rendered_field(self) -> None:
+        value = "x" * (surface.MAX_FIELD_CHARS + 100)
+        rendered = surface.format_result("Perl: Run Current File", [value])
+        item_line = next(line for line in rendered.splitlines() if line.startswith("  1: "))
+        self.assertLessEqual(len(item_line), surface.MAX_FIELD_CHARS)
+        self.assertIn("omitted by LSP-perllsp", rendered)
 
     def test_under_budget_scalar_field_remains_complete(self) -> None:
         value = "x" * (surface.MAX_FIELD_CHARS - 100)
@@ -306,7 +314,7 @@ class CommandSurfaceContractTests(unittest.TestCase):
             {"details": {"output": "a\n" * 30000}, "success": True},
         )
         self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
-        self.assertIn("field content omitted by LSP-perllsp", rendered)
+        self.assertIn("of this field omitted by LSP-perllsp", rendered)
 
     def test_nested_control_fields_survive_many_bulk_siblings(self) -> None:
         result = {"success": False, "nextAction": "fix"}
