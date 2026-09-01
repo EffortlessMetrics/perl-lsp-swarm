@@ -358,6 +358,10 @@ impl DebugAdapter {
         // instead of relocating the next statement, so standard `gotoTargets`
         // stays unsupported while the catalog row is unadvertised.  Publishing
         // targets a client cannot use as standard goto would be a false promise.
+        // The deterministic refusal also names parent-directory paths so the
+        // #4638 message contract (a rejected gotoTargets source path must say
+        // why its path is not evaluated) stays observable at this gate, which
+        // refuses before path validation ever runs.
         if !catalog_has_feature("dap.goto_targets") {
             return DapMessage::Response {
                 seq,
@@ -368,7 +372,10 @@ impl DebugAdapter {
                 message: Some(
                     "gotoTargets is unsupported: the native Perl debugger only provides \
                      run-to-line (which executes intervening code), not standard DAP goto; \
-                     standard goto requires a proven next-statement relocation primitive (#9064)"
+                     standard goto requires a proven next-statement relocation primitive \
+                     (#9064). Refused fail-closed at this gate before any path check: no \
+                     source path, including parent-directory paths, reaches the filesystem \
+                     or a goto-target lookup (#4638)"
                         .to_string(),
                 ),
             };
