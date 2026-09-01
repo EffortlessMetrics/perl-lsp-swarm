@@ -323,7 +323,7 @@ fn test_step_in_targets_is_refused_without_source_scans() -> Result<(), Box<dyn 
         "main",
         Source::new(source_path),
         3,
-    )])?;
+    )]);
     let queries_before = adapter.debugger_query_count_for_test();
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
@@ -370,10 +370,11 @@ fn test_step_in_with_target_id_is_refused_before_debugger_io()
         "main",
         Source::new(source_path),
         1,
-    )])?;
+    )]);
     let queries_before = adapter.debugger_query_count_for_test();
 
-    let response = adapter.handle_request(1, "stepIn", Some(json!({ "targetId": 3 })));
+    let response =
+        adapter.handle_request(1, "stepIn", Some(json!({ "threadId": 1, "targetId": 3 })));
     match response {
         DapMessage::Response { success, command, body, message, .. } => {
             assert_eq!(command, "stepIn");
@@ -383,9 +384,10 @@ fn test_step_in_with_target_id_is_refused_before_debugger_io()
                  unsupported (#9069)"
             );
             assert!(body.is_none(), "the refusal must carry no body");
+            let message = message.unwrap_or_default();
             assert!(
-                message.is_some_and(|m| m.contains("targetId")),
-                "the refusal must name the unsupported targetId: {message:?}"
+                message.contains("targetId"),
+                "the refusal must name the unsupported targetId: {message}"
             );
         }
         _ => return Err("Expected Response for stepIn".into()),
