@@ -1079,15 +1079,25 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
     // existing rows; new inventory identities remain fully qualified and
     // collision-stable.
     let mut lookup_current = current.keys().cloned().collect::<BTreeSet<_>>();
+    let mut qualified_by_bare = BTreeMap::<(String, String), BTreeSet<String>>::new();
     for (path, function) in current.keys() {
         let bare = function.rsplit("::").next().unwrap_or(function).to_owned();
-        lookup_current.insert((path.clone(), bare));
+        qualified_by_bare.entry((path.clone(), bare)).or_default().insert(function.clone());
+    }
+    for ((path, bare), qualified) in &qualified_by_bare {
+        if qualified.len() == 1 {
+            lookup_current.insert((path.clone(), bare.clone()));
+        }
     }
 
     let active_count =
         registry.values().filter(|record| record.state == RegistryState::Active).count();
     let serialized =
         serialized_inventory.iter().map(|site| (site.key(), site)).collect::<BTreeMap<_, _>>();
+    for (path, function) in serialized.keys() {
+        let bare = function.rsplit("::").next().unwrap_or(function).to_owned();
+        qualified_by_bare.entry((path.clone(), bare)).or_default().insert(function.clone());
+    }
     println!(
         "parallel-unsafe test identities: current={} active_registry={} registry={:?}",
         current.len(),
@@ -1098,7 +1108,8 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
     let mut failures = Vec::new();
     for (key, site) in &current {
         let bare_key = (key.0.clone(), key.1.rsplit("::").next().unwrap_or(&key.1).to_owned());
-        match registry.get(key).or_else(|| registry.get(&bare_key)) {
+        let bare_match = qualified_by_bare.get(&bare_key).is_some_and(|ids| ids.len() == 1);
+        match registry.get(key).or_else(|| bare_match.then(|| registry.get(&bare_key)).flatten()) {
             None => failures.push(format!(
                 "NEW parallel-unsafe test: {}:{} {} ({}) — add #[serial] or adjudicate a registry row",
                 site.path,
@@ -1129,7 +1140,8 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
     }
     for (key, site) in &serialized {
         let bare_key = (key.0.clone(), key.1.rsplit("::").next().unwrap_or(&key.1).to_owned());
-        match registry.get(key).or_else(|| registry.get(&bare_key)) {
+        let bare_match = qualified_by_bare.get(&bare_key).is_some_and(|ids| ids.len() == 1);
+        match registry.get(key).or_else(|| bare_match.then(|| registry.get(&bare_key)).flatten()) {
             Some(record)
                 if record.state == RegistryState::Retired
                     && record.remediation == Remediation::Serialized =>
@@ -1162,10 +1174,10 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
         let serialized_with_legacy = serialized_keys
             .iter()
             .flat_map(|(path, function)| {
-                [
-                    (path.clone(), function.clone()),
-                    (path.clone(), function.rsplit("::").next().unwrap_or(function).to_owned()),
-                ]
+                let bare =
+                    (path.clone(), function.rsplit("::").next().unwrap_or(function).to_owned());
+                let alias = qualified_by_bare.get(&bare).filter(|ids| ids.len() == 1).map(|_| bare);
+                std::iter::once((path.clone(), function.clone())).chain(alias)
             })
             .collect::<BTreeSet<_>>();
         if record.remediation == Remediation::Serialized && !serialized_with_legacy.contains(key) {
@@ -2443,6 +2455,26 @@ fn mutates_after_every_lexical_class() {
             }]
         }))?;
         assert!(read_identity_registry(&missing).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_bare_key_does_not_mask_ambiguous_nested_identity() -> Result<()> {
+        let repo = TempRepo::new("legacy-ambiguous-bare-key")?;
+        repo.write_test(
+            "mod first {\n    #[test]\n    fn same_name() { unsafe { std::env::set_var(\"A\", \"1\"); } }\n}\nmod second {\n    #[test]\n    fn same_name() { unsafe { std::env::set_var(\"B\", \"1\"); } }\n}\n",
+        )?;
+        let path = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [registry_row(
+                "crates/demo/tests/demo.rs",
+                "same_name",
+                "env_set",
+                "legacy fixture",
+                "active",
+            )]
+        }))?;
+        assert_eq!(repo.check(&path)?, 1);
         Ok(())
     }
 
