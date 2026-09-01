@@ -419,6 +419,96 @@ fn a_whole_impl_under_cfg_test_is_excluded_from_the_census() {
 }
 
 #[test]
+fn a_globally_unique_method_name_does_not_bypass_receiver_locality() {
+    // With only one same-crate definition the uniqueness shortcut would bind
+    // any receiver's method call to it. The receiver here is a type the census
+    // does not index, so the edge must stay unresolved regardless of
+    // uniqueness; a second definition is not needed to exercise the branch.
+    let sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self, ctx: &Foreign) {
+                    ctx.reap_stale_sessions();
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            "crates/perl-lsp-rs/src/other.rs".to_string(),
+            r#"
+            impl SessionTable {
+                pub fn reap_stale_sessions(&self) {
+                    let _ = std::process::Command::new("perl").output();
+                }
+            }
+            "#
+            .to_string(),
+        ),
+    ];
+    let census = Census::from_sources(&sources);
+    let root =
+        census.resolve(SYNTHETIC_ROOT_FILE, "handle_initialize").expect("synthetic root resolves");
+
+    // This is the documented over-approximation: a mis-bound edge can only
+    // produce a spurious finding, never hide reachable work, and dropping
+    // unique cross-file `self.helper()` edges would shrink the denominator.
+    // The falsifier pins the rule so a silent direction flip cannot happen.
+    assert!(
+        census.transitive_exposures(root, census::MAX_DEPTH).contains_key(&Exposure::ProcessSpawn),
+        "rule 1 (unique definition) binds before locality narrows; this pin must match the doc"
+    );
+}
+
+#[test]
+fn a_recursive_call_does_not_bind_a_namesake() {
+    // `descend` calls itself, and an unrelated same-named definition carries a
+    // spawn. Resolving the recursive call against the namesake would
+    // attribute the spawn to everything that reaches the recursive function.
+    let sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self) {
+                    let _ = descend(3);
+                }
+            }
+            pub fn descend(depth: usize) -> usize {
+                if depth == 0 { 0 } else { descend(depth - 1) }
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            SYNTHETIC_HELPER_FILE.to_string(),
+            r#"
+            pub fn descend(depth: usize) -> usize {
+                let _ = std::process::Command::new("perl").output();
+                depth
+            }
+            "#
+            .to_string(),
+        ),
+    ];
+    let census = Census::from_sources(&sources);
+    let root =
+        census.resolve(SYNTHETIC_ROOT_FILE, "handle_initialize").expect("synthetic root resolves");
+    let recursive = census.resolve(SYNTHETIC_ROOT_FILE, "descend").expect("recursive fn resolves");
+
+    assert!(
+        !census.transitive_exposures(root, census::MAX_DEPTH).contains_key(&Exposure::ProcessSpawn),
+        "the recursive call must not resolve to the same-named definition in another file"
+    );
+    assert!(
+        census.transitive_exposures(recursive, census::MAX_DEPTH).is_empty(),
+        "traversal from the recursive function must not reach its namesake"
+    );
+}
+
+#[test]
 fn a_generic_method_name_does_not_resolve_outside_the_calling_file() {
     // `handle_initialize` calls `params.get("capabilities")` on a serde_json
     // Value. That receiver type is not indexed, so a crate-wide fallback would
@@ -927,6 +1017,41 @@ fn a_same_named_call_elsewhere_cannot_keep_a_stale_row_alive() {
     assert_reports(&errors, "makes that call");
 }
 
+#[test]
+fn a_later_argument_cannot_preserve_a_row_call_site() {
+    // The discriminator is the FIRST argument. A row whose distinguishing
+    // literal only appears in a later argument position describes a call the
+    // source no longer makes, so an unrelated trailing string must not keep
+    // the row alive.
+    let sources = vec![(
+        SYNTHETIC_ROOT_FILE.to_string(),
+        r#"
+        impl Server {
+            pub fn handle_initialize(&self) {
+                self.detect_tool(mode, "perltidy");
+            }
+            pub fn detect_tool(&self, mode: &str, name: &str) -> bool {
+                name == "perltidy"
+            }
+        }
+        "#
+        .to_string(),
+    )];
+    let census = Census::from_sources(&sources);
+    let row = InitOperationRow {
+        operation_id: "synthetic.tool",
+        file: SYNTHETIC_ROOT_FILE,
+        function: "detect_tool",
+        declared_exposure: &[],
+        call_site_argument: "perltidy",
+        owns_exposure: false,
+        ..baseline_row()
+    };
+
+    let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
+    assert_reports(&errors, "makes that call");
+}
+
 // ---------------------------------------------------------------------------
 // Side effects are derived, not trusted
 // ---------------------------------------------------------------------------
@@ -999,6 +1124,82 @@ fn a_side_effect_the_cited_operation_reaches_is_accepted() {
     assert!(
         !errors.iter().any(|error| error.contains("claims side effect")),
         "a method the cited operation genuinely sends must not be reported: {errors:#?}"
+    );
+}
+
+#[test]
+fn a_dollar_prefixed_standard_method_claim_is_validated() {
+    // `$/progress` is a standard method. The claim must be checked, not
+    // silently skipped by the recognizer.
+    let sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self) {
+                    self.report_progress();
+                }
+                pub fn report_progress(&self) {
+                    self.notify("$/progress", ());
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        (SYNTHETIC_HELPER_FILE.to_string(), "pub fn unused() {}".to_string()),
+    ];
+    let census = Census::from_sources(&sources);
+
+    let mut row = baseline_row();
+    row.side_effects = &["sends $/progress"];
+
+    let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
+    assert!(
+        !errors.iter().any(|error| error.contains("claims side effect")),
+        "a recognized standard-method claim that is genuinely sent must validate: {errors:#?}"
+    );
+}
+
+#[test]
+fn a_stale_dollar_prefixed_claim_is_rejected() {
+    let census = Census::from_sources(&indirect_process_sources());
+
+    let mut row = baseline_row();
+    row.side_effects = &["sends $/progress"];
+
+    let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
+    assert_reports(&errors, "no function reachable from");
+    assert_reports(&errors, "`$/progress`");
+}
+
+#[test]
+fn a_multi_segment_extension_method_claim_is_validated() {
+    let sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self) {
+                    self.announce_extension();
+                }
+                pub fn announce_extension(&self) {
+                    self.notify("perl/lsp/indexReady", ());
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        (SYNTHETIC_HELPER_FILE.to_string(), "pub fn unused() {}".to_string()),
+    ];
+    let census = Census::from_sources(&sources);
+
+    let mut row = baseline_row();
+    row.side_effects = &["sends perl/lsp/indexReady"];
+
+    let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
+    assert!(
+        !errors.iter().any(|error| error.contains("claims side effect")),
+        "a multi-segment extension claim that is genuinely sent must validate: {errors:#?}"
     );
 }
 
@@ -1441,6 +1642,46 @@ fn a_helper_shared_by_both_phases_is_accepted_as_before_response() {
         !errors.iter().any(|error| error.contains("synthetic.shared")),
         "the derived before_response point must validate, got: {errors:#?}"
     );
+}
+
+#[test]
+fn a_deferred_row_already_after_response_cannot_claim_a_wave() {
+    // The move the wave schedules has already happened: the operation runs at
+    // the target point of its own disposition.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let mut completed = post_response_row();
+    completed.migration_wave = MigrationWave::E02;
+
+    let errors =
+        ledger_errors_with_roots(&[pre_response_row(), completed], &census, &lifecycle_roots());
+    assert_reports(&errors, "already runs at `after_response`");
+    assert_reports(&errors, "still claims wave E02");
+}
+
+#[test]
+fn a_lazy_row_already_on_demand_cannot_claim_a_wave() {
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let mut lazy = InitOperationRow {
+        operation_id: "synthetic.lazy",
+        file: SYNTHETIC_HELPER_FILE,
+        function: "resolve_timing_mode",
+        declared_exposure: &[Exposure::EnvRead],
+        triggers: &[Trigger::FirstUse],
+        current_point: ExecutionPoint::OnDemand,
+        phase: PhaseDisposition::LazyOnFirstUse,
+        migration_wave: MigrationWave::E03,
+        owns_exposure: false,
+        ..baseline_row()
+    };
+    lazy.migration_wave = MigrationWave::E03;
+
+    let errors = ledger_errors_with_roots(
+        &[pre_response_row(), post_response_row(), lazy],
+        &census,
+        &lifecycle_roots(),
+    );
+    assert_reports(&errors, "already runs at `on_demand`");
+    assert_reports(&errors, "still claims wave E03");
 }
 
 // ---------------------------------------------------------------------------

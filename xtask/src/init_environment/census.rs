@@ -392,12 +392,23 @@ impl Census {
     }
 
     /// Resolve one call edge from `from` to a callee name, or `None` when the
-    /// name is ambiguous or unknown.
+    /// name is ambiguous, unknown, or the call site cannot resolve it within
+    /// the receiver-locality policy.
     fn resolve_edge(&self, from: usize, callee: &str, kind: CallKind) -> Option<usize> {
-        // Self-recursion adds no reachability, and keeping the caller in the
-        // candidate set would let a same-file preference resolve
-        // `server.auto_initialize_for_compat(..)` back to the free function of
-        // the same name that contains the call.
+        // A call whose callee names the calling function itself is
+        // self-recursion: it adds no reachability, and excluding the caller
+        // from the candidate set must not let a same-named definition elsewhere
+        // absorb the edge. `server.auto_initialize_for_compat(..)` keeps its
+        // legitimate edge because a method call can only reach a method, so the
+        // free function containing the call was never a candidate.
+        let caller = self.funcs.get(from);
+        let self_is_callee = caller.is_some_and(|record| {
+            record.name == callee && record.is_method == (kind == CallKind::Method)
+        });
+        if self_is_callee {
+            return None;
+        }
+
         let mut candidates: Vec<usize> =
             self.by_name.get(callee)?.iter().copied().filter(|index| *index != from).collect();
         if candidates.is_empty() {
@@ -426,6 +437,13 @@ impl Census {
             candidates = by_kind;
         }
 
+        // Call-syntax narrowing decides the uniqueness shortcut. A unique
+        // candidate binds for either call kind: this is resolution rule 1 of
+        // the module's documented discipline, and the direction of a rare
+        // mistake is deliberate — a mis-bound edge can only produce a spurious
+        // finding, never hide reachable work. Dropping unique cross-file
+        // method edges instead would silently shrink the denominator: every
+        // `self.helper()` call into another file would go unresolved.
         if candidates.len() == 1 {
             return candidates.first().copied();
         }
@@ -947,19 +965,38 @@ fn call_mentions_path_env(node: &syn::ExprCall) -> bool {
     })
 }
 
-/// Whether a string literal looks like a protocol method name such as
-/// `window/showMessage` or `perl-lsp/index-ready`.
+/// Whether a string literal looks like a protocol method name.
+///
+/// Recognized shapes: the two-segment LSP core form (`window/showMessage`,
+/// `perl-lsp/index-ready`), the `$`-prefixed standard form (`$/progress`,
+/// `$/cancelRequest`), and multi-segment extension methods
+/// (`perl/lsp/indexReady`). Anything else is left unvalidated rather than
+/// guessed at, but the recognized set must cover every shape this repository's
+/// ledger actually claims, or a stale claim evades the check by spelling.
 pub fn looks_like_protocol_method(value: &str) -> bool {
-    let mut parts = value.split('/');
-    let (Some(head), Some(tail), None) = (parts.next(), parts.next(), parts.next()) else {
+    let segments: Vec<&str> = value.split('/').collect();
+    if segments.len() < 2 {
         return false;
-    };
+    }
     let segment_ok = |segment: &str| {
         !segment.is_empty()
             && segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             && segment.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
     };
-    segment_ok(head) && segment_ok(tail)
+    // The standard `$/` family is the only shape whose first segment starts
+    // with a symbol; the leading `$` belongs to the protocol namespace, not to
+    // the segment spelling.
+    let first = segments[0];
+    let head_ok = segment_ok(first)
+        || (first == "$" && segments[1].chars().next().is_some_and(|c| c.is_ascii_alphabetic()));
+    if !head_ok {
+        return false;
+    }
+    if first == "$" {
+        segments.len() >= 2 && segments[1..].iter().all(|segment| segment_ok(segment))
+    } else {
+        segments[1..].iter().all(|segment| segment_ok(segment))
+    }
 }
 
 /// Collect the exact files declared as `#[cfg(test)] mod name;` without a body.
@@ -1055,12 +1092,16 @@ fn is_test_only_file(file: &str, test_only_modules: &BTreeSet<String>) -> bool {
     test_only_modules.contains(file)
 }
 
-/// The first string-literal argument at a call site, if any.
+/// The first argument at a call site, when it is a string literal.
+///
+/// Only `args.first()` counts. Scanning every argument would let an unrelated
+/// later string keep a row's call-site discriminator alive after the
+/// identifying first argument was deleted or changed.
 fn first_string_literal(
     args: &syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>,
 ) -> Option<String> {
-    args.iter().find_map(|arg| match arg {
-        syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }) => Some(text.value()),
+    match args.first() {
+        Some(syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. })) => Some(text.value()),
         _ => None,
-    })
+    }
 }

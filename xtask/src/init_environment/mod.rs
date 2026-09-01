@@ -373,8 +373,11 @@ fn side_effect_errors(rows: &[InitOperationRow], census: &Census) -> Vec<String>
         };
         for effect in row.side_effects {
             for token in effect.split_whitespace() {
-                let candidate =
-                    token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '/');
+                // `$` is preserved: the standard `$/progress` family names its
+                // protocol namespace with a symbol, and stripping it would
+                // leave a candidate the recognizer can never accept.
+                let candidate = token
+                    .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '/' && c != '$');
                 if !census::looks_like_protocol_method(candidate) {
                     continue;
                 }
@@ -519,8 +522,39 @@ fn phase_errors(rows: &[InitOperationRow], census: &Census) -> Vec<String> {
                 }
             }
         }
+
+        // Deferred or lazy dispositions whose target point the operation
+        // already runs at are terminal for scheduling purposes: a non-`None`
+        // wave would cut over a move that has already happened.
+        if row.migration_wave != MigrationWave::None
+            && row.phase.implies_movement()
+            && phase_target_point(row.phase) == Some(row.current_point)
+        {
+            errors.push(format!(
+                "row {} already runs at `{}`, the target of `{}`, but still claims wave {}",
+                row.operation_id,
+                row.current_point.label(),
+                row.phase.label(),
+                row.migration_wave.label()
+            ));
+        }
     }
     errors
+}
+
+/// The execution point a movement-implying disposition targets, when the
+/// [`ExecutionPoint`] model can express it.
+///
+/// `remove_from_product_lifecycle` targets leaving the lifecycle entirely, so
+/// no point matches it and no wave is ever declared completed by this rule.
+fn phase_target_point(phase: PhaseDisposition) -> Option<ExecutionPoint> {
+    match phase {
+        PhaseDisposition::DeferToPostInitializeEnvironment => Some(ExecutionPoint::AfterResponse),
+        PhaseDisposition::LazyOnFirstUse | PhaseDisposition::UserTriggeredOnly => {
+            Some(ExecutionPoint::OnDemand)
+        }
+        _ => None,
+    }
 }
 
 fn static_surface_errors(rows: &[InitOperationRow], census: &Census) -> Vec<String> {
@@ -691,7 +725,17 @@ pub fn render_json(rows: &[InitOperationRow]) -> String {
         "rows": entries,
     });
 
-    format!("{}\n", serde_json::to_string_pretty(&document).unwrap_or_default())
+    // Serialization of an in-memory `serde_json::Value` cannot fail today. If
+    // a dependency change ever makes it fail, render a loud deterministic
+    // marker instead of a blank document: the checker's contract is to fail
+    // closed, not to hand consumers an empty ledger that looks authoritative.
+    match serde_json::to_string_pretty(&document) {
+        Ok(rendered) => format!("{rendered}\n"),
+        Err(error) => format!(
+            "{{\n  \"render_error\": \"instrument failure: the ledger could not be serialized: \
+             {error}\"\n}}\n"
+        ),
+    }
 }
 
 /// Group rows by phase disposition for the human view.
