@@ -16,7 +16,6 @@
 pub(crate) mod test_support {
     /// Process-global lock serializing every `PATH`-mutating test in this crate.
     pub(crate) static PATH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 }
 
 /// Helpers for translating feature catalog entries into client capability checks.
