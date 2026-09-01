@@ -575,32 +575,23 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         "github.event.pull_request.head",
         "refs/pull/${{",
     ];
-    let contract_steps = steps
-        .iter()
-        .filter(|step| {
-            step.as_mapping().is_some_and(|map| {
-                map.get(key("id")).and_then(serde_yaml_ng::Value::as_str)
-                    == Some("verify-trusted-workflow-contract")
-            })
+    let is_contract_step = |step: &&serde_yaml_ng::Value| {
+        step.as_mapping().is_some_and(|map| {
+            map.get(key("id")).and_then(serde_yaml_ng::Value::as_str)
+                == Some("verify-trusted-workflow-contract")
+                && map.get(key("name")).and_then(serde_yaml_ng::Value::as_str)
+                    == Some("Verify trusted workflow contract")
         })
-        .collect::<Vec<_>>();
-    if contract_steps.len() != 1
-        || contract_steps[0]
-            .as_mapping()
-            .and_then(|map| map.get(key("name")))
-            .and_then(serde_yaml_ng::Value::as_str)
-            != Some("Verify trusted workflow contract")
-    {
+    };
+    let contract_steps = steps.iter().filter(is_contract_step).collect::<Vec<_>>();
+    if contract_steps.len() != 1 {
         bail!("trusted workflow must define exactly one stable contract-verification step");
     }
     for step in steps {
         let map =
             step.as_mapping().ok_or_else(|| eyre!("trusted workflow step must be a mapping"))?;
         let name = map.get(key("name")).and_then(serde_yaml_ng::Value::as_str);
-        if name == Some("Verify trusted workflow contract")
-            && map.get(key("id")).and_then(serde_yaml_ng::Value::as_str)
-                == Some("verify-trusted-workflow-contract")
-        {
+        if is_contract_step(&step) {
             continue;
         }
         // Candidate-controlled refs can be smuggled through `env`/`with` and
@@ -760,8 +751,7 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         .iter()
         .filter_map(|step| {
             let map = step.as_mapping()?;
-            let name = map.get(key("name")).and_then(serde_yaml_ng::Value::as_str);
-            (name != Some("Verify trusted workflow contract")).then_some(map)
+            (!is_contract_step(&step)).then_some(map)
         })
         .filter_map(|step| step.get(key("run")))
         .filter_map(serde_yaml_ng::Value::as_str)
