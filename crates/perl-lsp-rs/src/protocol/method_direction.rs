@@ -1050,13 +1050,19 @@ mod tests {
                 if let Some(inner) = lines.get(index) {
                     let (delta, close) = scan_structural_braces(inner, &mut lexical_state, depth);
                     depth += delta;
-                    // A line-start closing brace is unambiguous even when a
-                    // preceding line ended in a continued literal.
+                    // Only use the line-start fallback after the lexical
+                    // scanner has reached normal code. A `}` at the start of
+                    // a line can be part of a continued literal or block
+                    // comment, neither of which closes the test module.
                     let close = close.or_else(|| {
-                        inner
-                            .trim_start()
-                            .starts_with('}')
-                            .then_some(inner.len() - inner.trim_start().len())
+                        matches!(lexical_state, LexicalState::Normal)
+                            .then(|| {
+                                inner
+                                    .trim_start()
+                                    .starts_with('}')
+                                    .then_some(inner.len() - inner.trim_start().len())
+                            })
+                            .flatten()
                     });
                     if let Some(offset) = close {
                         depth = 0;
@@ -1158,6 +1164,33 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         assert!(stripped.contains("production/after"));
         assert!(stripped.contains("pub(crate) mod visible"));
         assert!(stripped.contains("visible/production"));
+    }
+
+    #[test]
+    fn strip_test_modules_does_not_close_on_braces_inside_multiline_lexemes() {
+        let source = r#"
+#[cfg(test)]
+mod continued_literal {
+    const HIDDEN: &str = "opening\
+}
+";
+}
+#[cfg(test)]
+mod block_comment {
+    /*
+}
+    */
+    const ALSO_HIDDEN: &str = "test-only";
+}
+fn production_after_lexemes() {}
+"#;
+
+        let stripped = strip_test_modules(source);
+        assert!(!stripped.contains("continued_literal"));
+        assert!(!stripped.contains("block_comment"));
+        assert!(!stripped.contains("HIDDEN"));
+        assert!(!stripped.contains("ALSO_HIDDEN"));
+        assert!(stripped.contains("fn production_after_lexemes() {}"));
     }
 
     fn quoted_literals(line: &str) -> Vec<&str> {
