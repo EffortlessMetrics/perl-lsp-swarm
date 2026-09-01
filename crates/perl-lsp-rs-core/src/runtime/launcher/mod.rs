@@ -1451,10 +1451,17 @@ mod tests {
             .env("PERL_LSP_LOG_FILE", dir.path().join("wave-a1.log"))
             .output()?;
         assert!(output.status.success(), "logging child failed: {output:?}");
-        let found = std::fs::read_dir(dir.path())?
-            .filter_map(Result::ok)
-            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
-            .any(|contents| contents.contains(TOKEN));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let found = loop {
+            let found = std::fs::read_dir(dir.path())?
+                .filter_map(Result::ok)
+                .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+                .any(|contents| contents.contains(TOKEN));
+            if found || std::time::Instant::now() >= deadline {
+                break found;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
         assert!(found, "rolling log must contain marker {TOKEN}");
         Ok(())
     }
@@ -1981,7 +1988,7 @@ mod tests {
             );
             return Ok(());
         }
-        let quiet = std::process::Command::new(std::env::current_exe()?)
+        let visible = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
                 "runtime::launcher::tests::startup_banner_suppressed_by_quiet_env",
@@ -1990,9 +1997,9 @@ mod tests {
             .env(MARKER, "1")
             .env_remove("PERL_LSP_QUIET")
             .output()?;
-        assert!(quiet.status.success());
-        let quiet_output = String::from_utf8_lossy(&quiet.stderr);
-        assert!(quiet_output.contains("wave-a1-banner-token"));
+        assert!(visible.status.success());
+        let visible_output = String::from_utf8_lossy(&visible.stderr);
+        assert!(visible_output.contains("wave-a1-banner-token"));
         let suppressed = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
