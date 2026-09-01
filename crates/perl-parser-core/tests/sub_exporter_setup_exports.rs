@@ -8,8 +8,8 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    ExportDeclaration, ExportDeclarationKind, HirFile, StashConfidence, StashDynamicBoundaryKind,
-    StashProvenance, lower_ast,
+    ExportDeclaration, ExportDeclarationKind, FrameworkAdapterRegistry, HirFile, StashConfidence,
+    StashDynamicBoundaryKind, StashProvenance, lower_ast,
 };
 
 fn lower(source: &str) -> HirFile {
@@ -212,6 +212,58 @@ fn unrelated_setup_keys_do_not_become_exports() {
             "collectors and installer options are not exports: {symbols:?}"
         );
     }
+}
+
+#[test]
+fn a_repeated_name_is_declared_once_regardless_of_position() -> Result<(), String> {
+    // `Vec::dedup` collapses only *consecutive* duplicates, so a repeated name
+    // must be deduplicated by position-independent means. `ExportSet` sorts and
+    // dedups on its own, which hides this; `FrameworkFactGraph` does not, so a
+    // survived duplicate becomes a duplicated compiler fact. Assert the fact
+    // graph, which is where it actually shows.
+    for exports in ["qw(foo foo bar)", "qw(foo bar foo)"] {
+        let file = lower(&format!(
+            "package My::Utils;\n\
+             use Sub::Exporter -setup => {{\n\
+                 exports => [{exports}],\n\
+                 groups  => {{ default => [qw(foo bar foo)] }},\n\
+             }};\n",
+        ));
+
+        for (kind, _, symbols) in declarations(&file, "My::Utils") {
+            let mut unique = symbols.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                symbols.len(),
+                "{exports}: {kind:?} declaration repeats a name: {symbols:?}"
+            );
+        }
+
+        let graph = FrameworkAdapterRegistry::default().project_file(&file);
+        let mut identities: Vec<_> = graph
+            .exported_symbols
+            .iter()
+            .map(|fact| {
+                (
+                    fact.package.clone(),
+                    fact.name.clone(),
+                    format!("{:?}", fact.kind),
+                    fact.tag_name.clone(),
+                )
+            })
+            .collect();
+        let total = identities.len();
+        identities.sort();
+        identities.dedup();
+        assert_eq!(
+            identities.len(),
+            total,
+            "{exports}: framework fact graph repeats an exported-symbol identity"
+        );
+    }
+    Ok(())
 }
 
 // --- negative controls: nothing enumerable, nothing claimed ----------------

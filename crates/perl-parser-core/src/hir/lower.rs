@@ -3,7 +3,7 @@
 use crate::{Node, NodeKind, SourceLocation};
 use perl_pragma::{CompileTimePragmaEnvironment, PragmaSnapshot};
 use perl_semantic_facts::AnchorId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
@@ -3106,6 +3106,18 @@ fn sub_exporter_literal_names(token: &str) -> Vec<String> {
     vec![trimmed.trim_matches(',').trim_matches('"').trim_matches('\'').to_string()]
 }
 
+/// Remove duplicate names while preserving first-declaration order.
+///
+/// `Vec::dedup` only collapses *consecutive* duplicates, so it would let
+/// `exports => [qw(foo bar foo)]` through as two `foo` facts while collapsing
+/// `qw(foo foo bar)` to one. Downstream `ExportSet` sorts and dedups, but
+/// `FrameworkFactGraph` does not, so the duplicate would survive as a
+/// duplicated compiler fact.
+fn dedup_preserving_order(names: &mut Vec<String>) {
+    let mut seen = BTreeSet::new();
+    names.retain(|name| seen.insert(name.clone()));
+}
+
 /// One literal name from a token that must expand to exactly one valid name.
 fn sub_exporter_single_name(token: &str) -> Option<String> {
     let names = sub_exporter_literal_names(token);
@@ -3159,7 +3171,7 @@ fn sub_exporter_export_names(value: &[String]) -> Option<Vec<String>> {
         }
     }
 
-    names.dedup();
+    dedup_preserving_order(&mut names);
     Some(names)
 }
 
@@ -3204,7 +3216,7 @@ fn sub_exporter_group_members(value: &[String]) -> Option<Vec<String>> {
         }
     }
 
-    members.dedup();
+    dedup_preserving_order(&mut members);
     Some(members)
 }
 
