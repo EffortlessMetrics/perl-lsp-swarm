@@ -89,6 +89,9 @@ pub const MAX_ENVELOPE_FILE_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_DECLARED_OBJECTS: usize = 2_000_000;
 
 /// Ceiling on declared proof artifacts.
+///
+/// The producer enforces the same count, so neither side can build or accept an
+/// envelope the other would refuse.
 pub const MAX_DECLARED_PROOFS: usize = 256;
 
 /// Ceiling on declared parent commits.
@@ -1089,7 +1092,7 @@ fn verify_object_presence(odb: &Path, manifest: &Manifest) -> Result<(), (Handof
         if !output.succeeded() {
             return Err(missing(format!("tree {root} is not readable from the transport")));
         }
-        for entry in output.stdout.split('\0').filter(|entry| !entry.is_empty()) {
+        for entry in output.stdout().split('\0').filter(|entry| !entry.is_empty()) {
             // A record this reader cannot parse is unexpected Git output, not
             // an absent object. Skipping it would silently shrink the derived
             // closure and let an incomplete transport look authoritative, so it
@@ -1138,7 +1141,8 @@ fn verify_object_presence(odb: &Path, manifest: &Manifest) -> Result<(), (Handof
             present.diagnostic()
         )));
     }
-    let carried: BTreeSet<String> = present.stdout.split_whitespace().map(str::to_string).collect();
+    let carried: BTreeSet<String> =
+        present.stdout().split_whitespace().map(str::to_string).collect();
 
     if let Some(absent) = required.iter().find(|id| !carried.contains(*id)) {
         return Err(missing(format!("object {absent} is absent from the transport")));

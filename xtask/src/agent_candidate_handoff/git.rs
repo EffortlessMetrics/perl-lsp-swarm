@@ -85,12 +85,25 @@ pub const GIT_LOCAL_ENV_VARS: &[&str] = &[
 pub struct GitOutput {
     /// Process exit code, absent when the process was signalled.
     pub code: Option<i32>,
-    /// Captured standard output.
-    pub stdout: String,
-    /// Captured standard error.
-    pub stderr: String,
-    /// Captured standard output as raw bytes, for binary-producing commands.
+    /// Captured standard output, as the bytes Git produced.
     pub stdout_bytes: Vec<u8>,
+    /// Captured standard error, which is always diagnostic text.
+    pub stderr: String,
+}
+
+impl GitOutput {
+    /// Standard output as text, borrowed when it is already valid UTF-8.
+    ///
+    /// Deliberately not a stored `String`. The largest caller here produces a
+    /// pack, and materialising a lossy text copy of it alongside the bytes cost
+    /// two to three times the ceiling in memory for a value that command never
+    /// reads. Borrowing costs nothing in the ordinary case — Git's textual
+    /// output is valid UTF-8 — and the copy now exists only where a caller
+    /// actually asks for text, one at a time.
+    #[must_use]
+    pub fn stdout(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.stdout_bytes)
+    }
 }
 
 impl GitOutput {
@@ -232,9 +245,8 @@ fn run_bounded(
 
     Ok(GitOutput {
         code: status,
-        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
         stdout_bytes,
+        stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
     })
 }
 
@@ -324,7 +336,7 @@ fn spawn_capped_reader<R: Read + Send + 'static>(mut stream: R, cap: usize) -> C
 #[must_use]
 pub fn git_version(repository: &Path) -> String {
     match run_git(repository, &["--version"]) {
-        Ok(output) if output.succeeded() => output.stdout.trim().to_string(),
+        Ok(output) if output.succeeded() => output.stdout().trim().to_string(),
         _ => "not_available".to_string(),
     }
 }

@@ -3522,3 +3522,47 @@ fn a_drive_relative_inventory_path_is_refused() -> Result<()> {
     let _ = manifest;
     Ok(())
 }
+
+/// Proof collection is bounded in aggregate, not only per artifact.
+///
+/// The per-artifact ceiling times the count ceiling is eight gigabytes, and
+/// every artifact is held until the envelope is staged — so the per-artifact
+/// limit alone bounds nothing that matters.
+#[test]
+fn proof_collection_is_bounded_in_aggregate() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    // Too many artifacts, refused before any is read.
+    let destination = Destination::new()?;
+    let mut requested = request(&fixture, &destination);
+    requested.proofs = (0..super::create::MAX_PROOFS + 1)
+        .map(|index| fixture.path().join(format!("proof-{index}.json")))
+        .collect();
+    let Err((outcome, detail)) = create_handoff(&requested) else {
+        bail!("a proof set above the count ceiling must be refused");
+    };
+    assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
+    assert!(detail.contains("ceiling"), "the refusal must name the ceiling: {detail}");
+
+    // Individually legal artifacts whose total exceeds the aggregate ceiling.
+    let mut paths = Vec::new();
+    for index in 0..8 {
+        let path = fixture.path().join(format!("big-{index}.json"));
+        let file = fs::File::create(&path)?;
+        file.set_len(super::create::MAX_PROOF_BYTES)?;
+        drop(file);
+        paths.push(path);
+    }
+    let second = Destination::new()?;
+    let mut requested = request(&fixture, &second);
+    requested.proofs = paths;
+    let Err((outcome, detail)) = create_handoff(&requested) else {
+        bail!("artifacts that are each legal can still exceed the aggregate ceiling");
+    };
+    assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
+    assert!(detail.contains("total"), "the refusal must name the aggregate rule: {detail}");
+    assert!(!second.envelope().exists(), "nothing is published");
+    Ok(())
+}

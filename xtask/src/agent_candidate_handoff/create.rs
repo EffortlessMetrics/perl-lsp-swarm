@@ -36,6 +36,20 @@ pub const PROOF_SUBJECT_KEYS: &[&str] =
 /// is generous for its purpose and still bounded.
 pub const MAX_PROOF_BYTES: u64 = 32 * 1024 * 1024;
 
+/// Ceiling on the number of proof artifacts one envelope may carry.
+///
+/// Matches the validator's own limit, so the producer cannot build an envelope
+/// its consumer would refuse to read.
+pub const MAX_PROOFS: usize = 256;
+
+/// Ceiling on the total bytes of all proof artifacts together.
+///
+/// The per-artifact ceiling alone bounds nothing in aggregate: the count limit
+/// times the size limit is eight gigabytes, and every artifact is held in
+/// memory until the envelope is staged. This is the bound that actually keeps
+/// a legitimate-looking set of inputs from exhausting the producer.
+pub const MAX_TOTAL_PROOF_BYTES: u64 = 128 * 1024 * 1024;
+
 /// Self-check value written while an envelope is still staged.
 pub const SELF_CHECK_PENDING: &str = "pending";
 
@@ -177,7 +191,8 @@ fn require_supported_object_format(repository: &Path) -> Result<(), (HandoffOutc
     if !output.succeeded() {
         return Ok(());
     }
-    let format = output.stdout.trim();
+    let stdout = output.stdout();
+    let format = stdout.trim();
     if format.is_empty() || format == "sha1" {
         return Ok(());
     }
@@ -298,7 +313,7 @@ fn resolve_commit(repository: &Path, revision: &str) -> Result<String, (HandoffO
             format!("could not resolve `{revision}` to a commit: {}", output.diagnostic()),
         ));
     }
-    let sha = output.stdout.trim().to_string();
+    let sha = output.stdout().trim().to_string();
     if !is_full_object_id(&sha) {
         return Err((
             HandoffOutcome::InstrumentFailure,
@@ -467,7 +482,7 @@ fn resolve_tree(repository: &Path, commit: &str) -> Result<String, (HandoffOutco
             format!("tree of {commit} is not present locally: {}", output.diagnostic()),
         ));
     }
-    let tree = output.stdout.trim().to_string();
+    let tree = output.stdout().trim().to_string();
     // This value becomes a declared identity covered by the semantic digest,
     // so it gets the same canonical-id check its sibling readers apply.
     if !is_full_object_id(&tree) {
@@ -512,7 +527,7 @@ fn resolve_repository_identity(
     let output = run_git(repository, &["config", "--get", "remote.origin.url"])
         .map_err(|error| (HandoffOutcome::InstrumentFailure, error))?;
     if output.succeeded() {
-        match repository_identity_from_remote(output.stdout.trim()) {
+        match repository_identity_from_remote(output.stdout().trim()) {
             Ok(Some(identity)) => {
                 if let Some(declared) = &declared
                     && *declared != identity.value
@@ -547,7 +562,7 @@ fn resolve_repository_identity(
                 // Comparing an `owner/name` is not retaining a URL.
                 if let Some(declared) = &declared
                     && let Ok(Some(identity)) =
-                        repository_identity_from_remote(&strip_url_userinfo(output.stdout.trim()))
+                        repository_identity_from_remote(&strip_url_userinfo(output.stdout().trim()))
                     && *declared != identity.value
                 {
                     return Err((
@@ -831,7 +846,7 @@ fn enumerate_objects(
     }
 
     let mut ids: BTreeSet<String> = BTreeSet::new();
-    for line in output.stdout.lines() {
+    for line in output.stdout().lines() {
         let id = line.split(' ').next().unwrap_or_default().trim();
         if is_full_object_id(id) {
             ids.insert(id.to_string());
@@ -919,7 +934,18 @@ fn collect_proofs(
     paths: &[PathBuf],
     commit: &str,
 ) -> Result<Vec<PreparedProof>, (HandoffOutcome, String)> {
+    if paths.len() > MAX_PROOFS {
+        return Err((
+            HandoffOutcome::InstrumentFailure,
+            format!(
+                "{} proof artifacts were supplied, above the {MAX_PROOFS} ceiling",
+                paths.len()
+            ),
+        ));
+    }
+
     let mut prepared: Vec<PreparedProof> = Vec::new();
+    let mut total_bytes: u64 = 0;
     for path in paths {
         // Check the size before the read, not after. A proof artifact is
         // caller-supplied and unbounded; reading it first and rejecting it
@@ -973,6 +999,17 @@ fn collect_proofs(
                 ),
             ));
         }
+        total_bytes = total_bytes.saturating_add(metadata.len());
+        if total_bytes > MAX_TOTAL_PROOF_BYTES {
+            return Err((
+                HandoffOutcome::InstrumentFailure,
+                format!(
+                    "the supplied proof artifacts total more than the \
+                     {MAX_TOTAL_PROOF_BYTES}-byte ceiling"
+                ),
+            ));
+        }
+
         // One byte past the ceiling, so an artifact that grew after it was
         // measured is refused rather than silently truncated into the envelope.
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
