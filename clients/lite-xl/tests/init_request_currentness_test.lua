@@ -925,8 +925,9 @@ do
   -- first, the references-only server second; iteration order must not let
   -- the first server block the second. One open_document broadcast admits
   -- both servers.
+  local trial_count = 8
   local successful_trials = 0
-  for _ = 1, 8 do
+  for _ = 1, trial_count do
     lsp = fresh_module_load()
     local first = make_server("hoverfirst", merge_caps(SYNC, { hoverProvider = {} }))
     local second = make_server("refssecond", merge_caps(SYNC, { referencesProvider = {} }))
@@ -949,7 +950,7 @@ do
       successful_trials = successful_trials + 1
     end
   end
-  ok(successful_trials == 8,
+  ok(successful_trials == trial_count,
     "case12: references-capable second server remains reachable in every complementary-server trial")
 end
 
