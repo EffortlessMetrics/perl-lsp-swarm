@@ -870,7 +870,8 @@ fn complete_serial_site_inventories(
         sites.sort();
         sites.dedup();
     }
-    let serialized_keys = scan.serialized_sites.iter().map(SerialSiteIdentity::key).collect();
+    let serialized_keys: BTreeSet<_> =
+        scan.serialized_sites.iter().map(SerialSiteIdentity::key).collect();
     let mut all_sites = scan.sites;
     all_sites.extend(scan.serialized_sites);
     normalize_sites(&mut all_sites);
