@@ -2491,6 +2491,12 @@ fn mutates_after_every_lexical_class() {
                 "active",
             )]
         }))?;
+        let identities = complete_serial_site_inventory(&repo.path)?
+            .into_iter()
+            .map(|site| site.test_function)
+            .collect::<BTreeSet<_>>();
+        assert!(identities.contains("first::same_name"));
+        assert!(identities.contains("second::same_name"));
         assert_eq!(repo.check(&path)?, 1);
         Ok(())
     }
