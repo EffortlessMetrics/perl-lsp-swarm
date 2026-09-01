@@ -1,7 +1,6 @@
 use super::{
     DapMessage, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody, DebugAdapter,
     SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, Value, is_valid_set_variable_name,
-    lock_or_recover,
 };
 
 fn context_qualified_watchpoint_refusal(
@@ -122,19 +121,12 @@ impl DebugAdapter {
             };
 
         // #9091 fail-closed: native data breakpoints are unsupported, so this
-        // request performs zero debugger mutation (no `W *`, no `w <name>`),
-        // stores no watchpoint registry state that could imply installation,
-        // and reports one unverified entry per input in request order. An
-        // empty replacement is naturally a no-op. No watchpoint state exists
-        // to survive restart or session boundaries.
-        {
-            // The legacy registry slot is retained but is now permanently
-            // empty: no supported native watchpoint state exists (#9091).
-            let mut store =
-                lock_or_recover(&self.data_breakpoints, "debug_adapter.data_breakpoints");
-            store.clear();
-        }
-
+        // request performs zero debugger mutation (no `W *`, no `w <name>`)
+        // and zero registry mutation: the retained watchpoint slot is neither
+        // read nor written here, so a rejected non-empty replacement and an
+        // empty replacement both leave any retained state byte-for-byte
+        // unchanged. The response below reports one unverified entry per
+        // input in request order without implying installation.
         let response_breakpoints: Vec<crate::protocol::Breakpoint> = args
             .breakpoints
             .iter()
@@ -168,6 +160,7 @@ impl DebugAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug_adapter::sync_utils::lock_or_recover;
 
     fn args(
         variables_reference: Option<i64>,
@@ -191,5 +184,55 @@ mod tests {
     #[test]
     fn context_free_request_retains_compatibility_path() {
         assert!(context_qualified_watchpoint_refusal(&args(None, None)).is_none());
+    }
+
+    fn legacy_record(data_id: &str) -> crate::debug_adapter::data_breakpoints::DataBreakpointRecord {
+        crate::debug_adapter::data_breakpoints::DataBreakpointRecord {
+            data_id: data_id.to_string(),
+            access_type: Some("write".to_string()),
+            condition: Some(format!("{data_id} > 0")),
+        }
+    }
+
+    /// #9091 canary: the fail-closed `setDataBreakpoints` boundary must not
+    /// mutate the retained watchpoint registry. A seeded legacy slot proves a
+    /// rejected non-empty replacement and an empty replacement both leave the
+    /// retained state byte-for-byte unchanged instead of relying on the slot
+    /// being structurally empty.
+    #[test]
+    fn rejected_replacements_leave_seeded_registry_byte_for_byte_unchanged() {
+        let adapter = DebugAdapter::new();
+        let seed = vec![legacy_record("legacy:$a"), legacy_record("legacy:$b")];
+        {
+            let mut store =
+                lock_or_recover(&adapter.data_breakpoints, "test:seed_data_breakpoints");
+            *store = seed.clone();
+        }
+
+        let non_empty = Some(serde_json::json!({
+            "breakpoints": [
+                { "dataId": "$value", "accessType": "write" },
+                { "dataId": "@array", "accessType": "read" }
+            ]
+        }));
+        let rejected = adapter.handle_set_data_breakpoints(1, 1, non_empty);
+        assert!(matches!(rejected, DapMessage::Response { success: true, .. }));
+        let after_non_empty = {
+            let store = lock_or_recover(&adapter.data_breakpoints, "test:read_after_non_empty");
+            store.clone()
+        };
+        assert_eq!(
+            after_non_empty, seed,
+            "rejected non-empty replacement mutated the retained registry"
+        );
+
+        let empty = Some(serde_json::json!({ "breakpoints": [] }));
+        let empty_replacement = adapter.handle_set_data_breakpoints(2, 2, empty);
+        assert!(matches!(empty_replacement, DapMessage::Response { success: true, .. }));
+        let after_empty = {
+            let store = lock_or_recover(&adapter.data_breakpoints, "test:read_after_empty");
+            store.clone()
+        };
+        assert_eq!(after_empty, seed, "empty replacement mutated the retained registry");
     }
 }

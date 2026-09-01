@@ -158,6 +158,9 @@ pub struct DebugAdapter {
     /// Cancellation flag for in-progress requests.
     cancel_requested: Arc<AtomicBool>,
     /// Data breakpoints (watchpoints) stored with REPLACE semantics
+    /// Legacy retained slot: the #9091 fail-closed request path neither reads
+    /// nor writes it; lifecycle cleanup retires it at its own boundary.
+    #[allow(dead_code)]
     data_breakpoints: Arc<Mutex<Vec<DataBreakpointRecord>>>,
     /// Last exception message captured by the output reader (for exceptionInfo)
     last_exception_message: Arc<Mutex<Option<String>>>,
