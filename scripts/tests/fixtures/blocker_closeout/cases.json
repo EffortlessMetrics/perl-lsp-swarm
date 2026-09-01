@@ -135,7 +135,8 @@
       "proof.observations.0.proof_class": "product_test",
       "proof.observations.0.claim_scope": "product_behavior",
       "proof.observations.0.evidence.kind": "github_check",
-      "proof.observations.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90007/job/90008"
+      "proof.observations.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90007/job/90008",
+      "proof.observations.0.evidence_subject_sha": "638a0ea89b0415c02500787c8e5807cfe7fa4cff"
     },
     "error": "resolved preserved claim lacks observation proof coverage"
   },
@@ -151,6 +152,7 @@
       "proof.observations.0.claim_scope": "product_behavior",
       "proof.observations.0.evidence.kind": "github_check",
       "proof.observations.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90007/job/90008",
+      "proof.observations.0.evidence_subject_sha": "638a0ea89b0415c02500787c8e5807cfe7fa4cff",
       "proof.observations.1.claim_ids": ["example.product"]
     },
     "error": "bounded_limitation claim lacks observation proof coverage"

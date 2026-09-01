@@ -160,10 +160,19 @@
         "authority_number": {"type": ["integer", "null"], "minimum": 1},
         "current_head_synthesis": {"$ref": "#/$defs/durable_evidence"},
         "reviewed_head": {"$ref": "#/$defs/sha"},
+        "reviewed_head_metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["implementation_pr", "reviewed_head"],
+          "properties": {"implementation_pr": {"type": "integer", "minimum": 1}, "reviewed_head": {"$ref": "#/$defs/sha"}}
+        },
         "status": {"enum": ["current", "stale", "not_proven"]},
         "unresolved_material_findings": {"type": "integer", "minimum": 0},
         "finding_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/durable_evidence"}}
-      }
+      },
+      "allOf": [
+        {"if": {"properties": {"authority_kind": {"const": "implementation_pr"}, "status": {"const": "current"}}, "required": ["authority_kind", "status"]}, "then": {"required": ["reviewed_head_metadata"]}}
+      ]
     },
     "proof_observation": {
       "type": "object",
@@ -176,7 +185,8 @@
         "status": {"enum": ["passed", "failed", "not_proven", "stale", "skipped", "cancelled", "timed_out", "instrument_failed", "malformed"]},
         "proof_class": {"enum": ["product_test", "installed_acceptance", "workflow", "review", "repository_receipt", "mechanism", "fixture"]},
         "claim_scope": {"enum": ["repository_mechanism", "product_behavior", "installed_user_behavior"]},
-        "evidence": {"$ref": "#/$defs/durable_evidence"}
+        "evidence": {"$ref": "#/$defs/durable_evidence"},
+        "evidence_subject_sha": {"$ref": "#/$defs/sha"}
       },
       "allOf": [
         {"if": {"properties": {"proof_class": {"const": "product_test"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "product_behavior"}, "evidence": {"properties": {"kind": {"enum": ["github_check", "repository_receipt"]}}}}}},
@@ -185,7 +195,8 @@
         {"if": {"properties": {"proof_class": {"const": "review"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"const": "github_review"}}}}}},
         {"if": {"properties": {"proof_class": {"const": "repository_receipt"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"const": "repository_receipt"}}}}}},
         {"if": {"properties": {"proof_class": {"const": "mechanism"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"enum": ["github_check", "repository_blob", "repository_receipt"]}}}}}},
-        {"if": {"properties": {"proof_class": {"const": "fixture"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"enum": ["repository_blob", "repository_receipt"]}}}}}}
+        {"if": {"properties": {"proof_class": {"const": "fixture"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"enum": ["repository_blob", "repository_receipt"]}}}}}},
+        {"if": {"properties": {"evidence": {"properties": {"kind": {"enum": ["github_check", "repository_blob"]}}}}, "required": ["evidence"]}, "then": {"required": ["evidence_subject_sha"]}}
       ]
     },
     "proof": {
@@ -202,11 +213,12 @@
     "claim_effect": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["preserves", "narrows", "limitations"],
+      "required": ["preserves", "narrows", "limitations", "unchanged_claims"],
       "properties": {
         "preserves": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}},
         "narrows": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}},
-        "limitations": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        "limitations": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "unchanged_claims": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/claim_id"}}
       }
     },
     "shared_relation": {

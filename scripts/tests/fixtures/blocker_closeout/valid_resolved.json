@@ -56,6 +56,7 @@
         "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
       },
       "reviewed_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reviewed_head_metadata": {"implementation_pr": 90002, "reviewed_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
       "status": "current",
       "unresolved_material_findings": 0,
       "finding_refs": []
@@ -90,14 +91,16 @@
           "kind": "github_check",
           "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90003/job/90004",
           "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
-        }
+        },
+        "evidence_subject_sha": "638a0ea89b0415c02500787c8e5807cfe7fa4cff"
       }
     ]
   },
   "claim_effect": {
     "preserves": ["example.installed", "example.product"],
     "narrows": [],
-    "limitations": []
+    "limitations": [],
+    "unchanged_claims": []
   },
   "follow_ups": [],
   "invalidation_paths": ["Any load-bearing subject, contribution, review, proof, or claim-effect identity changes."],

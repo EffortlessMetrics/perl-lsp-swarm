@@ -239,11 +239,15 @@ class ProofObservation:
     proof_class: str
     claim_scope: str
     evidence: DurableEvidence
+    evidence_subject_sha: str | None
 
     @classmethod
     def parse(cls, value: Any, name: str) -> "ProofObservation":
         data = _object(value, name)
-        _exact_keys(data, name, {"id", "claim_ids", "subject_sha", "status", "proof_class", "claim_scope", "evidence"})
+        allowed_keys = {"id", "claim_ids", "subject_sha", "status", "proof_class", "claim_scope", "evidence"}
+        if "evidence_subject_sha" in data:
+            allowed_keys.add("evidence_subject_sha")
+        _exact_keys(data, name, allowed_keys)
         status = _string(data["status"], f"{name}.status")
         proof_class = _string(data["proof_class"], f"{name}.proof_class")
         claim_scope = _string(data["claim_scope"], f"{name}.claim_scope")
@@ -259,6 +263,9 @@ class ProofObservation:
         if proof_class == "installed_acceptance" and evidence.kind == "repository_receipt":
             _require(INSTALLED_RECEIPT_REF.fullmatch(evidence.ref) is not None, f"{name} installed acceptance receipt is not an installed evidence receipt")
         subject_sha = _sha(data["subject_sha"], f"{name}.subject_sha")
+        evidence_subject_sha = None
+        if "evidence_subject_sha" in data:
+            evidence_subject_sha = _sha(data["evidence_subject_sha"], f"{name}.evidence_subject_sha")
         if evidence.kind == "repository_receipt":
             receipt_match = REPOSITORY_REF.fullmatch(evidence.ref)
             _require(
@@ -273,6 +280,7 @@ class ProofObservation:
             proof_class,
             claim_scope,
             evidence,
+            evidence_subject_sha,
         )
 
 
@@ -457,7 +465,10 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
     for index, raw_review in enumerate(raw_reviews):
         name = f"reviews[{index}]"
         review = _object(raw_review, name)
-        _exact_keys(review, name, {"authority_kind", "authority_number", "current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"})
+        allowed_review_fields = {"authority_kind", "authority_number", "current_head_synthesis", "reviewed_head", "status", "unresolved_material_findings", "finding_refs"}
+        if "reviewed_head_metadata" in review:
+            allowed_review_fields.add("reviewed_head_metadata")
+        _exact_keys(review, name, allowed_review_fields)
         authority_kind = _string(review["authority_kind"], f"{name}.authority_kind")
         _require(authority_kind in {"implementation_pr", "semantic_controller", "landed_tree"}, f"{name}.authority_kind is invalid")
         evidence = DurableEvidence.parse(review["current_head_synthesis"], f"{name}.current_head_synthesis")
@@ -479,6 +490,11 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
                     reviewed_head == contributions_by_pr[authority_number].candidate_head_sha,
                     "current PR review head does not match modeled candidate head",
                 )
+                _require("reviewed_head_metadata" in review, f"{name} is missing reviewed-head metadata")
+                metadata = _object(review["reviewed_head_metadata"], f"{name}.reviewed_head_metadata")
+                _exact_keys(metadata, f"{name}.reviewed_head_metadata", {"implementation_pr", "reviewed_head"})
+                _require(_positive_int(metadata["implementation_pr"], f"{name}.reviewed_head_metadata.implementation_pr") == authority_number, f"{name} review metadata PR does not match authority")
+                _require(_sha(metadata["reviewed_head"], f"{name}.reviewed_head_metadata.reviewed_head") == reviewed_head, f"{name} review metadata head does not match reviewed_head")
         elif authority_kind == "semantic_controller":
             authority_number = _positive_int(review["authority_number"], f"{name}.authority_number")
             _require(authority_number == controller_issue, "review authority is not the semantic controller")
@@ -552,14 +568,21 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
             _require(observation.subject_sha == observed_main_sha, "passed proof is cross-subject")
         elif observation.status == "failed":
             _require(observation.subject_sha == observed_main_sha, "failed proof is cross-subject")
+        if observation.evidence.kind in {"github_check", "repository_blob"}:
+            _require(observation.evidence_subject_sha is not None, f"proof observation requires evidence_subject_sha for {observation.evidence.kind}")
+            _require(observation.evidence_subject_sha == observation.subject_sha, "proof observation evidence subject SHA does not match subject_sha")
 
     claim_effect = _object(packet["claim_effect"], "claim_effect")
-    _exact_keys(claim_effect, "claim_effect", {"preserves", "narrows", "limitations"})
+    _exact_keys(claim_effect, "claim_effect", {"preserves", "narrows", "limitations", "unchanged_claims"})
     preserves = _unique_strings(claim_effect["preserves"], "claim_effect.preserves", identifiers=True)
     narrows = _unique_strings(claim_effect["narrows"], "claim_effect.narrows", identifiers=True)
     limitations = _unique_strings(claim_effect["limitations"], "claim_effect.limitations")
+    unchanged_claims = _unique_strings(claim_effect["unchanged_claims"], "claim_effect.unchanged_claims", identifiers=True)
     _require(not (set(preserves) & set(narrows)), "claim_effect cannot both preserve and narrow one claim")
     _require(set(preserves) | set(narrows) <= set(controller_claims), "claim_effect names a claim outside the semantic controller")
+    contribution_claims = {claim_id for contribution in contributions for claim_id in contribution.claim_ids}
+    if status in {"resolved", "bounded_limitation"}:
+        _require(set(preserves) <= contribution_claims | set(unchanged_claims), "preserved claim lacks implementation or unchanged provenance")
     passed_claim_coverage = {
         claim_id
         for observation in observations
