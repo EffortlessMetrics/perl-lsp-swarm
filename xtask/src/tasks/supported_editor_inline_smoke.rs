@@ -12,7 +12,7 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
     SupportedEditorRouteRequirement {
         route: "stdio_cli_smoke",
         claim: "the generic stdio LSP smoke covers static, dynamic, and disabled inline-completion clients",
-        proof_surfaces: &[ProofSurfaceRequirement {
+        proof_planes: &[proof_surface_plane(&[ProofSurfaceRequirement {
             path: "xtask/src/tasks/inline_completion_smoke.rs",
             markers: &[
                 "fn run_static_client",
@@ -22,38 +22,70 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                 "perl-inlineCompletion",
                 "assert_inline_completion_runtime",
             ],
-        }],
+        }])],
     },
     SupportedEditorRouteRequirement {
         route: "lsp4ij_upstream_integration",
-        claim: "the JetBrains path is documented as upstream LSP4IJ integration with dynamic inline-completion registration",
-        proof_surfaces: &[
-            ProofSurfaceRequirement {
-                path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
-                markers: &[
-                    "Recommended: LSP4IJ Upstream Integration",
-                    "confirm the command is the intended `perllsp --stdio` binary",
-                    "client/registerCapability",
-                    "textDocument/inlineCompletion",
-                    "dynamic registration through `client/registerCapability`",
-                    "perllsp --stdio",
+        claim: "the JetBrains path documents the `perllsp --stdio` launch identity, executably proves the static/dynamic inline-completion protocol split, and keeps actual IntelliJ/LSP4IJ host support explicitly unproven here",
+        proof_planes: &[
+            ProofPlaneRequirement {
+                plane: "launch_identity",
+                owner: None,
+                declared_status: None,
+                proof_surfaces: &[ProofSurfaceRequirement {
+                    path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
+                    markers: &["Recommended: LSP4IJ Upstream Integration", "perllsp --stdio"],
+                }],
+            },
+            ProofPlaneRequirement {
+                plane: "static_protocol",
+                owner: None,
+                declared_status: None,
+                proof_surfaces: &[ProofSurfaceRequirement {
+                    path: "xtask/src/tasks/inline_completion_smoke.rs",
+                    markers: &["fn run_static_client", "inlineCompletionProvider"],
+                }],
+            },
+            ProofPlaneRequirement {
+                plane: "dynamic_protocol",
+                owner: None,
+                declared_status: None,
+                proof_surfaces: &[
+                    ProofSurfaceRequirement {
+                        path: "xtask/src/tasks/inline_completion_smoke.rs",
+                        markers: &[
+                            "fn run_dynamic_client",
+                            "client/registerCapability",
+                            "textDocument/inlineCompletion",
+                        ],
+                    },
+                    ProofSurfaceRequirement {
+                        path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
+                        markers: &["client/registerCapability", "textDocument/inlineCompletion"],
+                    },
                 ],
             },
-            ProofSurfaceRequirement {
-                path: "xtask/src/tasks/inline_completion_smoke.rs",
-                markers: &[
-                    "fn run_dynamic_client",
-                    "client/registerCapability",
-                    "textDocument/inlineCompletion",
-                    "perl-inlineCompletion",
-                ],
+            ProofPlaneRequirement {
+                plane: "host_support_boundary",
+                owner: None,
+                declared_status: None,
+                proof_surfaces: &[ProofSurfaceRequirement {
+                    path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
+                    markers: &["not the same thing as IntelliJ/LSP4IJ host support", "#7719"],
+                }],
+            },
+            ProofPlaneRequirement {
+                plane: "actual_host_evidence",
+                owner: Some("#7719/#7977/#8179"),
+                declared_status: Some("not_proven"),
+                proof_surfaces: &[],
             },
         ],
     },
     SupportedEditorRouteRequirement {
         route: "vscode_extension_path",
         claim: "the VS Code route uses the managed extension path with configurable perllsp binary resolution",
-        proof_surfaces: &[
+        proof_planes: &[proof_surface_plane(&[
             ProofSurfaceRequirement {
                 path: "docs/EDITORS/VS_CODE_SETUP.md",
                 markers: &[
@@ -72,12 +104,12 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                     "Automatically download the `perllsp` binary if it is not found locally.",
                 ],
             },
-        ],
+        ])],
     },
     SupportedEditorRouteRequirement {
         route: "release_built_binary_smoke",
         claim: "the release gate requires building perllsp and running the inline-completion stdio smoke against that binary",
-        proof_surfaces: &[
+        proof_planes: &[proof_surface_plane(&[
             ProofSurfaceRequirement {
                 path: "docs/development/INLINE_COMPLETION_RELEASE_GATE.md",
                 markers: &[
@@ -98,7 +130,7 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                     "run_disabled_client(&binary)?;",
                 ],
             },
-        ],
+        ])],
     },
 ];
 
@@ -106,7 +138,30 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
 struct SupportedEditorRouteRequirement {
     route: &'static str,
     claim: &'static str,
+    proof_planes: &'static [ProofPlaneRequirement],
+}
+
+/// One named proof plane of a route. Planes with proof surfaces are executable/
+/// documented claims that must validate for the route to register. A plane with
+/// `declared_status` reports an explicit non-registered disposition (for example
+/// actual-host evidence owned elsewhere) without failing the bundle.
+#[derive(Debug, Clone, Copy)]
+struct ProofPlaneRequirement {
+    plane: &'static str,
+    owner: Option<&'static str>,
+    declared_status: Option<&'static str>,
     proof_surfaces: &'static [ProofSurfaceRequirement],
+}
+
+const fn proof_surface_plane(
+    proof_surfaces: &'static [ProofSurfaceRequirement],
+) -> ProofPlaneRequirement {
+    ProofPlaneRequirement {
+        plane: "proof_surface",
+        owner: None,
+        declared_status: None,
+        proof_surfaces,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -134,6 +189,16 @@ struct SupportedEditorInlineSmokeReceipt {
 struct SupportedEditorRouteReceipt {
     status: &'static str,
     claim: &'static str,
+    proof_plane_count: usize,
+    proof_planes: BTreeMap<&'static str, ProofPlaneReceipt>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct ProofPlaneReceipt {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<&'static str>,
     proof_surface_count: usize,
     proof_surfaces: Vec<ProofSurfaceReceipt>,
 }
@@ -178,22 +243,45 @@ fn summarize_supported_editor_routes(
 ) -> Result<SupportedEditorInlineSmokeReceipt> {
     let mut supported_editor_routes = BTreeMap::new();
     for route in requirements {
-        let mut proof_surfaces = Vec::new();
-        for surface in route.proof_surfaces {
-            validate_proof_surface(root, route.route, surface)?;
-            proof_surfaces.push(ProofSurfaceReceipt {
-                path: surface.path,
-                required_marker_count: surface.markers.len(),
-                required_markers: surface.markers.to_vec(),
-            });
+        let mut proof_planes = BTreeMap::new();
+        for plane in route.proof_planes {
+            let status = match (plane.declared_status, plane.proof_surfaces.is_empty()) {
+                (Some(status), true) => status,
+                (Some(_), false) | (None, true) => {
+                    bail!(
+                        "supported editor inline smoke route `{}` plane `{}` must either declare a status with no proof surfaces or carry proof surfaces with no declared status",
+                        route.route,
+                        plane.plane
+                    );
+                }
+                (None, false) => "registered",
+            };
+            let mut proof_surfaces = Vec::new();
+            for surface in plane.proof_surfaces {
+                validate_proof_surface(root, route.route, plane.plane, surface)?;
+                proof_surfaces.push(ProofSurfaceReceipt {
+                    path: surface.path,
+                    required_marker_count: surface.markers.len(),
+                    required_markers: surface.markers.to_vec(),
+                });
+            }
+            proof_planes.insert(
+                plane.plane,
+                ProofPlaneReceipt {
+                    status,
+                    owner: plane.owner,
+                    proof_surface_count: proof_surfaces.len(),
+                    proof_surfaces,
+                },
+            );
         }
         supported_editor_routes.insert(
             route.route,
             SupportedEditorRouteReceipt {
                 status: "registered",
                 claim: route.claim,
-                proof_surface_count: proof_surfaces.len(),
-                proof_surfaces,
+                proof_plane_count: proof_planes.len(),
+                proof_planes,
             },
         );
     }
@@ -272,6 +360,7 @@ fn summarize_next_edit_supported_editor_boundary() -> Result<NextEditSupportedEd
 fn validate_proof_surface(
     root: &Path,
     route: &str,
+    plane: &str,
     surface: &ProofSurfaceRequirement,
 ) -> Result<()> {
     let path = root.join(surface.path);
@@ -286,7 +375,7 @@ fn validate_proof_surface(
 
     if !missing.is_empty() {
         bail!(
-            "supported editor inline smoke route `{route}` proof surface `{}` is missing markers: {}",
+            "supported editor inline smoke route `{route}` proof plane `{plane}` surface `{}` is missing markers: {}",
             surface.path,
             missing.join(", ")
         );
@@ -317,7 +406,7 @@ mod tests {
     const TEST_ROUTES: &[SupportedEditorRouteRequirement] = &[SupportedEditorRouteRequirement {
         route: "test_route",
         claim: "test route claim",
-        proof_surfaces: TEST_PROOFS,
+        proof_planes: &[proof_surface_plane(TEST_PROOFS)],
     }];
 
     #[test]
@@ -336,14 +425,43 @@ mod tests {
                 .ok_or_else(|| color_eyre::eyre::eyre!("missing route {}", route.route))?;
             assert_eq!(entry.status, "registered");
             assert_eq!(entry.claim, route.claim);
-            assert_eq!(entry.proof_surface_count, route.proof_surfaces.len());
-            assert_eq!(entry.proof_surfaces.len(), route.proof_surfaces.len());
-            for (actual, expected) in entry.proof_surfaces.iter().zip(route.proof_surfaces.iter()) {
-                assert_eq!(actual.path, expected.path);
-                assert_eq!(actual.required_marker_count, expected.markers.len());
-                assert_eq!(actual.required_markers, expected.markers.to_vec());
+            assert_eq!(entry.proof_plane_count, route.proof_planes.len());
+            assert_eq!(entry.proof_planes.len(), route.proof_planes.len());
+            for (name, plane) in entry.proof_planes.iter() {
+                let expected = route
+                    .proof_planes
+                    .iter()
+                    .find(|expected| expected.plane == *name)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("missing plane {name}"))?;
+                assert_eq!(plane.proof_surface_count, expected.proof_surfaces.len());
+                assert_eq!(plane.proof_surfaces.len(), expected.proof_surfaces.len());
+                for (actual, expected) in
+                    plane.proof_surfaces.iter().zip(expected.proof_surfaces.iter())
+                {
+                    assert_eq!(actual.path, expected.path);
+                    assert_eq!(actual.required_marker_count, expected.markers.len());
+                    assert_eq!(actual.required_markers, expected.markers.to_vec());
+                }
             }
         }
+
+        let lsp4ij = receipt
+            .supported_editor_routes
+            .get("lsp4ij_upstream_integration")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing lsp4ij route"))?;
+        let launch = lsp4ij
+            .proof_planes
+            .get("launch_identity")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing launch_identity plane"))?;
+        assert_eq!(launch.status, "registered");
+        let actual_host = lsp4ij
+            .proof_planes
+            .get("actual_host_evidence")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing actual_host_evidence plane"))?;
+        assert_eq!(actual_host.status, "not_proven");
+        assert_eq!(actual_host.owner, Some("#7719/#7977/#8179"));
+        assert_eq!(actual_host.proof_surface_count, 0);
+
         assert_eq!(receipt.future_gated.get("live_vscode_ui_automation"), Some(&"future_gated"));
         assert_eq!(receipt.future_gated.get("live_lsp4ij_ui_automation"), Some(&"future_gated"));
         assert_eq!(receipt.future_gated.get("runtime_next_edit_provider"), Some(&"future_gated"));
@@ -380,6 +498,79 @@ mod tests {
         assert!(
             error.to_string().contains("missing marker"),
             "error should identify missing marker, got {error}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn missing_plane_marker_names_route_and_plane() -> Result<()> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), ROUTES)?;
+
+        let doc = temp.path().join("docs/EDITORS/INTELLIJ_IDEA_SETUP.md");
+        let content = fs::read_to_string(&doc)?;
+        let content = content.replace("perllsp --stdio", "perllsp --pipe");
+        fs::write(&doc, content)?;
+
+        let Err(error) = summarize_supported_editor_routes(temp.path(), ROUTES) else {
+            bail!("removing the launch identity must fail receipt generation");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("`lsp4ij_upstream_integration` proof plane `launch_identity`"),
+            "error should name the route and plane, got {message}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn lsp4ij_host_support_boundary_removal_fails_receipt() -> Result<()> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), ROUTES)?;
+
+        let doc = temp.path().join("docs/EDITORS/INTELLIJ_IDEA_SETUP.md");
+        let content = fs::read_to_string(&doc)?;
+        let content =
+            content.replace("not the same thing as IntelliJ/LSP4IJ host support", "host support");
+        fs::write(&doc, content)?;
+
+        let Err(error) = summarize_supported_editor_routes(temp.path(), ROUTES) else {
+            bail!("removing the host-support boundary must fail receipt generation");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("proof plane `host_support_boundary`"),
+            "error should name the boundary plane, got {message}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn declared_status_plane_requires_no_proof_surfaces() -> Result<()> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), TEST_ROUTES)?;
+
+        let malformed = &[SupportedEditorRouteRequirement {
+            route: "malformed_route",
+            claim: "malformed route claim",
+            proof_planes: &[ProofPlaneRequirement {
+                plane: "bad_plane",
+                owner: Some("owner"),
+                declared_status: Some("not_proven"),
+                proof_surfaces: TEST_PROOFS,
+            }],
+        }];
+
+        let Err(error) = summarize_supported_editor_routes(temp.path(), malformed) else {
+            bail!("a declared-status plane with proof surfaces must be rejected");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("`bad_plane`"),
+            "error should name the malformed plane, got {message}"
         );
 
         Ok(())
@@ -476,8 +667,10 @@ mod tests {
     ) -> Result<()> {
         let mut content_by_path = BTreeMap::<&str, Vec<&str>>::new();
         for route in requirements {
-            for surface in route.proof_surfaces {
-                content_by_path.entry(surface.path).or_default().extend(surface.markers);
+            for plane in route.proof_planes {
+                for surface in plane.proof_surfaces {
+                    content_by_path.entry(surface.path).or_default().extend(surface.markers);
+                }
             }
         }
 
