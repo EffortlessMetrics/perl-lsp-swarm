@@ -6,7 +6,7 @@
 //!
 //! - workspace-level `print_stderr = "deny"` / `print_stdout = "deny"` in Cargo.toml
 //! - `#![cfg_attr(test, allow(...))]` to suppress in test code
-//! - `#[expect(clippy::print_stderr)]` on `startup_banner` (the one intentional exception)
+//! - `#[expect(clippy::print_stderr)]` on `startup_banner_with_quiet` (the one intentional exception)
 //!
 //! These tests read the actual source files via `CARGO_MANIFEST_DIR` so they would
 //! catch any future accidental removal of the directives.
@@ -32,6 +32,26 @@ fn read_source(path: &std::path::Path) -> String {
 
 fn find_line_number(source: &str, pattern: &str) -> Option<usize> {
     source.lines().position(|line| line.contains(pattern)).map(|pos| pos + 1)
+}
+
+fn immediately_preceding_attribute(source: &str, function_pattern: &str) -> Option<String> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let function_line = lines.iter().position(|line| line.contains(function_pattern))?;
+    let mut end = function_line;
+    while end > 0 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    if end == 0 || !lines[end - 1].trim_end().ends_with(']') {
+        return None;
+    }
+    let mut start = end - 1;
+    while start > 0 && !lines[start].trim_start().starts_with("#[") {
+        start -= 1;
+    }
+    if !lines[start].trim_start().starts_with("#[") {
+        return None;
+    }
+    Some(lines[start..end].join("\n"))
 }
 
 #[test]
@@ -74,12 +94,13 @@ fn test_startup_banner_has_allow_annotation() {
     // directly since it must appear in both single-line and multi-line forms.
     let allow_line = find_line_number(&source, "clippy::print_stderr");
     let fn_line = find_line_number(&source, "fn startup_banner_with_quiet(");
+    let annotation = immediately_preceding_attribute(&source, "fn startup_banner_with_quiet(");
 
     assert!(
         allow_line.is_some(),
         "src/runtime/launcher/mod.rs: startup_banner_with_quiet is missing its \
          #[expect(clippy::print_stderr, reason = ...)] annotation.\n\
-         The eprintln! in startup_banner fires before the tracing subscriber is configured \
+         The eprintln! in startup_banner_with_quiet fires before the tracing subscriber is configured \
          and is the one intentional exception in this crate. \
          Also verify that the source contains #[expect(clippy::print_stderr ...)]."
     );
@@ -91,11 +112,17 @@ fn test_startup_banner_has_allow_annotation() {
          #[expect(...)] not #[allow(...)]. Update startup_banner annotation."
     );
 
-    if let (Some(allow), Some(func)) = (allow_line, fn_line) {
-        assert!(
-            allow < func,
-            "The clippy::print_stderr annotation (line {allow}) must appear \
-             before startup_banner_with_quiet (line {func})."
-        );
-    }
+    let allow = allow_line.expect("clippy::print_stderr occurrence must be present");
+    let func = fn_line.expect("startup_banner_with_quiet must be present");
+    let annotation =
+        annotation.expect("startup_banner_with_quiet must have an immediately preceding attribute");
+    assert!(
+        allow < func,
+        "The clippy::print_stderr annotation (line {allow}) must appear \
+         before startup_banner_with_quiet (line {func})."
+    );
+    assert!(
+        annotation.contains("#[expect(") && annotation.contains("clippy::print_stderr"),
+        "The immediate attribute before startup_banner_with_quiet must expect clippy::print_stderr."
+    );
 }

@@ -118,6 +118,7 @@ jobs:
           PY
 
       - name: Verify trusted workflow contract
+        id: verify-trusted-workflow-contract
         shell: bash
         run: |
           set -euo pipefail
@@ -140,30 +141,53 @@ jobs:
 
           lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
           run_bodies = []
-          step = None
           index = 0
           while index < len(lines):
               line = lines[index]
-              if line.startswith("      - name:"):
-                  step_name = line.removeprefix("      - name: ")
-                  step = []
+              match = re.match(r"^(?P<indent>\s*)run:\s?(?P<value>.*)$", line)
+              if not match:
                   index += 1
-                  while index < len(lines) and not lines[index].startswith("      - name:"):
-                      step.append(lines[index])
-                      index += 1
-                  for offset, item in enumerate(step):
-                      match = re.match(r"^        run:\s?(.*)$", item)
-                      if not match:
-                          continue
-                      body = match.group(1)
-                      if body.startswith(("|", ">")):
-                          body = "\n".join(
-                              content[10:] if len(content) >= 10 else ""
-                              for content in step[offset + 1 :]
-                              if content.startswith("          ")
-                          )
-                      run_bodies.append((step_name, body))
                   continue
+              key_indent = len(match.group("indent"))
+              step_name = ""
+              for prior in reversed(lines[:index]):
+                  prior_indent = len(prior) - len(prior.lstrip(" "))
+                  if prior_indent < key_indent and prior.lstrip().startswith("- name:"):
+                      step_name = prior.split(":", 1)[1].strip()
+                      break
+              value = match.group("value").strip()
+              if value.startswith(("|", ">")):
+                  header = value[1:]
+                  explicit_indent = next(
+                      (int(char) for char in header if char.isdigit()), None
+                  )
+                  content_indent = None
+                  if explicit_indent is not None:
+                      content_indent = key_indent + explicit_indent
+                  body_lines = []
+                  cursor = index + 1
+                  while cursor < len(lines):
+                      candidate = lines[cursor]
+                      candidate_indent = len(candidate) - len(candidate.lstrip(" "))
+                      if candidate.strip() and candidate_indent <= key_indent:
+                          break
+                      if content_indent is None and candidate.strip() and candidate_indent > key_indent:
+                          content_indent = candidate_indent
+                      body_lines.append(candidate)
+                      cursor += 1
+                  content_indent = content_indent or (key_indent + 1)
+                  normalized = [
+                      item[content_indent:] if len(item) >= content_indent else ""
+                      for item in body_lines
+                  ]
+                  if value.startswith(">"):
+                      body = " ".join(item.strip() for item in normalized)
+                  else:
+                      body = "\n".join(normalized)
+                  run_bodies.append((step_name, body))
+                  index = cursor
+                  continue
+              run_bodies.append((step_name, value))
               index += 1
 
           forbidden = re.compile(
