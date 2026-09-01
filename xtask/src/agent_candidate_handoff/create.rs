@@ -28,6 +28,12 @@ use super::{HandoffOutcome, canonical_json, content_digest_hex};
 pub const PROOF_SUBJECT_KEYS: &[&str] =
     &["commit", "candidate", "candidate_commit", "subject", "head_sha", "sha"];
 
+/// Ceiling on one declared proof artifact.
+///
+/// Proof is evidence a human or a sibling tool reads, not bulk data, so this
+/// is generous for its purpose and still bounded.
+pub const MAX_PROOF_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Self-check value written while an envelope is still staged.
 pub const SELF_CHECK_PENDING: &str = "pending";
 
@@ -260,21 +266,23 @@ fn resolve_commit(repository: &Path, revision: &str) -> Result<String, (HandoffO
 
 /// Read one commit's complete identity from a repository or object database.
 ///
-/// The validator reruns this exact function against the imported objects, so
-/// producer and consumer cannot disagree about how a commit is read — every
-/// retained field is recomputed rather than carried on trust.
+/// The commit *object* is the source, not `git show`'s formatted projection.
+/// That distinction is load-bearing for a format whose manifest documents these
+/// fields as verbatim: `git show` applies the commit's `encoding` header and
+/// transcodes the message to UTF-8, and normalises date tokens, so a Latin-1
+/// commit body would reach the manifest as different bytes than the object
+/// holds. The validator reruns this exact function against the imported
+/// objects, so the two would agree with each other and disagree with the
+/// candidate — a mismatch no dimension could see.
+///
+/// Everything retained must still be UTF-8, because the manifest is JSON.
+/// A commit whose object bytes are not UTF-8 is refused rather than mangled.
 pub fn read_commit_identity(
     repository: &Path,
     commit: &str,
 ) -> Result<CandidateIdentity, (HandoffOutcome, String)> {
-    // A single formatted read keeps author, committer, parents, and message
-    // from one commit object; separate invocations could straddle a change.
-    let format = "%T%n%P%n%an%n%ae%n%ad%n%cn%n%ce%n%cd%n%B";
-    let output = run_git(
-        repository,
-        &["show", "-s", "--date=raw", &format!("--format={format}"), "--end-of-options", commit],
-    )
-    .map_err(|error| (HandoffOutcome::InstrumentFailure, error))?;
+    let output = run_git(repository, &["cat-file", "commit", "--end-of-options", commit])
+        .map_err(|error| (HandoffOutcome::InstrumentFailure, error))?;
     if !output.succeeded() {
         return Err((
             HandoffOutcome::InstrumentFailure,
@@ -282,44 +290,57 @@ pub fn read_commit_identity(
         ));
     }
 
-    // Read the bytes, not Git's lossy text projection. `GitOutput::stdout` is
-    // built with `from_utf8_lossy`, so a commit whose message or identity is
-    // Latin-1 or otherwise non-UTF-8 would arrive with U+FFFD substituted and
-    // be retained under a field documented as verbatim. The validator recomputes
-    // through the same reader, so the two would agree and the envelope would
-    // pass while misrepresenting the candidate. Refusing is the honest outcome,
-    // and it matches how non-UTF-8 paths are already handled.
-    let text = std::str::from_utf8(&output.stdout_bytes).map_err(|_| {
+    let raw = output.stdout_bytes.as_slice();
+    // The header block ends at the first empty line; everything after it is the
+    // message, byte for byte, including any trailing newline the object has.
+    let (header_bytes, message_bytes) = split_commit_object(raw).ok_or_else(|| {
         (
             HandoffOutcome::UnsupportedObjectClass,
-            format!(
-                "commit {commit} carries non-UTF-8 metadata, which this format cannot retain verbatim"
-            ),
+            format!("commit {commit} has no header/message separator"),
         )
     })?;
 
-    let mut lines = text.splitn(9, '\n');
-    let mut next = |field: &str| -> Result<String, (HandoffOutcome, String)> {
-        lines.next().map(str::to_string).ok_or_else(|| {
-            (HandoffOutcome::InstrumentFailure, format!("commit {commit} did not report `{field}`"))
-        })
+    let unsupported = |what: &str| {
+        (
+            HandoffOutcome::UnsupportedObjectClass,
+            format!(
+                "commit {commit} carries non-UTF-8 {what}, which this format cannot retain verbatim"
+            ),
+        )
     };
+    let headers = std::str::from_utf8(header_bytes).map_err(|_| unsupported("headers"))?;
+    let message =
+        std::str::from_utf8(message_bytes).map_err(|_| unsupported("message"))?.to_string();
 
-    let tree = next("tree")?;
-    let parents_raw = next("parents")?;
-    let author_name = next("author name")?;
-    let author_email = next("author email")?;
-    let author_date = next("author date")?;
-    let committer_name = next("committer name")?;
-    let committer_email = next("committer email")?;
-    let committer_date = next("committer date")?;
-    // `--format=%B` terminates its output with a newline of its own, so the
-    // final field carries one more than the commit object's body. Dropping it
-    // keeps `message` byte-identical to `git cat-file commit`'s body, which is
-    // what "preserved verbatim" has to mean for a receiver that reconstructs
-    // the identity from the raw object.
-    let raw_message = next("message")?;
-    let message = raw_message.strip_suffix('\n').unwrap_or(&raw_message).to_string();
+    let mut tree: Option<String> = None;
+    let mut parents: Vec<String> = Vec::new();
+    let mut author: Option<CommitPerson> = None;
+    let mut committer: Option<CommitPerson> = None;
+    for line in headers.lines() {
+        // A multi-line header (`gpgsig`) continues with a leading space. None
+        // of the fields read here are multi-line, so continuations are skipped
+        // rather than mistaken for a new header.
+        if line.starts_with(' ') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(' ') else {
+            continue;
+        };
+        match name {
+            "tree" => tree = Some(value.to_string()),
+            "parent" => parents.push(value.to_string()),
+            "author" => author = Some(parse_commit_person(value, commit, "author")?),
+            "committer" => committer = Some(parse_commit_person(value, commit, "committer")?),
+            _ => {}
+        }
+    }
+
+    let instrument = |what: &str| {
+        (HandoffOutcome::InstrumentFailure, format!("commit {commit} did not report `{what}`"))
+    };
+    let tree = tree.ok_or_else(|| instrument("tree"))?;
+    let author = author.ok_or_else(|| instrument("author"))?;
+    let committer = committer.ok_or_else(|| instrument("committer"))?;
 
     if !is_full_object_id(&tree) {
         return Err((
@@ -327,8 +348,6 @@ pub fn read_commit_identity(
             format!("commit {commit} reported a non-canonical tree id"),
         ));
     }
-
-    let parents: Vec<String> = parents_raw.split_whitespace().map(str::to_string).collect();
     for parent in &parents {
         if !is_full_object_id(parent) {
             return Err((
@@ -351,13 +370,46 @@ pub fn read_commit_identity(
         parents,
         parent_trees,
         message,
-        author: CommitPerson { name: author_name, email: author_email, date: author_date },
-        committer: CommitPerson {
-            name: committer_name,
-            email: committer_email,
-            date: committer_date,
-        },
+        author,
+        committer,
     })
+}
+
+/// Split a raw commit object into its header block and its message bytes.
+///
+/// Returns `None` when no blank line separates the two, which is not a
+/// well-formed commit object.
+fn split_commit_object(raw: &[u8]) -> Option<(&[u8], &[u8])> {
+    if let Some(rest) = raw.strip_prefix(b"\n") {
+        return Some((&[], rest));
+    }
+    raw.windows(2).position(|pair| pair == b"\n\n").map(|index| (&raw[..index], &raw[index + 2..]))
+}
+
+/// Parse one `NAME <EMAIL> <unix seconds> <tz offset>` identity line.
+///
+/// The date is kept as the object's own two tokens rather than a reformatted
+/// value, so an unusual but valid timestamp survives the round trip unchanged.
+fn parse_commit_person(
+    value: &str,
+    commit: &str,
+    role: &str,
+) -> Result<CommitPerson, (HandoffOutcome, String)> {
+    let malformed = || {
+        (
+            HandoffOutcome::UnsupportedObjectClass,
+            format!("commit {commit} has a malformed `{role}` identity line"),
+        )
+    };
+    let open = value.rfind(" <").ok_or_else(malformed)?;
+    let close = value[open..].find('>').map(|index| open + index).ok_or_else(malformed)?;
+    let name = value[..open].to_string();
+    let email = value[open + 2..close].to_string();
+    let date = value[close + 1..].trim().to_string();
+    if date.is_empty() {
+        return Err(malformed());
+    }
+    Ok(CommitPerson { name, email, date })
 }
 
 fn resolve_tree(repository: &Path, commit: &str) -> Result<String, (HandoffOutcome, String)> {
@@ -763,6 +815,25 @@ fn collect_proofs(
 ) -> Result<Vec<PreparedProof>, (HandoffOutcome, String)> {
     let mut prepared: Vec<PreparedProof> = Vec::new();
     for path in paths {
+        // Check the size before the read, not after. A proof artifact is
+        // caller-supplied and unbounded; reading it first and rejecting it
+        // afterwards would already have allocated whatever it pointed at.
+        let metadata = fs::metadata(path).map_err(|error| {
+            (
+                HandoffOutcome::InstrumentFailure,
+                format!("could not read proof artifact `{}`: {error}", path.display()),
+            )
+        })?;
+        if metadata.len() > MAX_PROOF_BYTES {
+            return Err((
+                HandoffOutcome::InstrumentFailure,
+                format!(
+                    "proof artifact `{}` is {} bytes, above the {MAX_PROOF_BYTES}-byte ceiling",
+                    path.display(),
+                    metadata.len()
+                ),
+            ));
+        }
         let bytes = fs::read(path).map_err(|error| {
             (
                 HandoffOutcome::InstrumentFailure,

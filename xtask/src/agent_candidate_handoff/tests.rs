@@ -2374,3 +2374,214 @@ fn an_unpublished_staging_directory_is_removed_when_it_is_dropped() -> Result<()
     assert!(published.exists(), "a published envelope must never be removed by its own cleanup");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Review-driven controls: third round on #14535
+// ---------------------------------------------------------------------------
+
+/// The commit object is the source of retained metadata, not `git show`.
+///
+/// A commit carrying an `encoding` header makes `git show --format=%B`
+/// transcode the body to UTF-8. The result is valid UTF-8, so a byte check
+/// cannot catch it, and the validator recomputes through the same reader — so
+/// producer and validator would agree with each other and disagree with the
+/// object. Reading `cat-file commit` is what makes "verbatim" true.
+#[test]
+fn a_transcoding_encoding_header_does_not_alter_the_retained_message() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    let tree = fixture.git(&["rev-parse", "HEAD^{tree}"])?.trim().to_string();
+    let mut raw = format!(
+        "tree {tree}\n\
+         author Fixture Author <fixture@example.invalid> 1600000000 +0000\n\
+         committer Fixture Author <fixture@example.invalid> 1600000000 +0000\n\
+         encoding ISO-8859-1\n\n\
+         subject caf"
+    )
+    .into_bytes();
+    // 0xE9 is `é` in Latin-1 and is not valid UTF-8 on its own. Git will
+    // happily hand this back as `\u{c3}\u{a9}` through `git show`.
+    raw.push(0xE9);
+    raw.extend_from_slice(b" latin1\n");
+    fs::write(fixture.path().join("raw-commit.bin"), &raw)?;
+    let commit = fixture
+        .git(&["hash-object", "-t", "commit", "-w", "--", "raw-commit.bin"])?
+        .trim()
+        .to_string();
+    fixture.git(&["update-ref", "refs/heads/main", &commit])?;
+
+    let destination = Destination::new()?;
+    let Err((outcome, detail)) = create_handoff(&request(&fixture, &destination)) else {
+        bail!(
+            "the object's message is not UTF-8; retaining Git's transcoding of it would not be \
+             verbatim, so the export must be refused"
+        );
+    };
+    assert_eq!(outcome, HandoffOutcome::UnsupportedObjectClass);
+    assert!(detail.contains("non-UTF-8"), "the refusal must name the reason: {detail}");
+    Ok(())
+}
+
+/// An unusual but valid date token survives unchanged.
+///
+/// `git show --date=raw` normalises what it prints; the object's own token is
+/// what a receiver reconstructing the commit needs.
+#[test]
+fn an_unusual_raw_date_token_is_retained_exactly() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    let tree = fixture.git(&["rev-parse", "HEAD^{tree}"])?.trim().to_string();
+    // `-0000` is a distinct token from `+0000` in Git: it means "no timezone
+    // stated". Normalising it away would lose that distinction.
+    let raw = format!(
+        "tree {tree}\n\
+         author Fixture Author <fixture@example.invalid> 1600000000 -0000\n\
+         committer Fixture Author <fixture@example.invalid> 1600000000 -0000\n\n\
+         subject\n"
+    );
+    fs::write(fixture.path().join("raw-commit.bin"), raw.as_bytes())?;
+    let commit = fixture
+        .git(&["hash-object", "-t", "commit", "-w", "--", "raw-commit.bin"])?
+        .trim()
+        .to_string();
+    fixture.git(&["update-ref", "refs/heads/main", &commit])?;
+
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    assert_eq!(manifest.candidate.author.date, "1600000000 -0000");
+    assert_eq!(manifest.candidate.committer.date, "1600000000 -0000");
+    assert_eq!(manifest.candidate.message, "subject\n", "the message keeps the object's own bytes");
+    Ok(())
+}
+
+/// A signed commit's `gpgsig` continuation lines are headers, not the message.
+#[test]
+fn a_multi_line_header_does_not_leak_into_the_message() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    let tree = fixture.git(&["rev-parse", "HEAD^{tree}"])?.trim().to_string();
+    let raw = format!(
+        "tree {tree}\n\
+         author Fixture Author <fixture@example.invalid> 1600000000 +0000\n\
+         committer Fixture Author <fixture@example.invalid> 1600000000 +0000\n\
+         gpgsig -----BEGIN PGP SIGNATURE-----\n \n iHUEABYKAB0WIQS\n \
+         -----END PGP SIGNATURE-----\n\n\
+         subject line\n\nbody line\n"
+    );
+    fs::write(fixture.path().join("raw-commit.bin"), raw.as_bytes())?;
+    let commit = fixture
+        .git(&["hash-object", "-t", "commit", "-w", "--", "raw-commit.bin"])?
+        .trim()
+        .to_string();
+    fixture.git(&["update-ref", "refs/heads/main", &commit])?;
+
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    assert_eq!(manifest.candidate.message, "subject line\n\nbody line\n");
+    assert_eq!(manifest.candidate.author.name, "Fixture Author");
+    assert_eq!(manifest.candidate.author.email, "fixture@example.invalid");
+    Ok(())
+}
+
+/// A declared `git_pack_v2` transport must actually be a version 2 pack.
+///
+/// `index-pack` accepts more than one pack version, so a successful import
+/// never confirmed the format claim the manifest makes.
+#[test]
+fn a_pack_whose_header_is_not_version_two_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    let pack_path = destination.envelope().join(PACK_FILE_NAME);
+    let mut pack = fs::read(&pack_path)?;
+    assert_eq!(&pack[..4], b"PACK", "the fixture must be a real pack");
+    assert_eq!(pack[7], 2, "the fixture must declare version two");
+    pack[7] = 3;
+    fs::write(&pack_path, &pack)?;
+
+    // Reseal the transport row so the byte digest still matches and the version
+    // claim is the only thing left wrong.
+    let mut resealed = manifest;
+    resealed.transport.files[0].sha256 = super::content_digest_hex(&pack);
+    resealed.transport.files[0].bytes = pack.len() as u64;
+    rewrite_manifest_resealed(&destination.envelope(), resealed)?;
+
+    let report = check_handoff(&destination.envelope());
+    assert_eq!(report.outcome, HandoffOutcome::UnsupportedObjectClass);
+    Ok(())
+}
+
+/// Proof references are ordered, so the order is constrained.
+///
+/// Reordering or duplicating a valid reference changes the semantic digest
+/// without changing anything the object-level dimensions recompute, which would
+/// give one candidate and one proof set several identities.
+#[test]
+fn duplicated_or_unordered_proof_references_are_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    assert!(manifest.proof_references.is_empty(), "this fixture carries no proof");
+
+    let mut raw = raw_manifest(&destination.envelope())?;
+    let duplicate = serde_json::json!({
+        "id": "proof.json",
+        "path": "proof/proof.json",
+        "bytes": 0,
+        "sha256": "0".repeat(64),
+        "candidate_subject": manifest.candidate.commit.clone(),
+    });
+    raw["proof_references"] = serde_json::Value::Array(vec![duplicate.clone(), duplicate]);
+    rewrite_manifest_raw(&destination.envelope(), &raw)?;
+
+    let report = check_handoff(&destination.envelope());
+    assert_eq!(report.outcome, HandoffOutcome::InvalidManifest);
+    let shape = report
+        .dimensions
+        .iter()
+        .find(|dimension| dimension.id == "manifest_shape")
+        .context("manifest_shape dimension")?;
+    assert!(
+        shape.detail.contains("sorted and unique"),
+        "the refusal must name the rule: {}",
+        shape.detail
+    );
+    Ok(())
+}
+
+/// A proof artifact is caller-supplied and bounded before it is read.
+#[test]
+fn an_oversized_proof_artifact_is_refused_before_it_is_read() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    let oversized = fixture.path().join("huge-proof.json");
+    let file = fs::File::create(&oversized)?;
+    // A sparse file: the length exceeds the ceiling without writing the bytes,
+    // which is exactly the shape the size check exists to refuse cheaply.
+    file.set_len(super::create::MAX_PROOF_BYTES + 1)?;
+    drop(file);
+
+    let destination = Destination::new()?;
+    let mut requested = request(&fixture, &destination);
+    requested.proofs = vec![oversized];
+
+    let Err((outcome, detail)) = create_handoff(&requested) else {
+        bail!("an oversized proof artifact must be refused");
+    };
+    assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
+    assert!(detail.contains("ceiling"), "the refusal must name the ceiling: {detail}");
+    Ok(())
+}

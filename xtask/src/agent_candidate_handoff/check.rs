@@ -282,8 +282,8 @@ fn check_envelope(envelope: &Path, stage: ReceiptStage) -> CheckReport {
         Err((outcome, detail)) => return builder.fail("commit_identity", outcome, detail),
     }
 
-    if let Err(detail) = verify_object_presence(isolated.path(), &manifest) {
-        return builder.fail("object_presence", HandoffOutcome::MissingObject, detail);
+    if let Err((outcome, detail)) = verify_object_presence(isolated.path(), &manifest) {
+        return builder.fail("object_presence", outcome, detail);
     }
     builder.pass("object_presence", "the transport carries exactly the candidate's closure");
 
@@ -433,6 +433,14 @@ fn validate_shape(manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
         ));
     }
 
+    // Proof order is part of the semantic digest, so an unconstrained order
+    // would let one candidate with one proof set carry several different
+    // identities — and a resealed envelope could duplicate a valid reference
+    // without changing anything a later dimension recomputes. Sorted and unique
+    // is the same rule the transported object ids already follow.
+    if !manifest.proof_references.windows(2).all(|pair| pair[0].id < pair[1].id) {
+        return Err(invalid("proof references are not sorted and unique".to_string()));
+    }
     for proof in &manifest.proof_references {
         if !is_proof_id(&proof.id) {
             return Err(invalid(format!("proof id `{}` is not a stable token", proof.id)));
@@ -788,6 +796,12 @@ fn import_isolated(pack_bytes: &[u8]) -> Result<IsolatedOdb, (HandoffOutcome, St
         )));
     }
 
+    // `index-pack` accepts more than one pack version, so importing
+    // successfully does not confirm the `git_pack_v2` the manifest declares.
+    // The header is the only place that claim can be checked, and an unchecked
+    // format claim is exactly the kind a resealed envelope would exploit.
+    verify_pack_version(pack_bytes)?;
+
     let imported = run_git_with_stdin(directory.path(), &["index-pack", "--stdin"], pack_bytes)
         .map_err(&instrument)?;
     if !imported.succeeded() {
@@ -801,6 +815,35 @@ fn import_isolated(pack_bytes: &[u8]) -> Result<IsolatedOdb, (HandoffOutcome, St
     Ok(IsolatedOdb { directory })
 }
 
+/// Require the pack header to be the version the manifest declares.
+///
+/// A pack begins with the four bytes `PACK` and a big-endian version word.
+/// `TransportFormat::GitPackV2` is the only v1 transport, so any other version
+/// is an unsupported object class rather than a corrupt pack: the bytes may be
+/// a perfectly good pack, just not one this format claims to carry.
+fn verify_pack_version(pack_bytes: &[u8]) -> Result<(), (HandoffOutcome, String)> {
+    let Some(header) = pack_bytes.get(..8) else {
+        return Err((
+            HandoffOutcome::MissingObject,
+            "the transport is too short to be an object pack".to_string(),
+        ));
+    };
+    if &header[..4] != b"PACK" {
+        return Err((
+            HandoffOutcome::MissingObject,
+            "the transport does not begin with a pack signature".to_string(),
+        ));
+    }
+    let version = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+    if version != 2 {
+        return Err((
+            HandoffOutcome::UnsupportedObjectClass,
+            format!("the transport is a version {version} pack, but `git_pack_v2` was declared"),
+        ));
+    }
+    Ok(())
+}
+
 /// Prove the transport carries the complete object closure the candidate needs.
 ///
 /// Checking only the declared list would be circular, and recomputing the
@@ -808,7 +851,13 @@ fn import_isolated(pack_bytes: &[u8]) -> Result<IsolatedOdb, (HandoffOutcome, St
 /// by reading trees alone, so a candidate stripped of a blob still produces a
 /// complete-looking inventory. The closure is therefore derived from the trees
 /// themselves and every member is required to be present.
-fn verify_object_presence(odb: &Path, manifest: &Manifest) -> Result<(), String> {
+fn verify_object_presence(odb: &Path, manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
+    // Git failing to run is not the candidate failing to carry an object. A
+    // deadline breach or an output-cap breach here would otherwise be reported
+    // as MISSING_OBJECT, telling automation the envelope is bad (exit 2) when
+    // the truth is that the instrument did not produce an answer (exit 4).
+    let instrument = |detail: String| (HandoffOutcome::InstrumentFailure, detail);
+    let missing = |detail: String| (HandoffOutcome::MissingObject, detail);
     let candidate = &manifest.candidate;
     let mut required: BTreeSet<String> = BTreeSet::new();
     required.insert(candidate.commit.clone());
@@ -820,17 +869,22 @@ fn verify_object_presence(odb: &Path, manifest: &Manifest) -> Result<(), String>
     let mut roots = vec![candidate.tree.clone()];
     roots.extend(candidate.parent_trees.iter().cloned());
     for root in &roots {
-        let output = run_git(odb, &["ls-tree", "-r", "-t", "-z", "--end-of-options", root])?;
+        let output = run_git(odb, &["ls-tree", "-r", "-t", "-z", "--end-of-options", root])
+            .map_err(&instrument)?;
         if !output.succeeded() {
-            return Err(format!("tree {root} is not readable from the transport"));
+            return Err(missing(format!("tree {root} is not readable from the transport")));
         }
         for entry in output.stdout.split('\0').filter(|entry| !entry.is_empty()) {
-            let Some((metadata, _path)) = entry.split_once('\t') else {
-                continue;
-            };
+            // A record this reader cannot parse is unexpected Git output, not
+            // an absent object. Skipping it would silently shrink the derived
+            // closure and let an incomplete transport look authoritative, so it
+            // is an instrument failure instead.
+            let malformed =
+                || instrument(format!("tree {root} produced an unreadable entry record"));
+            let (metadata, _path) = entry.split_once('\t').ok_or_else(malformed)?;
             let columns: Vec<&str> = metadata.split_whitespace().collect();
             let [mode, _kind, object] = columns.as_slice() else {
-                continue;
+                return Err(malformed());
             };
             // A gitlink names a commit in another repository and is recorded
             // rather than transported, so it is not part of this closure.
@@ -846,14 +900,14 @@ fn verify_object_presence(odb: &Path, manifest: &Manifest) -> Result<(), String>
     // — inside a transport that still validates as this one bounded candidate.
     let declared: BTreeSet<&String> = manifest.transport.object_ids.iter().collect();
     if let Some(undeclared) = required.iter().find(|id| !declared.contains(id)) {
-        return Err(format!(
+        return Err(missing(format!(
             "object {undeclared} is required by the candidate but not declared by the transport"
-        ));
+        )));
     }
     if let Some(extra) = declared.iter().find(|id| !required.contains(**id)) {
-        return Err(format!(
+        return Err(missing(format!(
             "object {extra} is declared by the transport but not required by the candidate"
-        ));
+        )));
     }
 
     // Comparing the manifest against itself would still be circular: a
@@ -861,20 +915,23 @@ fn verify_object_presence(odb: &Path, manifest: &Manifest) -> Result<(), String>
     // objects, refresh its size and digest, and leave `object_ids` untouched.
     // The object database was empty before this envelope's pack was imported,
     // so enumerating it now yields exactly what the transport really carried.
-    let present =
-        run_git(odb, &["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"])?;
+    let present = run_git(odb, &["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"])
+        .map_err(&instrument)?;
     if !present.succeeded() {
-        return Err(format!("could not enumerate imported objects: {}", present.diagnostic()));
+        return Err(instrument(format!(
+            "could not enumerate imported objects: {}",
+            present.diagnostic()
+        )));
     }
     let carried: BTreeSet<String> = present.stdout.split_whitespace().map(str::to_string).collect();
 
     if let Some(absent) = required.iter().find(|id| !carried.contains(*id)) {
-        return Err(format!("object {absent} is absent from the transport"));
+        return Err(missing(format!("object {absent} is absent from the transport")));
     }
     if let Some(stowaway) = carried.iter().find(|id| !required.contains(*id)) {
-        return Err(format!(
+        return Err(missing(format!(
             "the transport carries object {stowaway}, which the candidate does not require"
-        ));
+        )));
     }
     Ok(())
 }
