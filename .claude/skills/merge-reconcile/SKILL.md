@@ -122,11 +122,17 @@ When the required union is still pending, arm auto-merge with the current head S
 gh pr merge <n> --auto --squash --match-head-commit <current-head-sha>
 ```
 
-Arming auto-merge is the correct action in that state; it leaves `REVIEW_CURRENT` intact
-and returns `PR_IN_FLIGHT`.
+The command request is not evidence that GitHub persisted the transition. Immediately
+re-read the live PR. Return `PR_IN_FLIGHT` only after a fresh GitHub read confirms a
+non-null `autoMergeRequest` for the same PR, the unchanged current head, and the squash
+method. If the request is absent, the head moved, or the method differs, return
+`MERGE_BLOCKED` or `NOT_PROVEN` with the observed state; do not report auto-merge as
+armed.
 
-That prevents racing a moving branch. It does not make review currentness depend on the
-SHA.
+A confirmed auto-merge request leaves `REVIEW_CURRENT` intact and returns
+`PR_IN_FLIGHT`. The read-back and current-head compare-and-swap prevent a command success
+or stale branch observation from stranding the claim behind a transition GitHub never
+accepted. They do not make review currentness depend on the SHA.
 
 If the head moves before merge, re-read the candidate. Refresh only proof, review, and
 integration dimensions affected by the new commit. Never use administrative bypass to

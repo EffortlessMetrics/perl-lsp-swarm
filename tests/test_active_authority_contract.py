@@ -98,12 +98,27 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
     "final-challenge": ("CANDIDATE_READY_FOR_REVIEW", "NOT_PROVEN", "review-pr"),
     "finish-pr": ("REVIEW_CURRENT", "CHANGES_REQUIRED", "INTEGRATION_READY", "NOT_PROVEN"),
     "improve-test-suite": ("NOT_PROVEN", "review-tests", "simplify-candidate"),
-    "merge-reconcile": ("REVIEW_CURRENT", "INTEGRATION_READY", "PR_IN_FLIGHT", "NOT_PROVEN", "--match-head-commit"),
+    "merge-reconcile": (
+        "REVIEW_CURRENT",
+        "INTEGRATION_READY",
+        "PR_IN_FLIGHT",
+        "NOT_PROVEN",
+        "--match-head-commit",
+        "autoMergeRequest",
+        "Return `PR_IN_FLIGHT` only after a fresh GitHub read confirms",
+    ),
     "orchestrate-work": ("NOT_PROVEN", "deliver-pr", "review-pr", "verify-live-ci"),
     "prepare-issue": ("PLAN_READY", "NOT_PROVEN", "prepare-proof"),
     "prepare-proof": ("PROOF_READY", "NOT_PROVEN", "build-candidate"),
     "review-candidate": ("CANDIDATE_READY", "NOT_PROVEN", "prepare-proof"),
-    "review-pr": ("REVIEW_CURRENT", "CHANGES_REQUIRED", "NOT_PROVEN", "semantic-review:v1", "verify-live-ci"),
+    "review-pr": (
+        "REVIEW_CURRENT",
+        "CHANGES_REQUIRED",
+        "NOT_PROVEN",
+        "semantic-review:v1",
+        "verify-live-ci",
+        "Never include both `## Findings` and `## No material findings`",
+    ),
     "review-tests": ("NOT_PROVEN", "build-candidate", "prepare-proof"),
     "simplify-candidate": ("ALREADY_MINIMAL", "NOT_PROVEN", "review-candidate"),
     "verify-live-ci": (
@@ -114,6 +129,23 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "NOT_PROVEN",
         "a rerun of a merge-tree-evaluated check replays its original merge snapshot",
         "re-evaluates the current tree and is the honest action",
+    ),
+}
+
+REQUIRED_ROUTE_EDGES: dict[str, frozenset[tuple[str, str]]] = {
+    "review-pr": frozenset(
+        {
+            ("REVIEW_CURRENT", "verify-live-ci"),
+            ("CHANGES_REQUIRED", "address-review-comments"),
+        }
+    ),
+    "merge-reconcile": frozenset(
+        {
+            ("REVIEW_REQUIRED", "finish-pr"),
+            ("REVIEW_REQUIRED", "review-pr"),
+            ("CHANGES_REQUIRED", "address-review-comments"),
+            ("PR_IN_FLIGHT", "deliver-goal"),
+        }
     ),
 }
 
@@ -142,6 +174,8 @@ JUST_RECIPE_DEF = re.compile(r"^([a-z0-9_][a-z0-9_-]*)(?:\s+[^\n]*?)?:(?!=)", re
 FLOW_ROSTER_HEADING = "Choose the narrowest applicable public flow:"
 FLOW_BULLET = re.compile(r"^- `\$?([a-z][a-z-]*)`", re.MULTILINE)
 BACKTICK_SKILL = re.compile(r"`\$?([a-z][a-z0-9-]*)`")
+BACKTICK_RESULT = re.compile(r"`([A-Z][A-Z0-9_]+)`")
+ROUTE_BULLET = re.compile(r"(?ms)^\s*-\s+(.*?)(?=^\s*-\s+|^##\s|\Z)")
 RETIRED_ACTIVE_SKILL_AUTHORITY = (
     re.compile(r"\bcampaign root\b"),
     re.compile(r"\blane root\b"),
@@ -157,13 +191,18 @@ CODEX_ROOT_AUTHORITY = re.compile(r"\b(?:accountable root|Codex root|main/root(?
 CLAUDE_ROOT_AUTHORITY = re.compile(r"\bmain Claude thread\b")
 
 
-ROUTE_EDGE = re.compile(r"(?:→\s*)?([A-Z][A-Z0-9_]+)\s*\n\s*→\s*`\$?([a-z0-9][a-z0-9-]*)`")
-
-
 def result_route_edges(text: str) -> set[tuple[str, str]]:
-    """Normalized result-to-destination edges from a skill's route blocks."""
+    """Extract result-to-skill edges from reader-visible Markdown route bullets."""
 
-    return {(result, destination) for result, destination in ROUTE_EDGE.findall(text)}
+    edges: set[tuple[str, str]] = set()
+    for bullet in ROUTE_BULLET.findall(text):
+        if "→" not in bullet:
+            continue
+        source, destination = bullet.split("→", 1)
+        results = BACKTICK_RESULT.findall(source)
+        skills = [token for token in BACKTICK_SKILL.findall(destination) if token in KNOWN_SKILLS]
+        edges.update((result, skill) for result in results for skill in skills)
+    return edges
 
 
 def read(path: str) -> str:
@@ -528,17 +567,32 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
             claude_path = f".claude/skills/{skill}/SKILL.md"
             codex = active_text(codex_path)
             claude = active_text(claude_path)
+            codex_visible = visible_text(codex_path)
+            claude_visible = visible_text(claude_path)
 
             self.assertEqual(
                 skill_references(codex),
                 skill_references(claude),
                 f"{skill} provider implementations disagree on callable skill references",
             )
+            codex_edges = result_route_edges(codex_visible)
+            claude_edges = result_route_edges(claude_visible)
             self.assertEqual(
-                result_route_edges(codex),
-                result_route_edges(claude),
+                codex_edges,
+                claude_edges,
                 f"{skill} provider implementations disagree on result-to-route edges",
             )
+            for required_edge in REQUIRED_ROUTE_EDGES.get(skill, frozenset()):
+                self.assertIn(
+                    required_edge,
+                    codex_edges,
+                    f"{codex_path} lost required result-to-route edge {required_edge!r}",
+                )
+                self.assertIn(
+                    required_edge,
+                    claude_edges,
+                    f"{claude_path} lost required result-to-route edge {required_edge!r}",
+                )
             self.assertRegex(
                 codex,
                 CODEX_ROOT_AUTHORITY,
@@ -609,6 +663,27 @@ class RatchetSelfTests(unittest.TestCase):
     def test_subordinate_authority_detector_rejects_renamed_actor(self) -> None:
         self.assertIsNotNone(SUBORDINATE_AUTHORITY.search("The claim coordinator owns review disposition."))
         self.assertIsNone(SUBORDINATE_AUTHORITY.search("A claim is a logical frame held by the root."))
+
+    def test_result_route_edges_cover_real_bullets_and_reject_inversion(self) -> None:
+        routes = (
+            "## Routes\n\n"
+            "- `REVIEW_CURRENT` → `$verify-live-ci`\n"
+            "- `CHANGES_REQUIRED` / `REVIEW_FINDINGS_OPEN` →\n"
+            "  `$address-review-comments`\n"
+            "- `REVIEW_REQUIRED` → `$finish-pr` / `$review-pr`\n"
+        )
+        expected = {
+            ("REVIEW_CURRENT", "verify-live-ci"),
+            ("CHANGES_REQUIRED", "address-review-comments"),
+            ("REVIEW_FINDINGS_OPEN", "address-review-comments"),
+            ("REVIEW_REQUIRED", "finish-pr"),
+            ("REVIEW_REQUIRED", "review-pr"),
+        }
+        self.assertEqual(result_route_edges(routes), expected)
+
+        inverted = routes.replace("`REVIEW_CURRENT` → `$verify-live-ci`", "`REVIEW_CURRENT` → `$address-review-comments`")
+        self.assertNotEqual(result_route_edges(inverted), expected)
+        self.assertNotIn(("REVIEW_CURRENT", "verify-live-ci"), result_route_edges(inverted))
 
     def test_one_sided_path_removal_is_detected(self) -> None:
         both = (

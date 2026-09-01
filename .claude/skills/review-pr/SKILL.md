@@ -126,8 +126,10 @@ file/line-anchored findings as evidence and does not publish an unjoined verdict
 
 ## Durable review record
 
-For a substantive review, preserve the useful durable record shape below. A clean review
-uses `## No material findings` instead of inventing findings.
+For a substantive review, preserve the useful durable record shape below. Choose exactly
+one outcome heading: a finding-bearing review uses `## Findings`; a clean review uses
+`## No material findings`. Never include both `## Findings` and `## No material findings`
+in one review record.
 
 ```markdown
 ## Review scope
@@ -139,11 +141,9 @@ uses `## No material findings` instead of inventing findings.
 ## Evidence and falsifiers
 - Commands, tests, fixtures, sources, authorities, realistic wrong behavior challenged
 
-## Findings
-- Material findings with severity, affected claim, and evidence
-
-## No material findings
-- Use this heading instead of Findings when the programme is clean
+## <Findings OR No material findings — replace with exactly one literal heading>
+- For Findings: material findings with severity, affected claim, and evidence
+- For No material findings: what was challenged and why no material finding remains
 
 ## Prior finding dispositions
 - fixed | refuted | superseded | follow-up, with evidence
