@@ -579,9 +579,13 @@ mod tests {
             }
             let Some(next) = lines.peek() else { break };
             let next_trimmed = next.trim_start();
-            let is_mod_open = next_trimmed.starts_with("mod ")
-                && (next_trimmed.contains('{') || next_trimmed.ends_with(';'));
-            if !is_mod_open {
+            // A visibility-qualified declaration (`pub(crate) mod tests {`,
+            // `pub mod x;`, plain `mod x;`) counts as a mod header: check the
+            // opening/closing shape plus a `mod` token rather than matching
+            // the `mod` keyword at the start of the line.
+            let opens_like_module = next_trimmed.contains('{') || next_trimmed.ends_with(';');
+            let declares_mod = next_trimmed.split_whitespace().take(3).any(|token| token == "mod");
+            if !(opens_like_module && declares_mod) {
                 continue;
             }
             // Consume the attribute/mod pair. A `mod x;` declaration ends
