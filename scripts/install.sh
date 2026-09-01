@@ -1077,30 +1077,13 @@ The release archive may have an unexpected layout."
 # cargo's argv. A VERSION like `--target` must never be able to pose as a
 # cargo flag, and a two-component or non-numeric spec must be rejected with a
 # typed reason instead of a confusing cargo resolution error. Semver core is
-# X.Y.Z with numeric components; an optional prerelease/build suffix
+# X.Y.Z with no leading zeroes; an optional prerelease/build suffix
 # (-alpha.1, +build.7) is accepted with its restricted alphabet.
 validate_source_version_spec() {
     local _spec="$1"
-    case "$_spec" in
-        *[!0-9A-Za-z.+_-]*)
-            err "invalid VERSION=$_spec for source mode: expected 'latest' or a semver like v0.12.0 (allowed characters: digits, letters, '.', '+', '-', '_')"
-            ;;
-    esac
-    local _core="$_spec"
-    case "$_spec" in
-        *-*) _core="${_spec%%-*}" ;;
-        *+*) _core="${_spec%%+*}" ;;
-    esac
-    local _major="${_core%%.*}"
-    local _rest="${_core#*.}"
-    local _minor="${_rest%%.*}"
-    local _patch="${_rest#*.}"
-    if [ "$_minor" = "$_rest" ]; then
-        err "invalid VERSION=$_spec for source mode: expected a full X.Y.Z semver (v0.12.0), got fewer than three numeric components"
+    if [[ ! "$_spec" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+        err "invalid VERSION=$_spec for source mode: expected a full X.Y.Z semver (v0.12.0) with optional prerelease/build metadata"
     fi
-    case "$_major" in ""|*[!0-9]*) err "invalid VERSION=$_spec for source mode: major version component must be numeric" ;; esac
-    case "$_minor" in ""|*[!0-9]*) err "invalid VERSION=$_spec for source mode: minor version component must be numeric" ;; esac
-    case "$_patch" in ""|*[!0-9]*) err "invalid VERSION=$_spec for source mode: patch version component must be numeric" ;; esac
 }
 
 # #8367: bind the staged binary to the requested registry subject before any
@@ -1118,10 +1101,16 @@ verify_source_install_identity() {
     if ! _resolved="$("$_bin" --version 2>/dev/null)"; then
         err "source build staged ${BIN_NAME}, but it failed to report a version (--version exited non-zero)"
     fi
-    _resolved_ver="$(printf '%s' "$_resolved" | tr ' \t' '\n' \
-        | grep -E '^[0-9]+(\.[0-9]+){1,3}([-+][0-9A-Za-z.-]+)?$' | tail -n 1 || true)"
+    _resolved_ver="$(printf '%s\n' "$_resolved" | awk -v expected="$BIN_NAME" '
+        $1 == expected {
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/) {
+                    print $i
+                }
+            }
+        }' | tail -n 1 || true)"
     if [ -z "$_resolved_ver" ]; then
-        err "source build staged ${BIN_NAME}, but its version output '${_resolved}' contains no parseable version token"
+        err "source build staged ${BIN_NAME}, but its version output '${_resolved}' contains no parseable ${BIN_NAME} version token"
     fi
     case "$VERSION" in
         latest|"")

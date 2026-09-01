@@ -99,7 +99,7 @@ mkdir -p "$root/bin"
 cat > "$root/bin/perllsp" <<BIN
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "--version" ]]; then
-    echo "perllsp ${FAKE_CARGO_RESOLVED}"
+    echo "${FAKE_CARGO_IDENTITY_PREFIX:-perllsp} ${FAKE_CARGO_RESOLVED}"
     exit 0
 fi
 exit 0
@@ -126,6 +126,7 @@ run_source_build() {
     local requested_version="$1"   # "latest" or vX.Y.Z / X.Y.Z
     local resolved_version="$2"    # what the shim-staged binary reports
     local mode="${3:-ok}"          # ok | fail-version | fail-build
+    local identity_prefix="${4:-perllsp}"
 
     : > "$FAKE_CARGO_LOG"
     : > "$FAKE_CARGO_INSTALL_LOG"
@@ -135,6 +136,7 @@ run_source_build() {
         export FAKE_CARGO_LOG
         export FAKE_CARGO_INSTALL_LOG
         export FAKE_CARGO_RESOLVED="$resolved_version"
+        export FAKE_CARGO_IDENTITY_PREFIX="$identity_prefix"
         export FAKE_CARGO_MODE="$mode"
         export PERL_LSP_INSTALLER_LIBRARY_ONLY=1
         unset TARGET
@@ -209,6 +211,21 @@ else
         "cargo argv log did not contain the requested version: $(tr '\0' ' ' < "$FAKE_CARGO_LOG")"
 fi
 
+if python3 - "$FAKE_CARGO_INSTALL_LOG" <<'PY'
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    argv = handle.read().split(b"\0")[:-1]
+if argv[:3] != [b"install", b"perllsp", b"--locked"]:
+    raise SystemExit(f"unexpected cargo install prefix: {argv!r}")
+PY
+then
+    pass "cargo source install keeps the locked selector in exact argv order"
+else
+    fail "cargo source install keeps the locked selector in exact argv order" \
+        "cargo install argv did not begin with install perllsp --locked"
+fi
+
 # The historical defect: cargo resolves a DIFFERENT version than requested
 # (the pin is ignored). The staged binary reports 9.9.9, so the identity gate
 # must refuse promotion instead of silently installing another subject.
@@ -216,6 +233,11 @@ expect_failure_with \
     "identity mismatch refuses promotion of a different registry subject" \
     "identity mismatch" \
     "v0.12.0" "9.9.9" ok
+
+expect_failure_with \
+    "an unrelated binary identity cannot satisfy an exact version request" \
+    "no parseable perllsp version token" \
+    "v0.12.0" "0.12.0" ok "other-tool"
 
 # Exact version absent from the registry: a distinct failure reason naming the
 # requested subject, not a generic build failure.
@@ -263,6 +285,26 @@ if [[ -s "$FAKE_CARGO_INSTALL_LOG" ]]; then
     fail "a malformed VERSION never reaches cargo" "cargo install shim was invoked"
 else
     pass "a malformed VERSION never reaches cargo"
+fi
+
+expect_failure_with \
+    "a leading-zero VERSION is rejected with a typed semver reason" \
+    "expected a full X.Y.Z semver" \
+    "v01.2.3" "1.2.3" ok
+if [[ -s "$FAKE_CARGO_INSTALL_LOG" ]]; then
+    fail "a leading-zero VERSION never reaches cargo" "cargo install shim was invoked"
+else
+    pass "a leading-zero VERSION never reaches cargo"
+fi
+
+expect_failure_with \
+    "an underscore VERSION is rejected with a typed semver reason" \
+    "expected a full X.Y.Z semver" \
+    "v0.12.3_bad" "0.12.3_bad" ok
+if [[ -s "$FAKE_CARGO_INSTALL_LOG" ]]; then
+    fail "an underscore VERSION never reaches cargo" "cargo install shim was invoked"
+else
+    pass "an underscore VERSION never reaches cargo"
 fi
 
 # ---------------------------------------------------------------------------
