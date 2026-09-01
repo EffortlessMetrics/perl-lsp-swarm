@@ -1986,7 +1986,7 @@ impl Lowerer {
         // `-setup` and establishes no configuration, so it leaves an earlier
         // one standing. Boundaries are kept either way: they record what could
         // not be read, which stays true, and they claim no exports.
-        if args.iter().any(|arg| arg == "-setup") {
+        if args.iter().any(|arg| unquote_literal(arg) == "-setup") {
             self.stash_graph.export_declarations.retain(|declaration| {
                 declaration.package != package
                     || declaration.provenance != StashProvenance::DesugaredAst
@@ -2044,9 +2044,21 @@ impl Lowerer {
             },
         };
 
+        // `generator` is documented as "a callback used to produce the code
+        // that will be installed", defaulting to `Sub::Exporter`'s own
+        // generator — the one that turns a plain `exports` name into that
+        // package's sub of the same name. A setup that replaces it produces
+        // every export's code itself, so a plain name no longer has to name a
+        // sub in this source. That is the same weakening a per-name generator
+        // causes, so it takes the same confidence, over the whole setup.
+        let custom_generator = hash_entry_value(setup, "generator").is_some();
+
         let declared: &[String] = export_names.as_ref().map_or(&[], |exports| &exports.names);
         let generated = export_names.as_ref().map(|exports| &exports.generated);
         let confidence_of = |symbols: &[String]| {
+            if custom_generator {
+                return StashConfidence::Medium;
+            }
             generated.map_or(StashConfidence::High, |generated| {
                 sub_exporter_declaration_confidence(symbols, generated)
             })
@@ -2140,7 +2152,7 @@ impl Lowerer {
                         range,
                         Some(item_id),
                         StashDynamicBoundaryKind::DynamicExportDeclaration,
-                        "Sub::Exporter groups value is not a static hash",
+                        "Sub::Exporter groups value is not a static list",
                     );
                 }
             }
@@ -3066,13 +3078,20 @@ fn constant_names_from_use_args(args: &[String]) -> Vec<String> {
 
 /// Index of the delimiter closing the opener at `open`, if the slice balances.
 fn matching_delimiter(tokens: &[String], open: usize) -> Option<usize> {
-    let mut depth = 0usize;
+    // The closer kind is tracked, not just the nesting depth: counting depth
+    // alone would let `[ ... }` balance and hand callers a body that spans a
+    // delimiter it never closed.
+    let mut expected: Vec<&str> = Vec::new();
     for (index, token) in tokens.iter().enumerate().skip(open) {
         match token.as_str() {
-            "{" | "[" | "(" => depth += 1,
-            "}" | "]" | ")" => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
+            "{" => expected.push("}"),
+            "[" => expected.push("]"),
+            "(" => expected.push(")"),
+            close @ ("}" | "]" | ")") => {
+                if expected.pop()? != close {
+                    return None;
+                }
+                if expected.is_empty() {
                     return Some(index);
                 }
             }
@@ -3080,6 +3099,22 @@ fn matching_delimiter(tokens: &[String], open: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Strip one matching pair of Perl quotes from a literal token.
+///
+/// `{ 'exports' => ... }` is ordinary Perl and means exactly what
+/// `{ exports => ... }` means. Comparing raw tokens would read the quoted
+/// spelling as an absent key, which publishes nothing *and* records no
+/// boundary — the silent partial answer this lowering exists to avoid.
+fn unquote_literal(token: &str) -> &str {
+    let token = token.trim();
+    for quote in ['"', '\''] {
+        if let Some(inner) = token.strip_prefix(quote).and_then(|rest| rest.strip_suffix(quote)) {
+            return inner;
+        }
+    }
+    token
 }
 
 /// Names declared by a Sub::Exporter `exports` value.
@@ -3134,7 +3169,7 @@ const SUB_EXPORTER_INSTALL_REDIRECT_KEYS: &[&str] = &["as", "into", "into_level"
 fn sub_exporter_setup_body(args: &[String]) -> Option<&[String]> {
     // Perl keeps the last value for a repeated key, so a repeated `-setup`
     // resolves to the last one for the same reason `hash_entry_value` does.
-    let setup = args.iter().rposition(|arg| arg == "-setup")?;
+    let setup = args.iter().rposition(|arg| unquote_literal(arg) == "-setup")?;
     let open = setup + 1;
     if args.get(open).map(String::as_str) != Some("{") {
         return None;
@@ -3155,7 +3190,7 @@ fn hash_entry_value<'a>(body: &'a [String], key: &str) -> Option<&'a [String]> {
         match body[index].as_str() {
             "{" | "[" | "(" => depth += 1,
             "}" | "]" | ")" => depth = depth.saturating_sub(1),
-            token if depth == 0 && token == key => {
+            token if depth == 0 && unquote_literal(token) == key => {
                 if body.get(index + 1).map(String::as_str) != Some("=>") {
                     continue;
                 }
@@ -3312,12 +3347,17 @@ fn sub_exporter_export_names(value: &[String]) -> Option<SubExporterExports> {
 
 /// Group name to member list for a Sub::Exporter `groups` value.
 ///
-/// The outer `Option` is `None` when `groups` is not a literal hash. One
+/// Both documented forms are accepted: Sub::Exporter says "the `groups` list
+/// can be passed in the same forms as `exports`", and an `exports` list "may be
+/// provided as an array reference or a hash reference". Either way the body is
+/// a flat sequence of `name => members` pairs.
+///
+/// The outer `Option` is `None` when `groups` is not a literal list. One
 /// group's members are `None` when that group's value is not a literal list.
 fn sub_exporter_group_bodies(
     value: &[String],
 ) -> Option<Vec<(String, Option<SubExporterGroupMembers>)>> {
-    let body = bracketed_body(value, "{", "}")?;
+    let body = bracketed_body(value, "{", "}").or_else(|| bracketed_body(value, "[", "]"))?;
 
     let mut groups: Vec<(String, Option<SubExporterGroupMembers>)> = Vec::new();
     for entry in comma_separated_entries(body) {

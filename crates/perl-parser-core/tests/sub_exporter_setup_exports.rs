@@ -671,7 +671,7 @@ fn computed_groups_value_records_a_boundary_but_keeps_the_exports_list() {
         export_boundaries(&file, "My::Utils"),
         vec![(
             Some("groups".to_string()),
-            "Sub::Exporter groups value is not a static hash".to_string()
+            "Sub::Exporter groups value is not a static list".to_string()
         )]
     );
 }
@@ -709,4 +709,114 @@ fn importing_sub_exporter_does_not_export_from_the_importing_package() {
 
     assert!(file.stash_graph.export_declarations.is_empty());
     assert!(export_boundaries(&file, "Consumer").is_empty());
+}
+
+#[test]
+fn quoted_setup_keys_are_read_like_bare_ones() {
+    // `{ 'exports' => ... }` is ordinary Perl and means what the bareword
+    // spelling means. Comparing raw tokens read it as an absent key, which
+    // published nothing and recorded no boundary — a silent partial answer.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter '-setup' => {\n\
+             'exports' => [qw(foo bar)],\n\
+             \"groups\"  => { default => [qw(foo)] },\n\
+         };\n",
+    );
+
+    assert_eq!(
+        declarations(&file, "My::Utils"),
+        vec![
+            (ExportDeclarationKind::Optional, None, vec!["foo".to_string(), "bar".to_string()]),
+            (ExportDeclarationKind::Default, None, vec!["foo".to_string()]),
+            (
+                ExportDeclarationKind::Tag,
+                Some("all".to_string()),
+                vec!["foo".to_string(), "bar".to_string()]
+            ),
+        ]
+    );
+    assert!(export_boundaries(&file, "My::Utils").is_empty());
+}
+
+#[test]
+fn array_form_groups_declare_the_same_groups_as_the_hash_form() {
+    // "The `groups` list can be passed in the same forms as `exports`", and an
+    // `exports` list "may be provided as an array reference or a hash
+    // reference" — so the arrayref spelling is a static configuration, not a
+    // dynamic boundary.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports => [qw(foo bar)],\n\
+             groups  => [ default => [qw(foo)], tools => [qw(bar)] ],\n\
+         };\n",
+    );
+
+    assert_eq!(
+        declarations(&file, "My::Utils"),
+        vec![
+            (ExportDeclarationKind::Optional, None, vec!["foo".to_string(), "bar".to_string()]),
+            (ExportDeclarationKind::Default, None, vec!["foo".to_string()]),
+            (ExportDeclarationKind::Tag, Some("tools".to_string()), vec!["bar".to_string()]),
+            (
+                ExportDeclarationKind::Tag,
+                Some("all".to_string()),
+                vec!["foo".to_string(), "bar".to_string()]
+            ),
+        ]
+    );
+    assert!(export_boundaries(&file, "My::Utils").is_empty());
+}
+
+#[test]
+fn a_custom_generator_lowers_confidence_for_every_export() {
+    // `generator` is "a callback used to produce the code that will be
+    // installed", defaulting to Sub::Exporter's own generator — the one that
+    // turns a plain `exports` name into this package's sub of that name.
+    // Replacing it removes that anchoring for every export, so no declaration
+    // from this setup may claim high confidence.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports   => [qw(foo bar)],\n\
+             groups    => { default => [qw(foo)] },\n\
+             generator => \\&build_any,\n\
+         };\n",
+    );
+
+    let confidences: Vec<StashConfidence> = file
+        .stash_graph
+        .export_declarations
+        .iter()
+        .filter(|declaration| declaration.package == "My::Utils")
+        .map(|declaration| declaration.confidence)
+        .collect();
+
+    assert_eq!(confidences.len(), 3, "optional, default and implicit-all declarations");
+    assert!(
+        confidences.iter().all(|confidence| *confidence == StashConfidence::Medium),
+        "a custom generator leaves no declaration at high confidence: {confidences:?}"
+    );
+}
+
+#[test]
+fn a_setup_whose_brackets_do_not_close_publishes_no_exports() {
+    // A negative control on delimiter matching: nesting depth alone would let
+    // `[ ... }` balance and hand the reader a body spanning a delimiter that
+    // was never closed. An unreadable setup is a boundary, never a partial
+    // export list.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(foo bar) };\n",
+    );
+
+    assert!(
+        declarations(&file, "My::Utils").is_empty(),
+        "no export list is published from a setup that cannot be delimited"
+    );
+    assert_eq!(
+        export_boundaries(&file, "My::Utils"),
+        vec![(None, "Sub::Exporter export configuration is not a static -setup hash".to_string())]
+    );
 }
