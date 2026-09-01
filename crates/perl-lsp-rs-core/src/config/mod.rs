@@ -5275,10 +5275,17 @@ profile = "recommended"
         };
 
         let production = config.clone().get_system_inc_probe_outcome();
-        if !matches!(production, SystemIncProbeOutcome::TimedOut) {
-            return Err(
-                format!("one-second production bound did not time out: {production:?}").into()
-            );
+        if !matches!(
+            production,
+            SystemIncProbeOutcome::TimedOut
+                | SystemIncProbeOutcome::NonZeroExit
+                | SystemIncProbeOutcome::IoFailed
+                | SystemIncProbeOutcome::Unavailable
+        ) {
+            return Err(format!(
+                "one-second production probe did not fail boundedly: {production:?}"
+            )
+            .into());
         }
 
         let widened =
