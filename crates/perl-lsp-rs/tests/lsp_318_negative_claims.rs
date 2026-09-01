@@ -723,10 +723,7 @@ fn document_filter_relative_pattern_is_never_emitted() -> TestResult {
                     .ok_or("watcher registration missing watchers")?;
                 assert!(
                     watchers.iter().any(|watcher| {
-                        watcher
-                            .pointer("/globPattern/baseUri")
-                            .and_then(Value::as_str)
-                            .is_some()
+                        watcher.pointer("/globPattern/baseUri").and_then(Value::as_str).is_some()
                     }),
                     "relative-pattern capable clients must receive a watcher baseUri: {registration}"
                 );
