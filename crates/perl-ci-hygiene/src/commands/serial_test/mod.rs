@@ -834,30 +834,32 @@ fn complete_serial_site_inventories(
             scan.scan_file(index, directory, &[]);
         }
     }
-    let serialized_keys: BTreeSet<_> =
-        scan.serialized_sites.iter().map(SerialSiteIdentity::key).collect();
-    let mut all_sites = scan.sites;
-    all_sites.extend(scan.serialized_sites);
+    // Keep the guard classification attached to each site while normalizing
+    // identities.  In particular, a uniquely named inline-module test is
+    // normalized from `module::test` to `test`; looking up its serialized
+    // status by the pre-normalization key would lose that classification.
+    let mut all_sites = scan.sites.into_iter().map(|site| (site, false)).collect::<Vec<_>>();
+    all_sites.extend(scan.serialized_sites.into_iter().map(|site| (site, true)));
     let identities = all_sites.iter().fold(
         BTreeMap::<(String, String), BTreeSet<String>>::new(),
         |mut identities, site| {
             let bare = site
+                .0
                 .test_function
                 .rsplit("::")
                 .next()
-                .unwrap_or(site.test_function.as_str())
+                .unwrap_or(site.0.test_function.as_str())
                 .to_owned();
             identities
-                .entry((site.path.clone(), bare))
+                .entry((site.0.path.clone(), bare))
                 .or_default()
-                .insert(site.test_function.clone());
+                .insert(site.0.test_function.clone());
             identities
         },
     );
     let mut classified = all_sites
         .drain(..)
-        .map(|mut site| {
-            let is_serialized = serialized_keys.contains(&site.key());
+        .map(|(mut site, is_serialized)| {
             let bare = site
                 .test_function
                 .rsplit("::")
@@ -1012,11 +1014,17 @@ fn read_identity_registry(path: &Path) -> Result<BTreeMap<(String, String), Seri
                 ));
             }
         };
-        let remediation = match required_string("remediation")?.as_str() {
-            "pending" => Remediation::Pending,
-            "serialized" => Remediation::Serialized,
-            "eliminated" => Remediation::Eliminated,
-            other => {
+        // Version 1 registries predate the orthogonal remediation field.  Read
+        // those rows with the historical state-derived disposition so existing
+        // registries remain valid while checked-in rows can opt into explicit
+        // remediation values.
+        let remediation = match object.get("remediation").and_then(serde_json::Value::as_str) {
+            None if state == RegistryState::Active => Remediation::Pending,
+            None => Remediation::Serialized,
+            Some("pending") => Remediation::Pending,
+            Some("serialized") => Remediation::Serialized,
+            Some("eliminated") => Remediation::Eliminated,
+            Some(other) => {
                 return Err(eyre!(
                     "serial identity registry entry {} has invalid remediation {other:?}",
                     index + 1
@@ -2330,6 +2338,46 @@ fn mutates_after_every_lexical_class() {
                     "serialized fixture",
                     "retired",
                 ),
+            ]
+        }))?;
+        assert_eq!(repo.check(&path)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn unique_guarded_nested_identity_is_normalized_with_status() -> Result<()> {
+        let repo = TempRepo::new("unique-guarded-nested")?;
+        repo.write_test(
+            "mod nested {\n    #[test]\n    #[serial]\n    fn only_nested() {\n        std::env::set_var(\"A\", \"1\");\n    }\n}\n",
+        )?;
+        let path = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [registry_row(
+                "crates/demo/tests/demo.rs",
+                "only_nested",
+                "env_set",
+                "serialized fixture",
+                "retired",
+            )]
+        }))?;
+        assert_eq!(repo.check(&path)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_v1_rows_default_remediation_from_state() -> Result<()> {
+        let repo = TempRepo::new("legacy-v1-remediation")?;
+        repo.write_test(UNANNOTATED_ENV_TEST)?;
+        let path = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [
+                {
+                    "path": "crates/demo/tests/demo.rs",
+                    "test_function": "flips_toolchain_env",
+                    "signals": "env_set",
+                    "accepted_reason": "legacy fixture",
+                    "state": "active"
+                }
             ]
         }))?;
         assert_eq!(repo.check(&path)?, 0);
