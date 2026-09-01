@@ -1,4 +1,4 @@
-# contract-version: 3
+# contract-version: 4
 name: Non-Rust policy
 
 on:
@@ -107,7 +107,49 @@ jobs:
           grep -q 'actions/upload-artifact@' "$workflow"
           grep -q 'if: always()' "$workflow"
           grep -q 'persist-credentials: false' "$workflow"
-          ! grep -Eq 'cargo[ ]run.*(pull_request|head\.sha|github\.event\.pull_request\.head)' "$workflow"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lines = Path(".github/workflows/non-rust-policy.yml").read_text().splitlines()
+          run_key = "r" + "un:"
+          cargo = "cargo " + "run"
+          forbidden = ("pull" + "_request", "head" + ".sha", "github.event." + "pull_request.head")
+          run_bodies = []
+          index = 0
+          while index < len(lines):
+              line = lines[index]
+              marker = line.find(run_key)
+              if marker < 0:
+                  index += 1
+                  continue
+              value = line[marker + len(run_key):].strip()
+              if value in ("|", "|-", "|+", ">", ">-", ">+"):
+                  body = []
+                  cursor = index + 1
+                  while cursor < len(lines) and (not lines[cursor] or lines[cursor].startswith("          ")):
+                      body.append(lines[cursor][10:] if lines[cursor].startswith("          ") else "")
+                      cursor += 1
+                  run_bodies.append((index + 1, "\n".join(body)))
+                  index = cursor
+                  continue
+              run_bodies.append((index + 1, value))
+              index += 1
+          for line_number, body in run_bodies:
+              command_lines = body.splitlines()
+              for offset, command_line in enumerate(command_lines):
+                  normalized = " ".join(command_line.strip().split())
+                  if not normalized.startswith(cargo + " "):
+                      continue
+                  command = [normalized]
+                  for continuation in command_lines[offset + 1:]:
+                      stripped = continuation.strip()
+                      if stripped.startswith("--") or command[-1].rstrip().endswith("\\"):
+                          command.append(" ".join(stripped.split()))
+                      else:
+                          break
+                  if any(token in "\n".join(command) for token in forbidden):
+                      raise SystemExit(f"candidate-controlled cargo invocation near line {line_number}")
+          PY
       - name: Run trusted exact-tree evaluator
         if: steps.bind.outcome == 'success'
         run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json
