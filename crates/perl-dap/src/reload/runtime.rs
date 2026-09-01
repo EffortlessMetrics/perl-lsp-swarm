@@ -511,6 +511,22 @@ fn settle(
 /// Once the mutation is issued, every path returns either `Reloaded` or
 /// `IndeterminatePossiblyApplied`; there is no route back to a clean
 /// pre-mutation failure, because there is no evidence that could earn one.
+///
+/// # Serialization
+///
+/// The `&mut` on both the channel and the clock makes two concurrent
+/// executions over *the same* channel or clock impossible — the borrow
+/// checker rejects it, so admission through read-back cannot interleave
+/// for a single transport.
+///
+/// That is not the same as debuggee-wide exclusivity. Two channels onto
+/// one debuggee, or two clocks for one process, would each satisfy the
+/// borrow checker and still interleave mutations. Whoever owns the
+/// adapter must therefore keep one channel and one clock per debuggee and
+/// route reload operations through the serialized broker — #10098 calls
+/// for one serialized broker operation, and R03 (#10102) owns that
+/// wiring. The executor cannot enforce it from here and does not pretend
+/// to.
 pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
     plan: &LoadedModuleReloadPlan,
     mechanism: ReloadMechanism,
