@@ -263,7 +263,10 @@ fn test_command_exists_does_not_execute_path_hijacked_which() -> Result<(), Box<
     use std::os::unix::fs::PermissionsExt;
 
     if child_mode("test_command_exists_does_not_execute_path_hijacked_which") {
-        let _ = perl_lsp::execute_command::command_exists("perlcritic");
+        assert!(
+            perl_lsp::execute_command::command_exists("perlcritic"),
+            "the PATH fixture must make perlcritic discoverable"
+        );
         let marker = child_env("SECURITY_MARKER")?;
         assert!(!Path::new(&marker).exists(), "PATH probe executed a hijacked which");
         return Ok(());
@@ -271,6 +274,7 @@ fn test_command_exists_does_not_execute_path_hijacked_which() -> Result<(), Box<
 
     let temp_dir = TempDir::new()?;
     let which_path = temp_dir.path().join("which");
+    let perlcritic_path = temp_dir.path().join("perlcritic");
     let marker_path = temp_dir.path().join("which-executed.marker");
 
     fs::write(
@@ -283,7 +287,9 @@ exit 0
             marker_path.display()
         ),
     )?;
+    fs::write(&perlcritic_path, "#!/bin/sh\nexit 0\n")?;
     fs::set_permissions(&which_path, fs::Permissions::from_mode(0o755))?;
+    fs::set_permissions(&perlcritic_path, fs::Permissions::from_mode(0o755))?;
 
     let original_path = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = vec![temp_dir.path().to_path_buf()];
