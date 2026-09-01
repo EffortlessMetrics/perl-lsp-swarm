@@ -382,12 +382,13 @@ jobs:
         shell: bash
         env:
           WINDOWS_TEST_CRATES: ${{ needs.platform-overrides.outputs.windows_test_crates }}
-        # `--lib` never admits integration targets under `tests/`. Keep this
-        # lane compile-only on Windows: Unix owns execution of the Bash/chmod
-        # smoke, while Windows proves the gated target is admitted without
-        # importing Unix-only APIs.
+        # Keep the existing library smoke execution, then compile the
+        # Unix-only integration target on Windows so its cfg boundary cannot
+        # silently bit-rot. Unix remains the execution authority for the
+        # Bash/chmod smoke.
         run: |
-          cargo test $WINDOWS_TEST_CRATES --locked --tests --no-run
+          cargo test $WINDOWS_TEST_CRATES --locked --lib
+          cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
             cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
           fi

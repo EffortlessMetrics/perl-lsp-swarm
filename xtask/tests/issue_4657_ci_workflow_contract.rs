@@ -258,9 +258,9 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
 /// #14355: the Windows portability lane must admit integration targets.
 ///
 /// The release-artifact smoke target is intentionally Unix-only at runtime,
-/// but its crate-root cfg must still be compiled on Windows. A library-only
-/// command silently skips every file under `tests/` and therefore cannot
-/// prove that boundary.
+/// but its crate-root cfg must still be compiled on Windows. The Windows lane
+/// therefore retains its library execution and adds a narrow compile-only
+/// command for this integration target.
 #[test]
 fn windows_platform_smoke_compiles_integration_targets_without_running_them()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -277,12 +277,14 @@ fn windows_platform_smoke_compiles_integration_targets_without_running_them()
     let run = step_run_script(smoke_step).ok_or("windows platform smoke has no run command")?;
 
     assert!(
-        run.contains("cargo test $WINDOWS_TEST_CRATES --locked --tests --no-run"),
-        "Windows portability smoke must compile selected integration targets without running Unix-only tests; command: {run}"
+        run.contains("cargo test $WINDOWS_TEST_CRATES --locked --lib"),
+        "Windows portability smoke must retain its library execution; command: {run}"
     );
     assert!(
-        !run.contains("--lib"),
-        "Windows portability smoke must not use --lib, which excludes integration targets; command: {run}"
+        run.contains(
+            "cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run"
+        ),
+        "Windows portability smoke must compile the Unix-only integration target without running it; command: {run}"
     );
     Ok(())
 }
