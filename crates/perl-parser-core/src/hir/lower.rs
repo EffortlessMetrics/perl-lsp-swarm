@@ -1928,6 +1928,9 @@ impl Lowerer {
                     );
                 }
             }
+            "Sub::Exporter" | "Sub::Exporter::Progressive" => {
+                self.record_sub_exporter_setup(args, range, item_id);
+            }
             "constant" => {
                 for constant in constant_names_from_use_args(args) {
                     self.record_slot(
@@ -1946,6 +1949,139 @@ impl Lowerer {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Record export declarations for `use Sub::Exporter -setup => { ... };`.
+    ///
+    /// Sub::Exporter replaces the `@EXPORT`/`@EXPORT_OK`/`%EXPORT_TAGS` stash
+    /// variables with a configuration hash, so the classic stash-variable path
+    /// never sees these packages. The mapping onto the existing export model
+    /// follows Sub::Exporter's documented semantics:
+    ///
+    /// - every name in `exports` is available on request (`Optional`);
+    /// - the `default` group is what a bare `use Module;` installs (`Default`);
+    /// - every other group is a tag (`Tag`), requested as `-name` or `:name`;
+    /// - the implicit `all` group holds every `exports` name.
+    ///
+    /// A configuration this function cannot enumerate statically (a computed
+    /// `exports` value, a group built from other group references, or a
+    /// `Sub::Exporter` usage with no literal `-setup` hash) records a dynamic
+    /// export boundary instead of a partial export list.
+    fn record_sub_exporter_setup(
+        &mut self,
+        args: &[String],
+        range: SourceLocation,
+        item_id: HirId,
+    ) {
+        let package = self.current_package_name();
+
+        let Some(setup) = sub_exporter_setup_body(args) else {
+            self.record_dynamic_stash_boundary(
+                Some(package),
+                None,
+                range,
+                Some(item_id),
+                StashDynamicBoundaryKind::DynamicExportDeclaration,
+                "Sub::Exporter export configuration is not a static -setup hash",
+            );
+            return;
+        };
+
+        let export_names = match hash_entry_value(setup, "exports") {
+            None => None,
+            Some(value) => match sub_exporter_export_names(value) {
+                Some(names) => {
+                    self.stash_graph.export_declarations.push(ExportDeclaration {
+                        package: package.clone(),
+                        kind: ExportDeclarationKind::Optional,
+                        tag_name: None,
+                        symbols: names.clone(),
+                        range,
+                        declaration_item: Some(item_id),
+                        provenance: StashProvenance::DesugaredAst,
+                        confidence: StashConfidence::High,
+                    });
+                    Some(names)
+                }
+                None => {
+                    self.record_dynamic_stash_boundary(
+                        Some(package.clone()),
+                        Some("exports".to_string()),
+                        range,
+                        Some(item_id),
+                        StashDynamicBoundaryKind::DynamicExportDeclaration,
+                        "Sub::Exporter exports list is not statically enumerable",
+                    );
+                    None
+                }
+            },
+        };
+
+        let mut declared_all_group = false;
+
+        if let Some(value) = hash_entry_value(setup, "groups") {
+            match sub_exporter_group_bodies(value) {
+                Some(groups) => {
+                    for (name, members) in groups {
+                        if name == "all" {
+                            declared_all_group = true;
+                        }
+                        let Some(members) = members else {
+                            self.record_dynamic_stash_boundary(
+                                Some(package.clone()),
+                                Some(name),
+                                range,
+                                Some(item_id),
+                                StashDynamicBoundaryKind::DynamicExportDeclaration,
+                                "Sub::Exporter group is not statically enumerable",
+                            );
+                            continue;
+                        };
+                        let (kind, tag_name) = if name == "default" {
+                            (ExportDeclarationKind::Default, None)
+                        } else {
+                            (ExportDeclarationKind::Tag, Some(name))
+                        };
+                        self.stash_graph.export_declarations.push(ExportDeclaration {
+                            package: package.clone(),
+                            kind,
+                            tag_name,
+                            symbols: members,
+                            range,
+                            declaration_item: Some(item_id),
+                            provenance: StashProvenance::DesugaredAst,
+                            confidence: StashConfidence::High,
+                        });
+                    }
+                }
+                None => {
+                    self.record_dynamic_stash_boundary(
+                        Some(package.clone()),
+                        Some("groups".to_string()),
+                        range,
+                        Some(item_id),
+                        StashDynamicBoundaryKind::DynamicExportDeclaration,
+                        "Sub::Exporter groups value is not a static hash",
+                    );
+                }
+            }
+        }
+
+        // Sub::Exporter creates an implicit `all` group over the `exports`
+        // list. Only synthesize it when the export list was fully enumerated
+        // and the configuration did not define `all` itself.
+        if let Some(names) = export_names.filter(|names| !declared_all_group && !names.is_empty()) {
+            self.stash_graph.export_declarations.push(ExportDeclaration {
+                package,
+                kind: ExportDeclarationKind::Tag,
+                tag_name: Some("all".to_string()),
+                symbols: names,
+                range,
+                declaration_item: Some(item_id),
+                provenance: StashProvenance::DesugaredAst,
+                confidence: StashConfidence::High,
+            });
         }
     }
 
@@ -2847,6 +2983,229 @@ fn constant_names_from_use_args(args: &[String]) -> Vec<String> {
     }
 
     Vec::new()
+}
+
+/// Index of the delimiter closing the opener at `open`, if the slice balances.
+fn matching_delimiter(tokens: &[String], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match token.as_str() {
+            "{" | "[" | "(" => depth += 1,
+            "}" | "]" | ")" => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Token slice inside a `use Sub::Exporter -setup => { ... }` configuration hash.
+///
+/// The parser drops the `=>` after a leading `-flag`, so the opening brace
+/// follows `-setup` directly. Returns `None` when there is no literal hash.
+fn sub_exporter_setup_body(args: &[String]) -> Option<&[String]> {
+    let setup = args.iter().position(|arg| arg == "-setup")?;
+    let open = setup + 1;
+    if args.get(open).map(String::as_str) != Some("{") {
+        return None;
+    }
+    let close = matching_delimiter(args, open)?;
+    args.get(open + 1..close)
+}
+
+/// Value tokens for `key => <value>` at the top level of a hash body.
+///
+/// A bracketed value includes its delimiters so callers can tell an arrayref
+/// from a hashref; any other value is a single token.
+fn hash_entry_value<'a>(body: &'a [String], key: &str) -> Option<&'a [String]> {
+    let mut depth = 0usize;
+    for index in 0..body.len() {
+        match body[index].as_str() {
+            "{" | "[" | "(" => depth += 1,
+            "}" | "]" | ")" => depth = depth.saturating_sub(1),
+            token if depth == 0 && token == key => {
+                if body.get(index + 1).map(String::as_str) != Some("=>") {
+                    continue;
+                }
+                let value = index + 2;
+                return match body.get(value).map(String::as_str) {
+                    Some("{" | "[" | "(") => {
+                        let close = matching_delimiter(body, value)?;
+                        body.get(value..=close)
+                    }
+                    Some(_) => body.get(value..=value),
+                    None => None,
+                };
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split a bracketed body into its top-level comma-separated entries.
+fn comma_separated_entries(body: &[String]) -> Vec<&[String]> {
+    let mut entries = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, token) in body.iter().enumerate() {
+        match token.as_str() {
+            "{" | "[" | "(" => depth += 1,
+            "}" | "]" | ")" => depth = depth.saturating_sub(1),
+            "," if depth == 0 => {
+                if start < index {
+                    entries.push(&body[start..index]);
+                }
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < body.len() {
+        entries.push(&body[start..]);
+    }
+    entries
+}
+
+/// Strip the outer delimiters from a bracketed token slice.
+fn bracketed_body<'a>(value: &'a [String], open: &str, close: &str) -> Option<&'a [String]> {
+    if value.first().map(String::as_str) != Some(open)
+        || value.last().map(String::as_str) != Some(close)
+    {
+        return None;
+    }
+    value.get(1..value.len() - 1)
+}
+
+/// Expand one export/group list token into its literal names.
+///
+/// Unlike [`static_names_from_arg`] this keeps a leading `:` or `-`, so a
+/// group reference such as `:all` stays distinguishable from a symbol named
+/// `all` and is rejected by [`is_sub_exporter_name`].
+fn sub_exporter_literal_names(token: &str) -> Vec<String> {
+    let trimmed = token.trim();
+    for (open, close) in [("qw(", ')'), ("qw[", ']'), ("qw{", '}'), ("qw<", '>')] {
+        if let Some(inner) = trimmed.strip_prefix(open).and_then(|rest| rest.strip_suffix(close)) {
+            return inner.split_whitespace().map(str::to_string).collect();
+        }
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix("qw")
+        .filter(|rest| rest.len() >= 2 && !rest.starts_with(char::is_alphanumeric))
+    {
+        let mut chars = inner.chars();
+        let delimiter = chars.next().unwrap_or('/');
+        if let Some(body) = inner.strip_prefix(delimiter).and_then(|r| r.strip_suffix(delimiter)) {
+            return body.split_whitespace().map(str::to_string).collect();
+        }
+    }
+    vec![trimmed.trim_matches(',').trim_matches('"').trim_matches('\'').to_string()]
+}
+
+/// One literal name from a token that must expand to exactly one valid name.
+fn sub_exporter_single_name(token: &str) -> Option<String> {
+    let names = sub_exporter_literal_names(token);
+    let [name] = names.as_slice() else {
+        return None;
+    };
+    is_sub_exporter_name(name).then(|| name.clone())
+}
+
+/// True when `name` can be a Sub::Exporter export or group member name.
+///
+/// Group references (`-all`, `:all`) and anything with a sigil, quote, or
+/// punctuation are deliberately rejected so callers fall back to a boundary.
+fn is_sub_exporter_name(name: &str) -> bool {
+    let Some(first) = name.chars().next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && name.chars().all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+/// Export names declared by a Sub::Exporter `exports` value.
+///
+/// Accepts both documented forms — `[ qw(foo), bar => \&gen ]` and
+/// `{ foo => undef, bar => \&gen }` — and returns `None` for anything that
+/// cannot be enumerated without running Perl.
+fn sub_exporter_export_names(value: &[String]) -> Option<Vec<String>> {
+    let body = bracketed_body(value, "[", "]").or_else(|| bracketed_body(value, "{", "}"))?;
+
+    let mut names = Vec::new();
+    for entry in comma_separated_entries(body) {
+        // `name => <generator>`: the generator is dynamic, but the exported
+        // name itself is declared here.
+        if entry.get(1).map(String::as_str) == Some("=>") {
+            names.push(sub_exporter_single_name(&entry[0])?);
+            continue;
+        }
+
+        let [token] = entry else {
+            return None;
+        };
+        let expanded = sub_exporter_literal_names(token);
+        if expanded.is_empty() {
+            return None;
+        }
+        for name in expanded {
+            if !is_sub_exporter_name(&name) {
+                return None;
+            }
+            names.push(name);
+        }
+    }
+
+    names.dedup();
+    Some(names)
+}
+
+/// Group name to member list for a Sub::Exporter `groups` value.
+///
+/// The outer `Option` is `None` when `groups` is not a literal hash. Each
+/// group's members are `None` when that one group cannot be enumerated (for
+/// example `default => [qw(-all)]`, which names another group).
+fn sub_exporter_group_bodies(value: &[String]) -> Option<Vec<(String, Option<Vec<String>>)>> {
+    let body = bracketed_body(value, "{", "}")?;
+
+    let mut groups = Vec::new();
+    for entry in comma_separated_entries(body) {
+        if entry.get(1).map(String::as_str) != Some("=>") {
+            return None;
+        }
+        let name = sub_exporter_single_name(&entry[0])?;
+        groups.push((name, sub_exporter_group_members(entry.get(2..).unwrap_or_default())));
+    }
+
+    Some(groups)
+}
+
+/// Statically enumerable members of one Sub::Exporter group.
+fn sub_exporter_group_members(value: &[String]) -> Option<Vec<String>> {
+    let body = bracketed_body(value, "[", "]")?;
+
+    let mut members = Vec::new();
+    for entry in comma_separated_entries(body) {
+        let [token] = entry else {
+            return None;
+        };
+        let expanded = sub_exporter_literal_names(token);
+        if expanded.is_empty() {
+            return None;
+        }
+        for name in expanded {
+            if !is_sub_exporter_name(&name) {
+                return None;
+            }
+            members.push(name);
+        }
+    }
+
+    members.dedup();
+    Some(members)
 }
 
 fn static_names_from_arg(arg: &str) -> Vec<String> {
