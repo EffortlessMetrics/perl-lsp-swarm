@@ -1343,10 +1343,6 @@ pub fn format_startup_banner(version: &str, profile: FeatureProfile, is_socket: 
 /// Suppressed when `PERL_LSP_QUIET` is set in the environment.
 // The startup banner is intentionally written to stderr before the tracing subscriber
 // is configured. This is the one permitted `eprintln!` in this crate.
-#[expect(
-    clippy::print_stderr,
-    reason = "Startup banner fires before the tracing subscriber is configured — intentional stderr output"
-)]
 pub fn startup_banner(version: &str, profile: FeatureProfile, transport: TransportMode) {
     startup_banner_with_env_lookup(version, profile, transport, process_env_var);
 }
@@ -1360,6 +1356,10 @@ fn startup_banner_with_env_lookup(
     startup_banner_with_quiet(version, profile, transport, get("PERL_LSP_QUIET").is_ok());
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "Startup banner fires before the tracing subscriber is configured — intentional stderr output"
+)]
 fn startup_banner_with_quiet(
     version: &str,
     profile: FeatureProfile,
