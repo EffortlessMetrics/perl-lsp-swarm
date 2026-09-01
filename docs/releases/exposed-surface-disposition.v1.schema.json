@@ -8,7 +8,7 @@
   "required": ["schema", "release", "repository_sha", "rows"],
   "properties": {
     "schema": {"const": "exposed_surface_disposition.v1"},
-    "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-rc(?:\\.[0-9]+)?$"},
+    "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-rc(?:\\.?[0-9]+)?$"},
     "repository_sha": {"$ref": "#/$defs/sha"},
     "rows": {
       "type": "array",

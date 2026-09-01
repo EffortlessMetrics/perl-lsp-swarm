@@ -23,7 +23,7 @@ SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 ISSUE_URL_PATTERN = re.compile(
     r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/[1-9][0-9]*$"
 )
-RELEASE_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+-rc(?:\.[0-9]+)?$")
+RELEASE_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+-rc(?:\.?[0-9]+)?$")
 DEFAULT_AUTHORITY_CATALOG = Path(__file__).resolve().parents[1] / "docs/releases/exposed-surface-authorities.v1.json"
 DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "docs/releases/exposed-surface-disposition.v1.schema.json"
 

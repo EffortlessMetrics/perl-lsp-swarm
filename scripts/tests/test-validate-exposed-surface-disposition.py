@@ -67,6 +67,11 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         projection["release"] = "0.18.0"
         self.assert_invalid(projection, "normalized RC identifier")
 
+        for release in ("0.13.0-rc1", "0.18.0-rc.1"):
+            projection = copy.deepcopy(self.projection)
+            projection["release"] = release
+            MODULE.validate_projection(self.schema, projection, self.authorities)
+
     def test_rejects_duplicate_canonical_authority_row(self) -> None:
         projection = copy.deepcopy(self.projection)
         projection["rows"].append(copy.deepcopy(projection["rows"][0]))
