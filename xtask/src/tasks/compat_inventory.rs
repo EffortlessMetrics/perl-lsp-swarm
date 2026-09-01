@@ -901,29 +901,29 @@ fn discover_syn_item_list(
             });
         }
 
-        if let Item::Impl(item_impl) = item {
-            if let Some(type_name) = inherent_impl_name(item_impl) {
-                for impl_item in &item_impl.items {
-                    let syn::ImplItem::Fn(method) = impl_item else { continue };
-                    let Some(declared) = syn_visibility(&method.vis) else { continue };
-                    let name = format!("{type_name}::{}", method.sig.ident);
-                    let reexported = root_reexports
-                        .iter()
-                        .any(|(path, exported)| path == module && exported == &name);
-                    let visibility =
-                        if declared == Visibility::Public && (module_public || reexported) {
-                            Visibility::Public
-                        } else {
-                            Visibility::Internal
-                        };
-                    exports.push(Export {
-                        module: module.to_string(),
-                        name,
-                        kind: SymbolKind::Method,
-                        visibility,
-                        reexported_at_root: visibility == Visibility::Public && reexported,
-                    });
-                }
+        if let Item::Impl(item_impl) = item
+            && let Some(type_name) = inherent_impl_name(item_impl)
+        {
+            for impl_item in &item_impl.items {
+                let syn::ImplItem::Fn(method) = impl_item else { continue };
+                let Some(declared) = syn_visibility(&method.vis) else { continue };
+                let name = format!("{type_name}::{}", method.sig.ident);
+                let reexported = root_reexports
+                    .iter()
+                    .any(|(path, exported)| path == module && exported == &name);
+                let visibility =
+                    if declared == Visibility::Public && (module_public || reexported) {
+                        Visibility::Public
+                    } else {
+                        Visibility::Internal
+                    };
+                exports.push(Export {
+                    module: module.to_string(),
+                    name,
+                    kind: SymbolKind::Method,
+                    visibility,
+                    reexported_at_root: visibility == Visibility::Public && reexported,
+                });
             }
         }
 
