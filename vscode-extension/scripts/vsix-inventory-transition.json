@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 14447,
-  "reason": "Makes VS Code resource configuration folder-owned and transport-coherent (#14447). The candidate adds src/configurationPull.ts (the workspace/configuration middleware) and src/configurationOwnership.ts (the checked setting ownership table), growing the bundled out/extension.js from 1605380 to 1621816 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
+  "reason": "Makes VS Code resource configuration folder-owned and transport-coherent (#14447). The candidate adds src/configurationPull.ts (the workspace/configuration middleware) and src/configurationOwnership.ts (the checked setting ownership table), growing the bundled out/extension.js from 1605380 to 1622973 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
   "base_baseline_file_sha256": "c334509714d671bc93c27387a153089cc133eae98f5d516bcac2f4a77ae898fd",
-  "candidate_baseline_file_sha256": "b14c1ddf7a7edc4dcf9c0f961cb995eab4af806d8b03e26b74dabc26a72b01af",
+  "candidate_baseline_file_sha256": "743c76a80950eb314c4044228cbec78ae8c55812c849af4da175e435003dcc81",
   "base_inventory_sha256": "b6001a5b7432633f4b24a36899243f507adc4492ff35a6877f6d5b2eb63e1874",
-  "candidate_inventory_sha256": "e5e56e11d6a5251464a7d0a07f9e5099a4bdfb2d7dad41838db1dd6d4dcd98ac"
+  "candidate_inventory_sha256": "e35344832b31cac09685f8c2d87efa743035aa924fe29c0ba93dceb10f5b7bbe"
 }
