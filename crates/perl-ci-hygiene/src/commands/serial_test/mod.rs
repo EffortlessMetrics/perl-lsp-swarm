@@ -1065,6 +1065,13 @@ fn read_identity_registry(path: &Path) -> Result<BTreeMap<(String, String), Seri
 pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> Result<i32> {
     let resolved = registry_path(repo_root, path);
     let registry = read_identity_registry(&resolved)?;
+    let registry_schema_version = serde_json::from_str::<serde_json::Value>(
+        &std::fs::read_to_string(&resolved)
+            .map_err(|err| eyre!("reading serial identity registry {:?}: {err}", resolved))?,
+    )?
+    .get("schema_version")
+    .and_then(serde_json::Value::as_u64)
+    .ok_or_else(|| eyre!("serial identity registry schema_version must be an integer"))?;
     let (inventory, serialized_inventory) = complete_serial_site_inventories(repo_root)?;
     let mut current = BTreeMap::new();
     for site in inventory {
@@ -1084,11 +1091,6 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
         let bare = function.rsplit("::").next().unwrap_or(function).to_owned();
         qualified_by_bare.entry((path.clone(), bare)).or_default().insert(function.clone());
     }
-    for ((path, bare), qualified) in &qualified_by_bare {
-        if qualified.len() == 1 {
-            lookup_current.insert((path.clone(), bare.clone()));
-        }
-    }
 
     let active_count =
         registry.values().filter(|record| record.state == RegistryState::Active).count();
@@ -1097,6 +1099,13 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
     for (path, function) in serialized.keys() {
         let bare = function.rsplit("::").next().unwrap_or(function).to_owned();
         qualified_by_bare.entry((path.clone(), bare)).or_default().insert(function.clone());
+    }
+    if registry_schema_version == 1 {
+        for ((path, bare), qualified) in &qualified_by_bare {
+            if qualified.len() == 1 {
+                lookup_current.insert((path.clone(), bare.clone()));
+            }
+        }
     }
     println!(
         "parallel-unsafe test identities: current={} active_registry={} registry={:?}",
@@ -1109,7 +1118,9 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
     for (key, site) in &current {
         let bare_key = (key.0.clone(), key.1.rsplit("::").next().unwrap_or(&key.1).to_owned());
         let bare_match = qualified_by_bare.get(&bare_key).is_some_and(|ids| ids.len() == 1);
-        match registry.get(key).or_else(|| bare_match.then(|| registry.get(&bare_key)).flatten()) {
+        match registry.get(key).or_else(|| {
+            (registry_schema_version == 1 && bare_match).then(|| registry.get(&bare_key)).flatten()
+        }) {
             None => failures.push(format!(
                 "NEW parallel-unsafe test: {}:{} {} ({}) — add #[serial] or adjudicate a registry row",
                 site.path,
@@ -1141,7 +1152,9 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
     for (key, site) in &serialized {
         let bare_key = (key.0.clone(), key.1.rsplit("::").next().unwrap_or(&key.1).to_owned());
         let bare_match = qualified_by_bare.get(&bare_key).is_some_and(|ids| ids.len() == 1);
-        match registry.get(key).or_else(|| bare_match.then(|| registry.get(&bare_key)).flatten()) {
+        match registry.get(key).or_else(|| {
+            (registry_schema_version == 1 && bare_match).then(|| registry.get(&bare_key)).flatten()
+        }) {
             Some(record)
                 if record.state == RegistryState::Retired
                     && record.remediation == Remediation::Serialized =>
@@ -1176,7 +1189,11 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
             .flat_map(|(path, function)| {
                 let bare =
                     (path.clone(), function.rsplit("::").next().unwrap_or(function).to_owned());
-                let alias = qualified_by_bare.get(&bare).filter(|ids| ids.len() == 1).map(|_| bare);
+                let alias = (registry_schema_version == 1)
+                    .then(|| {
+                        qualified_by_bare.get(&bare).filter(|ids| ids.len() == 1).map(|_| bare)
+                    })
+                    .flatten();
                 std::iter::once((path.clone(), function.clone())).chain(alias)
             })
             .collect::<BTreeSet<_>>();
