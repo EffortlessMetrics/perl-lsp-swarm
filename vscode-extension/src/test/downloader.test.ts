@@ -1480,7 +1480,7 @@ describe('BinaryDownloader download stream lifecycle', () => {
   type DownloaderSeams = {
     downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void>;
     createWriteStream: (dest: string) => TestFile;
-    removePartialFile: (dest: string) => void;
+    removePartialFile: (dest: string) => Promise<void>;
     httpGet: (...args: unknown[]) => TestRequest;
   };
 
