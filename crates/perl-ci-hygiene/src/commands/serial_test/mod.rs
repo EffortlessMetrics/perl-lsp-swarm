@@ -1094,8 +1094,21 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
 
     let active_count =
         registry.values().filter(|record| record.state == RegistryState::Active).count();
-    let serialized =
-        serialized_inventory.iter().map(|site| (site.key(), site)).collect::<BTreeMap<_, _>>();
+    let mut serialized = BTreeMap::<(String, String), SerialSiteIdentity>::new();
+    for site in serialized_inventory {
+        let key = site.key();
+        if let Some(existing) = serialized.get_mut(&key) {
+            let signals = existing
+                .signals
+                .iter()
+                .chain(site.signals.iter())
+                .copied()
+                .collect::<BTreeSet<_>>();
+            existing.signals = signals.into_iter().collect();
+        } else {
+            serialized.insert(key, site);
+        }
+    }
     for (path, function) in serialized.keys() {
         let bare = function.rsplit("::").next().unwrap_or(function).to_owned();
         qualified_by_bare.entry((path.clone(), bare)).or_default().insert(function.clone());
