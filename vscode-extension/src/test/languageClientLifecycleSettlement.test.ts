@@ -6,13 +6,13 @@ import {
 } from '../languageClientLifecycle';
 
 class DeferredVoid {
-  readonly promise: Promise<void>;
+  readonly promise: Promise<undefined>;
   private readonly resolvePromise: () => void;
 
   constructor() {
     let resolvePromise: (() => void) | undefined;
-    this.promise = new Promise<void>((resolve) => {
-      resolvePromise = resolve;
+    this.promise = new Promise<undefined>((resolve) => {
+      resolvePromise = () => resolve(undefined);
     });
     if (!resolvePromise) {
       throw new Error('Deferred resolver was not initialized');
@@ -133,4 +133,19 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     expect(clients[0]!.dispose).toHaveBeenCalledTimes(1);
     expect(controller.snapshot.state).toBe('failed');
   });
+
+  test.each(['stop', 'dispose'] as const)(
+    '%s rejecting without a reason blocks replacement startup',
+    async (operation) => {
+      const { controller, clients } = makeController();
+      await controller.start();
+      clients[0]![operation].mockRejectedValue(undefined);
+
+      await expect(controller.restart()).rejects.toThrow(
+        'Language client cleanup is incomplete; replacement startup is blocked',
+      );
+      expect(clients).toHaveLength(1);
+      expect(controller.snapshot.state).toBe('failed');
+    },
+  );
 });

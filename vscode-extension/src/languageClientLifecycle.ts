@@ -75,6 +75,11 @@ interface CleanupResult {
   readonly clientCleanupComplete: boolean;
 }
 
+interface BoundedOperationResult {
+  readonly completed: boolean;
+  readonly error: unknown;
+}
+
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 
 /**
@@ -376,15 +381,15 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       active.listener = undefined;
     }
 
-    const stopError = await this.runBounded('stop', () => active.client.stop());
-    if (stopError !== undefined) {
-      firstError ??= stopError;
+    const stopResult = await this.runBounded('stop', () => active.client.stop());
+    if (!stopResult.completed) {
+      firstError ??= stopResult.error;
       clientCleanupComplete = false;
     }
 
-    const disposeError = await this.runBounded('dispose', () => active.client.dispose());
-    if (disposeError !== undefined) {
-      firstError ??= disposeError;
+    const disposeResult = await this.runBounded('dispose', () => active.client.dispose());
+    if (!disposeResult.completed) {
+      firstError ??= disposeResult.error;
       clientCleanupComplete = false;
     }
 
@@ -415,7 +420,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   private async runBounded(
     operation: string,
     callback: () => void | Promise<void>,
-  ): Promise<unknown | undefined> {
+  ): Promise<BoundedOperationResult> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const operationPromise = Promise.resolve().then(callback);
@@ -429,9 +434,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         }, this.stopTimeoutMs);
       });
       await Promise.race([operationPromise, timeoutPromise]);
-      return undefined;
+      return { completed: true, error: undefined };
     } catch (error: unknown) {
-      return error;
+      return { completed: false, error };
     } finally {
       if (timer) {
         clearTimeout(timer);
