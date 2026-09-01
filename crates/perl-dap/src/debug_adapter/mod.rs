@@ -174,6 +174,9 @@ pub struct DebugAdapter {
     /// Cancellation flag for in-progress requests.
     cancel_requested: Arc<AtomicBool>,
     /// Data breakpoints (watchpoints) stored with REPLACE semantics
+    /// Legacy retained slot: the #9091 fail-closed request path neither reads
+    /// nor writes it; lifecycle cleanup retires it at its own boundary.
+    #[allow(dead_code)]
     data_breakpoints: Arc<Mutex<Vec<DataBreakpointRecord>>>,
     /// Last exception message captured by the output reader (for exceptionInfo)
     last_exception_message: Arc<Mutex<Option<String>>>,
@@ -641,8 +644,9 @@ impl DebugAdapter {
 
     /// Seed `attached_pid` with the given PID for testing.
     ///
-    /// Use a PID that is guaranteed not to exist (e.g. `999_999`) to drive the
-    /// "session present, signal delivery failed" path in `handle_pause`.
+    /// Use PID 0 to drive the "session present, signal delivery failed" path in
+    /// `handle_pause`; `send_interrupt_signal` rejects that reserved sentinel
+    /// before reaching the operating system.
     ///
     /// Only for use in tests; not part of the public API contract.
     #[cfg(any(test, feature = "test-helpers"))]
