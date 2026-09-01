@@ -538,14 +538,6 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             bail!("subject workflow weakens trusted contract: missing {required}");
         }
     }
-    if text.lines().any(|line| {
-        line.contains("cargo run")
-            && (line.contains("pull_request.head")
-                || line.contains("pull_request.head.sha")
-                || line.contains("github.event.pull_request.head"))
-    }) {
-        bail!("subject workflow must not execute candidate source");
-    }
     if text.contains("actions/checkout@") && !text.contains("ref: ${{ env.EVALUATOR_SHA }}") {
         bail!("subject workflow must checkout the trusted evaluator SHA");
     }
@@ -573,6 +565,43 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         .get(key("steps"))
         .and_then(serde_yaml_ng::Value::as_sequence)
         .ok_or_else(|| eyre!("exact-tree job must define steps sequence"))?;
+    // Inspect executable Cargo commands structurally. The trusted contract
+    // step contains this validator's own examples and forbidden-pattern
+    // source text; scanning serialized YAML would mistake that source for a
+    // candidate-controlled invocation.
+    let forbidden =
+        ["pull_request.head", "pull_request.head.sha", "github.event.pull_request.head"];
+    for step in steps {
+        let map =
+            step.as_mapping().ok_or_else(|| eyre!("trusted workflow step must be a mapping"))?;
+        let name = map.get(key("name")).and_then(serde_yaml_ng::Value::as_str);
+        if name == Some("Verify trusted workflow contract") {
+            continue;
+        }
+        let Some(run) = map.get(key("run")).and_then(serde_yaml_ng::Value::as_str) else {
+            continue;
+        };
+        let lines = run.lines().collect::<Vec<_>>();
+        for (index, line) in lines.iter().enumerate() {
+            let normalized = line.trim();
+            if !normalized.starts_with("cargo run ") {
+                continue;
+            }
+            let mut command = normalized.to_string();
+            for continuation in lines.iter().skip(index + 1) {
+                let stripped = continuation.trim();
+                if stripped.starts_with("--") || command.ends_with('\\') {
+                    command.push('\n');
+                    command.push_str(stripped);
+                } else {
+                    break;
+                }
+            }
+            if forbidden.iter().any(|token| command.contains(token)) {
+                bail!("subject workflow must not execute candidate source");
+            }
+        }
+    }
     let step_run_contains = |needle: &str| {
         steps.iter().any(|step| {
             step.as_mapping()
@@ -4084,6 +4113,60 @@ review_after = "2026-08-13"
                 "unexpected error: {error}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_scans_executable_cargo_runs_not_validator_source() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let workflow = workflow.replacen(
+            "          run_bodies = []\n",
+            "          # cargo run github.event.pull_request.head.sha\n          run_bodies = []\n",
+            1,
+        );
+        let version_marker = "# contract-version: ";
+        let version = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(version_marker))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("fixture workflow must carry a contract-version");
+        let workflow = workflow.replacen(
+            &format!("{version_marker}{version}"),
+            &format!("{version_marker}{}", version + 1),
+            1,
+        );
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "validator source comment")?;
+        validate_subject_workflow(temp.path(), &base, &subject)?;
+
+        let (temp, base) = exact_fixture()?;
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let version_marker = "# contract-version: ";
+        let version = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(version_marker))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("fixture workflow must carry a contract-version");
+        let workflow = workflow.replacen(
+            &format!("{version_marker}{version}"),
+            &format!("{version_marker}{}", version + 1),
+            1,
+        );
+        let workflow = workflow.replacen(
+            "run: cargo run --locked -p xtask -- non-rust exact-tree",
+            "run: cargo run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}",
+            1,
+        );
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "candidate interpolation")?;
+        let error = validate_subject_workflow(temp.path(), &base, &subject)
+            .expect_err("candidate-derived evaluator interpolation must fail closed");
+        assert!(
+            error.to_string().contains("must not execute candidate source"),
+            "unexpected error: {error}"
+        );
         Ok(())
     }
 
