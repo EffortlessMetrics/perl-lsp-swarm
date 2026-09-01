@@ -261,7 +261,7 @@ pub fn detect_carmel(workspace_root: &Path) -> CarmelDetection {
                                     input_id: None,
                                 });
                                 artifact_roots.push(CarmelArtifactRoot {
-                                    path: entry.clone(),
+                                    path: lexical_normalize_artifact_path(entry, workspace_root),
                                     role: artifact_role(entry),
                                     source_order: source_order as u32,
                                     exists,
@@ -379,6 +379,19 @@ fn classify_artifact_entry(entry: &str, workspace_root: &Path) -> ArtifactEntryO
     } else {
         ArtifactEntryOrigin::OutsideWorkspace
     }
+}
+
+/// Publish one stable, workspace-relative embedded path after lexical
+/// normalization. Consumers must not reinterpret relative entries against the
+/// process CWD.
+fn lexical_normalize_artifact_path(entry: &str, workspace_root: &Path) -> String {
+    let candidate = Path::new(entry);
+    let resolved = if candidate.is_absolute() {
+        lexical_normalize(candidate)
+    } else {
+        lexical_normalize(&workspace_root.join(candidate))
+    };
+    resolved.to_string_lossy().into_owned()
 }
 
 /// Normalize `.` and `..` components lexically. No symlink, drive, or
@@ -1061,6 +1074,13 @@ our %environment = (
         fixture.dir("present/blib/lib");
 
         let detection = detect_carmel(&fixture.root);
+        let paths: Vec<String> = detection
+            .artifact_roots
+            .iter()
+            .map(|root| root.path.clone())
+            .collect();
+        assert_eq!(Path::new(&paths[0]), fixture.root.join("present/blib/lib"));
+        assert_eq!(Path::new(&paths[1]), fixture.root.join("absent/blib/lib"));
         let exists: Vec<Option<bool>> =
             detection.artifact_roots.iter().map(|root| root.exists).collect();
         assert_eq!(
