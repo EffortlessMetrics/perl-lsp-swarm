@@ -72,6 +72,10 @@ pub fn logging_filter(
 /// (max 5 files) **in addition to** stderr. Invalid `RUST_LOG` values fall
 /// back to `default_filter`.
 pub fn init_logging(default_filter: &str) {
+    init_logging_with_log_path(default_filter, std::env::var("PERL_LSP_LOG_FILE").ok());
+}
+
+fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
     LOGGING_INIT.call_once(|| {
         let filter = EnvFilter::try_from_default_env()
             .or_else(|_| EnvFilter::try_new(default_filter))
@@ -80,7 +84,7 @@ pub fn init_logging(default_filter: &str) {
         let use_ansi = should_use_ansi_stderr();
 
         // If PERL_LSP_LOG_FILE is set, add a rolling file appender alongside stderr.
-        if let Ok(log_path) = std::env::var("PERL_LSP_LOG_FILE") {
+        if let Some(log_path) = log_path {
             let path = std::path::Path::new(&log_path);
             let log_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
             let log_file_prefix = path.file_name().and_then(|f| f.to_str()).unwrap_or("perl-lsp");
@@ -1333,7 +1337,16 @@ pub fn format_startup_banner(version: &str, profile: FeatureProfile, is_socket: 
     reason = "Startup banner fires before the tracing subscriber is configured — intentional stderr output"
 )]
 pub fn startup_banner(version: &str, profile: FeatureProfile, transport: TransportMode) {
-    if std::env::var("PERL_LSP_QUIET").is_ok() {
+    startup_banner_with_quiet(version, profile, transport, std::env::var("PERL_LSP_QUIET").is_ok());
+}
+
+fn startup_banner_with_quiet(
+    version: &str,
+    profile: FeatureProfile,
+    transport: TransportMode,
+    quiet: bool,
+) {
+    if quiet {
         return;
     }
     eprintln!("{}", format_startup_banner(version, profile, transport.is_socket()));
@@ -1399,22 +1412,12 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    #[allow(unsafe_code)]
     fn init_logging_does_not_panic_with_log_file() {
-        let _snapshot = crate::test_support::EnvSnapshot::capture(&["PERL_LSP_LOG_FILE"]);
         let dir = std::env::temp_dir().join("perl-lsp-test-log-rotation");
         let _ = std::fs::create_dir_all(&dir);
         let log_path = dir.join("test.log");
 
-        // Set the env var for this test — init_logging is Once-guarded so the
-        // file path may not actually be used if another test already initialized,
-        // but this must not panic regardless.
-        // SAFETY: test-only, single-threaded access to this env var.
-        unsafe {
-            std::env::set_var("PERL_LSP_LOG_FILE", log_path.to_str().unwrap_or_default());
-        }
-        super::init_logging("debug");
+        super::init_logging_with_log_path("debug", Some(log_path.to_string_lossy().into_owned()));
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1931,22 +1934,14 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    #[allow(unsafe_code)]
     fn startup_banner_suppressed_by_quiet_env() {
-        let _snapshot = crate::test_support::EnvSnapshot::capture(&["PERL_LSP_QUIET"]);
-
-        // SAFETY: test-only env var manipulation; previous value is restored after test.
-        unsafe {
-            std::env::set_var("PERL_LSP_QUIET", "1");
-        }
-
         // startup_banner must not panic when PERL_LSP_QUIET is set.
         // The transport argument must propagate through without crashing.
-        super::startup_banner(
+        super::startup_banner_with_quiet(
             "0.12.0",
             super::FeatureProfile::current(),
             super::TransportMode::Stdio,
+            true,
         );
     }
 

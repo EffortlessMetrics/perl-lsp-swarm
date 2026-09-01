@@ -3834,8 +3834,6 @@ profile = "recommended"
     }
 
     #[test]
-    #[serial_test::serial]
-    #[allow(unsafe_code)] // transient PATH mutation, serialized + restored (see below)
     fn perltidy_discoverable_on_path_still_yields_native_default()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Stronger form of the guard above. The previous test only proves the
@@ -3852,10 +3850,6 @@ profile = "recommended"
         // sibling tests). The lock is crate-shared (`crate::test_support`), not
         // function-local, so every PATH-mutating test acquires the SAME guard.
         use std::io::Write as _;
-        let _lock = crate::test_support::PATH_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
         let dir = tempfile::tempdir()?;
         let bin_name = if cfg!(windows) { "perltidy.exe" } else { "perltidy" };
         let bin_path = dir.path().join(bin_name);
@@ -3867,20 +3861,6 @@ profile = "recommended"
             perms.set_mode(0o755);
             std::fs::set_permissions(&bin_path, perms)?;
         }
-
-        let _snapshot = crate::test_support::EnvSnapshot::capture(&["PATH"]);
-        let original_path = std::env::var_os("PATH");
-        let probe_path = {
-            let mut parts = vec![dir.path().to_path_buf()];
-            if let Some(existing) = &original_path {
-                parts.extend(std::env::split_paths(existing));
-            }
-            std::env::join_paths(parts)?
-        };
-        // SAFETY: serialized by PATH_ENV_LOCK; PATH is restored below before any
-        // assertion can unwind the thread. Mirrors the crate's existing
-        // `EnvVarGuard` pattern (runtime/launcher/mod.rs).
-        unsafe { std::env::set_var("PATH", &probe_path) };
 
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({

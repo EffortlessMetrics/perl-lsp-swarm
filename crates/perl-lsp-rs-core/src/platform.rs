@@ -128,15 +128,17 @@ pub fn resolve_perl_path() -> Result<PathBuf> {
 }
 
 /// Candidate Perl locations used by Termux environments when PATH is minimal.
-fn termux_perl_candidates() -> Vec<PathBuf> {
+fn termux_perl_candidates_from_prefix(prefix: Option<&str>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Ok(prefix) = env::var("PREFIX")
-        && !prefix.is_empty()
-    {
+    if let Some(prefix) = prefix.filter(|prefix| !prefix.is_empty()) {
         candidates.push(PathBuf::from(prefix).join("bin").join(PERL_EXECUTABLE));
     }
     candidates.push(PathBuf::from("/data/data/com.termux/files/usr/bin").join(PERL_EXECUTABLE));
     candidates
+}
+
+fn termux_perl_candidates() -> Vec<PathBuf> {
+    termux_perl_candidates_from_prefix(env::var("PREFIX").ok().as_deref())
 }
 
 /// End-user remediation guidance shown when no Perl interpreter is available.
@@ -169,18 +171,18 @@ fn plenv_root() -> PathBuf {
 ///
 /// Checks `HOME` (Unix) then `USERPROFILE` (Windows) before falling back to
 /// [`std::env::temp_dir`].
-fn home_dir() -> PathBuf {
-    if let Ok(home) = env::var("HOME")
-        && !home.is_empty()
-    {
+fn home_dir_from_env(home: Option<&str>, profile: Option<&str>) -> PathBuf {
+    if let Some(home) = home.filter(|home| !home.is_empty()) {
         return PathBuf::from(home);
     }
-    if let Ok(profile) = env::var("USERPROFILE")
-        && !profile.is_empty()
-    {
+    if let Some(profile) = profile.filter(|profile| !profile.is_empty()) {
         return PathBuf::from(profile);
     }
     std::env::temp_dir()
+}
+
+fn home_dir() -> PathBuf {
+    home_dir_from_env(env::var("HOME").ok().as_deref(), env::var("USERPROFILE").ok().as_deref())
 }
 
 #[cfg(test)]
@@ -189,17 +191,8 @@ mod tests {
     use super::*;
 
     #[test]
-    #[serial_test::serial]
     fn home_dir_fallback_uses_temp_dir() {
-        let _snapshot = crate::test_support::EnvSnapshot::capture(&["HOME", "USERPROFILE"]);
-
-        // SAFETY: single-threaded test; no other threads reading these vars.
-        unsafe {
-            std::env::remove_var("HOME");
-            std::env::remove_var("USERPROFILE");
-        }
-
-        let result = home_dir();
+        let result = home_dir_from_env(None, None);
         let expected = std::env::temp_dir();
 
         assert_eq!(
@@ -210,16 +203,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn termux_candidates_include_prefix_bin_perl() {
-        let _snapshot = crate::test_support::EnvSnapshot::capture(&["PREFIX"]);
-
-        // SAFETY: test controls process env for the duration of this test.
-        unsafe {
-            std::env::set_var("PREFIX", "/data/data/com.termux/files/usr");
-        }
-
-        let candidates = termux_perl_candidates();
+        let candidates =
+            termux_perl_candidates_from_prefix(Some("/data/data/com.termux/files/usr"));
 
         assert!(
             candidates.iter().any(|p| p
