@@ -188,8 +188,7 @@ impl PerlOracleEnv {
     ///
     /// [`into_command`]: PerlOracleEnv::into_command
     pub fn configure_command(&self, cmd: &mut Command) {
-        let ambient_env = Self::capture_ambient_env();
-        self.configure_command_with_env(cmd, &ambient_env);
+        self.configure_command_with_env(cmd, &self.ambient_env);
     }
 
     /// Apply the environment contract using an explicit parent environment.

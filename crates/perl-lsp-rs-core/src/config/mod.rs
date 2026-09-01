@@ -3834,6 +3834,36 @@ profile = "recommended"
     }
 
     #[test]
+    fn perltidy_discoverable_on_path_still_yields_native_default() -> TestResult {
+        // Exercise discoverability in a child command with an explicit PATH;
+        // the test runner's environment is never changed.
+        let dir = tempfile::tempdir()?;
+        let name = if cfg!(windows) { "perltidy.cmd" } else { "perltidy" };
+        let path = dir.path().join(name);
+        let script: &[u8] =
+            if cfg!(windows) { b"@echo off\r\nexit /b 0\r\n" } else { b"#!/bin/sh\nexit 0\n" };
+        std::fs::write(&path, script)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&path)?.permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions)?;
+        }
+        let path_env = std::env::join_paths([dir.path()])?;
+        #[cfg(windows)]
+        let status =
+            std::process::Command::new("cmd").args(["/C", name]).env("PATH", &path_env).status()?;
+        #[cfg(not(windows))]
+        let status = std::process::Command::new(name).env("PATH", &path_env).status()?;
+        assert!(status.success(), "explicit child PATH must find perltidy fixture");
+
+        let config = ServerConfig::default();
+        assert_eq!(config.formatting_engine, FormatterMode::Native);
+        Ok(())
+    }
+
+    #[test]
     fn perltidyrc_profile_does_not_force_external_formatting() {
         // A `.perltidyrc` profile is usable for compatibility reporting or an
         // explicit external mode, but setting it via the LSP settings channel
