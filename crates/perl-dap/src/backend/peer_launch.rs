@@ -618,7 +618,6 @@ impl MirrorPeerBridge {
             self.secondary_floor_response(request_seq, command, arguments.as_ref())
         {
             out.push(response);
-            out.extend(self.poll_events());
             return out;
         }
         match DapRequestRoute::from_command(command)

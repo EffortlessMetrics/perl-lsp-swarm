@@ -401,6 +401,7 @@ fn mirror_bridge_rejects_floored_requests_before_peer_or_oracle_work() -> TestRe
     ];
     for (command, arguments) in floored {
         let out = bridge.dispatch(2, command, arguments);
+        assert_eq!(out.len(), 1, "mirror `{command}` floor must not poll peer events");
         let first = out.first().ok_or_else(|| format!("{command}: no response"))?;
         match first {
             DapMessage::Response { success, message, body, .. } => {

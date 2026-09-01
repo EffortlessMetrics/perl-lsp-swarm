@@ -172,7 +172,6 @@ impl DapPeerBridge {
             self.secondary_floor_response(request_seq, command, arguments.as_ref())
         {
             out.push(response);
-            out.extend(self.poll_events());
             return out;
         }
         match DapRequestRoute::from_command(command)
@@ -1037,6 +1036,24 @@ mod tests {
 
     fn bridge() -> DapPeerBridge {
         DapPeerBridge::new(Box::new(ScriptBackend::default()))
+    }
+
+    #[test]
+    fn floored_request_does_not_drain_queued_backend_events() -> Result<(), String> {
+        let mut backend = ScriptBackend::default();
+        backend.events.push(DebugEvent::Terminated { exit_code: Some(7) });
+        let mut bridge = DapPeerBridge::new(Box::new(backend));
+
+        let out = bridge.dispatch(1, "completions", Some(json!({ "text": "pr" })));
+        assert_eq!(out.len(), 1, "a floored request must return only its response");
+        assert!(matches!(out.first(), Some(DapMessage::Response { success: false, .. })));
+
+        let events = bridge.poll_events();
+        assert_eq!(events.len(), 1, "the queued event must remain available");
+        assert!(
+            matches!(events.first(), Some(DapMessage::Event { event, .. }) if event == "terminated")
+        );
+        Ok(())
     }
 
     fn as_response(msg: &DapMessage) -> Result<(&str, bool, Option<&Value>), String> {
