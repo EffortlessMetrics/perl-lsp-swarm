@@ -1084,7 +1084,7 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
 /// row counts, so stale summary totals cannot survive a regeneration.
 pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
     let mut seen_paths = std::collections::BTreeSet::new();
-    let mut summary_counts: std::collections::BTreeMap<&str, usize> =
+    let mut summary_counts: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     let mut section_rows: std::collections::BTreeMap<&str, usize> =
         std::collections::BTreeMap::new();
@@ -1099,17 +1099,18 @@ pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
         let Some(cells) = parse_markdown_cells(line) else { continue };
         if cells.len() == 2 && section == "Summary" {
             if let Ok(count) = cells[1].parse::<usize>() {
-                summary_counts.insert(cells[0].as_str(), count);
+                summary_counts.insert(cells[0].clone(), count);
             }
             continue;
         }
         let Some(path) = cells
             .first()
             .and_then(|cell| cell.strip_prefix('`').and_then(|path| path.strip_suffix('`')))
+            .map(str::to_string)
         else {
             continue;
         };
-        if !seen_paths.insert(path) {
+        if !seen_paths.insert(path.clone()) {
             bail!(
                 "non-Rust inventory projection emits duplicate file rows for `{path}`; \
                  regenerate from a single pass with `cargo xtask non-rust inventory --write`"
