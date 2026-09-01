@@ -319,7 +319,11 @@ impl CancelRegistry {
     /// Record the terminal outcome of one operation under the lock.
     ///
     /// An operation whose record was replaced (superseded) has no mapping
-    /// left to mark; its replacement stays untouched.
+    /// left to mark; its replacement stays untouched. A successful
+    /// transition also runs the retained-entry prune (#9074 review): the
+    /// bounded terminal window must hold even when many live operations
+    /// finish without any later `register` call, and pruning here can never
+    /// evict live entries.
     fn settle(&self, request_seq: i64, operation: OperationId, outcome: OperationOutcome) {
         let mut entries = lock_or_recover(&self.entries, "cancel_registry.entries");
         if let Some(record) = entries.get_mut(&request_seq)
@@ -327,6 +331,7 @@ impl CancelRegistry {
         {
             record.state = RecordState::Terminal(outcome);
         }
+        Self::prune_terminal(&mut entries);
     }
 
     /// Keep the retained-entry bound: evict the oldest terminal entries
@@ -483,5 +488,44 @@ mod tests {
             CancelDisposition::AlreadyTerminal { operation },
             "a late cancel must observe the recorded terminal outcome"
         );
+    }
+
+    /// #9074 review: settling runs the retained-entry prune, so the bounded
+    /// terminal window holds even when more than the cap goes live and then
+    /// finishes without any later `register` call — and live entries are
+    /// never evicted by that prune.
+    #[test]
+    fn settling_an_oversized_live_set_prunes_terminal_records() {
+        let registry = Arc::new(CancelRegistry::new());
+        let live: Vec<_> = (0..(MAX_RETAINED_ENTRIES as i64 + 16))
+            .map(|seq| registry.register(seq, "evaluate"))
+            .collect();
+
+        {
+            let entries = lock_or_recover(&registry.entries, "cancel_registry.entries");
+            assert_eq!(
+                entries.len(),
+                MAX_RETAINED_ENTRIES + 16,
+                "live entries are never evicted, even past the cap"
+            );
+        }
+
+        for op in &live {
+            op.settle(OperationOutcome::Completed);
+        }
+
+        {
+            let entries = lock_or_recover(&registry.entries, "cancel_registry.entries");
+            assert!(
+                entries.len() <= MAX_RETAINED_ENTRIES,
+                "settled terminal records must be pruned without requiring another \
+                 registration: retained {}",
+                entries.len()
+            );
+            assert!(
+                entries.values().all(|record| matches!(record.state, RecordState::Terminal(_))),
+                "pruning must only ever evict terminal entries"
+            );
+        }
     }
 }
