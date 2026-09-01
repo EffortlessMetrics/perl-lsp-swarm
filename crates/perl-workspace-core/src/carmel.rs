@@ -12,17 +12,11 @@
 //! from the already-serialized `inc` list embedded in `MySetup.pm`, in
 //! producer order.
 //!
-//! Untrusted embedded strings never drive host probes outside the declared
-//! rules. The embedded `inc`/`base` values are untrusted input: they are
-//! resolved against the workspace root (never the process CWD) and compared
-//! lexically. Existence probing is gated to the module's workspace-bounded
-//! authority: only entries that lexically resolve inside the workspace root
-//! are probed, with exactly the same surface as the marker checks. Entries
-//! resolving outside it — arbitrary absolute host paths, UNC device paths,
-//! root-escaping relative entries — are classified without any host access
-//! and reported as explicit
-//! [`CARMEL_ARTIFACT_UNVERIFIED_LIMITATION`] entries whose existence stays
-//! unknown.
+//! Untrusted embedded strings never drive host probes. The embedded
+//! `inc`/`base` values are resolved against the workspace root (never the
+//! process CWD) and compared lexically. Every artifact entry is reported with
+//! unknown existence until a trusted consumer chooses a separate bounded
+//! probe, including entries lexically contained in the workspace.
 //!
 //! Authority mapping (contract §3, aligned to [`crate::environment`]
 //! enums):
@@ -140,11 +134,9 @@ pub struct CarmelArtifactRoot {
     pub role: IncludeEntryRole,
     /// Producer-local stable order; never recomputed (contract §3).
     pub source_order: u32,
-    /// Existence under the module's workspace-bounded probe authority.
-    /// `Some(bool)` when the entry lexically resolves inside the workspace
-    /// root and was probed; `None` when the entry resolves outside it and
-    /// was never probed (see [`CARMEL_ARTIFACT_UNVERIFIED_LIMITATION`]) —
-    /// untrusted embedded bytes must not act as a host existence oracle.
+    /// Existence is intentionally unknown. The entry is untrusted embedded
+    /// state and this facts layer has no trust authority for filesystem
+    /// probes; a trusted consumer may perform its own bounded probe.
     pub exists: Option<bool>,
 }
 
@@ -198,9 +190,8 @@ pub struct CarmelDetection {
     /// Parsed dev-state facts. `None` when the marker is absent or could not
     /// be parsed (see `limitations`).
     pub dev_state: Option<MySetupFacts>,
-    /// Dev-mode artifact candidates in producer order, with workspace-bounded
-    /// existence (`None` when the entry resolves outside the probe
-    /// authority). Empty unless dev state parsed.
+    /// Dev-mode artifact candidates in producer order. Existence remains
+    /// unknown because embedded paths are not trusted for filesystem probes.
     pub artifact_roots: Vec<CarmelArtifactRoot>,
     /// Explicit limitations: unparsable dev state, missing workspace-bounded
     /// artifacts, unprobed outside-workspace artifact entries, relocated
@@ -214,11 +205,8 @@ pub struct CarmelDetection {
 /// of `.carmel/MySetup.pm`. Deterministic for a fixed filesystem view: the
 /// artifact candidate list is the embedded serialized list in producer
 /// order, never recomputed, and the post-rollout root is one fixed relative
-/// literal. Embedded `inc`/`base` strings are untrusted input: relative
-/// entries resolve against `workspace_root` (never the process CWD) and are
-/// compared lexically, and only entries that lexically resolve inside
-/// `workspace_root` are existence-probed — outside entries are classified
-/// without any host access (see [`CARMEL_ARTIFACT_UNVERIFIED_LIMITATION`]).
+/// literal. Embedded `inc`/`base` strings are untrusted input and are only
+/// classified lexically; no embedded path is existence-probed.
 #[must_use]
 pub fn detect_carmel(workspace_root: &Path) -> CarmelDetection {
     let cpanfile_present = workspace_root.join(CPANFILE_MARKER).is_file();
@@ -253,36 +241,22 @@ pub fn detect_carmel(workspace_root: &Path) -> CarmelDetection {
                     match &facts.inc {
                         Some(inc) => {
                             for (source_order, entry) in inc.iter().enumerate() {
-                                let exists = match classify_artifact_entry(entry, workspace_root) {
-                                    ArtifactEntryOrigin::WorkspaceBounded { resolved } => {
-                                        let exists = resolved.is_dir();
-                                        if !exists {
-                                            limitations.push(EnvironmentLimitation {
-                                                code: CARMEL_ARTIFACT_MISSING_LIMITATION
-                                                    .to_string(),
-                                                detail: format!(
-                                                    "embedded dev artifact path resolves \
-                                                     inside the workspace but does not \
-                                                     exist: {entry}"
-                                                ),
-                                                input_id: None,
-                                            });
-                                        }
-                                        Some(exists)
-                                    }
-                                    ArtifactEntryOrigin::OutsideWorkspace => {
-                                        limitations.push(EnvironmentLimitation {
-                                            code: CARMEL_ARTIFACT_UNVERIFIED_LIMITATION.to_string(),
-                                            detail: format!(
-                                                "embedded dev artifact path resolves \
-                                                 outside the workspace root; existence is \
-                                                 not probed and stays unknown: {entry}"
-                                            ),
-                                            input_id: None,
-                                        });
-                                        None
-                                    }
+                                let exists = None;
+                                let detail = match classify_artifact_entry(entry, workspace_root) {
+                                    ArtifactEntryOrigin::WorkspaceBounded => format!(
+                                        "embedded dev artifact path is workspace-contained, but \
+                                         this facts layer does not probe untrusted paths: {entry}"
+                                    ),
+                                    ArtifactEntryOrigin::OutsideWorkspace => format!(
+                                        "embedded dev artifact path resolves outside the workspace; \
+                                         existence is not probed and stays unknown: {entry}"
+                                    ),
                                 };
+                                limitations.push(EnvironmentLimitation {
+                                    code: CARMEL_ARTIFACT_UNVERIFIED_LIMITATION.to_string(),
+                                    detail,
+                                    input_id: None,
+                                });
                                 artifact_roots.push(CarmelArtifactRoot {
                                     path: entry.clone(),
                                     role: artifact_role(entry),
@@ -373,12 +347,8 @@ fn is_relocated_base(workspace_root: &Path, base: &str) -> bool {
 /// Classification of one embedded dev-mode artifact entry, decided
 /// lexically from the untrusted string alone — no host access.
 enum ArtifactEntryOrigin {
-    /// Lexically resolves inside the workspace root; eligible for the same
-    /// bounded existence probe as the marker checks.
-    WorkspaceBounded {
-        /// Normalized, workspace-resolved candidate path.
-        resolved: PathBuf,
-    },
+    /// Lexically resolves inside the workspace root; it remains unprobed.
+    WorkspaceBounded,
     /// Resolves outside the workspace root: an arbitrary absolute host
     /// path, a UNC device path, or a root-escaping relative entry. Never
     /// probed.
@@ -401,7 +371,8 @@ fn classify_artifact_entry(entry: &str, workspace_root: &Path) -> ArtifactEntryO
         lexical_normalize(&workspace_root.join(candidate))
     };
     if resolved.starts_with(lexical_normalize(workspace_root).as_path()) {
-        ArtifactEntryOrigin::WorkspaceBounded { resolved }
+        let _ = resolved;
+        ArtifactEntryOrigin::WorkspaceBounded
     } else {
         ArtifactEntryOrigin::OutsideWorkspace
     }
@@ -964,9 +935,8 @@ our %environment = (
     fn relative_inc_entries_resolve_against_workspace_root_not_cwd() {
         // `present/blib/lib` exists inside the fixture root only. If the
         // detector resolved entries against the process CWD (the package
-        // directory under test), the first entry would not exist there and
-        // the probe would report absence; workspace-root resolution is the
-        // only way to observe `Some(true)`.
+        // directory under test), but this facts layer deliberately performs
+        // no embedded-path existence probes.
         let fixture = Fixture::new("relative-inc");
         fixture.write("cpanfile", "requires 'JSON::PP';\n");
         let base = fixture.root.to_str().expect("utf-8 fixture root").to_string();
@@ -981,22 +951,24 @@ our %environment = (
             detection.artifact_roots.iter().map(|root| root.exists).collect();
         assert_eq!(
             exists,
-            vec![Some(true), Some(false)],
-            "relative entries must resolve against the workspace root, never the process CWD"
+            vec![None, None],
+            "embedded entries remain unprobed until trusted consumption"
         );
         assert!(
             detection
                 .limitations
                 .iter()
-                .any(|item| item.code == CARMEL_ARTIFACT_MISSING_LIMITATION),
-            "probed-absent workspace-bounded entries report missing-artifact limitations"
+                .filter(|item| item.code == CARMEL_ARTIFACT_UNVERIFIED_LIMITATION)
+                .count()
+                == 2,
+            "all embedded entries report unknown existence"
         );
         assert!(
             !detection
                 .limitations
                 .iter()
-                .any(|item| item.code == CARMEL_ARTIFACT_UNVERIFIED_LIMITATION),
-            "workspace-contained entries sit inside the bounded probe authority"
+                .any(|item| item.code == CARMEL_ARTIFACT_MISSING_LIMITATION),
+            "no untrusted entry is classified by a filesystem probe"
         );
     }
 
@@ -1077,8 +1049,14 @@ our %environment = (
         );
         assert_eq!(
             detection.artifact_roots.iter().map(|root| root.exists).collect::<Vec<_>>(),
-            vec![Some(true)],
-            "workspace-bounded entries are probed"
+            vec![None],
+            "embedded entries remain unprobed until trusted consumption"
+        );
+        assert!(
+            detection
+                .limitations
+                .iter()
+                .any(|item| item.code == CARMEL_ARTIFACT_UNVERIFIED_LIMITATION)
         );
     }
 
