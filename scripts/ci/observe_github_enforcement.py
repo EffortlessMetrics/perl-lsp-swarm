@@ -997,6 +997,19 @@ def ruleset_status_checks(
             raise ObserverError(f"ruleset {ruleset_id} rule must be an object")
         if rule.get("type") != "required_status_checks":
             continue
+        # A required_status_checks rule that carries no parameters is a rule
+        # this observer could not read, not a rule that requires nothing.
+        # Letting absent or null stand in for an empty mapping (object_field's
+        # contract for containers) would observe a check-requiring ruleset as
+        # requiring none — understating live enforcement in both reconciler
+        # directions: a false MATCH against checked-in policy, or a false
+        # DRIFT on contexts the observer could not read. Fail closed instead:
+        # ruleset_surface records ruleset_detail_unreadable:<id> and the
+        # snapshot permission can no longer be complete.
+        if rule.get("parameters") is None:
+            raise ObserverError(
+                f"ruleset {ruleset_id} required_status_checks rule has no parameters"
+            )
         parameters = object_field(rule, "parameters", f"ruleset {ruleset_id} rule")
         strict = optional_bool(
             parameters.get("strict_required_status_checks_policy"), strict
@@ -1262,12 +1275,31 @@ def emit(args: argparse.Namespace, capture: Capture) -> int:
     # nothing recording the substitution. Distinctness is checked on the
     # resolved paths so two spellings of one file cannot slip through.
     seen: dict[Path, str] = {}
+    # Input evidence is fully read before anything is staged, so an output
+    # resolving onto an input path would overwrite that input only after it
+    # had been consumed: the run would exit successfully with the static
+    # receipt — or, for assemble, the capture bundle — replaced by a derived
+    # artifact, and the next reconciler run would load malformed evidence.
+    # The inputs join the same resolved-path set so the overlap is rejected
+    # before any staging begins.
+    inputs: list[tuple[Path, str]] = [(args.static_receipt, "static receipt")]
+    capture_input = getattr(args, "capture", None)
+    if capture_input is not None:
+        inputs.append((capture_input, "capture bundle input"))
+    for input_path, label in inputs:
+        resolved = Path(os.path.realpath(input_path))
+        if resolved in seen:
+            raise ObserverError(
+                f"input paths must be distinct: {input_path} collides with "
+                f"the {seen[resolved]} at the same destination"
+            )
+        seen[resolved] = label
     for path, _ in outputs:
         resolved = Path(os.path.realpath(path))
         if resolved in seen:
             raise ObserverError(
                 f"output paths must be distinct: {path} would overwrite the "
-                f"{seen[resolved]} written to the same destination"
+                f"{seen[resolved]} at the same destination"
             )
         seen[resolved] = "snapshot" if path == args.snapshot else "output"
 

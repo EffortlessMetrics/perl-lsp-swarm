@@ -445,6 +445,108 @@ class RulesetObservation(unittest.TestCase):
         )
         self.assertNotEqual(snapshot["observation"]["permission"], "complete")
 
+    def test_required_status_checks_rule_without_parameters_fails_closed(self) -> None:
+        """A rule this observer cannot read must not read as a no-op rule.
+
+        `object_field` reads absent and null as an empty mapping, so a
+        `required_status_checks` rule with no `parameters` would contribute
+        zero contexts while the surface stayed observed and the permission
+        could still reach `complete` — a ruleset that requires a check would
+        be observed as one that requires none, understating live enforcement
+        in both reconciler directions (false MATCH against checked-in policy,
+        or false DRIFT on contexts the observer could not read).
+        """
+        for label, mutate in (
+            ("absent", lambda rule: rule.pop("parameters")),
+            ("explicit null", lambda rule: rule.__setitem__("parameters", None)),
+        ):
+            with self.subTest(mutation=label):
+                detail = json.loads(ruleset_detail_response())
+                mutate(detail["rules"][0])
+                snapshot = observe(transport(detail=(200, body(detail))))
+                self.assertEqual(snapshot["rulesets"]["items"], [])
+                self.assertIn(
+                    f"{observer.RULESET_DETAIL_UNREADABLE}:{RULESET_ID}",
+                    snapshot["observation"]["limitations"],
+                )
+                self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+
+    def test_output_cannot_overwrite_input_evidence(self) -> None:
+        """An output resolving onto an input must be rejected, not staged.
+
+        The static receipt and, for `assemble`, the capture bundle are fully
+        read before any output is staged. An output pointed at the same
+        destination would overwrite that input only after it was consumed —
+        the run would exit successfully with the receipt replaced by a
+        derived artifact, and the next reconciler run would load malformed
+        evidence and emit a typed NOT_PROVEN.
+        """
+        capture = observer.capture_live(REPOSITORY, "main", transport())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle = root / "capture.json"
+            receipt = root / "static.json"
+            bundle_bytes = json.dumps(capture.to_bundle()).encode("utf-8")
+            receipt_bytes = json.dumps(static_receipt()).encode("utf-8")
+            bundle.write_bytes(bundle_bytes)
+            receipt.write_bytes(receipt_bytes)
+
+            overlaps = (
+                # snapshot onto the static receipt
+                ["--snapshot", str(receipt)],
+                # authority onto the static receipt
+                ["--snapshot", str(root / "snapshot.json"),
+                 "--authority", str(receipt),
+                 "--authority-repository-id", str(REPOSITORY_ID)],
+                # capture-bundle output onto the static receipt
+                ["--snapshot", str(root / "snapshot.json"),
+                 "--capture-bundle", str(receipt)],
+            )
+            for tail in overlaps:
+                code = observer.main(
+                    [
+                        "assemble",
+                        "--capture",
+                        str(bundle),
+                        "--repository",
+                        REPOSITORY,
+                        "--source",
+                        "connector",
+                        "--static-receipt",
+                        str(receipt),
+                        *tail,
+                    ]
+                )
+                self.assertEqual(code, 1, f"{tail} was accepted")
+                self.assertEqual(
+                    receipt.read_bytes(),
+                    receipt_bytes,
+                    f"{tail} overwrote the static receipt",
+                )
+
+            # assemble's own bundle input is likewise protected.
+            code = observer.main(
+                [
+                    "assemble",
+                    "--capture",
+                    str(bundle),
+                    "--repository",
+                    REPOSITORY,
+                    "--source",
+                    "connector",
+                    "--static-receipt",
+                    str(receipt),
+                    "--snapshot",
+                    str(bundle),
+                ]
+            )
+            self.assertEqual(code, 1, "snapshot onto the bundle input was accepted")
+            self.assertEqual(
+                bundle.read_bytes(),
+                bundle_bytes,
+                "assemble overwrote the capture bundle",
+            )
+
     def test_one_ruleset_context_from_two_apps_keeps_both(self) -> None:
         detail = json.loads(ruleset_detail_response())
         detail["rules"][0]["parameters"]["required_status_checks"] = [
