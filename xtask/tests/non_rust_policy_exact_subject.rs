@@ -212,6 +212,34 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
         );
     }
 
+    // The guard must reject an executable run body that interpolates an
+    // untrusted pull-request field, including when the body is represented by
+    // a YAML block scalar.
+    let guard_fixture = tempfile::tempdir()?;
+    let guard_workflow = guard_fixture.path().join(".github/workflows");
+    fs::create_dir_all(&guard_workflow)?;
+    let malicious_step = concat!(
+        "      - name: Untrusted interpolation fixture\n",
+        "        run: >-\n",
+        "          echo \"${{ github.event.pull_request.head.sha }}\"\n\n",
+    );
+    let malicious_workflow = workflow_text.replacen(
+        "      - name: Verify trusted workflow contract\n",
+        malicious_step,
+        1,
+    );
+    let malicious_path = guard_workflow.join("non-rust-policy.yml");
+    write(&malicious_path, &malicious_workflow)?;
+    let malicious_guard = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &guard])
+        .current_dir(guard_fixture.path())
+        .output()
+        .context("executing malicious trusted workflow guard fixture")?;
+    ensure!(
+        !malicious_guard.status.success(),
+        "trusted workflow guard must reject pull-request interpolation"
+    );
+
     let fixture = pr_fixture()?;
     let output_path = fixture.trusted.join("github-output");
     let env_path = fixture.trusted.join("github-env");

@@ -156,7 +156,7 @@ jobs:
                       if not match:
                           continue
                       body = match.group(1)
-                      if body in ("|", ">", "|-"):
+                      if body.startswith(("|", ">")):
                           body = "\n".join(
                               content[10:] if len(content) >= 10 else ""
                               for content in step[offset + 1 :]
