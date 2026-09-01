@@ -550,12 +550,15 @@ fn dap_support_gate_binds_all_helper_targets_and_propagates_failures()
     assert!(dap_helper_command_error(&missing_feature).is_some());
     let swallowed_failure = gate.command.replacen("&&", ";", 1);
     assert!(dap_helper_command_error(&swallowed_failure).is_some());
-    // Cargo `--` boundary mutation: a required selector relocated behind the
-    // harness separator must fail the guard even though the word pair still
-    // appears in the command text.
-    let relocated = gate
-        .command
-        .replace("--test-threads=4", "--test-threads=4 --test pause_signal_delivery_tests");
+    // Cargo `--` boundary mutation: the ONLY copy of a required selector is
+    // moved behind the harness separator. Removing it from the selection
+    // region keeps the exact-occurrence check satisfied under a
+    // boundary-blind validator, so this mutation specifically protects the
+    // selection/harness split.
+    let relocated = format!(
+        "{} --test pause_signal_delivery_tests",
+        gate.command.replacen(" --test pause_signal_delivery_tests", "", 1),
+    );
     assert!(
         dap_helper_command_error(&relocated).is_some(),
         "selector behind `--` must fail the policy contract"
