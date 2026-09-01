@@ -25,7 +25,8 @@ pub struct SnapshotBudget {
     pub max_depth: usize,
     /// Maximum rendered bytes for a single scalar value.
     pub max_scalar_bytes: usize,
-    /// Maximum total rendered bytes across the entire snapshot.
+    /// Maximum retained bytes across the entire snapshot, including node
+    /// names, kind labels, and rendered scalar text.
     pub max_total_bytes: usize,
 }
 
@@ -133,7 +134,8 @@ pub struct CollectionSnapshot {
     pub root: SnapshotNode,
     /// Total nodes visited while building the snapshot.
     pub total_nodes_visited: usize,
-    /// Total rendered bytes accepted into the snapshot.
+    /// Total retained bytes accepted into the snapshot, including node names,
+    /// kind labels, and rendered scalar text.
     pub total_rendered_bytes: usize,
     /// The first global truncation observed, if any.
     pub truncation: Option<TruncationReason>,
@@ -146,12 +148,12 @@ pub struct SourceValue<'a> {
     pub name: &'a str,
     /// Honest kind label from the capture boundary.
     pub kind_label: &'a str,
-    /// Pre-captured scalar text (empty for containers).
-    pub scalar_text: &'a str,
+    /// Pre-captured scalar text, when this is a scalar.
+    pub scalar_text: Option<&'a str>,
     /// Side-effect classification of the source value.
     pub flags: SourceFlags,
     /// Captured child values, when this is a container.
-    pub children: &'a [SourceValue<'a>],
+    pub children: Option<&'a [SourceValue<'a>]>,
 }
 
 impl<'a> SourceValue<'a> {
@@ -160,15 +162,21 @@ impl<'a> SourceValue<'a> {
         Self {
             name,
             kind_label: "scalar",
-            scalar_text: text,
+            scalar_text: Some(text),
             flags: SourceFlags::PLAIN,
-            children: &[],
+            children: None,
         }
     }
 
     /// Build a container source value.
     pub fn container(name: &'a str, kind_label: &'a str, children: &'a [SourceValue<'a>]) -> Self {
-        Self { name, kind_label, scalar_text: "", flags: SourceFlags::PLAIN, children }
+        Self {
+            name,
+            kind_label,
+            scalar_text: None,
+            flags: SourceFlags::PLAIN,
+            children: Some(children),
+        }
     }
 }
 
@@ -201,8 +209,7 @@ pub fn capture_snapshot(root: SourceValue<'_>, budget: SnapshotBudget) -> Collec
 }
 
 fn build_node(value: SourceValue<'_>, depth: usize, cursor: &mut BudgetCursor) -> SnapshotNode {
-    cursor.visited = cursor.visited.saturating_add(1);
-    if cursor.visited > cursor.budget.max_total_nodes {
+    if cursor.visited >= cursor.budget.max_total_nodes {
         cursor.record_truncation(TruncationReason::NodeBudgetExhausted);
         return SnapshotNode {
             name: value.name.to_string(),
@@ -210,6 +217,17 @@ fn build_node(value: SourceValue<'_>, depth: usize, cursor: &mut BudgetCursor) -
             rendered: None,
             children: Vec::new(),
             outcome: NodeOutcome::Truncated(TruncationReason::NodeBudgetExhausted),
+        };
+    }
+    cursor.visited = cursor.visited.saturating_add(1);
+
+    if !charge_bytes(cursor, value.name.len().saturating_add(value.kind_label.len())) {
+        return SnapshotNode {
+            name: value.name.to_string(),
+            kind_label: value.kind_label.to_string(),
+            rendered: None,
+            children: Vec::new(),
+            outcome: NodeOutcome::Truncated(TruncationReason::TotalByteLimit),
         };
     }
 
@@ -225,9 +243,9 @@ fn build_node(value: SourceValue<'_>, depth: usize, cursor: &mut BudgetCursor) -
         };
     }
 
-    if value.children.is_empty() {
+    let Some(source_children) = value.children else {
         return render_scalar(value, depth, cursor);
-    }
+    };
 
     // Container expansion under the depth and per-container limits.
     if depth >= cursor.budget.max_depth {
@@ -240,23 +258,36 @@ fn build_node(value: SourceValue<'_>, depth: usize, cursor: &mut BudgetCursor) -
             outcome: NodeOutcome::Truncated(TruncationReason::DepthLimit),
         };
     }
-    let admitted = value.children.len().min(cursor.budget.max_items_per_container);
-    if admitted < value.children.len() {
+    let admitted = source_children.len().min(cursor.budget.max_items_per_container);
+    if admitted < source_children.len() {
         cursor.record_truncation(TruncationReason::ContainerItemLimit);
     }
 
-    let mut children = Vec::with_capacity(admitted);
-    for child in &value.children[..admitted] {
+    let mut snapshot_children = Vec::with_capacity(admitted);
+    let mut outcome = if admitted < source_children.len() {
+        Some(TruncationReason::ContainerItemLimit)
+    } else {
+        None
+    };
+    for child in &source_children[..admitted] {
+        if cursor.visited >= cursor.budget.max_total_nodes {
+            cursor.record_truncation(TruncationReason::NodeBudgetExhausted);
+            outcome.get_or_insert(TruncationReason::NodeBudgetExhausted);
+            break;
+        }
         let node = build_node(*child, depth + 1, cursor);
-        children.push(node);
+        if let NodeOutcome::Truncated(reason) = node.outcome {
+            outcome.get_or_insert(reason);
+        }
+        snapshot_children.push(node);
     }
 
     SnapshotNode {
         name: value.name.to_string(),
         kind_label: value.kind_label.to_string(),
         rendered: None,
-        children,
-        outcome: NodeOutcome::Complete,
+        children: snapshot_children,
+        outcome: outcome.map_or(NodeOutcome::Complete, NodeOutcome::Truncated),
     }
 }
 
@@ -271,7 +302,7 @@ fn render_scalar(value: SourceValue<'_>, _depth: usize, cursor: &mut BudgetCurso
         };
     }
 
-    let text = value.scalar_text;
+    let text = value.scalar_text.unwrap_or_default();
     if text.len() > cursor.budget.max_scalar_bytes {
         cursor.record_truncation(TruncationReason::ScalarByteLimit);
         return SnapshotNode {
@@ -283,9 +314,7 @@ fn render_scalar(value: SourceValue<'_>, _depth: usize, cursor: &mut BudgetCurso
         };
     }
 
-    let projected = cursor.rendered_bytes.saturating_add(text.len());
-    if projected > cursor.budget.max_total_bytes {
-        cursor.record_truncation(TruncationReason::TotalByteLimit);
+    if !charge_bytes(cursor, text.len()) {
         return SnapshotNode {
             name: value.name.to_string(),
             kind_label: value.kind_label.to_string(),
@@ -295,13 +324,23 @@ fn render_scalar(value: SourceValue<'_>, _depth: usize, cursor: &mut BudgetCurso
         };
     }
 
-    cursor.rendered_bytes = projected;
     SnapshotNode {
         name: value.name.to_string(),
         kind_label: value.kind_label.to_string(),
         rendered: Some(text.to_string()),
         children: Vec::new(),
         outcome: NodeOutcome::Complete,
+    }
+}
+
+fn charge_bytes(cursor: &mut BudgetCursor, bytes: usize) -> bool {
+    let projected = cursor.rendered_bytes.saturating_add(bytes);
+    if projected > cursor.budget.max_total_bytes {
+        cursor.record_truncation(TruncationReason::TotalByteLimit);
+        false
+    } else {
+        cursor.rendered_bytes = projected;
+        true
     }
 }
 
@@ -327,7 +366,7 @@ mod tests {
         assert_eq!(snapshot.root.children[0].rendered.as_deref(), Some("1"));
         assert_eq!(snapshot.truncation, None);
         assert_eq!(snapshot.total_nodes_visited, 3);
-        assert_eq!(snapshot.total_rendered_bytes, 2);
+        assert_eq!(snapshot.total_rendered_bytes, 28);
     }
 
     #[test]
@@ -339,6 +378,7 @@ mod tests {
         let snapshot = capture_snapshot(root[0], budget);
 
         assert_eq!(snapshot.truncation, Some(TruncationReason::DepthLimit));
+        assert_eq!(snapshot.root.outcome, NodeOutcome::Truncated(TruncationReason::DepthLimit));
         let child = &snapshot.root.children[0];
         assert_eq!(child.outcome, NodeOutcome::Truncated(TruncationReason::DepthLimit));
         assert!(child.children.is_empty());
@@ -346,37 +386,43 @@ mod tests {
 
     #[test]
     fn per_container_item_limit_truncates_wide_containers() {
-        let kids: Vec<SourceValue<'_>> = (0..8).map(|i| scalar("s", "v")).collect();
+        let kids: Vec<SourceValue<'_>> = (0..8).map(|_| scalar("s", "v")).collect();
         let root = SourceValue::container("@wide", "array", &kids);
         let budget = SnapshotBudget { max_items_per_container: 3, ..SnapshotBudget::defaults() };
         let snapshot = capture_snapshot(root, budget);
 
         assert_eq!(snapshot.truncation, Some(TruncationReason::ContainerItemLimit));
         assert_eq!(snapshot.root.children.len(), 3);
+        assert_eq!(
+            snapshot.root.outcome,
+            NodeOutcome::Truncated(TruncationReason::ContainerItemLimit)
+        );
     }
 
     #[test]
     fn node_budget_is_cumulative_across_the_whole_snapshot() {
-        // Budget of 2 total nodes: root + first child. The second child must
-        // be refused by the global counter even though each container is tiny.
-        let kids = [scalar("a", "1"), scalar("b", "2")];
+        // Budget of 2 total nodes: root + first child. Remaining siblings must
+        // be omitted once the cumulative counter is exhausted.
+        let kids: Vec<SourceValue<'_>> = (0..64).map(|_| scalar("s", "v")).collect();
         let root = SourceValue::container("@v", "array", &kids);
         let budget = SnapshotBudget { max_total_nodes: 2, ..SnapshotBudget::defaults() };
         let snapshot = capture_snapshot(root, budget);
 
         assert_eq!(snapshot.truncation, Some(TruncationReason::NodeBudgetExhausted));
         assert_eq!(snapshot.root.children[0].outcome, NodeOutcome::Complete);
+        assert_eq!(snapshot.root.children.len(), 1);
         assert_eq!(
-            snapshot.root.children[1].outcome,
+            snapshot.root.outcome,
             NodeOutcome::Truncated(TruncationReason::NodeBudgetExhausted)
         );
+        assert!(snapshot.total_nodes_visited <= budget.max_total_nodes);
     }
 
     #[test]
     fn total_byte_budget_refuses_the_scalar_that_overflows_it() {
         let kids = [scalar("a", "12345"), scalar("b", "67890")];
         let root = SourceValue::container("@v", "array", &kids);
-        let budget = SnapshotBudget { max_total_bytes: 8, ..SnapshotBudget::defaults() };
+        let budget = SnapshotBudget { max_total_bytes: 20, ..SnapshotBudget::defaults() };
         let snapshot = capture_snapshot(root, budget);
 
         assert_eq!(snapshot.truncation, Some(TruncationReason::TotalByteLimit));
@@ -386,6 +432,7 @@ mod tests {
             NodeOutcome::Truncated(TruncationReason::TotalByteLimit)
         );
         assert_eq!(snapshot.root.children[1].rendered, None);
+        assert_eq!(snapshot.root.outcome, NodeOutcome::Truncated(TruncationReason::TotalByteLimit));
     }
 
     #[test]
@@ -436,6 +483,29 @@ mod tests {
     }
 
     #[test]
+    fn empty_containers_remain_containers() {
+        let empty: [SourceValue<'_>; 0] = [];
+        let root = SourceValue::container("@empty", "array", &empty);
+        let snapshot = capture_snapshot(root, SnapshotBudget::defaults());
+
+        assert_eq!(snapshot.root.outcome, NodeOutcome::Complete);
+        assert_eq!(snapshot.root.kind_label, "array");
+        assert_eq!(snapshot.root.rendered, None);
+        assert!(snapshot.root.children.is_empty());
+    }
+
+    #[test]
+    fn empty_overloaded_containers_do_not_stringify() {
+        let empty: [SourceValue<'_>; 0] = [];
+        let mut root = SourceValue::container("@empty", "array", &empty);
+        root.flags = SourceFlags { overloaded_stringify: true, ..SourceFlags::PLAIN };
+        let snapshot = capture_snapshot(root, SnapshotBudget::defaults());
+
+        assert_eq!(snapshot.root.outcome, NodeOutcome::Complete);
+        assert_eq!(snapshot.root.rendered, None);
+    }
+
+    #[test]
     fn identical_inputs_produce_identical_snapshots() {
         let kids = [scalar("a", "1"), scalar("b", "2")];
         let root = SourceValue::container("@v", "array", &kids);
@@ -453,7 +523,10 @@ mod tests {
         let snapshot = capture_snapshot(root, budget);
 
         assert_eq!(snapshot.truncation, Some(TruncationReason::ContainerItemLimit));
-        assert_eq!(snapshot.root.outcome, NodeOutcome::Complete);
+        assert_eq!(
+            snapshot.root.outcome,
+            NodeOutcome::Truncated(TruncationReason::ContainerItemLimit)
+        );
         assert!(snapshot.root.children.is_empty());
     }
 }
