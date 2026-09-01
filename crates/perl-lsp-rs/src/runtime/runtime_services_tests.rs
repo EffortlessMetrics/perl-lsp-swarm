@@ -460,18 +460,26 @@ mod tests {
             },
         ));
 
-        // Drive the panic, then wait for the worker thread to actually unwind
-        // so its receiver is gone and the next admission is refused.
+        // Drive the panic, then keep scheduling until the worker is retired.
+        // Admission starts refusing as soon as the receiver dies, which is
+        // BEFORE the thread is observably finished; retirement waits for that
+        // exit, so poll on the retained terminal rather than the first
+        // refusal.
         assert!(services.schedule_diagnostic_debounce("file:///panics.pl"));
-        let refused = (0..500).any(|_| {
-            if services.schedule_diagnostic_debounce("file:///again.pl") {
+        let retired = (0..500).any(|_| {
+            assert!(
+                !services.schedule_diagnostic_debounce("file:///again.pl")
+                    || services.settlement_snapshot().settled.is_empty(),
+                "a retired class must not start admitting again"
+            );
+            if services.settlement_snapshot().settled.is_empty() {
                 std::thread::sleep(Duration::from_millis(10));
                 false
             } else {
                 true
             }
         });
-        assert!(refused, "a panicked worker's channel must eventually refuse admission");
+        assert!(retired, "a panicked worker must eventually retire with a terminal");
 
         // The refusal evicted the slot; settlement must still know it died.
         let outcome = services.begin_application_shutdown(
@@ -491,6 +499,50 @@ mod tests {
                     reason: "diagnostic debounce worker exited abnormally".to_string()
                 }
             )]
+        );
+    }
+
+    #[test]
+    fn a_refusal_during_teardown_records_nothing_until_the_exit_is_observable() {
+        // The channel dies while the worker thread is still running, because
+        // `worker_loop` owns the receiver. Classifying inside that window
+        // would record a guess -- and the sticky rule would freeze it -- so
+        // a refusal must retire nothing until the exit is observable.
+        let (debouncer, release) = DiagnosticDebouncer::dead_channel_live_worker_for_test();
+        let services = RuntimeServices::new();
+        services.install_diagnostic_debouncer(debouncer);
+
+        // Install saw an operational worker, so nothing is recorded yet.
+        assert!(services.settlement_snapshot().settled.is_empty());
+
+        // Admission is refused (dead channel) but the thread has NOT exited.
+        assert!(!services.schedule_diagnostic_debounce("file:///parked.pl"));
+        assert!(
+            services.settlement_snapshot().settled.is_empty(),
+            "a refusal during teardown must not record a guessed terminal"
+        );
+        assert!(
+            services.diagnostic_debouncer_is_installed(),
+            "the only handle to an unfinished worker must not be discarded"
+        );
+
+        // Release the worker; once its exit is observable the refusal retires
+        // it with the outcome that actually happened.
+        drop(release);
+        let retired = (0..500).any(|_| {
+            let _ = services.schedule_diagnostic_debounce("file:///parked.pl");
+            if services.settlement_snapshot().settled.is_empty() {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            } else {
+                true
+            }
+        });
+        assert!(retired, "an observable exit must eventually retire the worker");
+        assert_eq!(
+            services.settlement_snapshot().settled,
+            vec![(ApplicationTaskClass::DiagnosticDebounce, TaskTerminal::Completed)],
+            "the parked worker returned normally, so its terminal is Completed"
         );
     }
 

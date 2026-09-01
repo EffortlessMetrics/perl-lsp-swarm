@@ -127,6 +127,39 @@ impl DiagnosticDebouncer {
         }
     }
 
+    /// A debouncer whose channel is already dead while its worker thread is
+    /// still running, returning the sender that releases that thread.
+    ///
+    /// Reproduces the teardown window deterministically: `worker_loop` owns
+    /// the receiver, so a real worker's channel dies before
+    /// `JoinHandle::is_finished` flips and before `clean_exit` is stored.
+    /// Settlement must not classify a terminal from inside that window.
+    #[cfg(test)]
+    pub(crate) fn dead_channel_live_worker_for_test() -> (Self, std::sync::mpsc::Sender<()>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(rx);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let clean_exit = Arc::new(AtomicBool::new(false));
+        let worker_clean_exit = Arc::clone(&clean_exit);
+        let worker = thread::Builder::new()
+            .name("diag-debounce-test-park".into())
+            .spawn(move || {
+                // Park until released, so `has_exited()` stays false while
+                // the channel is already unusable.
+                let _ = release_rx.recv();
+                worker_clean_exit.store(true, Ordering::SeqCst);
+            })
+            .ok();
+        let debouncer = Self {
+            tx,
+            pending_count: Arc::new(AtomicUsize::new(0)),
+            worker,
+            operational: true,
+            clean_exit,
+        };
+        (debouncer, release_tx)
+    }
+
     #[allow(dead_code)] // Read by test/debug runtime pressure snapshots.
     pub(crate) fn pending_uris(&self) -> usize {
         self.pending_count.load(Ordering::SeqCst)

@@ -549,6 +549,18 @@ impl RuntimeServices {
             if debouncer.schedule(uri) {
                 return true;
             }
+            // Refused, so the caller falls back either way. Retire the worker
+            // only once its exit is OBSERVABLE: `worker_loop` owns the
+            // receiver, so the channel dies as the thread tears down --
+            // before `JoinHandle::is_finished` flips and before `clean_exit`
+            // is stored. Evicting inside that window would discard the only
+            // handle while its terminal is still unknowable, and the sticky
+            // rule would freeze whatever we guessed. Leaving it installed
+            // keeps the handle readable; admission keeps failing, so a later
+            // call retires it with the real outcome.
+            if !debouncer.has_exited() {
+                return false;
+            }
             guard.take()
         };
 
@@ -560,18 +572,16 @@ impl RuntimeServices {
         // takes `tasks` and then the slot, so classifying under the slot lock
         // would invert that order.
         if let Some(debouncer) = evicted {
-            let terminal = match (debouncer.has_exited(), debouncer.exited_cleanly()) {
-                // The loop unwound instead of returning: the worker died.
-                (true, false) => TaskTerminal::Failed {
-                    reason: "diagnostic debounce worker exited abnormally".to_string(),
-                },
+            // Only reached once `has_exited()` held, so both readings below
+            // are settled rather than racing the teardown.
+            let terminal = if debouncer.exited_cleanly() {
                 // The loop returned normally; its receiver dropped with it.
-                (true, true) => TaskTerminal::Completed,
-                // Receiver gone while the thread lingers: nothing this
-                // debouncer can do will ever publish again.
-                (false, _) => TaskTerminal::InstrumentFailed {
-                    reason: "diagnostic debounce channel closed with no receiver".to_string(),
-                },
+                TaskTerminal::Completed
+            } else {
+                // The loop unwound past the clean-exit store: it died.
+                TaskTerminal::Failed {
+                    reason: "diagnostic debounce worker exited abnormally".to_string(),
+                }
             };
             let _ = self.record_terminal(ApplicationTaskClass::DiagnosticDebounce, terminal);
         }
