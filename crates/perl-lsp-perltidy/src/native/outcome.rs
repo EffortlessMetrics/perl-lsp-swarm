@@ -375,11 +375,11 @@ fn valid_range(source: &str, range: TextRange) -> bool {
 /// zero-length final line.
 ///
 /// This is the geometry that `valid_range` must use so that bare-CR documents
-/// have the same line structure as the rest of the formatting pipeline (which
-/// uses `str::lines()` or `str::split_inclusive`). Without it, bare-CR sources
-/// appear as a single `\n`-less line, causing any range past physical line 0
-/// to be rejected as `UnsafeRange` before the CR-aware literal-preservation
-/// refusal in `format_range` can fire.
+/// have the line structure promised by LSP positions. Without it, bare-CR
+/// sources appear as a single `\n`-less line, causing any range past physical
+/// line 0 to be rejected as `UnsafeRange` before the CR-aware
+/// literal-preservation refusal in `format_range` can fire. The formatter's
+/// remaining line-to-byte mapping is a separate follow-up concern.
 fn split_lines_for_range_validation(source: &str) -> Vec<&str> {
     let mut result = Vec::new();
     let bytes = source.as_bytes();

@@ -204,6 +204,7 @@ fn format_range_typed_refuses_bare_cr_heredoc_as_literal_preservation_not_unsafe
     );
     assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
     assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::Refused);
+    assert_eq!(typed.result.formatted, source);
     assert!(!typed.result.changed);
     assert!(typed.result.edits.is_empty());
 }
