@@ -247,7 +247,7 @@ impl PerlOracleEnv {
     /// Build a [`Command`] with ALL non-allowlisted env vars stripped.
     pub fn into_command(&self) -> Command {
         let mut cmd = Command::new(&self.perl_binary);
-        self.configure_command(&mut cmd);
+        self.configure_command_with_env(&mut cmd, &self.ambient_env);
 
         cmd
     }
