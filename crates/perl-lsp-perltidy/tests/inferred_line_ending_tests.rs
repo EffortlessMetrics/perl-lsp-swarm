@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+
 //! Property proof for the shared generated-line-ending rule (#13792).
 //!
 //! `inferred_line_ending` was previously duplicated byte-for-byte in

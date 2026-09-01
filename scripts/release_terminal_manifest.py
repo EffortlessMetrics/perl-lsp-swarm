@@ -565,7 +565,7 @@ def main() -> int:
             output, inventory = check_outputs(args.candidate, args.source_sha, args.tag)
         else:
             output, inventory = write_outputs(args.candidate, args.source_sha, args.tag)
-    except (ManifestError, OSError) as error:
+    except (ManifestError, OSError, tarfile.TarError, zipfile.BadZipFile) as error:
         print(f"release terminal manifest: NOT_PROVEN: {error}", file=sys.stderr)
         return 1
     print(f"release terminal manifest: eligible: {output}; subjects: {inventory}")

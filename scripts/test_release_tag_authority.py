@@ -21,7 +21,6 @@ TAG = "v0.18.0-rc.1"
 
 def ruleset() -> dict[str, object]:
     return {
-        "id": 21821148,
         "name": "release-tags",
         "target": "tag",
         "source_type": "Repository",
