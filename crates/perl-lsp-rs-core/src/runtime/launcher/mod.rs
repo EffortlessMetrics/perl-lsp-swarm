@@ -15,6 +15,7 @@ use std::sync::{Once, OnceLock};
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
+mod checking_guidance;
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
 pub use crate::features::grid::{compliance_counts_for_profile, to_json_for_profile};
@@ -71,6 +72,21 @@ pub fn logging_filter(
 /// (max 5 files) **in addition to** stderr. Invalid `RUST_LOG` values fall
 /// back to `default_filter`.
 pub fn init_logging(default_filter: &str) {
+    init_logging_with_env_lookup(default_filter, process_env_var);
+}
+
+fn process_env_var(key: &str) -> Result<String, std::env::VarError> {
+    std::env::var(key)
+}
+
+fn init_logging_with_env_lookup(
+    default_filter: &str,
+    get: fn(&str) -> Result<String, std::env::VarError>,
+) {
+    init_logging_with_log_path(default_filter, get("PERL_LSP_LOG_FILE").ok());
+}
+
+fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
     LOGGING_INIT.call_once(|| {
         let filter = EnvFilter::try_from_default_env()
             .or_else(|_| EnvFilter::try_new(default_filter))
@@ -79,7 +95,7 @@ pub fn init_logging(default_filter: &str) {
         let use_ansi = should_use_ansi_stderr();
 
         // If PERL_LSP_LOG_FILE is set, add a rolling file appender alongside stderr.
-        if let Ok(log_path) = std::env::var("PERL_LSP_LOG_FILE") {
+        if let Some(log_path) = log_path {
             let path = std::path::Path::new(&log_path);
             let log_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
             let log_file_prefix = path.file_name().and_then(|f| f.to_str()).unwrap_or("perl-lsp");
@@ -250,11 +266,11 @@ pub struct LspArgs {
     #[arg(long)]
     pub info: bool,
 
-    /// Validate Perl files and report parse errors (batch mode)
+    /// Native in-process parser check of listed files (does not execute project Perl)
     #[arg(long)]
     pub check: bool,
 
-    /// Scan a project directory and report parsability summary
+    /// Native parsability report (80% threshold; not a strict all-clean check)
     #[arg(long, conflicts_with = "check")]
     pub check_project: Option<Option<String>>,
 
@@ -416,9 +432,9 @@ pub enum LaunchAction {
     Health,
     /// Show server info (version, features, coverage).
     Info,
-    /// Validate Perl files in batch mode.
+    /// Native in-process parser check of listed files.
     Check,
-    /// Scan a project directory and report parsability summary.
+    /// Native project parsability report at a fixed 80% threshold.
     CheckProject {
         /// Directory to scan (defaults to ".").
         dir: String,
@@ -925,9 +941,17 @@ pub fn help_text() -> String {
     out.push_str("  --features-json      Output features catalog as JSON\n");
     out.push('\n');
     out.push_str("Tool options:\n");
-    out.push_str("  --check <files...>   Validate Perl files and report parse errors\n");
-    out.push_str("  --check-project [dir]\n");
-    out.push_str("                       Scan project directory for parsability report\n");
+    out.push_str("  ");
+    out.push_str(checking_guidance::CHECK_FLAG);
+    out.push_str(" <files...>   ");
+    out.push_str(checking_guidance::CHECK_DESCRIPTION);
+    out.push_str(" (does not execute project Perl)\n");
+    out.push_str("  ");
+    out.push_str(checking_guidance::CHECK_PROJECT_FLAG);
+    out.push_str(" [dir]\n");
+    out.push_str("                       ");
+    out.push_str(checking_guidance::CHECK_PROJECT_DESCRIPTION);
+    out.push('\n');
     out.push_str("  --doctor [dir]       Explain Perl path, config, and effective @INC roots\n");
     out.push_str(
         "  --external-tools     With --doctor: native-first external tooling report (registry-driven)\n",
@@ -960,13 +984,31 @@ pub fn help_text() -> String {
         "  --ripr-out <path>    Output path (default: target/ripr/reports/perl-facts.json)\n",
     );
     out.push('\n');
+    out.push_str("Checking commands (native vs real Perl):\n");
+    out.push_str("  Need fast native feedback on listed files?     ");
+    out.push_str(checking_guidance::CHECK_FLAG);
+    out.push_str(" <files...>\n");
+    out.push_str("  Need a project parser coverage metric?         ");
+    out.push_str(checking_guidance::CHECK_PROJECT_FLAG);
+    out.push_str(" [dir]\n");
+    out.push_str(
+        "  Need real-Perl compile observation?            editor Perl: Check Syntax / DAP (`perl -c`)\n",
+    );
+    out.push_str(
+        "  Advisories remain visible but non-blocking. `--check-project` can PASS below 100% clean.\n",
+    );
+    out.push('\n');
     out.push_str("Examples:\n");
     out.push_str("  perllsp --stdio                         # stdio mode (default)\n");
     out.push_str("  perllsp --stdio --log                   # with logging\n");
     out.push_str("  perllsp --socket --port 9257            # TCP socket mode\n");
     out.push_str("  perllsp --stdio --feature-profile=prod  # production profile\n");
-    out.push_str("  perllsp --check lib/MyModule.pm         # syntax check\n");
-    out.push_str("  perllsp --check-project lib/            # project scan\n");
+    out.push_str("  perllsp --check lib/MyModule.pm         # ");
+    out.push_str(checking_guidance::CHECK_EXAMPLE_COMMENT);
+    out.push('\n');
+    out.push_str("  perllsp --check-project lib/            # ");
+    out.push_str(checking_guidance::CHECK_PROJECT_EXAMPLE_COMMENT);
+    out.push('\n');
     out.push_str("  perllsp --doctor .                      # first-run setup report\n");
     out.push_str("  perllsp --doctor --external-tools       # registry-driven tooling report\n");
     out.push_str("  perllsp --doctor --critic-compatibility # critic config compatibility\n");
@@ -1088,8 +1130,8 @@ _perl-lsp() {
         '--log[Enable logging to stderr]' \
         '--health[Quick health check]' \
         '--info[Show server info]' \
-        '--check[Validate Perl files]:file:_files -g "*.{pl,pm,t}"' \
-        '--check-project[Scan project directory for parsability report]:dir:_directories' \
+        '--check[Native in-process parser check of listed files]:file:_files -g "*.{pl,pm,t}"' \
+        '--check-project[Native parsability report (80% threshold; not a strict all-clean check)]:dir:_directories' \
         '--doctor[Explain Perl path, config, and effective @INC roots]:dir:_directories' \
         '--external-tools[With --doctor: native-first external tooling report]' \
         '--critic-compatibility[With --doctor: .perlcriticrc compatibility, process-free]' \
@@ -1124,8 +1166,8 @@ complete -c perl-lsp -l port -x -d 'Port to listen on'
 complete -c perl-lsp -l log -d 'Enable logging to stderr'
 complete -c perl-lsp -l health -d 'Quick health check'
 complete -c perl-lsp -l info -d 'Show server info'
-complete -c perl-lsp -l check -F -d 'Validate Perl files'
-complete -c perl-lsp -l check-project -d 'Scan project directory for parsability report'
+complete -c perl-lsp -l check -F -d 'Native in-process parser check of listed files'
+complete -c perl-lsp -l check-project -d 'Native parsability report (80% threshold; not a strict all-clean check)'
 complete -c perl-lsp -l doctor -d 'Explain Perl path, config, and effective @INC roots'
 complete -c perl-lsp -l version -d 'Show version information'
 complete -c perl-lsp -l features-json -d 'Output features catalog as JSON'
@@ -1158,8 +1200,8 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
         [CompletionResult]::new('--log', '--log', 'ParameterName', 'Enable logging to stderr')
         [CompletionResult]::new('--health', '--health', 'ParameterName', 'Quick health check')
         [CompletionResult]::new('--info', '--info', 'ParameterName', 'Show server info')
-        [CompletionResult]::new('--check', '--check', 'ParameterName', 'Validate Perl files')
-        [CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Scan project directory for parsability report')
+        [CompletionResult]::new('--check', '--check', 'ParameterName', 'Native in-process parser check of listed files')
+        [CompletionResult]::new('--check-project', '--check-project', 'ParameterName', 'Native parsability report (80% threshold; not a strict all-clean check)')
         [CompletionResult]::new('--doctor', '--doctor', 'ParameterName', 'Explain Perl path, config, and effective @INC roots')
         [CompletionResult]::new('--external-tools', '--external-tools', 'ParameterName', 'With --doctor: native-first external tooling report')
         [CompletionResult]::new('--critic-compatibility', '--critic-compatibility', 'ParameterName', 'With --doctor: .perlcriticrc compatibility, process-free')
@@ -1306,7 +1348,25 @@ pub fn format_startup_banner(version: &str, profile: FeatureProfile, is_socket: 
     reason = "Startup banner fires before the tracing subscriber is configured — intentional stderr output"
 )]
 pub fn startup_banner(version: &str, profile: FeatureProfile, transport: TransportMode) {
-    if std::env::var("PERL_LSP_QUIET").is_ok() {
+    startup_banner_with_env_lookup(version, profile, transport, process_env_var);
+}
+
+fn startup_banner_with_env_lookup(
+    version: &str,
+    profile: FeatureProfile,
+    transport: TransportMode,
+    get: fn(&str) -> Result<String, std::env::VarError>,
+) {
+    startup_banner_with_quiet(version, profile, transport, get("PERL_LSP_QUIET").is_ok());
+}
+
+fn startup_banner_with_quiet(
+    version: &str,
+    profile: FeatureProfile,
+    transport: TransportMode,
+    quiet: bool,
+) {
+    if quiet {
         return;
     }
     eprintln!("{}", format_startup_banner(version, profile, transport.is_socket()));
@@ -1372,27 +1432,38 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
-    fn init_logging_does_not_panic_with_log_file() {
-        let dir = std::env::temp_dir().join("perl-lsp-test-log-rotation");
-        let _ = std::fs::create_dir_all(&dir);
-        let log_path = dir.join("test.log");
-
-        // Set the env var for this test — init_logging is Once-guarded so the
-        // file path may not actually be used if another test already initialized,
-        // but this must not panic regardless.
-        // SAFETY: test-only, single-threaded access to this env var.
-        unsafe {
-            std::env::set_var("PERL_LSP_LOG_FILE", log_path.to_str().unwrap_or_default());
+    fn init_logging_does_not_panic_with_log_file() -> Result<(), Box<dyn std::error::Error>> {
+        const MARKER: &str = "PERL_LSP_WAVE_A1_LOG_CHILD";
+        const TOKEN: &str = "wave-a1-log-token";
+        if std::env::var_os(MARKER).is_some() {
+            super::init_logging("debug");
+            tracing::info!(target: "wave_a1", "{TOKEN}");
+            return Ok(());
         }
-        super::init_logging("debug");
-        // SAFETY: test-only cleanup.
-        unsafe {
-            std::env::remove_var("PERL_LSP_LOG_FILE");
-        }
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = tempfile::tempdir()?;
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "runtime::launcher::tests::init_logging_does_not_panic_with_log_file",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env("PERL_LSP_LOG_FILE", dir.path().join("wave-a1.log"))
+            .output()?;
+        assert!(output.status.success(), "logging child failed: {output:?}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let found = loop {
+            let found = std::fs::read_dir(dir.path())?
+                .filter_map(Result::ok)
+                .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+                .any(|contents| contents.contains(TOKEN));
+            if found || std::time::Instant::now() >= deadline {
+                break found;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
+        assert!(found, "rolling log must contain marker {TOKEN}");
+        Ok(())
     }
 
     #[test]
@@ -1736,6 +1807,8 @@ mod tests {
     fn help_mentions_check_flag() {
         let text = super::help_text();
         assert!(text.contains("--check"));
+        assert!(text.contains(super::checking_guidance::CHECK_DESCRIPTION));
+        assert!(text.contains("does not execute project Perl"));
     }
 
     #[test]
@@ -1771,6 +1844,7 @@ mod tests {
     fn help_mentions_check_project_flag() {
         let text = super::help_text();
         assert!(text.contains("--check-project"));
+        assert!(text.contains(super::checking_guidance::CHECK_PROJECT_DESCRIPTION));
     }
 
     // -- --doctor flag -----------------------------------------------
@@ -1904,29 +1978,40 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
-    fn startup_banner_suppressed_by_quiet_env() {
-        // Save previous value to avoid test pollution even if test panics.
-        let previous = std::env::var_os("PERL_LSP_QUIET");
-
-        // SAFETY: test-only env var manipulation; previous value is restored after test.
-        unsafe {
-            std::env::set_var("PERL_LSP_QUIET", "1");
+    fn startup_banner_suppressed_by_quiet_env() -> Result<(), Box<dyn std::error::Error>> {
+        const MARKER: &str = "PERL_LSP_WAVE_A1_BANNER_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            super::startup_banner(
+                "wave-a1-banner-token",
+                super::FeatureProfile::current(),
+                super::TransportMode::Stdio,
+            );
+            return Ok(());
         }
-
-        // startup_banner must not panic when PERL_LSP_QUIET is set.
-        // The transport argument must propagate through without crashing.
-        super::startup_banner(
-            "0.12.0",
-            super::FeatureProfile::current(),
-            super::TransportMode::Stdio,
-        );
-
-        // SAFETY: restore previous value.
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PERL_LSP_QUIET", value) },
-            None => unsafe { std::env::remove_var("PERL_LSP_QUIET") },
-        }
+        let visible = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "runtime::launcher::tests::startup_banner_suppressed_by_quiet_env",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env_remove("PERL_LSP_QUIET")
+            .output()?;
+        assert!(visible.status.success());
+        let visible_output = String::from_utf8_lossy(&visible.stderr);
+        assert!(visible_output.contains("wave-a1-banner-token"));
+        let suppressed = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "runtime::launcher::tests::startup_banner_suppressed_by_quiet_env",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env("PERL_LSP_QUIET", "1")
+            .output()?;
+        assert!(suppressed.status.success());
+        assert!(!String::from_utf8_lossy(&suppressed.stderr).contains("wave-a1-banner-token"));
+        Ok(())
     }
 
     // ANSI detection helpers
