@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12539 |
-| Rust-family files | 3886 |
-| Non-Rust files | 8653 |
-| Allowlisted | 6414 |
+| Total tracked files | 12559 |
+| Rust-family files | 3893 |
+| Non-Rust files | 8666 |
+| Allowlisted | 6427 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 497 |
-| documentation | 2821 |
+| config | 498 |
+| documentation | 2833 |
 | generated | 2 |
 | production | 349 |
 | test | 2067 |
@@ -2341,6 +2341,7 @@
 | `.changes/unreleased/product-12725-Changed-092400.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12765-Changed-154500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12806-Added-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12813-Changed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12815-Fixed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13073-Fixed-020212.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13123-Fixed-021700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2357,6 +2358,9 @@
 | `.changes/unreleased/product-14076-Fixed-024700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14281-Fixed-014013.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2526,11 +2530,15 @@
 | `.changes/unreleased/vscode-4732-Fixed-091746.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-5018-Fixed-124602.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-5021-Security-024527.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/vscode-5022-Security-215121.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/vscode-5141-Fixed-200716.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/vscode-5152-Fixed-085254.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-5159-Fixed-125725.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-5184-Fixed-204937.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-5188-Fixed-220853.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-5190-Fixed-222430.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-5263-Security-064323.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/vscode-5291-Fixed-182701.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-5301-Fixed-195751.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-5305-Fixed-213744.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-6869-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2939,6 +2947,7 @@
 | `.github/workflows/lsp-318-claim-guard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/merge-gate-target.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/methodology-gate.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/non-rust-policy.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/perl-core-harness.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/perl-version-matrix.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/policy-validators.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3144,6 +3153,9 @@
 | `.spec/10858-train-edge-contract/adaptations.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/10858-train-edge-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10858-train-edge-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10888-neovim-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10888-neovim-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10888-neovim-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5296,6 +5308,7 @@
 | `docs/reference/ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/ARCHITECTURE_OVERVIEW.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/CHANGE_SET_SHADOW_PARITY.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/reference/CHECKING.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/CI_ARCHITECTURE.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/CI_GATE_PLAYBOOK.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/reference/CLUSTER_CURATION.md` | documentation | `non-rust-docs-tree` | docs |
