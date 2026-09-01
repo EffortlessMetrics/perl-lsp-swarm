@@ -301,10 +301,36 @@ impl DapPeerBridge {
                 }
             }
             None | Some(_) => {
-                // Lenient: acknowledge unrecognized requests so a client is not
-                // wedged, but carry no body. (mirror-MVP behavior.)
-                tracing::warn!(command, "peer bridge: unhandled DAP request");
-                out.push(self.response(request_seq, command, true, None, None));
+                // #9089: `inlineValues` is `native_only` in the route table, so
+                // the peer-availability filter reduces it to `None` before this
+                // arm. The routed extension is unnegotiated in every frontend,
+                // so this bridge refuses it on the same single authority the
+                // native gate reads — the previous lenient acknowledgement
+                // answered `success: true` with no body while the native
+                // adapter refused the identical request, serving an extension
+                // this mode neither advertises nor negotiates.
+                if matches!(
+                    DapRequestRoute::from_command(command),
+                    Some(DapRequestRoute::InlineValues)
+                ) && crate::backend::capabilities::refuse_inline_values_extension(
+                    crate::backend::capabilities::advertises_inline_values_extension(),
+                ) {
+                    out.push(self.response(
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some(
+                            crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE
+                                .to_string(),
+                        ),
+                    ));
+                } else {
+                    // Lenient: acknowledge unrecognized requests so a client is
+                    // not wedged, but carry no body. (mirror-MVP behavior.)
+                    tracing::warn!(command, "peer bridge: unhandled DAP request");
+                    out.push(self.response(request_seq, command, true, None, None));
+                }
             }
         }
         // Surface any events the backend queued while handling the request.
@@ -1284,6 +1310,34 @@ mod tests {
         let out = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
         let caps = must_some(as_response(&out[0])?.2);
         assert_eq!(caps["supportsEvaluateForHovers"], false);
+        Ok(())
+    }
+
+    /// #9089: the peer bridge refuses the routed inlineValues extension on the
+    /// same single authority the native gate reads — the fallthrough must not
+    /// acknowledge with success a request the native adapter refuses, for an
+    /// extension this mode neither advertises nor negotiates.
+    #[test]
+    fn peer_bridge_refuses_inline_values() -> Result<(), String> {
+        let mut b = bridge();
+
+        let out = b.dispatch(
+            2,
+            "inlineValues",
+            Some(json!({ "source": { "path": "script.pl" }, "startLine": 1, "endLine": 2 })),
+        );
+        match &out[0] {
+            DapMessage::Response { success, body, message, .. } => {
+                assert!(!success, "inlineValues must be refused in peer mode, not acked");
+                assert!(body.is_none(), "a refused inlineValues response carries no body");
+                assert_eq!(
+                    message.as_deref(),
+                    Some(crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE),
+                    "the refusal must be the single deterministic #9089 message"
+                );
+            }
+            other => return Err(format!("expected response, got {other:?}")),
+        }
         Ok(())
     }
 

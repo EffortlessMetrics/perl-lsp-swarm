@@ -81,7 +81,13 @@ fn test_dap_initialize() {
             assert!(
                 body.get("supportsFunctionBreakpoints").and_then(|v| v.as_bool()).unwrap_or(false)
             );
-            assert!(body.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(false));
+            // #9089: the routed inlineValues extension is a project extension
+            // kept outside standard DAP capability accounting. `unwrap_or(true)`
+            // so a missing key fails this assertion instead of passing vacuously.
+            assert!(
+                !body.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(true),
+                "supportsInlineValues must be false until #9089's negotiation gate passes"
+            );
         }
         _ => must(Err::<(), _>("Expected response message")),
     }
@@ -185,24 +191,18 @@ fn test_dap_inline_values() -> TestResult {
         })),
     );
 
+    // #9089: the routed inlineValues extension is fail-closed — every
+    // unnegotiated request is refused with the deterministic gate message,
+    // before any filesystem read or debugger query.
     match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success);
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            let body = body.ok_or("missing body")?;
-            let values = body
-                .get("inlineValues")
-                .and_then(|v| v.as_array())
-                .ok_or("missing inlineValues")?;
+            assert!(body.is_none(), "a refused inlineValues response carries no body");
+            let message = message.ok_or("refusal must carry a message")?;
             assert!(
-                values.iter().any(|v| {
-                    v.get("text").and_then(|t| t.as_str()).unwrap_or("").contains("$x")
-                })
-            );
-            assert!(
-                values.iter().any(|v| {
-                    v.get("text").and_then(|t| t.as_str()).unwrap_or("").contains("$y")
-                })
+                message.contains("inlineValues"),
+                "refusal must carry the #9089 gate reason, got: {message}"
             );
         }
         _ => must(Err::<(), _>("Expected inlineValues response")),

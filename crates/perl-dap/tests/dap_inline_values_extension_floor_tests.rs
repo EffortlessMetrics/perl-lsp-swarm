@@ -68,9 +68,13 @@ fn well_formed_inline_values() -> Value {
 
 /// Ordinary DAP initialize exposes no custom inline-values capability.
 ///
-/// Discriminating against the previous wiring: `dap.inline_values` is an
-/// advertised catalog row, so `supportsInlineValues: has_feature(...)` would
-/// report true and fail every assertion here.
+/// The wire value comes from the single #9089 negotiation authority, never
+/// from the catalog row: the row is unadvertised (`advertised = false` since
+/// this floor landed) and `supportsInlineValues` is authority-bound false, so
+/// both sides are pinned here. Promotion must flip the negotiation authority
+/// consciously — re-reading `has_feature("dap.inline_values")` for the wire
+/// would quietly re-couple the extension to ordinary catalog state, which is
+/// exactly what #9089 removes.
 #[test]
 fn ordinary_initialize_does_not_advertise_the_extension() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -86,10 +90,14 @@ fn ordinary_initialize_does_not_advertise_the_extension() -> Result<(), Box<dyn 
         !capability(&caps, "supportsInlineValues")?,
         "the extension must not count as standard DAP while its negotiation is unproven"
     );
-    assert_ne!(
-        capability(&caps, "supportsInlineValues")?,
-        perl_dap::feature_catalog::has_feature("dap.inline_values"),
-        "the wire value must not ride on the dap.inline_values catalog row anymore"
+    assert_eq!(
+        (
+            capability(&caps, "supportsInlineValues")?,
+            perl_dap::feature_catalog::has_feature("dap.inline_values"),
+        ),
+        (false, false),
+        "the wire value stays authority-bound false while the catalog row stays \
+         unadvertised (#9089); revisit this pair consciously at promotion"
     );
     Ok(())
 }

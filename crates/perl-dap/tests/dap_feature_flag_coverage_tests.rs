@@ -67,6 +67,21 @@ fn expect_success_body(
     }
 }
 
+/// Expect the command to be refused, returning its refusal message.
+fn expect_error(response: DapMessage, command: &str) -> Result<String, Box<dyn std::error::Error>> {
+    match response {
+        DapMessage::Response { success: false, command: actual, message, .. }
+            if actual == command =>
+        {
+            Ok(message.unwrap_or_default())
+        }
+        DapMessage::Response { success, command: actual, .. } => {
+            Err(format!("expected `{actual}` to be refused, got success={success}").into())
+        }
+        _ => Err(format!("Expected response for `{command}`").into()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AC0: dap.core
 // ---------------------------------------------------------------------------
@@ -761,35 +776,50 @@ fn test_capability_dap_exceptions_die_and_all_filters() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
-// AC6: dap.inline_values
+// AC6: dap.inline_values — fail-closed extension floor (#9089)
 // ---------------------------------------------------------------------------
 
-/// Feature gate: dap.inline_values is registered in the catalog.
+/// Feature gate: dap.inline_values is registered but not advertised.
+///
+/// #9089: the routed inlineValues extension is a project extension kept
+/// outside standard DAP capability accounting. The catalog row stays
+/// registered for inventory honesty while `advertised = false`, and the wire
+/// value comes from the single #9089 negotiation authority, which is false
+/// until a versioned negotiation contract is proven.
 #[test]
 fn test_feature_gate_dap_inline_values() {
     assert!(
-        has_feature("dap.inline_values"),
-        "dap.inline_values must be registered in the feature catalog"
+        !has_feature("dap.inline_values"),
+        "dap.inline_values must not be advertised until #9089's negotiation gate passes"
     );
 }
 
-/// Capability test: initialize advertises inline values support.
+/// Capability test: initialize must not advertise inline values.
 #[test]
 fn test_capability_dap_inline_values_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
 
-    if has_feature("dap.inline_values") {
-        let supports_inline =
-            body.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(false);
-        assert!(
-            supports_inline,
-            "supportsInlineValues must be true when dap.inline_values is enabled"
-        );
-    }
+    // #9089: supportsInlineValues is authority-bound false — the routed
+    // `inlineValues` request is a project extension, not standard DAP, and no
+    // versioned negotiation contract exists yet. It must not ride on the
+    // catalog row either way.
+    let supports_inline =
+        body.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(true);
+    assert!(
+        !supports_inline,
+        "supportsInlineValues must stay false until #9089's negotiation gate passes"
+    );
+    assert_eq!(
+        supports_inline,
+        has_feature("dap.inline_values"),
+        "supportsInlineValues must mirror the (unadvertised) dap.inline_values row"
+    );
     Ok(())
 }
 
-/// Functional test: inlineValues extracts scalar variables from source.
+/// Functional test: inlineValues is refused with the deterministic #9089
+/// refusal — the extension cannot serve source-derived occurrences or runtime
+/// values while it is unnegotiated.
 #[test]
 fn test_functional_dap_inline_values_scalar_extraction() -> TestResult {
     use std::fs::write;
@@ -800,42 +830,25 @@ fn test_functional_dap_inline_values_scalar_extraction() -> TestResult {
     write(&script, "my $foo = 42;\nmy $bar = $foo + 1;\n")?;
 
     let mut adapter = initialize_adapter();
-    let body = expect_success_body(
-        adapter.handle_request(
-            2,
-            "inlineValues",
-            Some(json!({
-                "source": { "path": script.to_str().ok_or("path error")? },
-                "startLine": 1,
-                "endLine": 2
-            })),
-        ),
+    let response = adapter.handle_request(
+        2,
         "inlineValues",
-    )?;
-
-    let values =
-        body.get("inlineValues").and_then(|v| v.as_array()).ok_or("missing inlineValues array")?;
-
-    assert!(
-        values.iter().any(|v| v
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .contains("$foo")),
-        "inlineValues must include $foo"
+        Some(json!({
+            "source": { "path": script.to_str().ok_or("path error")? },
+            "startLine": 1,
+            "endLine": 2
+        })),
     );
+    let err = expect_error(response, "inlineValues")?;
     assert!(
-        values.iter().any(|v| v
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .contains("$bar")),
-        "inlineValues must include $bar"
+        err.contains("inlineValues"),
+        "inlineValues refusal must carry the #9089 gate reason, got: {err}"
     );
     Ok(())
 }
 
-/// Functional test: inlineValues skips special Perl variables.
+/// Functional test: the refusal is input-independent — unnegotiated requests
+/// are refused as a class, whatever variables the source contains.
 #[test]
 fn test_functional_dap_inline_values_skips_special_vars() -> TestResult {
     use std::fs::write;
@@ -846,41 +859,26 @@ fn test_functional_dap_inline_values_skips_special_vars() -> TestResult {
     write(&script, "print $_; warn $!; my $val = 1;\n")?;
 
     let mut adapter = initialize_adapter();
-    let body = expect_success_body(
-        adapter.handle_request(
-            2,
-            "inlineValues",
-            Some(json!({
-                "source": { "path": script.to_str().ok_or("path error")? },
-                "startLine": 1,
-                "endLine": 1
-            })),
-        ),
+    let response = adapter.handle_request(
+        2,
         "inlineValues",
-    )?;
-
-    let values =
-        body.get("inlineValues").and_then(|v| v.as_array()).ok_or("missing inlineValues array")?;
-
-    let texts: Vec<&str> =
-        values.iter().filter_map(|v| v.get("text").and_then(|t| t.as_str())).collect();
-
-    assert!(
-        !texts.iter().any(|t| t.contains("$_")),
-        "inlineValues must not include special variable $_, got: {texts:?}"
+        Some(json!({
+            "source": { "path": script.to_str().ok_or("path error")? },
+            "startLine": 1,
+            "endLine": 1
+        })),
     );
+    let err = expect_error(response, "inlineValues")?;
     assert!(
-        !texts.iter().any(|t| t.contains("$!")),
-        "inlineValues must not include special variable $!, got: {texts:?}"
-    );
-    assert!(
-        texts.iter().any(|t| t.contains("$val")),
-        "inlineValues must include user variable $val, got: {texts:?}"
+        err.contains("inlineValues"),
+        "inlineValues refusal must carry the #9089 gate reason, got: {err}"
     );
     Ok(())
 }
 
-/// Functional test: inlineValues for array and hash variables includes correct formatting.
+/// Functional test: inlineValues for array and hash sources is refused with
+/// the same deterministic #9089 refusal — array/hash content cannot widen the
+/// floor either.
 #[test]
 fn test_functional_dap_inline_values_array_and_hash() -> TestResult {
     use std::fs::write;
@@ -891,37 +889,19 @@ fn test_functional_dap_inline_values_array_and_hash() -> TestResult {
     write(&script, "my @items = (1, 2, 3);\nmy %config = (a => 1);\n")?;
 
     let mut adapter = initialize_adapter();
-    let body = expect_success_body(
-        adapter.handle_request(
-            2,
-            "inlineValues",
-            Some(json!({
-                "source": { "path": script.to_str().ok_or("path error")? },
-                "startLine": 1,
-                "endLine": 2
-            })),
-        ),
+    let response = adapter.handle_request(
+        2,
         "inlineValues",
-    )?;
-
-    let values =
-        body.get("inlineValues").and_then(|v| v.as_array()).ok_or("missing inlineValues array")?;
-
-    assert!(
-        values.iter().any(|v| v
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .contains("@items")),
-        "inlineValues must include @items"
+        Some(json!({
+            "source": { "path": script.to_str().ok_or("path error")? },
+            "startLine": 1,
+            "endLine": 2
+        })),
     );
+    let err = expect_error(response, "inlineValues")?;
     assert!(
-        values.iter().any(|v| v
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .contains("%config")),
-        "inlineValues must include %config"
+        err.contains("inlineValues"),
+        "inlineValues refusal must carry the #9089 gate reason, got: {err}"
     );
     Ok(())
 }
@@ -1146,7 +1126,14 @@ fn test_functional_dap_watchpoints_data_breakpoint_roundtrip() -> TestResult {
 // Cross-feature: feature catalog completeness
 // ---------------------------------------------------------------------------
 
-/// All 10 DAP features must be registered in the feature catalog.
+/// All DAP features that must be advertised are registered in the feature
+/// catalog.
+///
+/// `dap.inline_values` is deliberately excluded from this advertised set
+/// (#9089): its catalog row stays registered for inventory honesty while
+/// `advertised = false`, and `test_feature_gate_dap_inline_values` pins that
+/// value. The goto rows (#9064) are likewise unadvertised and likewise live
+/// outside this list.
 #[test]
 fn test_all_dap_features_registered_in_catalog() {
     let dap_features = [
@@ -1157,7 +1144,6 @@ fn test_all_dap_features_registered_in_catalog() {
         "dap.completions",
         "dap.exceptions.die",
         "dap.exceptions.warn",
-        "dap.inline_values",
         "dap.modules",
         "dap.watchpoints",
     ];
@@ -1167,6 +1153,12 @@ fn test_all_dap_features_registered_in_catalog() {
     assert!(
         missing.is_empty(),
         "The following DAP features are missing from the catalog: {missing:?}"
+    );
+
+    // The floored extension must not quietly rejoin the advertised set.
+    assert!(
+        !has_feature("dap.inline_values"),
+        "dap.inline_values must stay unadvertised until #9089's negotiation gate passes"
     );
 }
 
@@ -1181,7 +1173,10 @@ fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
     //   supportsBreakpointLocationsRequest  = supports_basic_breakpoints
     //   supportsHitConditionalBreakpoints   = supports_hit_conditions
     //   supportsLogPoints                   = supports_log_points
-    //   supportsInlineValues                = supports_inline_values
+    //   supportsInlineValues                = #9089 negotiation authority (not
+    //                                         the dap.inline_values row); the
+    //                                         row is unadvertised, so both
+    //                                         sides are false today
     //   supportsCompletionsRequest          = supports_completions
     //   supportsModulesRequest              = supports_modules
     //   supportsDataBreakpoints             = supports_watchpoints

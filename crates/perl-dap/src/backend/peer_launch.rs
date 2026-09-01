@@ -689,8 +689,33 @@ impl MirrorPeerBridge {
                 }
             }
             None | Some(_) => {
-                tracing::warn!(command, "mirror bridge: unhandled DAP request");
-                out.push(self.response(request_seq, command, true, None, None));
+                // #9089: `inlineValues` is `native_only` in the route table, so
+                // the peer-availability filter reduces it to `None` before this
+                // arm. The routed extension is unnegotiated in every frontend,
+                // so the mirror bridge refuses it on the same single authority
+                // the native gate reads — the lenient acknowledgement would
+                // answer `success: true` with no body while the native adapter
+                // refuses the identical request.
+                if matches!(
+                    DapRequestRoute::from_command(command),
+                    Some(DapRequestRoute::InlineValues)
+                ) && crate::backend::capabilities::refuse_inline_values_extension(
+                    crate::backend::capabilities::advertises_inline_values_extension(),
+                ) {
+                    out.push(self.response(
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some(
+                            crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE
+                                .to_string(),
+                        ),
+                    ));
+                } else {
+                    tracing::warn!(command, "mirror bridge: unhandled DAP request");
+                    out.push(self.response(request_seq, command, true, None, None));
+                }
             }
         }
         out.extend(self.poll_events());
@@ -1685,6 +1710,40 @@ mod tests {
             assert!(
                 !message.as_deref().unwrap_or("").contains("supportsEvaluateForHovers"),
                 "watch must not be refused as hover"
+            );
+        }
+        Ok(())
+    }
+
+    /// #9089: the mirror bridge refuses the routed inlineValues extension
+    /// instead of acking it.
+    ///
+    /// `inlineValues` is `native_only` in the route table, so before this gate
+    /// it fell through the lenient fallthrough as `success: true` with no body
+    /// while the native adapter refused the identical request. The refusal is
+    /// decided in the dispatch fallthrough before any backend access, so the
+    /// pending phase (no peer connected) is the discriminating seat: getting
+    /// the #9089 refusal rather than `NotConnected` or a success ack proves
+    /// the gate owns the route.
+    #[test]
+    fn mirror_refuses_inline_values_instead_of_acking() -> Result<(), String> {
+        let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+
+        let out = bridge.dispatch(
+            2,
+            "inlineValues",
+            Some(json!({ "source": { "path": "script.pl" }, "startLine": 1, "endLine": 2 })),
+        );
+        let first = out.first().ok_or_else(|| "produced no response".to_string())?;
+        let (cmd, ok, body) = as_response(first)?;
+        assert_eq!(cmd, "inlineValues");
+        assert!(!ok, "inlineValues must be refused, not acked with success");
+        assert!(body.is_none(), "a refused inlineValues response carries no body");
+        if let DapMessage::Response { message, .. } = first {
+            assert_eq!(
+                message.as_deref(),
+                Some(crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE),
+                "expected the deterministic #9089 refusal"
             );
         }
         Ok(())
