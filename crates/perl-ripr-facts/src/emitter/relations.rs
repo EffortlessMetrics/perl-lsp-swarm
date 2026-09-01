@@ -35,6 +35,31 @@ fn resolve_package_owner_id(ast: &Node, pm_path: &str, package_name: &str) -> Op
     })
 }
 
+/// Emit relations, concrete discriminators, and observed-sink facts.
+///
+/// Campaign 31 Phase B PR 7 (perl-lsp-swarm#2594). The load-bearing semantic
+/// slice. This conservative first-pass emitter:
+///
+/// - **Relations**: infers `file_proximity` relations between `.pm` source
+///   files and `.t` test files that share a package name. Relation kind is
+///   `file_proximity` (advisory-only per ripr's gating rules) with confidence
+///   `medium`. This is the simplest relation — `direct_owner_call` /
+///   `established-helper-call-chain` require AST-level call-graph analysis
+///   that lands in a later enrichment.
+///
+/// - **Concrete discriminators**: derives from `is(...)` assertions — the
+///   first argument is the observed value, the second is the expected value,
+///   producing a concrete `"$got == $expected"` discriminator string. This
+///   replaces the generic enum labels ripr's consumer currently falls back to.
+///
+/// - **Observed-sink facts**: ties each oracle to the specific value it
+///   observes (the first argument of `is(got, expected, name)`). A strong
+///   assertion elsewhere in the same test is NOT enough — the oracle must
+///   observe the changed sink.
+///
+/// All three are conservative: where extraction is unsure, emit `unknown` /
+/// omit the fact. ripr's strict-actionability validator fails closed on
+/// unknown facts.
 pub(crate) fn emit_relations_and_discriminators(
     root: &str,
     tests: &[Value],
