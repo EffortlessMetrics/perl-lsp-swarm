@@ -246,6 +246,7 @@ struct CappedReader {
 }
 
 impl CappedReader {
+    /// Join the reader thread and return its bytes, or why it refused.
     fn collect(self, label: &str, stream: &str) -> Result<Vec<u8>, String> {
         let received = self.receiver.recv();
         let _ = self.handle.join();
@@ -257,6 +258,11 @@ impl CappedReader {
     }
 }
 
+/// Drain `stream` on its own thread, refusing more than `cap` bytes.
+///
+/// Over-limit input is still drained, into a sink rather than a buffer, so
+/// the child is never left blocked on a full pipe and the ceiling this
+/// reader just enforced is not defeated on the way out.
 fn spawn_capped_reader<R: Read + Send + 'static>(mut stream: R, cap: usize) -> CappedReader {
     let (sender, receiver) = mpsc::channel();
     let handle = std::thread::spawn(move || {

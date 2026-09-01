@@ -173,6 +173,7 @@ pub fn render<T: Serialize>(value: &T, human: &str, as_json: bool) -> Result<Str
     if as_json { canonical_json(value) } else { Ok(human.to_string()) }
 }
 
+/// Stable token for one dimension verdict.
 const fn verdict_token(verdict: DimensionVerdict) -> &'static str {
     match verdict {
         DimensionVerdict::Valid => "valid",
@@ -182,6 +183,10 @@ const fn verdict_token(verdict: DimensionVerdict) -> &'static str {
     }
 }
 
+/// Stable token for one limitation code.
+///
+/// Exhaustive by construction: a new code will not compile until it is
+/// given a token here, so no limitation can reach a reader unnamed.
 const fn limitation_token(limitation: LimitationCode) -> &'static str {
     match limitation {
         LimitationCode::LocalProofOnly => "local_proof_only",

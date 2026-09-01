@@ -167,6 +167,7 @@ pub(super) struct StagedEnvelope {
 }
 
 impl Drop for StagedEnvelope {
+    /// Remove the staging directory unless it was published.
     fn drop(&mut self) {
         if !self.published {
             let _ = fs::remove_dir_all(&self.directory);
@@ -175,6 +176,7 @@ impl Drop for StagedEnvelope {
 }
 
 impl StagedEnvelope {
+    /// Path of the staging directory, for validating it in place.
     pub(super) fn path(&self) -> &Path {
         &self.directory
     }
@@ -240,6 +242,10 @@ pub fn compute_identity_digest(manifest: &Manifest) -> Result<String, (HandoffOu
     Ok(content_digest_hex(json.as_bytes()))
 }
 
+/// Resolve `revision` to a full commit object id.
+///
+/// Abbreviated ids are refused everywhere identity is claimed, so the
+/// result is checked for canonical form rather than assumed.
 fn resolve_commit(repository: &Path, revision: &str) -> Result<String, (HandoffOutcome, String)> {
     if revision.trim().is_empty() || revision.starts_with('-') {
         return Err((
@@ -414,6 +420,7 @@ fn parse_commit_person(
     Ok(CommitPerson { name, email, date })
 }
 
+/// Read the tree id of `commit`, refusing a non-canonical answer.
 fn resolve_tree(repository: &Path, commit: &str) -> Result<String, (HandoffOutcome, String)> {
     let argument = format!("{commit}^{{tree}}");
     let output = run_git(repository, &["rev-parse", "--verify", "--end-of-options", &argument])
@@ -436,6 +443,10 @@ fn resolve_tree(repository: &Path, commit: &str) -> Result<String, (HandoffOutco
     Ok(tree)
 }
 
+/// Establish which repository the candidate belongs to, or prove none.
+///
+/// A caller's declaration short-circuits the remote read, because it is a
+/// different and weaker claim that must not be presented as an observation.
 fn resolve_repository_identity(
     repository: &Path,
     request: &CreateRequest,
@@ -612,6 +623,7 @@ fn parse_raw_diff(stdout: &[u8]) -> Result<Vec<ChangeRecord>, (HandoffOutcome, S
     Ok(records)
 }
 
+/// Split a raw status field into its letter and rename/copy score.
 fn split_status(field: &str) -> (char, Option<u32>) {
     let mut characters = field.chars();
     let letter = characters.next().unwrap_or('?');
@@ -619,10 +631,12 @@ fn split_status(field: &str) -> (char, Option<u32>) {
     (letter, if score.is_empty() { None } else { score.parse::<u32>().ok() })
 }
 
+/// Absent-side modes are all zeroes; report them as no mode at all.
 fn mode_option(mode: &str) -> Option<String> {
     (mode != "000000").then(|| mode.to_string())
 }
 
+/// Absent-side object ids are all zeroes; report them as no object.
 fn object_option(object: &str) -> Option<String> {
     (!object.chars().all(|character| character == '0')).then(|| object.to_string())
 }
@@ -747,6 +761,7 @@ fn enumerate_objects(
     Ok(ids.into_iter().collect())
 }
 
+/// Pack the candidate's object closure into transport bytes.
 fn build_pack(
     repository: &Path,
     object_ids: &[String],
@@ -811,6 +826,10 @@ struct PreparedProof {
     bytes: Vec<u8>,
 }
 
+/// Read, bound, and subject-bind each declared proof artifact.
+///
+/// A proof naming a different candidate is stale evidence rather than this
+/// candidate's proof, and is refused rather than silently rebound.
 fn collect_proofs(
     paths: &[PathBuf],
     commit: &str,
@@ -885,6 +904,7 @@ fn collect_proofs(
     Ok(prepared)
 }
 
+/// Derive a proof's stable id from its file name.
 fn proof_id_for(path: &Path) -> Result<String, (HandoffOutcome, String)> {
     let raw =
         path.file_name().map(|name| name.to_string_lossy().to_lowercase()).unwrap_or_default();

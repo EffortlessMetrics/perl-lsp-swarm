@@ -142,6 +142,7 @@ struct Builder {
 }
 
 impl Builder {
+    /// Start an empty report for `envelope`.
     fn new(envelope: &Path) -> Self {
         Self {
             envelope: envelope.to_string_lossy().replace('\\', "/"),
@@ -151,15 +152,22 @@ impl Builder {
         }
     }
 
+    /// Record `id` as evaluated and holding.
     fn pass(&mut self, id: &'static str, detail: impl Into<String>) {
         self.record(id, DimensionVerdict::Valid, detail);
     }
 
+    /// Record any verdict for `id`, with the evidence behind it.
     fn record(&mut self, id: &'static str, verdict: DimensionVerdict, detail: impl Into<String>) {
         self.results
             .insert(id, CheckDimension { id: id.to_string(), verdict, detail: detail.into() });
     }
 
+    /// Emit every dimension in evaluation order, including unreached ones.
+    ///
+    /// Dimensions an earlier failure prevented are reported as
+    /// `NotEvaluated` rather than omitted, so a reader can tell "this held"
+    /// from "this was never asked".
     fn finish(self, outcome: HandoffOutcome) -> CheckReport {
         let dimensions = DIMENSION_IDS
             .iter()
@@ -181,6 +189,7 @@ impl Builder {
         }
     }
 
+    /// Record `id` as failing and finish the report with `outcome`.
     fn fail(
         mut self,
         id: &'static str,
@@ -220,6 +229,10 @@ pub fn check_staged(envelope: &Path) -> CheckReport {
 }
 
 #[must_use]
+/// Run every dimension in order, stopping at the first that fails.
+///
+/// Order is deliberate: each dimension assumes the ones before it held, so
+/// a defect is reported as itself rather than as a downstream symptom.
 fn check_envelope(envelope: &Path, stage: ReceiptStage) -> CheckReport {
     let mut builder = Builder::new(envelope);
 
@@ -344,6 +357,12 @@ fn check_envelope(envelope: &Path, stage: ReceiptStage) -> CheckReport {
     }
 }
 
+/// Check every claim the manifest can contradict on its own.
+///
+/// These are the rules that need no objects: identities well formed, counts
+/// within ceilings, enumerations internally consistent, and paths safe to
+/// hand onward. Running them first keeps the expensive object work off
+/// manifests that were never coherent.
 fn validate_shape(manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
     let invalid = |detail: String| (HandoffOutcome::InvalidManifest, detail);
 
@@ -580,6 +599,10 @@ fn validate_shape(manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
     Ok(())
 }
 
+/// Scan every retained manifest string for credential material.
+///
+/// "Every" is the load-bearing word: a field excluded here makes the
+/// `content_safety` dimension assert something false about the document.
 fn find_unsafe_content(manifest: &Manifest) -> Option<String> {
     let candidate = &manifest.candidate;
     let mut fields: Vec<(String, &str)> = vec![
@@ -720,6 +743,10 @@ fn verify_receipt_agrees(
     Ok(())
 }
 
+/// Collect envelope-relative paths of every regular file under `directory`.
+///
+/// Symbolic links are refused rather than followed, so the set describes
+/// the envelope itself and not whatever it points at.
 fn collect_relative_files(
     root: &Path,
     directory: &Path,
@@ -785,6 +812,11 @@ pub(super) fn read_envelope_file(
     fs::read(&path).map_err(|error| format!("`{relative}` is not readable: {error}"))
 }
 
+/// Read the transport and confirm it is the bytes the manifest declares.
+///
+/// This is an integrity claim about *this* envelope only. It says nothing
+/// about whether those bytes carry the candidate, which object import and
+/// the closure comparison establish separately.
 fn verify_transport(envelope: &Path, manifest: &Manifest) -> Result<Vec<u8>, String> {
     // Shape validation already established there is exactly one transport row.
     let Some(file) = manifest.transport.files.first() else {
@@ -865,11 +897,17 @@ struct IsolatedOdb {
 }
 
 impl IsolatedOdb {
+    /// Path of the temporary object database.
     fn path(&self) -> &Path {
         self.directory.path()
     }
 }
 
+/// Import the transport into a throwaway object database.
+///
+/// Isolation is the point: the database starts empty and is destroyed with
+/// the returned value, so anything resolvable inside it came from this
+/// envelope and nowhere else.
 fn import_isolated(pack_bytes: &[u8]) -> Result<IsolatedOdb, (HandoffOutcome, String)> {
     let instrument = |detail: String| (HandoffOutcome::InstrumentFailure, detail);
 
@@ -1058,6 +1096,12 @@ fn mandatory_limitations(manifest: &Manifest) -> BTreeSet<LimitationCode> {
     required
 }
 
+/// Require the declared limitations to be exactly the earned ones.
+///
+/// Sorted, deduplicated, and equal to the derivable set — with
+/// `RemoteUrlContainedCredentials` the sole permitted extra, since no
+/// receiver can derive it. A dropped admission and an unearned one are
+/// both dishonest, so both are refused.
 fn verify_limitations(manifest: &Manifest) -> Result<(), String> {
     let declared: BTreeSet<LimitationCode> = manifest.limitations.iter().copied().collect();
     if declared.len() != manifest.limitations.len() {
@@ -1151,6 +1195,10 @@ fn verify_commit_identity(odb: &Path, manifest: &Manifest) -> Result<(), (Handof
     Ok(())
 }
 
+/// Rebuild the changed-path inventory from the imported objects.
+///
+/// The declared inventory is never trusted: it is re-derived by the same
+/// reader the producer used and required to match row for row.
 fn recompute_inventory(odb: &Path, manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
     let recomputed = build_inventory(odb, &manifest.candidate)?;
     let gitlinks = collect_gitlinks(odb, &manifest.candidate.tree)?;
