@@ -5,7 +5,7 @@
       "path": "crates/perl-dap/tests/debuggee_probe_hygiene.rs",
       "test_function": "probe_workspace_cleanup_covers_each_child_exit_path",
       "signals": "env_remove,env_set",
-      "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
+      "accepted_reason": "Tracked #1269 audit long tail: process-environment behavior is exercised in a configured child process; retire this row when the parent remains mutation-free.",
       "state": "active",
       "remediation": "pending"
     },
@@ -13,7 +13,7 @@
       "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
       "test_function": "tests::perltidy_discoverable_on_path_still_yields_native_default",
       "signals": "env_remove,env_set",
-      "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
+      "accepted_reason": "Tracked #1269 audit long tail: process-environment behavior is exercised in a configured child process; retire this row when the parent remains mutation-free.",
       "state": "retired",
       "remediation": "eliminated"
     },
@@ -21,7 +21,7 @@
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
       "test_function": "tests::for_dap_bridge_gates_perl5lib_and_perl5opt",
       "signals": "env_remove,env_set",
-      "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
+      "accepted_reason": "Tracked #1269 audit long tail: process-environment behavior is exercised in a configured child process; retire this row when the parent remains mutation-free.",
       "state": "retired",
       "remediation": "eliminated"
     },
@@ -29,7 +29,7 @@
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
       "test_function": "tests::for_dap_test_fixture_strips_poisoned_env_from_invocation",
       "signals": "env_remove,env_set",
-      "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
+      "accepted_reason": "Tracked #1269 audit long tail: command discovery runs in a configured child process; retire this row when the parent remains mutation-free.",
       "state": "retired",
       "remediation": "eliminated"
     },
@@ -37,7 +37,7 @@
       "path": "crates/perl-lsp-rs-core/src/config/perl_oracle_env.rs",
       "test_function": "tests::for_language_probe_strips_perl5lib_when_disabled",
       "signals": "env_remove,env_set",
-      "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
+      "accepted_reason": "Tracked #1269 audit long tail: command discovery runs in a configured child process; retire this row when the parent remains mutation-free.",
       "state": "retired",
       "remediation": "eliminated"
     },
