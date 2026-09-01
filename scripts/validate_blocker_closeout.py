@@ -22,7 +22,7 @@ SCHEMA_VERSION = "blocker_closeout.v1"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 IDENTIFIER = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
-SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
+SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9A-Za-z][0-9A-Za-z-]*)(?:\.(?:0|[1-9A-Za-z][0-9A-Za-z-]*))*)?$")
 TERMINAL_STATUSES = {"resolved", "bounded_limitation", "blocked", "not_proven"}
 PROOF_STATUSES = {
     "passed",
@@ -65,7 +65,7 @@ PROOF_AUTHORITY_MATRIX = {
     ("fixture", "repository_mechanism"): {"repository_blob", "repository_receipt"},
 }
 PRIVATE_REF = re.compile(
-    r"(?:(?:^|repo:)[A-Za-z]:[\\/]|^/tmp/|^/home/|\.codex(?:[\\/]|$)|worktrees?(?:[\\/]|$))",
+    r"(?:(?:^|repo:)[A-Za-z]:[\\/]|^/tmp/|^/home/|\.codex(?:[\\/]|$)|worktrees?(?:[\\/]|$)|^repo:(?:/|[A-Za-z]:[\\/]))",
     re.IGNORECASE,
 )
 ISSUE_REF = re.compile(r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/([0-9]+)$")
@@ -568,7 +568,7 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
         _require(all(item.status == "passed" for item in observations), "bounded_limitation requires every required proof to pass within its narrowed claim")
         _require(bool(narrows) and bool(limitations), "bounded_limitation requires exact narrowed claims and limitations")
         _require(set(preserves) | set(narrows) == set(controller_claims), "bounded_limitation must state the effect on every semantic-controller claim")
-        _require(set(preserves) <= passed_claim_coverage, "bounded_limitation preserved claim lacks observation proof coverage")
+        _require(set(preserves) | set(narrows) <= passed_claim_coverage, "bounded_limitation claim lacks observation proof coverage")
     elif status == "blocked":
         # Blocked packets report a decisive failed observation or an unresolved
         # finding. They do not claim terminal proof closure, so preserved-claim

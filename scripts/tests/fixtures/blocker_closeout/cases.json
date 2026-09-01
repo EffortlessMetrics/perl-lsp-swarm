@@ -138,7 +138,7 @@
       "proof.observations.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90007/job/90008",
       "proof.observations.1.claim_ids": ["example.product"]
     },
-    "error": "bounded_limitation preserved claim lacks observation proof coverage"
+    "error": "bounded_limitation claim lacks observation proof coverage"
   },
   {
     "name": "reject_contradictory_controller_identity",
