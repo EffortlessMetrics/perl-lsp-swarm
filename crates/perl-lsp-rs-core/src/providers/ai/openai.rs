@@ -295,8 +295,8 @@ impl OpenAiProvider {
                     // finalizing whatever text accumulated by EOF.
                     if Self::extract_finish_reason(&event.data).as_deref() == Some("error") {
                         return Err(BackendError::Provider(
-                            "stream ended with a provider failure event (response.failed or \
-                             response.incomplete)"
+                            "stream ended with a provider failure event (response.failed, \
+                             response.incomplete, content_filter, or error event)"
                                 .to_string(),
                         ));
                     }
