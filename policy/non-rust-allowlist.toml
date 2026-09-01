@@ -1244,6 +1244,23 @@ covered_by = [
 created = "2026-08-08"
 review_after = "2026-11-08"
 
+[[allow]]
+id = "non-rust-blocker-closeout-schema"
+path = "schemas/blocker_closeout.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned terminal blocker-closeout packet schema binding semantic-controller, merged contribution, current review, proof, and claim-effect identities for release freeze fan-in (#13858)."
+covered_by = [
+  "python -m unittest scripts/tests/test-validate-blocker-closeout.py",
+  "python scripts/validate_blocker_closeout.py --packet scripts/tests/fixtures/blocker_closeout/valid_resolved.json --repository .",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-30"
+review_after = "2026-11-30"
+
 # =============================================================================
 # Receipts / status / metrics
 # =============================================================================
@@ -3664,6 +3681,51 @@ broad_glob_reason = "Benchmark results accumulate per run."
 created = "2026-08-24"
 review_after = "2027-02-20"
 
+[[allow]]
+id = "non-rust-distribution-kwalitee-catalog-v1"
+path = "crates/perl-kwalitee/distribution_kwalitee_catalog.v1.toml"
+kind = "config"
+language = "toml"
+surface = "tooling"
+classification = "config"
+owner = "distribution/kwalitee"
+reason = "Frozen machine-readable CPANTS-compatible catalog v1 (#7170); decoded and validated by perl-kwalitee tests, not by a second runtime language."
+covered_by = [
+  "cargo test -p perl-kwalitee --all-targets --locked",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-distribution-kwalitee-fixture-contract-v1"
+path = "crates/perl-kwalitee/distribution_kwalitee_fixtures.v1.toml"
+kind = "config"
+language = "toml"
+surface = "tooling"
+classification = "config"
+owner = "distribution/kwalitee"
+reason = "Frozen fixture-identity contract for catalog v1 (#7170); expected facts are independently authored and catalog-bound."
+covered_by = [
+  "cargo test -p perl-kwalitee --all-targets --locked",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-distribution-kwalitee-fixture-trees"
+glob = "crates/perl-kwalitee/fixtures/distribution/**"
+kind = "language_fixture"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "distribution/kwalitee"
+reason = "Committed catalog-bound distribution fixture trees for Kwalitee contract tests. Perl/metadata files are the subject under test, not runtime tooling."
+covered_by = [
+  "cargo test -p perl-kwalitee --all-targets --locked",
+]
+broad_glob_reason = "Each catalog metric may grow a reserved tree under a stable fixture id; the Rust fixture contract enumerates the allowed relative paths."
+created = "2026-08-26"
+review_after = "2026-11-26"
 
 [[allow]]
 id = "non-rust-product-health-status-fixtures"

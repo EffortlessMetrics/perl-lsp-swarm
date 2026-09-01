@@ -605,9 +605,14 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
             &["phase_span"]
         ),
         fixture!(
-            NodeKind::DataSection { marker: text(), body: Some(text()) },
+            NodeKind::DataSection {
+                marker: text(),
+                marker_span: Some(loc),
+                body: Some(text()),
+                body_span: Some(loc)
+            },
             &["marker", "body"],
-            &[]
+            &["marker_span", "body_span"]
         ),
         fixture!(
             NodeKind::Class {

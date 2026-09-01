@@ -28,7 +28,7 @@
       "command": "initialize",
       "body": {
         "supportsConfigurationDoneRequest": true,
-        "supportsEvaluateForHovers": true,
+        "supportsEvaluateForHovers": false,
         "supportsStepBack": false,
         "supportsSetVariable": true,
         "supportsRestartFrame": false,
