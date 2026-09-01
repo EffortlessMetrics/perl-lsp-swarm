@@ -2272,17 +2272,6 @@ pub fn discover_perltidy_profile(workspace_root: &Path) -> Option<String> {
     )
 }
 
-/// Resolve a named executable from an explicit PATH value.
-///
-/// Keeping the path input explicit makes discovery behavior testable without
-/// mutating the environment of the process running the test suite.
-fn executable_from_path(path_env: &str, name: &str) -> Option<PathBuf> {
-    std::env::split_paths(path_env)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
 /// Pure, dependency-injected core of [`discover_perltidy_profile`].
 ///
 /// Separated so tests can exercise the search order deterministically without
@@ -3846,17 +3835,40 @@ profile = "recommended"
 
     #[test]
     fn perltidy_discoverable_on_path_still_yields_native_default() -> TestResult {
+        const MARKER: &str = "PERL_LSP_WAVE_A1_PATH_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            let name = if cfg!(windows) { "perltidy.exe" } else { "perltidy" };
+            let status = std::process::Command::new(name).status()?;
+            assert!(status.success(), "child PATH must discover perltidy");
+            assert_eq!(ServerConfig::default().formatting_engine, FormatterMode::Native);
+            return Ok(());
+        }
         // Exercise executable discoverability with an explicit PATH input; the
         // test runner's environment is never changed.
         let dir = tempfile::tempdir()?;
         let name = if cfg!(windows) { "perltidy.exe" } else { "perltidy" };
         let executable = dir.path().join(name);
-        std::fs::write(&executable, b"fixture")?;
-        let path = dir.path().to_string_lossy();
-        assert_eq!(executable_from_path(&path, name), Some(executable));
-
-        let config = ServerConfig::default();
-        assert_eq!(config.formatting_engine, FormatterMode::Native);
+        #[cfg(windows)]
+        std::fs::write(&executable, b"@echo off\r\nexit /b 0\r\n")?;
+        #[cfg(not(windows))]
+        std::fs::write(&executable, b"#!/bin/sh\nexit 0\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&executable)?.permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&executable, permissions)?;
+        }
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "config::tests::perltidy_discoverable_on_path_still_yields_native_default",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env("PATH", dir.path())
+            .output()?;
+        assert!(output.status.success(), "child PATH/default proof failed: {output:?}");
         Ok(())
     }
 
