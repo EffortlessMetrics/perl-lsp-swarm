@@ -1363,7 +1363,7 @@ fn startup_banner_with_quiet(
     quiet: bool,
 ) {
     if quiet {
-        return;
+        return Ok(());
     }
     eprintln!("{}", format_startup_banner(version, profile, transport.is_socket()));
 }
@@ -1453,7 +1453,7 @@ mod tests {
             .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
             .any(|contents| contents.contains(TOKEN));
         assert!(found, "rolling log must contain marker {TOKEN}");
-        return;
+        return Ok(());
         #[allow(unreachable_code)]
         {
             // The public wrapper owns environment/configuration lookup; this
