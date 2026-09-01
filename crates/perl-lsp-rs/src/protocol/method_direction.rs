@@ -585,7 +585,13 @@ mod tests {
                 index += 1;
             }
             if bytes.get(index..).is_some_and(|tail| tail.starts_with(b"//")) {
-                return None;
+                let Some(newline) =
+                    bytes.get(index..).and_then(|tail| tail.iter().position(|byte| *byte == b'\n'))
+                else {
+                    return None;
+                };
+                index += newline + 1;
+                continue;
             }
             if !bytes.get(index..).is_some_and(|tail| tail.starts_with(b"/*")) {
                 return Some(index);
@@ -612,6 +618,38 @@ mod tests {
         }
     }
 
+    fn visibility_close(source: &str) -> Option<usize> {
+        let bytes = source.as_bytes();
+        let mut depth = 0;
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index..].starts_with(b"/*") {
+                let mut comment_depth = 1;
+                index += 2;
+                while index < bytes.len() && comment_depth > 0 {
+                    if bytes[index..].starts_with(b"/*") {
+                        comment_depth += 1;
+                        index += 2;
+                    } else if bytes[index..].starts_with(b"*/") {
+                        comment_depth -= 1;
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                }
+                continue;
+            }
+            match bytes[index] {
+                b'(' => depth += 1,
+                b')' if depth == 1 => return Some(index),
+                b')' if depth > 1 => depth -= 1,
+                _ => {}
+            }
+            index += 1;
+        }
+        None
+    }
+
     fn test_module_declaration(line: &str) -> Option<TestModuleDeclaration> {
         let mut rest = line.trim_start();
 
@@ -622,7 +660,7 @@ mod tests {
             let visibility_start = skip_declaration_trivia(rest, 0)?;
             rest = &rest[visibility_start..];
             if rest.starts_with('(') {
-                let Some(close) = rest.find(')') else { return None };
+                let Some(close) = visibility_close(rest) else { return None };
                 let after_visibility = skip_declaration_trivia(&rest[close + 1..], 0)?;
                 rest = &rest[close + 1 + after_visibility..];
             }
@@ -633,7 +671,8 @@ mod tests {
             return None;
         }
 
-        let rest = after_mod.trim_start();
+        let name_start = skip_declaration_trivia(after_mod, 0)?;
+        let rest = &after_mod[name_start..];
         let name_end = rest
             .find(|character: char| character.is_whitespace() || matches!(character, '{' | ';'));
         let Some(name_end) = name_end else { return None };
@@ -712,9 +751,14 @@ mod tests {
                 .is_some_and(|closing| closing.iter().all(|byte| *byte == b'#'))
     }
 
-    fn scan_structural_braces(line: &str, state: &mut LexicalState) -> i64 {
+    fn scan_structural_braces(
+        line: &str,
+        state: &mut LexicalState,
+        starting_depth: i64,
+        start_index: usize,
+    ) -> (i64, Option<usize>) {
         let bytes = line.as_bytes();
-        let mut index = 0;
+        let mut index = start_index;
         let mut depth_delta = 0;
 
         if let LexicalState::Quoted { delimiter, escaped: true } = *state {
@@ -762,7 +806,12 @@ mod tests {
                     }
                     match bytes[index] {
                         b'{' => depth_delta += 1,
-                        b'}' => depth_delta -= 1,
+                        b'}' => {
+                            depth_delta -= 1;
+                            if starting_depth + depth_delta == 0 {
+                                return (depth_delta, Some(index));
+                            }
+                        }
                         _ => {}
                     }
                     index += 1;
@@ -807,7 +856,7 @@ mod tests {
             }
         }
 
-        depth_delta
+        (depth_delta, None)
     }
 
     fn strip_line_comment(source: &str) -> &str {
@@ -897,7 +946,7 @@ mod tests {
             let declaration_start = line_index;
             let mut declaration_text = String::new();
             let mut declaration = None;
-            for end in declaration_start..lines.len().min(declaration_start + 32) {
+            for end in declaration_start..lines.len() {
                 if !declaration_text.is_empty() {
                     declaration_text.push('\n');
                 }
@@ -918,8 +967,10 @@ mod tests {
                 let declaration_line = lines[declaration_end];
                 let prefix_len = declaration_text.len() - declaration_line.len();
                 let offset = declaration.terminator_offset.saturating_sub(prefix_len);
-                let suffix = declaration_line.get(offset + 1..).unwrap_or_default();
-                let suffix = strip_line_comment(suffix);
+                let suffix = skip_declaration_trivia(declaration_line, offset + 1)
+                    .and_then(|suffix_start| declaration_line.get(suffix_start..))
+                    .map(strip_line_comment)
+                    .unwrap_or_default();
                 if !suffix.trim().is_empty() {
                     result.push_str(suffix.trim_end());
                     result.push('\n');
@@ -928,15 +979,50 @@ mod tests {
             }
             let mut lexical_state = LexicalState::Normal;
             let mut depth = 0;
-            for declaration_line in &lines[declaration_start..=declaration_end] {
-                depth += scan_structural_braces(declaration_line, &mut lexical_state);
+            let mut module_close = None;
+            for (offset, declaration_line) in
+                lines[declaration_start..=declaration_end].iter().enumerate()
+            {
+                let line_offset = if offset + declaration_start == declaration_end {
+                    declaration
+                        .terminator_offset
+                        .saturating_sub(declaration_text.len() - declaration_line.len())
+                } else {
+                    0
+                };
+                let (delta, close) = scan_structural_braces(
+                    declaration_line,
+                    &mut lexical_state,
+                    depth,
+                    line_offset,
+                );
+                depth += delta;
+                if close.is_some() {
+                    module_close = close;
+                    break;
+                }
             }
             while depth > 0 {
                 let Some(&inner) = lines.get(line_index) else {
                     break;
                 };
                 line_index += 1;
-                depth += scan_structural_braces(inner, &mut lexical_state);
+                let (delta, close) = scan_structural_braces(inner, &mut lexical_state, depth, 0);
+                depth += delta;
+                if close.is_some() {
+                    module_close = close;
+                    break;
+                }
+            }
+            if let Some(close) = module_close {
+                let closing_line =
+                    lines.get(line_index.saturating_sub(1)).copied().unwrap_or_default();
+                let suffix = closing_line.get(close + 1..).unwrap_or_default();
+                let suffix = strip_line_comment(suffix);
+                if !suffix.trim().is_empty() {
+                    result.push_str(suffix.trim_end());
+                    result.push('\n');
+                }
             }
             if depth < 0 {
                 // A malformed declaration must not cause the remainder of
@@ -972,6 +1058,21 @@ mod plain_external;
 #[cfg(test)]
 pub(crate) /* comment containing { and } */ mod commented_visibility {
     fn send() { client.send_request("test-only/visibility-comment"); }
+}
+#[cfg(test)]
+pub(crate) // visibility line trivia
+mod line_trivia {
+    fn send() { client.send_request("test-only/line-visibility"); }
+}
+#[cfg(test)]
+mod /* name trivia */ name_trivia {
+    fn send() { client.send_request("test-only/name-comment"); }
+}
+#[cfg(test)]
+mod external_block; /* client.send_request("test-only/block-comment") */
+#[cfg(test)]
+pub(in /* fake ) delimiter */ crate::protocol) mod scoped_comment {
+    fn send() { client.send_request("test-only/scoped-comment"); }
 }
 #[cfg(test)]
 pub(crate) mod commented /* comment containing { and } */ ;
@@ -1011,6 +1112,10 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         assert!(!stripped.contains("pub(crate) mod external;"));
         assert!(!stripped.contains("test-only/external-comment"));
         assert!(!stripped.contains("test-only/visibility-comment"));
+        assert!(!stripped.contains("test-only/line-visibility"));
+        assert!(!stripped.contains("test-only/name-comment"));
+        assert!(!stripped.contains("test-only/block-comment"));
+        assert!(!stripped.contains("test-only/scoped-comment"));
         assert!(!stripped.contains("pub(crate) mod commented"));
         assert!(!stripped.contains("pub(crate) mod lexical_forms"));
         assert!(!stripped.contains("CONTINUED"));
