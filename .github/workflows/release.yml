@@ -466,7 +466,7 @@ jobs:
             --check
 
       - name: Attest exact terminal candidate subjects
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.0
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
         with:
           subject-checksums: candidate/attestation-subjects.sha256
 
@@ -592,7 +592,17 @@ jobs:
           if ! gh api -X POST "/repos/${GITHUB_REPOSITORY}/git/refs" \
               -f ref="refs/tags/${TAG}" \
               -f sha="$SOURCE_SHA" \
-              > target/release-tag-authority/created-ref.json; then
+              > target/release-tag-authority/created-ref.json \
+              2> target/release-tag-authority/post-error.log; then
+            # Only a 422 already-exists conflict may fall back to validating
+            # the pre-existing ref (safe-to-retry). Any other POST failure —
+            # 5xx, auth, validation — must fail the step so it is not masked
+            # as "tag already exists".
+            if ! grep -q "HTTP 422" target/release-tag-authority/post-error.log; then
+              cat target/release-tag-authority/post-error.log >&2
+              printf '::error::Tag creation failed for a non-conflict reason: %s\n' "$TAG"
+              exit 1
+            fi
             gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" \
               > target/release-tag-authority/created-ref.json
           fi

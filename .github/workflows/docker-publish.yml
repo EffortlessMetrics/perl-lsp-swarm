@@ -64,6 +64,7 @@ jobs:
           EXPECTED_SHA: ${{ github.event.inputs.expected_sha }}
           MANIFEST_SHA256: ${{ github.event.inputs.manifest_sha256 }}
           CANDIDATE_RUN_ID: ${{ github.event.inputs.candidate_run_id }}
+          VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
           test "$GITHUB_SHA" = "$EXPECTED_SHA"
@@ -78,6 +79,11 @@ jobs:
           actual_manifest_sha256="$(sha256sum release-candidate/dist/release-terminal-manifest.json | awk '{print $1}')"
           test "$actual_manifest_sha256" = "$MANIFEST_SHA256"
           test "$(jq -r '.source_sha' release-candidate/dist/release-terminal-manifest.json)" = "$EXPECTED_SHA"
+          # Bind the sealed manifest's release tag to the dispatched version:
+          # image tags derive from `version`, so a manifest sealed for another
+          # tag must not be admitted even when its source_sha matches. The
+          # manifest digest binding above already pins schema and status.
+          test "$(jq -r '.tag' release-candidate/dist/release-terminal-manifest.json)" = "v$VERSION"
           echo "Accepted release eligibility handoff for $EXPECTED_SHA from run $CANDIDATE_RUN_ID."
 
   # Dispatch-selected refs used to flow straight into every build/publish job

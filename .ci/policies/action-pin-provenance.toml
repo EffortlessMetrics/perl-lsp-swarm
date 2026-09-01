@@ -159,7 +159,7 @@ value = 'v7.0.0'
 action = 'actions/attest'
 sha = 'a1948c3f048ba23858d222213b7c278aabede763'
 kind = 'release_tag'
-value = 'v4.1.0'
+value = 'v4.1.1'
 
 [[pin]]
 action = 'actions/upload-artifact'
@@ -167,14 +167,15 @@ sha = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
 kind = 'legacy_debt'
 value = 'v7'
 
-# Verified against upstream on 2026-08-31:
-#   git ls-remote --tags https://github.com/actions/attest v4.1.0
-#   a1948c3f048ba23858d222213b7c278aabede763  refs/tags/v4.1.0
+# Verified against upstream on 2026-09-01:
+#   gh api repos/actions/attest/git/ref/tags/v4.1.1
+#   a1948c3f048ba23858d222213b7c278aabede763  refs/tags/v4.1.1
+#   (gh api repos/actions/attest/git/ref/tags/v4.1.0 → 59d89421af93a897026c735860bf21b6eb4f7b26)
 [[pin]]
 action = 'actions/attest'
 sha = 'a1948c3f048ba23858d222213b7c278aabede763'
 kind = 'release_tag'
-value = 'v4.1.0'
+value = 'v4.1.1'
 
 [[pin]]
 action = 'actions/upload-artifact'
