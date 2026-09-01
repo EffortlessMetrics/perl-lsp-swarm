@@ -820,3 +820,69 @@ fn a_setup_whose_brackets_do_not_close_publishes_no_exports() {
         vec![(None, "Sub::Exporter export configuration is not a static -setup hash".to_string())]
     );
 }
+
+#[test]
+fn a_group_member_carrying_only_generator_arguments_is_published() {
+    // `reformat => { -as => 'email_format', width => 72 }` in the documentation
+    // shows both kinds of group-member option side by side: `-as` renames what
+    // is installed, `width` is a generator argument. A member whose options
+    // carry no dashed directive at all installs under its own name, so
+    // withholding it would hide an import a consumer really gets.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports => [qw(item other)],\n\
+             groups  => { default => [ qw(other), item => { width => 72 } ] },\n\
+         };\n",
+    );
+
+    assert_eq!(
+        declarations(&file, "My::Utils"),
+        vec![
+            (ExportDeclarationKind::Optional, None, vec!["item".to_string(), "other".to_string()]),
+            (ExportDeclarationKind::Default, None, vec!["other".to_string(), "item".to_string()]),
+            (
+                ExportDeclarationKind::Tag,
+                Some("all".to_string()),
+                vec!["item".to_string(), "other".to_string()]
+            ),
+        ]
+    );
+    assert!(
+        export_boundaries(&file, "My::Utils").is_empty(),
+        "a member that keeps its name leaves the group complete"
+    );
+}
+
+#[test]
+fn a_renamed_group_member_is_still_withheld_beside_a_plain_options_member() {
+    // The control for the test above: adding options must not become a blanket
+    // "publish it anyway". A dashed directive still withholds that member and
+    // still marks the group incomplete.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports => [qw(item rabbit)],\n\
+             groups  => { default => [ item => { width => 72 }, rabbit => { -as => 'coney' } ] },\n\
+         };\n",
+    );
+
+    assert_eq!(
+        declarations(&file, "My::Utils")
+            .into_iter()
+            .filter(|(kind, _, _)| *kind == ExportDeclarationKind::Default)
+            .map(|(_, _, symbols)| symbols)
+            .collect::<Vec<_>>(),
+        vec![vec!["item".to_string()]],
+        "the renamed member is withheld, the argument-only member is kept"
+    );
+    assert_eq!(
+        export_boundaries(&file, "My::Utils"),
+        vec![(
+            Some("default".to_string()),
+            "Sub::Exporter group has members that do not resolve \
+             to a declared export name"
+                .to_string()
+        )]
+    );
+}

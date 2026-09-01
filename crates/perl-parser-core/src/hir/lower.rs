@@ -3378,6 +3378,24 @@ fn sub_exporter_group_bodies(
     Some(groups)
 }
 
+/// True when a group member's option value cannot change the installed name.
+///
+/// Sub::Exporter spells its directives with a leading dash, and `-as` is the
+/// one that renames what is installed — `reformat => { -as => 'email_format',
+/// width => 72 }` shows both kinds side by side, where `width` is a generator
+/// argument. An option hash carrying no dashed key therefore carries no
+/// directive at all, so the member installs under its own name. Resting on
+/// "a rename directive is dashed" rather than on a list of which dashed
+/// options exist keeps this sound without enumerating them.
+fn sub_exporter_member_keeps_its_name(value: &[String]) -> bool {
+    let Some(body) = bracketed_body(value, "{", "}") else {
+        return false;
+    };
+    comma_separated_entries(body)
+        .iter()
+        .all(|entry| entry.first().is_some_and(|key| !unquote_literal(key).starts_with('-')))
+}
+
 /// Statically enumerable members of one Sub::Exporter group.
 fn sub_exporter_group_members(value: &[String]) -> Option<SubExporterGroupMembers> {
     let body = bracketed_body(value, "[", "]")?;
@@ -3390,8 +3408,17 @@ fn sub_exporter_group_members(value: &[String]) -> Option<SubExporterGroupMember
         // a consumer of this group ends up with. The plain members beside it
         // are still exactly known, so record the gap instead of discarding
         // the whole group.
+        //
+        // `item => { width => 72 }` is the other half of the same syntax —
+        // generator arguments, no rename — and that member does still install
+        // under its own name, so withholding it would hide a valid import.
         if entry.get(1).map(String::as_str) == Some("=>") {
-            complete = false;
+            let member = sub_exporter_single_name(&entry[0])
+                .filter(|_| sub_exporter_member_keeps_its_name(entry.get(2..).unwrap_or_default()));
+            match member {
+                Some(name) => names.push(name),
+                None => complete = false,
+            }
             continue;
         }
 
