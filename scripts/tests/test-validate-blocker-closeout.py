@@ -84,12 +84,17 @@ def _multi_pr_packet(base: dict) -> dict:
     )
     second_integration["evidence"] = {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/example-integration-2.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ref": "repo:receipts/integration/pr-90003@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     }
     packet["landed_integrations"].append(second_integration)
     second_review = copy.deepcopy(packet["reviews"][0])
     second_review.update({"authority_number": 90003, "reviewed_head": "cccccccccccccccccccccccccccccccccccccccc"})
+    second_review["reviewed_head_receipt"] = {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/review/pr-90003@cccccccccccccccccccccccccccccccccccccccc",
+        "digest": "sha256:abababababababababababababababababababababababababababababababab",
+    }
     second_review["current_head_synthesis"] = {
         "kind": "github_review",
         "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90003#pullrequestreview-2",

@@ -176,6 +176,16 @@
     "error": "review synthesis evidence ref does not match implementation PR authority"
   },
   {
+    "name": "reject_mismatched_review_head_receipt_subject",
+    "updates": {"reviews.0.reviewed_head_receipt.ref": "repo:receipts/review/pr-90002@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "error": "current PR review receipt must bind implementation PR and reviewed head"
+  },
+  {
+    "name": "reject_mismatched_review_head_receipt_authority",
+    "updates": {"reviews.0.reviewed_head_receipt.ref": "repo:receipts/review/pr-90003@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "error": "current PR review receipt must bind implementation PR and reviewed head"
+  },
+  {
     "name": "reject_pull_without_review_synthesis_identity",
     "updates": {"reviews.0.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90002"},
     "error": "does not match exact grammar for github_review"
@@ -246,7 +256,7 @@
   {
     "name": "reject_mismatched_integration_receipt_subject",
     "updates": {"landed_integrations.0.evidence.ref": "repo:receipts/example-integration.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-    "error": "landed integration receipt SHA does not match landed_sha"
+    "error": "landed integration receipt must bind implementation_pr and landed_sha"
   },
   {
     "name": "reject_merge_without_candidate_to_landed_ancestry",
@@ -262,7 +272,7 @@
       "merged_shas": ["0d70248e3ec1ef90c6059f864b9a26fecad07db4"],
       "landed_integrations.0.candidate_head_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
       "landed_integrations.0.landed_sha": "0d70248e3ec1ef90c6059f864b9a26fecad07db4",
-      "landed_integrations.0.evidence.ref": "repo:receipts/example-integration.json@0d70248e3ec1ef90c6059f864b9a26fecad07db4",
+      "landed_integrations.0.evidence.ref": "repo:receipts/integration/pr-90002@0d70248e3ec1ef90c6059f864b9a26fecad07db4",
       "reviews.0.reviewed_head": "0d70248e3ec1ef90c6059f864b9a26fecad07db4"
     },
     "error": "squash integration must distinguish candidate head from landed SHA"

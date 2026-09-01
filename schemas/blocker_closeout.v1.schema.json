@@ -143,7 +143,10 @@
         "landed_sha": {"$ref": "#/$defs/sha"},
         "kind": {"enum": ["squash", "merge", "fast_forward"]},
         "evidence": {"$ref": "#/$defs/durable_evidence"}
-      }
+      },
+      "allOf": [
+        {"if": {"properties": {"evidence": {"properties": {"kind": {"const": "repository_receipt"}}}}, "required": ["evidence"]}, "then": {"properties": {"evidence": {"properties": {"ref": {"pattern": "^repo:receipts/integration/pr-[1-9][0-9]*@[0-9a-f]{40}$"}}}}}}
+      ]
     },
     "review": {
       "type": "object",
@@ -156,8 +159,12 @@
         "reviewed_head": {"$ref": "#/$defs/sha"},
         "status": {"enum": ["current", "stale", "not_proven"]},
         "unresolved_material_findings": {"type": "integer", "minimum": 0},
-        "finding_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/durable_evidence"}}
-      }
+        "finding_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/durable_evidence"}},
+        "reviewed_head_receipt": {"$ref": "#/$defs/durable_evidence"}
+      },
+      "allOf": [
+        {"if": {"properties": {"authority_kind": {"const": "implementation_pr"}, "status": {"const": "current"}}, "required": ["authority_kind", "status"]}, "then": {"required": ["reviewed_head_receipt"], "properties": {"reviewed_head_receipt": {"properties": {"kind": {"const": "repository_receipt"}, "ref": {"pattern": "^repo:receipts/review/pr-[1-9][0-9]*@[0-9a-f]{40}$"}}}}}}
+      ]
     },
     "proof_observation": {
       "type": "object",
