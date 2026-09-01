@@ -72,7 +72,11 @@ pub fn logging_filter(
 /// (max 5 files) **in addition to** stderr. Invalid `RUST_LOG` values fall
 /// back to `default_filter`.
 pub fn init_logging(default_filter: &str) {
-    init_logging_with_log_path(default_filter, std::env::var("PERL_LSP_LOG_FILE").ok());
+    init_logging_with_log_path(default_filter, log_path_from(std::env::var("PERL_LSP_LOG_FILE").ok()));
+}
+
+fn log_path_from(value: Option<String>) -> Option<String> {
+    value
 }
 
 fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
@@ -1337,7 +1341,11 @@ pub fn format_startup_banner(version: &str, profile: FeatureProfile, is_socket: 
     reason = "Startup banner fires before the tracing subscriber is configured — intentional stderr output"
 )]
 pub fn startup_banner(version: &str, profile: FeatureProfile, transport: TransportMode) {
-    startup_banner_with_quiet(version, profile, transport, std::env::var("PERL_LSP_QUIET").is_ok());
+    startup_banner_with_quiet(version, profile, transport, quiet_from(std::env::var("PERL_LSP_QUIET").ok()));
+}
+
+fn quiet_from(value: Option<String>) -> bool {
+    value.is_some()
 }
 
 fn startup_banner_with_quiet(
@@ -1415,6 +1423,10 @@ mod tests {
     fn init_logging_does_not_panic_with_log_file() {
         // The public wrapper owns environment/configuration lookup; this
         // smoke test ensures the call remains safe after initialization.
+        assert_eq!(
+            super::log_path_from(Some("fixture.log".to_owned())),
+            Some("fixture.log".to_owned())
+        );
         super::init_logging("debug");
     }
 
@@ -1933,6 +1945,7 @@ mod tests {
     fn startup_banner_suppressed_by_quiet_env() {
         // startup_banner must not panic when PERL_LSP_QUIET is set.
         // The transport argument must propagate through without crashing.
+        assert!(super::quiet_from(Some("1".to_owned())));
         super::startup_banner(
             "0.12.0",
             super::FeatureProfile::current(),
