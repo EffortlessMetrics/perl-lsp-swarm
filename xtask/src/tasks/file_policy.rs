@@ -575,11 +575,32 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         "github.event.pull_request.head",
         "refs/pull/${{",
     ];
+    let contract_steps = steps
+        .iter()
+        .filter(|step| {
+            step.as_mapping().is_some_and(|map| {
+                map.get(key("id")).and_then(serde_yaml_ng::Value::as_str)
+                    == Some("verify-trusted-workflow-contract")
+            })
+        })
+        .collect::<Vec<_>>();
+    if contract_steps.len() != 1
+        || contract_steps[0]
+            .as_mapping()
+            .and_then(|map| map.get(key("name")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            != Some("Verify trusted workflow contract")
+    {
+        bail!("trusted workflow must define exactly one stable contract-verification step");
+    }
     for step in steps {
         let map =
             step.as_mapping().ok_or_else(|| eyre!("trusted workflow step must be a mapping"))?;
         let name = map.get(key("name")).and_then(serde_yaml_ng::Value::as_str);
-        if name == Some("Verify trusted workflow contract") {
+        if name == Some("Verify trusted workflow contract")
+            && map.get(key("id")).and_then(serde_yaml_ng::Value::as_str)
+                == Some("verify-trusted-workflow-contract")
+        {
             continue;
         }
         // Candidate-controlled refs can be smuggled through `env`/`with` and
