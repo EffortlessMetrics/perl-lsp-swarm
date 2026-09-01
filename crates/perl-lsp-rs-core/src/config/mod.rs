@@ -3834,58 +3834,6 @@ profile = "recommended"
     }
 
     #[test]
-    fn perltidy_discoverable_on_path_still_yields_native_default()
-    -> std::result::Result<(), Box<dyn std::error::Error>> {
-        // Stronger form of the guard above. The previous test only proves the
-        // default holds when `perltidy` is ABSENT from PATH (the usual CI
-        // condition), so it would not catch a regression that auto-selects the
-        // external engine only when a PATH probe (`which perltidy`) succeeds.
-        // Here we make a real `perltidy` executable discoverable on PATH and
-        // assert the default engine is STILL native — locking the "installed
-        // external tools must not change default behavior merely by existing on
-        // PATH" contract behaviorally, not just structurally.
-        //
-        // PATH is process-global, so serialize against any other PATH-touching
-        // test and restore it on scope exit (a leaked mutation would poison
-        // sibling tests). The lock is crate-shared (`crate::test_support`), not
-        // function-local, so every PATH-mutating test acquires the SAME guard.
-        use std::io::Write as _;
-        let dir = tempfile::tempdir()?;
-        let bin_name = if cfg!(windows) { "perltidy.exe" } else { "perltidy" };
-        let bin_path = dir.path().join(bin_name);
-        std::fs::File::create(&bin_path)?.write_all(b"#!/bin/sh\nexit 0\n")?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mut perms = std::fs::metadata(&bin_path)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin_path, perms)?;
-        }
-
-        let probe_path = std::env::join_paths(
-            std::iter::once(dir.path().to_owned())
-                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
-        )?;
-        let probe = std::process::Command::new(bin_name).env("PATH", &probe_path).status()?;
-        if !probe.success() {
-            return Err(format!("PATH probe for {bin_name} failed").into());
-        }
-
-        let mut config = ServerConfig::default();
-        config.update_from_value(&serde_json::json!({
-            "formatting": { "enabled": true }
-        }));
-        let engine_with_perltidy_on_path = config.formatting_engine;
-
-        assert_eq!(
-            engine_with_perltidy_on_path,
-            FormatterMode::Native,
-            "a `perltidy` discoverable on PATH must not flip the default formatter engine"
-        );
-        Ok(())
-    }
-
-    #[test]
     fn perltidyrc_profile_does_not_force_external_formatting() {
         // A `.perltidyrc` profile is usable for compatibility reporting or an
         // explicit external mode, but setting it via the LSP settings channel

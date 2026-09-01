@@ -149,7 +149,7 @@ pub struct PerlOracleEnv {
     /// Snapshot of the parent environment used to populate the child allow-set.
     /// Keeping this explicit makes tests and embedders independent of process-global
     /// environment mutation.
-    pub ambient_env: BTreeMap<String, std::ffi::OsString>,
+    ambient_env: BTreeMap<String, std::ffi::OsString>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -194,7 +194,7 @@ impl PerlOracleEnv {
 
     /// Apply the environment contract using an explicit parent environment.
     #[cfg_attr(not(test), doc(hidden))]
-    pub fn configure_command_with_env(
+    fn configure_command_with_env(
         &self,
         cmd: &mut Command,
         ambient_env: &BTreeMap<String, std::ffi::OsString>,
@@ -776,9 +776,10 @@ mod tests {
                 use_perl5lib: false,
                 ..WorkspaceConfig::default()
             };
-            let denied = PerlOracleEnv::for_perldoc(&denied_config, cwd.clone());
+            let mut denied = PerlOracleEnv::for_perldoc(&denied_config, cwd.clone());
+            denied.ambient_env.insert("PERL5LIB".to_owned(), poison_path.clone().into());
             let mut cmd = std::process::Command::new(&perl);
-            denied.configure_command(&mut cmd);
+            denied.configure_command_with_env(&mut cmd, &denied.ambient_env);
             cmd.args([
                 "-e",
                 "print join('|', $ENV{PERL5LIB}//'UNSET', $ENV{PERL5OPT}//'UNSET', \
