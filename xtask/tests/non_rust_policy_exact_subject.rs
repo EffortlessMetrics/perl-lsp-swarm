@@ -10,7 +10,7 @@ use std::{
     process::{Command, Output},
 };
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_yaml_ng::Value;
 use tempfile::TempDir;
 
@@ -108,7 +108,6 @@ fn pr_fixture() -> Result<PrFixture> {
     write(&seed.join("subject.txt"), "base\n")?;
     run_ok("git", &["add", "subject.txt"], &seed)?;
     run_ok("git", &["commit", "-m", "base"], &seed)?;
-    let base_sha = git_output(&["rev-parse", "HEAD"], &seed)?;
     run_ok("git", &["branch", "-M", "main"], &seed)?;
     run_ok(
         "git",
@@ -123,6 +122,16 @@ fn pr_fixture() -> Result<PrFixture> {
     run_ok("git", &["commit", "-m", "candidate"], &seed)?;
     let head_sha = git_output(&["rev-parse", "HEAD"], &seed)?;
     run_ok("git", &["push", "origin", "candidate"], &seed)?;
+
+    // Advance the target branch after the candidate forked. This proves the
+    // synthetic subject uses the event's exact advanced base.
+    run_ok("git", &["switch", "main"], &seed)?;
+    write(&seed.join("base-advance.txt"), "advanced base\n")?;
+    run_ok("git", &["add", "base-advance.txt"], &seed)?;
+    run_ok("git", &["commit", "-m", "advance base"], &seed)?;
+    let base_sha = git_output(&["rev-parse", "HEAD"], &seed)?;
+    run_ok("git", &["push", "origin", "main"], &seed)?;
+
     run_ok(
         "git",
         &[
@@ -170,6 +179,8 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
         "refs/pull/$PR_NUMBER/head:refs/remotes/origin/non-rust-policy-pr-head",
         "refs/remotes/origin/non-rust-policy-pr-head^{commit}",
         "git commit-tree \"$merge_tree\" -p \"$BASE_SHA\" -p \"$PR_HEAD_SHA\"",
+        "GIT_AUTHOR_DATE=2000-01-01T00:00:00Z",
+        "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
         "git rev-parse \"$SUBJECT_SHA^1\"",
         "git rev-parse \"$SUBJECT_SHA^2\"",
         "git rev-parse \"$SUBJECT_SHA^{tree}\"",
@@ -209,6 +220,37 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
         .find_map(|line| line.strip_prefix("subject_sha="))
         .ok_or_else(|| anyhow!("binding must emit subject_sha"))?;
     ensure!(subject_sha != "0000000000000000000000000000000000000000");
+
+    // The synthetic subject is reproducible across reruns, independent of
+    // wall-clock metadata on the runner.
+    write(&output_path, "")?;
+    write(&env_path, "")?;
+    let rerun = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &run])
+        .current_dir(&fixture.trusted)
+        .env("BASE_SHA", &fixture.base_sha)
+        .env("PR_HEAD_SHA", &fixture.head_sha)
+        .env("PR_NUMBER", "42")
+        .env("SUBJECT_SHA", "0000000000000000000000000000000000000000")
+        .env("GITHUB_OUTPUT", &output_path)
+        .env("GITHUB_ENV", &env_path)
+        .output()
+        .context("rerunning trusted subject-binding block")?;
+    if !rerun.status.success() {
+        bail!(
+            "trusted subject binding rerun failed with {:?}\nstdout:\n{}\nstderr:\n{}",
+            rerun.status.code(),
+            String::from_utf8_lossy(&rerun.stdout),
+            String::from_utf8_lossy(&rerun.stderr)
+        );
+    }
+    let rerun_output = fs::read_to_string(&output_path)?;
+    let rerun_subject_sha = rerun_output
+        .lines()
+        .find_map(|line| line.strip_prefix("subject_sha="))
+        .ok_or_else(|| anyhow!("binding rerun must emit subject_sha"))?;
+    assert_eq!(rerun_subject_sha, subject_sha);
+
     assert_eq!(
         git_output(&["rev-parse", &format!("{subject_sha}^1")], &fixture.trusted)?,
         fixture.base_sha
@@ -223,6 +265,10 @@ fn pull_request_target_constructs_a_subject_from_exact_base_and_head() -> Result
             &["merge-tree", "--write-tree", &fixture.base_sha, &fixture.head_sha],
             &fixture.trusted
         )?
+    );
+    assert_eq!(
+        git_output(&["show", &format!("{subject_sha}:base-advance.txt")], &fixture.trusted,)?,
+        "advanced base"
     );
     assert_eq!(fs::read_to_string(&env_path)?, format!("SUBJECT_SHA={subject_sha}\n"));
     Ok(())
