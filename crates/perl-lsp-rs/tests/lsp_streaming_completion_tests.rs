@@ -1076,7 +1076,11 @@ mod mock_streaming_completion_tests {
         // A typed provider failure means the failed provider text is never
         // published as the final candidate: with fallback configured the
         // deterministic route owns the final content, so the failed partial
-        // text ("1") must not survive into the final frame.
+        // text ("1") must not survive into the final frame. The deterministic
+        // route legitimately yields an empty list for this prefix in the
+        // harness, so absence of "1" is the discriminating assertion here;
+        // the sibling no-fallback test pins the empty-final outcome
+        // positively.
         let final_items = final_progress["params"]["value"]["items"]
             .as_array()
             .expect("final progress frame should carry items");

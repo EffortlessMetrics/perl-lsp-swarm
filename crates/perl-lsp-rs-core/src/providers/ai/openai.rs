@@ -234,7 +234,14 @@ impl OpenAiProvider {
             .and_then(|choice| choice.get("finish_reason"))
             .and_then(serde_json::Value::as_str)
         {
-            return Some(reason.to_string());
+            // A content-filter rejection repudiates the candidate: normalize
+            // it to "error" so the stream terminal treats it as a provider
+            // failure instead of finalizing the rejected text.
+            return Some(if reason == "content_filter" {
+                "error".to_string()
+            } else {
+                reason.to_string()
+            });
         }
 
         match parsed.get("type").and_then(serde_json::Value::as_str) {
@@ -251,7 +258,7 @@ impl OpenAiProvider {
                     .is_some_and(|reason| reason == "max_output_tokens");
                 Some(if token_limited { "length".to_string() } else { "error".to_string() })
             }
-            Some("response.failed") => Some("error".to_string()),
+            Some("response.failed") | Some("error") => Some("error".to_string()),
             _ => None,
         }
     }
@@ -572,6 +579,49 @@ mod tests {
         assert!(
             matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
             "non-token-limited incomplete reasons stay failures"
+        );
+    }
+
+    #[test]
+    fn stream_content_filter_finish_reason_is_a_typed_error() {
+        // A chat-completions `content_filter` rejection after partial text
+        // must surface as a provider failure: the rejected text must never
+        // be finalized into the candidate.
+        let mut body = String::new();
+        body.push_str(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"my $x = \"},\"finish_reason\":null}]}\n\n",
+        );
+        body.push_str(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"dropped\"},\"finish_reason\":\"content_filter\"}]}\n\n",
+        );
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut chunks: Vec<(String, bool)> = Vec::new();
+        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |chunk| {
+            chunks.push((chunk.text, chunk.is_final));
+            crate::providers::inline_completion::StreamControl::Continue
+        });
+        assert!(
+            matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
+            "content_filter rejections must be provider errors"
+        );
+        assert!(
+            chunks.iter().all(|(_, is_final)| !is_final),
+            "rejected text must not reach the sink as final"
+        );
+    }
+
+    #[test]
+    fn stream_responses_error_event_is_a_typed_error() {
+        // A Responses API `type: "error"` event is a provider failure even
+        // though it carries no choices/finish_reason shape.
+        let body = "data: {\"type\": \"error\"}\n\n";
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |_| {
+            crate::providers::inline_completion::StreamControl::Continue
+        });
+        assert!(
+            matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
+            "Responses API error events must be provider errors"
         );
     }
 
