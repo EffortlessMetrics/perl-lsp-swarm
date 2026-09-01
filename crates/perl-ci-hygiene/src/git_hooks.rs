@@ -60,8 +60,10 @@ cargo xtask fmt --staged || echo "⚠️  staged formatting did not run; the com
 # (write-tree + commit-tree + worktree add) and the generator runs there, so
 # unstaged edits, untracked files, ignored build outputs, and drift in any
 # Cargo build input of the xtask workspace closure cannot change the executed
-# generator or its inputs. The generated snapshot is copied back from that
-# exact tree and staged beside the contributor's staged changes.
+# generator or its inputs. The snapshot and allowlist are revalidated
+# immediately before replacement so a concurrent edit landing during the
+# build is never overwritten, and a staging failure rolls the worktree copy
+# back to the staged content.
 STAGED_INVENTORY_CHANGE=0
 STAGED_INVENTORY_PATHS=()
 while IFS= read -r -d '' staged_path; do
@@ -117,16 +119,32 @@ if [ "$STAGED_INVENTORY_CHANGE" -eq 1 ]; then
     fi
     if ! (
         cd "$INV_WT" &&
-            CARGO_TARGET_DIR="$REPO_ROOT/target" cargo xtask non-rust inventory --write &&
-            mkdir -p "$REPO_ROOT/docs/policy" &&
-            cp -f "$INV_WT/docs/policy/NON_RUST_INVENTORY.md" \
-                "$REPO_ROOT/docs/policy/NON_RUST_INVENTORY.md"
+            CARGO_TARGET_DIR="$REPO_ROOT/target" cargo xtask non-rust inventory --write
     ); then
         cleanup_inv_wt
         echo "❌ Non-Rust inventory refresh failed inside the staged-tree worktree"
         exit 1
     fi
-    git add -- docs/policy/NON_RUST_INVENTORY.md
+    # The build takes a while: revalidate the snapshot and allowlist so a
+    # concurrent edit landing mid-refresh is never overwritten or staged.
+    if ! git diff --quiet -- docs/policy/NON_RUST_INVENTORY.md ||
+        ! git diff --quiet -- policy/non-rust-allowlist.toml; then
+        cleanup_inv_wt
+        echo "❌ Cannot refresh non-Rust inventory: allowlist or inventory changed during the refresh"
+        echo "   Stage or discard those edits, then retry the commit."
+        exit 1
+    fi
+    mkdir -p docs/policy
+    if ! cp -f "$INV_WT/docs/policy/NON_RUST_INVENTORY.md" docs/policy/NON_RUST_INVENTORY.md ||
+        ! git add -- docs/policy/NON_RUST_INVENTORY.md; then
+        # Roll the worktree copy back to the staged content: any failure after
+        # the snapshot was replaced must not leave half-staged state behind.
+        git checkout -- docs/policy/NON_RUST_INVENTORY.md 2>/dev/null ||
+            rm -f docs/policy/NON_RUST_INVENTORY.md
+        cleanup_inv_wt
+        echo "❌ Non-Rust inventory refresh failed while staging the snapshot"
+        exit 1
+    fi
 fi
 
 echo "Running exact staged commit gate: cargo xtask precommit"

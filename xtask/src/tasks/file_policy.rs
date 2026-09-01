@@ -299,7 +299,11 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
         );
         out.push_str("| Path | Extension |\n|---|---|\n");
         for r in non_rust.iter().filter(|r| !r.allowlisted) {
-            out.push_str(&format!("| `{}` | `{}` |\n", r.path, r.extension));
+            out.push_str(&format!(
+                "| `{}` | `{}` |\n",
+                escape_markdown_cell(&r.path),
+                escape_markdown_cell(&r.extension)
+            ));
         }
         out.push('\n');
     }
@@ -309,7 +313,13 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
     for r in non_rust.iter().filter(|r| r.allowlisted) {
         let (id, owner) =
             r.entry.as_ref().map(|e| (e.id.as_str(), e.owner.as_str())).unwrap_or(("", ""));
-        out.push_str(&format!("| `{}` | {} | `{}` | {} |\n", r.path, r.category, id, owner));
+        out.push_str(&format!(
+            "| `{}` | {} | `{}` | {} |\n",
+            escape_markdown_cell(&r.path),
+            r.category,
+            id,
+            owner
+        ));
     }
     out.push('\n');
 
@@ -345,12 +355,10 @@ pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
             section = line.trim_start_matches('#').trim();
             continue;
         }
-        let Some(rest) = line.strip_prefix("| ") else { continue };
-        let cells: Vec<&str> =
-            rest.trim_end().trim_end_matches('|').split('|').map(str::trim).collect();
+        let Some(cells) = parse_markdown_cells(line) else { continue };
         if cells.len() == 2 && section == "Summary" {
             if let Ok(count) = cells[1].parse::<usize>() {
-                summary_counts.insert(cells[0], count);
+                summary_counts.insert(cells[0].as_str(), count);
             }
             continue;
         }
@@ -596,6 +604,46 @@ fn normalize_line_endings(value: &str) -> String {
     value.replace("\r\n", "\n")
 }
 
+/// Escape a literal value for embedding in one Markdown table cell so the
+/// rendered row keeps exactly one cell per column: a literal `|` inside a
+/// path would otherwise split the row. The escape is reversed by
+/// [`parse_markdown_cells`].
+fn escape_markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|")
+}
+
+/// Split one rendered table row into its raw cell values, honoring
+/// [`escape_markdown_cell`] backslash escapes and trimming the surrounding
+/// whitespace the renderer emits. Returns `None` for lines outside table rows.
+fn parse_markdown_cells(line: &str) -> Option<Vec<String>> {
+    let rest = line.trim().strip_prefix("| ")?;
+    let trimmed = rest.trim_end().trim_end_matches('|');
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for ch in trimmed.chars() {
+        match ch {
+            '\\' if !escaped => escaped = true,
+            '|' if !escaped => {
+                cells.push(current.trim().to_string());
+                current = String::new();
+            }
+            _ => {
+                if escaped {
+                    current.push('\\');
+                    escaped = false;
+                }
+                current.push(ch);
+            }
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    cells.push(current.trim().to_string());
+    Some(cells)
+}
+
 /// Collect the backtick-wrapped first-column cells of a generated inventory
 /// table.
 ///
@@ -605,7 +653,8 @@ fn inventory_row_paths(markdown: &str) -> std::collections::BTreeSet<String> {
     markdown
         .lines()
         .filter_map(|line| {
-            let cell = line.trim().strip_prefix("| ")?.split('|').next()?.trim();
+            let cells = parse_markdown_cells(line)?;
+            let cell = cells.first()?;
             Some(cell.strip_prefix('`')?.strip_suffix('`')?.to_string())
         })
         .collect()
@@ -2635,6 +2684,35 @@ mod tests {
             | `docs/keep.md` | documentation | `keep` | owner |\n";
         let delta = inventory_path_delta(actual, expected);
         assert_eq!(delta, "the row paths match but summary or metadata changed");
+    }
+
+    /// A tracked path containing `|` is rendered escaped in table cells; the
+    /// delta parser must reverse the escape and name the raw path, not hide
+    /// the stale row as metadata-only drift.
+    #[test]
+    fn inventory_path_delta_names_pipe_paths_through_markdown_escapes() {
+        let actual = "| `docs/old.md` | documentation | `old` | owner |\n\
+            | `docs/a|b.md` | documentation | `ab` | owner |\n";
+        let actual_rendered = actual.replace("docs/a|b.md", "docs/a\\|b.md");
+        let expected = "| `docs/new.md` | documentation | `new` | owner |\n\
+             | `docs/a\\|b.md` | documentation | `ab` | owner |\n";
+        let delta = inventory_path_delta(&actual_rendered, expected);
+        assert!(delta.contains("missing generated paths: docs/new.md"), "{delta}");
+        assert!(delta.contains("paths no longer generated: docs/old.md"), "{delta}");
+        assert!(
+            !delta.contains("docs/a"),
+            "the pipe path must be recovered on both sides, not reported stale: {delta}"
+        );
+
+        // Round trip: the escaped cell parses back to the raw path.
+        let escaped = escape_markdown_cell("docs/a|b.md");
+        let row = format!("| `{escaped}` | documentation | `ab` | owner |\n");
+        let parsed = inventory_row_paths(&row);
+        assert_eq!(
+            parsed.into_iter().collect::<Vec<_>>(),
+            vec!["docs/a|b.md"],
+            "escape and parse must be exact inverses"
+        );
     }
 
     #[test]
