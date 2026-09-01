@@ -182,16 +182,13 @@ mod cleanup_tests {
 
     // ── Perl-requiring tests (skipped when `perl` is absent) ──────────────────
 
-    /// Cancellation registry is settled before `clear_active_session_state`
-    /// so that any live cancellable operation is retired and its waiter
-    /// wakes; this test exercises the settle ordering without a live Perl
-    /// process (#9074).
-    ///
-    /// We verify by initialising and immediately dropping — the Drop body
-    /// settles the registry (retiring every live operation and emptying the
-    /// request→operation mapping) before delegating to
-    /// `clear_active_session_state`; without a real process there is no
-    /// waiter to observe it, but the ordering contract is exercised.
+    /// Smoke cover for the initialize→drop protocol flow. This test does NOT
+    /// verify settlement ordering: it registers no live cancellable
+    /// operation, so it cannot fail if `settle_all()` were missing or ran
+    /// after session clear (#9074 review). The settle-before-clear ordering
+    /// contract is proven by
+    /// `debug_adapter::tests::test_drop_settles_cancel_registry_before_clearing_session_state`,
+    /// which registers a live operation and observes its settlement.
     #[test]
     fn test_cancel_flag_set_before_session_clear() -> Result<()> {
         let (mut adapter, _rx) = make_adapter();

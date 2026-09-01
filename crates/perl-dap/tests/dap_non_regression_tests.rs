@@ -372,11 +372,15 @@ fn test_capabilities_loaded_sources_advertised_and_working()
 fn test_capabilities_cancel_advertised_and_working() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
     let caps = get_capabilities(&mut adapter)?;
-    let advertised = caps.get("supportsCancelRequest").and_then(Value::as_bool).unwrap_or(false);
+    // #9074: assert the explicit wire value — absence or a non-bool value
+    // must fail here, not silently read as `false` (#9074 review).
+    let advertised = caps.get("supportsCancelRequest").and_then(Value::as_bool);
 
-    assert!(
-        !advertised,
-        "supportsCancelRequest must stay false until the #7568 exact-binary cancel rows pass"
+    assert_eq!(
+        advertised,
+        Some(false),
+        "supportsCancelRequest must be explicitly false on the wire until the \
+         #7568 exact-binary cancel rows pass"
     );
 
     let mut adapter2 = new_adapter();
@@ -789,8 +793,9 @@ fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dy
     let mut adapter = new_adapter();
 
     // First: cancel with an unknown requestId is acknowledged without
-    // touching any operation.
-    let cancel_msg = adapter.handle_request(1, "cancel", None);
+    // touching any operation. The unknown id is sent explicitly so the
+    // inputs match the stated case (#9074 review).
+    let cancel_msg = adapter.handle_request(1, "cancel", Some(json!({ "requestId": 424242 })));
     match cancel_msg {
         DapMessage::Response { command, success, .. } => {
             assert_eq!(command, "cancel");
@@ -799,12 +804,16 @@ fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dy
         other => return Err(format!("cancel: expected Response, got {other:?}").into()),
     }
 
-    // Second: breakpointLocations runs its scan undisturbed — no cancel
-    // state exists for it to observe.
+    // Second: breakpointLocations runs its scan undisturbed — the scan
+    // target is a real file with executable lines, so the response proves
+    // the scan actually ran rather than failing on an unreadable path
+    // (#9074 review).
+    let scan_target = std::env::temp_dir().join("perllsp-9074-breakpoint-scan-target.pl");
+    std::fs::write(&scan_target, "my $x = 1;\nprint \"$x\\n\";\n")?;
     let bp_msg = adapter.handle_request(
         2,
         "breakpointLocations",
-        Some(json!({"source": {"path": "/nonexistent/file.pl"}, "line": 1})),
+        Some(json!({"source": {"path": scan_target.to_string_lossy()}, "line": 1})),
     );
     match bp_msg {
         DapMessage::Response { command, request_seq, .. } => {
