@@ -129,6 +129,16 @@
     "error": "resolved cannot retain claim limitations"
   },
   {
+    "name": "reject_unchanged_claim_outside_controller",
+    "updates": {"claim_effect.unchanged_claims": ["unknown.claim"]},
+    "error": "unchanged_claims names a claim outside the semantic controller"
+  },
+  {
+    "name": "reject_unchanged_claim_overlaps_narrowed",
+    "updates": {"status": "bounded_limitation", "claim_effect.preserves": ["example.installed"], "claim_effect.narrows": ["example.product"], "claim_effect.limitations": ["Product behavior is explicitly narrowed."], "claim_effect.unchanged_claims": ["example.product"]},
+    "error": "unchanged_claims cannot overlap narrowed claims"
+  },
+  {
     "name": "reject_resolved_preserved_claim_without_observation",
     "updates": {
       "proof.observations.0.claim_ids": ["example.product"],
@@ -181,6 +191,11 @@
     "name": "reject_mismatched_review_synthesis_ref",
     "updates": {"reviews.0.current_head_synthesis.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90009#pullrequestreview-1"},
     "error": "review synthesis evidence ref does not match implementation PR authority"
+  },
+  {
+    "name": "reject_mismatched_optional_review_metadata",
+    "updates": {"reviews.0.reviewed_head_metadata.reviewed_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "error": "review metadata head does not match reviewed_head"
   },
   {
     "name": "reject_pull_without_review_synthesis_identity",

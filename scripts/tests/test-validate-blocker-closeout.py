@@ -220,6 +220,7 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
                 "status": "not_proven",
             }
         )
+        controller_only["reviews"][0].pop("reviewed_head_metadata", None)
         MODULE.validate_blocker_closeout(controller_only, lambda _ancestor, _subject: True)
 
     def test_landed_tree_review_can_bind_the_exact_observed_tree(self) -> None:
@@ -236,6 +237,7 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
                 "reviewed_head": packet["observed_main_sha"],
             }
         )
+        packet["reviews"][0].pop("reviewed_head_metadata", None)
         model = MODULE.validate_blocker_closeout(packet, lambda _ancestor, _subject: True)
         self.assertEqual(model.reviews[0].authority_kind, "landed_tree")
         self.assertIsNone(model.reviews[0].authority_number)

@@ -490,11 +490,6 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
                     reviewed_head == contributions_by_pr[authority_number].candidate_head_sha,
                     "current PR review head does not match modeled candidate head",
                 )
-                _require("reviewed_head_metadata" in review, f"{name} is missing reviewed-head metadata")
-                metadata = _object(review["reviewed_head_metadata"], f"{name}.reviewed_head_metadata")
-                _exact_keys(metadata, f"{name}.reviewed_head_metadata", {"implementation_pr", "reviewed_head"})
-                _require(_positive_int(metadata["implementation_pr"], f"{name}.reviewed_head_metadata.implementation_pr") == authority_number, f"{name} review metadata PR does not match authority")
-                _require(_sha(metadata["reviewed_head"], f"{name}.reviewed_head_metadata.reviewed_head") == reviewed_head, f"{name} review metadata head does not match reviewed_head")
         elif authority_kind == "semantic_controller":
             authority_number = _positive_int(review["authority_number"], f"{name}.authority_number")
             _require(authority_number == controller_issue, "review authority is not the semantic controller")
@@ -519,6 +514,12 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
             )
             if review_status == "current":
                 _require(reviewed_head == observed_main_sha, "current landed-tree review refers to a superseded landed head")
+        if "reviewed_head_metadata" in review:
+            _require(authority_kind == "implementation_pr", f"{name}.reviewed_head_metadata is only valid for implementation_pr reviews")
+            metadata = _object(review["reviewed_head_metadata"], f"{name}.reviewed_head_metadata")
+            _exact_keys(metadata, f"{name}.reviewed_head_metadata", {"implementation_pr", "reviewed_head"})
+            _require(_positive_int(metadata["implementation_pr"], f"{name}.reviewed_head_metadata.implementation_pr") == authority_number, f"{name} review metadata PR does not match authority")
+            _require(_sha(metadata["reviewed_head"], f"{name}.reviewed_head_metadata.reviewed_head") == reviewed_head, f"{name} review metadata head does not match reviewed_head")
         unresolved_findings = review["unresolved_material_findings"]
         _require(type(unresolved_findings) is int and unresolved_findings >= 0, f"{name}.unresolved_material_findings must be a non-negative integer")
         finding_refs = _parse_evidence_array(review["finding_refs"], f"{name}.finding_refs")
@@ -580,6 +581,8 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
     unchanged_claims = _unique_strings(claim_effect["unchanged_claims"], "claim_effect.unchanged_claims", identifiers=True)
     _require(not (set(preserves) & set(narrows)), "claim_effect cannot both preserve and narrow one claim")
     _require(set(preserves) | set(narrows) <= set(controller_claims), "claim_effect names a claim outside the semantic controller")
+    _require(set(unchanged_claims) <= set(controller_claims), "unchanged_claims names a claim outside the semantic controller")
+    _require(not (set(unchanged_claims) & set(narrows)), "unchanged_claims cannot overlap narrowed claims")
     contribution_claims = {claim_id for contribution in contributions for claim_id in contribution.claim_ids}
     if status in {"resolved", "bounded_limitation"}:
         _require(set(preserves) <= contribution_claims | set(unchanged_claims), "preserved claim lacks implementation or unchanged provenance")

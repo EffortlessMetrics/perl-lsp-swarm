@@ -169,10 +169,7 @@
         "status": {"enum": ["current", "stale", "not_proven"]},
         "unresolved_material_findings": {"type": "integer", "minimum": 0},
         "finding_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/durable_evidence"}}
-      },
-      "allOf": [
-        {"if": {"properties": {"authority_kind": {"const": "implementation_pr"}, "status": {"const": "current"}}, "required": ["authority_kind", "status"]}, "then": {"required": ["reviewed_head_metadata"]}}
-      ]
+      }
     },
     "proof_observation": {
       "type": "object",
