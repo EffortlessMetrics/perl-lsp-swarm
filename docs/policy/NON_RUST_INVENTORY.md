@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12582 |
+| Total tracked files | 12584 |
 | Rust-family files | 3907 |
-| Non-Rust files | 8675 |
-| Allowlisted | 6436 |
+| Non-Rust files | 8677 |
+| Allowlisted | 6438 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 349 |
 | test | 2069 |
-| tooling | 680 |
+| tooling | 682 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -6642,6 +6642,7 @@
 | `scripts/ci/hosted_formatter_producers.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/learned_estimate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/main_red_refusal.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/observe_github_enforcement.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/parser_facade_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/parser_facade_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/pr_plan.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6676,6 +6677,7 @@
 | `scripts/ci/test_hosted_formatter_producers.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_learned_estimate.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_main_red_refusal.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_observe_github_enforcement.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_parser_facade_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_pr_plan.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_pr_smoke_disk_guard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
