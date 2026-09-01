@@ -83,6 +83,37 @@ describe('typed LSP provider call settlement', () => {
     expect(onFailure).toHaveBeenCalledWith(error);
   });
 
+  test('compatibility adapter contains a synchronous observer failure', async () => {
+    const error = new Error('definition failed');
+    const result = await settleLspProviderCall(
+      async () => {
+        throw error;
+      },
+      null,
+      () => {
+        throw new Error('observer failed');
+      },
+    );
+
+    expect(result).toBeNull();
+  });
+
+  test('compatibility adapter consumes an asynchronous observer rejection', async () => {
+    const error = new Error('definition failed');
+    const result = await settleLspProviderCall(
+      async () => {
+        throw error;
+      },
+      null,
+      async () => {
+        throw new Error('observer failed');
+      },
+    );
+
+    expect(result).toBeNull();
+    await Promise.resolve();
+  });
+
   test('compatibility adapter does not report cancellation as a product failure', async () => {
     const error = { code: -32800 };
     const onFailure = jest.fn();

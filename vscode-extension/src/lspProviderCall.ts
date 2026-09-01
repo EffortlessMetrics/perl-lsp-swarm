@@ -76,7 +76,14 @@ export async function settleLspProviderCall<T>(
 ): Promise<T> {
   const settlement = await settleLspProviderCallWithDisposition(call, fallback);
   if (settlement.kind === 'failed') {
-    onFailure(settlement.error);
+    try {
+      const observation = onFailure(settlement.error) as unknown;
+      if (observation && typeof observation === 'object' && 'then' in observation) {
+        void Promise.resolve(observation).catch(() => undefined);
+      }
+    } catch {
+      // Compatibility observation must never replace the provider's wire result.
+    }
   }
   return settlement.wireValue;
 }
