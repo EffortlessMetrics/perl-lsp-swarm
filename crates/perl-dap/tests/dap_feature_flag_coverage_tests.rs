@@ -1115,8 +1115,10 @@ fn test_functional_dap_watchpoints_data_breakpoint_roundtrip() -> TestResult {
         DapMessage::Response { success, command, body: Some(body), .. } => {
             assert!(success, "dataBreakpointInfo must respond");
             assert_eq!(command, "dataBreakpointInfo");
-            let data_id = body.get("dataId").expect("dataId must be explicitly null");
-            assert!(data_id.is_null(), "no persistent native dataId may be minted (#9091)");
+            assert!(
+                body.get("dataId").is_some_and(|value| value.is_null()),
+                "no persistent native dataId may be minted (#9091)"
+            );
         }
         _ => return Err("Expected dataBreakpointInfo response".into()),
     }

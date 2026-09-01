@@ -53,8 +53,10 @@ fn test_data_breakpoint_info_valid_names_stay_fail_closed() -> TestResult {
 
         let data_id = body.get("dataId").and_then(|v| v.as_str());
         assert!(data_id.is_none(), "valid name {name} must not mint a dataId");
-        let raw = body.get("dataId").expect("dataId must be explicitly null");
-        assert!(raw.is_null(), "valid name {name} must carry explicit dataId: null");
+        assert!(
+            body.get("dataId").is_some_and(|value| value.is_null()),
+            "valid name {name} must carry explicit dataId: null"
+        );
 
         assert!(
             body.get("accessTypes").is_none(),
