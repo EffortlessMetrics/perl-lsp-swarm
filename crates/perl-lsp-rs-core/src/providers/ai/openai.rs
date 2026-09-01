@@ -239,7 +239,19 @@ impl OpenAiProvider {
 
         match parsed.get("type").and_then(serde_json::Value::as_str) {
             Some("response.completed") => Some("stop".to_string()),
-            Some("response.failed") | Some("response.incomplete") => Some("error".to_string()),
+            // `max_output_tokens` exhaustion is the Responses API equivalent
+            // of the chat `length` finish reason: the accumulated text is
+            // usable and must finalize instead of surfacing as a provider
+            // error. Any other incomplete reason stays a failure.
+            Some("response.incomplete") => {
+                let token_limited = parsed
+                    .get("incomplete_details")
+                    .and_then(|details| details.get("reason"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|reason| reason == "max_output_tokens");
+                Some(if token_limited { "length".to_string() } else { "error".to_string() })
+            }
+            Some("response.failed") => Some("error".to_string()),
             _ => None,
         }
     }
@@ -523,6 +535,43 @@ mod tests {
         assert!(
             chunks.iter().all(|(_, is_final)| !is_final),
             "failure events must not finalize the candidate, got: {chunks:?}"
+        );
+    }
+
+    #[test]
+    fn stream_max_output_tokens_incomplete_finalizes_accumulated_text() {
+        // `response.incomplete` with `max_output_tokens` is the Responses API
+        // equivalent of the chat `length` finish reason: the accumulated text
+        // is usable and must finalize, not surface as a provider error.
+        let mut body = String::new();
+        body.push_str(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"my $x = \"},\"finish_reason\":null}]}\n\n",
+        );
+        body.push_str(
+            "data: {\"type\":\"response.incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}\n\n",
+        );
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut chunks: Vec<(String, bool)> = Vec::new();
+        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |chunk| {
+            chunks.push((chunk.text, chunk.is_final));
+            crate::providers::inline_completion::StreamControl::Continue
+        });
+        result.expect("token-limited incomplete must not be a provider error");
+        let (text, is_final) = chunks.last().expect("boundary chunk");
+        assert!(is_final, "token-limited output must finalize");
+        assert_eq!(text, "my $x = ");
+    }
+
+    #[test]
+    fn stream_incomplete_without_token_limit_stays_a_provider_error() {
+        let body = "data: {\"type\":\"response.incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"}}\n\n";
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |_| {
+            crate::providers::inline_completion::StreamControl::Continue
+        });
+        assert!(
+            matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
+            "non-token-limited incomplete reasons stay failures"
         );
     }
 

@@ -47,14 +47,14 @@ pub fn sanitize_completion_text(raw: &str) -> String {
     // body through `str::lines`, which would drop the final newline.
     let body_start = line_terminator_end(raw, open_end);
     let mut cursor = body_start;
-    while let Some((start, end)) = line_bounds(raw, cursor) {
+    while let Some(((start, end), next)) = line_bounds(raw, cursor) {
         if closing_fence_run_length(&raw[start..end], open_run).is_some() {
             // Preserve every body byte except the single separator
             // immediately before the real closing fence.
             let body = &raw[body_start..start];
             return trim_one_line_terminator(body).to_string();
         }
-        cursor = end;
+        cursor = next;
     }
     // Unterminated fence: keep everything after the opening line rather
     // than dropping the candidate entirely, including a trailing newline.
@@ -65,26 +65,35 @@ pub fn sanitize_completion_text(raw: &str) -> String {
 /// non-empty, terminator excluded. `None` while every line so far is blank.
 fn first_non_empty_line_bounds(raw: &str) -> Option<(usize, usize)> {
     let mut cursor = 0;
-    while let Some((start, end)) = line_bounds(raw, cursor) {
+    while let Some(((start, end), next)) = line_bounds(raw, cursor) {
         if !raw[start..end].trim().is_empty() {
             return Some((start, end));
         }
-        cursor = end;
+        cursor = next;
     }
     None
 }
 
-/// Byte bounds `(start, end)` of the line beginning at `cursor`, terminator
-/// excluded. `None` once `cursor` reaches the end of the text.
-fn line_bounds(raw: &str, cursor: usize) -> Option<(usize, usize)> {
+/// Byte bounds `(start, end)` of the line beginning at `cursor` plus the
+/// cursor for the following line. The line content excludes its `\r\n` or
+/// `\n` terminator; `next` always advances past it, so scans terminate.
+fn line_bounds(raw: &str, cursor: usize) -> Option<((usize, usize), usize)> {
     if cursor >= raw.len() {
         return None;
     }
-    let mut end = raw[cursor..].find('\n').map_or(raw.len(), |pos| cursor + pos);
-    if end > cursor && raw.as_bytes()[end - 1] == b'\r' {
-        end -= 1;
+    match raw[cursor..].find('\n') {
+        Some(pos) => {
+            let line_end = cursor + pos;
+            let next = line_end + 1;
+            let content_end = if line_end > cursor && raw.as_bytes()[line_end - 1] == b'\r' {
+                line_end - 1
+            } else {
+                line_end
+            };
+            Some(((cursor, content_end), next))
+        }
+        None => Some(((cursor, raw.len()), raw.len())),
     }
-    Some((cursor, end))
 }
 
 /// Offset just past the line terminator at `line_end`.
@@ -169,44 +178,69 @@ fn incomplete_fence_marker_candidate(line: &str) -> bool {
 /// [`sanitize_completion_text`] result, which restores any held tail.
 pub fn sanitize_streaming_text(cumulative: &str) -> String {
     let sanitized = sanitize_completion_text(cumulative);
-    if first_non_empty_line_bounds(cumulative).is_none() {
+    let Some((open_start, open_end)) = first_non_empty_line_bounds(cumulative) else {
         // Only blank lines so far: the wrapper decision is still pending
         // and the blank prefix may yet precede an opening fence.
         return String::new();
-    }
+    };
     if !first_non_empty_line_opens_fence(cumulative) {
-        // Content-anchored (or still-classifying) output: only the
-        // in-flight first line can change the wrapper decision.
-        if !cumulative.contains('\n') && incomplete_fence_marker_candidate(&sanitized) {
+        // Content-anchored (or still-classifying) output: while the first
+        // non-empty line is still in flight, it can still grow into the
+        // opening fence, so a bare backtick run stays withheld.
+        let line_in_flight = !cumulative[open_end..].contains('\n');
+        if line_in_flight && incomplete_fence_marker_candidate(&cumulative[open_start..]) {
             return String::new();
         }
         return sanitized;
     }
-    // Wrapper mode: hold the ambiguous tail so shown text is never
-    // retracted when a closing marker arrives.
-    let bytes = sanitized.as_bytes();
-    let mut end = sanitized.len();
-    // Trailing line separators: one of them could become the single
-    // separator the boundary strips together with the closing marker.
-    while end > 0 && bytes[end - 1] == b'\n' {
-        end -= 1;
-        if end > 0 && bytes[end - 1] == b'\r' {
+    // Wrapper mode: while the wrapper is still open, hold the ambiguous
+    // tail — trailing line separators may include the one the boundary
+    // strips with the closing marker, and a trailing bare backtick run may
+    // still grow into that marker. Once a valid closing marker has arrived,
+    // the boundary value is final-shaped and streams as-is.
+    if !wrapper_closes(cumulative) {
+        let bytes = sanitized.as_bytes();
+        let mut end = sanitized.len();
+        // Trailing CR/LF bytes: one of them could become (part of) the
+        // single separator the boundary strips with the closing marker, so
+        // a half-delivered "\r" is held exactly like a "\n".
+        while end > 0 && matches!(bytes[end - 1], b'\n' | b'\r') {
             end -= 1;
         }
-    }
-    // Trailing bare backtick run: it may still grow into the closing
-    // marker, and the separator in front of it would be stripped with it.
-    let line_start = sanitized[..end].rfind('\n').map_or(0, |pos| pos + 1);
-    if incomplete_fence_marker_candidate(&sanitized[line_start..end]) {
-        end = line_start;
-        if end > 0 && bytes[end - 1] == b'\n' {
-            end -= 1;
-            if end > 0 && bytes[end - 1] == b'\r' {
+        // Trailing bare backtick run: it may still grow into the closing
+        // marker, and the separator in front of it would be stripped with it.
+        let line_start = sanitized[..end].rfind('\n').map_or(0, |pos| pos + 1);
+        if incomplete_fence_marker_candidate(&sanitized[line_start..end]) {
+            end = line_start;
+            if end > 0 && bytes[end - 1] == b'\n' {
                 end -= 1;
+                if end > 0 && bytes[end - 1] == b'\r' {
+                    end -= 1;
+                }
             }
         }
+        return sanitized[..end].to_string();
     }
-    sanitized[..end].to_string()
+    sanitized
+}
+
+/// True when the output opens a leading wrapper whose real closing marker
+/// has already arrived in `raw`.
+fn wrapper_closes(raw: &str) -> bool {
+    let Some((open_start, open_end)) = first_non_empty_line_bounds(raw) else {
+        return false;
+    };
+    let Some(open_run) = opening_fence_run_length(&raw[open_start..open_end]) else {
+        return false;
+    };
+    let mut cursor = line_terminator_end(raw, open_end);
+    while let Some(((start, end), next)) = line_bounds(raw, cursor) {
+        if closing_fence_run_length(&raw[start..end], open_run).is_some() {
+            return true;
+        }
+        cursor = next;
+    }
+    false
 }
 
 /// True when the first non-empty line of `raw` opens a fence, i.e. the
@@ -377,12 +411,12 @@ mod tests {
 
     #[test]
     fn streaming_blank_line_before_closer_never_retracts() {
-        // A blank body line right before the closing marker: the separator
-        // the boundary strips must not be emitted mid-stream first. The
-        // final boundary (not streamed here) restores the full body.
+        // A blank body line right before the closing marker: the streamed
+        // prefix never includes text the boundary strips, and the final
+        // streamed value (wrapper closed) equals the boundary output.
         let raw = "```perl\nmy $x = 1;\n\n```";
         let emissions = assert_stream_monotone(raw);
-        assert_eq!(emissions.last(), Some(&"my $x = 1;".to_string()));
+        assert_eq!(emissions.last(), Some(&"my $x = 1;\n".to_string()));
         assert_eq!(sanitize_completion_text(raw), "my $x = 1;\n");
     }
 
@@ -427,5 +461,44 @@ mod tests {
         // marker, so the wrapper stays open (unterminated at this cut).
         let raw = "```perl\nmy $x = 1;\n```perl\n";
         assert_eq!(sanitize_completion_text(raw), "my $x = 1;\n```perl\n");
+    }
+
+    #[test]
+    fn generated_stream_matrix_stays_monotone_and_terminates() {
+        // Termination and the cumulative-prefix contract must hold across
+        // the line-ending x blank-prefix x wrapper x content x tail matrix,
+        // not only the hand-picked cases above. A regression here either
+        // hangs (scan that cannot advance) or trips the retraction assert.
+        let line_endings = ["\n", "\r\n"];
+        let blank_prefixes = ["", "\n", "  \n", "\r\n"];
+        let wrappers = ["```perl\n", "````\n"];
+        let bodies = ["my $x = 1;", "a;\n\nb;\n", "print <<'E';\n```\nE;"];
+        let tails = ["", "```", "```\n", "\n```", "````"];
+        for le in line_endings {
+            for blank in blank_prefixes {
+                for wrapper in wrappers {
+                    for body in bodies {
+                        for tail in tails {
+                            let raw = format!("{blank}{wrapper}{body}{le}{tail}");
+                            // Panics on retraction; hangs on a stuck scan.
+                            let _ = assert_stream_monotone(&raw);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generated_boundary_matches_crlf_and_lf_streams() {
+        // Both line endings must produce the same sanitized body: the
+        // wrapper strip may differ only in the removed separator bytes.
+        let lf = sanitize_completion_text("```perl\na;\nb;\n```");
+        let crlf = sanitize_completion_text("```perl\r\na;\r\nb;\r\n```");
+        assert_eq!(lf, "a;\nb;");
+        assert_eq!(crlf, "a;\r\nb;");
+        // Unterminated: the trailing separator is body and survives.
+        assert_eq!(sanitize_completion_text("```perl\na;\n"), "a;\n");
+        assert_eq!(sanitize_completion_text("```perl\r\na;\r\n"), "a;\r\n");
     }
 }

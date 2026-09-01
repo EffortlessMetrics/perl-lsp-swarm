@@ -57,10 +57,11 @@ pub fn build_fim_prompt(context: &PreparedInlineCompletionContext) -> (String, S
         user.push('\n');
     }
     if let Some(ref prev) = context.previous_non_empty_line {
-        // The closest previous non-empty line is usually the nearest
-        // retained preceding line; re-emitting it would spend budget on a
-        // duplicate row.
-        let duplicated = context.preceding_lines.last().is_some_and(|last| last == prev);
+        // `preceding_lines` covers the document rows before the cursor, so
+        // the closest previous non-empty line is already among them when the
+        // budget retained it (possibly followed by blank rows). Re-emitting
+        // it would duplicate context and misrepresent source order.
+        let duplicated = context.preceding_lines.iter().any(|line| line == prev);
         if !duplicated {
             user.push_str(&escape_cursor_marker(prev));
             user.push('\n');
@@ -124,6 +125,30 @@ mod tests {
             user.matches("my $y = 2;").count(),
             1,
             "closest preceding line must appear once, got: {user}"
+        );
+    }
+
+    #[test]
+    fn prompt_does_not_duplicate_when_blank_rows_follow_the_previous_line() {
+        // Blank lines after the closest previous non-empty line must not
+        // hide the duplicate: the code row is already in preceding_lines.
+        let ctx = PreparedInlineCompletionContext {
+            prefix: "if ($ready) {".to_string(),
+            current_line: "if ($ready) {".to_string(),
+            previous_non_empty_line: Some("my $y = 2;".to_string()),
+            preceding_lines: vec![
+                "use strict;".to_string(),
+                "my $y = 2;".to_string(),
+                String::new(),
+                String::new(),
+            ],
+            ..PreparedInlineCompletionContext::default()
+        };
+        let (_, user) = build_fim_prompt(&ctx);
+        assert_eq!(
+            user.matches("my $y = 2;").count(),
+            1,
+            "earlier context row must appear once, got: {user}"
         );
     }
 
