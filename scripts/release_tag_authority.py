@@ -93,6 +93,11 @@ def main() -> int:
     except TagAuthorityError as error:
         print(f"release tag authority: {error}", file=sys.stderr)
         return 1
+    if args.ref is None:
+        # Ruleset-only preflight: exact tag currentness was NOT checked, so
+        # this must not be mistaken for the authoritative PROVEN verdict.
+        print("release tag authority: RULESET PREFLIGHT OK (no ref validated)")
+        return 0
     print("release tag authority: PROVEN")
     return 0
 

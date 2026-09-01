@@ -49,17 +49,26 @@ def load(path: Path, label: str) -> dict[str, Any]:
 
 
 def archive_member(archive: Path, name: str) -> bytes:
+    # Duplicate member names are refused: both zipfile and tarfile silently
+    # resolve a duplicated name to the last entry, so evidence could be taken
+    # from a member that installers and extractors may not select the same way.
     if archive.name.endswith(".zip"):
         with zipfile.ZipFile(archive) as bundle:
-            try:
-                return bundle.read(name)
-            except KeyError as error:
-                raise PackageEvidenceError(f"archive member is missing: {name}") from error
+            matches = [info for info in bundle.infolist() if info.filename == name]
+            if not matches:
+                raise PackageEvidenceError(f"archive member is missing: {name}")
+            if len(matches) > 1:
+                raise PackageEvidenceError(f"archive has duplicate members: {name}")
+            return bundle.read(matches[0])
     with tarfile.open(archive, "r:gz") as bundle:
-        try:
-            member = bundle.getmember(name)
-        except KeyError as error:
-            raise PackageEvidenceError(f"archive member is missing: {name}") from error
+        matches = [member for member in bundle.getmembers() if member.name == name]
+        if not matches:
+            raise PackageEvidenceError(f"archive member is missing: {name}")
+        if len(matches) > 1:
+            raise PackageEvidenceError(f"archive has duplicate members: {name}")
+        member = matches[0]
+        if member.issym() or member.islnk():
+            raise PackageEvidenceError(f"archive member is a link, not a file: {name}")
         handle = bundle.extractfile(member)
         if handle is None:
             raise PackageEvidenceError(f"archive member is not a file: {name}")
