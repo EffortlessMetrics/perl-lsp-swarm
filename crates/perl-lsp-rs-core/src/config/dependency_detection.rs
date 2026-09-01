@@ -28,7 +28,6 @@ const CARMEL_ROLLOUT_SENTINEL: &str = "local/.carmel";
 /// canonical dev-mode workspace is cpanfile + `cpanfile.snapshot` +
 /// `.carmel/MySetup.pm` with no `local/.carmel`. Contract §2(b): that shape
 /// is dev mode and must not yield the project-local root.
-#[cfg(test)]
 const CARMEL_DEV_STATE: &str = ".carmel/MySetup.pm";
 
 /// Detect include paths produced by Carton and Carmel in a workspace root.
@@ -36,18 +35,16 @@ const CARMEL_DEV_STATE: &str = ".carmel/MySetup.pm";
 /// The project is the directory holding `cpanfile` (the declaration; never
 /// installed-root evidence by itself). One relative root is produced:
 /// `local/lib/perl5` — when Carton markers (`carton.lock`, or a
-/// `cpanfile.snapshot` is present, or when the `local/.carmel` rollout
-/// sentinel marks the tree as Carmel rollout output. A snapshot has no
-/// producer field, so a Carmel marker cannot safely suppress a possible
-/// Carton install root; the mixed shape is intentionally treated as
-/// ambiguous and retains the shared root.
+/// `cpanfile.snapshot` is present without the positive Carmel dev marker, or
+/// when the `local/.carmel` rollout sentinel marks the tree as Carmel rollout
+/// output. The positive `.carmel/MySetup.pm` marker identifies canonical
+/// Carmel dev mode, which has no project-local root.
 ///
 /// A `cpanfile.snapshot` is written in the shared Carton format with no
-/// producer field. `.carmel/MySetup.pm` therefore cannot prove that the
-/// snapshot is Carmel-owned; when both are present, preserve the possible
-/// Carton root. Pure Carmel dev mode without a snapshot has no project-local
-/// root (contract §2(b)), and an explicit `carton.lock` still identifies
-/// Carton.
+/// producer field, but `.carmel/MySetup.pm` is a positive Carmel dev marker.
+/// In that canonical shape the snapshot is Carmel's own dev-mode lock and
+/// must not admit a project-local root. An explicit `carton.lock` still
+/// identifies Carton when both managers are present.
 ///
 /// These are runtime-derived roots (#4998): their safety class is "bounded,
 /// hard-coded, workspace-relative literals" and must stay that way. They are
@@ -63,13 +60,13 @@ pub fn detect_dependency_include_paths(workspace_root: &Path) -> Vec<String> {
 
     let snapshot_locked = workspace_root.join("cpanfile.snapshot").is_file();
     let carton_locked = workspace_root.join("carton.lock").is_file();
+    let carmel_dev_state = workspace_root.join(CARMEL_DEV_STATE).is_file();
     let carmel_rolled_out = workspace_root.join(CARMEL_ROLLOUT_SENTINEL).is_file();
 
     // A `cpanfile.snapshot` shares Carton's format with no producer field.
-    // Keep its possible Carton root even beside Carmel dev state: the marker
-    // cannot prove that the snapshot is Carmel-owned. Pure Carmel dev mode
-    // without a snapshot remains rootless.
-    let carton_root = carton_locked || snapshot_locked;
+    // The positive Carmel dev marker identifies the canonical Carmel shape;
+    // only an explicit Carton lock can establish a Carton root alongside it.
+    let carton_root = carton_locked || (snapshot_locked && !carmel_dev_state);
 
     if carton_root || carmel_rolled_out {
         vec![LOCAL_INSTALL_INCLUDE_PATH.to_string()]
@@ -153,12 +150,10 @@ mod tests {
         Ok(())
     }
 
-    /// A snapshot has no producer identity, so this mixed shape is
-    /// intentionally ambiguous and retains the possible Carton root. The
-    /// environment detector may separately classify the Carmel dev state;
-    /// this include-path detector must not discard valid Carton dependencies.
+    /// Canonical Carmel dev mode has no project-local root: the snapshot is
+    /// Carmel's own shared-format lock. An explicit Carton lock still wins.
     #[test]
-    fn snapshot_with_carmel_dev_marker_preserves_possible_carton_root()
+    fn carmel_dev_mode_with_its_own_snapshot_has_no_project_local_root()
     -> Result<(), Box<dyn std::error::Error>> {
         let workspace = tempfile::tempdir()?;
         std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
@@ -172,10 +167,7 @@ mod tests {
             "our %environment = ('inc' => [], 'base' => '/x');\n",
         )?;
 
-        assert_eq!(
-            detect_dependency_include_paths(workspace.path()),
-            vec![LOCAL_INSTALL_INCLUDE_PATH]
-        );
+        assert!(detect_dependency_include_paths(workspace.path()).is_empty());
         Ok(())
     }
 
