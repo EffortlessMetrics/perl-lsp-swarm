@@ -579,8 +579,13 @@ mod tests {
             }
             let Some(next) = lines.peek() else { break };
             let next_trimmed = next.trim_start();
-            let is_mod_open = next_trimmed.starts_with("mod ")
-                && (next_trimmed.contains('{') || next_trimmed.ends_with(';'));
+            // Visibility-qualified declarations (`pub(crate) mod tests {`)
+            // are test modules too; strip the qualifier before matching so a
+            // test module needed by a sibling's tests cannot leak its
+            // fixtures into production-inventory scans (#14282 follow-up).
+            let mod_decl = strip_visibility_qualifier(next_trimmed);
+            let is_mod_open =
+                mod_decl.starts_with("mod ") && (mod_decl.contains('{') || mod_decl.ends_with(';'));
             if !is_mod_open {
                 continue;
             }
@@ -603,6 +608,22 @@ mod tests {
             }
         }
         result
+    }
+
+    /// Strip a leading visibility qualifier (`pub`, `pub(crate)`,
+    /// `pub(super)`, `pub(in path)`) from an item declaration so module
+    /// detection sees the `mod` keyword regardless of visibility.
+    fn strip_visibility_qualifier(decl: &str) -> &str {
+        let Some(after_pub) = decl.strip_prefix("pub") else {
+            return decl;
+        };
+        match after_pub.strip_prefix('(') {
+            Some(rest) => match rest.find(')') {
+                Some(end) => rest[end + 1..].trim_start(),
+                None => decl,
+            },
+            None => after_pub.strip_prefix([' ', '\t']).unwrap_or(after_pub),
+        }
     }
 
     fn quoted_literals(line: &str) -> Vec<&str> {
