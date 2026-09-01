@@ -213,25 +213,25 @@
       "path": "crates/perl-lsp-rs/tests/lsp_behavioral_tests.rs",
       "test_function": "test_completion_detail_formatting",
       "signals": "env_set",
-      "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
-      "state": "active",
-      "remediation": "pending"
+      "accepted_reason": "#1269 remediation: test-only fallback dispatch currently requires process environment configuration; canonical serial domain guards the mutation pending an explicit fallback-input seam.",
+      "state": "retired",
+      "remediation": "serialized"
     },
     {
       "path": "crates/perl-lsp-rs/tests/lsp_behavioral_tests.rs",
       "test_function": "test_extract_variable_returns_edits",
       "signals": "env_set",
-      "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
-      "state": "active",
-      "remediation": "pending"
+      "accepted_reason": "#1269 remediation: test-only fallback dispatch currently requires process environment configuration; canonical serial domain guards the mutation pending an explicit fallback-input seam.",
+      "state": "retired",
+      "remediation": "serialized"
     },
     {
       "path": "crates/perl-lsp-rs/tests/lsp_behavioral_tests.rs",
       "test_function": "test_workspace_symbol_search",
       "signals": "env_set",
-      "accepted_reason": "Tracked #1269 audit long tail: unannotated parallel-unsafe test; repair by adding #[serial] and retiring this row.",
-      "state": "active",
-      "remediation": "pending"
+      "accepted_reason": "#1269 remediation: test-only fallback dispatch currently requires process environment configuration; canonical serial domain guards the mutation pending an explicit fallback-input seam.",
+      "state": "retired",
+      "remediation": "serialized"
     },
     {
       "path": "crates/perl-lsp-rs/tests/lsp_encoding_edge_cases.rs",

@@ -185,8 +185,11 @@ fn test_cross_file_references() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn test_workspace_symbol_search() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
+    // The test-only fallback route is selected by the server from this
+    // process environment. Keep the mutation within the canonical serial
+    // extent until the route accepts explicit test configuration.
     unsafe {
         std::env::set_var("LSP_TEST_FALLBACKS", "1");
     }
@@ -217,8 +220,11 @@ fn test_workspace_symbol_search() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn test_extract_variable_returns_edits() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
+    // The test-only fallback route is selected by the server from this
+    // process environment. Keep the mutation within the canonical serial
+    // extent until the route accepts explicit test configuration.
     unsafe {
         std::env::set_var("LSP_TEST_FALLBACKS", "1");
     }
@@ -401,8 +407,11 @@ fn test_test_generation_actions_present() -> TestResult {
 }
 
 #[test]
+#[serial_test::serial]
 fn test_completion_detail_formatting() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
+    // The test-only fallback route is selected by the server from this
+    // process environment. Keep the mutation within the canonical serial
+    // extent until the route accepts explicit test configuration.
     unsafe {
         std::env::set_var("LSP_TEST_FALLBACKS", "1");
     }
