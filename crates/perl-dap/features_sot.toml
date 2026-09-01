@@ -1340,7 +1340,7 @@ spec = "DAP 1.0"
 area = "debug"
 policy_class = "debug_adapter"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
 capability_gate = "dap capabilities advertisement"
@@ -1352,7 +1352,8 @@ evidence = [
   { class = "integration_test", id = "crates/perl-dap/tests/dap_watchpoints_tests.rs" },
 ]
 limitations = [
-  "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
+  "Native data breakpoints are fail-closed (#9091): dataBreakpointInfo never mints a name-only or context-qualified dataId, and setDataBreakpoints performs no debugger mutation, retains no watchpoint registry, and reports every entry unverified. Capability advertisement is false until the #9091 re-enable gate proves identity, install acknowledgement, and hit attribution.",
+  "Re-enable requires the #9091 gate: frame/container-bound session-stable dataId, backend install request through the mutation broker with parsed acknowledgement, target-value-change stop attributed to that exact watchpoint, and replacement/removal/restart cleanup.",
 ]
 description = "Data breakpoints (watchpoints) via Perl debugger w/W commands"
 
