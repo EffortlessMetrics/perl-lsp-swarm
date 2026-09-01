@@ -9,6 +9,7 @@ authorities consumed by later adapter work.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -124,7 +125,30 @@ def _validate_evidence(
     return evidence
 
 
-def validate_projection(schema: Any, projection: Any) -> None:
+def _authority_digest(row: dict[str, Any]) -> str:
+    payload = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_authorities(value: Any) -> dict[tuple[str, str], dict[str, Any]]:
+    entries = _object(value, "authority catalog").get("rows")
+    _require(isinstance(entries, list) and entries, "authority catalog.rows must be a non-empty list")
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    for index, raw in enumerate(entries):
+        item = _object(raw, f"authority catalog.rows[{index}]")
+        authority = _string(item.get("authority"), f"authority catalog.rows[{index}].authority")
+        row_id = _string(item.get("row_id"), f"authority catalog.rows[{index}].row_id")
+        canonical = item.get("row")
+        canonical = _object(canonical, f"authority catalog.rows[{index}].row")
+        _require(canonical.get("authority") == authority and canonical.get("row_id") == row_id,
+                 f"authority catalog.rows[{index}] identity does not match its row")
+        key = (authority, row_id)
+        _require(key not in result, f"authority catalog duplicates {authority}:{row_id}")
+        result[key] = canonical
+    return result
+
+
+def validate_projection(schema: Any, projection: Any, authorities: Any = None) -> None:
     """Raise ``ValueError`` unless projection structure and release laws hold."""
 
     schema_object = _object(schema, "schema")
@@ -142,6 +166,8 @@ def validate_projection(schema: Any, projection: Any) -> None:
     _require(data.get("schema") == SCHEMA_VERSION, f"projection.schema must be {SCHEMA_VERSION}")
     _string(data.get("release"), "projection.release")
     repository_sha = _sha(data.get("repository_sha"), "projection.repository_sha")
+    authority_rows = _validate_authorities(authorities) if authorities is not None else {}
+    _require(authorities is not None, "an authority catalog is required to verify surface references")
     rows = data.get("rows")
     _require(isinstance(rows, list) and rows, "projection.rows must be a non-empty list")
 
@@ -169,8 +195,12 @@ def validate_projection(schema: Any, projection: Any) -> None:
         source = _exact_keys(row.get("surface_ref"), {"authority", "row_id", "digest"}, f"projection.rows[{index}].surface_ref")
         authority = _string(source.get("authority"), f"projection.rows[{index}].surface_ref.authority")
         row_id = _string(source.get("row_id"), f"projection.rows[{index}].surface_ref.row_id")
-        _sha256(source.get("digest"), f"projection.rows[{index}].surface_ref.digest")
+        digest = _sha256(source.get("digest"), f"projection.rows[{index}].surface_ref.digest")
         reference = (authority, row_id)
+        canonical = authority_rows.get(reference)
+        _require(canonical is not None, f"projection.rows[{index}] references unknown canonical authority row {authority}:{row_id}")
+        _require(digest == _authority_digest(canonical),
+                 f"projection.rows[{index}].surface_ref.digest does not match canonical authority row")
         _require(reference not in references, f"projection rows duplicate canonical authority row {authority}:{row_id}")
         references.add(reference)
 
@@ -198,18 +228,25 @@ def validate_projection(schema: Any, projection: Any) -> None:
         claim_effect = row.get("claim_effect")
         _require(claim_effect in CLAIM_EFFECTS, f"projection.rows[{index}].claim_effect is invalid")
 
-        kinds = {item["kind"] for item in evidence}
+        evidence_by_profile = {profile: [item for item in evidence if item["artifact_profile"] == profile] for profile in profiles}
         if disposition == "READY":
             _require(claim_effect == "retain", f"projection.rows[{index}].READY must retain its public claim")
-            _require("installed_journey" in kinds, f"projection.rows[{index}].READY requires exact installed evidence")
+            for profile, subjects in evidence_by_profile.items():
+                _require(any(item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"] for item in subjects),
+                         f"projection.rows[{index}].READY requires exact installed evidence for {profile} and ordinary journey")
         elif disposition == "BOUNDED_PREVIEW":
             _require(claim_effect == "limit", f"projection.rows[{index}].BOUNDED_PREVIEW must limit its public claim")
-            _require("installed_journey" in kinds, f"projection.rows[{index}].BOUNDED_PREVIEW requires exact installed evidence")
-            _require("refusal_boundary" in kinds, f"projection.rows[{index}].BOUNDED_PREVIEW requires refusal-boundary evidence")
+            for profile, subjects in evidence_by_profile.items():
+                _require(any(item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"] for item in subjects),
+                         f"projection.rows[{index}].BOUNDED_PREVIEW requires exact installed evidence for {profile} and ordinary journey")
+                _require(any(item["kind"] == "refusal_boundary" and item["journey_id"] in row["failure_journeys"] for item in subjects),
+                         f"projection.rows[{index}].BOUNDED_PREVIEW requires refusal-boundary evidence for {profile} and a failure journey")
         elif disposition == "DISABLED":
             _require(claim_effect == "remove_or_withhold", f"projection.rows[{index}].DISABLED must remove or withhold its claim")
             _require(row["default_reachable"] is False, f"projection.rows[{index}].DISABLED cannot remain default reachable")
-            _require("artifact_absence" in kinds, f"projection.rows[{index}].DISABLED requires artifact-absence evidence")
+            for profile, subjects in evidence_by_profile.items():
+                _require(any(item["kind"] == "artifact_absence" for item in subjects),
+                         f"projection.rows[{index}].DISABLED requires artifact-absence evidence for {profile}")
         else:
             _require(claim_effect == "remove_or_withhold", f"projection.rows[{index}].{disposition} must remove or withhold its claim")
             _require(owner_issue is not None, f"projection.rows[{index}].{disposition} requires an owning issue")
@@ -227,12 +264,14 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("docs/releases/exposed-surface-disposition.v1.schema.json"),
     )
     parser.add_argument("--projection", type=Path, required=True)
+    parser.add_argument("--authority-catalog", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         schema = json.loads(args.schema.read_text(encoding="utf-8"))
         text = args.projection.read_text(encoding="utf-8")
         projection = json.loads(text)
-        validate_projection(schema, projection)
+        authorities = json.loads(args.authority_catalog.read_text(encoding="utf-8"))
+        validate_projection(schema, projection, authorities)
         _require(text == canonical_bytes(projection), "projection bytes are not canonical; identical inputs must generate identical bytes")
     except (OSError, json.JSONDecodeError, ValueError) as error:
         print(f"exposed-surface disposition validation failed: {error}", file=sys.stderr)

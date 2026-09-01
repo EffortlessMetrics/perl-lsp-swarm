@@ -1,0 +1,5 @@
+{
+  "rows": [
+    {"authority":"effective_lsp_surface","row_id":"provider.diagnostics","row":{"authority":"effective_lsp_surface","row_id":"provider.diagnostics","contract":"diagnostics-current-document"}}
+  ]
+}

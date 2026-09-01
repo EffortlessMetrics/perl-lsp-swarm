@@ -33,7 +33,7 @@
       "owner_issue": null,
       "surface_ref": {
         "authority": "effective_lsp_surface",
-        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "digest": "9ebf24dbfdea2fbbd59a71167845c62e17b5227de4a32d33ce8db2b289c9c77a",
         "row_id": "provider.diagnostics"
       }
     }

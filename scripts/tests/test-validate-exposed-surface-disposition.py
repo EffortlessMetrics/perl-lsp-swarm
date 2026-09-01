@@ -30,20 +30,25 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         cls.projection = json.loads(
             (ROOT / "scripts/tests/fixtures/exposed-surface-disposition/valid.json").read_text(encoding="utf-8")
         )
+        cls.authorities = json.loads(
+            (ROOT / "scripts/tests/fixtures/exposed-surface-disposition/authorities.json").read_text(encoding="utf-8")
+        )
 
     def assert_invalid(self, projection: dict, message: str) -> None:
         with self.assertRaisesRegex(ValueError, message):
-            MODULE.validate_projection(self.schema, projection)
+            MODULE.validate_projection(self.schema, projection, self.authorities)
 
     def test_valid_ready_projection_passes_and_cli_requires_canonical_bytes(self) -> None:
-        MODULE.validate_projection(self.schema, self.projection)
+        MODULE.validate_projection(self.schema, self.projection, self.authorities)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             schema_path = root / "schema.json"
             projection_path = root / "projection.json"
             schema_path.write_text(json.dumps(self.schema), encoding="utf-8")
             projection_path.write_text(MODULE.canonical_bytes(self.projection), encoding="utf-8")
-            self.assertEqual(MODULE.main(["--schema", str(schema_path), "--projection", str(projection_path)]), 0)
+            authority_path = root / "authorities.json"
+            authority_path.write_text(json.dumps(self.authorities), encoding="utf-8")
+            self.assertEqual(MODULE.main(["--schema", str(schema_path), "--authority-catalog", str(authority_path), "--projection", str(projection_path)]), 0)
 
     def test_rejects_unknown_disposition(self) -> None:
         projection = copy.deepcopy(self.projection)
@@ -64,6 +69,14 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         projection["rows"][0]["surface_ref"]["digest"] = "stale"
         self.assert_invalid(projection, "surface_ref.digest")
 
+        projection = copy.deepcopy(self.projection)
+        projection["rows"][0]["surface_ref"]["row_id"] = "unknown"
+        self.assert_invalid(projection, "unknown canonical authority row")
+
+        projection = copy.deepcopy(self.projection)
+        projection["rows"][0]["surface_ref"]["authority"] = "forged"
+        self.assert_invalid(projection, "unknown canonical authority row")
+
     def test_rejects_cross_subject_or_cross_profile_evidence(self) -> None:
         projection = copy.deepcopy(self.projection)
         projection["rows"][0]["evidence_subjects"][0]["repository_sha"] = "d" * 40
@@ -77,6 +90,14 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         projection = copy.deepcopy(self.projection)
         projection["rows"][0]["evidence_subjects"] = []
         self.assert_invalid(projection, "READY requires exact installed evidence")
+
+        projection = copy.deepcopy(self.projection)
+        projection["rows"][0]["evidence_subjects"][0]["journey_id"] = "unrelated"
+        self.assert_invalid(projection, "ordinary journey")
+
+        projection = copy.deepcopy(self.projection)
+        projection["rows"][0]["artifact_profiles"].append("web_public")
+        self.assert_invalid(projection, "installed evidence for web_public")
 
     def test_rejects_disabled_while_default_reachable_or_without_absence_proof(self) -> None:
         projection = copy.deepcopy(self.projection)
@@ -115,8 +136,10 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
     def test_rejects_noncanonical_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             projection_path = Path(directory) / "projection.json"
+            authority_path = Path(directory) / "authorities.json"
             projection_path.write_text(json.dumps(self.projection), encoding="utf-8")
-            self.assertEqual(MODULE.main(["--projection", str(projection_path)]), 1)
+            authority_path.write_text(json.dumps(self.authorities), encoding="utf-8")
+            self.assertEqual(MODULE.main(["--authority-catalog", str(authority_path), "--projection", str(projection_path)]), 1)
 
 
 if __name__ == "__main__":
