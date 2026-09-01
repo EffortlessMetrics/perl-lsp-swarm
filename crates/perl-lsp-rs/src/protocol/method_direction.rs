@@ -623,6 +623,11 @@ mod tests {
         let mut depth = 0;
         let mut index = 0;
         while index < bytes.len() {
+            if bytes[index..].starts_with(b"//") {
+                let newline = bytes[index..].iter().position(|byte| *byte == b'\n')?;
+                index += newline + 1;
+                continue;
+            }
             if bytes[index..].starts_with(b"/*") {
                 let mut comment_depth = 1;
                 index += 2;
@@ -652,6 +657,16 @@ mod tests {
 
     fn test_module_declaration(line: &str) -> Option<TestModuleDeclaration> {
         let mut rest = line.trim_start();
+
+        loop {
+            let attribute_start = skip_declaration_trivia(rest, 0)?;
+            rest = &rest[attribute_start..];
+            if !rest.starts_with("#[") {
+                break;
+            }
+            let attribute_end = outer_attribute_end(rest)?;
+            rest = &rest[attribute_end..];
+        }
 
         if let Some(after_pub) = rest.strip_prefix("pub")
             && after_pub.chars().next().is_some_and(|next| next.is_whitespace() || next == '(')
@@ -690,6 +705,80 @@ mod tests {
             kind,
             terminator_offset: line.len() - rest.len() + terminator_offset,
         })
+    }
+
+    fn outer_attribute_end(source: &str) -> Option<usize> {
+        let bytes = source.as_bytes();
+        let mut index = 2;
+        let mut brackets = 1;
+        let mut state = LexicalState::Normal;
+        while index < bytes.len() {
+            match state {
+                LexicalState::Normal => {
+                    if bytes[index..].starts_with(b"//") {
+                        let newline = bytes[index..].iter().position(|byte| *byte == b'\n')?;
+                        index += newline + 1;
+                    } else if bytes[index..].starts_with(b"/*") {
+                        state = LexicalState::BlockComment(1);
+                        index += 2;
+                    } else if let Some((next, hashes)) = raw_string_start(bytes, index) {
+                        state = LexicalState::RawString { hashes };
+                        index = next;
+                    } else if bytes[index] == b'"' {
+                        state = LexicalState::Quoted { delimiter: b'"', escaped: false };
+                        index += 1;
+                    } else if bytes[index] == b'\'' && char_literal_ends_on_line(bytes, index) {
+                        state = LexicalState::Quoted { delimiter: b'\'', escaped: false };
+                        index += 1;
+                    } else if bytes[index] == b'[' {
+                        brackets += 1;
+                        index += 1;
+                    } else if bytes[index] == b']' {
+                        brackets -= 1;
+                        index += 1;
+                        if brackets == 0 {
+                            return Some(index);
+                        }
+                    } else {
+                        index += 1;
+                    }
+                }
+                LexicalState::BlockComment(depth) => {
+                    if bytes[index..].starts_with(b"/*") {
+                        state = LexicalState::BlockComment(depth + 1);
+                        index += 2;
+                    } else if bytes[index..].starts_with(b"*/") {
+                        index += 2;
+                        if depth == 1 {
+                            state = LexicalState::Normal;
+                        } else {
+                            state = LexicalState::BlockComment(depth - 1);
+                        }
+                    } else {
+                        index += 1;
+                    }
+                }
+                LexicalState::Quoted { delimiter, escaped } => {
+                    if escaped {
+                        state = LexicalState::Quoted { delimiter, escaped: false };
+                    } else if bytes[index] == b'\\' {
+                        state = LexicalState::Quoted { delimiter, escaped: true };
+                    } else if bytes[index] == delimiter {
+                        state = LexicalState::Normal;
+                    }
+                    index += 1;
+                }
+                LexicalState::RawString { hashes } => {
+                    if raw_string_ends_at(bytes, index, hashes) {
+                        state = LexicalState::Normal;
+                        index += hashes + 1;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+        }
+        None
     }
 
     #[derive(Clone, Copy)]
@@ -1017,8 +1106,10 @@ mod tests {
             if let Some(close) = module_close {
                 let closing_line =
                     lines.get(line_index.saturating_sub(1)).copied().unwrap_or_default();
-                let suffix = closing_line.get(close + 1..).unwrap_or_default();
-                let suffix = strip_line_comment(suffix);
+                let suffix = skip_declaration_trivia(closing_line, close + 1)
+                    .and_then(|suffix_start| closing_line.get(suffix_start..))
+                    .map(strip_line_comment)
+                    .unwrap_or_default();
                 if !suffix.trim().is_empty() {
                     result.push_str(suffix.trim_end());
                     result.push('\n');
