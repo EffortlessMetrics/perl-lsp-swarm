@@ -269,6 +269,7 @@ fn test_command_exists_does_not_execute_path_hijacked_which() -> Result<(), Box<
         );
         let marker = child_env("SECURITY_MARKER")?;
         assert!(!Path::new(&marker).exists(), "PATH probe executed a hijacked which");
+        println!("{CHILD_PROOF_MARKER}=test_command_exists_does_not_execute_path_hijacked_which");
         return Ok(());
     }
 
@@ -302,6 +303,7 @@ exit 0
         &[("SECURITY_MARKER", marker_path.as_os_str())],
     )?;
     assert!(output.status.success(), "child failed: {}", output_text(&output));
+    assert_child_ran_once(&output, "test_command_exists_does_not_execute_path_hijacked_which")?;
 
     Ok(())
 }
@@ -315,6 +317,7 @@ fn test_command_exists_does_not_execute_candidate_binary() -> Result<(), Box<dyn
         let marker = child_env("SECURITY_MARKER")?;
         assert!(exists, "candidate should be discoverable in PATH");
         assert!(!Path::new(&marker).exists(), "command_exists executed the candidate");
+        println!("{CHILD_PROOF_MARKER}=test_command_exists_does_not_execute_candidate_binary");
         return Ok(());
     }
 
@@ -339,6 +342,7 @@ fn test_command_exists_does_not_execute_candidate_binary() -> Result<(), Box<dyn
         &[("SECURITY_MARKER", marker_path.as_os_str())],
     )?;
     assert!(output.status.success(), "child failed: {}", output_text(&output));
+    assert_child_ran_once(&output, "test_command_exists_does_not_execute_candidate_binary")?;
     Ok(())
 }
 
@@ -463,6 +467,7 @@ fn test_command_injection_pipe() -> Result<(), Box<dyn Error>> {
 // binary can be resolved.
 
 const CHILD_MODE: &str = "PERL_LSP_SECURITY_CHILD";
+const CHILD_PROOF_MARKER: &str = "PERL_LSP_SECURITY_CHILD_RAN";
 
 fn child_mode(name: &str) -> bool {
     std::env::var_os(CHILD_MODE).is_some_and(|value| value.to_string_lossy() == name)
@@ -492,6 +497,20 @@ fn output_text(output: &Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+fn assert_child_ran_once(output: &Output, selector: &str) -> Result<(), Box<dyn Error>> {
+    let expected = format!("{CHILD_PROOF_MARKER}={selector}");
+    let count =
+        String::from_utf8_lossy(&output.stdout).lines().filter(|line| *line == expected).count();
+    if count != 1 {
+        return Err(format!(
+            "expected exactly one child proof marker {expected:?}, found {count}: {}",
+            output_text(output)
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Helper: resolve the system Perl binary via the toolchain resolver.
@@ -528,6 +547,7 @@ fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Erro
         )?;
         let output = result["output"].as_str().ok_or("missing output")?;
         assert!(output.contains("UNSET"), "child inherited PERL5LIB: {output:?}");
+        println!("{CHILD_PROOF_MARKER}=run_file_strips_perl5lib_when_use_perl5lib_false");
         return Ok(());
     }
     if config_with_perl5lib(false).is_none() {
@@ -549,6 +569,7 @@ fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Erro
         &[("SECURITY_SCRIPT", script.as_os_str())],
     )?;
     assert!(output.status.success(), "child failed: {}", output_text(&output));
+    assert_child_ran_once(&output, "run_file_strips_perl5lib_when_use_perl5lib_false")?;
     assert_eq!(std::env::var_os("PERL5LIB"), before, "parent environment changed");
     Ok(())
 }
@@ -573,6 +594,7 @@ fn run_file_passes_perl5lib_when_use_perl5lib_true() -> Result<(), Box<dyn Error
             output.contains(marker.to_string_lossy().as_ref()),
             "PERL5LIB was not passed: {output:?}"
         );
+        println!("{CHILD_PROOF_MARKER}=run_file_passes_perl5lib_when_use_perl5lib_true");
         return Ok(());
     }
     if config_with_perl5lib(true).is_none() {
@@ -593,6 +615,7 @@ fn run_file_passes_perl5lib_when_use_perl5lib_true() -> Result<(), Box<dyn Error
         &[("SECURITY_SCRIPT", script.as_os_str()), ("SECURITY_MARKER", marker_path.as_os_str())],
     )?;
     assert!(output.status.success(), "child failed: {}", output_text(&output));
+    assert_child_ran_once(&output, "run_file_passes_perl5lib_when_use_perl5lib_true")?;
     assert_eq!(std::env::var_os("PERL5LIB"), before, "parent environment changed");
     Ok(())
 }
@@ -616,6 +639,7 @@ fn run_test_sub_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn 
         )?;
         let output = result["output"].as_str().ok_or("missing output")?;
         assert!(output.contains("UNSET"), "child inherited PERL5LIB: {output:?}");
+        println!("{CHILD_PROOF_MARKER}=run_test_sub_strips_perl5lib_when_use_perl5lib_false");
         return Ok(());
     }
     if config_with_perl5lib(false).is_none() {
@@ -637,6 +661,7 @@ fn run_test_sub_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn 
         &[("SECURITY_SCRIPT", script.as_os_str())],
     )?;
     assert!(output.status.success(), "child failed: {}", output_text(&output));
+    assert_child_ran_once(&output, "run_test_sub_strips_perl5lib_when_use_perl5lib_false")?;
     assert_eq!(std::env::var_os("PERL5LIB"), before, "parent environment changed");
     Ok(())
 }
