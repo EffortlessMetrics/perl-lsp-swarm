@@ -912,13 +912,34 @@ mod tests {
             if line.trim() != "#[cfg(test)]" {
                 continue;
             }
-            let Some(next) = lines.peek() else { break };
-            let Some(declaration) = test_module_declaration(next.trim_start()) else {
-                continue;
+            // Outer attributes may intervene between cfg(test) and the module
+            // declaration (notably #[path = "..."] on an external module).
+            // Inspect the whole contiguous attribute run before consuming it;
+            // otherwise a non-module item must remain visible to the scan.
+            let mut lookahead = lines.clone();
+            let mut intervening_attributes = 0;
+            let declaration = loop {
+                let Some(candidate) = lookahead.next() else { break None };
+                if let Some(declaration) = test_module_declaration(candidate.trim_start()) {
+                    break Some(declaration);
+                }
+                let trimmed = candidate.trim_start();
+                if trimmed.starts_with("#[")
+                    || trimmed.starts_with("///")
+                    || trimmed.starts_with("//!")
+                {
+                    intervening_attributes += 1;
+                    continue;
+                }
+                break None;
             };
-            // Consume the attribute/mod pair. A `mod x;` declaration ends
+            let Some(declaration) = declaration else { continue };
+            // Consume the intervening attributes and module declaration. A `mod x;` declaration ends
             // here, including when trailing comments follow the semicolon; a
             // `mod x {` block is skipped by lexical brace counting.
+            for _ in 0..intervening_attributes {
+                let _ = lines.next();
+            }
             let Some(mod_line) = lines.next() else { break };
             if matches!(declaration.kind, TestModuleKind::External) {
                 let mod_line = mod_line.trim_start();
@@ -993,6 +1014,10 @@ mod inline_same_line { const INLINE: &str = "inline/test"; } const INLINE_URL: &
 #[cfg(test)]
 pub(crate) mod external_with_url; const EXTERNAL_URL: &str = "https://example.test/external"; // trailing comment
 #[cfg(test)]
+#[allow(dead_code)]
+#[path = "fixtures/external_test.rs"]
+pub(in crate::protocol) mod attributed_external; const ATTRIBUTED_URL: &str = "https://example.test/attributed"; // trailing comment
+#[cfg(test)]
 pub(crate) mod lexical_forms {
     const CLOSE: &str = "}";
     const OPEN: &str = "{";
@@ -1025,6 +1050,9 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         assert!(stripped.contains("production/after_inline"));
         assert!(stripped.contains("https://example.test/inline"));
         assert!(stripped.contains("https://example.test/external"));
+        assert!(stripped.contains("https://example.test/attributed"));
+        assert!(!stripped.contains("fixtures/external_test.rs"));
+        assert!(!stripped.contains("pub(in crate::protocol) mod attributed_external"));
         assert!(stripped.contains("production/after"));
         assert!(stripped.contains("pub(crate) mod visible"));
         assert!(stripped.contains("visible/production"));
