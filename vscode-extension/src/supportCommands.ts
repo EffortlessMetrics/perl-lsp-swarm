@@ -196,37 +196,124 @@ async function getServerVersionSafely(dependencies: SupportCommandDependencies):
   }
 }
 
-/** Collect bounded support context and open the repository's issue form. */
+/**
+ * Render the human packet projection, or `null` when the packet cannot be built.
+ *
+ * The raw failure is deliberately dropped rather than surfaced: packet-validation
+ * messages name the offending field contents, which is exactly the class of data the
+ * packet exists to keep out of a public report.
+ *
+ * The catch is also deliberately silent rather than logging an error class. This
+ * extension emits no `console` output from production code — there are zero
+ * `console.*` calls outside tests and `.oxlintrc.json` sets `no-console`, against a
+ * 0/0 warning budget, so a `console.error` here fails `npm run lint` outright. The
+ * sanctioned diagnostic surface is an `OutputChannel` (see `diagnosticCommands.ts`),
+ * which this command does not take; wiring one is tracked separately rather than
+ * widened into this claim.
+ */
+function renderSupportPacketSafely(
+  dependencies: SupportCommandDependencies,
+  serverVersion: string,
+) {
+  try {
+    return formatSupportPacketHuman(
+      buildBasicSupportPacket({
+        serverVersion,
+        extensionVersion: dependencies.extensionVersion,
+        editorVersion: dependencies.editorVersion,
+        platform: dependencies.platform,
+        arch: dependencies.arch,
+        editorName: dependencies.editorName,
+      }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function openIssueForm(): Promise<void> {
+  await vscode.env.openExternal(vscode.Uri.parse(PUBLIC_BUG_REPORT_URL));
+}
+
+/**
+ * Show the packet in a native, inspectable editor document before the user shares it.
+ *
+ * Opening an untitled document can fail (host teardown, editor limits), and letting
+ * that reject would dead-end the command the same way an unguarded packet render did.
+ * Report it bounded and keep the issue form reachable instead.
+ */
+async function showSupportPacket(humanPacket: string): Promise<void> {
+  try {
+    const document = await vscode.workspace.openTextDocument({
+      content: humanPacket,
+      language: 'plaintext',
+    });
+    await vscode.window.showTextDocument(document, { preview: true });
+  } catch {
+    const recovery = await vscode.window.showWarningMessage(
+      'Could not open the support packet in an editor tab. You can still open the issue form and describe the problem.',
+      'Open Issue Form',
+    );
+    if (recovery === 'Open Issue Form') {
+      await openIssueForm();
+    }
+  }
+}
+
+async function copySupportPacket(humanPacket: string): Promise<void> {
+  try {
+    await vscode.env.clipboard.writeText(humanPacket);
+  } catch {
+    const recovery = await vscode.window.showWarningMessage(
+      'Could not write the support packet to the clipboard. Show the packet to copy it manually, or open the issue form and describe the problem.',
+      'Show Support Packet',
+      'Open Issue Form',
+    );
+    if (recovery === 'Show Support Packet') {
+      await showSupportPacket(humanPacket);
+    } else if (recovery === 'Open Issue Form') {
+      await openIssueForm();
+    }
+    return;
+  }
+  vscode.window.showInformationMessage(
+    'Support packet copied. Review it, then choose Open Issue Form to paste it into the report.',
+  );
+}
+
+/**
+ * Collect bounded support context and offer inspect, copy, and issue-form actions.
+ *
+ * Each action is independent: copying never opens the browser and showing never
+ * copies, so no support data leaves the machine without an explicit user choice.
+ */
 export async function reportIssueCommand(dependencies: SupportCommandDependencies): Promise<void> {
   const serverVersion = await getServerVersionSafely(dependencies);
-  const supportPacket = buildBasicSupportPacket({
-    serverVersion,
-    extensionVersion: dependencies.extensionVersion,
-    editorVersion: dependencies.editorVersion,
-    platform: dependencies.platform,
-    arch: dependencies.arch,
-    editorName: dependencies.editorName,
-  });
-  const humanPacket = formatSupportPacketHuman(supportPacket);
+  const humanPacket = renderSupportPacketSafely(dependencies, serverVersion);
+
+  if (humanPacket === null) {
+    const fallback = await vscode.window.showWarningMessage(
+      'The support packet could not be generated. You can still open the issue form and describe the problem manually.',
+      'Open Issue Form',
+    );
+    if (fallback === 'Open Issue Form') {
+      await openIssueForm();
+    }
+    return;
+  }
 
   const selection = await vscode.window.showInformationMessage(
-    'Open a GitHub issue to report a bug or request a feature.',
+    'Report a perl-lsp issue. Review the support packet before you share it.',
+    'Show Support Packet',
     'Copy Support Packet',
     'Open Issue Form',
   );
 
-  if (selection === 'Copy Support Packet') {
-    try {
-      await vscode.env.clipboard.writeText(humanPacket);
-      vscode.window.showInformationMessage(
-        'Support packet copied. Review it, then paste it into the issue form.',
-      );
-    } catch {
-      // Clipboard unavailable — continue to open browser anyway.
-    }
-  }
-
-  if (selection === 'Copy Support Packet' || selection === 'Open Issue Form') {
-    await vscode.env.openExternal(vscode.Uri.parse(PUBLIC_BUG_REPORT_URL));
+  if (selection === 'Show Support Packet') {
+    await showSupportPacket(humanPacket);
+  } else if (selection === 'Copy Support Packet') {
+    await copySupportPacket(humanPacket);
+  } else if (selection === 'Open Issue Form') {
+    await openIssueForm();
   }
 }

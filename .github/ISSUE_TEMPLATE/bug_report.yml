@@ -8,7 +8,7 @@ body:
       value: |
         Thanks for reporting a bug. Please provide the smallest reproducible journey you can share.
 
-        **VS Code public-beta users:** `Perl: Report Issue` can copy a bounded support packet with product/editor identity and only the support state the extension can establish safely. Please review the packet before pasting it below. Do not paste private source, full logs, environment dumps, credentials, debugger values, or test output unless a maintainer asks for one specifically bounded excerpt.
+        **VS Code public-beta users:** `Perl: Report Issue` offers `Show Support Packet` (inspect it in an editor tab) and `Copy Support Packet`. The packet carries product/editor identity and only the support state the extension can establish safely. Please review the packet before pasting it below. Do not paste private source, full logs, environment dumps, credentials, debugger values, or test output unless a maintainer asks for one specifically bounded excerpt.
 
   - type: dropdown
     id: component
@@ -100,7 +100,7 @@ body:
     attributes:
       label: VS Code Support Packet (recommended for VS Code reports)
       description: |
-        In VS Code run `Perl: Report Issue` → `Copy Support Packet`, review it, then paste it here.
+        In VS Code run `Perl: Report Issue`, use `Show Support Packet` to review it or `Copy Support Packet` to copy it, then paste it here.
         The packet is user-triggered and should contain bounded/redacted product state rather than full logs or source.
         Leave blank for other editors or if packet generation is unavailable.
       render: text
