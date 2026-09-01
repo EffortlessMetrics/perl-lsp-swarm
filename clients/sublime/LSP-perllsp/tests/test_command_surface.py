@@ -341,6 +341,31 @@ class CommandSurfaceContractTests(unittest.TestCase):
         self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
         self.assertIn("later item diagnosis", rendered)
 
+    def test_oversized_top_level_list_preserves_later_details_and_notice(self) -> None:
+        # The first item is deliberately large enough to consume the global
+        # envelope.  A later control-bearing item must still be rendered, and
+        # the output must explain that bulk material was bounded.
+        result = [
+            {"stdout": "x" * (surface.MAX_OUTPUT_CHARS * 2)},
+            {"status": "failed", "error": "later list-item diagnosis"},
+        ]
+        rendered = surface.format_result("Perl: Run Workspace Tests", result)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+        self.assertIn("later list-item diagnosis", rendered)
+        self.assertIn("of this field omitted by LSP-perllsp", rendered)
+
+    def test_list_nested_control_survives_many_oversized_bulk_items(self) -> None:
+        result = [
+            {"details": {"stdout": "y" * (surface.MAX_FIELD_CHARS * 2)}}
+            for _ in range(20)
+        ]
+        result.append({"details": {"result": {"success": False, "reason": "nested failure"}}})
+        rendered = surface.format_result("Perl: Run Workspace Tests", result)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+        self.assertIn("Success: no", rendered)
+        self.assertIn("Reason: nested failure", rendered)
+        self.assertIn("of this field omitted by LSP-perllsp", rendered)
+
     def test_bounded_results_have_one_terminal_newline_and_exact_limit(self) -> None:
         rendered = surface.format_result(
             "Perl: Run Current File",

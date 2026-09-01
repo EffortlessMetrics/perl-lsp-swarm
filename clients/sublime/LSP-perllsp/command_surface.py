@@ -266,7 +266,11 @@ def _append_value(
         return
     if isinstance(value, (list, tuple)):
         lines.append(f"{prefix}{label}: {len(value)} item(s)")
-        for index, item in enumerate(value[:50], start=1):
+        # A result list is an envelope too.  Render control-bearing items
+        # before bulk items so the global bound cannot hide a later failure or
+        # next action merely because an earlier item is large.
+        ordered_items = _ordered_items(value)
+        for index, item in ordered_items[:50]:
             # Bound each item as a unit.  Bounding only scalar leaves still
             # permits one deeply nested mapping/list item to consume the
             # complete envelope before later items (and their labels) render.
@@ -304,6 +308,8 @@ def _ordered_keys(value: Mapping) -> list[Any]:
     # mappings forward too, otherwise a collection of large sibling payloads
     # can hide the nested diagnosis behind the final envelope bound.
     def contains_control(candidate: Any) -> bool:
+        if isinstance(candidate, (list, tuple)):
+            return any(contains_control(item) for item in candidate)
         if not isinstance(candidate, Mapping):
             return False
         return any(
@@ -324,6 +330,27 @@ def _ordered_keys(value: Mapping) -> list[Any]:
         (k for k in keys if str(k) not in control_set and str(k) not in nested_set), key=str
     )
     return control_present + sorted(nested_controls, key=str) + rest
+
+
+def _ordered_items(value: Sequence[Any]) -> list[tuple[int, Any]]:
+    """Place items containing control/result fields before bulk items.
+
+    Keep the source index in the label so reordering is presentation-only and
+    callers can still identify the original result item.
+    """
+
+    def contains_control(candidate: Any) -> bool:
+        if isinstance(candidate, Mapping):
+            return any(
+                str(key) in CONTROL_RESULT_KEYS or contains_control(item)
+                for key, item in candidate.items()
+            )
+        if isinstance(candidate, (list, tuple)):
+            return any(contains_control(item) for item in candidate)
+        return False
+
+    indexed = list(enumerate(value, start=1))
+    return sorted(indexed, key=lambda pair: (not contains_control(pair[1]), pair[0]))
 
 
 def _bounded(text: str) -> str:
@@ -365,13 +392,11 @@ def format_result(caption: str, result: Any) -> str:
         _append_value(lines, "Results", result, bound_fields=True)
     else:
         lines.append(_scalar(result))
-    rendered = "\n".join(lines).rstrip() + "\n"
-    if len(rendered) > MAX_OUTPUT_CHARS:
-        lines = [caption, "=" * len(caption), ""]
-        for key in _ordered_keys(result) if isinstance(result, Mapping) else []:
-            _append_value(lines, _humanize(str(key)), result[key], bound_fields=True)
-        rendered = "\n".join(lines).rstrip() + "\n"
-    return _bounded(rendered)
+    # Every result shape has already been rendered with bounded fields/items.
+    # Keep the complete envelope here so list/tuple details are not discarded
+    # by a mapping-only overflow fallback; the final bound supplies the single
+    # envelope notice consistently for scalars, mappings, and sequences.
+    return _bounded("\n".join(lines).rstrip() + "\n")
 
 
 def format_error(caption: str, command_id: str, error: Any) -> str:
