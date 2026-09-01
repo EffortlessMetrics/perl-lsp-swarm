@@ -867,7 +867,13 @@ fn verify_transport(envelope: &Path, manifest: &Manifest) -> Result<Vec<u8>, Str
 /// re-read here and must name this candidate. Otherwise a resealed envelope
 /// could carry another candidate's proof under a correct-looking binding.
 fn verify_proofs(envelope: &Path, manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
+    // Three different facts with three different repairs, so three outcomes.
+    // Collapsing them all into "not bound to this candidate" told an operator
+    // to rebind evidence when the actual repair was to re-copy bytes or to fix
+    // the envelope, which is exactly what a typed outcome vocabulary is for.
     let mismatch = |detail: String| (HandoffOutcome::ProofSubjectMismatch, detail);
+    let corrupt = |detail: String| (HandoffOutcome::DigestMismatch, detail);
+    let malformed = |detail: String| (HandoffOutcome::InvalidManifest, detail);
     for proof in &manifest.proof_references {
         if proof.candidate_subject != manifest.candidate.commit {
             return Err(mismatch(format!(
@@ -879,18 +885,18 @@ fn verify_proofs(envelope: &Path, manifest: &Manifest) -> Result<(), (HandoffOut
         // artifact here would mean an envelope this validator calls valid
         // could never have been produced by `create`.
         if proof.bytes > MAX_PROOF_BYTES {
-            return Err(mismatch(format!(
+            return Err(malformed(format!(
                 "proof `{}` declares a size above the ceiling",
                 proof.id
             )));
         }
         let bytes =
-            read_envelope_file(envelope, &proof.path, MAX_PROOF_BYTES).map_err(&mismatch)?;
+            read_envelope_file(envelope, &proof.path, MAX_PROOF_BYTES).map_err(&malformed)?;
         if bytes.len() as u64 != proof.bytes {
-            return Err(mismatch(format!("proof `{}` does not match its declared size", proof.id)));
+            return Err(corrupt(format!("proof `{}` does not match its declared size", proof.id)));
         }
         if super::content_digest_hex(&bytes) != proof.sha256 {
-            return Err(mismatch(format!(
+            return Err(corrupt(format!(
                 "proof `{}` does not match its declared digest",
                 proof.id
             )));

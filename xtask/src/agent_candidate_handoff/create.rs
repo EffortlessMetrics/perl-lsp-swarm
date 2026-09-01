@@ -14,6 +14,7 @@ use super::check::{CheckReport, check_staged, describe_failure};
 use super::git::{git_version, is_full_object_id, run_git, run_git_with_stdin};
 use super::hygiene::{
     is_proof_id, is_repository_identity, repository_identity_from_remote, scan_secrets,
+    strip_url_userinfo,
 };
 use super::model::{
     CandidateIdentity, ChangeInventory, ChangeRecord, ChangeStatus, CommitPerson, EntryClass,
@@ -72,10 +73,15 @@ pub fn create_handoff_with_validator(
     let repository = request.repository.as_path();
     let instrument = |message: String| (HandoffOutcome::InstrumentFailure, message);
 
-    if !run_git(repository, &["rev-parse", "--show-toplevel"]).map_err(&instrument)?.succeeded() {
-        return Err(instrument(
-            "the requested path is not an inspectable Git worktree".to_string(),
-        ));
+    let toplevel = run_git(repository, &["rev-parse", "--show-toplevel"]).map_err(&instrument)?;
+    if !toplevel.succeeded() {
+        // Carry Git's own diagnostic. Reporting only "not inspectable" pointed
+        // the operator away from causes like dubious ownership, which name
+        // themselves precisely if you let them.
+        return Err(instrument(format!(
+            "the requested path is not an inspectable Git worktree: {}",
+            toplevel.diagnostic()
+        )));
     }
     require_supported_object_format(repository)?;
 
@@ -530,6 +536,28 @@ fn resolve_repository_identity(
             Err(_) => {
                 // The URL carried credentials. Record the refusal as a code and
                 // retain none of the URL bytes.
+                //
+                // The identity inside such a URL is still readable, and a
+                // caller's declaration must not silently disagree with it:
+                // standing in a clone of `acme/app` and stamping
+                // `totally/unrelated` is the very substitution the conflict
+                // rule above exists to stop, and a credential-bearing remote is
+                // the ordinary shape for the workspaces this format targets.
+                // Comparing an `owner/name` is not retaining a URL.
+                if let Some(declared) = &declared
+                    && let Ok(Some(identity)) =
+                        repository_identity_from_remote(&strip_url_userinfo(output.stdout.trim()))
+                    && *declared != identity.value
+                {
+                    return Err((
+                        HandoffOutcome::InstrumentFailure,
+                        format!(
+                            "the configured remote names `{}` but `{declared}` was declared; \
+                             refusing rather than choosing one",
+                            identity.value
+                        ),
+                    ));
+                }
                 limitations.insert(LimitationCode::RemoteUrlContainedCredentials);
             }
         }

@@ -1831,10 +1831,17 @@ fn an_alternate_object_directory_cannot_satisfy_a_missing_object() -> Result<()>
         .and_then(|row| row.new_object.clone())
         .context("binary object id")?;
 
-    // Drop the blob from both the pack and the declared set, then reseal.
+    // Drop the blob from the pack *only*, leaving it declared. Dropping it from
+    // `object_ids` too would let `verify_object_presence` refuse on pure
+    // manifest arithmetic — declared versus required — without ever consulting
+    // the object database, so the control would pass whether or not the
+    // environment guard worked. Keeping `declared == required` forces the
+    // question into the imported database, which is where the alternate would
+    // answer it.
     let mut reduced = manifest;
-    reduced.transport.object_ids.retain(|id| *id != binary_object);
-    let stdin = reduced.transport.object_ids.join("\n");
+    let packed: Vec<String> =
+        reduced.transport.object_ids.iter().filter(|id| **id != binary_object).cloned().collect();
+    let stdin = packed.join("\n");
     let repacked = super::git::run_git_with_stdin(
         fixture.path(),
         &["pack-objects", "--stdout", "-q"],
@@ -3199,6 +3206,13 @@ fn the_validator_uses_the_same_proof_ceiling_as_the_producer() -> Result<()> {
     let destination = Destination::new()?;
     let manifest = export_valid(&fixture, &destination)?;
 
+    // The file must exist, or `envelope_closure` refuses first and the ceiling
+    // is never consulted — the control would then be green whether or not the
+    // rule it names is present.
+    let proof_dir = destination.envelope().join(PROOF_DIR_NAME);
+    fs::create_dir_all(&proof_dir)?;
+    fs::write(proof_dir.join("report.json"), b"{}")?;
+
     let mut raw = raw_manifest(&destination.envelope())?;
     raw["proof_references"] = serde_json::Value::Array(vec![serde_json::json!({
         "id": "report.json",
@@ -3211,6 +3225,17 @@ fn the_validator_uses_the_same_proof_ceiling_as_the_producer() -> Result<()> {
 
     let report = check_handoff(&destination.envelope());
     assert_eq!(report.outcome, HandoffOutcome::InvalidManifest);
+    let binding = report
+        .dimensions
+        .iter()
+        .find(|dimension| dimension.id == "proof_binding")
+        .context("proof_binding dimension")?;
+    assert_eq!(
+        binding.verdict,
+        DimensionVerdict::Invalid,
+        "the ceiling must be what refuses this, not envelope closure"
+    );
+    assert!(binding.detail.contains("ceiling"), "detail: {}", binding.detail);
     Ok(())
 }
 
@@ -3314,5 +3339,123 @@ fn a_proof_subject_that_is_not_a_full_object_id_is_refused() -> Result<()> {
         };
         assert_eq!(outcome, HandoffOutcome::ProofSubjectMismatch, "for value `{value}`");
     }
+    Ok(())
+}
+
+/// `..` is traversal, not a repository name.
+///
+/// This is the field a downstream publisher resolves into a target, and it was
+/// the one place the module's own path rule was not applied — reachable on the
+/// *observed* path too, which is the strongest claim strength the format issues.
+#[test]
+fn a_traversing_repository_identity_is_refused() -> Result<()> {
+    for hostile in ["../..", ".git/.git", "-x/y", "./a", "a/.."] {
+        assert!(
+            !super::hygiene::is_repository_identity(hostile),
+            "`{hostile}` is not a repository name"
+        );
+
+        // Refused as a caller declaration...
+        let bare = Fixture::with_remote(None)?;
+        bare.write("a.txt", b"a\n")?;
+        bare.commit("root")?;
+        let destination = Destination::new()?;
+        let mut requested = request(&bare, &destination);
+        requested.declared_repository_identity = Some(hostile.to_string());
+        assert!(
+            create_handoff(&requested).is_err(),
+            "`{hostile}` must not be accepted as a declared identity"
+        );
+
+        // ...and never observed from a remote either.
+        let observed = Fixture::with_remote(Some(&format!("https://github.com/{hostile}")))?;
+        observed.write("a.txt", b"a\n")?;
+        observed.commit("root")?;
+        let out = Destination::new()?;
+        let manifest = create_handoff(&request(&observed, &out))
+            .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+        assert_eq!(
+            manifest.repository_identity.status,
+            RepositoryIdentityStatus::NotProven,
+            "`{hostile}` must not be observed as an identity"
+        );
+    }
+    Ok(())
+}
+
+/// A credential-bearing remote still contradicts a wrong declaration.
+///
+/// Refusing the URL as an identity *source* is not a reason to stop reading it
+/// as a cross-check: standing in a clone of `acme/app` and stamping
+/// `totally/unrelated` is the substitution the conflict rule exists to stop,
+/// and a token-in-URL remote is the ordinary shape for the credential-less
+/// workspaces this format targets. Comparing an `owner/name` is not retaining
+/// a URL.
+#[test]
+fn a_credential_bearing_remote_still_contradicts_a_wrong_declaration() -> Result<()> {
+    let token = synthetic_github_token();
+    let remote = format!("https://{}:{}@{}", "octocat", token, "github.com/acme/app.git");
+
+    let fixture = Fixture::with_remote(Some(&remote))?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let mut requested = request(&fixture, &destination);
+    requested.declared_repository_identity = Some("totally/unrelated".to_string());
+
+    let Err((outcome, detail)) = create_handoff(&requested) else {
+        bail!(
+            "a declaration contradicting the remote must be refused even when the URL is refused"
+        );
+    };
+    assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
+    assert!(detail.contains("acme/app"), "the refusal must name the remote's identity: {detail}");
+    assert!(!detail.contains(&github_token_marker()), "no token material may reach a message");
+    assert!(!destination.envelope().exists(), "nothing is published");
+
+    // An agreeing declaration is still the fallback the field is for.
+    let agreeing = Destination::new()?;
+    let mut requested = request(&fixture, &agreeing);
+    requested.declared_repository_identity = Some("acme/app".to_string());
+    let manifest = create_handoff(&requested)
+        .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+    assert_eq!(manifest.repository_identity.status, RepositoryIdentityStatus::Declared);
+    assert!(manifest.limitations.contains(&LimitationCode::RemoteUrlContainedCredentials));
+    let manifest_text = fs::read_to_string(agreeing.envelope().join(MANIFEST_FILE_NAME))?;
+    assert!(!manifest_text.contains(&github_token_marker()), "no token reaches the envelope");
+    Ok(())
+}
+
+/// Altered proof bytes are corruption, not a rebinding.
+///
+/// Three different facts have three different repairs; reporting all of them as
+/// "not bound to this candidate" told an operator to rebind evidence when the
+/// repair was to re-copy bytes.
+#[test]
+fn proof_failures_are_classified_by_what_actually_went_wrong() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let head = fixture.git(&["rev-parse", "HEAD"])?.trim().to_string();
+    let proof = fixture.path().join("report.json");
+    fs::write(&proof, serde_json::to_vec(&serde_json::json!({ "commit": head }))?)?;
+
+    let destination = Destination::new()?;
+    let mut requested = request(&fixture, &destination);
+    requested.proofs = vec![proof];
+    create_handoff(&requested)
+        .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+
+    // Corrupt the artifact's bytes without touching the manifest.
+    let carried = destination.envelope().join(PROOF_DIR_NAME).join("report.json");
+    let mut bytes = fs::read(&carried)?;
+    bytes.extend_from_slice(b" ");
+    fs::write(&carried, &bytes)?;
+
+    assert_eq!(
+        check_handoff(&destination.envelope()).outcome,
+        HandoffOutcome::DigestMismatch,
+        "altered bytes are corruption; rebinding the evidence would not repair them"
+    );
     Ok(())
 }

@@ -183,6 +183,25 @@ pub fn is_proof_id(value: &str) -> bool {
     })
 }
 
+/// Remove any userinfo from a URL, leaving the rest untouched.
+///
+/// Used only to compare a credential-bearing remote's `owner/name` against a
+/// caller's declaration. The result is never retained: it exists so a
+/// contradiction can be detected without the manifest ever seeing a URL.
+#[must_use]
+pub fn strip_url_userinfo(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let (scheme, rest) = url.split_at(scheme_end + 3);
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let Some(at) = authority.rfind('@') else {
+        return url.to_string();
+    };
+    let separator = if path.is_empty() { "" } else { "/" };
+    format!("{scheme}{}{separator}{path}", &authority[at + 1..])
+}
+
 /// Whether `value` is a lowercase `owner/name` repository identity.
 ///
 /// Deliberately structural: an identity that cannot be expressed as
@@ -202,6 +221,23 @@ pub fn is_repository_identity(value: &str) -> bool {
         return false;
     }
     let acceptable = |segment: &str| {
+        // `.` and `..` are path traversal, not names, and this value is the one
+        // a downstream publisher resolves into a target. `is_safe_repository_path`
+        // has carried that rule all along; the field the whole identity tuple
+        // exists to protect did not. A leading `-` is refused for the same
+        // class of reason: it reads as an option to anything that interpolates
+        // the value into a command line.
+        // A leading `.` covers `.`, `..`, and `.git` alike — path-shaped
+        // segments no forge issues as a name — and a leading `-` reads as an
+        // option to anything that interpolates the value into a command line.
+        // Requiring the first character to be alphanumeric or `_` states the
+        // rule once instead of enumerating the hostile cases.
+        let Some(first) = segment.chars().next() else {
+            return false;
+        };
+        if !(first.is_ascii_alphanumeric() || first == '_') {
+            return false;
+        }
         segment.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     };
     acceptable(owner) && acceptable(name)

@@ -148,8 +148,16 @@ fn run_bounded(
 ) -> Result<GitOutput, String> {
     let label = arguments.join(" ");
     let mut command = Command::new("git");
+    command.args(FORCED_CONFIG.iter().flat_map(|setting| ["-c", setting]));
+    // Neutering ambient configuration also took `safe.directory` with it, and
+    // Git reads that setting from global or system config *only* — a repository
+    // cannot whitelist itself. Without this, `create` fails on any checkout the
+    // running user does not own: the ordinary container, CI, and devcontainer
+    // shape, and one of the environments this format exists to serve. Naming
+    // the one directory the caller already asked us to inspect restores that
+    // without reopening host configuration to anything else.
+    command.arg("-c").arg(format!("safe.directory={}", repository.display()));
     command
-        .args(FORCED_CONFIG.iter().flat_map(|setting| ["-c", setting]))
         .args(arguments)
         .current_dir(repository)
         // Validation must never block on, or acquire, a credential. Every
