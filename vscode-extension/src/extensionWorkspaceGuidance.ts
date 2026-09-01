@@ -244,7 +244,12 @@ export async function suggestDiscoveredIncludePaths(
     if (choice === 'Add to Include Paths') {
       const next = Array.from(new Set([...includePaths, ...discovered]));
       try {
-        await config.update('includePaths', next, vscode.ConfigurationTarget.Workspace);
+        // `includePaths` is genuinely folder-owned — the server reads it per
+        // folder over `workspace/configuration` — and `discovered` was resolved
+        // against this folder's own root, so it must be written to this folder.
+        // Writing `Workspace` published one folder's include paths to every
+        // other folder in a multi-root workspace (#14447).
+        await config.update('includePaths', next, vscode.ConfigurationTarget.WorkspaceFolder);
         void vscode.window.showInformationMessage(
           `Added ${discovered.join(', ')} to perl-lsp.includePaths.`,
         );
