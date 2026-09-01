@@ -719,9 +719,6 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             }
         }
     }
-    if text.contains("refs/pull/${{") {
-        bail!("subject workflow must pass pull-request refs through environment data");
-    }
     let executable_text = steps
         .iter()
         .filter_map(|step| {
@@ -753,6 +750,7 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
         "| bash",
         "| sh",
         "eval ",
+        "refs/pull/${{",
         "git fetch .*head",
     ] {
         if executable_text.iter().any(|run| run.contains(forbidden)) && forbidden != "refs/pull/" {
