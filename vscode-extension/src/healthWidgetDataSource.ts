@@ -23,6 +23,12 @@ interface FileRenameEvent {
   readonly files: readonly { readonly oldUri: Uri; readonly newUri: Uri }[];
 }
 
+interface FileSystemWatcherTelemetry extends Disposable {
+  onDidCreate(listener: (uri: Uri) => void): Disposable;
+  onDidChange(listener: (uri: Uri) => void): Disposable;
+  onDidDelete(listener: (uri: Uri) => void): Disposable;
+}
+
 /** Telemetry subset of `vscode.languages` used by the data source. */
 export interface LanguagesTelemetry {
   onDidChangeDiagnostics(listener: (event: { uris: readonly Uri[] }) => void): Disposable;
@@ -36,6 +42,7 @@ export interface WorkspaceTelemetry {
   onDidCreateFiles?(listener: (event: FileCreateDeleteEvent) => void): Disposable;
   onDidDeleteFiles?(listener: (event: FileCreateDeleteEvent) => void): Disposable;
   onDidRenameFiles?(listener: (event: FileRenameEvent) => void): Disposable;
+  createFileSystemWatcher?(globPattern: string): FileSystemWatcherTelemetry;
 }
 
 /** Perl source-file globs scanned for the current bounded file-count claim. */
@@ -87,6 +94,14 @@ function uriIdentity(uri: Uri): string {
   return uri.toString();
 }
 
+function isRelevantWorkspaceFile(uri: Uri): boolean {
+  if (!isPerlFile(uri)) {
+    return false;
+  }
+  const path = ((uri.fsPath ?? uri.toString()) as string).replaceAll('\\', '/');
+  return !/(^|\/)(node_modules|\.git|target|\.vscode)(\/|$)/i.test(path);
+}
+
 /**
  * Wires first-party error and bounded file counts into `HealthWidget`.
  *
@@ -97,6 +112,8 @@ export class HealthWidgetDataSource {
   private readonly disposables: Disposable[] = [];
   private fileCountPromise: Promise<void> | undefined;
   private fileCountGeneration = 0;
+  private fileCountInvalidated = false;
+  private started = false;
   private disposed = false;
   private readonly fileScanCap: number;
 
@@ -123,6 +140,10 @@ export class HealthWidgetDataSource {
 
   /** Register listeners and push the first file/error counts into the widget. */
   start(): void {
+    if (this.started || this.disposed) {
+      return;
+    }
+    this.started = true;
     this.disposables.push(
       this.languages.onDidChangeDiagnostics(() => {
         this.refreshErrorCount();
@@ -136,17 +157,46 @@ export class HealthWidgetDataSource {
     if (folderListener) {
       this.disposables.push(folderListener);
     }
-    const createListener = this.workspace.onDidCreateFiles?.(invalidate);
+    const createListener = this.workspace.onDidCreateFiles?.((event) => {
+      if (event.files.some(isRelevantWorkspaceFile)) {
+        invalidate();
+      }
+    });
     if (createListener) {
       this.disposables.push(createListener);
     }
-    const deleteListener = this.workspace.onDidDeleteFiles?.(invalidate);
+    const deleteListener = this.workspace.onDidDeleteFiles?.((event) => {
+      if (event.files.some(isRelevantWorkspaceFile)) {
+        invalidate();
+      }
+    });
     if (deleteListener) {
       this.disposables.push(deleteListener);
     }
-    const renameListener = this.workspace.onDidRenameFiles?.(invalidate);
+    const renameListener = this.workspace.onDidRenameFiles?.((event) => {
+      if (event.files.some(({ oldUri, newUri }) =>
+        isRelevantWorkspaceFile(oldUri) || isRelevantWorkspaceFile(newUri))) {
+        invalidate();
+      }
+    });
     if (renameListener) {
       this.disposables.push(renameListener);
+    }
+
+    for (const glob of PERL_FILE_GLOBS) {
+      const watcher = this.workspace.createFileSystemWatcher?.(glob);
+      if (!watcher) {
+        continue;
+      }
+      this.disposables.push(watcher);
+      const watch = (uri: Uri): void => {
+        if (isRelevantWorkspaceFile(uri)) {
+          invalidate();
+        }
+      };
+      this.disposables.push(watcher.onDidCreate(watch));
+      this.disposables.push(watcher.onDidChange(watch));
+      this.disposables.push(watcher.onDidDelete(watch));
     }
 
     this.refreshErrorCount();
@@ -179,9 +229,11 @@ export class HealthWidgetDataSource {
       return;
     }
     this.fileCountGeneration += 1;
-    this.fileCountPromise = undefined;
+    this.fileCountInvalidated = true;
     this.widget.setFileCount(undefined);
-    void this.refreshFileCount();
+    if (!this.fileCountPromise) {
+      void this.refreshFileCount();
+    }
   }
 
   /**
@@ -198,8 +250,18 @@ export class HealthWidgetDataSource {
       return this.fileCountPromise;
     }
     const generation = this.fileCountGeneration;
+    this.fileCountInvalidated = false;
     const promise = this.runFileCountScan(generation);
     this.fileCountPromise = promise;
+    void promise.then(() => {
+      if (this.fileCountPromise !== promise) {
+        return;
+      }
+      this.fileCountPromise = undefined;
+      if (!this.disposed && this.fileCountInvalidated) {
+        void this.refreshFileCount();
+      }
+    });
     return promise;
   }
 
@@ -208,6 +270,9 @@ export class HealthWidgetDataSource {
       const identities = new Set<string>();
       let lowerBound = false;
       for (const glob of PERL_FILE_GLOBS) {
+        if (generation !== this.fileCountGeneration) {
+          return;
+        }
         const uris = await this.workspace.findFiles(
           glob,
           FILE_SCAN_EXCLUDE,
@@ -222,13 +287,20 @@ export class HealthWidgetDataSource {
       }
 
       if (this.disposed || generation !== this.fileCountGeneration) {
+        if (!this.disposed && this.fileCountInvalidated) {
+          await this.runFileCountScan(this.fileCountGeneration);
+        }
         return;
       }
       this.widget.setFileCount(identities.size, lowerBound);
     } catch {
       if (this.disposed || generation !== this.fileCountGeneration) {
+        if (!this.disposed && this.fileCountInvalidated) {
+          await this.runFileCountScan(this.fileCountGeneration);
+        }
         return;
       }
+      this.fileCountPromise = undefined;
       // A failed replacement scan is unavailable, not the prior exact count.
       this.widget.setFileCount(undefined);
     }
@@ -240,6 +312,7 @@ export class HealthWidgetDataSource {
     }
     this.disposed = true;
     this.fileCountGeneration += 1;
+    this.fileCountInvalidated = false;
     this.fileCountPromise = undefined;
     for (const disposable of this.disposables) {
       disposable.dispose();
