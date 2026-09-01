@@ -130,6 +130,152 @@ describe('downloadBoundedFile', () => {
     expect(fs.existsSync(dest)).toBe(false);
   });
 
+  test('does not reject until an injected partial-file cleanup has completed', async () => {
+    const dest = destPath();
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, { 'content-type': 'application/octet-stream' });
+          response.write('0123456789');
+          response.end('abcdefghij');
+        },
+        (url) =>
+          downloadBoundedFile({
+            requestFactory: (listener) => http.get(url, listener),
+            dest,
+            timeoutMs: 1000,
+            maxBytes: 12,
+            operationName: 'Archive download',
+            removePartialFile: async () => {},
+          }),
+      ),
+    ).rejects.toThrow('exceeded 12 compressed bytes');
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
+  test('does not let deferred cleanup delete a replacement destination', async () => {
+    const dest = destPath();
+    let cleanupStarted!: () => void;
+    const cleanupReady = new Promise<void>((resolve) => {
+      cleanupStarted = resolve;
+    });
+
+    const failure = withServer(
+      (_request, response) => {
+        response.writeHead(200, { 'content-type': 'application/octet-stream' });
+        response.write('0123456789');
+        response.end('abcdefghij');
+      },
+      (url) =>
+        downloadBoundedFile({
+          requestFactory: (listener) => http.get(url, listener),
+          dest,
+          timeoutMs: 1000,
+          maxBytes: 12,
+          operationName: 'Archive download',
+          removePartialFile: async (filePath) => {
+            cleanupStarted();
+            await new Promise<void>((resolve) => setTimeout(resolve, 25));
+            fs.unlinkSync(filePath);
+          },
+        }),
+    );
+
+    await cleanupReady;
+    await expect(failure).rejects.toThrow('exceeded 12 compressed bytes');
+    fs.writeFileSync(dest, 'replacement');
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    expect(fs.readFileSync(dest, 'utf8')).toBe('replacement');
+  });
+
+  test('reports cleanup failure when both removal attempts leave the destination', async () => {
+    const dest = destPath();
+    fs.mkdirSync(dest);
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, { 'content-type': 'application/octet-stream' });
+          response.end('payload');
+        },
+        (url) =>
+          downloadBoundedFile({
+            requestFactory: (listener) => http.get(url, listener),
+            dest,
+            timeoutMs: 1000,
+            maxBytes: 64,
+            operationName: 'Archive download',
+            removePartialFile: () => {
+              throw new Error('injected cleanup failure');
+            },
+          }),
+      ),
+    ).rejects.toThrow('partial file cleanup failed:');
+    expect(fs.existsSync(dest)).toBe(true);
+  });
+
+  test('preserves the original download error when fallback cleanup succeeds', async () => {
+    const dest = destPath();
+    fs.writeFileSync(dest, 'stale destination');
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, {
+            'content-type': 'application/octet-stream',
+            'content-length': 64,
+          });
+          response.end('payload');
+        },
+        (url) =>
+          downloadBoundedFile({
+            requestFactory: (listener) => http.get(url, listener),
+            dest,
+            timeoutMs: 1000,
+            maxBytes: 12,
+            operationName: 'Archive download',
+            removePartialFile: async () => {
+              throw new Error('injected cleanup failure');
+            },
+          }),
+      ),
+    ).rejects.toMatchObject({
+      message: 'Archive download exceeded 12 compressed bytes (declared 64)',
+    });
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
+  test('fallback removes a dangling destination symlink', async () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+    const dest = destPath();
+    fs.symlinkSync(path.join(tmpDir, 'missing-target'), dest);
+    expect(fs.existsSync(dest)).toBe(false);
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, {
+            'content-type': 'application/octet-stream',
+            'content-length': 64,
+          });
+          response.end('payload');
+        },
+        (url) =>
+          downloadBoundedFile({
+            requestFactory: (listener) => http.get(url, listener),
+            dest,
+            timeoutMs: 1000,
+            maxBytes: 12,
+            operationName: 'Archive download',
+            removePartialFile: async () => {
+              throw new Error('injected cleanup failure');
+            },
+          }),
+      ),
+    ).rejects.toThrow('exceeded 12 compressed bytes');
+    expect(fs.existsSync(dest)).toBe(false);
+    expect(() => fs.lstatSync(dest)).toThrow();
+  });
+
   test('deletes a partial dest when cancellation is signalled during transfer', async () => {
     const dest = destPath();
     const token = new TestCancellationToken();
@@ -154,6 +300,28 @@ describe('downloadBoundedFile', () => {
     expect(fs.existsSync(dest)).toBe(false);
   });
 
+  test('deletes a partial dest when the response stream errors', async () => {
+    const dest = destPath();
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, { 'content-type': 'application/octet-stream' });
+          response.write('partial');
+          setImmediate(() => response.destroy());
+        },
+        (url) =>
+          downloadBoundedFile({
+            requestFactory: (listener) => http.get(url, listener),
+            dest,
+            timeoutMs: 1000,
+            maxBytes: 1024,
+            operationName: 'Archive download',
+          }),
+      ),
+    ).rejects.toThrow();
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
   test('timeout is independent of the byte ceiling', async () => {
     const dest = destPath();
     await expect(
@@ -172,6 +340,29 @@ describe('downloadBoundedFile', () => {
           }),
       ),
     ).rejects.toThrow('Download timeout after 0.025 seconds');
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
+  test('settles cleanup when a WriteStream does not emit close', async () => {
+    const dest = destPath();
+    await expect(
+      withServer(
+        (_request, response) => {
+          response.writeHead(200, { 'content-type': 'application/octet-stream' });
+          response.write('0123456789');
+          response.end('abcdefghij');
+        },
+        (url) =>
+          downloadBoundedFile({
+            requestFactory: (listener) => http.get(url, listener),
+            createWriteStream: (filePath) => fs.createWriteStream(filePath, { emitClose: false }),
+            dest,
+            timeoutMs: 1000,
+            maxBytes: 12,
+            operationName: 'Archive download',
+          }),
+      ),
+    ).rejects.toThrow('exceeded 12 compressed bytes');
     expect(fs.existsSync(dest)).toBe(false);
   });
 });
