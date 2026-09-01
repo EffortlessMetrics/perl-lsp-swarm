@@ -269,6 +269,18 @@ impl OpenAiProvider {
         loop {
             match parser.next_event() {
                 Ok(Some(event)) => {
+                    // Provider failure events are typed errors, not candidate
+                    // text: `response.failed`, `response.incomplete`, or an
+                    // explicit error finish reason must surface as
+                    // [`BackendError::Provider`] instead of silently
+                    // finalizing whatever text accumulated by EOF.
+                    if Self::extract_finish_reason(&event.data).as_deref() == Some("error") {
+                        return Err(BackendError::Provider(
+                            "stream ended with a provider failure event (response.failed or \
+                             response.incomplete)"
+                                .to_string(),
+                        ));
+                    }
                     if let Some(delta) = Self::extract_content_delta(&event.data) {
                         cumulative.push_str(&delta);
 
@@ -471,6 +483,47 @@ mod tests {
         assert!(is_final);
         assert_eq!(final_text, raw, "content fences must survive the boundary");
         Ok(())
+    }
+
+    #[test]
+    fn stream_provider_failure_event_is_a_typed_error() {
+        // `response.failed` / `response.incomplete` carry no candidate text:
+        // they must surface as a typed provider error instead of being
+        // ignored until EOF finalizes the accumulated text.
+        let body = "data: {\"type\": \"response.failed\"}\n\n";
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |_| {
+            crate::providers::inline_completion::StreamControl::Continue
+        });
+        assert!(
+            matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
+            "provider failure events must be typed errors"
+        );
+    }
+
+    #[test]
+    fn stream_failure_after_partial_text_never_finalizes_the_candidate() {
+        // Text accumulated before the failure event must not be finalized as
+        // a completion: no `is_final` chunk may reach the sink.
+        let mut body = String::new();
+        body.push_str(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"my $x = \"},\"finish_reason\":null}]}\n\n",
+        );
+        body.push_str("data: {\"type\": \"response.incomplete\"}\n\n");
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut chunks: Vec<(String, bool)> = Vec::new();
+        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |chunk| {
+            chunks.push((chunk.text, chunk.is_final));
+            crate::providers::inline_completion::StreamControl::Continue
+        });
+        assert!(
+            matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
+            "provider failure events must be typed errors"
+        );
+        assert!(
+            chunks.iter().all(|(_, is_final)| !is_final),
+            "failure events must not finalize the candidate, got: {chunks:?}"
+        );
     }
 
     #[test]

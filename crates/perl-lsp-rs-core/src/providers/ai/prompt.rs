@@ -44,15 +44,27 @@ pub fn build_fim_prompt(context: &PreparedInlineCompletionContext) -> (String, S
         system.push_str(&format!("\nImported modules: {}", context.imports.join(", ")));
     }
 
-    // Build the user message with the code context. The suffix and the
-    // bounded following lines (#10273 capture) close the FIM gap: the model
-    // can see the closing brace or function epilogue after the cursor.
-    // Every captured piece is marker-escaped: user text containing the
-    // literal sentinel must not create a second completion point.
+    // Build the user message with the code context. The budgeted preceding
+    // lines give the model the left-of-cursor scope it was captured for;
+    // the suffix and the bounded following lines (#10273 capture) close the
+    // FIM gap: the model can see the closing brace or function epilogue
+    // after the cursor. Every captured piece is marker-escaped: user text
+    // containing the literal sentinel must not create a second completion
+    // point.
     let mut user = String::new();
-    if let Some(ref prev) = context.previous_non_empty_line {
-        user.push_str(&escape_cursor_marker(prev));
+    for line in &context.preceding_lines {
+        user.push_str(&escape_cursor_marker(line));
         user.push('\n');
+    }
+    if let Some(ref prev) = context.previous_non_empty_line {
+        // The closest previous non-empty line is usually the nearest
+        // retained preceding line; re-emitting it would spend budget on a
+        // duplicate row.
+        let duplicated = context.preceding_lines.last().is_some_and(|last| last == prev);
+        if !duplicated {
+            user.push_str(&escape_cursor_marker(prev));
+            user.push('\n');
+        }
     }
     user.push_str(&escape_cursor_marker(&context.prefix));
     user.push_str(CURSOR_MARKER);
@@ -68,6 +80,52 @@ pub fn build_fim_prompt(context: &PreparedInlineCompletionContext) -> (String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_includes_preceding_lines() {
+        let ctx = PreparedInlineCompletionContext {
+            prefix: "my $x = ".to_string(),
+            current_line: "my $x = ".to_string(),
+            previous_non_empty_line: Some("my $y = 2;".to_string()),
+            preceding_lines: vec![
+                "use strict;".to_string(),
+                "use warnings;".to_string(),
+                "my $y = 2;".to_string(),
+            ],
+            ..PreparedInlineCompletionContext::default()
+        };
+        let (_, user) = build_fim_prompt(&ctx);
+        // Budgeted preceding context must reach the model, not just the
+        // closest line.
+        assert!(user.contains("use warnings;"), "preceding lines must be included, got: {user}");
+        // And it must precede the cursor marker, not be silently dropped.
+        let cursor = user.find("<CURSOR>").expect("cursor marker");
+        let warn = user.find("use warnings;").expect("warnings line");
+        assert!(warn < cursor, "preceding line must precede cursor, got: {user}");
+    }
+
+    #[test]
+    fn prompt_does_not_duplicate_the_closest_preceding_line() {
+        // `preceding_lines` already ends with the closest previous non-empty
+        // line when the budget retained it; emitting it twice wastes tokens.
+        let ctx = PreparedInlineCompletionContext {
+            prefix: "my $x = ".to_string(),
+            current_line: "my $x = ".to_string(),
+            previous_non_empty_line: Some("my $y = 2;".to_string()),
+            preceding_lines: vec![
+                "use strict;".to_string(),
+                "use warnings;".to_string(),
+                "my $y = 2;".to_string(),
+            ],
+            ..PreparedInlineCompletionContext::default()
+        };
+        let (_, user) = build_fim_prompt(&ctx);
+        assert_eq!(
+            user.matches("my $y = 2;").count(),
+            1,
+            "closest preceding line must appear once, got: {user}"
+        );
+    }
 
     #[test]
     fn basic_prompt_includes_prefix() {

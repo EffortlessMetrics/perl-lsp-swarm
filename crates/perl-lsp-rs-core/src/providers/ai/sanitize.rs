@@ -20,37 +20,119 @@
 ///   returned unchanged — including prose-leading output and completions
 ///   whose content merely contains fences.
 /// - Text with a leading fenced block returns the block's inner content,
-///   preserving internal indentation and stripping the final newline before
-///   the closing fence.
+///   preserving internal indentation and stripping only the single line
+///   separator immediately before the closing fence.
 /// - An unterminated leading fence (opening marker without a closing one,
 ///   common at streaming cutoffs) returns the content after the opening
-///   fence line.
+///   fence line, preserving every body byte including a trailing newline.
+/// - A closing marker must carry at least as many backticks as the opening
+///   fence and nothing but fence whitespace, so a shorter line-initial
+///   fence inside the body (a here-doc, say) cannot close the wrapper
+///   early.
 pub fn sanitize_completion_text(raw: &str) -> String {
-    let lines: Vec<&str> = raw.lines().collect();
     // Wrapper recognition anchors on the first non-empty line only: to be
     // packaging, a fence must open the output. Later line-initial fences
     // are content (here-doc bodies, POD), never a wrapper.
-    let Some(open_idx) = lines.iter().position(|line| !line.trim().is_empty()) else {
+    let Some((open_start, open_end)) = first_non_empty_line_bounds(raw) else {
         return raw.to_string();
     };
-    if !lines[open_idx].trim_start().starts_with("```") {
+    let Some(open_run) = opening_fence_run_length(&raw[open_start..open_end]) else {
         // The output does not open with a fence: return it unchanged.
         // Interior fences are content, and prose-leading output falls
         // through to the parse-safety seam instead of being stripped here.
         return raw.to_string();
-    }
-    let close_idx = lines
-        .iter()
-        .skip(open_idx + 1)
-        .position(|line| line.trim_start().starts_with("```"))
-        .map(|rel| open_idx + 1 + rel);
-    let body = match close_idx {
-        Some(close) => &lines[open_idx + 1..close],
-        // Unterminated fence: keep everything after the opening line rather
-        // than dropping the candidate entirely.
-        None => &lines[open_idx + 1..],
     };
-    body.join("\n")
+    // The body begins after the opening fence's line terminator; scan the
+    // remaining lines for a real closing marker without reconstructing the
+    // body through `str::lines`, which would drop the final newline.
+    let body_start = line_terminator_end(raw, open_end);
+    let mut cursor = body_start;
+    while let Some((start, end)) = line_bounds(raw, cursor) {
+        if closing_fence_run_length(&raw[start..end], open_run).is_some() {
+            // Preserve every body byte except the single separator
+            // immediately before the real closing fence.
+            let body = &raw[body_start..start];
+            return trim_one_line_terminator(body).to_string();
+        }
+        cursor = end;
+    }
+    // Unterminated fence: keep everything after the opening line rather
+    // than dropping the candidate entirely, including a trailing newline.
+    raw[body_start..].to_string()
+}
+
+/// Byte bounds `(start, end)` of the first line whose trimmed content is
+/// non-empty, terminator excluded. `None` while every line so far is blank.
+fn first_non_empty_line_bounds(raw: &str) -> Option<(usize, usize)> {
+    let mut cursor = 0;
+    while let Some((start, end)) = line_bounds(raw, cursor) {
+        if !raw[start..end].trim().is_empty() {
+            return Some((start, end));
+        }
+        cursor = end;
+    }
+    None
+}
+
+/// Byte bounds `(start, end)` of the line beginning at `cursor`, terminator
+/// excluded. `None` once `cursor` reaches the end of the text.
+fn line_bounds(raw: &str, cursor: usize) -> Option<(usize, usize)> {
+    if cursor >= raw.len() {
+        return None;
+    }
+    let mut end = raw[cursor..].find('\n').map_or(raw.len(), |pos| cursor + pos);
+    if end > cursor && raw.as_bytes()[end - 1] == b'\r' {
+        end -= 1;
+    }
+    Some((cursor, end))
+}
+
+/// Offset just past the line terminator at `line_end`.
+fn line_terminator_end(raw: &str, line_end: usize) -> usize {
+    if raw[line_end..].starts_with("\r\n") {
+        line_end + 2
+    } else if raw[line_end..].starts_with('\n') || raw[line_end..].starts_with('\r') {
+        line_end + 1
+    } else {
+        line_end
+    }
+}
+
+/// Remove one trailing line terminator (`\r\n`, `\n`, or `\r`).
+fn trim_one_line_terminator(body: &str) -> &str {
+    let mut end = body.len();
+    if body.ends_with("\r\n") {
+        end -= 2;
+    } else if body.ends_with('\n') || body.ends_with('\r') {
+        end -= 1;
+    }
+    &body[..end]
+}
+
+/// Backtick run length of one line's opening fence marker, if any.
+///
+/// The line must start (after leading whitespace) with at least three
+/// backticks; an opening marker may carry an info string after the run.
+fn opening_fence_run_length(line: &str) -> Option<usize> {
+    let run = leading_backtick_run(line);
+    if run >= 3 { Some(run) } else { None }
+}
+
+/// Backtick run length of one line's closing fence marker, if any.
+///
+/// A closing marker must carry at least `open_run` backticks and nothing
+/// but fence whitespace after the run (CommonMark rule), so a shorter
+/// content fence cannot close a longer wrapper and a marker carrying an
+/// info string is content, not a closer.
+fn closing_fence_run_length(line: &str, open_run: usize) -> Option<usize> {
+    let trimmed = line.trim_start();
+    let run = trimmed.bytes().take_while(|byte| *byte == b'`').count();
+    if run >= open_run && trimmed[run..].trim().is_empty() { Some(run) } else { None }
+}
+
+/// Count the backticks starting the line, after leading whitespace.
+fn leading_backtick_run(line: &str) -> usize {
+    line.trim_start().bytes().take_while(|byte| *byte == b'`').count()
 }
 
 /// True while a line could still grow into a fence marker: after leading
@@ -68,20 +150,30 @@ fn incomplete_fence_marker_candidate(line: &str) -> bool {
 /// passes through raw as candidate text, and a partially delivered closing
 /// marker surfaces as a stray backtick suffix for one tick.
 ///
-/// Streaming holds back only the genuinely ambiguous regions:
+/// Streaming holds back only the genuinely ambiguous regions, so every
+/// non-final emitted value stays a prefix of every later value:
 ///
+/// - While no non-empty line has arrived, leading whitespace may still
+///   precede the opening fence, so the wrapper decision is pending and
+///   nothing is emitted yet.
 /// - Before the first newline arrives, a bare backtick run may still become
 ///   the opening fence, so it is withheld until the wrapper decision can be
 ///   made.
-/// - Once a leading wrapper is recognized, a trailing bare backtick run may
-///   still grow into the closing marker, so it is withheld until it
-///   resolves.
+/// - Once a leading wrapper is recognized, the trailing line separators may
+///   include the one the boundary strips together with the closing marker,
+///   and a trailing bare backtick run may still grow into that marker, so
+///   both are withheld until they resolve.
 ///
 /// Content-anchored output is never stripped at the boundary, so its
 /// interior fences stream raw. The completion boundary still emits the full
 /// [`sanitize_completion_text`] result, which restores any held tail.
 pub fn sanitize_streaming_text(cumulative: &str) -> String {
     let sanitized = sanitize_completion_text(cumulative);
+    if first_non_empty_line_bounds(cumulative).is_none() {
+        // Only blank lines so far: the wrapper decision is still pending
+        // and the blank prefix may yet precede an opening fence.
+        return String::new();
+    }
     if !first_non_empty_line_opens_fence(cumulative) {
         // Content-anchored (or still-classifying) output: only the
         // in-flight first line can change the wrapper decision.
@@ -90,16 +182,31 @@ pub fn sanitize_streaming_text(cumulative: &str) -> String {
         }
         return sanitized;
     }
-    // Wrapper mode: hold a trailing bare backtick run — it may still grow
-    // into the closing marker.
-    let Some(last_newline) = sanitized.rfind('\n') else {
-        return sanitized;
-    };
-    if incomplete_fence_marker_candidate(&sanitized[last_newline + 1..]) {
-        sanitized[..last_newline].to_string()
-    } else {
-        sanitized
+    // Wrapper mode: hold the ambiguous tail so shown text is never
+    // retracted when a closing marker arrives.
+    let bytes = sanitized.as_bytes();
+    let mut end = sanitized.len();
+    // Trailing line separators: one of them could become the single
+    // separator the boundary strips together with the closing marker.
+    while end > 0 && bytes[end - 1] == b'\n' {
+        end -= 1;
+        if end > 0 && bytes[end - 1] == b'\r' {
+            end -= 1;
+        }
     }
+    // Trailing bare backtick run: it may still grow into the closing
+    // marker, and the separator in front of it would be stripped with it.
+    let line_start = sanitized[..end].rfind('\n').map_or(0, |pos| pos + 1);
+    if incomplete_fence_marker_candidate(&sanitized[line_start..end]) {
+        end = line_start;
+        if end > 0 && bytes[end - 1] == b'\n' {
+            end -= 1;
+            if end > 0 && bytes[end - 1] == b'\r' {
+                end -= 1;
+            }
+        }
+    }
+    sanitized[..end].to_string()
 }
 
 /// True when the first non-empty line of `raw` opens a fence, i.e. the
@@ -228,5 +335,97 @@ mod tests {
         assert!(!incomplete_fence_marker_candidate("```perl"));
         assert!(!incomplete_fence_marker_candidate("my $x;"));
         assert!(!incomplete_fence_marker_candidate(""));
+    }
+
+    /// Stream `raw` one character at a time and assert the cumulative-prefix
+    /// contract: no emission is ever retracted by a later chunk.
+    fn assert_stream_monotone(raw: &str) -> Vec<String> {
+        let mut emissions: Vec<String> = Vec::new();
+        let mut cumulative = String::new();
+        for ch in raw.chars() {
+            cumulative.push(ch);
+            emissions.push(sanitize_streaming_text(&cumulative));
+        }
+        for window in emissions.windows(2) {
+            assert!(
+                window[1].starts_with(&window[0]),
+                "streamed candidate was retracted: {:?} -> {:?}",
+                window[0],
+                window[1]
+            );
+        }
+        emissions
+    }
+
+    #[test]
+    fn streaming_blank_prefix_before_fence_never_retracts() {
+        // Leading blank lines before the opening fence: the pending wrapper
+        // decision must never emit text the boundary would take back.
+        let raw = "\n\n```perl\nmy $x = 1;\n```";
+        let emissions = assert_stream_monotone(raw);
+        assert_eq!(emissions.last(), Some(&"my $x = 1;".to_string()));
+    }
+
+    #[test]
+    fn streaming_indented_opening_fence_never_retracts() {
+        // Whitespace, then an indented opening fence: the whole blank
+        // prefix stays withheld until the first non-empty line resolves.
+        let raw = "  \n```perl\nmy $x = 1;\n```";
+        let emissions = assert_stream_monotone(raw);
+        assert_eq!(emissions.last(), Some(&"my $x = 1;".to_string()));
+    }
+
+    #[test]
+    fn streaming_blank_line_before_closer_never_retracts() {
+        // A blank body line right before the closing marker: the separator
+        // the boundary strips must not be emitted mid-stream first. The
+        // final boundary (not streamed here) restores the full body.
+        let raw = "```perl\nmy $x = 1;\n\n```";
+        let emissions = assert_stream_monotone(raw);
+        assert_eq!(emissions.last(), Some(&"my $x = 1;".to_string()));
+        assert_eq!(sanitize_completion_text(raw), "my $x = 1;\n");
+    }
+
+    #[test]
+    fn unterminated_fence_boundary_preserves_trailing_newline() {
+        // A truncated fenced response that ends on a newline keeps it, so
+        // the completion does not join the document's existing line.
+        assert_eq!(sanitize_completion_text("```perl\nmy $x = 1;\n"), "my $x = 1;\n");
+        assert_eq!(sanitize_completion_text("```perl\r\nmy $x = 1;\r\n"), "my $x = 1;\r\n");
+    }
+
+    #[test]
+    fn closed_fence_strips_only_the_separator_before_the_marker() {
+        // Interior blank lines stay in the body; exactly one separator
+        // immediately before the real closing marker is removed.
+        assert_eq!(sanitize_completion_text("```perl\nmy $x = 1;\n\n```"), "my $x = 1;\n");
+        assert_eq!(sanitize_completion_text("```perl\na;\n\n\nb;\n```"), "a;\n\n\nb;");
+    }
+
+    #[test]
+    fn longer_wrapper_tolerates_short_content_fences() {
+        // A four-backtick wrapper around Perl whose body contains a heredoc
+        // with three-backtick Markdown fences: the short fence is content
+        // and must not close the wrapper early.
+        let raw = "````perl\nmy $doc = <<'END';\n```\nEND\nreturn $doc;\n````";
+        assert_eq!(sanitize_completion_text(raw), "my $doc = <<'END';\n```\nEND\nreturn $doc;");
+    }
+
+    #[test]
+    fn streaming_longer_wrapper_holds_until_the_real_closer() {
+        let raw = "````perl\nmy $doc = <<'END';\n```\nEND\nreturn $doc;\n````";
+        let emissions = assert_stream_monotone(raw);
+        assert_eq!(
+            emissions.last(),
+            Some(&"my $doc = <<'END';\n```\nEND\nreturn $doc;".to_string())
+        );
+    }
+
+    #[test]
+    fn closing_fence_with_info_string_is_not_a_closer() {
+        // A marker carrying fence info text is content, never a closing
+        // marker, so the wrapper stays open (unterminated at this cut).
+        let raw = "```perl\nmy $x = 1;\n```perl\n";
+        assert_eq!(sanitize_completion_text(raw), "my $x = 1;\n```perl\n");
     }
 }
