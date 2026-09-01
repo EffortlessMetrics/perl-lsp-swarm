@@ -106,6 +106,10 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         projection["rows"][0]["artifact_profiles"].append("web_public")
         self.assert_invalid(projection, "installed evidence for web_public")
 
+        projection = copy.deepcopy(self.projection)
+        projection["rows"][0]["evidence_subjects"] = projection["rows"][0]["evidence_subjects"][:1]
+        self.assert_invalid(projection, "READY requires applicable failure or refusal evidence")
+
     def test_rejects_disabled_while_default_reachable_or_without_absence_proof(self) -> None:
         projection = copy.deepcopy(self.projection)
         row = projection["rows"][0]
@@ -118,6 +122,10 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         row["disposition"] = "DISABLED"
         row["claim_effect"] = "remove_or_withhold"
         row["default_reachable"] = False
+        row["opt_in"] = True
+        self.assert_invalid(projection, "DISABLED cannot remain opt-in reachable")
+
+        row["opt_in"] = False
         self.assert_invalid(projection, "requires artifact-absence evidence")
 
     def test_rejects_bounded_preview_without_refusal_boundary(self) -> None:
@@ -125,6 +133,7 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         row = projection["rows"][0]
         row["disposition"] = "BOUNDED_PREVIEW"
         row["claim_effect"] = "limit"
+        row["evidence_subjects"] = row["evidence_subjects"][:1]
         self.assert_invalid(projection, "requires refusal-boundary evidence")
 
     def test_rejects_blocked_or_not_proven_without_owner_or_with_retained_claim(self) -> None:

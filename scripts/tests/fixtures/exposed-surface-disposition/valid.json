@@ -18,6 +18,14 @@
           "kind": "installed_journey",
           "receipt_ref": "receipt://6056/diagnostics",
           "repository_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "artifact_profile": "vscode_public_beta",
+          "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "journey_id": "stale-document-generation",
+          "kind": "refusal_boundary",
+          "receipt_ref": "receipt://6056/diagnostics-stale",
+          "repository_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       ],
       "exposure_class": "product_supported",

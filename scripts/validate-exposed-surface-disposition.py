@@ -246,6 +246,8 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
             for profile, subjects in evidence_by_profile.items():
                 _require(any(item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"] for item in subjects),
                          f"projection.rows[{index}].READY requires exact installed evidence for {profile} and ordinary journey")
+                _require(any(item["kind"] in {"installed_journey", "refusal_boundary"} and item["journey_id"] in row["failure_journeys"] for item in subjects),
+                         f"projection.rows[{index}].READY requires applicable failure or refusal evidence for {profile}")
         elif disposition == "BOUNDED_PREVIEW":
             _require(claim_effect == "limit", f"projection.rows[{index}].BOUNDED_PREVIEW must limit its public claim")
             for profile, subjects in evidence_by_profile.items():
@@ -256,6 +258,7 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
         elif disposition == "DISABLED":
             _require(claim_effect == "remove_or_withhold", f"projection.rows[{index}].DISABLED must remove or withhold its claim")
             _require(row["default_reachable"] is False, f"projection.rows[{index}].DISABLED cannot remain default reachable")
+            _require(row["opt_in"] is False, f"projection.rows[{index}].DISABLED cannot remain opt-in reachable")
             for profile, subjects in evidence_by_profile.items():
                 _require(any(item["kind"] == "artifact_absence" for item in subjects),
                          f"projection.rows[{index}].DISABLED requires artifact-absence evidence for {profile}")
