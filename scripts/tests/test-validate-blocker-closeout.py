@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -354,6 +355,18 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
             path = Path(directory) / "invalid.json"
             path.write_text(json.dumps(packet), encoding="utf-8")
             self.assertEqual(MODULE.main(["--packet", str(path), "--repository", str(ROOT)]), 1)
+
+    def test_cli_rejects_unreachable_landed_subject(self) -> None:
+        packet = copy.deepcopy(self.base)
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+            (repository / "marker").write_text("unrelated\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "marker"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "unrelated"], check=True, capture_output=True)
+            path = repository / "packet.json"
+            path.write_text(json.dumps(packet), encoding="utf-8")
+            self.assertEqual(MODULE.main(["--packet", str(path), "--repository", str(repository)]), 1)
 
 
 if __name__ == "__main__":
