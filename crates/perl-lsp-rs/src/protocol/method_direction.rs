@@ -709,10 +709,16 @@ mod tests {
                 .is_some_and(|closing| closing.iter().all(|byte| *byte == b'#'))
     }
 
-    fn scan_structural_braces(line: &str, state: &mut LexicalState) -> i64 {
+    fn scan_structural_braces(
+        line: &str,
+        state: &mut LexicalState,
+        base_depth: i64,
+    ) -> (i64, Option<usize>) {
         let bytes = line.as_bytes();
         let mut index = 0;
         let mut depth_delta = 0;
+        let mut opened = base_depth > 0;
+        let mut closing_offset = None;
 
         if let LexicalState::Quoted { delimiter, escaped: true } = *state {
             *state = LexicalState::Quoted { delimiter, escaped: false };
@@ -758,8 +764,17 @@ mod tests {
                         continue;
                     }
                     match bytes[index] {
-                        b'{' => depth_delta += 1,
-                        b'}' => depth_delta -= 1,
+                        b'{' => {
+                            opened = true;
+                            depth_delta += 1;
+                        }
+                        b'}' => {
+                            depth_delta -= 1;
+                            if opened && base_depth + depth_delta == 0 {
+                                closing_offset = Some(index);
+                                break;
+                            }
+                        }
                         _ => {}
                     }
                     index += 1;
@@ -804,7 +819,7 @@ mod tests {
             }
         }
 
-        depth_delta
+        (depth_delta, closing_offset)
     }
 
     fn strip_test_modules(source: &str) -> String {
@@ -827,6 +842,7 @@ mod tests {
             if matches!(declaration.kind, TestModuleKind::External) {
                 let mod_line = mod_line.trim_start();
                 let suffix = &mod_line[declaration.terminator_offset + 1..];
+                let suffix = suffix.split_once("//").map_or(suffix, |(code, _)| code);
                 if !suffix.trim().is_empty() {
                     result.push_str(suffix);
                     result.push('\n');
@@ -834,11 +850,30 @@ mod tests {
                 continue;
             }
             let mut lexical_state = LexicalState::Normal;
-            let mut depth = scan_structural_braces(mod_line, &mut lexical_state);
+            let (delta, close) = scan_structural_braces(mod_line, &mut lexical_state, 0);
+            let mut depth = delta;
+            if let Some(offset) = close {
+                let suffix = &mod_line[offset + 1..];
+                if !suffix.trim().is_empty() {
+                    result.push_str(suffix);
+                    result.push('\n');
+                }
+                continue;
+            }
             while depth > 0 {
                 match lines.next() {
                     Some(inner) => {
-                        depth += scan_structural_braces(inner, &mut lexical_state);
+                        let (delta, close) =
+                            scan_structural_braces(inner, &mut lexical_state, depth);
+                        depth += delta;
+                        if let Some(offset) = close {
+                            let suffix = &inner[offset + 1..];
+                            if !suffix.trim().is_empty() {
+                                result.push_str(suffix);
+                                result.push('\n');
+                            }
+                            break;
+                        }
                     }
                     None => break,
                 }
@@ -863,13 +898,15 @@ pub(self) mod private { const PRIVATE: &str = "self/test"; }
 #[cfg(test)]
 pub(in crate::protocol) mod scoped { const SCOPED: &str = "scoped/test"; }
 #[cfg(test)]
-pub(crate) mod external; // a comment containing {
+pub(crate) mod external; // a comment containing { and send("test/comment-leak")
 #[cfg(test)]
 mod plain_external;
 #[cfg(test)]
 pub(crate) mod commented /* comment containing { and } */ ;
 #[cfg(test)]
 pub(crate) mod same_line; fn after_external() { send("production/after_external"); }
+#[cfg(test)]
+mod inline_same_line { const INLINE: &str = "inline/test"; } fn after_inline() { send("production/after_inline"); }
 #[cfg(test)]
 pub(crate) mod lexical_forms {
     const CLOSE: &str = "}";
@@ -894,10 +931,13 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
             assert!(!stripped.contains(test_only), "test-only literal leaked: {test_only}");
         }
         assert!(!stripped.contains("pub(crate) mod external;"));
+        assert!(!stripped.contains("test/comment-leak"));
         assert!(!stripped.contains("pub(crate) mod commented"));
+        assert!(!stripped.contains("inline/test"));
         assert!(!stripped.contains("pub(crate) mod lexical_forms"));
         assert!(!stripped.contains("CONTINUED"));
         assert!(stripped.contains("production/after_external"));
+        assert!(stripped.contains("production/after_inline"));
         assert!(stripped.contains("production/after"));
         assert!(stripped.contains("pub(crate) mod visible"));
         assert!(stripped.contains("visible/production"));
