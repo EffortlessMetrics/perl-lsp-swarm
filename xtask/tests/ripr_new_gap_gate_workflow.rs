@@ -2145,11 +2145,11 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         run_gate_with_fake_gh(None, 0, 0, fallback_route)?;
     if !fallback.status.success()
         || !fallback_output.contains("CX53 disk preflight failed")
-        || !fallback_output.contains("lookup=Some(\"1\")\nfetch=Some(\"5\")")
+        || !fallback_output.contains("lookup=None\nfetch=None")
         || fallback_artifact.is_some()
     {
         bail!(
-            "successful disk-full fallback must preserve primary fail-closed retrieval and then take the fallback route without a retry artifact:\n{fallback_output}"
+            "successful disk-full fallback must skip primary-log retrieval that nothing would read (the verdict path only warns), emit the fallback warning, and take the fallback route without a retry artifact:\n{fallback_output}"
         );
     }
 

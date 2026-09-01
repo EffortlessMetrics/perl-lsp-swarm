@@ -1252,7 +1252,13 @@ jobs:
           fi
           lane_class="ripr-failure"
           lane_job_id=""
-          if [ -n "$lane_name" ] && [ "$lane_result" != "success" ]; then
+          # Classification evidence is read only by report_lane_failure. When
+          # the primary CX lane failed but the GitHub-hosted fallback
+          # succeeded, the verdict path below only warns, so running the
+          # bounded lookup/fetch retrieval here would spend real time on
+          # every disk-preflight failover without producing evidence anyone
+          # reads.
+          if [ -n "$lane_name" ] && [ "$lane_result" != "success" ] && [ "$FALLBACK_RESULT" != "success" ]; then
             # Keep both retrieval phases inside the one job-level deadline.
             # The deadline was established before checkout/setup, reserving the
             # finalization interval for the verdict, summary, and artifact upload.
