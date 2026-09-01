@@ -491,14 +491,19 @@ fn test_set_expression_empty_value_fails() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn test_set_expression_no_session_fails() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — setExpression without an active debug session must fail
+    // AC:2783 — setExpression without an active debug session must fail.
+    // #9568 floors the request before session lookup: the refusal is the
+    // deterministic authority message whatever the session state, so the
+    // superseded missing-session wording assertion converts to the gate
+    // contract (fail-closed is stronger than session-dependent failure).
     let mut adapter = DebugAdapter::new();
     let args = json!({ "expression": "$x", "value": "42" });
     let msg = adapter.handle_request(1, "setExpression", Some(args));
     let err = assert_failure_response(msg, "setExpression")?;
-    assert!(
-        err.to_lowercase().contains("session") || err.to_lowercase().contains("debugger"),
-        "error must reference missing session: {err}"
+    assert_eq!(
+        err,
+        perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+        "the floor refusal must be the deterministic authority message even without a session"
     );
     Ok(())
 }

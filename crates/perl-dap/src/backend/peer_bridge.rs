@@ -301,10 +301,55 @@ impl DapPeerBridge {
                 }
             }
             None | Some(_) => {
-                // Lenient: acknowledge unrecognized requests so a client is not
-                // wedged, but carry no body. (mirror-MVP behavior.)
-                tracing::warn!(command, "peer bridge: unhandled DAP request");
-                out.push(self.response(request_seq, command, true, None, None));
+                // #9568: setExpression is `native_only` in the route table, so
+                // the peer-availability filter reduces it to `None` before this
+                // arm. This bridge does not advertise setExpression, and it
+                // refuses exactly what it does not advertise: the previous
+                // lenient acknowledgement promised an assignment that never
+                // happened while the native adapter refused the identical
+                // request. Gate on the same value `capabilities_body`
+                // advertises, so advertisement and admission cannot disagree.
+                if matches!(
+                    DapRequestRoute::from_command(command),
+                    Some(DapRequestRoute::SetExpression)
+                ) {
+                    if crate::backend::capabilities::refuse_set_expression(
+                        self.advertised_set_expression(),
+                    ) {
+                        out.push(self.response(
+                            request_seq,
+                            command,
+                            false,
+                            None,
+                            Some(
+                                crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE
+                                    .to_string(),
+                            ),
+                        ));
+                    } else {
+                        // Promotion path: advertised by this mode but
+                        // delegation to the external peer's assignment
+                        // primitive is not wired yet. Fail loudly instead of
+                        // acknowledging a write that did not happen.
+                        out.push(
+                            self.response(
+                                request_seq,
+                                command,
+                                false,
+                                None,
+                                Some(
+                                    "setExpression: external-peer delegation is not implemented"
+                                        .to_string(),
+                                ),
+                            ),
+                        );
+                    }
+                } else {
+                    // Lenient: acknowledge unrecognized requests so a client is
+                    // not wedged, but carry no body. (mirror-MVP behavior.)
+                    tracing::warn!(command, "peer bridge: unhandled DAP request");
+                    out.push(self.response(request_seq, command, true, None, None));
+                }
             }
         }
         // Surface any events the backend queued while handling the request.
@@ -358,6 +403,21 @@ impl DapPeerBridge {
         )
     }
 
+    /// The `supportsSetExpression` value this session advertises.
+    ///
+    /// One source for both `capabilities_body` and the setExpression request
+    /// gate (#9568), so this bridge cannot advertise one thing and enforce
+    /// another.
+    fn advertised_set_expression(&self) -> bool {
+        // Gated on the PEER authority, not the native one (#9568): the native
+        // promotion boundary must not silently open an external-peer assignment
+        // path that has no exact current-frame assignment proof of its own.
+        crate::backend::capabilities::peer_bridge_set_expression_admission(
+            crate::backend::capabilities::SET_EXPRESSION_PROMOTION_PROVEN,
+            crate::backend::capabilities::PEER_BRIDGE_ADVERTISES_SET_EXPRESSION,
+        )
+    }
+
     fn capabilities_body(&self) -> Value {
         let negotiated = intersect_dap_capabilities(
             &CatalogDapFlags::from_catalog(),
@@ -376,6 +436,9 @@ impl DapPeerBridge {
             // One source with the hover request gate (#9573), and gated on the
             // peer authority rather than the native one.
             "supportsEvaluateForHovers": self.advertised_evaluate_for_hovers(),
+            // One source with the setExpression request gate (#9568), gated on
+            // the peer authority rather than the native one.
+            "supportsSetExpression": self.advertised_set_expression(),
             "supportsSetVariable": negotiated.supports_set_variable,
         })
     }
@@ -1284,6 +1347,40 @@ mod tests {
         let out = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
         let caps = must_some(as_response(&out[0])?.2);
         assert_eq!(caps["supportsEvaluateForHovers"], false);
+        Ok(())
+    }
+
+    /// #9568: the peer bridge refuses setExpression exactly as it advertises
+    /// it false — the fallthrough must not acknowledge an assignment that
+    /// never happened while the native adapter refuses the same request.
+    #[test]
+    fn peer_bridge_refuses_set_expression_like_it_advertises_it() -> Result<(), String> {
+        let mut b = bridge();
+
+        let init = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
+        let caps = must_some(as_response(&init[0])?.2);
+        assert_eq!(
+            caps["supportsSetExpression"], false,
+            "the peer session must advertise setExpression false (#9568)"
+        );
+
+        let out = b.dispatch(
+            2,
+            "setExpression",
+            Some(json!({ "expression": "$x", "value": "42", "frameId": 0 })),
+        );
+        match &out[0] {
+            DapMessage::Response { success, body, message, .. } => {
+                assert!(!success, "setExpression must be refused in peer mode, not acked");
+                assert!(body.is_none(), "a refused setExpression must not carry a result body");
+                assert_eq!(
+                    message.as_deref(),
+                    Some(crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE),
+                    "the refusal must be the single deterministic #9568 message"
+                );
+            }
+            other => return Err(format!("expected response, got {other:?}")),
+        }
         Ok(())
     }
 

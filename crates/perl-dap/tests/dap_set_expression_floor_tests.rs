@@ -12,7 +12,7 @@
 //! cannot widen the field.
 
 use perl_dap::backend::capabilities::{
-    advertises_set_expression, SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+    SET_EXPRESSION_UNSUPPORTED_MESSAGE, advertises_set_expression,
 };
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use serde_json::{Value, json};
@@ -89,8 +89,11 @@ fn initialize_advertises_set_expression_from_the_single_authority()
 fn well_formed_set_expression_is_refused_deterministically()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = create_test_adapter();
-    let response =
-        adapter.handle_request(1, "setExpression", Some(json!({"expression": "$x", "value": "42"})));
+    let response = adapter.handle_request(
+        1,
+        "setExpression",
+        Some(json!({"expression": "$x", "value": "42"})),
+    );
     let message = refused_set_expression(response)?;
     assert_eq!(
         message, SET_EXPRESSION_UNSUPPORTED_MESSAGE,
@@ -120,9 +123,8 @@ fn every_input_shape_receives_the_same_refusal() -> Result<(), Box<dyn std::erro
     for shape in shapes {
         let mut adapter = create_test_adapter();
         let response = adapter.handle_request(1, "setExpression", Some(shape.clone()));
-        let message = refused_set_expression(response).map_err(|error| {
-            format!("shape {shape} was not refused uniformly: {error}")
-        })?;
+        let message = refused_set_expression(response)
+            .map_err(|error| format!("shape {shape} was not refused uniformly: {error}"))?;
         assert_eq!(
             message, SET_EXPRESSION_UNSUPPORTED_MESSAGE,
             "shape {shape} must receive the deterministic authority refusal"
@@ -136,8 +138,7 @@ fn every_input_shape_receives_the_same_refusal() -> Result<(), Box<dyn std::erro
 /// The gate sits *after* envelope validation: a request with no arguments at
 /// all fails the envelope layer, not the capability gate.
 #[test]
-fn missing_arguments_still_fail_at_the_envelope_layer()
--> Result<(), Box<dyn std::error::Error>> {
+fn missing_arguments_still_fail_at_the_envelope_layer() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = create_test_adapter();
     let response = adapter.handle_request(1, "setExpression", None);
     let message = refused_set_expression(response)?;
@@ -170,8 +171,11 @@ fn refused_request_does_not_mutate_adapter_state() -> Result<(), Box<dyn std::er
     }
 
     let before = no_session_threads_body(&mut adapter)?;
-    let response =
-        adapter.handle_request(1, "setExpression", Some(json!({"expression": "$x", "value": "42"})));
+    let response = adapter.handle_request(
+        1,
+        "setExpression",
+        Some(json!({"expression": "$x", "value": "42"})),
+    );
     refused_set_expression(response)?;
     let after = no_session_threads_body(&mut adapter)?;
 
@@ -193,7 +197,8 @@ fn repeated_refusals_are_identical() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = create_test_adapter();
     let args = json!({"expression": "$x", "value": "42"});
 
-    let first = refused_set_expression(adapter.handle_request(1, "setExpression", Some(args.clone())))?;
+    let first =
+        refused_set_expression(adapter.handle_request(1, "setExpression", Some(args.clone())))?;
     let second = refused_set_expression(adapter.handle_request(2, "setExpression", Some(args)))?;
     assert_eq!(first, second, "repeated refusals must be byte-identical");
     Ok(())

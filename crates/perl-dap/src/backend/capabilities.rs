@@ -343,6 +343,39 @@ pub(crate) fn refuse_set_expression(advertised_set_expression: bool) -> bool {
     !advertised_set_expression
 }
 
+/// The `supportsSetExpression` value the external-peer bridge advertises.
+///
+/// The external-peer seam has no exact current-frame l-value assignment proof
+/// of its own (#9568): the bridge can observe and drive a peer debugger, but
+/// it performs no brokered, read-back-current assignment. The value is
+/// deliberately independent of [`SET_EXPRESSION_PROMOTION_PROVEN`] so
+/// promoting the native adapter cannot silently open the peer path (#9573's
+/// independence rule, applied to setExpression).
+pub(crate) const PEER_BRIDGE_ADVERTISES_SET_EXPRESSION: bool = false;
+
+/// The external-peer bridge's setExpression advertisement, as a pure function.
+///
+/// `native_set_expression_gate` is accepted and **deliberately not used** —
+/// the same independence property [`peer_bridge_hover_admission`] proves for
+/// hover (#9573): a test evaluates this under both native values and requires
+/// the result to be identical, so re-reading the native gate here fails CI
+/// without any source mutation.
+#[must_use]
+pub(crate) fn peer_bridge_set_expression_admission(
+    _native_set_expression_gate: bool,
+    peer_set_expression_gate: bool,
+) -> bool {
+    peer_set_expression_gate
+}
+
+/// The `supportsSetExpression` value the static mirror profile advertises.
+///
+/// Mirror mode is conservative by construction and has no assignment proof of
+/// its own, so it stays false independently of the native gate (#9568). Both
+/// `static_mirror_capabilities` and the mirror request gate read this, so the
+/// profile cannot advertise one thing and enforce another.
+pub(crate) const MIRROR_ADVERTISES_SET_EXPRESSION: bool = false;
+
 /// The negotiated DAP capability flags: catalog ∩ backend.
 ///
 /// Field names mirror the DAP `capabilities` payload keys the frontend emits in
@@ -643,11 +676,56 @@ mod tests {
     /// capability-versus-behaviour contradiction this issue removes.
     #[test]
     fn set_expression_refusal_tracks_the_advertised_capability_in_both_directions() {
-        assert!(refuse_set_expression(false), "a mode that does not advertise setExpression must refuse it");
+        assert!(
+            refuse_set_expression(false),
+            "a mode that does not advertise setExpression must refuse it"
+        );
         assert!(
             !refuse_set_expression(true),
             "a mode that advertises setExpression must stop refusing it, or promotion \
              would advertise a capability the handler still rejects"
+        );
+    }
+
+    /// #9568: the peer bridge's setExpression decision does not read the
+    /// native gate.
+    ///
+    /// Both gates are false today, so asserting only "the peer is closed"
+    /// would pass for a recoupled implementation too. Evaluating the decision
+    /// under both native values fails the moment the native gate is read
+    /// again — the same non-mutating independence proof hover uses (#9573).
+    #[test]
+    fn peer_set_expression_admission_is_independent_of_the_native_gate() {
+        for peer_gate in [false, true] {
+            assert_eq!(
+                peer_bridge_set_expression_admission(false, peer_gate),
+                peer_bridge_set_expression_admission(true, peer_gate),
+                "the peer setExpression decision changed with the native gate \
+                 (peer_gate={peer_gate}); promoting native must never open an \
+                 external-peer assignment path"
+            );
+        }
+
+        assert!(
+            !peer_bridge_set_expression_admission(true, false),
+            "a closed peer gate stays closed even with native promoted"
+        );
+        assert!(
+            peer_bridge_set_expression_admission(false, true),
+            "an open peer gate opens on its own authority, not the native one"
+        );
+    }
+
+    /// #9568: the mirror profile advertises and enforces the same value,
+    /// independently of the native gate.
+    #[test]
+    fn mirror_set_expression_advertisement_and_admission_agree() {
+        // The advertised value itself is pinned at runtime by
+        // `peer_launch::tests::static_capabilities_match_the_conservative_profile`,
+        // which reads it back out of the emitted JSON.
+        assert!(
+            refuse_set_expression(MIRROR_ADVERTISES_SET_EXPRESSION),
+            "mirror advertises setExpression false, so it must refuse it"
         );
     }
 

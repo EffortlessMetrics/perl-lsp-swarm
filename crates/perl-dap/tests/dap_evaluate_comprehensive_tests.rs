@@ -1103,8 +1103,15 @@ fn test_set_expression_empty_expression_returns_error() -> TestResult {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "setExpression");
             assert!(!success);
+            // #9568: the floor refuses after envelope validation only, so an
+            // empty expression receives the deterministic refusal like every
+            // other valid envelope — input screening is unreachable.
             let msg = message.ok_or("expected error message")?;
-            assert!(msg.contains("expression") || msg.contains("Missing"), "got: {msg:?}");
+            assert_eq!(
+                msg,
+                perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+                "empty-expression shape must receive the deterministic #9568 refusal"
+            );
         }
         other => return Err(format!("expected Response, got {other:?}").into()),
     }
@@ -1143,10 +1150,13 @@ fn test_set_expression_newline_in_value_is_rejected() -> TestResult {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "setExpression");
             assert!(!success);
+            // #9568: value screening is behind the gate — the newline-bearing
+            // value receives the deterministic refusal like every other input.
             let msg = message.ok_or("expected error message")?;
-            assert!(
-                msg.contains("newline") || msg.contains("newlines"),
-                "should mention newlines, got: {msg:?}"
+            assert_eq!(
+                msg,
+                perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+                "newline-in-value shape must receive the deterministic #9568 refusal"
             );
         }
         other => return Err(format!("expected Response, got {other:?}").into()),
@@ -1155,25 +1165,28 @@ fn test_set_expression_newline_in_value_is_rejected() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
-// AC: setExpression LHS (expression) validation — Issue #4637
+// AC: setExpression input hostility — floored refusal (#9568, ex-#4637)
 //
-// The LHS `expression` is interpolated into the debugger command
-// `p {expression} = {value}`.  A hostile LHS like `$x; system('id')` would
-// inject an arbitrary debugger command.  The LHS must be validated before the
-// value is ever sent.
+// The LHS `expression` used to be interpolated into the debugger command
+// `p {expression} = {value}`, so hostile shapes needed per-shape screening.
+// #9568 floors the whole request before any screening: every valid-envelope
+// request — hostile or not — receives the identical deterministic refusal.
+// These tests now prove that input-independence: the hostile shapes below
+// cannot change (or widen) the refusal.
 // ---------------------------------------------------------------------------
 
-/// Assert a setExpression response is a failure whose message contains `needle`.
-fn assert_set_expression_blocked(
-    response: DapMessage,
-    needle: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// Assert a setExpression response is the deterministic #9568 floor refusal.
+fn assert_set_expression_blocked(response: DapMessage) -> Result<(), Box<dyn std::error::Error>> {
     match response {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "setExpression");
-            assert!(!success, "expected setExpression to be blocked");
+            assert!(!success, "expected setExpression to be refused");
             let msg = message.ok_or("expected error message")?;
-            assert!(msg.contains(needle), "error message {msg:?} does not contain {needle:?}");
+            assert_eq!(
+                msg,
+                perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+                "the refusal must be the single deterministic #9568 message for every input"
+            );
         }
         other => return Err(format!("expected Response, got {other:?}").into()),
     }
@@ -1188,7 +1201,7 @@ fn test_set_expression_rejects_injection_lhs() -> TestResult {
         "setExpression",
         Some(json!({ "expression": "$x; system('id')", "value": "42" })),
     );
-    assert_set_expression_blocked(response, "statement separators")?;
+    assert_set_expression_blocked(response)?;
     Ok(())
 }
 
@@ -1200,7 +1213,7 @@ fn test_set_expression_rejects_bare_semicolon_lhs() -> TestResult {
         "setExpression",
         Some(json!({ "expression": "$x; $y", "value": "42" })),
     );
-    assert_set_expression_blocked(response, "statement separators")?;
+    assert_set_expression_blocked(response)?;
     Ok(())
 }
 
@@ -1212,8 +1225,7 @@ fn test_set_expression_rejects_unsafe_call_lhs() -> TestResult {
         "setExpression",
         Some(json!({ "expression": "system('id')", "value": "42" })),
     );
-    // No statement separator, but the SafeEvaluator must reject the dangerous call.
-    assert_set_expression_blocked(response, "Unsafe expression")?;
+    assert_set_expression_blocked(response)?;
     Ok(())
 }
 
@@ -1225,7 +1237,7 @@ fn test_set_expression_rejects_backtick_lhs() -> TestResult {
         "setExpression",
         Some(json!({ "expression": "`rm -rf /`", "value": "42" })),
     );
-    assert_set_expression_blocked(response, "Unsafe expression")?;
+    assert_set_expression_blocked(response)?;
     Ok(())
 }
 
@@ -1237,8 +1249,7 @@ fn test_set_expression_rejects_newline_in_lhs() -> TestResult {
         "setExpression",
         Some(json!({ "expression": "$x\ndie('inject')", "value": "42" })),
     );
-    // Regression guard: the existing newline check fires first.
-    assert_set_expression_blocked(response, "newline")?;
+    assert_set_expression_blocked(response)?;
     Ok(())
 }
 
@@ -1252,19 +1263,9 @@ fn test_set_expression_legitimate_lhs_passes_validation() -> TestResult {
         "setExpression",
         Some(json!({ "expression": "$hash{key}", "value": "42" })),
     );
-    match response {
-        DapMessage::Response { success, command, message, .. } => {
-            assert_eq!(command, "setExpression");
-            assert!(!success, "expected failure due to no session, not success");
-            let msg = message.unwrap_or_default();
-            assert!(
-                !msg.contains("statement separators")
-                    && !msg.contains("Unsafe expression for setExpression"),
-                "legitimate l-value should not be validation-rejected, got: {msg:?}"
-            );
-        }
-        other => return Err(format!("expected Response, got {other:?}").into()),
-    }
+    // #9568: legitimate and hostile shapes are refused identically — the
+    // deterministic floor refusal, with no validation side channel left.
+    assert_set_expression_blocked(response)?;
     Ok(())
 }
 
