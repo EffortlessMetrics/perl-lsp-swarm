@@ -5298,18 +5298,18 @@ profile = "recommended"
             ..WorkspaceConfig::default()
         };
 
+        let started = std::time::Instant::now();
         let production = config.clone().get_system_inc_probe_outcome();
-        if !matches!(
-            production,
-            SystemIncProbeOutcome::TimedOut
-                | SystemIncProbeOutcome::NonZeroExit
-                | SystemIncProbeOutcome::IoFailed
-                | SystemIncProbeOutcome::Unavailable
-        ) {
-            return Err(format!(
-                "one-second production probe did not fail boundedly: {production:?}"
-            )
-            .into());
+        let elapsed = started.elapsed();
+        if !matches!(production, SystemIncProbeOutcome::TimedOut) {
+            return Err(
+                format!("one-second production probe did not time out: {production:?}").into()
+            );
+        }
+        if elapsed < Duration::from_millis(750) || elapsed >= Duration::from_secs(2) {
+            return Err(
+                format!("one-second production timeout was not bounded: {elapsed:?}").into()
+            );
         }
 
         let widened =
