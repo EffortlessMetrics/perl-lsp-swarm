@@ -475,7 +475,12 @@ impl Drop for LspServer {
         drop(outbound);
 
         if let Some(handle) = self.outbound_writer_handle.take() {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(outcome) => outcome.report_settlement(),
+                Err(_) => {
+                    tracing::error!("outbound writer thread panicked before terminal settlement")
+                }
+            }
         }
     }
 }
@@ -530,5 +535,74 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("window/logMessage"));
         assert!(text.contains("flush me"));
+    }
+
+    /// #8402: dropping a server whose outbound writer already failed on its
+    /// sink must settle promptly through the typed terminal outcome rather
+    /// than deadlocking, and the settlement record must name the first
+    /// causal sink error — the `ConnectionAborted` write failure — so the
+    /// failure surface is observable instead of silently discarded.
+    #[test]
+    fn drop_with_failed_outbound_writer_does_not_deadlock() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "controlled write failure (#8402)",
+                ))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        // Statically observe the causal error path of the controlled sink:
+        // `FailingWriter::write` fails with ConnectionAborted, and the writer
+        // loop turns that exact error into the typed first cause reported in
+        // the settlement record asserted below.
+        let mut probe_sink = FailingWriter;
+        let probe = probe_sink.write(&mut Vec::new());
+        assert!(
+            matches!(&probe, Err(err) if err.kind() == io::ErrorKind::ConnectionAborted),
+            "controlled writer must fail writes with ConnectionAborted, got {probe:?}"
+        );
+
+        let server =
+            LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(FailingWriter));
+        let _ = server.notify("window/logMessage", json!({"type": 4, "message": "settle"}));
+
+        let dropper = thread::spawn(move || {
+            // Capture on this thread: Drop reports settlement while joining
+            // the writer thread's terminal outcome.
+            let records = outbound::tests::capture_tracing_records(|| drop(server));
+            assert!(
+                records.contains("outbound writer settled: transport I/O failure"),
+                "failed-writer drop must settle with the transport I/O failure record, got: {records}"
+            );
+            assert!(
+                records.contains("phase=\"write\""),
+                "settlement must record the write phase, got: {records}"
+            );
+            assert!(
+                records.contains("error_kind=connection aborted"),
+                "settlement must preserve the first causal sink error kind, got: {records}"
+            );
+            assert!(
+                !records.contains("error_kind=broken pipe"),
+                "later channel-closed observations must not overwrite the first cause, got: {records}"
+            );
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !dropper.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "server drop must not deadlock on a failed outbound writer"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(dropper.join().is_ok(), "drop thread must not panic");
     }
 }

@@ -9,6 +9,8 @@ import re
 import sys
 import tomllib
 import unittest
+
+import yaml
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,15 @@ assert SPEC and SPEC.loader
 yaml_structure = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = yaml_structure
 SPEC.loader.exec_module(yaml_structure)
+
+PRODUCER_PATH = ROOT / "scripts" / "ci" / "hosted_formatter_producers.py"
+PRODUCER_SPEC = importlib.util.spec_from_file_location(
+    "hosted_formatter_producers", PRODUCER_PATH
+)
+assert PRODUCER_SPEC and PRODUCER_SPEC.loader
+producers = importlib.util.module_from_spec(PRODUCER_SPEC)
+sys.modules[PRODUCER_SPEC.name] = producers
+PRODUCER_SPEC.loader.exec_module(producers)
 
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 RUST_SMALL_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "em-ci-routed-rust.yml"
@@ -43,13 +54,79 @@ FMT_COMMAND = "cargo fmt --all -- --check"
 CONTRACT_TEST_FILES = (
     "scripts/ci/test_rustfmt_check.py",
     "scripts/ci/test_rustfmt_required_workflow.py",
+    "scripts/ci/test_hosted_formatter_producers.py",
 )
 CARGO_FMT_RE = re.compile(r"cargo\s+fmt\b")
+job_bodies = producers.job_bodies
+active_code_lines = producers.active_code_lines
 
 
-def load_workflow() -> dict[str, Any]:
-    lines = WORKFLOW_PATH.read_text(encoding="utf-8").splitlines()
-    triggers: dict[str, object] = {}
+def load_triggers(source: str) -> dict[str, dict[str, Any]]:
+    """Read the workflow's `on:` triggers with a real YAML parser.
+
+    A line-based reader only sees block style, so a flow mapping such as
+    `pull_request: { paths-ignore: ['**.md'] }` hid its own body and the
+    docs-only guard passed on a workflow GitHub would skip for Markdown-only
+    PRs. ci.yml already uses flow style (`merge_group: {}`), so this is a real
+    spelling, not a hypothetical one. Parsing as YAML accepts every equivalent
+    representation instead of one shape at a time.
+
+    Scope, deliberately: this parses the WHOLE file, not the `on:` block alone.
+    Trigger validation therefore depends on all of ci.yml being loadable by
+    `safe_load`, and any construct anywhere in the file that PyYAML rejects
+    reds this contract with "not valid YAML" even when the `on:` block itself
+    is fine — stricter than the rest of the contract, which reads only the
+    formatter job. The alternative, slicing the `on:` block out before parsing,
+    needs a hand-rolled column-0 scan to find where the block ends, which is
+    the exact class of reader this function replaced; letting YAML find the
+    boundary is the point. If you add a YAML feature to ci.yml that PyYAML
+    cannot load, expect it to surface here first.
+
+    YAML 1.1 resolves the bare key `on` to boolean True, so both spellings are
+    accepted.
+    """
+    try:
+        document = yaml.safe_load(source)
+    except yaml.YAMLError as error:
+        raise AssertionError(f"workflow source is not valid YAML: {error}") from error
+    if not isinstance(document, dict):
+        raise AssertionError("workflow source is not a YAML mapping")
+    node = document.get("on", document.get(True))
+    if node is None:
+        raise AssertionError("workflow declares no triggers")
+    if isinstance(node, str):
+        return {node: {}}
+    if isinstance(node, list):
+        return {str(event): {} for event in node}
+    if not isinstance(node, dict):
+        raise AssertionError("workflow triggers are not a mapping")
+    triggers: dict[str, dict[str, Any]] = {}
+    for event, body in node.items():
+        if body is None:
+            # A bare `pull_request:` is valid and means every activity type.
+            triggers[str(event)] = {}
+        elif isinstance(body, dict):
+            triggers[str(event)] = body
+        else:
+            # Coercing an unsupported shape to {} would report an unconfigured
+            # event body and let the docs-only and required-trigger checks pass
+            # without the event configuration ever being valid.
+            raise AssertionError(
+                f"trigger {str(event)!r} has a {type(body).__name__} body; "
+                "expected a mapping or an empty body"
+            )
+    return triggers
+
+
+def load_workflow(text: str | None = None) -> dict[str, Any]:
+    """Parse the formatter contract out of ci.yml, or out of `text` when supplied.
+
+    Accepting source text lets the mutation tests drop the governed context from
+    real workflow source instead of from an already-parsed dictionary (#9564).
+    """
+    source = WORKFLOW_PATH.read_text(encoding="utf-8") if text is None else text
+    lines = source.splitlines()
+    triggers = load_triggers(source)
     job: dict[str, Any] = {"env": {}, "steps": []}
     section = ""
     current_step: dict[str, Any] | None = None
@@ -57,10 +134,10 @@ def load_workflow() -> dict[str, Any]:
     index = 0
     while index < len(lines):
         parsed = yaml_structure._parse_key_line(lines[index])
-        if parsed and parsed.indent == 0 and parsed.key in {"on", "jobs"}:
-            section = parsed.key
-        elif section == "on" and parsed and parsed.indent == 2:
-            triggers[parsed.key] = {}
+        if parsed and parsed.indent == 0:
+            # Any top-level key ends the previous section, so `concurrency`,
+            # `permissions`, and `env` children cannot be mistaken for jobs.
+            section = parsed.key if parsed.key == "jobs" else ""
         elif section in {"jobs", "other-job"} and parsed and parsed.indent == 2:
             section = "formatter" if parsed.key == JOB_ID else "other-job"
         elif section == "formatter" and parsed:
@@ -100,8 +177,10 @@ def load_workflow() -> dict[str, Any]:
     return {"on": triggers, "jobs": {JOB_ID: job}}
 
 
-def load_policy() -> dict[str, object]:
-    return tomllib.loads(POLICY_PATH.read_text(encoding="utf-8"))
+def load_policy(text: str | None = None) -> dict[str, object]:
+    """Load the required-checks policy from disk, or from `text` when supplied."""
+    source = POLICY_PATH.read_text(encoding="utf-8") if text is None else text
+    return tomllib.loads(source)
 
 
 def named_step(job: dict[str, Any], name: str) -> dict[str, Any]:
@@ -201,16 +280,22 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
     if entry.get("job") != JOB_ID:
         raise AssertionError("formatter policy must name the owning job")
     # Policy schema v2 separates merge-policy role from live GitHub enforcement.
-    # "advisory" is a `policy_role`; the enforcement source must stay unclaimed
-    # until a reviewed settings change actually protects the context.
+    # Dedicated `Rust formatting` stays advisory; live merge blocking is the
+    # required Perl LSP Rust Small Result path (#9127/#12320). #9959 retires
+    # duplicate meta-shard fmt without promoting this context.
     if (
         entry.get("required") is not False
         or entry.get("policy_role") != "advisory"
         or entry.get("enforcement") != "neither"
     ):
-        raise AssertionError("formatter policy must remain advisory before post-merge promotion")
-    if "post-merge promotion target" not in str(entry.get("reason", "")).lower():
-        raise AssertionError("formatter policy must retain the post-merge promotion target")
+        raise AssertionError("formatter policy must remain advisory; live blocking stays on Rust Small")
+    reason = str(entry.get("reason", "")).lower()
+    if "advisory receipt-producing dedicated formatter" not in reason:
+        raise AssertionError("formatter policy must name the dedicated context as advisory")
+    if "perl lsp rust small result" not in reason:
+        raise AssertionError("formatter policy must declare Rust Small as the live blocker")
+    if "9959" not in reason:
+        raise AssertionError("formatter policy must record meta-shard fmt retirement")
 
 
 class RustfmtRequiredWorkflowTests(unittest.TestCase):
@@ -286,47 +371,293 @@ class RustfmtRequiredWorkflowTests(unittest.TestCase):
             validate_contract(self.workflow, broken)
 
 
+def replace_pull_request_trigger(workflow_text: str, replacement: str) -> str:
+    """Swap the entire `on.pull_request` block for `replacement`.
+
+    The real block carries comment lines and a `types:` key, so replacing only
+    its first line would leave them dangling and produce invalid YAML rather
+    than the equivalent workflow the mutation is meant to express.
+
+    The block ends at the next sibling key at the same indent, found by scan
+    rather than by naming whichever trigger happens to follow. Hardcoding
+    `merge_group:` as the delimiter meant that reordering `on:` moved the
+    boundary silently past `push:`, so the mutation expressed more than it
+    said. Fails closed with a named error, like every other helper here.
+    """
+    lines = workflow_text.splitlines(keepends=True)
+    start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.rstrip("\n") == "  pull_request:"
+        ),
+        None,
+    )
+    if start is None:
+        raise AssertionError("`on.pull_request` block is not present in workflow source")
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].strip()
+            and lines[index].startswith("  ")
+            and not lines[index].startswith("   ")
+        ),
+        None,
+    )
+    if end is None:
+        raise AssertionError(
+            "`on.pull_request` block has no following sibling key to bound it"
+        )
+    return "".join(lines[:start] + [replacement] + lines[end:])
+
+
+def drop_governed_job(workflow_text: str) -> str:
+    """Delete the whole `rust-formatting:` job block from workflow source.
+
+    This reproduces the exact #9564 regression shape: the governed context
+    disappears and every other job in the workflow survives untouched.
+    """
+    lines = workflow_text.splitlines(keepends=True)
+    header = f"  {JOB_ID}:"
+    start = next(
+        (index for index, line in enumerate(lines) if line.rstrip("\n") == header),
+        None,
+    )
+    if start is None:
+        raise AssertionError(f"{JOB_ID!r} job block is not present in workflow source")
+    end = len(lines)
+    for cursor in range(start + 1, len(lines)):
+        candidate = lines[cursor].rstrip("\n")
+        if candidate.startswith("  ") and not candidate.startswith("   "):
+            end = cursor
+            break
+    return "".join(lines[:start] + lines[end:])
+
+
+def policy_entry_index(blocks: list[str], name: str) -> int:
+    """Locate the single `[[checks]]` block declaring `name`, or fail closed."""
+    hits = [index for index, block in enumerate(blocks) if f'name = "{name}"' in block]
+    if len(hits) != 1:
+        raise AssertionError(f"expected exactly one {name!r} policy entry, found {len(hits)}")
+    return hits[0]
+
+
+def drop_policy_entry(policy_text: str, name: str) -> str:
+    """Delete exactly one `[[checks]]` entry by context name from policy source."""
+    blocks = policy_text.split("[[checks]]")
+    del blocks[policy_entry_index(blocks, name)]
+    return "[[checks]]".join(blocks)
+
+
+def mutate_policy_entry(policy_text: str, name: str, old: str, new: str) -> str:
+    """Rewrite `old` into `new` inside exactly the named `[[checks]]` entry.
+
+    Scoping the rewrite to one entry keeps the mutation independent of key order
+    and of every unrelated context in the policy file.
+    """
+    blocks = policy_text.split("[[checks]]")
+    index = policy_entry_index(blocks, name)
+    if old not in blocks[index]:
+        raise AssertionError(f"{old!r} is not present in the {name!r} policy entry")
+    blocks[index] = blocks[index].replace(old, new, 1)
+    return "[[checks]]".join(blocks)
+
+
+class GovernedContextSourceMutationTests(unittest.TestCase):
+    """Prove the contract rejects the governed context being dropped from real source.
+
+    The dict-level mutations above prove `validate_contract` discriminates *after*
+    parsing succeeded. They cannot fail if the hand-rolled workflow parser simply
+    stops seeing the job, which is exactly how the #6858 rebase dropped the
+    `Rust formatting` governed context with nothing going red (#9564).
+    """
+
+    def setUp(self) -> None:
+        self.workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.policy_text = POLICY_PATH.read_text(encoding="utf-8")
+
+    def validate_source(self, workflow_text: str, policy_text: str) -> None:
+        """Run the contract against workflow and policy source text."""
+        validate_contract(load_workflow(workflow_text), load_policy(policy_text))
+
+    def test_unmutated_source_satisfies_the_contract(self) -> None:
+        # Anti-vacuity anchor: the mutations below must be the reason the contract
+        # fails. Also proves the optional-text path agrees with the disk path.
+        self.validate_source(self.workflow_text, self.policy_text)
+
+    def test_trigger_parsing_does_not_absorb_unrelated_top_level_sections(self) -> None:
+        # Regression: the `on` section never terminated, so `concurrency`,
+        # `permissions`, and `env` children (`group`, `contents`,
+        # `CARGO_TERM_COLOR`, ...) were accepted as if they were workflow events.
+        triggers = load_workflow(self.workflow_text)["on"]
+        for leaked in ("group", "cancel-in-progress", "contents", "CARGO_TERM_COLOR"):
+            self.assertNotIn(leaked, triggers)
+        self.assertEqual(
+            set(triggers), {"pull_request", "merge_group", "push", "workflow_dispatch"}
+        )
+
+    # The next four tests are a deliberate 2x2: {paths, paths-ignore} x
+    # {block, flow}. A diagonal of two would cover the contract today, because
+    # the axes are resolved in different functions — representation in
+    # load_triggers, key in validate_contract. The full matrix is what detects
+    # that separation breaking, and it costs four assertions. If you prune
+    # these, prune to a diagonal deliberately; do not drop an axis.
+    def test_docs_only_path_filter_fails_closed(self) -> None:
+        # Regression: trigger bodies parsed as empty dicts, so validate_contract's
+        # docs-only guard was unreachable on real source no matter what it said.
+        broken = self.workflow_text.replace(
+            "  pull_request:\n    branches:",
+            "  pull_request:\n    paths:\n      - '**.rs'\n    branches:",
+            1,
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_paths_ignore_filter_fails_closed(self) -> None:
+        broken = self.workflow_text.replace(
+            "  pull_request:\n    branches:",
+            "  pull_request:\n    paths-ignore:\n      - '**.md'\n    branches:",
+            1,
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_flow_style_docs_only_filter_fails_closed(self) -> None:
+        # A line-based reader saw `pull_request: { ... }` as an empty body and
+        # let the docs-only guard pass on a workflow GitHub would skip for
+        # Markdown-only PRs. ci.yml already uses flow style (`merge_group: {}`),
+        # so this spelling is real, not hypothetical.
+        broken = replace_pull_request_trigger(
+            self.workflow_text,
+            "  pull_request: { branches: [ main, master ], paths-ignore: ['**.md'] }\n",
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        self.assertIn("paths-ignore", load_triggers(broken)["pull_request"])
+        with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_flow_style_paths_filter_fails_closed(self) -> None:
+        broken = replace_pull_request_trigger(
+            self.workflow_text,
+            "  pull_request: { branches: [ main, master ], paths: ['**.rs'] }\n",
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        with self.assertRaisesRegex(AssertionError, "terminal for docs-only"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_non_mapping_trigger_body_fails_closed(self) -> None:
+        # Regression: every non-mapping body was coerced to {}, so a workflow
+        # whose event configuration is not even valid reported an unconfigured
+        # event and satisfied both the required-trigger and docs-only checks.
+        for spelling in ("true", "[branches]", "'yes'", "42"):
+            broken = replace_pull_request_trigger(
+                self.workflow_text, f"  pull_request: {spelling}\n"
+            )
+            self.assertNotEqual(broken, self.workflow_text)
+            with self.assertRaisesRegex(AssertionError, "expected a mapping"):
+                self.validate_source(broken, self.policy_text)
+
+    def test_empty_trigger_body_is_accepted(self) -> None:
+        # Positive control for the check above: a bare `pull_request:` is legal
+        # GitHub Actions, so rejecting non-mappings must not reject null bodies.
+        relaxed = replace_pull_request_trigger(self.workflow_text, "  pull_request:\n")
+        self.assertEqual(load_triggers(relaxed)["pull_request"], {})
+        self.validate_source(relaxed, self.policy_text)
+
+    def test_unparseable_workflow_source_fails_closed(self) -> None:
+        # A corrupted or truncated ci.yml must red the gate with a named error,
+        # not escape as a raw parser exception.
+        with self.assertRaisesRegex(AssertionError, "not valid YAML"):
+            load_triggers(self.workflow_text + "\n  : : :\n\t- bad\n")
+
+    def test_trigger_replacement_stops_at_the_next_sibling_key(self) -> None:
+        # Regression: the boundary was found by hardcoding `merge_group:`, so
+        # reordering `on:` moved it silently past `push:` and the mutation
+        # expressed more than it said — the failure mode this suite exists to
+        # catch, in the suite's own helper.
+        reordered = self.workflow_text.replace("  merge_group: {}\n", "", 1).replace(
+            "  workflow_dispatch:\n", "  merge_group: {}\n  workflow_dispatch:\n", 1
+        )
+        self.assertNotEqual(reordered, self.workflow_text)
+        swapped = replace_pull_request_trigger(
+            reordered, "  pull_request: { branches: [ main, master ] }\n"
+        )
+        self.assertIn("push", load_triggers(swapped))
+        self.assertIn("merge_group", load_triggers(swapped))
+
+    def test_trigger_replacement_helper_fails_closed(self) -> None:
+        # The helper carries the same fail-closed duty as the rest: a named
+        # error, never a raw ValueError and never a silent wrong region.
+        with self.assertRaisesRegex(AssertionError, "not present in workflow source"):
+            replace_pull_request_trigger("on:\n  push: {}\n", "  pull_request: {}\n")
+        with self.assertRaisesRegex(AssertionError, "no following sibling key"):
+            replace_pull_request_trigger(
+                "on:\n  pull_request:\n    branches: [ main ]\n", "x\n"
+            )
+
+    def test_quoted_on_key_is_read_the_same_as_the_bare_key(self) -> None:
+        # YAML 1.1 resolves a bare `on` to boolean True; the quoted spelling
+        # stays a string. Both must yield the same trigger set.
+        quoted = self.workflow_text.replace("\non:\n", '\n"on":\n', 1)
+        self.assertNotEqual(quoted, self.workflow_text)
+        self.assertEqual(load_triggers(quoted), load_triggers(self.workflow_text))
+        self.validate_source(quoted, self.policy_text)
+
+    def test_dropping_a_required_trigger_from_source_fails_closed(self) -> None:
+        broken = self.workflow_text.replace(
+            "  push:\n    branches: [ main, master ]\n", "", 1
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        with self.assertRaisesRegex(AssertionError, "must report on push"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_dropping_the_governed_job_from_workflow_source_fails_closed(self) -> None:
+        broken = drop_governed_job(self.workflow_text)
+        self.assertNotIn(f"  {JOB_ID}:\n", broken)
+        self.assertLess(len(broken), len(self.workflow_text))
+        # The mutation stays surgical: the rest of the workflow is still there.
+        self.assertIn("\njobs:\n", broken)
+        self.assertIn("pull_request:", broken)
+        with self.assertRaisesRegex(AssertionError, "formatter context name drifted"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_renaming_the_governed_context_in_workflow_source_fails_closed(self) -> None:
+        broken = self.workflow_text.replace(
+            f"name: {CONTEXT_NAME}", "name: Rust format check", 1
+        )
+        self.assertNotEqual(broken, self.workflow_text)
+        with self.assertRaisesRegex(AssertionError, "formatter context name drifted"):
+            self.validate_source(broken, self.policy_text)
+
+    def test_dropping_the_policy_entry_from_source_fails_closed(self) -> None:
+        broken = drop_policy_entry(self.policy_text, CONTEXT_NAME)
+        self.assertNotIn(f'name = "{CONTEXT_NAME}"', broken)
+        with self.assertRaisesRegex(AssertionError, "exactly one formatter context"):
+            self.validate_source(self.workflow_text, broken)
+
+    def test_repointing_the_policy_entry_in_source_fails_closed(self) -> None:
+        broken = mutate_policy_entry(
+            self.policy_text, CONTEXT_NAME, f'job = "{JOB_ID}"', 'job = "rust-fmt"'
+        )
+        self.assertNotEqual(broken, self.policy_text)
+        with self.assertRaisesRegex(AssertionError, "must name the owning job"):
+            self.validate_source(self.workflow_text, broken)
+
+    def test_promoting_the_policy_entry_in_source_fails_closed(self) -> None:
+        # The advisory-before-promotion rule must bind real policy source too.
+        broken = mutate_policy_entry(
+            self.policy_text, CONTEXT_NAME, "required = false", "required = true"
+        )
+        self.assertNotEqual(broken, self.policy_text)
+        with self.assertRaisesRegex(AssertionError, "remain advisory"):
+            self.validate_source(self.workflow_text, broken)
+
+
 def load_rust_small_workflow_text() -> str:
     return RUST_SMALL_WORKFLOW_PATH.read_text(encoding="utf-8")
-
-
-def job_bodies(workflow_text: str) -> dict[str, str]:
-    """Return indent-2 GitHub Actions job bodies keyed by job id."""
-    bodies: dict[str, list[str]] = {}
-    current: str | None = None
-    in_jobs = False
-    for line in workflow_text.splitlines():
-        if line == "jobs:":
-            in_jobs = True
-            current = None
-            continue
-        if in_jobs and line and not line.startswith((" ", "\t")):
-            in_jobs = False
-            current = None
-            continue
-        if not in_jobs:
-            continue
-        if (
-            line.startswith("  ")
-            and not line.startswith("   ")
-            and line.rstrip().endswith(":")
-            and not line.lstrip().startswith("-")
-        ):
-            current = line.strip()[:-1]
-            bodies[current] = [line]
-        elif current is not None:
-            bodies[current].append(line)
-    return {job_id: "\n".join(lines) for job_id, lines in bodies.items()}
-
-
-def active_code_lines(text: str) -> list[str]:
-    lines: list[str] = []
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        lines.append(raw)
-    return lines
 
 
 def validate_rust_small_fmt_contract(workflow_text: str) -> None:
