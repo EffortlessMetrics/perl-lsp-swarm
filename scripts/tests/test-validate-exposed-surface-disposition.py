@@ -84,6 +84,20 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         projection["rows"][0]["surface_ref"]["authority"] = "forged"
         self.assert_invalid(projection, "unknown canonical authority row")
 
+    def test_rejects_missing_canonical_authority_coverage(self) -> None:
+        authorities = copy.deepcopy(self.authorities)
+        authorities["rows"].append({
+            "authority": "effective_lsp_surface",
+            "row_id": "provider.hover",
+            "row": {
+                "authority": "effective_lsp_surface",
+                "row_id": "provider.hover",
+                "contract": "hover-current-document",
+            },
+        })
+        with self.assertRaisesRegex(ValueError, "missing canonical authority rows"):
+            MODULE.validate_projection(self.schema, self.projection, authorities)
+
     def test_rejects_cross_subject_or_cross_profile_evidence(self) -> None:
         projection = copy.deepcopy(self.projection)
         projection["rows"][0]["evidence_subjects"][0]["repository_sha"] = "d" * 40
@@ -109,6 +123,14 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         projection = copy.deepcopy(self.projection)
         projection["rows"][0]["evidence_subjects"] = projection["rows"][0]["evidence_subjects"][:1]
         self.assert_invalid(projection, "READY requires applicable failure or refusal evidence")
+
+        projection = copy.deepcopy(self.projection)
+        projection["rows"][0]["evidence_subjects"][1]["artifact_sha256"] = "c" * 64
+        self.assert_invalid(projection, "READY failure evidence must use the ordinary artifact digest")
+
+        projection = copy.deepcopy(self.projection)
+        projection["rows"][0]["failure_journeys"] = [projection["rows"][0]["ordinary_journey"]]
+        self.assert_invalid(projection, "ordinary_journey must not be listed as a failure journey")
 
     def test_rejects_disabled_while_default_reachable_or_without_absence_proof(self) -> None:
         projection = copy.deepcopy(self.projection)
@@ -156,6 +178,12 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
             projection_path.write_text(json.dumps(self.projection), encoding="utf-8")
             authority_path.write_text(json.dumps(self.authorities), encoding="utf-8")
             self.assertEqual(MODULE.main(["--authority-catalog", str(authority_path), "--projection", str(projection_path)]), 1)
+
+    def test_rejects_malformed_schema(self) -> None:
+        schema = copy.deepcopy(self.schema)
+        schema["$defs"]["row"]["properties"]["disposition"] = []
+        with self.assertRaisesRegex(ValueError, "properties.disposition must be an object"):
+            MODULE.validate_projection(schema, self.projection, self.authorities)
 
     def test_shipped_authority_catalog_matches_fixture(self) -> None:
         self.assertEqual(self.authorities, self.authority_fixture)

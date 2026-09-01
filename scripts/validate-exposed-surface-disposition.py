@@ -60,7 +60,8 @@ def _schema_enum(schema: dict[str, Any], definition: str, field: str) -> frozens
     definitions = _object(schema.get("$defs"), "schema.$defs")
     definition_object = _object(definitions.get(definition), f"schema.$defs.{definition}")
     properties = _object(definition_object.get("properties"), f"schema.$defs.{definition}.properties")
-    values = properties.get(field, {}).get("enum")
+    field_definition = _object(properties.get(field), f"schema.$defs.{definition}.properties.{field}")
+    values = field_definition.get("enum")
     _require(
         isinstance(values, list) and values and all(isinstance(value, str) and value for value in values),
         f"schema.$defs.{definition}.properties.{field}.enum must be non-empty strings",
@@ -224,6 +225,8 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
         _require(type(row.get("opt_in")) is bool, f"projection.rows[{index}].opt_in must be boolean")
         _string(row.get("ordinary_journey"), f"projection.rows[{index}].ordinary_journey")
         _strings(row.get("failure_journeys"), f"projection.rows[{index}].failure_journeys", minimum=1)
+        _require(row["ordinary_journey"] not in row["failure_journeys"],
+                 f"projection.rows[{index}].ordinary_journey must not be listed as a failure journey")
         disposition = _enum(row.get("disposition"), dispositions, f"projection.rows[{index}].disposition")
         owner_issue = row.get("owner_issue")
         _require(
@@ -248,6 +251,10 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
                          f"projection.rows[{index}].READY requires exact installed evidence for {profile} and ordinary journey")
                 _require(any(item["kind"] in {"installed_journey", "refusal_boundary"} and item["journey_id"] in row["failure_journeys"] for item in subjects),
                          f"projection.rows[{index}].READY requires applicable failure or refusal evidence for {profile}")
+                ordinary_digests = {item["artifact_sha256"] for item in subjects if item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"]}
+                failure_evidence = [item for item in subjects if item["kind"] in {"installed_journey", "refusal_boundary"} and item["journey_id"] in row["failure_journeys"]]
+                _require(all(item["artifact_sha256"] in ordinary_digests for item in failure_evidence),
+                         f"projection.rows[{index}].READY failure evidence must use the ordinary artifact digest for {profile}")
         elif disposition == "BOUNDED_PREVIEW":
             _require(claim_effect == "limit", f"projection.rows[{index}].BOUNDED_PREVIEW must limit its public claim")
             for profile, subjects in evidence_by_profile.items():
@@ -255,6 +262,10 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
                          f"projection.rows[{index}].BOUNDED_PREVIEW requires exact installed evidence for {profile} and ordinary journey")
                 _require(any(item["kind"] == "refusal_boundary" and item["journey_id"] in row["failure_journeys"] for item in subjects),
                          f"projection.rows[{index}].BOUNDED_PREVIEW requires refusal-boundary evidence for {profile} and a failure journey")
+                ordinary_digests = {item["artifact_sha256"] for item in subjects if item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"]}
+                refusal_evidence = [item for item in subjects if item["kind"] == "refusal_boundary" and item["journey_id"] in row["failure_journeys"]]
+                _require(all(item["artifact_sha256"] in ordinary_digests for item in refusal_evidence),
+                         f"projection.rows[{index}].BOUNDED_PREVIEW refusal evidence must use the ordinary artifact digest for {profile}")
         elif disposition == "DISABLED":
             _require(claim_effect == "remove_or_withhold", f"projection.rows[{index}].DISABLED must remove or withhold its claim")
             _require(row["default_reachable"] is False, f"projection.rows[{index}].DISABLED cannot remain default reachable")
@@ -265,6 +276,9 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
         else:
             _require(claim_effect == "remove_or_withhold", f"projection.rows[{index}].{disposition} must remove or withhold its claim")
             _require(owner_issue is not None, f"projection.rows[{index}].{disposition} requires an owning issue")
+
+    missing = sorted(set(authority_rows) - references)
+    _require(not missing, f"projection is missing canonical authority rows: {missing}")
 
 
 def canonical_bytes(projection: Any) -> str:
