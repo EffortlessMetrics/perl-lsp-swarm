@@ -1979,6 +1979,20 @@ impl Lowerer {
     ) {
         let package = self.current_package_name();
 
+        // Any `-setup` installs a new importer over an earlier one, so the
+        // earlier configuration's names become stale — including when this
+        // setup's own value cannot be read, which is why this runs before the
+        // readability check below. A bare `use Sub::Exporter;` carries no
+        // `-setup` and establishes no configuration, so it leaves an earlier
+        // one standing. Boundaries are kept either way: they record what could
+        // not be read, which stays true, and they claim no exports.
+        if args.iter().any(|arg| arg == "-setup") {
+            self.stash_graph.export_declarations.retain(|declaration| {
+                declaration.package != package
+                    || declaration.provenance != StashProvenance::DesugaredAst
+            });
+        }
+
         let Some(setup) = sub_exporter_setup_body(args) else {
             self.record_dynamic_stash_boundary(
                 Some(package),
@@ -1991,18 +2005,11 @@ impl Lowerer {
             return;
         };
 
-        // A second `-setup` installs a new importer over the first, so the
-        // earlier configuration's names are stale rather than additional.
-        // Boundaries are left in place: they record what could not be read,
-        // which stays true, and they claim no exports.
-        self.stash_graph.export_declarations.retain(|declaration| {
-            declaration.package != package
-                || declaration.provenance != StashProvenance::DesugaredAst
-        });
-
-        // `into`, `into_level`, and `installer` send the generated importer's
-        // symbols somewhere other than the caller, so an ordinary `use` of
-        // this module does not install them into the importing package.
+        // `as` renames the installed exporter, and `into`/`into_level`/
+        // `installer` control where and how it installs. A custom `installer`
+        // may well install normally, but nothing here proves it does, so an
+        // ordinary `use` of this module is not shown to install these symbols
+        // into the importing package.
         if let Some(key) = SUB_EXPORTER_INSTALL_REDIRECT_KEYS
             .iter()
             .find(|key| hash_entry_value(setup, key).is_some())
@@ -2013,7 +2020,8 @@ impl Lowerer {
                 range,
                 Some(item_id),
                 StashDynamicBoundaryKind::DynamicExportDeclaration,
-                "Sub::Exporter setup installs exports outside the importing package",
+                "Sub::Exporter setup is not shown to install exports \
+                 into the importing package",
             );
             return;
         }
@@ -3111,9 +3119,13 @@ fn sub_exporter_declaration_confidence(
     }
 }
 
-/// Sub::Exporter setup keys that install the generated importer's symbols
-/// somewhere other than the importing package.
-const SUB_EXPORTER_INSTALL_REDIRECT_KEYS: &[&str] = &["into", "into_level", "installer"];
+/// Sub::Exporter setup keys that leave an ordinary `use` of the module unable
+/// to prove it installs the configured symbols into the importing package.
+///
+/// `as` renames the installed exporter, so the module may have no `import` at
+/// all; `into` and `into_level` name a different destination; `installer`
+/// replaces the installation itself, which may or may not be equivalent.
+const SUB_EXPORTER_INSTALL_REDIRECT_KEYS: &[&str] = &["as", "into", "into_level", "installer"];
 
 /// Token slice inside a `use Sub::Exporter -setup => { ... }` configuration hash.
 ///
@@ -3307,13 +3319,20 @@ fn sub_exporter_group_bodies(
 ) -> Option<Vec<(String, Option<SubExporterGroupMembers>)>> {
     let body = bracketed_body(value, "{", "}")?;
 
-    let mut groups = Vec::new();
+    let mut groups: Vec<(String, Option<SubExporterGroupMembers>)> = Vec::new();
     for entry in comma_separated_entries(body) {
         if entry.get(1).map(String::as_str) != Some("=>") {
             return None;
         }
         let name = sub_exporter_single_name(&entry[0])?;
-        groups.push((name, sub_exporter_group_members(entry.get(2..).unwrap_or_default())));
+        let members = sub_exporter_group_members(entry.get(2..).unwrap_or_default());
+        // Perl keeps the last value for a repeated key, so a group defined
+        // twice resolves to its last definition rather than the union. The
+        // first position is kept so declaration order stays deterministic.
+        match groups.iter_mut().find(|(existing, _)| *existing == name) {
+            Some((_, existing)) => *existing = members,
+            None => groups.push((name, members)),
+        }
     }
 
     Some(groups)

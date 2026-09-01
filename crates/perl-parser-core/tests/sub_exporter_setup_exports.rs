@@ -245,7 +245,12 @@ fn a_setup_that_installs_elsewhere_publishes_no_exports() {
     // `into`, `into_level`, and `installer` send the generated importer's
     // symbols somewhere other than the caller, so an ordinary `use` of this
     // module does not install them into the importing package.
-    for redirect in ["into => 'Other::Package'", "into_level => 1", "installer => \\&install"] {
+    for redirect in [
+        "as => 'do_import'",
+        "into => 'Other::Package'",
+        "into_level => 1",
+        "installer => \\&install",
+    ] {
         let file = lower(&format!(
             "package My::Utils;\n\
              use Sub::Exporter -setup => {{ exports => [qw(a b)], {redirect} }};\n",
@@ -260,7 +265,7 @@ fn a_setup_that_installs_elsewhere_publishes_no_exports() {
                 .iter()
                 .map(|(_, reason)| reason.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Sub::Exporter setup installs exports outside the importing package"],
+            vec!["Sub::Exporter setup is not shown to install exports into the importing package"],
             "{redirect}: expected exactly one install-redirect boundary"
         );
     }
@@ -464,6 +469,68 @@ fn a_group_keeps_its_plain_members_beside_a_group_reference() {
         export_boundaries(&file, "My::Utils")
             .iter()
             .any(|(symbol, _)| symbol.as_deref() == Some("default"))
+    );
+}
+
+#[test]
+fn a_second_setup_replaces_the_first_even_when_it_cannot_be_read() {
+    // The replacement must not depend on the *new* configuration being
+    // readable: a computed second `-setup` still installs a new importer, so
+    // the first configuration's names are stale either way.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(stale)] };\n\
+         use Sub::Exporter -setup => $computed;\n",
+    );
+
+    assert!(
+        declarations(&file, "My::Utils").is_empty(),
+        "a computed second setup must not leave the first setup's exports standing"
+    );
+    assert!(
+        export_boundaries(&file, "My::Utils")
+            .iter()
+            .any(|(_, reason)| reason.contains("not a static -setup hash"))
+    );
+}
+
+#[test]
+fn a_bare_use_after_a_setup_leaves_the_configuration_standing() {
+    // A bare `use Sub::Exporter;` carries no `-setup`, so it establishes no
+    // configuration and must not clear one that a previous statement proved.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(kept)] };\n\
+         use Sub::Exporter;\n",
+    );
+
+    assert!(
+        declarations(&file, "My::Utils")
+            .iter()
+            .any(|(_, _, symbols)| symbols.contains(&"kept".to_string())),
+        "a bare use must not discard an established -setup configuration"
+    );
+}
+
+#[test]
+fn a_repeated_group_name_resolves_to_its_last_definition() {
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports => [qw(stale fresh)],\n\
+             groups  => { default => [qw(stale)], default => [qw(fresh)] },\n\
+         };\n",
+    );
+
+    let default: Vec<Vec<String>> = declarations(&file, "My::Utils")
+        .into_iter()
+        .filter(|(kind, _, _)| *kind == ExportDeclarationKind::Default)
+        .map(|(_, _, symbols)| symbols)
+        .collect();
+    assert_eq!(
+        default,
+        vec![vec!["fresh".to_string()]],
+        "a repeated group name must resolve to its last definition, not the union"
     );
 }
 
