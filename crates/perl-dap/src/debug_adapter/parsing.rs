@@ -1084,7 +1084,7 @@ mod tests {
         adapter.push_recent_output_line_for_test("main::(/test/file1.pl:4):");
         adapter.push_recent_output_line_for_test("main::(/test/file2.pl:5):");
 
-        let response = adapter.handle_stack_trace(1, 1, None);
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         match response {
             DapMessage::Response { body: Some(body), .. } => {
                 if let Ok(trace_response) =
