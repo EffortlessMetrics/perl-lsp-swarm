@@ -292,7 +292,10 @@ fn feature_gated_blocking_work_is_still_owned_by_a_row() {
 #[test]
 fn a_test_module_behind_a_path_attribute_is_excluded() {
     // `#[path]` overrides the conventional file lookup, so a test module can
-    // point at a filename the conventional exclusion never names.
+    // point at a filename the conventional exclusion never names. Rust resolves
+    // the attribute relative to the directory containing the declaring file, so
+    // `src/entry.rs` with `#[path = "fixtures/entry_cases.rs"]` names
+    // `src/fixtures/entry_cases.rs` — not `src/entry/fixtures/entry_cases.rs`.
     let sources = vec![
         (
             "crates/perl-lsp-rs/src/entry.rs".to_string(),
@@ -306,7 +309,7 @@ fn a_test_module_behind_a_path_attribute_is_excluded() {
             .to_string(),
         ),
         (
-            "crates/perl-lsp-rs/src/entry/fixtures/entry_cases.rs".to_string(),
+            "crates/perl-lsp-rs/src/fixtures/entry_cases.rs".to_string(),
             r#"
             pub fn spawn_from_a_relocated_test_module() {
                 let _ = std::process::Command::new("perl").output();
@@ -320,11 +323,98 @@ fn a_test_module_behind_a_path_attribute_is_excluded() {
     assert!(
         census
             .resolve(
-                "crates/perl-lsp-rs/src/entry/fixtures/entry_cases.rs",
+                "crates/perl-lsp-rs/src/fixtures/entry_cases.rs",
                 "spawn_from_a_relocated_test_module"
             )
             .is_none(),
         "a #[path]-relocated #[cfg(test)] module must not enter the production census"
+    );
+}
+
+#[test]
+fn a_path_attribute_resolves_against_the_declaring_file_not_the_module_directory() {
+    // The falsifier mirrors Rust's real layout for
+    // `src/documentation_targets.rs` + `#[path = "documentation_targets_tests.rs"]`:
+    // the file lives beside the declaring file, and the module-directory
+    // prediction (`src/entry/…` here) is exactly the misresolution this must
+    // reject. A helper in the mispredicted location stays production; the real
+    // relocated test module is excluded.
+    let sources = vec![
+        (
+            "crates/perl-lsp-rs/src/entry.rs".to_string(),
+            r#"
+            impl Server { pub fn handle_initialize(&self) {} }
+
+            #[cfg(test)]
+            #[path = "entry_cases.rs"]
+            mod cases;
+            "#
+            .to_string(),
+        ),
+        (
+            "crates/perl-lsp-rs/src/entry/entry_cases.rs".to_string(),
+            "pub fn helper_in_the_mispredicted_location() {}".to_string(),
+        ),
+        (
+            "crates/perl-lsp-rs/src/entry_cases.rs".to_string(),
+            r#"
+            pub fn spawn_from_the_real_test_module() {
+                let _ = std::process::Command::new("perl").output();
+            }
+            "#
+            .to_string(),
+        ),
+    ];
+    let census = Census::from_sources(&sources);
+
+    assert!(
+        census
+            .resolve("crates/perl-lsp-rs/src/entry_cases.rs", "spawn_from_the_real_test_module")
+            .is_none(),
+        "the real #[path] target must be excluded from the production census"
+    );
+    assert!(
+        census
+            .resolve(
+                "crates/perl-lsp-rs/src/entry/entry_cases.rs",
+                "helper_in_the_mispredicted_location"
+            )
+            .is_some(),
+        "a production file that merely shares the predicted name must stay indexed"
+    );
+}
+
+#[test]
+fn a_whole_impl_under_cfg_test_is_excluded_from_the_census() {
+    // A `#[cfg(test)]` gate on an entire `impl` never reaches the method items:
+    // each method carries no attribute of its own, so without an impl-level
+    // stop the methods redirect same-name edges and satisfy protocol claims.
+    let sources = vec![(
+        SYNTHETIC_ROOT_FILE.to_string(),
+        r#"
+        impl Server { pub fn handle_initialize(&self) {} }
+
+        #[cfg(test)]
+        impl Server {
+            pub fn handle_initialize(&self) {
+                let _ = std::process::Command::new("perl").output();
+            }
+            pub fn test_only_announce(&self) {
+                self.notify("perl-lsp/index-ready", ());
+            }
+        }
+        "#
+        .to_string(),
+    )];
+    let census = Census::from_sources(&sources);
+
+    assert!(
+        census.resolve(SYNTHETIC_ROOT_FILE, "test_only_announce").is_none(),
+        "a method of a #[cfg(test)] impl must not enter the production census"
+    );
+    assert!(
+        census.citation_arity(SYNTHETIC_ROOT_FILE, "handle_initialize") == 1,
+        "the test-only colliding root must not enter the census alongside the real one"
     );
 }
 
@@ -401,6 +491,102 @@ fn colliding_names_are_not_claimed_to_be_dropped_edges() {
         census.transitive_exposures(root, census::MAX_DEPTH).contains_key(&Exposure::PathLookup),
         "a colliding name still resolves per call site and must be traversed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Process exposure is execution, not construction
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_command_builder_without_execution_is_not_a_spawn() {
+    // `Command::new` constructs a builder; nothing runs until `spawn`,
+    // `output`, or `status`. A builder-only helper must not fabricate spawn
+    // exposure and force false ledger declarations.
+    let sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self) {
+                    let _ = build_command("perl");
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            SYNTHETIC_HELPER_FILE.to_string(),
+            r#"
+            pub fn build_command(program: &str) -> std::process::Command {
+                let mut command = std::process::Command::new(program);
+                command.arg("--version");
+                command
+            }
+            "#
+            .to_string(),
+        ),
+    ];
+    let census = Census::from_sources(&sources);
+    let root =
+        census.resolve(SYNTHETIC_ROOT_FILE, "handle_initialize").expect("synthetic root resolves");
+
+    assert!(
+        census.transitive_exposures(root, census::MAX_DEPTH).is_empty(),
+        "building a Command without executing it must not count as process work"
+    );
+}
+
+#[test]
+fn a_command_executed_from_a_split_variable_is_a_spawn() {
+    // Positive control for the guard: a builder constructed in one statement
+    // and executed in another within one body is still process work.
+    let sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self) {
+                    run_perl_version();
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            SYNTHETIC_HELPER_FILE.to_string(),
+            r#"
+            pub fn run_perl_version() {
+                let mut command = std::process::Command::new("perl");
+                command.arg("--version");
+                let _ = command.output();
+            }
+            pub fn spawn_directly() {
+                let _ = std::process::Command::new("perl").spawn();
+            }
+            pub fn status_directly() {
+                let _ = std::process::Command::new("perl").status();
+            }
+            "#
+            .to_string(),
+        ),
+    ];
+    let census = Census::from_sources(&sources);
+    let root =
+        census.resolve(SYNTHETIC_ROOT_FILE, "handle_initialize").expect("synthetic root resolves");
+
+    let exposures = census.transitive_exposures(root, census::MAX_DEPTH);
+    assert!(
+        exposures.contains_key(&Exposure::ProcessSpawn),
+        "an executed split-variable command is process work, got {exposures:?}"
+    );
+
+    for name in ["run_perl_version", "spawn_directly", "status_directly"] {
+        let index = census.resolve(SYNTHETIC_HELPER_FILE, name).expect("helper resolves");
+        assert!(
+            census.direct_exposures(index).contains(&Exposure::ProcessSpawn),
+            "{name} must carry direct process exposure"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -672,38 +858,102 @@ fn rows_sharing_a_helper_are_independently_falsifiable() {
     );
 }
 
+#[test]
+fn a_same_named_call_elsewhere_cannot_keep_a_stale_row_alive() {
+    // Call-site identity must include the resolved callee, not only the
+    // callee's final name plus the literal. Here `detect_tool("perltidy")` is
+    // called twice: once on the cited same-file method, and once — through an
+    // initialize-reachable path — on an unrelated type in another file.
+    // Deleting only the cited call must retire the row; a name-plus-literal
+    // match would keep it validated by the decoy call.
+    let cited_sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self) {
+                    self.detect_tool("perltidy");
+                    self.run_decoy();
+                }
+                pub fn detect_tool(&self, name: &str) -> bool {
+                    name == "perltidy"
+                }
+                pub fn run_decoy(&self) {
+                    decoy_runner();
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            SYNTHETIC_HELPER_FILE.to_string(),
+            r#"
+            pub struct Decoy;
+            impl Decoy {
+                pub fn detect_tool(&self, _name: &str) -> bool {
+                    false
+                }
+            }
+            pub fn decoy_runner() -> bool {
+                Decoy.detect_tool("perltidy")
+            }
+            "#
+            .to_string(),
+        ),
+    ];
+    let row = InitOperationRow {
+        operation_id: "synthetic.tool",
+        file: SYNTHETIC_ROOT_FILE,
+        function: "detect_tool",
+        declared_exposure: &[],
+        call_site_argument: "perltidy",
+        owns_exposure: false,
+        ..baseline_row()
+    };
+
+    let census = Census::from_sources(&cited_sources);
+    let errors = ledger_errors_with_roots(&[row.clone()], &census, &synthetic_roots());
+    assert!(
+        !errors.iter().any(|error| error.contains("makes that call")),
+        "the cited call site exists, so the row must validate: {errors:#?}"
+    );
+
+    // Delete only the call targeting the cited function.
+    let mut reduced = cited_sources;
+    reduced[0].1 = reduced[0].1.replace("self.detect_tool(\"perltidy\");", "");
+    let reduced_census = Census::from_sources(&reduced);
+
+    let errors = ledger_errors_with_roots(&[row], &reduced_census, &synthetic_roots());
+    assert_reports(&errors, "makes that call");
+}
+
 // ---------------------------------------------------------------------------
 // Side effects are derived, not trusted
 // ---------------------------------------------------------------------------
 
 #[test]
 fn a_side_effect_naming_an_unsent_method_is_rejected() {
-    let mut sources = indirect_process_sources();
-    sources.push((
-        "crates/perl-lsp-rs/src/notify.rs".to_string(),
-        r#"
-        pub fn send(server: &Server) {
-            server.notify("perl-lsp/index-ready", ());
-        }
-        "#
-        .to_string(),
-    ));
-    let census = Census::from_sources(&sources);
+    let census = Census::from_sources(&indirect_process_sources());
 
     let mut row = baseline_row();
     row.side_effects = &["sends perl/workspaceReady"];
 
     let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
-    assert_reports(&errors, "no scanned source sends `perl/workspaceReady`");
+    assert_reports(&errors, "no function reachable from");
+    assert_reports(&errors, "sends `perl/workspaceReady`");
 }
 
 #[test]
-fn a_side_effect_naming_a_real_method_is_accepted() {
+fn a_side_effect_only_unrelated_code_sends_is_rejected() {
+    // The literal exists somewhere in the scanned tree, but nothing reachable
+    // from the row's cited operation sends it. A workspace-global literal scan
+    // would validate this row; binding the claim to the cited operation's
+    // closure rejects it.
     let mut sources = indirect_process_sources();
     sources.push((
         "crates/perl-lsp-rs/src/notify.rs".to_string(),
         r#"
-        pub fn send(server: &Server) {
+        pub fn send_unrelated(server: &Server) {
             server.notify("perl-lsp/index-ready", ());
         }
         "#
@@ -715,9 +965,40 @@ fn a_side_effect_naming_a_real_method_is_accepted() {
     row.side_effects = &["sends perl-lsp/index-ready"];
 
     let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
+    assert_reports(&errors, "no function reachable from");
+    assert_reports(&errors, "sends `perl-lsp/index-ready`");
+}
+
+#[test]
+fn a_side_effect_the_cited_operation_reaches_is_accepted() {
+    // Positive control: the sender sits inside the cited operation's closure,
+    // so the claim is bound to code that actually runs it.
+    let sources = vec![
+        (
+            SYNTHETIC_ROOT_FILE.to_string(),
+            r#"
+            impl Server {
+                pub fn handle_initialize(&self) {
+                    self.announce_index_ready();
+                }
+                pub fn announce_index_ready(&self) {
+                    self.notify("perl-lsp/index-ready", ());
+                }
+            }
+            "#
+            .to_string(),
+        ),
+        (SYNTHETIC_HELPER_FILE.to_string(), "pub fn unused() {}".to_string()),
+    ];
+    let census = Census::from_sources(&sources);
+
+    let mut row = baseline_row();
+    row.side_effects = &["sends perl-lsp/index-ready"];
+
+    let errors = ledger_errors_with_roots(&[row], &census, &synthetic_roots());
     assert!(
-        !errors.iter().any(|error| error.contains("no scanned source sends")),
-        "a method that is genuinely sent must not be reported: {errors:#?}"
+        !errors.iter().any(|error| error.contains("claims side effect")),
+        "a method the cited operation genuinely sends must not be reported: {errors:#?}"
     );
 }
 
@@ -913,6 +1194,7 @@ fn lifecycle_timing_sources() -> Vec<(String, String)> {
             r#"
             pub fn handle_initialize() {
                 normalize_capabilities();
+                shared_phase_helper();
             }
             fn normalize_capabilities() {
                 let _ = std::process::Command::new("perl").arg("--version").output();
@@ -925,6 +1207,7 @@ fn lifecycle_timing_sources() -> Vec<(String, String)> {
             r#"
             pub fn complete_initialization() {
                 start_workspace_indexing();
+                shared_phase_helper();
             }
             fn start_workspace_indexing() {
                 let _ = std::fs::read_to_string("Makefile.PL");
@@ -938,6 +1221,7 @@ fn lifecycle_timing_sources() -> Vec<(String, String)> {
             pub fn resolve_timing_mode() {
                 let _ = std::env::var("PERL_LSP_TIMING");
             }
+            pub fn shared_phase_helper() {}
             "#
             .to_string(),
         ),
@@ -1100,6 +1384,62 @@ fn an_on_demand_row_no_root_reaches_is_accepted() {
     assert!(
         !errors.iter().any(|error| error.contains("synthetic.lazy")),
         "an unreachable lazy leaf must not be given a response-relative point, got: {errors:#?}"
+    );
+}
+
+#[test]
+fn a_helper_shared_by_both_phases_cannot_claim_after_response() {
+    // Both lifecycle roots call the same helper. Initialization already
+    // executes it before the response, so an `after_response` row would hide
+    // pre-response execution behind a single-valued timing model — the model
+    // derives `before_response` for dual-reachable operations.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let shared = InitOperationRow {
+        operation_id: "synthetic.shared",
+        file: SYNTHETIC_HELPER_FILE,
+        function: "shared_phase_helper",
+        declared_exposure: &[],
+        current_point: ExecutionPoint::AfterResponse,
+        phase: PhaseDisposition::DeferToPostInitializeEnvironment,
+        migration_wave: MigrationWave::None,
+        owns_exposure: false,
+        ..baseline_row()
+    };
+
+    let errors = ledger_errors_with_roots(
+        &[pre_response_row(), post_response_row(), shared],
+        &census,
+        &lifecycle_roots(),
+    );
+    assert_reports(&errors, "synthetic.shared");
+    assert_reports(&errors, "reachable from the response-committing root as well");
+}
+
+#[test]
+fn a_helper_shared_by_both_phases_is_accepted_as_before_response() {
+    // Negative control: the same operation declared with the derived point
+    // must pass, so the rejection above cannot be an artefact of the fixture.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let shared = InitOperationRow {
+        operation_id: "synthetic.shared",
+        file: SYNTHETIC_HELPER_FILE,
+        function: "shared_phase_helper",
+        declared_exposure: &[],
+        current_point: ExecutionPoint::BeforeResponse,
+        phase: PhaseDisposition::LocalProcessFreeConfigBeforeResponse,
+        migration_wave: MigrationWave::None,
+        owns_exposure: false,
+        ..baseline_row()
+    };
+
+    let errors = ledger_errors_with_roots(
+        &[pre_response_row(), post_response_row(), shared],
+        &census,
+        &lifecycle_roots(),
+    );
+    assert!(
+        !errors.iter().any(|error| error.contains("synthetic.shared")),
+        "the derived before_response point must validate, got: {errors:#?}"
     );
 }
 

@@ -353,16 +353,24 @@ fn structural_errors(rows: &[InitOperationRow]) -> Vec<String> {
     errors
 }
 
-/// Fail when a row's side effects name a protocol method the source never sends.
+/// Fail when a row's side effects name a protocol method its own operation
+/// never reaches.
 ///
 /// `side_effects` was previously free prose that no rule inspected, and a row
 /// claiming `perl/workspaceReady` survived review even though the server sends
 /// `perl-lsp/index-ready` and no such method exists anywhere. That is exactly
-/// the stale-prose failure this module exists to catch, so the field is now
-/// derived against the literals present in scanned source.
+/// the stale-prose failure this module exists to catch. The check is also bound
+/// to the row's citation: the literal must appear in the cited function's body
+/// or somewhere in its transitive closure, so a notification that only some
+/// unrelated module sends — or that only appears in a test helper — cannot
+/// validate this row's claim.
 fn side_effect_errors(rows: &[InitOperationRow], census: &Census) -> Vec<String> {
     let mut errors = Vec::new();
     for row in rows {
+        let Some(index) = census.resolve(row.file, row.function) else {
+            // A citation the census cannot bind is `citation_errors`' finding.
+            continue;
+        };
         for effect in row.side_effects {
             for token in effect.split_whitespace() {
                 let candidate =
@@ -370,10 +378,11 @@ fn side_effect_errors(rows: &[InitOperationRow], census: &Census) -> Vec<String>
                 if !census::looks_like_protocol_method(candidate) {
                     continue;
                 }
-                if !census.declares_method(candidate) {
+                if !census.closure_sends_method(index, candidate) {
                     errors.push(format!(
-                        "row {} claims side effect `{}`, but no scanned source sends `{}`",
-                        row.operation_id, effect, candidate
+                        "row {} claims side effect `{}`, but no function reachable from \
+                         `{}::{}` sends `{}`",
+                        row.operation_id, effect, row.file, row.function, candidate
                     ));
                 }
             }
@@ -733,7 +742,12 @@ fn call_site_errors(
         if row.call_site_argument.is_empty() {
             continue;
         }
-        if !census.calls_with_argument(&reachable, row.function, row.call_site_argument) {
+        let Some(target) = census.resolve(row.file, row.function) else {
+            // The call-site rule can only bind through a citation the census
+            // resolves; an unresolvable citation is already reported.
+            continue;
+        };
+        if !census.calls_resolving_to(&reachable, target, row.call_site_argument) {
             errors.push(format!(
                 "row {} names call site `{}(\"{}\")`, but no initialize-reachable source makes \
                  that call",
@@ -847,12 +861,18 @@ fn execution_point_errors(
                     census.qualified(index)
                 ));
             }
-            ExecutionPoint::AfterResponse if !after.contains(&index) => {
+            ExecutionPoint::AfterResponse if !after.contains(&index) || before.contains(&index) => {
                 // Requiring a post-response root to actually reach the function
                 // closes the symmetric hole: without it a row nothing reaches
                 // would sit in `after_response` and take that point's migration
-                // timing, when `on_demand` is what the source supports.
-                let reason = if before.contains(&index) {
+                // timing, when `on_demand` is what the source supports. A
+                // helper both phases call is *before*-response — initialization
+                // already executes it before responding — so `after` alone is
+                // never sufficient evidence.
+                let reason = if before.contains(&index) && after.contains(&index) {
+                    "is reachable from the response-committing root as well, so initialization \
+                     already runs it before responding"
+                } else if before.contains(&index) {
                     "is reachable only from the response-committing root"
                 } else {
                     "is reached by no lifecycle root, so `on_demand` is the derived point"

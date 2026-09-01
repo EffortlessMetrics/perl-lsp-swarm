@@ -106,13 +106,23 @@ pub struct FunctionRecord {
     pub path_calls: BTreeSet<String>,
     /// Exposures detected directly in the body, not through callees.
     pub exposures: BTreeSet<Exposure>,
-    /// `(callee, first string-literal argument)` pairs seen at call sites.
+    /// `(callee, first string-literal argument, call kind)` seen at call sites.
     ///
     /// Two ledger rows can legitimately cite one shared helper —
     /// `detect_tool("perltidy")` and `detect_tool("perlcritic")` — and without a
     /// call-site discriminator neither row goes stale when its own call is
-    /// deleted.
-    pub call_arguments: BTreeSet<(String, String)>,
+    /// deleted. The call kind is retained so the checker can resolve the site
+    /// through the same edge resolver the reachability walk uses; a name plus
+    /// literal alone would let an unrelated same-named call keep a stale row
+    /// alive.
+    pub call_arguments: BTreeSet<(String, String, CallKind)>,
+    /// Protocol method names that appear as string literals inside this body.
+    ///
+    /// A `side_effects` claim is checked against the cited operation and its
+    /// closure rather than against the whole workspace, so a notification some
+    /// unrelated module happens to mention cannot validate a row that never
+    /// reaches a sender.
+    pub sent_methods: BTreeSet<String>,
 }
 
 impl FunctionRecord {
@@ -126,7 +136,7 @@ impl FunctionRecord {
 }
 
 /// How a callee was referenced at the call site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CallKind {
     /// `receiver.name(..)`
     Method,
@@ -171,7 +181,6 @@ pub struct Census {
     funcs: Vec<FunctionRecord>,
     by_name: BTreeMap<String, Vec<usize>>,
     ambiguous: BTreeSet<String>,
-    methods: BTreeSet<String>,
     unparsable: Vec<(String, String)>,
 }
 
@@ -183,7 +192,6 @@ impl Census {
     /// still attributes it.
     pub fn from_sources(sources: &[(String, String)]) -> Self {
         let mut funcs: Vec<FunctionRecord> = Vec::new();
-        let mut methods: BTreeSet<String> = BTreeSet::new();
         let mut unparsable: Vec<(String, String)> = Vec::new();
         let mut test_only_modules: BTreeSet<String> = BTreeSet::new();
 
@@ -202,9 +210,6 @@ impl Census {
             let mut collector = FnCollector { file: path.clone(), found: Vec::new() };
             collector.visit_file(&parsed);
             funcs.extend(collector.found);
-
-            let mut literals = MethodLiteralCollector { found: &mut methods };
-            literals.visit_file(&parsed);
         }
 
         // A file reached only through a `#[cfg(test)] mod name;` declaration is
@@ -224,7 +229,7 @@ impl Census {
             .map(|(name, _)| name.clone())
             .collect();
 
-        Self { funcs, by_name, ambiguous, methods, unparsable }
+        Self { funcs, by_name, ambiguous, unparsable }
     }
 
     /// Build a census by reading the allowlisted crates under `workspace_root`.
@@ -305,19 +310,27 @@ impl Census {
             .unwrap_or(0)
     }
 
-    /// Whether any function in `within` calls `callee` with `argument` as its
-    /// first string literal.
-    pub fn calls_with_argument(
+    /// Whether any function in `within` calls the exact function `target` with
+    /// `argument` as its first string literal.
+    ///
+    /// A call site counts only when the census's own edge resolver binds it to
+    /// `target` — the same resolution the reachability walk uses. Matching on
+    /// the callee's final name plus a literal alone would let an unrelated
+    /// same-named call in a sibling module keep an obsolete row alive.
+    pub fn calls_resolving_to(
         &self,
         within: &BTreeSet<usize>,
-        callee: &str,
+        target: usize,
         argument: &str,
     ) -> bool {
-        let wanted = (callee.to_string(), argument.to_string());
-        within
-            .iter()
-            .filter_map(|index| self.funcs.get(*index))
-            .any(|record| record.call_arguments.contains(&wanted))
+        within.iter().any(|&index| {
+            let Some(record) = self.funcs.get(index) else {
+                return false;
+            };
+            record.call_arguments.iter().any(|(callee, literal, kind)| {
+                literal == argument && self.resolve_edge(index, callee, *kind) == Some(target)
+            })
+        })
     }
 
     /// Sources the census could not parse, as `(path, parse error)`.
@@ -329,13 +342,22 @@ impl Census {
         &self.unparsable
     }
 
-    /// Protocol method names appearing as string literals in scanned source.
+    /// Whether the operation at `index`, or anything in its transitive closure,
+    /// carries `method` as a string literal in its own body.
     ///
-    /// A ledger row's `side_effects` naming a notification it does not actually
-    /// send is the same stale-prose failure this module exists to catch, so the
-    /// names are derived rather than trusted.
-    pub fn declares_method(&self, method: &str) -> bool {
-        self.methods.contains(method)
+    /// Side-effect claims are bound to the cited operation: a literal that only
+    /// exists in some unrelated module cannot validate a row whose function
+    /// never reaches a sender. `None` citations are the citation checker's
+    /// finding, so a missing index simply answers `false`.
+    pub fn closure_sends_method(&self, index: usize, method: &str) -> bool {
+        let reaches = self
+            .funcs
+            .get(index)
+            .is_some_and(|record| record.sent_methods.contains(method))
+            || self.reachable_from(index, MAX_DEPTH).into_keys().any(|reached| {
+                self.funcs.get(reached).is_some_and(|record| record.sent_methods.contains(method))
+            });
+        reaches
     }
 
     /// Files a name was found in, sorted.
@@ -706,6 +728,17 @@ impl<'ast> Visit<'ast> for FnCollector {
         syn::visit::visit_item_mod(self, node);
     }
 
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        // A `#[cfg(test)]` gate on a whole `impl` never reaches the method
+        // items: each `ImplItemFn` carries no attribute of its own, so without
+        // this stop its methods enter the production census and can redirect a
+        // same-name edge or fabricate a side-effect claim.
+        if is_cfg_test(&node.attrs) {
+            return;
+        }
+        syn::visit::visit_item_impl(self, node);
+    }
+
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         if is_cfg_test(&node.attrs) {
             return;
@@ -730,6 +763,7 @@ fn summarize(file: &str, name: String, is_method: bool, block: &syn::Block) -> F
         path_calls: BTreeSet::new(),
         call_arguments: BTreeSet::new(),
         exposures: BTreeSet::new(),
+        sent_methods: BTreeSet::new(),
         saw_command_type: false,
         deferred_process_methods: false,
     };
@@ -751,14 +785,16 @@ fn summarize(file: &str, name: String, is_method: bool, block: &syn::Block) -> F
         path_calls: body.path_calls,
         exposures,
         call_arguments: body.call_arguments,
+        sent_methods: body.sent_methods,
     }
 }
 
 struct BodyVisitor {
     method_calls: BTreeSet<String>,
     path_calls: BTreeSet<String>,
-    call_arguments: BTreeSet<(String, String)>,
+    call_arguments: BTreeSet<(String, String, CallKind)>,
     exposures: BTreeSet<Exposure>,
+    sent_methods: BTreeSet<String>,
     saw_command_type: bool,
     deferred_process_methods: bool,
 }
@@ -786,6 +822,14 @@ const PROCESS_METHODS: &[&str] = &["spawn", "output", "status"];
 const NETWORK_MARKERS: &[&str] = &["TcpStream", "UdpSocket", "TcpListener", "reqwest", "ureq"];
 
 impl<'ast> Visit<'ast> for BodyVisitor {
+    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+        let value = node.value();
+        if looks_like_protocol_method(&value) {
+            self.sent_methods.insert(value);
+        }
+        syn::visit::visit_lit_str(self, node);
+    }
+
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         let method = node.method.to_string();
         if FS_METHODS.contains(&method.as_str()) {
@@ -795,7 +839,7 @@ impl<'ast> Visit<'ast> for BodyVisitor {
             self.deferred_process_methods = true;
         }
         if let Some(literal) = first_string_literal(&node.args) {
-            self.call_arguments.insert((method.clone(), literal));
+            self.call_arguments.insert((method.clone(), literal, CallKind::Method));
         }
         self.method_calls.insert(method);
         self.record_function_reference_args(&node.args);
@@ -809,7 +853,7 @@ impl<'ast> Visit<'ast> for BodyVisitor {
             self.classify_path(&segments, node);
             if let Some(last) = segments.last() {
                 if let Some(literal) = first_string_literal(&node.args) {
-                    self.call_arguments.insert((last.clone(), literal));
+                    self.call_arguments.insert((last.clone(), literal, CallKind::Path));
                 }
                 self.path_calls.insert(last.clone());
             }
@@ -858,9 +902,13 @@ impl BodyVisitor {
         };
         let joined = segments.join("::");
 
-        if segments.iter().any(|seg| seg == "Command") && last == "new" {
-            self.exposures.insert(Exposure::ProcessSpawn);
-        }
+        // `Command::new` only constructs a builder; no process exists until
+        // `spawn`, `output`, or `status` executes it, so construction is not an
+        // exposure here. The execution methods carry the signal (see
+        // `summarize`), which also keeps builder-only helpers from fabricating
+        // spawn exposure while still crediting a builder built in one statement
+        // and executed in another within the same body. The `Command` type name
+        // itself is recorded by `visit_path` for that guard.
         if joined == "which" || joined.starts_with("which::") {
             self.exposures.insert(Exposure::PathLookup);
         }
@@ -899,27 +947,6 @@ fn call_mentions_path_env(node: &syn::ExprCall) -> bool {
     })
 }
 
-/// Collects LSP-style protocol method names from string literals.
-struct MethodLiteralCollector<'a> {
-    found: &'a mut BTreeSet<String>,
-}
-
-impl<'ast> Visit<'ast> for MethodLiteralCollector<'_> {
-    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-        if is_cfg_test(&node.attrs) {
-            return;
-        }
-        syn::visit::visit_item_mod(self, node);
-    }
-
-    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
-        let value = node.value();
-        if looks_like_protocol_method(&value) {
-            self.found.insert(value);
-        }
-    }
-}
-
 /// Whether a string literal looks like a protocol method name such as
 /// `window/showMessage` or `perl-lsp/index-ready`.
 pub fn looks_like_protocol_method(value: &str) -> bool {
@@ -941,9 +968,6 @@ pub fn looks_like_protocol_method(value: &str) -> bool {
 /// anywhere would otherwise exclude every `tests.rs` in every scanned crate and
 /// silently drop unrelated production definitions.
 fn collect_test_only_modules(declaring_file: &str, file: &syn::File, out: &mut BTreeSet<String>) {
-    let Some(dir) = module_dir_of(declaring_file) else {
-        return;
-    };
     for item in &file.items {
         if let syn::Item::Mod(item_mod) = item
             && item_mod.content.is_none()
@@ -951,16 +975,30 @@ fn collect_test_only_modules(declaring_file: &str, file: &syn::File, out: &mut B
         {
             // `#[path = "…"]` overrides the conventional lookup entirely, so a
             // test module pointed elsewhere would otherwise stay in the
-            // production census under its real filename.
+            // production census under its real filename. Rust resolves a path
+            // attribute relative to the directory containing the *declaring
+            // file* — not the child-module directory that conventional
+            // `mod name;` lookup uses — so `src/foo.rs` declaring
+            // `#[path = "foo_tests.rs"]` names `src/foo_tests.rs`.
             if let Some(path) = module_path_attribute(&item_mod.attrs) {
-                out.insert(normalize_module_path(&dir, &path));
+                if let Some(dir) = declaring_dir_of(declaring_file) {
+                    out.insert(normalize_module_path(&dir, &path));
+                }
                 continue;
             }
+            let Some(dir) = module_dir_of(declaring_file) else {
+                continue;
+            };
             let name = item_mod.ident.to_string();
             out.insert(format!("{dir}/{name}.rs"));
             out.insert(format!("{dir}/{name}/mod.rs"));
         }
     }
+}
+
+/// The directory containing the declaring source file.
+fn declaring_dir_of(file: &str) -> Option<String> {
+    file.rsplit_once('/').map(|(dir, _)| dir.to_string())
 }
 
 /// The literal of a `#[path = "…"]` attribute, if the item carries one.
