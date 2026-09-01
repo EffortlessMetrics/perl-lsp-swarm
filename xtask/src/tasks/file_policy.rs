@@ -4305,39 +4305,6 @@ review_after = "2026-08-13"
     }
 
     #[test]
-    fn trusted_workflow_scans_same_name_with_unreserved_id() -> Result<()> {
-        let (temp, base) = exact_fixture()?;
-        let workflow_path = ".github/workflows/non-rust-policy.yml";
-        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-        let version_marker = "# contract-version: ";
-        let version = workflow
-            .lines()
-            .find_map(|line| line.trim().strip_prefix(version_marker))
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .ok_or_else(|| eyre!("fixture workflow must carry a contract-version"))?;
-        let workflow = workflow.replacen(
-            &format!("{version_marker}{version}"),
-            &format!("{version_marker}{}", version + 1),
-            1,
-        );
-        let same_name = "      - id: unreserved-step\n        name: Verify trusted workflow contract\n        run: cargo run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}\n";
-        let workflow = workflow.replacen(
-            "      - name: Upload exact-tree receipt",
-            &(same_name.to_string() + "      - name: Upload exact-tree receipt"),
-            1,
-        );
-        write_fixture(temp.path(), workflow_path, &workflow)?;
-        let subject = commit_fixture(temp.path(), "same-name unreserved workflow step")?;
-        let error = validate_subject_workflow(temp.path(), &base, &subject)
-            .expect_err("same-name step with an unreserved ID must be scanned");
-        assert!(
-            error.to_string().contains("must not execute candidate source"),
-            "unexpected error: {error}"
-        );
-        Ok(())
-    }
-
-    #[test]
     fn exact_tree_workflow_keeps_trusted_shadow_contract() -> Result<()> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")

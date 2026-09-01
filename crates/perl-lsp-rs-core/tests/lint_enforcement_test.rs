@@ -34,7 +34,7 @@ fn find_line_number(source: &str, pattern: &str) -> Option<usize> {
     source.lines().position(|line| line.contains(pattern)).map(|pos| pos + 1)
 }
 
-fn immediately_preceding_attribute<'a>(source: &'a str, function_pattern: &str) -> Option<&'a str> {
+fn immediately_preceding_attribute(source: &str, function_pattern: &str) -> Option<String> {
     let lines = source.lines().collect::<Vec<_>>();
     let function_line = lines.iter().position(|line| line.contains(function_pattern))?;
     let mut end = function_line;
@@ -51,10 +51,7 @@ fn immediately_preceding_attribute<'a>(source: &'a str, function_pattern: &str) 
     if !lines[start].trim_start().starts_with("#[") {
         return None;
     }
-    Some(
-        &source[source.lines().take(start).map(str::len).sum::<usize>() + start
-            ..source.lines().take(end).map(str::len).sum::<usize>() + end],
-    )
+    Some(lines[start..end].join("\n"))
 }
 
 #[test]
@@ -115,15 +112,17 @@ fn test_startup_banner_has_allow_annotation() {
          #[expect(...)] not #[allow(...)]. Update startup_banner annotation."
     );
 
-    if let (Some(allow), Some(func), Some(annotation)) = (allow_line, fn_line, annotation) {
-        assert!(
-            allow < func,
-            "The clippy::print_stderr annotation (line {allow}) must appear \
-             before startup_banner_with_quiet (line {func})."
-        );
-        assert!(
-            annotation.contains("#[expect(") && annotation.contains("clippy::print_stderr"),
-            "The immediate attribute before startup_banner_with_quiet must expect clippy::print_stderr."
-        );
-    }
+    let allow = allow_line.expect("clippy::print_stderr occurrence must be present");
+    let func = fn_line.expect("startup_banner_with_quiet must be present");
+    let annotation =
+        annotation.expect("startup_banner_with_quiet must have an immediately preceding attribute");
+    assert!(
+        allow < func,
+        "The clippy::print_stderr annotation (line {allow}) must appear \
+         before startup_banner_with_quiet (line {func})."
+    );
+    assert!(
+        annotation.contains("#[expect(") && annotation.contains("clippy::print_stderr"),
+        "The immediate attribute before startup_banner_with_quiet must expect clippy::print_stderr."
+    );
 }
