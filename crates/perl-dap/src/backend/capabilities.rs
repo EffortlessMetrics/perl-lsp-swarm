@@ -355,6 +355,25 @@ pub(crate) fn value_format_unsupported_message(command: &str) -> String {
     )
 }
 
+/// The one #9581 floor decision for a request, combining both floored
+/// families: the six secondary requests and a non-default `format` option on
+/// the four ValueFormat families.
+///
+/// Every production surface — the native dispatch seams
+/// (`DebugAdapter::secondary_capability_floor_response`) and both peer
+/// frontends (`secondary_floor_response`) — applies this single function at
+/// its own sanctioned seam and constructs only its own refusal response from
+/// it, so the two families cannot drift apart between surfaces.
+pub(crate) fn capability_floor_message(command: &str, arguments: Option<&Value>) -> Option<String> {
+    if let Some(message) = secondary_capability_floor_message(command) {
+        return Some(message);
+    }
+    if unproven_value_format_requested(command, arguments) {
+        return Some(value_format_unsupported_message(command));
+    }
+    None
+}
+
 /// The negotiated DAP capability flags: catalog ∩ backend.
 ///
 /// Field names mirror the DAP `capabilities` payload keys the frontend emits in
@@ -711,6 +730,26 @@ mod tests {
         let message = value_format_unsupported_message("variables");
         assert!(message.contains("supportsValueFormattingOptions"));
         assert!(message.contains("#9581"));
+    }
+
+    /// #9581: the combined floor decision every surface applies is exactly the
+    /// composition of the two floored families — a floored secondary row, a
+    /// non-default `format` on a ValueFormat family, and nothing else.
+    #[test]
+    fn capability_floor_message_combines_both_floored_families() {
+        assert!(capability_floor_message("restart", None).is_some());
+        assert!(
+            capability_floor_message(
+                "evaluate",
+                Some(&serde_json::json!({ "expression": "$x", "format": { "hex": true } }))
+            )
+            .is_some()
+        );
+        assert!(capability_floor_message("threads", None).is_none());
+        assert!(
+            capability_floor_message("evaluate", Some(&serde_json::json!({ "expression": "$x" })))
+                .is_none()
+        );
     }
 
     #[test]

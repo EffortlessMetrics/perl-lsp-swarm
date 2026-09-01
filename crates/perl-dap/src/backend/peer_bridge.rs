@@ -15,8 +15,9 @@
 //! The bridge is a **parallel** path: it does not touch the native
 //! [`crate::debug_adapter::DebugAdapter`] dispatch funnel (decision DF1 remains
 //! deferred). [`run_external_peer_session_stdio`] drives it over editor stdio;
-//! [`DapPeerBridge::dispatch`] / [`DapPeerBridge::poll_events`] are the
-//! deterministic, testable core.
+//! [`DapPeerBridge::dispatch_with_capability_floor`] (the #9581 floored editor
+//! entry) / [`DapPeerBridge::dispatch`] / [`DapPeerBridge::poll_events`] are
+//! the deterministic, testable core.
 
 #[cfg(test)]
 use perl_tdd_support::{must, must_some};
@@ -154,9 +155,37 @@ impl DapPeerBridge {
         }
     }
 
+    /// Dispatch a single DAP request through the #9581 capability floor.
+    ///
+    /// This is the editor-facing entry point on the external-peer surface. The
+    /// #9581 secondary-capability floor is resolved *here* — outside the
+    /// canonical route match in [`Self::dispatch`], whose body the
+    /// protocol-authority gate pins to the table-owned shape — so a floored
+    /// request is refused before any AST-oracle source read, peer/backend I/O,
+    /// or queued-event drain can happen. Non-floored requests route exactly
+    /// as [`Self::dispatch`] always has.
+    pub fn dispatch_with_capability_floor(
+        &mut self,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<Value>,
+    ) -> Vec<DapMessage> {
+        if let Some(response) =
+            self.secondary_floor_response(request_seq, command, arguments.as_ref())
+        {
+            return vec![response];
+        }
+        self.dispatch(request_seq, command, arguments)
+    }
+
     /// Dispatch a single DAP request. Returns the response message followed by
     /// any backend events that arrived while servicing it (drained after the
     /// call), so a caller can write them in order.
+    ///
+    /// Editor-facing callers must enter through
+    /// [`Self::dispatch_with_capability_floor`], which applies the #9581
+    /// floor ahead of this route match; this body stays the fixed,
+    /// table-owned shape the protocol-authority gate pins.
     pub fn dispatch(
         &mut self,
         request_seq: i64,
@@ -164,16 +193,6 @@ impl DapPeerBridge {
         arguments: Option<Value>,
     ) -> Vec<DapMessage> {
         let mut out = Vec::new();
-        // #9581 secondary-capability floor (external-peer surface). Resolved
-        // before the route match so floored requests perform no AST-oracle
-        // source read, no peer/backend I/O, and no state mutation; the
-        // disposition mirrors the `false` rows in [`Self::capabilities_body`].
-        if let Some(response) =
-            self.secondary_floor_response(request_seq, command, arguments.as_ref())
-        {
-            out.push(response);
-            return out;
-        }
         match DapRequestRoute::from_command(command)
             .filter(DapRequestRoute::available_in_peer_frontends)
         {
@@ -272,9 +291,17 @@ impl DapPeerBridge {
             Some(DapRequestRoute::ConfigurationDone) => {
                 out.push(self.response(request_seq, command, true, None, None));
             }
-            // `BreakpointLocations` has no arm: the #9581 floor gate above
-            // intercepts it before this match, so the AST oracle is unreachable
-            // while `supportsBreakpointLocationsRequest` is false.
+            Some(DapRequestRoute::BreakpointLocations) => {
+                // Answered locally from the AST oracle (the source file is on the
+                // same host as perl-dap), independent of the peer. The #9581
+                // capability floor intercepts the request at
+                // [`Self::dispatch_with_capability_floor`] while
+                // `supportsBreakpointLocationsRequest` is false, so this arm is
+                // unreachable through the floored editor entry until that
+                // per-field re-enable gate passes.
+                let body = handle_breakpoint_locations(arguments.as_ref());
+                out.push(self.response(request_seq, command, true, Some(body), None));
+            }
             Some(DapRequestRoute::Terminate) => {
                 // DAP `terminate` (the editor's Stop button when the adapter
                 // advertises `supportsTerminateRequest`): end the debuggee. In
@@ -397,26 +424,19 @@ impl DapPeerBridge {
 
     /// The #9581 floor disposition for this request, if it is floored.
     ///
-    /// One authority for both floored families: the six secondary requests and
-    /// a non-default `format` option on the four ValueFormat families. Returns
-    /// the explicit unsupported response this bridge must send instead of
-    /// dispatching.
+    /// The single authority in `backend/capabilities.rs`
+    /// (`capability_floor_message`) decides for both floored families: the
+    /// six secondary requests and a non-default `format` option on the four
+    /// ValueFormat families. This surface only builds its own explicit
+    /// unsupported response from that decision.
     fn secondary_floor_response(
         &mut self,
         request_seq: i64,
         command: &str,
         arguments: Option<&Value>,
     ) -> Option<DapMessage> {
-        if let Some(message) =
-            crate::backend::capabilities::secondary_capability_floor_message(command)
-        {
-            return Some(self.response(request_seq, command, false, None, Some(message)));
-        }
-        if crate::backend::capabilities::unproven_value_format_requested(command, arguments) {
-            let message = crate::backend::capabilities::value_format_unsupported_message(command);
-            return Some(self.response(request_seq, command, false, None, Some(message)));
-        }
-        None
+        crate::backend::capabilities::capability_floor_message(command, arguments)
+            .map(|message| self.response(request_seq, command, false, None, Some(message)))
     }
 
     fn handle_set_breakpoints(&mut self, args: Option<&Value>) -> super::BackendResult<Value> {
@@ -754,7 +774,9 @@ fn dispatch_frame(bridge: &mut DapPeerBridge, body: &[u8]) -> (Vec<DapMessage>, 
     };
     let seq =
         v.get("seq").and_then(|s| s.as_i64().or_else(|| s.as_f64().map(|f| f as i64))).unwrap_or(0);
-    let out = bridge.dispatch(seq, command, v.get("arguments").cloned());
+    // The editor-facing ingress applies the #9581 capability floor before the
+    // canonical route match.
+    let out = bridge.dispatch_with_capability_floor(seq, command, v.get("arguments").cloned());
     let disconnect = command == "disconnect";
     (out, disconnect)
 }
@@ -844,11 +866,12 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
 /// (missing args, unreadable/unparseable source) returns an empty set rather than
 /// failing the request — the editor treats "no breakable locations" gracefully.
 ///
-/// Retained (unit-proven) as the lower oracle helper for the #9581 re-enable
-/// gate (#10524 + #2300 + #9021 + #7566). The dispatch path is floored while
-/// `supportsBreakpointLocationsRequest` is `false`, so this is unreachable in
-/// production until that gate passes.
-#[allow(dead_code)]
+/// Retained as the AST oracle behind the canonical `BreakpointLocations`
+/// route arm. The #9581 capability floor intercepts the request at
+/// `dispatch_with_capability_floor` while `supportsBreakpointLocationsRequest`
+/// is `false`, so production reaches this arm only after that per-field
+/// re-enable gate (#10524 + #2300 + #9021 + #7566) passes; the unit proofs
+/// keep proving its geometry/empty-set contract in the meantime.
 fn handle_breakpoint_locations(args: Option<&Value>) -> Value {
     let empty = json!({ "breakpoints": [] });
     let Some(args) = args else { return empty };
@@ -1044,7 +1067,8 @@ mod tests {
         backend.events.push(DebugEvent::Terminated { exit_code: Some(7) });
         let mut bridge = DapPeerBridge::new(Box::new(backend));
 
-        let out = bridge.dispatch(1, "completions", Some(json!({ "text": "pr" })));
+        let out =
+            bridge.dispatch_with_capability_floor(1, "completions", Some(json!({ "text": "pr" })));
         assert_eq!(out.len(), 1, "a floored request must return only its response");
         assert!(matches!(out.first(), Some(DapMessage::Response { success: false, .. })));
 
@@ -1494,7 +1518,7 @@ mod tests {
         let path = f.path().to_string_lossy().to_string();
 
         let mut b = bridge();
-        let out = b.dispatch(
+        let out = b.dispatch_with_capability_floor(
             9,
             "breakpointLocations",
             Some(json!({ "source": { "path": path }, "line": 1, "endLine": 1 })),

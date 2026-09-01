@@ -389,7 +389,9 @@ fn mirror_bridge_rejects_floored_requests_before_peer_or_oracle_work() -> TestRe
     let mut bridge = perl_dap::backend::MirrorPeerBridge::new_pending(
         perl_dap::backend::capabilities::ControlMode::Mirror,
     );
-    bridge.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
+    // The floored editor entry applies the floor before the canonical route
+    // match, so a pending bridge (no peer) refuses without peer or oracle work.
+    bridge.dispatch_with_capability_floor(1, "initialize", Some(json!({ "adapterID": "perl" })));
 
     let floored: [(&str, Option<Value>); 6] = [
         ("completions", Some(json!({ "text": "pr", "column": 2 }))),
@@ -400,7 +402,7 @@ fn mirror_bridge_rejects_floored_requests_before_peer_or_oracle_work() -> TestRe
         ("cancel", None),
     ];
     for (command, arguments) in floored {
-        let out = bridge.dispatch(2, command, arguments);
+        let out = bridge.dispatch_with_capability_floor(2, command, arguments);
         assert_eq!(out.len(), 1, "mirror `{command}` floor must not poll peer events");
         let first = out.first().ok_or_else(|| format!("{command}: no response"))?;
         match first {
@@ -427,13 +429,13 @@ fn mirror_bridge_rejects_non_default_format_on_proxied_families() -> TestResult 
     let mut bridge = perl_dap::backend::MirrorPeerBridge::new_pending(
         perl_dap::backend::capabilities::ControlMode::Mirror,
     );
-    bridge.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
+    bridge.dispatch_with_capability_floor(1, "initialize", Some(json!({ "adapterID": "perl" })));
 
     for (command, arguments) in [
         ("variables", json!({ "variablesReference": 1, "format": { "hex": true } })),
         ("evaluate", json!({ "expression": "$x", "format": { "hex": true } })),
     ] {
-        let out = bridge.dispatch(2, command, Some(arguments));
+        let out = bridge.dispatch_with_capability_floor(2, command, Some(arguments));
         let first = out.first().ok_or_else(|| format!("{command}: no response"))?;
         match first {
             DapMessage::Response { success, message, .. } => {

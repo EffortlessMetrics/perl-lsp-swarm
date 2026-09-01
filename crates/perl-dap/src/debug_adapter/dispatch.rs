@@ -156,42 +156,6 @@ macro_rules! dap_request_table {
             ) -> DapMessage {
                 let seq = self.next_seq();
 
-                // #9581 secondary-capability floor. Requests whose `initialize`
-                // capability field is forced `false` are rejected here — before
-                // any handler runs — so the floored paths perform no debugger
-                // I/O, process action, or state mutation, and a missing session
-                // can never masquerade as a successful empty result.
-                if let Some(message) =
-                    crate::backend::capabilities::secondary_capability_floor_message(command)
-                {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: command.to_string(),
-                        body: None,
-                        message: Some(message),
-                    };
-                }
-                // #9581 ValueFormat floor: a non-default `format` option on an
-                // unproven family is refused before any debugger/value mutation;
-                // requests without one keep their independent contract.
-                if crate::backend::capabilities::unproven_value_format_requested(
-                    command,
-                    arguments.as_ref(),
-                ) {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: command.to_string(),
-                        body: None,
-                        message: Some(
-                            crate::backend::capabilities::value_format_unsupported_message(command),
-                        ),
-                    };
-                }
-
                 match command {
                     $(
                         $command => dap_dispatch_call!(
@@ -259,6 +223,45 @@ pub(crate) fn is_supported_dap_command(command: &str) -> bool {
 }
 
 impl DebugAdapter {
+    /// The #9581 secondary-capability floor, applied at the sanctioned request
+    /// seams ([`Self::handle_request`], [`Self::handle_request_mock`], and the
+    /// stdio transport loop in [`super::transport`]).
+    ///
+    /// The floor's authority — which requests are floored, and the exact
+    /// disposition text — lives solely in `backend/capabilities.rs`; this is
+    /// only its application point. It sits *outside* the generated
+    /// `dispatch_request` body deliberately: that body must stay the fixed,
+    /// table-owned shape the protocol-authority gate pins
+    /// (`scripts/ci/dap_authority_common.py`), with no branch reachable around
+    /// the request table.
+    ///
+    /// Returns `Some(refusal)` when the request is floored. The refusal is
+    /// constructed before any handler runs, so the floored path performs no
+    /// debugger I/O, process action, or session/peer state mutation, and a
+    /// missing session can never masquerade as a successful empty result; the
+    /// only adapter change is response framing (one `seq` allocation).
+    pub(super) fn secondary_capability_floor_response(
+        &mut self,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<&Value>,
+    ) -> Option<DapMessage> {
+        if let Some(message) =
+            crate::backend::capabilities::capability_floor_message(command, arguments)
+        {
+            let seq = self.next_seq();
+            return Some(DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: command.to_string(),
+                body: None,
+                message: Some(message),
+            });
+        }
+        None
+    }
+
     /// Dispatch a DAP request and return the response message.
     ///
     /// Emits the `initialized` event automatically when an `initialize` request
@@ -271,7 +274,16 @@ impl DebugAdapter {
     ) -> DapMessage {
         tracing::debug!(command, arguments = ?arguments, "DAP request");
 
-        let response = self.dispatch_request(request_seq, command, arguments);
+        // #9581 secondary-capability floor, ahead of the table-owned dispatch:
+        // a floored request is refused before any handler can run.
+        let response = match self.secondary_capability_floor_response(
+            request_seq,
+            command,
+            arguments.as_ref(),
+        ) {
+            Some(floored) => floored,
+            None => self.dispatch_request(request_seq, command, arguments),
+        };
 
         // Preserve existing direct-call behavior for tests and in-memory usage.
         if command == "initialize" && Self::response_succeeded_for_command(&response, "initialize")
@@ -291,7 +303,16 @@ impl DebugAdapter {
     ) -> DapMessage {
         tracing::debug!(command, arguments = ?arguments, "DAP request (mock)");
 
-        let response = self.dispatch_request(request_seq, command, arguments);
+        // #9581 secondary-capability floor, ahead of the table-owned dispatch:
+        // the mock surface must not route floored requests either.
+        let response = match self.secondary_capability_floor_response(
+            request_seq,
+            command,
+            arguments.as_ref(),
+        ) {
+            Some(floored) => floored,
+            None => self.dispatch_request(request_seq, command, arguments),
+        };
         if command == "initialize" && Self::response_succeeded_for_command(&response, "initialize")
         {
             self.send_event("initialized", None);
