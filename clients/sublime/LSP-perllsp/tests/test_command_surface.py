@@ -385,11 +385,14 @@ class CommandSurfaceContractTests(unittest.TestCase):
     def test_bounded_results_have_one_terminal_newline_and_exact_limit(self) -> None:
         rendered = surface.format_result(
             "Perl: Run Current File",
-            {"output": "z" * (surface.MAX_OUTPUT_CHARS * 4)},
+            {
+                f"output_{index}": "z" * surface.MAX_FIELD_CHARS
+                for index in range(32)
+            },
         )
         self.assertTrue(rendered.endswith("\n"))
         self.assertFalse(rendered.endswith("\n\n"))
-        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+        self.assertEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
 
     def test_global_bound_is_hard_after_rendering(self) -> None:
         rendered = surface.format_result(
