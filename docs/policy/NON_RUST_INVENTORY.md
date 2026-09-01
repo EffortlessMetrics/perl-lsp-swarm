@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12444 |
+| Total tracked files | 12445 |
 | Rust-family files | 3837 |
-| Non-Rust files | 8607 |
+| Non-Rust files | 8608 |
 | Allowlisted | 6370 |
-| Unclassified | 2237 |
+| Unclassified | 2238 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 348 |
 | test | 2058 |
 | tooling | 667 |
-| unclassified | 2237 |
+| unclassified | 2238 |
 
 ## Unclassified files
 
@@ -2024,6 +2024,7 @@
 | `tests/test_review_claim_fail_closed.py` | `py` |
 | `tests/test_review_claim_hidden_comments.py` | `py` |
 | `tests/test_semantic_review_currentness.py` | `py` |
+| `tests/test_writer_authority_transfer_contract.py` | `py` |
 | `tokmd.toml` | `toml` |
 | `tree-sitter-perl/.clang-format` | `` |
 | `tree-sitter-perl/.editorconfig` | `` |

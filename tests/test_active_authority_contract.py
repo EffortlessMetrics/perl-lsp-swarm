@@ -14,6 +14,7 @@ COPILOT = ".github/copilot-instructions.md"
 WORKTREE_PROTOCOL = "docs/reference/WORKTREE_PROTOCOL.md"
 WORKFLOW = ".github/workflows/active-authority-contract.yml"
 SELF_TEST = "tests/test_active_authority_contract.py"
+WRITER_TRANSFER_TEST = "tests/test_writer_authority_transfer_contract.py"
 
 # Surfaces this contract reads to check the entrypoints against real repository
 # state instead of against themselves.
@@ -162,6 +163,7 @@ TRIGGER_PATHS = (
     JUSTFILE,
     GITIGNORE,
     SELF_TEST,
+    WRITER_TRANSFER_TEST,
     WORKFLOW,
 )
 
