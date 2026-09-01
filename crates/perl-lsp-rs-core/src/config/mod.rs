@@ -2272,6 +2272,17 @@ pub fn discover_perltidy_profile(workspace_root: &Path) -> Option<String> {
     )
 }
 
+/// Resolve a named executable from an explicit PATH value.
+///
+/// Keeping the path input explicit makes discovery behavior testable without
+/// mutating the environment of the process running the test suite.
+fn executable_from_path(path_env: &str, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(path_env)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
 /// Pure, dependency-injected core of [`discover_perltidy_profile`].
 ///
 /// Separated so tests can exercise the search order deterministically without
@@ -3835,14 +3846,14 @@ profile = "recommended"
 
     #[test]
     fn perltidy_discoverable_on_path_still_yields_native_default() -> TestResult {
-        // Exercise tool/profile discoverability with explicit inputs; the test
-        // runner's environment is never changed and configuration remains
-        // native unless the user explicitly selects another engine.
+        // Exercise executable discoverability with an explicit PATH input; the
+        // test runner's environment is never changed.
         let dir = tempfile::tempdir()?;
-        let profile = dir.path().join(".perltidyrc");
-        std::fs::write(&profile, "--maximum-line-length=100\n")?;
-        let discovered = discover_perltidy_profile_from(dir.path(), Some(profile.clone()), None);
-        assert_eq!(discovered, Some(profile.to_string_lossy().into_owned()));
+        let name = if cfg!(windows) { "perltidy.exe" } else { "perltidy" };
+        let executable = dir.path().join(name);
+        std::fs::write(&executable, b"fixture")?;
+        let path = dir.path().to_string_lossy();
+        assert_eq!(executable_from_path(&path, name), Some(executable));
 
         let config = ServerConfig::default();
         assert_eq!(config.formatting_engine, FormatterMode::Native);
