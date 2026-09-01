@@ -40,10 +40,21 @@ impl DiagnosticDebouncer {
         Self { tx, pending_count }
     }
 
-    pub(crate) fn schedule(&self, uri: &str) {
-        if let Err(e) = self.tx.send(DebounceMsg::Schedule(uri.to_string())) {
-            tracing::debug!(error = %e, "diagnostic debounce: channel closed on schedule");
+    pub(crate) fn schedule(&self, uri: &str) -> bool {
+        match self.tx.send(DebounceMsg::Schedule(uri.to_string())) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, "diagnostic debounce unavailable; falling back to immediate publication");
+                false
+            }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unavailable_for_test() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(rx);
+        Self { tx, pending_count: Arc::new(AtomicUsize::new(0)) }
     }
 
     #[allow(dead_code)] // Read by test/debug runtime pressure snapshots.
@@ -194,6 +205,13 @@ mod tests {
         thread::sleep(Duration::from_millis(80));
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(*last_uri.lock(), "file:///test.pl");
+    }
+
+    #[test]
+    fn unavailable_debouncer_reports_schedule_failure() {
+        let debouncer = DiagnosticDebouncer::unavailable_for_test();
+
+        assert!(!debouncer.schedule("file:///unavailable.pl"));
     }
 
     #[test]
