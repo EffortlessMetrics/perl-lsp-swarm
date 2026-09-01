@@ -1,0 +1,126 @@
+# contract-version: 2
+name: Non-Rust policy
+
+on:
+  pull_request_target:
+    branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group: {}
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        required: true
+        type: string
+      subject_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  exact-tree:
+    name: Non-Rust policy exact-tree
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
+      SUBJECT_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.sha }}
+      EVALUATOR_SHA: ${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
+      PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}
+    steps:
+      - name: Checkout trusted evaluator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.EVALUATOR_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch and bind subject Git object
+        id: bind
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$SUBJECT_SHA"
+          git update-ref refs/heads/non-rust-policy-subject "$SUBJECT_SHA"
+          test "$(git rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA"
+          test "$(git rev-parse "$SUBJECT_SHA^{commit}")" = "$SUBJECT_SHA"
+          test "$(git rev-parse refs/heads/non-rust-policy-subject^{commit})" = "$SUBJECT_SHA"
+          if [ -n "$PR_HEAD_SHA" ]; then
+            git merge-base --is-ancestor "$PR_HEAD_SHA" "$SUBJECT_SHA"
+            test "$(git rev-parse "$SUBJECT_SHA^1")" = "$BASE_SHA"
+          fi
+
+      - name: Write identity failure receipt
+        if: always() && steps.bind.outcome == 'failure'
+        shell: bash
+        env:
+          BIND_ERROR: ${{ steps.bind.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/policy
+          python3 - <<'PY'
+          import json, os
+          receipt = {
+              "schema_version": 2,
+              "event_name": os.environ.get("GITHUB_EVENT_NAME"),
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "base_sha": os.environ.get("BASE_SHA", ""),
+              "subject_sha": os.environ.get("SUBJECT_SHA", ""),
+              "pr_head_sha": os.environ.get("PR_HEAD_SHA") or None,
+              "base_tree_sha": None,
+              "subject_tree_sha": None,
+              "base_allowlist_blob_sha": None,
+              "subject_allowlist_blob_sha": None,
+              "base_unclassified_count": 0,
+              "subject_unclassified_count": 0,
+              "new_unclassified_paths": [],
+              "outcome": "fail",
+              "failure_stage": "identity-binding",
+              "error": "subject/base Git-object binding failed",
+              "evaluation_date": "",
+              "evaluator_commit": None,
+              "evaluator_tree": None,
+              "inventory_markdown_path": None,
+              "inventory_markdown_size": None,
+              "inventory_markdown_sha256": None,
+              "inventory_json_path": None,
+              "inventory_json_size": None,
+              "inventory_json_sha256": None,
+          }
+          with open("target/policy/non-rust-policy-exact-tree.json", "w", encoding="utf-8") as handle:
+              json.dump(receipt, handle, indent=2, sort_keys=True)
+          PY
+
+      - name: Verify trusted workflow contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/non-rust-policy.yml
+          grep -q '^  merge_group:' "$workflow"
+          grep -q 'name: Non-Rust policy exact-tree' "$workflow"
+          grep -q 'ref: .*EVALUATOR_SHA' "$workflow"
+          grep -q 'actions/upload-artifact@' "$workflow"
+          grep -q 'if: always()' "$workflow"
+          grep -q 'persist-credentials: false' "$workflow"
+          ! grep -Eq 'cargo run.*(pull_request|head\.sha|github\.event\.pull_request\.head)' "$workflow"
+      - name: Run trusted exact-tree evaluator
+        if: steps.bind.outcome == 'success'
+        run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json
+
+      - name: Upload exact-tree receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: non-rust-policy-${{ env.SUBJECT_SHA }}
+          path: target/policy/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Propagate identity failure
+        if: always() && steps.bind.outcome == 'failure'
+        run: exit 1

@@ -50,6 +50,56 @@ mod tests {
         }
         false
     }
+
+    #[test]
+    fn unavailable_diagnostic_debouncer_falls_back_to_immediate_publish() {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///diagnostic-debounce-fallback.pl";
+        // didOpen is the sanctioned setup here: it routes through
+        // `handle_did_open_with_cancellation`, which publishes a parsed
+        // snapshot before the document is visible, so `current_parsed()` is
+        // `Some` and the publish path below actually runs. A direct
+        // `DocumentState::from_parts` insert leaves `parsed: None`, and
+        // `publish_diagnostics` then silently withholds (#3396 PR4
+        // pending-parse guard) -- the fallback could never be exercised.
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $value = 1;\n"
+                }
+            })))
+            .expect("didOpen should succeed");
+        assert!(wait_for_frames(&buf, 1), "initial open should publish diagnostics");
+        buf.lock().clear();
+
+        server.install_diagnostic_debouncer(
+            super::super::diagnostic_debounce::DiagnosticDebouncer::unavailable_for_test(),
+        );
+        server.publish_diagnostics_debounced(uri);
+
+        assert!(
+            wait_for_frames(&buf, 1),
+            "an unavailable diagnostic debouncer must fall back to immediate publication"
+        );
+        let output = String::from_utf8_lossy(&buf.lock()).into_owned();
+        assert_eq!(
+            output.matches("\"method\":\"textDocument/publishDiagnostics\"").count(),
+            1,
+            "fallback must emit exactly one diagnostic notification: {output}"
+        );
+        assert!(
+            output.contains(uri),
+            "fallback must publish diagnostics for the requested document: {output}"
+        );
+        assert!(
+            server.diagnostic_debouncer.lock().is_none(),
+            "the permanently unavailable worker must be evicted after its first rejected admission"
+        );
+    }
+
     /// didClose + didOpen of the SAME URI installs a brand-new document
     /// instance whose numeric generation can equal the removed one. Performed
     /// directly on the documents map so no handler reentrancy is needed.
