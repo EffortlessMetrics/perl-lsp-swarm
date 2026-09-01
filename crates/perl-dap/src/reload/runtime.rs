@@ -178,6 +178,25 @@ impl CommandPlanError {
     ///
     /// An unusable key is an inexact identity; an unimplemented mechanism
     /// is an unsupported runtime family. Neither ever admits the subject.
+    ///
+    /// # Note for client-facing copy
+    ///
+    /// Both mappings reuse an existing frozen disposition rather than
+    /// widening the closed vocabulary, which is the required direction —
+    /// but each carries a second meaning the R01 contract's own wording
+    /// does not spell out, and anything rendering these codes to a user
+    /// needs to know that:
+    ///
+    /// - `source_not_exact_or_stale` is documented as incomplete binding,
+    ///   a stale generation, or a digest mismatch. Here it *also* means a
+    ///   malformed or hostile `%INC` key — "this identity is unusable",
+    ///   not "your source changed since you saved".
+    /// - `unsupported_runtime` is documented as the runtime not supporting
+    ///   the mechanism family. Here it *also* means the mechanism is not
+    ///   implemented in this build — a fact about us, not the runtime.
+    ///
+    /// Neither can be split without reopening #10097, so the distinction
+    /// lives here rather than in a fourteenth disposition.
     pub const fn refusal(self) -> LoadedModuleReloadEligibility {
         match self {
             CommandPlanError::UnsafeModuleKey => {
@@ -1355,6 +1374,21 @@ mod tests {
         }
     }
 
+    /// A scratch directory removed on drop.
+    ///
+    /// The live fixture's checks are `assert_eq!`, which panics rather
+    /// than returning through the `Result`, so a trailing `remove_dir_all`
+    /// is skipped by unwinding on exactly the runs that matter — a failing
+    /// assertion. `Drop` runs on both paths, so a failed run no longer
+    /// leaves a rewritten `.pm` behind in the temp directory.
+    struct ScratchDir(std::path::PathBuf);
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// Whether a real `perl -d` is usable here. A missing interpreter or a
     /// missing debugger is an instrument skip, never a pass.
     fn perl_debugger_available(oracle: &perl_lsp_rs_core::config::PerlOracleEnv) -> bool {
@@ -1395,18 +1429,31 @@ mod tests {
 
         // Write the whole command stream, then close stdin so perl5db
         // reaches EOF and exits even if `q` is swallowed.
+        //
+        // Every early return here kills the child first: `Child::drop`
+        // neither kills nor reaps, so a mid-stream write failure (an
+        // `EPIPE` from a debuggee that already died, say) would otherwise
+        // leave the process unreaped.
         {
             let Some(mut stdin) = child.stdin.take() else {
                 let _ = child.kill();
+                let _ = child.wait();
                 return Err("perl -d has no stdin".to_string());
             };
-            for line in commands {
-                stdin
-                    .write_all(format!("{line}\n").as_bytes())
-                    .map_err(|error| format!("write debugger command: {error}"))?;
+            let mut write_all = || -> Result<(), String> {
+                for line in commands {
+                    stdin
+                        .write_all(format!("{line}\n").as_bytes())
+                        .map_err(|error| format!("write debugger command: {error}"))?;
+                }
+                stdin.write_all(b"q\n").map_err(|error| format!("write quit: {error}"))?;
+                stdin.flush().map_err(|error| format!("flush: {error}"))
+            };
+            if let Err(error) = write_all() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
             }
-            stdin.write_all(b"q\n").map_err(|error| format!("write quit: {error}"))?;
-            stdin.flush().map_err(|error| format!("flush: {error}"))?;
         }
 
         // perl5db writes its prompt and `p` output to STDERR whenever
@@ -1486,14 +1533,15 @@ mod tests {
             return Ok(());
         }
 
-        let scratch = std::env::temp_dir().join(format!(
+        let scratch = ScratchDir(std::env::temp_dir().join(format!(
             "perl-reload-live-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|since| since.as_nanos())
                 .unwrap_or(0),
-        ));
+        )));
+        let scratch = &scratch.0;
         let module_dir = scratch.join("App");
         std::fs::create_dir_all(&module_dir)?;
         let module_path = module_dir.join("Core.pm");
@@ -1533,7 +1581,7 @@ mod tests {
             stream.extend(commands.read_back.iter().cloned());
             stream.push("p \"PERLLSP_TEST_AFTER \" . App::Core::answer()".to_string());
 
-            let run = drive_live_debuggee(oracle, &scratch, &program_path, &stream)?;
+            let run = drive_live_debuggee(oracle, scratch, &program_path, &stream)?;
             let context = || format!("debuggee stdout was:\n{}", run.stdout);
 
             // The harness itself worked.
@@ -1606,7 +1654,8 @@ mod tests {
             Ok(())
         })();
 
-        let _ = std::fs::remove_dir_all(&scratch);
+        // Cleanup is the `ScratchDir` guard's job, so it also runs when an
+        // assertion above panics.
         result
     }
 
@@ -1619,7 +1668,7 @@ mod tests {
             parse_registration(&[format!("{PREFLIGHT_MARKER} maybe /p")], PREFLIGHT_MARKER),
             None
         );
-        assert_eq!(parse_registration(&[format!("{PREFLIGHT_MARKER}")], PREFLIGHT_MARKER), None);
+        assert_eq!(parse_registration(&[PREFLIGHT_MARKER.to_string()], PREFLIGHT_MARKER), None);
         let present = parse_registration(
             &[format!("  DB<2> {PREFLIGHT_MARKER} present /ws/lib/App/Core.pm")],
             PREFLIGHT_MARKER,
@@ -1688,6 +1737,47 @@ mod tests {
             }
         );
         assert!(moved.issued_mutations.is_empty());
+        Ok(())
+    }
+
+    /// A channel that runs out of scripted settlements yields the
+    /// conservative answer, not a silent success.
+    ///
+    /// The sweep and the race tests each supply exactly as many
+    /// settlements as the executor consumes, so this fallback is never
+    /// reached there. It is a real safety net for future scenarios, so it
+    /// is pinned directly rather than left as an assumption.
+    #[test]
+    fn exhausted_script_settles_conservatively() -> TestResult {
+        let mut channel = ScriptedChannel::new(
+            // Preflight consumes the only queued settlement; the read-back
+            // call past the end falls back.
+            vec![ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH)],
+            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+        );
+        assert_eq!(channel.run_readonly(&[]), ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH));
+        assert_eq!(
+            channel.run_readonly(&[]),
+            ChannelSettlement::Unsettled(UnsettledKind::Timeout),
+            "an exhausted script must fall back to the conservative settlement"
+        );
+
+        // And through the executor: an exhausted read-back after a
+        // successful mutation is possibly applied, never Reloaded.
+        let mut channel = ScriptedChannel::new(
+            vec![ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH)],
+            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+        );
+        let execution = run(&mut channel)?;
+        assert_eq!(
+            execution.outcome,
+            LoadedModuleReloadOutcome::IndeterminatePossiblyApplied {
+                phase: ReloadTransactionPhase::RuntimeAcknowledgementReadBack,
+                cause: IndeterminateCause::TimeoutAfterMutationBegan,
+            }
+        );
+        assert!(execution.mutation_issued);
+        assert!(execution.generation.advanced());
         Ok(())
     }
 
