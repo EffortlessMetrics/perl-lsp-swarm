@@ -56,11 +56,6 @@
         "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
       },
       "reviewed_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "reviewed_head_receipt": {
-        "kind": "repository_receipt",
-        "ref": "repo:receipts/review/pr-90002@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
-      },
       "status": "current",
       "unresolved_material_findings": 0,
       "finding_refs": []
@@ -80,7 +75,7 @@
         "claim_scope": "installed_user_behavior",
         "evidence": {
           "kind": "repository_receipt",
-          "ref": "repo:receipts/example-installed.json@638a0ea89b0415c02500787c8e5807cfe7fa4cff",
+          "ref": "repo:receipts/installed/example.json@638a0ea89b0415c02500787c8e5807cfe7fa4cff",
           "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
         }
       },

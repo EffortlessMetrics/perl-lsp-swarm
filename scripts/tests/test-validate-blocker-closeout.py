@@ -90,11 +90,6 @@ def _multi_pr_packet(base: dict) -> dict:
     packet["landed_integrations"].append(second_integration)
     second_review = copy.deepcopy(packet["reviews"][0])
     second_review.update({"authority_number": 90003, "reviewed_head": "cccccccccccccccccccccccccccccccccccccccc"})
-    second_review["reviewed_head_receipt"] = {
-        "kind": "repository_receipt",
-        "ref": "repo:receipts/review/pr-90003@cccccccccccccccccccccccccccccccccccccccc",
-        "digest": "sha256:abababababababababababababababababababababababababababababababab",
-    }
     second_review["current_head_synthesis"] = {
         "kind": "github_review",
         "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/90003#pullrequestreview-2",
@@ -182,6 +177,17 @@ class BlockerCloseoutValidationTests(unittest.TestCase):
             packet = _apply_case(self.base, case)
             model = MODULE.validate_blocker_closeout(packet, lambda _ancestor, _subject: True)
             self.assertEqual(model.status, case["name"].removeprefix("valid_"))
+
+    def test_evidence_arrays_reject_duplicate_entries(self) -> None:
+        for field in ("finding_refs", "follow_ups"):
+            packet = copy.deepcopy(self.base)
+            evidence = copy.deepcopy(packet["proof"]["observations"][0]["evidence"])
+            if field == "finding_refs":
+                packet["reviews"][0][field] = [evidence, copy.deepcopy(evidence)]
+            else:
+                packet[field] = [evidence, copy.deepcopy(evidence)]
+            with self.assertRaisesRegex(ValueError, "must not contain duplicate evidence"):
+                MODULE.validate_blocker_closeout(packet, lambda _ancestor, _subject: True)
 
     def test_blocked_and_not_proven_do_not_claim_closure_proof_coverage(self) -> None:
         cases = {case["name"]: case for case in self.cases}

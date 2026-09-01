@@ -73,6 +73,9 @@
       "items": {"$ref": "#/$defs/shared_relation"}
     }
   },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "resolved"}}, "required": ["status"]}, "then": {"properties": {"claim_effect": {"properties": {"limitations": {"maxItems": 0}}}}}}
+  ],
   "$defs": {
     "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
@@ -159,12 +162,8 @@
         "reviewed_head": {"$ref": "#/$defs/sha"},
         "status": {"enum": ["current", "stale", "not_proven"]},
         "unresolved_material_findings": {"type": "integer", "minimum": 0},
-        "finding_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/durable_evidence"}},
-        "reviewed_head_receipt": {"$ref": "#/$defs/durable_evidence"}
-      },
-      "allOf": [
-        {"if": {"properties": {"authority_kind": {"const": "implementation_pr"}, "status": {"const": "current"}}, "required": ["authority_kind", "status"]}, "then": {"required": ["reviewed_head_receipt"], "properties": {"reviewed_head_receipt": {"properties": {"kind": {"const": "repository_receipt"}, "ref": {"pattern": "^repo:receipts/review/pr-[1-9][0-9]*@[0-9a-f]{40}$"}}}}}}
-      ]
+        "finding_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/durable_evidence"}}
+      }
     },
     "proof_observation": {
       "type": "object",
@@ -181,7 +180,7 @@
       },
       "allOf": [
         {"if": {"properties": {"proof_class": {"const": "product_test"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "product_behavior"}, "evidence": {"properties": {"kind": {"enum": ["github_check", "repository_receipt"]}}}}}},
-        {"if": {"properties": {"proof_class": {"const": "installed_acceptance"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "installed_user_behavior"}, "evidence": {"properties": {"kind": {"enum": ["github_check", "repository_receipt"]}}}}}},
+        {"if": {"properties": {"proof_class": {"const": "installed_acceptance"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "installed_user_behavior"}, "evidence": {"properties": {"kind": {"enum": ["github_check", "repository_receipt"]}, "ref": {"pattern": "^(?!repo:receipts/|repo:)[^@\\s]+$|^repo:receipts/installed/[^@\\s]+@[0-9a-f]{40}$"}}}}}},
         {"if": {"properties": {"proof_class": {"const": "workflow"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"enum": ["github_check", "repository_receipt"]}}}}}},
         {"if": {"properties": {"proof_class": {"const": "review"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"const": "github_review"}}}}}},
         {"if": {"properties": {"proof_class": {"const": "repository_receipt"}}, "required": ["proof_class"]}, "then": {"properties": {"claim_scope": {"const": "repository_mechanism"}, "evidence": {"properties": {"kind": {"const": "repository_receipt"}}}}}},
