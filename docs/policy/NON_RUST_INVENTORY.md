@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12553 |
-| Rust-family files | 3892 |
-| Non-Rust files | 8661 |
-| Allowlisted | 6422 |
+| Total tracked files | 12565 |
+| Rust-family files | 3894 |
+| Non-Rust files | 8671 |
+| Allowlisted | 6432 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 498 |
-| documentation | 2830 |
+| config | 499 |
+| documentation | 2835 |
 | generated | 2 |
 | production | 349 |
 | test | 2067 |
-| tooling | 676 |
+| tooling | 680 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -2358,7 +2358,9 @@
 | `.changes/unreleased/product-14076-Fixed-024700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14281-Fixed-014013.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3151,6 +3153,9 @@
 | `.spec/10858-train-edge-contract/adaptations.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/10858-train-edge-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10858-train-edge-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10888-neovim-bdd-journeys/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10888-neovim-bdd-journeys/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10888-neovim-bdd-journeys/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6438,6 +6443,7 @@
 | `schemas/agent_review_finding.v1.schema.json` | config | `non-rust-agent-review-finding-schema` | tooling/agent-review |
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
+| `schemas/blocker_closeout.v1.schema.json` | config | `non-rust-blocker-closeout-schema` | release/ci |
 | `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
 | `schemas/import_cleanup_train.v1.schema.json` | config | `non-rust-import-cleanup-train-schema` | tooling/train-graph |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
@@ -6825,6 +6831,8 @@
 | `scripts/test_release_build_identity.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_verify_binary_identity.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_verify_staged_binaries.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/fixtures/blocker_closeout/cases.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/fixtures/blocker_closeout/valid_resolved.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/exposed-surface-disposition/authorities.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/exposed-surface-disposition/valid.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/complementary.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6898,6 +6906,7 @@
 | `scripts/tests/test-update-coverage-baseline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-update-current-status-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-update-parser-matrix-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-validate-blocker-closeout.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-exposed-surface-disposition.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-public-release-claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-rc-intake.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6953,6 +6962,7 @@
 | `scripts/validate-rc-intake.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-workspace-exclusions.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/validate_blocker_closeout.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate_public_release_claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate_swarm_findings.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/verify-docs-rs.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
