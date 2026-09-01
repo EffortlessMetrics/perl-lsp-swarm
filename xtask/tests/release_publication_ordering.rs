@@ -74,10 +74,12 @@ fn validate_release_graph(document: &Value) -> Result<()> {
     );
 
     let candidate_text = rendered(candidate)?;
-    let producer_text = std::fs::read_to_string(root()?.join("scripts/release_terminal_manifest.py"))
-        .context("reading terminal manifest producer")?;
+    let producer_text =
+        std::fs::read_to_string(root()?.join("scripts/release_terminal_manifest.py"))
+            .context("reading terminal manifest producer")?;
     ensure!(
-        producer_text.contains("output = candidate / \"dist\" / \"release-terminal-manifest.json\""),
+        producer_text
+            .contains("output = candidate / \"dist\" / \"release-terminal-manifest.json\""),
         "terminal manifest producer does not declare the canonical output path"
     );
     for required in [
