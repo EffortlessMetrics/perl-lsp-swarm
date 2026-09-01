@@ -1,9 +1,9 @@
 project: product
 component: Developer experience
 kind: Fixed
-body: "perllsp --help now lists the PERL_LSP_TIMING and PERL_LSP_INCREMENTAL environment variables, and the VS Code perlcritic.theme setting's deprecation message now correctly points to perl-lsp.critic.profile instead of a setting that doesn't exist."
+body: "perllsp --help now lists the PERL_LSP_TIMING and PERL_LSP_INCREMENTAL environment variables."
 time: 2026-07-29T18:27:00Z
 custom:
   PR: "5291"
-  Slug: cli-help-env-vars-and-deprecation-msg
+  Slug: cli-help-env-vars
   Breaking: "no"

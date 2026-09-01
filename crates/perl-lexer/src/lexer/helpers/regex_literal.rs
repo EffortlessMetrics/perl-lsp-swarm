@@ -70,7 +70,7 @@ impl PerlLexer<'_> {
                 };
             }
 
-            if let Some(token) = self.budget_guard(start, 0) {
+            if let Some(token) = self.budget_guard(start) {
                 return token;
             }
 

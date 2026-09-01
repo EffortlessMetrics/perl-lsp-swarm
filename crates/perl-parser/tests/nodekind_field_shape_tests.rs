@@ -159,7 +159,7 @@ fn package_phase_and_data_nodekinds_preserve_optional_shapes() -> Result<(), Str
         "DataSection",
     )?;
     match &data_node.kind {
-        NodeKind::DataSection { marker, body } => {
+        NodeKind::DataSection { marker, body, .. } => {
             assert_eq!(marker, "__END__");
             let body = body.as_ref().ok_or("data section should keep body")?;
             assert!(body.contains("fixture tail"));
