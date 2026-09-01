@@ -328,13 +328,16 @@ def _ordered_keys(value: Mapping) -> list[Any]:
     # A nested mapping can itself carry a control result.  Bring those
     # mappings forward too, otherwise a collection of large sibling payloads
     # can hide the nested diagnosis behind the final envelope bound.
-    def contains_control(candidate: Any) -> bool:
+    def contains_control(candidate: Any, depth: int = 0) -> bool:
+        if depth >= MAX_RENDER_DEPTH:
+            return False
         if isinstance(candidate, (list, tuple)):
-            return any(contains_control(item) for item in candidate)
+            return any(contains_control(item, depth + 1) for item in candidate)
         if not isinstance(candidate, Mapping):
             return False
         return any(
-            str(nested_key) in CONTROL_RESULT_KEYS or contains_control(nested_value)
+            str(nested_key) in CONTROL_RESULT_KEYS
+            or contains_control(nested_value, depth + 1)
             for nested_key, nested_value in candidate.items()
         )
 
@@ -360,14 +363,16 @@ def _ordered_items(value: Sequence[Any]) -> list[tuple[int, Any]]:
     callers can still identify the original result item.
     """
 
-    def contains_control(candidate: Any) -> bool:
+    def contains_control(candidate: Any, depth: int = 0) -> bool:
+        if depth >= MAX_RENDER_DEPTH:
+            return False
         if isinstance(candidate, Mapping):
             return any(
-                str(key) in CONTROL_RESULT_KEYS or contains_control(item)
+                str(key) in CONTROL_RESULT_KEYS or contains_control(item, depth + 1)
                 for key, item in candidate.items()
             )
         if isinstance(candidate, (list, tuple)):
-            return any(contains_control(item) for item in candidate)
+            return any(contains_control(item, depth + 1) for item in candidate)
         return False
 
     indexed = list(enumerate(value, start=1))
