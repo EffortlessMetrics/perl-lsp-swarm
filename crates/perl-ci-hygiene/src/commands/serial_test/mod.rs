@@ -19,7 +19,7 @@
 //! mutual exclusion with every guard this policy accepts.
 //!
 //! The registry follows the `panic_test` identity-registry convention:
-//! `schema_version` 1, `active` rows must stay present in the inventory,
+//! `schema_version` 2, `active` rows must stay present in the inventory,
 //! `retired` rows must stay absent, and unknown identities fail. Repairing a
 //! registered site (annotating it) turns the gate red until the row is retired,
 //! so the accepted set only shrinks.
@@ -834,47 +834,12 @@ fn complete_serial_site_inventories(
             scan.scan_file(index, directory, &[]);
         }
     }
-    // Keep the guard classification attached to each site while normalizing
-    // identities.  In particular, a uniquely named inline-module test is
-    // normalized from `module::test` to `test`; looking up its serialized
-    // status by the pre-normalization key would lose that classification.
+    // Keep the guard classification attached to each site while preserving its
+    // fully-qualified identity.  Inline-module identity must not change when a
+    // sibling is added, removed, or changes guard status.
     let mut all_sites = scan.sites.into_iter().map(|site| (site, false)).collect::<Vec<_>>();
     all_sites.extend(scan.serialized_sites.into_iter().map(|site| (site, true)));
-    let identities = all_sites.iter().fold(
-        BTreeMap::<(String, String), BTreeSet<String>>::new(),
-        |mut identities, site| {
-            let bare = site
-                .0
-                .test_function
-                .rsplit("::")
-                .next()
-                .unwrap_or(site.0.test_function.as_str())
-                .to_owned();
-            identities
-                .entry((site.0.path.clone(), bare))
-                .or_default()
-                .insert(site.0.test_function.clone());
-            identities
-        },
-    );
-    let mut classified = all_sites
-        .drain(..)
-        .map(|(mut site, is_serialized)| {
-            let bare = site
-                .test_function
-                .rsplit("::")
-                .next()
-                .unwrap_or(site.test_function.as_str())
-                .to_owned();
-            if identities
-                .get(&(site.path.clone(), bare.clone()))
-                .is_some_and(|qualified| qualified.len() == 1)
-            {
-                site.test_function = bare;
-            }
-            (site, is_serialized)
-        })
-        .collect::<Vec<_>>();
+    let mut classified = all_sites;
     classified.sort_by(|(left, _), (right, _)| left.cmp(right));
     classified.dedup_by(|(left, _), (right, _)| left == right);
     let mut unguarded = Vec::new();
@@ -975,9 +940,9 @@ fn read_identity_registry(path: &Path) -> Result<BTreeMap<(String, String), Seri
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| eyre!("serial identity registry schema_version must be an integer"))?;
-    if schema_version != 1 {
+    if schema_version != 1 && schema_version != 2 {
         return Err(eyre!(
-            "unsupported serial identity registry schema_version {schema_version}; expected 1"
+            "unsupported serial identity registry schema_version {schema_version}; expected 1 or 2"
         ));
     }
     let sites = document
@@ -1014,22 +979,40 @@ fn read_identity_registry(path: &Path) -> Result<BTreeMap<(String, String), Seri
                 ));
             }
         };
-        // Version 1 registries predate the orthogonal remediation field.  Read
-        // those rows with the historical state-derived disposition so existing
-        // registries remain valid while checked-in rows can opt into explicit
-        // remediation values.
-        let remediation = match object.get("remediation").and_then(serde_json::Value::as_str) {
-            None if state == RegistryState::Active => Remediation::Pending,
-            None => Remediation::Serialized,
-            Some("pending") => Remediation::Pending,
-            Some("serialized") => Remediation::Serialized,
-            Some("eliminated") => Remediation::Eliminated,
-            Some(other) => {
+        // Version 1 registries predate the orthogonal remediation field.  Only
+        // active rows have an unambiguous legacy default; retired rows must be
+        // migrated with an explicit serialized/eliminated disposition.
+        let remediation = match object.get("remediation") {
+            None if schema_version == 1 && state == RegistryState::Active => Remediation::Pending,
+            None if schema_version == 1 => {
                 return Err(eyre!(
-                    "serial identity registry entry {} has invalid remediation {other:?}",
+                    "serial identity registry entry {} legacy v1 retired rows require explicit remediation",
                     index + 1
                 ));
             }
+            None => {
+                return Err(eyre!(
+                    "serial identity registry entry {} schema_version 2 requires remediation",
+                    index + 1
+                ));
+            }
+            Some(value) => match value.as_str() {
+                Some("pending") => Remediation::Pending,
+                Some("serialized") => Remediation::Serialized,
+                Some("eliminated") => Remediation::Eliminated,
+                Some(other) => {
+                    return Err(eyre!(
+                        "serial identity registry entry {} has invalid remediation {other:?}",
+                        index + 1
+                    ));
+                }
+                None => {
+                    return Err(eyre!(
+                        "serial identity registry entry {} remediation must be a string",
+                        index + 1
+                    ));
+                }
+            },
         };
         if state == RegistryState::Active && remediation != Remediation::Pending {
             return Err(eyre!(
@@ -1092,6 +1075,14 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
             ));
         }
     }
+    // Accept pre-v2 bare registry keys as a read-only migration bridge for
+    // existing rows; new inventory identities remain fully qualified and
+    // collision-stable.
+    let mut lookup_current = current.keys().cloned().collect::<BTreeSet<_>>();
+    for (path, function) in current.keys() {
+        let bare = function.rsplit("::").next().unwrap_or(function).to_owned();
+        lookup_current.insert((path.clone(), bare));
+    }
 
     let active_count =
         registry.values().filter(|record| record.state == RegistryState::Active).count();
@@ -1106,7 +1097,8 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
 
     let mut failures = Vec::new();
     for (key, site) in &current {
-        match registry.get(key) {
+        let bare_key = (key.0.clone(), key.1.rsplit("::").next().unwrap_or(&key.1).to_owned());
+        match registry.get(key).or_else(|| registry.get(&bare_key)) {
             None => failures.push(format!(
                 "NEW parallel-unsafe test: {}:{} {} ({}) — add #[serial] or adjudicate a registry row",
                 site.path,
@@ -1136,7 +1128,8 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
         }
     }
     for (key, site) in &serialized {
-        match registry.get(key) {
+        let bare_key = (key.0.clone(), key.1.rsplit("::").next().unwrap_or(&key.1).to_owned());
+        match registry.get(key).or_else(|| registry.get(&bare_key)) {
             Some(record)
                 if record.state == RegistryState::Retired
                     && record.remediation == Remediation::Serialized =>
@@ -1165,14 +1158,24 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
         }
     }
     for (key, record) in &registry {
-        if record.remediation == Remediation::Serialized && !serialized.contains_key(key) {
+        let serialized_keys = serialized.keys().cloned().collect::<BTreeSet<_>>();
+        let serialized_with_legacy = serialized_keys
+            .iter()
+            .flat_map(|(path, function)| {
+                [
+                    (path.clone(), function.clone()),
+                    (path.clone(), function.rsplit("::").next().unwrap_or(function).to_owned()),
+                ]
+            })
+            .collect::<BTreeSet<_>>();
+        if record.remediation == Remediation::Serialized && !serialized_with_legacy.contains(key) {
             failures.push(format!(
                 "SERIALIZED identity no longer has a direct mutation and canonical guard: {} {}",
                 record.path, record.test_function
             ));
         }
         if record.remediation == Remediation::Eliminated
-            && (current.contains_key(key) || serialized.contains_key(key))
+            && (lookup_current.contains(key) || serialized_with_legacy.contains(key))
         {
             failures.push(format!(
                 "ELIMINATED identity has a direct process mutation: {} {}",
@@ -1181,7 +1184,7 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
         }
     }
     for (key, record) in &registry {
-        if record.state == RegistryState::Active && !current.contains_key(key) {
+        if record.state == RegistryState::Active && !lookup_current.contains(key) {
             failures.push(format!(
                 "ACTIVE identity no longer detected: {} {} — if repaired, retire the registry row",
                 record.path, record.test_function
@@ -1550,12 +1553,12 @@ mod raw_renamed {
             .map(|site| (site.test_function.as_str(), site.signals.as_slice()))
             .collect::<BTreeMap<_, _>>();
         let expected = BTreeMap::from([
-            ("direct_import", ["env_set"].as_slice()),
-            ("glob_import", ["env_remove"].as_slice()),
-            ("grouped_imports", ["cwd", "env_remove"].as_slice()),
-            ("module_alias", ["env_set"].as_slice()),
-            ("raw_alias", ["env_set"].as_slice()),
-            ("renamed_turbofish", ["env_set"].as_slice()),
+            ("direct::direct_import", ["env_set"].as_slice()),
+            ("globbed::glob_import", ["env_remove"].as_slice()),
+            ("grouped::grouped_imports", ["cwd", "env_remove"].as_slice()),
+            ("module_self::module_alias", ["env_set"].as_slice()),
+            ("raw_renamed::raw_alias", ["env_set"].as_slice()),
+            ("renamed::renamed_turbofish", ["env_set"].as_slice()),
         ]);
         assert_eq!(actual, expected);
         Ok(())
@@ -1596,7 +1599,7 @@ mod positive {
         let sites = complete_serial_site_inventory(&repo.path)?;
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].path, "crates/demo/tests/demo.rs");
-        assert_eq!(sites[0].test_function, "glob_only_environment_call");
+        assert_eq!(sites[0].test_function, "positive::glob_only_environment_call");
         assert_eq!(sites[0].signals, vec!["env_set"]);
         Ok(())
     }
@@ -1620,7 +1623,7 @@ mod unrelated_sibling {
         )?;
         let sites = complete_serial_site_inventory(&repo.path)?;
         assert_eq!(sites.len(), 1);
-        assert_eq!(sites[0].test_function, "imported_call");
+        assert_eq!(sites[0].test_function, "importing_sibling::imported_call");
         assert_eq!(sites[0].signals, vec!["env_set"]);
         Ok(())
     }
@@ -1776,12 +1779,15 @@ mod outer {
             .map(|site| (site.test_function.as_str(), site.signals.as_slice()))
             .collect::<BTreeMap<_, _>>();
         let expected = BTreeMap::from([
-            ("ancestor_direct_alias", ["env_remove"].as_slice()),
-            ("ancestor_function_through_module_alias", ["env_remove"].as_slice()),
-            ("ancestor_module_alias", ["env_set"].as_slice()),
-            ("crate_direct_alias", ["env_remove"].as_slice()),
-            ("crate_function_through_module_alias", ["env_set"].as_slice()),
-            ("crate_module_alias", ["env_set"].as_slice()),
+            ("outer::via_super_super::ancestor_direct_alias", ["env_remove"].as_slice()),
+            (
+                "outer::via_super_super::ancestor_function_through_module_alias",
+                ["env_remove"].as_slice(),
+            ),
+            ("outer::via_super_super::ancestor_module_alias", ["env_set"].as_slice()),
+            ("outer::via_crate::crate_direct_alias", ["env_remove"].as_slice()),
+            ("outer::via_crate::crate_function_through_module_alias", ["env_set"].as_slice()),
+            ("outer::via_crate::crate_module_alias", ["env_set"].as_slice()),
         ]);
         assert_eq!(actual, expected);
         Ok(())
@@ -2027,7 +2033,10 @@ mod inherited_aliases {
         let sites = complete_serial_site_inventory(&repo.path)?;
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].path, "crates/demo/tests/demo.rs");
-        assert_eq!(sites[0].test_function, "inherited_aliases_return_after_inner_block");
+        assert_eq!(
+            sites[0].test_function,
+            "inherited_aliases::inherited_aliases_return_after_inner_block"
+        );
         assert_eq!(sites[0].signals, vec!["env_set"]);
         Ok(())
     }
@@ -2345,7 +2354,7 @@ fn mutates_after_every_lexical_class() {
     }
 
     #[test]
-    fn unique_guarded_nested_identity_is_normalized_with_status() -> Result<()> {
+    fn unique_guarded_nested_identity_is_population_independent() -> Result<()> {
         let repo = TempRepo::new("unique-guarded-nested")?;
         repo.write_test(
             "mod nested {\n    #[test]\n    #[serial]\n    fn only_nested() {\n        std::env::set_var(\"A\", \"1\");\n    }\n}\n",
@@ -2354,7 +2363,7 @@ fn mutates_after_every_lexical_class() {
             "schema_version": 1,
             "sites": [registry_row(
                 "crates/demo/tests/demo.rs",
-                "only_nested",
+                "nested::only_nested",
                 "env_set",
                 "serialized fixture",
                 "retired",
@@ -2381,6 +2390,59 @@ fn mutates_after_every_lexical_class() {
             ]
         }))?;
         assert_eq!(repo.check(&path)?, 0);
+        let retired = repo.write_registry(serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": "crates/demo/tests/demo.rs",
+                "test_function": "flips_toolchain_env",
+                "signals": "env_set",
+                "accepted_reason": "legacy fixture",
+                "state": "retired"
+            }]
+        }))?;
+        assert!(repo.check(&retired).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn v2_rejects_missing_or_non_string_remediation() -> Result<()> {
+        let repo = TempRepo::new("v2-remediation-types")?;
+        repo.write_test(UNANNOTATED_ENV_TEST)?;
+        let values = [
+            serde_json::Value::Null,
+            serde_json::json!(true),
+            serde_json::json!(7),
+            serde_json::json!(["pending"]),
+            serde_json::json!({"value": "pending"}),
+        ];
+        for remediation in values {
+            let mut row = registry_row(
+                "crates/demo/tests/demo.rs",
+                "flips_toolchain_env",
+                "env_set",
+                "v2 fixture",
+                "active",
+            );
+            row.as_object_mut()
+                .ok_or_else(|| eyre!("registry test row was not an object"))?
+                .insert("remediation".to_owned(), remediation);
+            let path = repo.write_registry(serde_json::json!({
+                "schema_version": 2,
+                "sites": [row]
+            }))?;
+            assert!(read_identity_registry(&path).is_err());
+        }
+        let missing = repo.write_registry(serde_json::json!({
+            "schema_version": 2,
+            "sites": [{
+                "path": "crates/demo/tests/demo.rs",
+                "test_function": "flips_toolchain_env",
+                "signals": "env_set",
+                "accepted_reason": "v2 fixture",
+                "state": "active"
+            }]
+        }))?;
+        assert!(read_identity_registry(&missing).is_err());
         Ok(())
     }
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "sites": [
     {
       "path": "crates/perl-dap/tests/debuggee_probe_hygiene.rs",
