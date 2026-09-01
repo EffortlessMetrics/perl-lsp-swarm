@@ -8,6 +8,7 @@ pub mod destination;
 pub mod openai;
 pub mod prompt;
 pub mod rate_limiter;
+pub mod sanitize;
 pub mod sse;
 
 pub use destination::{
