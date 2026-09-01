@@ -4071,7 +4071,21 @@ review_after = "2026-08-13"
             let (temp, base) = exact_fixture()?;
             let workflow_path = ".github/workflows/non-rust-policy.yml";
             let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
-            write_fixture(temp.path(), workflow_path, &(workflow.clone() + injected))?;
+            // A changed trusted workflow must increment its contract-version by
+            // exactly one before later checks run; follow that protocol so the
+            // injection itself is what gets rejected.
+            let version_marker = "# contract-version: ";
+            let version = workflow
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(version_marker))
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .expect("fixture workflow must carry a contract-version");
+            let workflow = workflow.replacen(
+                &format!("{version_marker}{version}"),
+                &format!("{version_marker}{}", version + 1),
+                1,
+            );
+            write_fixture(temp.path(), workflow_path, &(workflow + injected))?;
             let subject = commit_fixture(temp.path(), "untrusted workflow")?;
             let error = validate_subject_workflow(temp.path(), &base, &subject)
                 .expect_err("candidate checkout/import must be rejected");
