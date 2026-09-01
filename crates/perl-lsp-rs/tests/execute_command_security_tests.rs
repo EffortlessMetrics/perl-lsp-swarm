@@ -262,7 +262,7 @@ fn test_empty_workspace_roots_enforces_cwd_boundary() -> Result<(), Box<dyn Erro
 fn test_command_exists_does_not_execute_path_hijacked_which() -> Result<(), Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt;
 
-    if child_mode("path-hijacked-which") {
+    if child_mode("test_command_exists_does_not_execute_path_hijacked_which") {
         let _ = perl_lsp::execute_command::command_exists("perlcritic");
         let marker = child_env("SECURITY_MARKER")?;
         assert!(!Path::new(&marker).exists(), "PATH probe executed a hijacked which");
@@ -304,7 +304,7 @@ exit 0
 fn test_command_exists_does_not_execute_candidate_binary() -> Result<(), Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt;
 
-    if child_mode("candidate-binary") {
+    if child_mode("test_command_exists_does_not_execute_candidate_binary") {
         let exists = perl_lsp::execute_command::command_exists("fake-security-probe");
         let marker = child_env("SECURITY_MARKER")?;
         assert!(exists, "candidate should be discoverable in PATH");
@@ -509,7 +509,7 @@ fn config_with_perl5lib(use_perl5lib: bool) -> Option<WorkspaceConfig> {
 /// reach the subprocess when the workspace config opts out.
 #[test]
 fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Error>> {
-    if child_mode("run-file-strips-perl5lib") {
+    if child_mode("run_file_strips_perl5lib_when_use_perl5lib_false") {
         let script = child_env("SECURITY_SCRIPT")?;
         let config = config_with_perl5lib(false).ok_or("no Perl binary available")?;
         let root =
@@ -534,7 +534,7 @@ fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Erro
     std::fs::write(&script, "print $ENV{PERL5LIB} // 'UNSET';\n")?;
 
     let poison_dir = TempDir::new()?;
-    let poison_path = poison_dir.path().to_string_lossy().into_owned();
+    let poison_path = poison_dir.path().to_path_buf();
 
     let before = std::env::var_os("PERL5LIB");
     let output = run_child(
@@ -550,7 +550,7 @@ fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Erro
 /// `run_file` with `use_perl5lib=true` must pass PERL5LIB through to the subprocess.
 #[test]
 fn run_file_passes_perl5lib_when_use_perl5lib_true() -> Result<(), Box<dyn Error>> {
-    if child_mode("run-file-passes-perl5lib") {
+    if child_mode("run_file_passes_perl5lib_when_use_perl5lib_true") {
         let script = child_env("SECURITY_SCRIPT")?;
         let config = config_with_perl5lib(true).ok_or("no Perl binary available")?;
         let root =
@@ -578,7 +578,7 @@ fn run_file_passes_perl5lib_when_use_perl5lib_true() -> Result<(), Box<dyn Error
     std::fs::write(&script, "print $ENV{PERL5LIB} // 'UNSET';\n")?;
 
     let marker_dir = TempDir::new()?;
-    let marker_path = marker_dir.path().to_string_lossy().into_owned();
+    let marker_path = marker_dir.path().to_path_buf();
 
     let before = std::env::var_os("PERL5LIB");
     let output = run_child(
@@ -594,7 +594,7 @@ fn run_file_passes_perl5lib_when_use_perl5lib_true() -> Result<(), Box<dyn Error
 /// `run_test_sub` with `use_perl5lib=false` must strip PERL5LIB from the subprocess.
 #[test]
 fn run_test_sub_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Error>> {
-    if child_mode("run-test-sub-strips-perl5lib") {
+    if child_mode("run_test_sub_strips_perl5lib_when_use_perl5lib_false") {
         let script = child_env("SECURITY_SCRIPT")?;
         let config = config_with_perl5lib(false).ok_or("no Perl binary available")?;
         let root =
@@ -622,7 +622,7 @@ fn run_test_sub_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn 
     std::fs::write(&script, "sub check_env { print $ENV{PERL5LIB} // 'UNSET'; }\n")?;
 
     let poison_dir = TempDir::new()?;
-    let poison_path = poison_dir.path().to_string_lossy().into_owned();
+    let poison_path = poison_dir.path().to_path_buf();
 
     let before = std::env::var_os("PERL5LIB");
     let output = run_child(
