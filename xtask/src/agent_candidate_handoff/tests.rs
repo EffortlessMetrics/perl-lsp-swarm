@@ -627,6 +627,17 @@ fn identical_objects_in_two_workspaces_produce_one_identity() -> Result<()> {
     let first = export_valid(&fixture, &first_destination)?;
 
     let second_destination = Destination::new()?;
+    // Point the clone at the same remote the original observed. Repository
+    // identity is a semantic input — and its *status* is a claim-strength
+    // input, so an observed identity and a declared one are legitimately
+    // different candidates to this format. Holding both equal is what lets
+    // this control compare the whole semantic identity rather than a subset.
+    let status = Command::new("git")
+        .args(["remote", "set-url", "origin", "https://github.com/example/repo.git"])
+        .current_dir(&clone_path)
+        .status()?;
+    assert!(status.success(), "retargeting the clone's remote");
+
     let inputs = CreateRequest {
         repository: clone_path,
         candidate: "HEAD".to_string(),
@@ -634,9 +645,6 @@ fn identical_objects_in_two_workspaces_produce_one_identity() -> Result<()> {
         declared_repository_identity: None,
         proofs: Vec::new(),
     };
-    // The clone's `origin` points at a local path, so no identity is declared
-    // here. This control compares objects and inventory across storage
-    // layouts; repository identity is a separate semantic input.
     let second = create_handoff(&inputs)
         .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
 
@@ -646,6 +654,21 @@ fn identical_objects_in_two_workspaces_produce_one_identity() -> Result<()> {
         "the same candidate must enumerate the same objects from either storage layout"
     );
     assert_eq!(first.inventory, second.inventory);
+    assert_eq!(
+        first.candidate_identity_digest, second.candidate_identity_digest,
+        "semantic identity is what this format guarantees across worktrees and hosts"
+    );
+    // The declared identity differs only in `source` (observed versus declared),
+    // which is excluded from the transport, so the packs must agree byte for
+    // byte. This is the stronger property the contract asks for, demonstrated
+    // across the ordinary cross-host difference — loose objects versus a pack —
+    // at one Git version. Only the cross-Git-version case remains a declared
+    // limitation, because guaranteeing it would mean writing our own packer.
+    assert_eq!(
+        first.transport.files[0].sha256, second.transport.files[0].sha256,
+        "identical objects must produce identical transport bytes from either storage layout"
+    );
+    assert_eq!(first.transport.files[0].bytes, second.transport.files[0].bytes);
     Ok(())
 }
 

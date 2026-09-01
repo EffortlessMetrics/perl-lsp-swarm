@@ -284,8 +284,11 @@ pub enum LimitationCode {
     /// transport, not a content audit, and a secret already committed into the
     /// candidate's tree travels with it.
     TransportedObjectsNotSecretScanned,
-    /// Exact pack bytes depend on the producing Git version and packing
-    /// configuration; semantic identity does not.
+    /// Exact pack bytes are reproducible for a given Git version and packing
+    /// configuration — including across the ordinary cross-host difference of
+    /// loose objects versus a pack, which is proven — but they are not claimed
+    /// stable across Git versions. Semantic identity is, and it is what the
+    /// validator enforces.
     TransportBytesNotVersionStable,
     /// No trustworthy repository identity was available.
     RepositoryIdentityNotProven,
