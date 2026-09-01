@@ -40,18 +40,18 @@ use crate::feature_catalog::has_feature as catalog_has_feature;
 use crate::inline_values::{collect_inline_values_with_runtime, extract_variable_names};
 use crate::protocol::{
     BreakpointLocation, BreakpointLocationsArguments, BreakpointLocationsResponseBody,
-    CompletionItem, CompletionsArguments, CompletionsResponseBody, ContinueArguments,
-    ContinueResponseBody, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody,
-    DisconnectArguments, EvaluateArguments, EvaluateResponseBody, ExceptionDetails,
-    ExceptionInfoArguments, ExceptionInfoResponseBody, GotoArguments, GotoTarget,
-    GotoTargetsArguments, GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
-    LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, NextArguments,
-    PauseArguments, RestartArguments, Scope, ScopesArguments, ScopesResponseBody,
-    SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments,
-    SetExpressionArguments, SetExpressionResponseBody, SetFunctionBreakpointsArguments,
-    SetVariableArguments, SetVariableResponseBody, SourceArguments, SourceResponseBody,
-    StackTraceArguments, StepInArguments, StepInTargetsArguments, StepOutArguments,
-    TerminateArguments, VariablesArguments,
+    CompletionItem, CompletionsArguments, CompletionsResponseBody, ContinueResponseBody,
+    DataBreakpointInfoArguments, DataBreakpointInfoResponseBody, DisconnectArguments,
+    EvaluateArguments, EvaluateResponseBody, ExceptionDetails, ExceptionInfoArguments,
+    ExceptionInfoResponseBody, GotoArguments, GotoTarget, GotoTargetsArguments,
+    GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
+    LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, RestartArguments,
+    Scope, ScopesArguments, ScopesResponseBody, SetDataBreakpointsArguments,
+    SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments, SetExpressionArguments,
+    SetExpressionResponseBody, SetFunctionBreakpointsArguments, SetVariableArguments,
+    SetVariableResponseBody, SourceArguments, SourceResponseBody, StackTraceArguments,
+    StepInTarget, StepInTargetsArguments, StepInTargetsResponseBody, TerminateArguments,
+    VariablesArguments,
 };
 use crate::stack::{PerlStackParser, is_internal_frame_name_and_path};
 use crate::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};
@@ -66,7 +66,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -136,7 +136,12 @@ pub struct DebugAdapter {
     /// Breakpoints store
     breakpoints: BreakpointStore,
     /// Thread ID counter
-    thread_counter: Arc<Mutex<i32>>,
+    ///
+    /// Atomic rather than lock-based: a poisoned-mutex fallback that returned
+    /// a previously minted constant (e.g. `1`) could revive a stale execution
+    /// context id after a session replacement (#8294). Allocation must have
+    /// no failure path that reuses an id.
+    thread_counter: Arc<AtomicI32>,
     /// Bounded output channel for sending events to client
     event_sender: Option<SyncSender<DapMessage>>,
     /// Ensures competing session shutdown paths emit one terminal event per session.
@@ -242,7 +247,7 @@ impl DebugAdapter {
             attached_pid: Arc::new(Mutex::new(None)),
             tcp_session: Arc::new(Mutex::new(None)),
             breakpoints: BreakpointStore::new(),
-            thread_counter: Arc::new(Mutex::new(0)),
+            thread_counter: Arc::new(AtomicI32::new(0)),
             event_sender: None,
             termination_state: Arc::new(Mutex::new(TerminationState::default())),
             recent_output: Arc::new(Mutex::new(RecentOutputBuffer::new())),
@@ -733,21 +738,18 @@ impl DebugAdapter {
     ///
     /// Only for use in tests; not part of the public API contract.
     #[cfg(any(test, feature = "test-helpers"))]
-    pub fn seed_stopped_session_with_frames_for_test(
-        &self,
-        frames: Vec<crate::types::StackFrame>,
-    ) -> Result<(), io::Error> {
+    pub fn seed_stopped_session_with_frames_for_test(&self, frames: Vec<crate::types::StackFrame>) {
         use std::process::{Command, Stdio};
-        let child = Command::new("perl")
+        let Ok(child) = Command::new("perl")
             .arg("-e")
             .arg("1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|error| {
-                io::Error::other(format!("seed stopped session: spawn perl: {error}"))
-            })?;
+        else {
+            return;
+        };
         let mut session = lock_or_recover(&self.session, "debug_adapter.seed_stopped_session");
         *session = Some(DebugSession {
             process: child,
@@ -759,7 +761,6 @@ impl DebugAdapter {
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
         });
-        Ok(())
     }
 
     /// Seed captured stack-frame arguments for scope/variables protocol tests.
@@ -2154,7 +2155,7 @@ print "result: $final\n";
         );
 
         // Call the handler (this should clear stack_frames)
-        let _response = adapter.handle_continue(1, 1, None);
+        let _response = adapter.handle_continue(1, 1, Some(json!({"threadId": 1})));
 
         // Assert: frames are now cleared (FAILS if fix not implemented)
         assert_eq!(
@@ -2172,7 +2173,7 @@ print "result: $final\n";
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
-        let _response = adapter.handle_next(1, 1, None);
+        let _response = adapter.handle_next(1, 1, Some(json!({"threadId": 1})));
         assert_eq!(
             adapter.stack_frames_snapshot_for_test().len(),
             0,
@@ -2188,7 +2189,7 @@ print "result: $final\n";
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
-        let _response = adapter.handle_step_in(1, 1, None);
+        let _response = adapter.handle_step_in(1, 1, Some(json!({"threadId": 1})));
         assert_eq!(
             adapter.stack_frames_snapshot_for_test().len(),
             0,
@@ -2204,7 +2205,7 @@ print "result: $final\n";
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
-        let _response = adapter.handle_step_out(1, 1, None);
+        let _response = adapter.handle_step_out(1, 1, Some(json!({"threadId": 1})));
         assert_eq!(
             adapter.stack_frames_snapshot_for_test().len(),
             0,
@@ -2220,7 +2221,7 @@ print "result: $final\n";
         adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
 
         assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
-        let _response = adapter.handle_pause(1, 1, None);
+        let _response = adapter.handle_pause(1, 1, Some(json!({"threadId": 1})));
         assert_eq!(
             adapter.stack_frames_snapshot_for_test().len(),
             0,

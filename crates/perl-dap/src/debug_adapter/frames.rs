@@ -90,6 +90,17 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // Identity before any debugger query (#8294): when an execution
+        // context is live, the request must name exactly that context. With no
+        // live context, the pre-existing honest empty-list response is kept.
+        if let Err(rejection) = self.validated_live_thread_id(
+            "stackTrace",
+            seq,
+            request_seq,
+            arguments.as_ref().and_then(|v| v.get("threadId")).and_then(Value::as_i64),
+        ) {
+            return rejection;
+        }
         let args: Option<StackTraceArguments> =
             arguments.and_then(|v| serde_json::from_value(v).ok());
         let start_frame =

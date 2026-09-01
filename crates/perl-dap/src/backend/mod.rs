@@ -159,7 +159,9 @@ pub struct SetFunctionBreakpointsParams {
 /// Outcome of a continue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContinueResult {
-    /// Whether all threads resumed (Perl is single-threaded, usually `true`).
+    /// Whether every exposed context resumed. This is selected-backend
+    /// behavior for the one synthetic main execution context, not a Perl
+    /// language fact; runtime context discovery is not proven (#8294).
     pub all_threads_continued: bool,
 }
 
