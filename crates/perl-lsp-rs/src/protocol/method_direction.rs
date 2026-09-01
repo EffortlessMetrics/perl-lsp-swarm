@@ -568,6 +568,35 @@ mod tests {
 
     /// Remove trailing `#[cfg(test)] mod … { … }` regions so test-only string
     /// literals cannot satisfy or pollute production-inventory scans.
+    fn is_test_module_declaration(line: &str) -> bool {
+        let mut rest = line.trim_start();
+
+        if let Some(after_pub) = rest.strip_prefix("pub")
+            && after_pub.chars().next().is_some_and(|next| next.is_whitespace() || next == '(')
+        {
+            rest = after_pub.trim_start();
+            if rest.starts_with('(') {
+                let Some(close) = rest.find(')') else { return false };
+                rest = rest[close + 1..].trim_start();
+            }
+        }
+
+        let Some(after_mod) = rest.strip_prefix("mod") else { return false };
+        if !after_mod.chars().next().is_some_and(char::is_whitespace) {
+            return false;
+        }
+
+        let rest = after_mod.trim_start();
+        let name_end = rest
+            .find(|character: char| character.is_whitespace() || matches!(character, '{' | ';'));
+        let Some(name_end) = name_end else { return false };
+        if name_end == 0 {
+            return false;
+        }
+
+        matches!(rest[name_end..].trim_start().chars().next(), Some('{' | ';'))
+    }
+
     fn strip_test_modules(source: &str) -> String {
         let mut result = String::with_capacity(source.len());
         let mut lines = source.lines().peekable();
@@ -579,9 +608,7 @@ mod tests {
             }
             let Some(next) = lines.peek() else { break };
             let next_trimmed = next.trim_start();
-            let is_mod_open = next_trimmed.starts_with("mod ")
-                && (next_trimmed.contains('{') || next_trimmed.ends_with(';'));
-            if !is_mod_open {
+            if !is_test_module_declaration(next_trimmed) {
                 continue;
             }
             // Consume the attribute/mod pair. A `mod x;` declaration ends
@@ -603,6 +630,41 @@ mod tests {
             }
         }
         result
+    }
+
+    #[test]
+    fn strip_test_modules_handles_visible_and_external_test_modules() {
+        let source = r#"
+#[cfg(test)]
+mod plain { const PLAIN: &str = "plain/test"; }
+#[cfg(test)]
+pub mod public { const PUBLIC: &str = "pub/test"; }
+#[cfg(test)]
+pub(crate) mod restricted { const RESTRICTED: &str = "crate/test"; }
+#[cfg(test)]
+pub(super) mod parent { const PARENT: &str = "super/test"; }
+#[cfg(test)]
+pub(self) mod private { const PRIVATE: &str = "self/test"; }
+#[cfg(test)]
+pub(in crate::protocol) mod scoped { const SCOPED: &str = "scoped/test"; }
+#[cfg(test)]
+pub(crate) mod external;
+#[cfg(test)]
+mod plain_external;
+fn production() { send("production/after"); }
+pub(crate) mod visible { const KEEP: &str = "visible/production"; }
+"#;
+
+        let stripped = strip_test_modules(source);
+        for test_only in
+            ["plain/test", "pub/test", "crate/test", "super/test", "self/test", "scoped/test"]
+        {
+            assert!(!stripped.contains(test_only), "test-only literal leaked: {test_only}");
+        }
+        assert!(!stripped.contains("pub(crate) mod external;"));
+        assert!(stripped.contains("production/after"));
+        assert!(stripped.contains("pub(crate) mod visible"));
+        assert!(stripped.contains("visible/production"));
     }
 
     fn quoted_literals(line: &str) -> Vec<&str> {
