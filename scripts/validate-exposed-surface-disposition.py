@@ -23,6 +23,7 @@ SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 ISSUE_URL_PATTERN = re.compile(
     r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/[1-9][0-9]*$"
 )
+RELEASE_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+-rc(?:\.[0-9]+)?$")
 DEFAULT_AUTHORITY_CATALOG = Path(__file__).resolve().parents[1] / "docs/releases/exposed-surface-authorities.v1.json"
 DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "docs/releases/exposed-surface-disposition.v1.schema.json"
 
@@ -204,7 +205,8 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
 
     data = _exact_keys(projection, {"schema", "release", "repository_sha", "rows"}, "projection")
     _require(data.get("schema") == SCHEMA_VERSION, f"projection.schema must be {SCHEMA_VERSION}")
-    _string(data.get("release"), "projection.release")
+    release = _string(data.get("release"), "projection.release")
+    _require(RELEASE_PATTERN.fullmatch(release) is not None, "projection.release must be a normalized RC identifier")
     repository_sha = _sha(data.get("repository_sha"), "projection.repository_sha")
     authority_rows = _validate_authorities(authorities) if authorities is not None else {}
     _require(authorities is not None, "an authority catalog is required to verify surface references")
@@ -309,6 +311,8 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
                 artifact_digest = _profile_artifact_digest(subjects, profile, f"projection.rows[{index}].DISABLED")
                 _require(all(item["kind"] == "artifact_absence" for item in subjects),
                          f"projection.rows[{index}].DISABLED cannot mix absence and installed evidence for {profile}")
+                _require(all(item["journey_id"] in row["failure_journeys"] for item in subjects),
+                         f"projection.rows[{index}].DISABLED absence evidence must name a declared failure journey for {profile}")
                 _require(any(item["kind"] == "artifact_absence" and item["artifact_sha256"] == artifact_digest for item in subjects),
                          f"projection.rows[{index}].DISABLED requires artifact-absence evidence for {profile}")
         else:

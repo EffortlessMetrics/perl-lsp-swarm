@@ -62,6 +62,11 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         projection["rows"][0]["disposition"] = "SOMEDAY"
         self.assert_invalid(projection, "disposition is invalid")
 
+    def test_rejects_non_rc_release_identifier(self) -> None:
+        projection = copy.deepcopy(self.projection)
+        projection["release"] = "0.18.0"
+        self.assert_invalid(projection, "normalized RC identifier")
+
     def test_rejects_duplicate_canonical_authority_row(self) -> None:
         projection = copy.deepcopy(self.projection)
         projection["rows"].append(copy.deepcopy(projection["rows"][0]))
@@ -189,6 +194,17 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
             subject["kind"] = "artifact_absence"
         row["evidence_subjects"][1]["artifact_sha256"] = "c" * 64
         self.assert_invalid(projection, "conflicting artifact identities")
+
+        projection = copy.deepcopy(self.projection)
+        row = projection["rows"][0]
+        row["disposition"] = "DISABLED"
+        row["claim_effect"] = "remove_or_withhold"
+        row["default_reachable"] = False
+        row["opt_in"] = False
+        for subject in row["evidence_subjects"]:
+            subject["kind"] = "artifact_absence"
+            subject["journey_id"] = "undeclared-absence"
+        self.assert_invalid(projection, "absence evidence must name a declared failure journey")
 
     def test_rejects_bounded_preview_without_refusal_boundary(self) -> None:
         projection = copy.deepcopy(self.projection)
