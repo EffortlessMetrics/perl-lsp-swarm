@@ -955,17 +955,8 @@ mod tests {
 
     #[test]
     fn startup_inc_probe_timeout_override_wires_through_constructor() -> TestResult {
-        let perl = match perl_path() {
-            Some(path) => path,
-            None => {
-                eprintln!(
-                    "SKIP startup_inc_probe_timeout_override_wires_through_constructor: Perl unavailable"
-                );
-                return Ok(());
-            }
-        };
         let config = WorkspaceConfig {
-            perl_path: Some(perl.to_string_lossy().into_owned()),
+            perl_path: Some("synthetic-perl-for-constructor-test".into()),
             ..WorkspaceConfig::default()
         };
         let unmistakable = Duration::from_nanos(1);
@@ -1026,6 +1017,27 @@ mod tests {
         }
         if effective_startup_inc_probe_timeout() != baseline {
             return Err("caught unwind did not restore the prior timeout".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn startup_inc_probe_timeout_restores_after_nested_caught_unwind() -> TestResult {
+        let baseline = effective_startup_inc_probe_timeout();
+        let outer = Duration::from_secs(2);
+        let inner = Duration::from_secs(3);
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            PerlOracleEnv::with_startup_inc_probe_timeout(outer, || {
+                PerlOracleEnv::with_startup_inc_probe_timeout(inner, || {
+                    std::panic::resume_unwind(Box::new("nested controlled unwind"));
+                });
+            });
+        }));
+        if unwind.is_ok() {
+            return Err("nested controlled unwind unexpectedly completed".into());
+        }
+        if effective_startup_inc_probe_timeout() != baseline {
+            return Err("nested caught unwind did not restore the prior timeout".into());
         }
         Ok(())
     }
