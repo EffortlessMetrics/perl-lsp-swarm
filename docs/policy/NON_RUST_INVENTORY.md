@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12566 |
-| Rust-family files | 3895 |
-| Non-Rust files | 8671 |
-| Allowlisted | 6432 |
+| Total tracked files | 12589 |
+| Rust-family files | 3908 |
+| Non-Rust files | 8681 |
+| Allowlisted | 6442 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 499 |
-| documentation | 2833 |
+| documentation | 2837 |
 | generated | 2 |
 | production | 349 |
-| test | 2067 |
-| tooling | 682 |
+| test | 2069 |
+| tooling | 686 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -2358,6 +2358,7 @@
 | `.changes/unreleased/product-14076-Fixed-024700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14281-Fixed-014013.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14362-Added-000001.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -4258,6 +4259,8 @@
 | `crates/perl-regex/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-ripr-facts/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `crates/perl-ripr-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_no_diff.json` | test | `non-rust-ripr-facts-packet-goldens` | ripr/facts-producer |
+| `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_with_diff.json` | test | `non-rust-ripr-facts-packet-goldens` | ripr/facts-producer |
 | `crates/perl-semantic-analyzer/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-analyzer/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-semantic-analyzer/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
@@ -6020,6 +6023,9 @@
 | `docs/releases/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/RELEASE_CLOSEOUT_AUDIT.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/TAG_PROVENANCE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/releases/exposed-surface-authorities.v1.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/releases/exposed-surface-disposition.v1.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/releases/exposed-surface-disposition.v1.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/release-scope.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/v0.10.0.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/v0.11.0.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6837,6 +6843,8 @@
 | `scripts/test_verify_staged_binaries.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/blocker_closeout/cases.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/blocker_closeout/valid_resolved.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/fixtures/exposed-surface-disposition/authorities.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/fixtures/exposed-surface-disposition/valid.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/complementary.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/shared_base_isolated.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/true_duplicate.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6909,6 +6917,7 @@
 | `scripts/tests/test-update-current-status-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-update-parser-matrix-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-blocker-closeout.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-validate-exposed-surface-disposition.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-public-release-claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-rc-intake.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6959,6 +6968,7 @@
 | `scripts/ux/vim_vim_lsp_specialized_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vimspector_dap_driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vimspector_dap_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/validate-exposed-surface-disposition.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-rc-intake.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-workspace-exclusions.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
