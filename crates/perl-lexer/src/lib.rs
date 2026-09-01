@@ -100,7 +100,10 @@
 //! - **MAX_REGEX_PARSE_STEPS**: 32K maximum scan iterations for regex literals
 //!
 //! When limits are exceeded, the lexer emits an `UnknownRest` token preserving
-//! all previously parsed symbols, allowing continued analysis.
+//! all previously parsed symbols, allowing continued analysis. `MAX_DELIM_NEST`
+//! is the exception: `consume_nested_opener` rejects the opener at the depth
+//! limit and the balanced-segment helpers recover locally, so the enclosing
+//! token terminates cleanly without an `UnknownRest` EOF jump (#14389).
 //!
 //! # Integration with perl-parser
 //!
@@ -176,7 +179,7 @@ use crate::lexer::helpers::{
     empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
     is_perl_punctuation_variable, is_quote_op_word_prefix,
 };
-use crate::limits::{MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
+use crate::limits::{MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
 
 impl<'a> PerlLexer<'a> {
     /// Create a new lexer that emits `HeredocBody` tokens (for LSP folding)
@@ -533,7 +536,10 @@ impl<'a> PerlLexer<'a> {
     ///
     /// **Limits**:
     /// - `MAX_REGEX_BYTES` (64KB): Maximum bytes in a single regex literal
-    /// - `MAX_DELIM_NEST` (128): Maximum delimiter nesting depth
+    ///
+    /// This guard is byte-budget only (#14389). Delimiter nesting has its own
+    /// stop: `consume_nested_opener` rejects at `MAX_DELIM_NEST` and the
+    /// balanced-segment helpers recover locally instead of jumping to EOF.
     ///
     /// **Graceful Degradation**:
     /// - Budget exceeded → emit `UnknownRest` token
@@ -547,22 +553,17 @@ impl<'a> PerlLexer<'a> {
     /// - Amortized cost: O(1) per token
     #[allow(clippy::inline_always)] // Performance critical in lexer hot path
     #[inline(always)]
-    fn budget_guard(&mut self, start: usize, depth: usize) -> Option<Token> {
+    fn budget_guard(&mut self, start: usize) -> Option<Token> {
         // Fast path: most calls won't hit limits
         let bytes_consumed = self.position - start;
-        if bytes_consumed <= MAX_REGEX_BYTES && depth <= MAX_DELIM_NEST {
+        if bytes_consumed <= MAX_REGEX_BYTES {
             return None;
         }
 
         // Slow path: budget exceeded - graceful degradation
         #[cfg(debug_assertions)]
         {
-            tracing::debug!(
-                bytes_consumed,
-                depth,
-                position = self.position,
-                "Lexer budget exceeded"
-            );
+            tracing::debug!(bytes_consumed, position = self.position, "Lexer budget exceeded");
         }
 
         self.position = self.input.len();
