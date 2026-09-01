@@ -3834,6 +3834,7 @@ profile = "recommended"
     }
 
     #[test]
+    #[serial_test::serial]
     #[allow(unsafe_code)] // transient PATH mutation, serialized + restored (see below)
     fn perltidy_discoverable_on_path_still_yields_native_default()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -5181,6 +5182,7 @@ profile = "recommended"
     /// available.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn output_with_timeout_kills_long_running_subprocess() -> TestResult {
         let perl_path = match resolve_perl_path_with_toolchain() {
             Ok(path) => path,
@@ -5218,6 +5220,7 @@ profile = "recommended"
     /// typed cache holds that outcome for reuse.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn get_system_inc_does_not_stall_on_slow_interpreter() -> TestResult {
         let perl_path = match resolve_perl_path_with_toolchain() {
             Ok(path) => path,
@@ -5280,6 +5283,7 @@ profile = "recommended"
     /// `IoFailed`, so a fast second process cannot satisfy this oracle.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
         PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), || {
             let perl_path = match resolve_perl_path_with_toolchain() {
