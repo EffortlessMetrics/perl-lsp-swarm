@@ -360,8 +360,12 @@ def format_result(caption: str, result: Any) -> str:
         # Control/result semantics render ahead of bulk material so the
         # output bound below can never erase failure state or next actions;
         # bounded detail rows cannot guarantee it.
+        # Apply the per-field bound during the normal render, not only when
+        # the complete envelope later exceeds MAX_OUTPUT_CHARS.  A single
+        # scalar can fit inside the envelope while still crowding out the
+        # field-level safety contract.
         for key in _ordered_keys(result):
-            _append_value(lines, _humanize(str(key)), result[key])
+            _append_value(lines, _humanize(str(key)), result[key], bound_fields=True)
     elif isinstance(result, (list, tuple)):
         _append_value(lines, "Results", result)
     else:

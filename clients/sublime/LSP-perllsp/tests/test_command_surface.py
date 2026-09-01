@@ -273,8 +273,15 @@ class CommandSurfaceContractTests(unittest.TestCase):
         reordered = {"note": "kept", "stdout": "all green\n", "success": True}
         self.assertEqual(first, surface.format_result("Perl: Run Current File", reordered))
 
-    def test_scalar_keeps_complete_value_when_envelope_fits(self) -> None:
+    def test_scalar_field_is_bounded_even_when_envelope_fits(self) -> None:
         value = "x" * (surface.MAX_FIELD_CHARS + 100)
+        rendered = surface.format_result("Perl: Run Current File", {"output": value})
+        self.assertNotIn(value, rendered)
+        self.assertIn("omitted by LSP-perllsp", rendered)
+        self.assertLessEqual(len(rendered), surface.MAX_FIELD_CHARS + 200)
+
+    def test_under_budget_scalar_field_remains_complete(self) -> None:
+        value = "x" * (surface.MAX_FIELD_CHARS - 100)
         rendered = surface.format_result("Perl: Run Current File", {"output": value})
         self.assertIn(value, rendered)
         self.assertNotIn("omitted by LSP-perllsp", rendered)
