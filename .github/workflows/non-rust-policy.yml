@@ -135,9 +135,27 @@ jobs:
               run_bodies.append((index + 1, value))
               index += 1
           for line_number, body in run_bodies:
+              body = body.replace("\\\n", " ")
               command_lines = body.splitlines()
               for offset, command_line in enumerate(command_lines):
-                  normalized = " ".join(command_line.strip().split())
+                  quote = None
+                  escaped = False
+                  code = []
+                  for character in command_line:
+                      if escaped:
+                          code.append(character)
+                          escaped = False
+                      elif character == "\\":
+                          code.append(character)
+                          escaped = True
+                      elif character in ("'", '"'):
+                          code.append(character)
+                          quote = None if quote == character else (character if quote is None else quote)
+                      elif character == "#" and quote is None and (not code or code[-1].isspace()):
+                          break
+                      else:
+                          code.append(character)
+                  normalized = " ".join("".join(code).strip().split())
                   if not normalized.startswith(cargo + " "):
                       continue
                   command = [normalized]
