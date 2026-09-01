@@ -21,22 +21,10 @@ SCHEMA_VERSION = "exposed_surface_disposition.v1"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 ISSUE_URL_PATTERN = re.compile(
-    r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+$"
+    r"^https://github\.com/EffortlessMetrics/perl-lsp-swarm/issues/[1-9][0-9]*$"
 )
-DISPOSITIONS = {"READY", "BOUNDED_PREVIEW", "DISABLED", "BLOCKED", "NOT_PROVEN"}
-EVIDENCE_KINDS = {"installed_journey", "refusal_boundary", "artifact_absence"}
-EFFECT_CLASSES = {
-    "source_mutation",
-    "process_execution",
-    "state_publication",
-    "network",
-    "installation_update",
-    "read_only_provider",
-    "file_generation",
-    "registration_activation",
-    "other",
-}
-CLAIM_EFFECTS = {"retain", "limit", "remove_or_withhold"}
+DEFAULT_AUTHORITY_CATALOG = Path(__file__).resolve().parents[1] / "docs/releases/exposed-surface-authorities.v1.json"
+DEFAULT_SCHEMA = Path(__file__).resolve().parents[1] / "docs/releases/exposed-surface-disposition.v1.schema.json"
 
 
 def _require(condition: bool, message: str) -> None:
@@ -66,6 +54,27 @@ def _sha256(value: Any, name: str) -> str:
     return text
 
 
+def _schema_enum(schema: dict[str, Any], definition: str, field: str) -> frozenset[str]:
+    """Read a closed vocabulary from the JSON schema used by this validator."""
+
+    definitions = _object(schema.get("$defs"), "schema.$defs")
+    definition_object = _object(definitions.get(definition), f"schema.$defs.{definition}")
+    properties = _object(definition_object.get("properties"), f"schema.$defs.{definition}.properties")
+    values = properties.get(field, {}).get("enum")
+    _require(
+        isinstance(values, list) and values and all(isinstance(value, str) and value for value in values),
+        f"schema.$defs.{definition}.properties.{field}.enum must be non-empty strings",
+    )
+    _require(len(values) == len(set(values)), f"schema.$defs.{definition}.properties.{field}.enum must be unique")
+    return frozenset(values)
+
+
+def _enum(value: Any, allowed: frozenset[str], name: str) -> str:
+    text = _string(value, name)
+    _require(text in allowed, f"{name} is invalid")
+    return text
+
+
 def _exact_keys(value: Any, expected: set[str], name: str) -> dict[str, Any]:
     data = _object(value, name)
     unexpected = sorted(set(data) - expected)
@@ -87,6 +96,7 @@ def _validate_evidence(
     name: str,
     repository_sha: str,
     artifact_profiles: set[str],
+    evidence_kinds: frozenset[str],
 ) -> list[dict[str, str]]:
     _require(isinstance(value, list), f"{name} must be a list")
     evidence: list[dict[str, str]] = []
@@ -97,8 +107,7 @@ def _validate_evidence(
             {"kind", "repository_sha", "artifact_profile", "artifact_sha256", "journey_id", "receipt_ref"},
             f"{name}[{index}]",
         )
-        kind = item.get("kind")
-        _require(kind in EVIDENCE_KINDS, f"{name}[{index}].kind is invalid")
+        kind = _enum(item.get("kind"), evidence_kinds, f"{name}[{index}].kind")
         subject_sha = _sha(item.get("repository_sha"), f"{name}[{index}].repository_sha")
         _require(
             subject_sha == repository_sha,
@@ -168,6 +177,10 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
     repository_sha = _sha(data.get("repository_sha"), "projection.repository_sha")
     authority_rows = _validate_authorities(authorities) if authorities is not None else {}
     _require(authorities is not None, "an authority catalog is required to verify surface references")
+    dispositions = _schema_enum(schema_object, "row", "disposition")
+    effect_classes = _schema_enum(schema_object, "row", "effect_class")
+    claim_effects = _schema_enum(schema_object, "row", "claim_effect")
+    evidence_kinds = _schema_enum(schema_object, "evidenceSubject", "kind")
     rows = data.get("rows")
     _require(isinstance(rows, list) and rows, "projection.rows must be a non-empty list")
 
@@ -206,13 +219,12 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
 
         profiles = _strings(row.get("artifact_profiles"), f"projection.rows[{index}].artifact_profiles", minimum=1)
         _string(row.get("exposure_class"), f"projection.rows[{index}].exposure_class")
-        _require(row.get("effect_class") in EFFECT_CLASSES, f"projection.rows[{index}].effect_class is invalid")
+        _enum(row.get("effect_class"), effect_classes, f"projection.rows[{index}].effect_class")
         _require(type(row.get("default_reachable")) is bool, f"projection.rows[{index}].default_reachable must be boolean")
         _require(type(row.get("opt_in")) is bool, f"projection.rows[{index}].opt_in must be boolean")
         _string(row.get("ordinary_journey"), f"projection.rows[{index}].ordinary_journey")
         _strings(row.get("failure_journeys"), f"projection.rows[{index}].failure_journeys", minimum=1)
-        disposition = row.get("disposition")
-        _require(disposition in DISPOSITIONS, f"projection.rows[{index}].disposition is invalid")
+        disposition = _enum(row.get("disposition"), dispositions, f"projection.rows[{index}].disposition")
         owner_issue = row.get("owner_issue")
         _require(
             owner_issue is None or (isinstance(owner_issue, str) and ISSUE_URL_PATTERN.fullmatch(owner_issue) is not None),
@@ -223,10 +235,10 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
             f"projection.rows[{index}].evidence_subjects",
             repository_sha,
             set(profiles),
+            evidence_kinds,
         )
         _strings(row.get("invalidation_paths"), f"projection.rows[{index}].invalidation_paths", minimum=1)
-        claim_effect = row.get("claim_effect")
-        _require(claim_effect in CLAIM_EFFECTS, f"projection.rows[{index}].claim_effect is invalid")
+        claim_effect = _enum(row.get("claim_effect"), claim_effects, f"projection.rows[{index}].claim_effect")
 
         evidence_by_profile = {profile: [item for item in evidence if item["artifact_profile"] == profile] for profile in profiles}
         if disposition == "READY":
@@ -261,10 +273,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--schema",
         type=Path,
-        default=Path("docs/releases/exposed-surface-disposition.v1.schema.json"),
+        default=DEFAULT_SCHEMA,
     )
     parser.add_argument("--projection", type=Path, required=True)
-    parser.add_argument("--authority-catalog", type=Path, required=True)
+    parser.add_argument("--authority-catalog", type=Path, default=DEFAULT_AUTHORITY_CATALOG)
     args = parser.parse_args(argv)
     try:
         schema = json.loads(args.schema.read_text(encoding="utf-8"))

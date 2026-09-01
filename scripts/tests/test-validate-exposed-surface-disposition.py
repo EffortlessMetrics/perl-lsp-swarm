@@ -31,6 +31,9 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
             (ROOT / "scripts/tests/fixtures/exposed-surface-disposition/valid.json").read_text(encoding="utf-8")
         )
         cls.authorities = json.loads(
+            (ROOT / "docs/releases/exposed-surface-authorities.v1.json").read_text(encoding="utf-8")
+        )
+        cls.authority_fixture = json.loads(
             (ROOT / "scripts/tests/fixtures/exposed-surface-disposition/authorities.json").read_text(encoding="utf-8")
         )
 
@@ -50,6 +53,10 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
             authority_path.write_text(json.dumps(self.authorities), encoding="utf-8")
             self.assertEqual(MODULE.main(["--schema", str(schema_path), "--authority-catalog", str(authority_path), "--projection", str(projection_path)]), 0)
 
+            # The normal CLI path is bound to the shipped catalog; callers may
+            # override it only for an explicitly isolated authority fixture.
+            self.assertEqual(MODULE.main(["--schema", str(schema_path), "--projection", str(projection_path)]), 0)
+
     def test_rejects_unknown_disposition(self) -> None:
         projection = copy.deepcopy(self.projection)
         projection["rows"][0]["disposition"] = "SOMEDAY"
@@ -66,7 +73,7 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         self.assert_invalid(projection, "surface_ref.*missing keys")
 
         projection = copy.deepcopy(self.projection)
-        projection["rows"][0]["surface_ref"]["digest"] = "stale"
+        projection["rows"][0]["surface_ref"]["digest"] = "0" * 64
         self.assert_invalid(projection, "surface_ref.digest")
 
         projection = copy.deepcopy(self.projection)
@@ -140,6 +147,22 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
             projection_path.write_text(json.dumps(self.projection), encoding="utf-8")
             authority_path.write_text(json.dumps(self.authorities), encoding="utf-8")
             self.assertEqual(MODULE.main(["--authority-catalog", str(authority_path), "--projection", str(projection_path)]), 1)
+
+    def test_shipped_authority_catalog_matches_fixture(self) -> None:
+        self.assertEqual(self.authorities, self.authority_fixture)
+
+    def test_rejects_zero_issue_owner(self) -> None:
+        projection = copy.deepcopy(self.projection)
+        projection["rows"][0]["disposition"] = "BLOCKED"
+        projection["rows"][0]["claim_effect"] = "remove_or_withhold"
+        projection["rows"][0]["owner_issue"] = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/0"
+        self.assert_invalid(projection, "owner_issue must be a canonical issue URL")
+
+    def test_rejects_non_scalar_vocabularies(self) -> None:
+        for field in ("disposition", "effect_class", "claim_effect"):
+            projection = copy.deepcopy(self.projection)
+            projection["rows"][0][field] = []
+            self.assert_invalid(projection, f"projection.rows\\[0\\].{field} must be a non-empty string")
 
 
 if __name__ == "__main__":

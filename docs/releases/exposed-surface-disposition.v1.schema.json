@@ -22,7 +22,7 @@
     "nonEmptyString": {"type": "string", "minLength": 1},
     "issueUrl": {
       "type": ["string", "null"],
-      "pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[0-9]+$"
+      "pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[1-9][0-9]*$"
     },
     "authority": {
       "type": "object",
@@ -73,7 +73,10 @@
           "uniqueItems": true,
           "items": {"$ref": "#/$defs/nonEmptyString"}
         },
-        "exposure_class": {"$ref": "#/$defs/nonEmptyString"},
+        "exposure_class": {
+          "$ref": "#/$defs/nonEmptyString",
+          "description": "An intentionally open authority-defined exposure category. New categories do not change the release vocabulary; canonical authorities own their meaning."
+        },
         "effect_class": {
           "enum": [
             "source_mutation",

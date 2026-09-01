@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12547 |
+| Total tracked files | 12553 |
 | Rust-family files | 3892 |
-| Non-Rust files | 8655 |
-| Allowlisted | 6416 |
+| Non-Rust files | 8661 |
+| Allowlisted | 6422 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 498 |
-| documentation | 2828 |
+| documentation | 2830 |
 | generated | 2 |
 | production | 349 |
 | test | 2067 |
-| tooling | 672 |
+| tooling | 676 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -6015,6 +6015,8 @@
 | `docs/releases/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/RELEASE_CLOSEOUT_AUDIT.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/TAG_PROVENANCE.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/releases/exposed-surface-authorities.v1.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/releases/exposed-surface-disposition.v1.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/release-scope.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/v0.10.0.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/releases/v0.11.0.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6823,6 +6825,8 @@
 | `scripts/test_release_build_identity.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_verify_binary_identity.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_verify_staged_binaries.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/fixtures/exposed-surface-disposition/authorities.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/fixtures/exposed-surface-disposition/valid.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/complementary.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/shared_base_isolated.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/true_duplicate.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6894,6 +6898,7 @@
 | `scripts/tests/test-update-coverage-baseline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-update-current-status-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-update-parser-matrix-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-validate-exposed-surface-disposition.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-public-release-claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-rc-intake.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6944,6 +6949,7 @@
 | `scripts/ux/vim_vim_lsp_specialized_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vimspector_dap_driver.vim` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ux/vim_vimspector_dap_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/validate-exposed-surface-disposition.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-rc-intake.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-workspace-exclusions.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
