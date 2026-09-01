@@ -463,7 +463,20 @@ fn exempt_category_for_path(path: &str, changelog_paths: &[&str]) -> Option<&'st
 }
 
 /// Detect the PR's disposition from its changed files and PR body.
-fn detect_disposition(changed: &[String], pr_body: &str, policy: &ChangelogPolicy) -> Disposition {
+///
+/// `deleted` carries the git-derived deletion status (paths the PR removes).
+/// A deleted disposition artifact must never *supply* the disposition it is
+/// removed by: a deleted `.changes/exemptions/*.md` cannot exempt the PR
+/// that deletes it, and deleted `.changes/` artifacts cannot satisfy the
+/// release-prep heuristic. Deleted paths still count as disposition-bearing
+/// changes (they stay in `changed`); only surviving files classify the PR
+/// (issue #13484 review round 3).
+fn detect_disposition(
+    changed: &[String],
+    deleted: &std::collections::HashSet<String>,
+    pr_body: &str,
+    policy: &ChangelogPolicy,
+) -> Disposition {
     let frags = fragment_files(changed);
     if !frags.is_empty() {
         return Disposition::Fragment(frags);
@@ -474,13 +487,20 @@ fn detect_disposition(changed: &[String], pr_body: &str, policy: &ChangelogPolic
         return Disposition::Exemption(format!("{cat}: {reason}"));
     }
     if changed.iter().any(|f| {
+        if deleted.contains(f) {
+            return false;
+        }
         let n = f.replace('\\', "/");
         n.starts_with(".changes/exemptions/") && n.ends_with(".md")
     }) {
         return Disposition::Exemption("file-based (.changes/exemptions/)".to_string());
     }
     let changelog_paths = policy.changelog_paths();
-    if is_release_prep(changed, &changelog_paths) {
+    // The release-prep heuristic is satisfied only by surviving
+    // (non-deleted) files; an all-deleted change set is not a release prep.
+    let surviving: Vec<String> =
+        changed.iter().filter(|f| !deleted.contains(*f)).cloned().collect();
+    if is_release_prep(&surviving, &changelog_paths) {
         return Disposition::ReleasePrep;
     }
     Disposition::Missing
@@ -585,10 +605,14 @@ fn read_changed_files(
     }
     let out = Command::new("git")
         .current_dir(root)
-        // `--diff-filter=d` excludes deletions: a deleted fragment is absent
-        // on disk and cannot crash the renderer, so it must not be classified
-        // as an unreadable (malformed) fragment.
-        .args(["diff", "--name-only", "--diff-filter=d", &format!("{base}...HEAD")])
+        // Deletions are deliberately included: a deleted fragment is filtered
+        // downstream by the `deleted_paths` re-derivation in `check_inner`
+        // (an absent path cannot crash the renderer), while a deleted
+        // non-fragment file must stay a disposition-bearing change rather
+        // than silently vanish from the gate — the default git-discovery
+        // path must enforce the same deletion-only semantics as the
+        // caller-supplied path (issue #13484 review round 3).
+        .args(["diff", "--name-only", &format!("{base}...HEAD")])
         .output()
         .map_err(|e| format!("failed to spawn `git diff`: {e}"))?;
     if !out.status.success() {
@@ -836,7 +860,7 @@ fn check_inner(
         );
         return Ok((CheckOutcome::PolicySatisfied, report));
     }
-    let disposition = detect_disposition(&active, &pr_body, &policy);
+    let disposition = detect_disposition(&active, &deleted, &pr_body, &policy);
     let outcome = match &disposition {
         Disposition::Fragment(frags) => {
             report.ok(format!("disposition: {} Changie fragment(s) added", frags.len()));
@@ -1480,15 +1504,20 @@ custom:
     fn disposition_prefers_fragment() {
         let policy = test_policy("", "");
         let changed = vec![".changes/unreleased/product-1-Added-101010.yaml".to_string()];
-        assert!(matches!(detect_disposition(&changed, "", &policy), Disposition::Fragment(_)));
+        let deleted = std::collections::HashSet::new();
+        assert!(matches!(
+            detect_disposition(&changed, &deleted, "", &policy),
+            Disposition::Fragment(_)
+        ));
     }
 
     #[test]
     fn disposition_reads_pr_body_marker() {
         let policy = test_policy("", "");
         let changed = vec!["src/lib.rs".to_string()];
+        let deleted = std::collections::HashSet::new();
         let body = "This PR does X.\nchangelog-exempt: refactor — internal cleanup only\n";
-        match detect_disposition(&changed, body, &policy) {
+        match detect_disposition(&changed, &deleted, body, &policy) {
             Disposition::Exemption(reason) => {
                 assert!(reason.starts_with("refactor:"), "{reason}");
                 assert!(reason.contains("internal cleanup"), "{reason}");
@@ -1501,21 +1530,57 @@ custom:
     fn disposition_recognizes_release_prep() {
         let policy = test_policy("", "");
         let changed = vec!["CHANGELOG.md".to_string(), "Cargo.toml".to_string()];
-        assert_eq!(detect_disposition(&changed, "", &policy), Disposition::ReleasePrep);
+        let deleted = std::collections::HashSet::new();
+        assert_eq!(detect_disposition(&changed, &deleted, "", &policy), Disposition::ReleasePrep);
     }
 
     #[test]
     fn disposition_recognizes_exemption_file() {
         let policy = test_policy("", "");
         let changed = vec![".changes/exemptions/my-note.md".to_string()];
-        assert!(matches!(detect_disposition(&changed, "", &policy), Disposition::Exemption(_)));
+        let deleted = std::collections::HashSet::new();
+        assert!(matches!(
+            detect_disposition(&changed, &deleted, "", &policy),
+            Disposition::Exemption(_)
+        ));
     }
 
     #[test]
     fn disposition_missing_when_nothing_declared() {
         let policy = test_policy("", "");
         let changed = vec!["crates/perl-parser/src/lib.rs".to_string()];
-        assert_eq!(detect_disposition(&changed, "", &policy), Disposition::Missing);
+        let deleted = std::collections::HashSet::new();
+        assert_eq!(detect_disposition(&changed, &deleted, "", &policy), Disposition::Missing);
+    }
+
+    /// A DELETED exemption file cannot exempt the PR that deletes it: with a
+    /// production change in the set, the deleted `.changes/exemptions/*.md`
+    /// artifact must not satisfy the file-based exemption check, so the
+    /// disposition falls through to Missing (issue #13484 review round 3).
+    #[test]
+    fn deleted_exemption_file_cannot_supply_exemption() {
+        let policy = test_policy("", "");
+        let changed = vec![".changes/exemptions/old-note.md".to_string(), "src/lib.rs".to_string()];
+        let mut deleted = std::collections::HashSet::new();
+        deleted.insert(".changes/exemptions/old-note.md".to_string());
+        assert_eq!(detect_disposition(&changed, &deleted, "", &policy), Disposition::Missing);
+    }
+
+    /// Deleted `.changes/` artifacts cannot satisfy the release-prep
+    /// heuristic either: a deletion-only set of them is Missing, while a
+    /// surviving changelog edit still classifies as release prep (issue
+    /// #13484 review round 3: release-prep path audited for the same
+    /// status-blind behavior).
+    #[test]
+    fn deleted_artifacts_cannot_supply_release_prep() {
+        let policy = test_policy("", "");
+        let changed = vec![".changes/exemptions/old-note.md".to_string()];
+        let mut deleted = std::collections::HashSet::new();
+        deleted.insert(".changes/exemptions/old-note.md".to_string());
+        assert_eq!(detect_disposition(&changed, &deleted, "", &policy), Disposition::Missing);
+        let changed =
+            vec![".changes/exemptions/old-note.md".to_string(), "CHANGELOG.md".to_string()];
+        assert_eq!(detect_disposition(&changed, &deleted, "", &policy), Disposition::ReleasePrep);
     }
 
     #[test]
@@ -2149,9 +2214,12 @@ changelog = "vscode-extension/CHANGELOG.md"
     /// deletions are excluded before disposition detection, so the remaining
     /// change still owes a release note or exemption (issue #13484 review:
     /// deleted fragments must not bypass changelog enforcement). The
-    /// changed-file list is supplied explicitly — as the changelog-advisory
-    /// workflow does — because xtask's own git path already filters
-    /// deletions.
+    /// changed-file list is supplied explicitly to exercise the caller-
+    /// supplied path the changelog-advisory workflow takes; the default
+    /// git-discovery path is pinned by
+    /// `check_deleted_fragment_is_not_flagged_malformed` and
+    /// `check_deletion_only_production_change_owes_disposition_default_
+    /// discovery`.
     #[test]
     fn check_feature_change_plus_deleted_fragment_still_owes_a_disposition()
     -> std::result::Result<(), String> {
@@ -2268,6 +2336,133 @@ changelog = "vscode-extension/CHANGELOG.md"
             CheckOutcome::BlockingViolation,
             "a deletion-only production change past the blocking boundary must be a \
              BlockingViolation"
+        );
+        Ok(())
+    }
+
+    /// A production change combined with the DELETION of an existing
+    /// exemption file must not ride the deleted file's file-based Exemption
+    /// disposition: deleted disposition artifacts cannot supply the
+    /// disposition they are removed by, so the surviving production change
+    /// still owes a release note or exemption and the armed advisory soak
+    /// yields AdvisoryFinding (issue #13484 review round 3).
+    #[test]
+    fn check_production_change_plus_deleted_exemption_file_owes_disposition_advisory()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&armed), None)?;
+        write_valid_changie(dir)?;
+        let exemption_path = ".changes/exemptions/old-note.md";
+        std::fs::create_dir_all(dir.join(".changes/exemptions")).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(exemption_path), "stale exemption note")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add exemption file"])?;
+        std::fs::remove_file(dir.join(exemption_path)).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("feature.txt"), "unrelated feature change")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete exemption, land feature"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let list = write_changed_files(dir, &[exemption_path, "feature.txt"])?;
+        let (outcome, _) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "the production change must still owe a disposition; the deleted exemption \
+             file cannot supply it (advisory armed)"
+        );
+        Ok(())
+    }
+
+    /// Same shape at the blocking boundary: a production change plus the
+    /// deletion of an existing exemption file is a BlockingViolation, never a
+    /// pass (issue #13484 review round 3).
+    #[test]
+    fn check_production_change_plus_deleted_exemption_file_is_blocking_violation()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        let exemption_path = ".changes/exemptions/old-note.md";
+        std::fs::create_dir_all(dir.join(".changes/exemptions")).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(exemption_path), "stale exemption note")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add exemption file"])?;
+        std::fs::remove_file(dir.join(exemption_path)).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("feature.txt"), "unrelated feature change")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete exemption, land feature"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let list = write_changed_files(dir, &[exemption_path, "feature.txt"])?;
+        let (outcome, _) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "a production change plus a deleted exemption file past the blocking boundary \
+             must be a BlockingViolation"
+        );
+        Ok(())
+    }
+
+    /// Deletion-only enforcement through the DEFAULT git-discovery path (no
+    /// `--changed-files`): `read_changed_files` includes deletions, so a
+    /// deleted production file stays a disposition-bearing change and the
+    /// armed advisory soak still demands a note (issue #13484 review round
+    /// 3: the deletion-only semantics must not rely on caller-supplied lists
+    /// alone).
+    #[test]
+    fn check_deletion_only_production_change_owes_disposition_default_discovery()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&armed), None)?;
+        write_valid_changie(dir)?;
+        std::fs::remove_file(dir.join("seed.txt")).map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "remove production file"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let (outcome, report) = check_inner(Some(base), None, None, false, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "default git discovery must surface the deletion as a disposition-bearing change"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("no changed files resolved"),
+            "the deletion must be visible to default git discovery, not silently filtered \
+             into a vacuous pass; got:\n{rendered}"
         );
         Ok(())
     }
