@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12559 |
-| Rust-family files | 3893 |
-| Non-Rust files | 8666 |
-| Allowlisted | 6427 |
+| Total tracked files | 12566 |
+| Rust-family files | 3895 |
+| Non-Rust files | 8671 |
+| Allowlisted | 6432 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 498 |
+| config | 499 |
 | documentation | 2833 |
 | generated | 2 |
 | production | 349 |
 | test | 2067 |
-| tooling | 678 |
+| tooling | 682 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -6441,6 +6441,7 @@
 | `schemas/agent_review_finding.v1.schema.json` | config | `non-rust-agent-review-finding-schema` | tooling/agent-review |
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
+| `schemas/blocker_closeout.v1.schema.json` | config | `non-rust-blocker-closeout-schema` | release/ci |
 | `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
 | `schemas/import_cleanup_train.v1.schema.json` | config | `non-rust-import-cleanup-train-schema` | tooling/train-graph |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
@@ -6834,6 +6835,8 @@
 | `scripts/test_release_terminal_manifest.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_verify_binary_identity.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/test_verify_staged_binaries.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/fixtures/blocker_closeout/cases.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/fixtures/blocker_closeout/valid_resolved.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/complementary.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/shared_base_isolated.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/fixtures/pr_overlap/true_duplicate.json` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6905,6 +6908,7 @@
 | `scripts/tests/test-update-coverage-baseline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-update-current-status-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-update-parser-matrix-shim.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-validate-blocker-closeout.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-public-release-claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-rc-intake.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6958,6 +6962,7 @@
 | `scripts/validate-rc-intake.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-release-scope.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate-workspace-exclusions.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/validate_blocker_closeout.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate_public_release_claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/validate_swarm_findings.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/verify-docs-rs.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |

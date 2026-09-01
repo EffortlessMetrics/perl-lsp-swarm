@@ -1214,13 +1214,29 @@ mod tests {
             "validation must be read-only: {:?}",
             scopes("validate")
         );
+        // Tag creation must remain inside the validated release transaction:
+        // no orchestration job may declare `contents: write` under any name.
+        // Enumerate offenders instead of probing for a specific job name so a
+        // rename cannot make this assertion vacuous.
+        let mut contents_write_jobs: Vec<String> = Vec::new();
+        for (name, job) in jobs.iter() {
+            let writes_contents = job
+                .as_mapping()
+                .and_then(|job| job.get(Value::String("permissions".to_string())))
+                .and_then(Value::as_mapping)
+                .and_then(|permissions| permissions.get(Value::String("contents".to_string())))
+                .and_then(Value::as_str)
+                .is_some_and(|level| level == "write");
+            if writes_contents {
+                let job_name =
+                    name.as_str().map(str::to_string).unwrap_or_else(|| "<unknown>".to_string());
+                contents_write_jobs.push(job_name);
+            }
+        }
         assert!(
-            !jobs.contains_key(Value::String("create-tag".to_string())),
-            "release orchestration must not define a create-tag job"
-        );
-        assert!(
-            scopes("create-tag").is_empty(),
-            "tag creation must remain inside the validated release transaction"
+            contents_write_jobs.is_empty(),
+            "tag creation must remain inside the validated release transaction; \
+             jobs declaring contents: write: {contents_write_jobs:?}"
         );
         assert_eq!(
             scopes("trigger-release"),

@@ -402,9 +402,7 @@ impl DebugAdapter {
     fn allocate_thread_id(&self) -> Option<i32> {
         let mut current = self.thread_counter.load(Ordering::Relaxed);
         loop {
-            let Some(next) = current.checked_add(1).filter(|next| *next > 0) else {
-                return None;
-            };
+            let next = current.checked_add(1).filter(|next| *next > 0)?;
             match self.thread_counter.compare_exchange(
                 current,
                 next,
