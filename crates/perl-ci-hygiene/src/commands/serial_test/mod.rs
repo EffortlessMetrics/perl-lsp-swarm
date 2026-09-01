@@ -1077,10 +1077,11 @@ pub(crate) fn check_serial_test_with_registry(repo_root: &Path, path: &Path) -> 
         registry.values().filter(|record| record.state == RegistryState::Active).count();
     let serialized =
         serialized_inventory.iter().map(|site| (site.key(), site)).collect::<BTreeMap<_, _>>();
-    let current_total = current.len() + serialized.len();
     println!(
         "parallel-unsafe test identities: current={} active_registry={} registry={:?}",
-        current_total, active_count, resolved
+        current.len(),
+        active_count,
+        resolved
     );
 
     let mut failures = Vec::new();
