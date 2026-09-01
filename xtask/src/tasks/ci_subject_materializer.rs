@@ -155,10 +155,10 @@ fn materialize(root: &Path, config: &Config, receipt: &mut Receipt) -> Result<()
         let refspec = format!("refs/pull/{number}/head");
         let local_head_ref = "refs/ci-subject/pr-head";
         let head_refspec = format!("+{refspec}:{local_head_ref}");
-        ci_subject::git_stdout(root, &["fetch", "--no-tags", "origin", &head_refspec])
+        git_stdout_bounded(root, &["fetch", "--no-tags", "origin", &head_refspec])
             .map_err(|error| stage_error(receipt, "head-ref", error))?;
         let fetched =
-            ci_subject::git_stdout(root, &["rev-parse", &format!("{local_head_ref}^{{commit}}")])
+            git_stdout_bounded(root, &["rev-parse", &format!("{local_head_ref}^{{commit}}")])
                 .map_err(|error| stage_error(receipt, "head-ref", error))?;
         receipt.fetched_head_sha = Some(fetched.clone());
         if fetched != input.head_sha {
@@ -175,15 +175,13 @@ fn materialize(root: &Path, config: &Config, receipt: &mut Receipt) -> Result<()
             .map_err(|error| stage_error(receipt, "head-fetch", error))?;
         let local_merge_ref = "refs/ci-subject/pr-merge";
         let merge_refspec = format!("+refs/pull/{number}/merge:{local_merge_ref}");
-        if ci_subject::git_stdout(root, &["fetch", "--no-tags", "origin", &merge_refspec]).is_ok()
-            && let Ok(observed) = ci_subject::git_stdout(
-                root,
-                &["rev-parse", &format!("{local_merge_ref}^{{commit}}")],
-            )
+        if git_stdout_bounded(root, &["fetch", "--no-tags", "origin", &merge_refspec]).is_ok()
+            && let Ok(observed) =
+                git_stdout_bounded(root, &["rev-parse", &format!("{local_merge_ref}^{{commit}}")])
         {
             receipt.observed_merge_ref_sha = Some(observed.clone());
             if let Ok(parents) =
-                ci_subject::git_stdout(root, &["rev-list", "--parents", "-n", "1", &observed])
+                git_stdout_bounded(root, &["rev-list", "--parents", "-n", "1", &observed])
             {
                 receipt.observed_merge_ref_parents =
                     parents.split_whitespace().skip(1).map(str::to_string).collect();
@@ -293,7 +291,22 @@ fn read_event(config: &Config) -> Result<Value> {
 }
 
 fn git_version(root: &Path) -> Result<String> {
-    ci_subject::git_stdout(root, &["--version"]).map_err(|error| eyre!(error))
+    git_stdout_bounded(root, &["--version"])
+}
+
+fn git_stdout_bounded(root: &Path, args: &[&str]) -> Result<String> {
+    let output = run_git_bounded(Command::new("git").args(args).current_dir(root), None)
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    String::from_utf8(output.stdout)
+        .map(|stdout| stdout.trim().to_string())
+        .context("git command output is not UTF-8")
 }
 
 fn stage_error(

@@ -753,6 +753,33 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
         }
     }
     let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
+    let on = yaml
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("on")))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("preapproved v4 workflow must define structured triggers"))?;
+    for event in ["pull_request_target", "merge_group", "push", "workflow_dispatch"] {
+        if !on.contains_key(key(event)) {
+            bail!("preapproved v4 workflow is missing structured {event} trigger");
+        }
+    }
+    if on.keys().any(|event| {
+        event.as_str().is_none_or(|name| {
+            !["pull_request_target", "merge_group", "push", "workflow_dispatch"].contains(&name)
+        })
+    }) {
+        bail!("preapproved v4 workflow contains an unapproved trigger");
+    }
+    let permissions = yaml
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("permissions")))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("preapproved v4 workflow must define structured permissions"))?;
+    if permissions.len() != 1
+        || permissions.get(key("contents")).and_then(serde_yaml_ng::Value::as_str) != Some("read")
+    {
+        bail!("preapproved v4 workflow must grant only contents: read");
+    }
     let jobs = yaml
         .as_mapping()
         .and_then(|mapping| mapping.get(key("jobs")))
@@ -768,6 +795,17 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
     let allowed_job_keys = ["name", "runs-on", "timeout-minutes", "env", "steps"];
     if job.keys().any(|key| key.as_str().is_none_or(|name| !allowed_job_keys.contains(&name))) {
         bail!("preapproved v4 exact-tree job contains an unapproved control field");
+    }
+    let allowed_step_keys = ["name", "id", "uses", "run", "with", "if", "continue-on-error"];
+    for step in
+        job.get(key("steps")).and_then(serde_yaml_ng::Value::as_sequence).into_iter().flatten()
+    {
+        let map =
+            step.as_mapping().ok_or_else(|| eyre!("preapproved v4 steps must be mappings"))?;
+        if map.keys().any(|key| key.as_str().is_none_or(|name| !allowed_step_keys.contains(&name)))
+        {
+            bail!("preapproved v4 step contains an unapproved control field");
+        }
     }
     if job.get(key("runs-on")).and_then(serde_yaml_ng::Value::as_str) != Some("ubuntu-24.04") {
         bail!("preapproved v4 exact-tree job must use ubuntu-24.04");
@@ -838,11 +876,10 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
             != Some(
                 "cargo run --locked -p xtask -- ci-subject-materialize --event-name \"$GITHUB_EVENT_NAME\" --event-path \"$GITHUB_EVENT_PATH\" --repository \"$GITHUB_REPOSITORY\" --github-sha \"$SUBJECT_INPUT_SHA\" --base-sha \"$BASE_SHA\" --head-sha \"$SUBJECT_INPUT_SHA\" --receipt target/policy/ci-subject-materialization.json --env-file \"$GITHUB_ENV\"",
             )
-        || !materializer
+        || materializer
             .as_mapping()
-            .and_then(|map| map.get(key("continue-on-error")))
-            .and_then(serde_yaml_ng::Value::as_bool)
-            .is_some_and(|value| value)
+            .and_then(|map| map.get(key("if")))
+            .is_some_and(|condition| condition.as_str() != Some("always()"))
     {
         bail!("v4 materializer must be the exact trusted invocation");
     }
@@ -882,6 +919,11 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
             .and_then(|map| map.get(key("if")))
             .and_then(serde_yaml_ng::Value::as_str)
             .is_none_or(|condition| condition.trim() != "always() && (steps.materialize.outcome == 'failure' || steps.evaluate.outcome == 'failure')")
+        || propagate
+            .as_mapping()
+            .and_then(|map| map.get(key("continue-on-error")))
+            .and_then(serde_yaml_ng::Value::as_bool)
+            .is_some_and(|value| value)
     {
         bail!("v4 must propagate retained materialization or evaluator failure");
     }
@@ -4208,6 +4250,24 @@ jobs:
         validate_v4_subject_workflow(workflow)?;
         let tampered = workflow.replace("run: exit 1", "run: cargo echo unapproved");
         ensure!(validate_v4_subject_workflow(&tampered).is_err());
+        for tampered in [
+            workflow
+                .replace("  pull_request_target: {}", "  pull_request_target: {}\n  ignored: {}"),
+            workflow.replace("  exact-tree:\n", "  exact-tree:\n    if: false\n"),
+            workflow.replace(
+                "        continue-on-error: true\n",
+                "        if: false\n        continue-on-error: true\n",
+            ),
+            workflow.replace(
+                "        run: exit 1\n",
+                "        continue-on-error: true\n        run: exit 1\n",
+            ),
+        ] {
+            ensure!(
+                validate_v4_subject_workflow(&tampered).is_err(),
+                "control-plane tampering must be rejected"
+            );
+        }
         Ok(())
     }
 
