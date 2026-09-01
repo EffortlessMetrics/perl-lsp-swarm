@@ -355,15 +355,51 @@ fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
     let temporary =
         parent.join(format!(".{}.tmp-{}", file_name.to_string_lossy(), std::process::id()));
     fs::write(&temporary, serde_json::to_vec_pretty(receipt)?)?;
-    fs::rename(&temporary, path).or_else(|error| {
-        if path.exists() {
-            fs::remove_file(path)?;
-            fs::rename(&temporary, path)
-        } else {
-            Err(error)
-        }
-    })?;
+    replace_receipt_file(&temporary, path)?;
     Ok(())
+}
+
+fn replace_receipt_file(temporary: &Path, destination: &Path) -> Result<()> {
+    replace_receipt_file_with(temporary, destination, |from, to| fs::rename(from, to))
+}
+
+fn replace_receipt_file_with<F>(temporary: &Path, destination: &Path, mut rename: F) -> Result<()>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
+    match rename(temporary, destination) {
+        Ok(()) => Ok(()),
+        Err(first_error) if destination.exists() => {
+            let file_name =
+                destination.file_name().ok_or_else(|| eyre!("receipt path has no file name"))?;
+            let backup = destination
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new("."))
+                .join(format!(".{}.bak-{}", file_name.to_string_lossy(), std::process::id()));
+
+            rename(destination, &backup).with_context(|| {
+                format!("preserving existing receipt after replacement failed: {}", first_error)
+            })?;
+
+            match rename(temporary, destination) {
+                Ok(()) => {
+                    fs::remove_file(&backup)
+                        .with_context(|| format!("removing receipt backup {}", backup.display()))?;
+                    Ok(())
+                }
+                Err(replacement_error) => {
+                    rename(&backup, destination).map_err(|restore_error| {
+                        eyre!(
+                            "receipt replacement failed ({replacement_error}); restoring prior receipt failed ({restore_error})"
+                        )
+                    })?;
+                    Err(eyre!("receipt replacement failed: {replacement_error}"))
+                }
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn write_env(path: &Path, subject: Option<&str>, tree: Option<&str>) -> Result<()> {
@@ -472,6 +508,34 @@ mod tests {
         ensure!(value["outcome"] == "fail");
         ensure!(value["failure_stage"] == "event-input");
         ensure!(value["error"].as_str().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_receipt_replacement_restores_prior_receipt() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("receipt.json");
+        let temporary = temp.path().join(".receipt.json.tmp");
+        let backup = temp.path().join(format!(".receipt.json.bak-{}", std::process::id()));
+        fs::write(&destination, b"prior receipt")?;
+        fs::write(&temporary, b"new receipt")?;
+
+        let mut calls = 0;
+        let result = replace_receipt_file_with(&temporary, &destination, |from, to| {
+            calls += 1;
+            if calls == 1 {
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "occupied"));
+            }
+            if calls == 3 {
+                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked"));
+            }
+            fs::rename(from, to)
+        });
+
+        ensure!(result.is_err());
+        ensure!(fs::read(&destination)? == b"prior receipt");
+        ensure!(!backup.exists());
+        ensure!(temporary.exists());
         Ok(())
     }
 
