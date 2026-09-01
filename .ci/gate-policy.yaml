@@ -1269,9 +1269,10 @@ gates:
     # 1050s, leaving 150s inside the workflow's 1200s shard watchdog for the
     # terminal gate receipt, summary, and process cleanup. Do not increase this
     # ceiling without revisiting that outer watchdog contract.
-    # Claim boundary: on Linux the Windows-only pause test is compiled and
-    # invoked but its cfg(windows) runtime body is not executed. This row does
-    # not claim Windows pause behavior; that remains a Windows proof obligation.
+    # Claim boundary: on Linux `#[cfg(windows)]` removes the Windows-only
+    # pause test before compilation, so this row runs only non-Windows tests
+    # and does not prove Windows pause behavior; that remains a Windows proof
+    # obligation.
     command: >-
       cargo test --locked --lib
       -p perl-ci-hygiene -p perl-dap

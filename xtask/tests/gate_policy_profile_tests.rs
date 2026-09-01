@@ -462,10 +462,30 @@ fn dap_helper_command_error(command: &str) -> Option<String> {
 
     let separator = tokens.iter().position(|token| *token == "&&")?;
     let helper_tokens = &tokens[separator + 1..];
-    if !helper_tokens.windows(2).any(|window| window[0] == "-p" && window[1] == "perl-dap") {
+
+    // Cargo's `--` boundary: everything after the first standalone `--` is
+    // harness arguments, not package/target selection. Selectors are only
+    // honored in the pre-`--` prefix, and selector-shaped words in the
+    // harness region are refused, so relocating a required selector behind
+    // `--` cannot keep this contract green.
+    let harness_start = helper_tokens.iter().position(|token| *token == "--");
+    let (selection_tokens, harness_tokens) = match harness_start {
+        Some(boundary) => (&helper_tokens[..boundary], &helper_tokens[boundary + 1..]),
+        None => (helper_tokens, &helper_tokens[helper_tokens.len()..]),
+    };
+    if harness_tokens
+        .iter()
+        .any(|token| *token == "--test" || *token == "-p" || *token == "--features")
+    {
+        return Some(
+            "DAP helper command must keep package/target selection before `--`".to_string(),
+        );
+    }
+
+    if !selection_tokens.windows(2).any(|window| window[0] == "-p" && window[1] == "perl-dap") {
         return Some("DAP helper command must target perl-dap".to_string());
     }
-    if !helper_tokens
+    if !selection_tokens
         .windows(2)
         .any(|window| window[0] == "--features" && window[1] == "test-helpers")
     {
@@ -473,13 +493,22 @@ fn dap_helper_command_error(command: &str) -> Option<String> {
     }
 
     for target in DAP_HELPER_TARGETS {
-        let occurrences = helper_tokens
+        let occurrences = selection_tokens
             .windows(2)
             .filter(|window| window[0] == "--test" && window[1] == target)
             .count();
         if occurrences != 1 {
             return Some(format!("DAP helper command must bind exactly one --test {target}"));
         }
+    }
+    // Exact target set: an additional `--test` pair would silently widen
+    // this supposedly exact gate while every named pair still binds once.
+    let selector_count = selection_tokens.windows(2).filter(|window| window[0] == "--test").count();
+    if selector_count != DAP_HELPER_TARGETS.len() {
+        return Some(format!(
+            "DAP helper command must bind exactly {} --test targets",
+            DAP_HELPER_TARGETS.len()
+        ));
     }
     None
 }
@@ -521,6 +550,25 @@ fn dap_support_gate_binds_all_helper_targets_and_propagates_failures()
     assert!(dap_helper_command_error(&missing_feature).is_some());
     let swallowed_failure = gate.command.replacen("&&", ";", 1);
     assert!(dap_helper_command_error(&swallowed_failure).is_some());
+    // Cargo `--` boundary mutation: a required selector relocated behind the
+    // harness separator must fail the guard even though the word pair still
+    // appears in the command text.
+    let relocated = gate
+        .command
+        .replace("--test-threads=4", "--test-threads=4 --test pause_signal_delivery_tests");
+    assert!(
+        dap_helper_command_error(&relocated).is_some(),
+        "selector behind `--` must fail the policy contract"
+    );
+    // Exact target set: an extra `--test` pair widens the gate and must fail.
+    let widened = gate.command.replace(
+        "--test eval_ref_cache_miss_resume_tests",
+        "--test eval_ref_cache_miss_resume_tests --test extra_target_tests",
+    );
+    assert!(
+        dap_helper_command_error(&widened).is_some(),
+        "expanding the target set must fail the policy contract"
+    );
     Ok(())
 }
 
