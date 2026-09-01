@@ -282,12 +282,13 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
                 _require(any(item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"] for item in subjects),
                          f"projection.rows[{index}].READY requires exact installed evidence for {profile} and ordinary journey")
                 artifact_digest = _profile_artifact_digest(subjects, profile, f"projection.rows[{index}].READY")
-                _require(any(item["kind"] == "refusal_boundary" and item["journey_id"] in row["failure_journeys"] for item in subjects),
-                         f"projection.rows[{index}].READY requires applicable failure or refusal evidence for {profile}")
                 ordinary_evidence = [item for item in subjects if item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"]]
                 _require(all(item["artifact_sha256"] == artifact_digest for item in ordinary_evidence),
                          f"projection.rows[{index}].READY ordinary evidence must use one artifact digest for {profile}")
                 failure_evidence = [item for item in subjects if item["kind"] == "refusal_boundary" and item["journey_id"] in row["failure_journeys"]]
+                failure_journeys = {item["journey_id"] for item in failure_evidence}
+                _require(failure_journeys == set(row["failure_journeys"]),
+                         f"projection.rows[{index}].READY requires applicable failure or refusal evidence for every declared journey and {profile}")
                 _require(all(item["artifact_sha256"] == artifact_digest for item in failure_evidence),
                          f"projection.rows[{index}].READY failure evidence must use the ordinary artifact digest for {profile}")
         elif disposition == "BOUNDED_PREVIEW":

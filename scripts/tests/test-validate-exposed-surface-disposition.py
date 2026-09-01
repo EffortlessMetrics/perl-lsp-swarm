@@ -151,6 +151,10 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         self.assert_invalid(projection, "READY requires applicable failure or refusal evidence")
 
         projection = copy.deepcopy(self.projection)
+        projection["rows"][0]["failure_journeys"].append("configuration-generation-changed")
+        self.assert_invalid(projection, "for every declared journey")
+
+        projection = copy.deepcopy(self.projection)
         projection["rows"][0]["evidence_subjects"][1]["artifact_sha256"] = "c" * 64
         self.assert_invalid(projection, "conflicting artifact identities")
 

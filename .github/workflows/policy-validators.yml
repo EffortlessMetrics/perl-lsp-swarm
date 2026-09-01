@@ -147,7 +147,7 @@ jobs:
           python3 -m unittest scripts/tests/test-validate-exposed-surface-disposition.py
           python3 scripts/validate-exposed-surface-disposition.py \
             --authority-catalog docs/releases/exposed-surface-authorities.v1.json \
-            --projection scripts/tests/fixtures/exposed-surface-disposition/valid.json
+            --projection docs/releases/exposed-surface-disposition.v1.json
 
       - name: Validate bounded-result overflow invariants
         run: |
