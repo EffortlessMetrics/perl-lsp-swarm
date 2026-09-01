@@ -268,7 +268,13 @@ pub fn read_commit_identity(
     let committer_name = next("committer name")?;
     let committer_email = next("committer email")?;
     let committer_date = next("committer date")?;
-    let message = next("message")?;
+    // `--format=%B` terminates its output with a newline of its own, so the
+    // final field carries one more than the commit object's body. Dropping it
+    // keeps `message` byte-identical to `git cat-file commit`'s body, which is
+    // what "preserved verbatim" has to mean for a receiver that reconstructs
+    // the identity from the raw object.
+    let raw_message = next("message")?;
+    let message = raw_message.strip_suffix('\n').unwrap_or(&raw_message).to_string();
 
     if !is_full_object_id(&tree) {
         return Err((
@@ -319,7 +325,16 @@ fn resolve_tree(repository: &Path, commit: &str) -> Result<String, (HandoffOutco
             format!("tree of {commit} is not present locally: {}", output.diagnostic()),
         ));
     }
-    Ok(output.stdout.trim().to_string())
+    let tree = output.stdout.trim().to_string();
+    // This value becomes a declared identity covered by the semantic digest,
+    // so it gets the same canonical-id check its sibling readers apply.
+    if !is_full_object_id(&tree) {
+        return Err((
+            HandoffOutcome::InstrumentFailure,
+            format!("git returned a non-canonical tree id for {commit}"),
+        ));
+    }
+    Ok(tree)
 }
 
 fn resolve_repository_identity(
@@ -421,7 +436,7 @@ pub fn build_inventory(
         ));
     }
 
-    let mut changes = parse_raw_diff(&raw.stdout)?;
+    let mut changes = parse_raw_diff(&raw.stdout_bytes)?;
     changes.sort_by(|left, right| {
         left.path.cmp(&right.path).then_with(|| left.old_path.cmp(&right.old_path))
     });
@@ -431,19 +446,22 @@ pub fn build_inventory(
     Ok(ChangeInventory { base_parent, changes, gitlinks })
 }
 
-/// Parse `git diff-tree --raw -z` records.
+/// Parse `git diff-tree --raw -z` records from raw bytes.
 ///
 /// The NUL-delimited form is the only one safe for the paths this envelope
 /// must carry: quoted output would re-encode Unicode and whitespace-heavy
-/// paths, and the inventory must round-trip them exactly.
-fn parse_raw_diff(stdout: &str) -> Result<Vec<ChangeRecord>, (HandoffOutcome, String)> {
+/// paths. Parsing the exact bytes rather than a lossy string keeps that
+/// guarantee — a lossy conversion would silently substitute replacement
+/// characters and the manifest would then claim a path the tree does not have.
+fn parse_raw_diff(stdout: &[u8]) -> Result<Vec<ChangeRecord>, (HandoffOutcome, String)> {
     let malformed = |detail: &str| {
         (HandoffOutcome::InstrumentFailure, format!("malformed raw diff record: {detail}"))
     };
-    let mut fields = stdout.split('\0').filter(|field| !field.is_empty());
+    let mut fields = stdout.split(|byte| *byte == 0).filter(|field| !field.is_empty());
     let mut records = Vec::new();
 
     while let Some(header) = fields.next() {
+        let header = decode_utf8(header, "a raw diff header")?;
         let header = header.strip_prefix(':').ok_or_else(|| malformed("missing leading colon"))?;
         let parts: Vec<&str> = header.split(' ').collect();
         let [old_mode, new_mode, old_object, new_object, status_field] = parts.as_slice() else {
@@ -465,10 +483,13 @@ fn parse_raw_diff(stdout: &str) -> Result<Vec<ChangeRecord>, (HandoffOutcome, St
             let source = fields.next().ok_or_else(|| malformed("rename source missing"))?;
             let destination =
                 fields.next().ok_or_else(|| malformed("rename destination missing"))?;
-            (Some(source.to_string()), destination.to_string())
+            (
+                Some(decode_utf8(source, "a rename source path")?),
+                decode_utf8(destination, "a rename destination path")?,
+            )
         } else {
             let single = fields.next().ok_or_else(|| malformed("path missing"))?;
-            (None, single.to_string())
+            (None, decode_utf8(single, "a changed path")?)
         };
 
         records.push(ChangeRecord {
@@ -480,7 +501,7 @@ fn parse_raw_diff(stdout: &str) -> Result<Vec<ChangeRecord>, (HandoffOutcome, St
             old_object: object_option(old_object),
             new_object: object_option(new_object),
             similarity: score,
-            entry_class: entry_class_for(new_mode),
+            entry_class: entry_class_for(new_mode)?,
         });
     }
 
@@ -502,13 +523,39 @@ fn object_option(object: &str) -> Option<String> {
     (!object.chars().all(|character| character == '0')).then(|| object.to_string())
 }
 
-fn entry_class_for(mode: &str) -> EntryClass {
+/// Decode one Git-reported byte field, refusing what this envelope cannot
+/// represent.
+///
+/// A manifest is JSON, so a non-UTF-8 path has no faithful representation.
+/// Refusing with a typed outcome is honest; a lossy conversion would put a
+/// path in the inventory that does not exist in the tree, and the digest would
+/// then commit to that false claim.
+fn decode_utf8(bytes: &[u8], what: &str) -> Result<String, (HandoffOutcome, String)> {
+    std::str::from_utf8(bytes).map(str::to_string).map_err(|_| {
+        (
+            HandoffOutcome::UnsupportedObjectClass,
+            format!("{what} is not valid UTF-8 and cannot be represented in this envelope"),
+        )
+    })
+}
+
+/// Classify the candidate-side entry, refusing a mode this format does not
+/// model.
+///
+/// Only `000000` means the entry is absent. Mapping every unrecognised mode to
+/// `Absent` would record an unmodelled entry as a deletion, and the semantic
+/// digest would commit to that as a fact.
+pub fn entry_class_for(mode: &str) -> Result<EntryClass, (HandoffOutcome, String)> {
     match mode {
-        "100644" => EntryClass::RegularFile,
-        "100755" => EntryClass::ExecutableFile,
-        "120000" => EntryClass::Symlink,
-        "160000" => EntryClass::Gitlink,
-        _ => EntryClass::Absent,
+        "100644" => Ok(EntryClass::RegularFile),
+        "100755" => Ok(EntryClass::ExecutableFile),
+        "120000" => Ok(EntryClass::Symlink),
+        "160000" => Ok(EntryClass::Gitlink),
+        "000000" => Ok(EntryClass::Absent),
+        other => Err((
+            HandoffOutcome::UnsupportedObjectClass,
+            format!("mode `{other}` is not an entry class this format can carry"),
+        )),
     }
 }
 
@@ -527,17 +574,27 @@ pub fn collect_gitlinks(
     }
 
     let mut gitlinks = Vec::new();
-    for entry in output.stdout.split('\0').filter(|entry| !entry.is_empty()) {
-        let Some((metadata, path)) = entry.split_once('\t') else {
+    // Parse the exact bytes for the same reason the diff parser does: a
+    // gitlink path must reach the manifest as the tree spells it.
+    for entry in output.stdout_bytes.split(|byte| *byte == 0).filter(|entry| !entry.is_empty()) {
+        let Some(separator) = entry.iter().position(|byte| *byte == b'\t') else {
             continue;
         };
+        let metadata = decode_utf8(&entry[..separator], "an ls-tree entry")?;
         let columns: Vec<&str> = metadata.split_whitespace().collect();
         let [mode, kind, object] = columns.as_slice() else {
             continue;
         };
         if *mode == "160000" && *kind == "commit" {
+            if !is_full_object_id(object) {
+                return Err((
+                    HandoffOutcome::InstrumentFailure,
+                    format!("tree {tree} reported a non-canonical gitlink object id"),
+                ));
+            }
+            let path = decode_utf8(&entry[separator + 1..], "a gitlink path")?;
             gitlinks.push(GitlinkRecord {
-                path: path.to_string(),
+                path,
                 commit: (*object).to_string(),
                 disposition: GitlinkDisposition::ReferencedNotTransported,
             });

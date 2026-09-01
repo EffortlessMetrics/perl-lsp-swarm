@@ -627,16 +627,16 @@ fn identical_objects_in_two_workspaces_produce_one_identity() -> Result<()> {
     let first = export_valid(&fixture, &first_destination)?;
 
     let second_destination = Destination::new()?;
-    let mut inputs = CreateRequest {
+    let inputs = CreateRequest {
         repository: clone_path,
         candidate: "HEAD".to_string(),
         out: second_destination.envelope(),
         declared_repository_identity: None,
         proofs: Vec::new(),
     };
-    // The clone's `origin` points at a local path, so declare the identity the
-    // original observed; identity source is a semantic input, not an accident.
-    inputs.declared_repository_identity = None;
+    // The clone's `origin` points at a local path, so no identity is declared
+    // here. This control compares objects and inventory across storage
+    // layouts; repository identity is a separate semantic input.
     let second = create_handoff(&inputs)
         .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
 
@@ -1528,6 +1528,65 @@ fn every_envelope_admits_that_transported_objects_are_not_secret_scanned() -> Re
     Ok(())
 }
 
+/// The manifest must carry the commit body exactly as the object stores it.
+///
+/// `--format=%B` appends a newline of its own, so the message reached the
+/// manifest one byte longer than `git cat-file commit`'s body — a receiver
+/// reconstructing identity from the raw object would derive a different value
+/// for a field documented as verbatim.
+#[test]
+fn the_manifest_message_equals_the_raw_commit_body() -> Result<()> {
+    for message in ["subject only", "subject\n\nbody paragraph\n\nsecond paragraph"] {
+        let fixture = Fixture::new()?;
+        fixture.write("a.txt", b"a\n")?;
+        let commit = fixture.commit(message)?;
+
+        let destination = Destination::new()?;
+        let manifest = export_valid(&fixture, &destination)?;
+
+        let raw = Command::new("git")
+            .args(["cat-file", "commit", &commit])
+            .current_dir(fixture.path())
+            .output()?;
+        let raw = raw.stdout;
+        let separator = raw
+            .windows(2)
+            .position(|pair| pair == b"\n\n")
+            .context("commit header/body separator")?;
+        let body = String::from_utf8(raw[separator + 2..].to_vec())?;
+
+        assert_eq!(
+            manifest.candidate.message, body,
+            "the manifest message must equal the raw commit body byte for byte"
+        );
+    }
+    Ok(())
+}
+
+/// An entry class this format does not model must be refused, not silently
+/// recorded as a deletion the semantic digest then commits to.
+#[test]
+fn an_unmodelled_entry_mode_is_refused_as_an_unsupported_class() {
+    use super::create::entry_class_for;
+
+    for (mode, expected) in [
+        ("100644", EntryClass::RegularFile),
+        ("100755", EntryClass::ExecutableFile),
+        ("120000", EntryClass::Symlink),
+        ("160000", EntryClass::Gitlink),
+        ("000000", EntryClass::Absent),
+    ] {
+        assert_eq!(entry_class_for(mode).map_err(|(outcome, _)| outcome), Ok(expected), "{mode}");
+    }
+
+    let unknown = entry_class_for("040000");
+    assert_eq!(
+        unknown.map_err(|(outcome, _)| outcome),
+        Err(HandoffOutcome::UnsupportedObjectClass),
+        "an unmodelled mode is not a deletion"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Credential detection
 // ---------------------------------------------------------------------------
@@ -1630,6 +1689,25 @@ fn every_outcome_has_a_stable_distinct_spelling() {
         HandoffOutcome::ProofSubjectMismatch,
         HandoffOutcome::InstrumentFailure,
     ];
+    // An exhaustive match so a later variant cannot be added without being
+    // listed above; otherwise this distinctness claim silently narrows to
+    // whatever was known when it was written.
+    for outcome in &outcomes {
+        match outcome {
+            HandoffOutcome::ValidHandoff
+            | HandoffOutcome::InvalidManifest
+            | HandoffOutcome::MissingObject
+            | HandoffOutcome::DigestMismatch
+            | HandoffOutcome::TreeMismatch
+            | HandoffOutcome::ParentMismatch
+            | HandoffOutcome::InventoryMismatch
+            | HandoffOutcome::UnsafeContent
+            | HandoffOutcome::UnsupportedObjectClass
+            | HandoffOutcome::RepositoryIdentityNotProven
+            | HandoffOutcome::ProofSubjectMismatch
+            | HandoffOutcome::InstrumentFailure => {}
+        }
+    }
     let mut spellings: Vec<&str> = outcomes.iter().map(HandoffOutcome::as_str).collect();
     spellings.sort_unstable();
     let count = spellings.len();

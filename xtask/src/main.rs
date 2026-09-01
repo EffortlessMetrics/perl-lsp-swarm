@@ -4750,6 +4750,17 @@ enum AgentFlowCommand {
     },
 }
 
+/// Output projection for `agent-candidate-handoff`.
+///
+/// A closed set rather than a free string: an unrecognised `--format` silently
+/// produced human output, so a caller asking for machine output could parse a
+/// human report without ever being told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum HandoffOutputFormat {
+    Human,
+    Json,
+}
+
 #[derive(Subcommand)]
 enum AgentCandidateHandoffCommand {
     /// Export one exact local candidate into an immutable envelope.
@@ -4775,8 +4786,8 @@ enum AgentCandidateHandoffCommand {
         #[arg(long = "proof")]
         proofs: Vec<PathBuf>,
         /// Output format: `human` (default) or `json`.
-        #[arg(long, default_value = "human")]
-        format: String,
+        #[arg(long, value_enum, default_value = "human")]
+        format: HandoffOutputFormat,
     },
     /// Validate an envelope independently of the workspace that produced it.
     Check {
@@ -4784,8 +4795,8 @@ enum AgentCandidateHandoffCommand {
         #[arg(long)]
         handoff: PathBuf,
         /// Output format: `human` (default) or `json`.
-        #[arg(long, default_value = "human")]
-        format: String,
+        #[arg(long, value_enum, default_value = "human")]
+        format: HandoffOutputFormat,
     },
     /// Describe what an envelope claims, and what it deliberately does not.
     Explain {
@@ -4793,8 +4804,8 @@ enum AgentCandidateHandoffCommand {
         #[arg(long)]
         handoff: PathBuf,
         /// Output format: `human` (default) or `json`.
-        #[arg(long, default_value = "human")]
-        format: String,
+        #[arg(long, value_enum, default_value = "human")]
+        format: HandoffOutputFormat,
     },
 }
 
@@ -6926,7 +6937,7 @@ fn run_agent_candidate_handoff(command: AgentCandidateHandoffCommand) -> Result<
             proofs,
             format,
         } => {
-            let as_json = format == "json";
+            let as_json = format == HandoffOutputFormat::Json;
             let request = CreateRequest {
                 repository,
                 candidate,
@@ -6956,14 +6967,15 @@ fn run_agent_candidate_handoff(command: AgentCandidateHandoffCommand) -> Result<
         AgentCandidateHandoffCommand::Check { handoff, format } => {
             let report = check_handoff(&handoff);
             let human = render::render_check_human(&report);
-            let text = render::render(&report, &human, format == "json").map_err(|e| eyre!(e))?;
+            let text = render::render(&report, &human, format == HandoffOutputFormat::Json)
+                .map_err(|e| eyre!(e))?;
             emit(report.outcome, text)
         }
         AgentCandidateHandoffCommand::Explain { handoff, format } => match explain(&handoff) {
             Ok(document) => {
                 let human = render::render_explain_human(&document);
-                let text =
-                    render::render(&document, &human, format == "json").map_err(|e| eyre!(e))?;
+                let text = render::render(&document, &human, format == HandoffOutputFormat::Json)
+                    .map_err(|e| eyre!(e))?;
                 println!("{text}");
                 Ok(())
             }
@@ -7059,6 +7071,39 @@ mod tests {
             Cli::try_parse_from(["xtask", "agent-candidate-handoff", "explain"]).is_err(),
             "explain must not default to an implicit envelope"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_candidate_handoff_rejects_an_unsupported_format() -> TestResult {
+        assert!(
+            Cli::try_parse_from([
+                "xtask",
+                "agent-candidate-handoff",
+                "check",
+                "--handoff",
+                "target/handoff",
+                "--format",
+                "yaml",
+            ])
+            .is_err(),
+            "an unrecognised format must be refused, not silently rendered as human output"
+        );
+        let command = parse_handoff_command(&[
+            "xtask",
+            "agent-candidate-handoff",
+            "check",
+            "--handoff",
+            "target/handoff",
+            "--format",
+            "json",
+        ])?;
+        match command {
+            AgentCandidateHandoffCommand::Check { format, .. } => {
+                assert_eq!(format, HandoffOutputFormat::Json);
+            }
+            _ => return Err(std::io::Error::other("expected check").into()),
+        }
         Ok(())
     }
 

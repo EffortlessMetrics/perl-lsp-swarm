@@ -11,9 +11,9 @@ body: >-
   binary content, so a candidate can be reconstructed after the producing
   workspace is gone. Credential-bearing content is refused rather than
   redacted, repository identity is observed, declared, or NOT_PROVEN rather
-  than guessed, and every outcome is a distinct typed class with its own exit
-  code. Creating or checking a handoff publishes no branch, opens no pull
-  request, and claims no hosted check.
+  than guessed, and every outcome is a distinct typed class, grouped into
+  category-specific exit codes. Creating or checking a handoff publishes no
+  branch, opens no pull request, and claims no hosted check.
 time: 2026-09-01T19:30:00Z
 custom:
   PR: "14535"
