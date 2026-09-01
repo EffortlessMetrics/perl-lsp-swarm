@@ -1555,6 +1555,13 @@ fn validate_policy_table(
             return 0;
         }
     };
+    // Scan the raw source before parsing and table lookup: a syntactically
+    // valid policy without the selected table must not bypass marker checks.
+    let marker_lines = policy_conflict_marker_lines(&text);
+    if !marker_lines.is_empty() {
+        errors.push(format!("{}: Git conflict markers at lines {marker_lines:?}", path.display()));
+    }
+
     let data = match toml::from_str::<toml::Value>(&text) {
         Ok(data) => data,
         Err(err) => {
@@ -1570,11 +1577,6 @@ fn validate_policy_table(
         errors.push(format!("{}: `{table_name}` must be a list of tables", path.display()));
         return 0;
     };
-
-    let marker_lines = policy_conflict_marker_lines(&text);
-    if !marker_lines.is_empty() {
-        errors.push(format!("{}: Git conflict markers at lines {marker_lines:?}", path.display()));
-    }
 
     let mut seen_ids: BTreeMap<String, usize> = BTreeMap::new();
     let mut seen_matchers: BTreeMap<String, String> = BTreeMap::new();
@@ -3233,6 +3235,17 @@ review_after = "2026-06-01"
             marker_errors.iter().any(|error| error.contains("conflict markers")),
             "{marker_errors:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn policy_table_path_scans_markers_before_missing_table_return() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("missing-allow.toml");
+        std::fs::write(&path, "# no allow table\n<<<<<<< HEAD\n")?;
+        let mut errors = Vec::new();
+        assert_eq!(validate_policy_table(&path, "allow", true, &mut errors), 0);
+        assert!(errors.iter().any(|error| error.contains("conflict markers")), "{errors:?}");
         Ok(())
     }
 
