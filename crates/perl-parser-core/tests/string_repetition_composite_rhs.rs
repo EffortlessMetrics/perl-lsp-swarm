@@ -2,17 +2,41 @@ mod cpan_test_helpers;
 use cpan_test_helpers::*;
 use perl_parser_core::{Node, NodeKind};
 
-fn contains_string_repetition(node: &Node) -> bool {
-    matches!(&node.kind, NodeKind::Binary { op, .. } if op == "x")
-        || node.children().into_iter().any(contains_string_repetition)
+fn collect_string_repetitions<'a>(node: &'a Node, repetitions: &mut Vec<&'a Node>) {
+    if matches!(&node.kind, NodeKind::Binary { op, .. } if op == "x") {
+        repetitions.push(node);
+    }
+    for child in node.children() {
+        collect_string_repetitions(child, repetitions);
+    }
 }
 
 fn assert_string_repetition(source: &str) {
     assert_clean_parse(source);
     let ast = parse(source);
+    let mut repetitions = Vec::new();
+    collect_string_repetitions(&ast, &mut repetitions);
+    assert_eq!(
+        repetitions.len(),
+        1,
+        "expected exactly one binary string-repetition node for source:\n{source}\n\nsexp:\n{}",
+        ast.to_sexp(),
+    );
+
+    let Some(repetition) = repetitions.first() else {
+        return;
+    };
+    let NodeKind::Binary { left, right, .. } = &repetition.kind else {
+        return;
+    };
     assert!(
-        contains_string_repetition(&ast),
-        "expected a binary string-repetition node for source:\n{source}\n\nsexp:\n{}",
+        matches!(&left.kind, NodeKind::String { .. }),
+        "the repetition LHS must be a string literal for source:\n{source}\n\nsexp:\n{}",
+        ast.to_sexp(),
+    );
+    assert!(
+        !matches!(&right.kind, NodeKind::Binary { op, .. } if op == "x"),
+        "the composite RHS must not be parsed as another repetition for source:\n{source}\n\nsexp:\n{}",
         ast.to_sexp(),
     );
 }
@@ -42,9 +66,31 @@ fn x_before_fat_arrow_remains_a_bare_call_key() {
     let source = r#"sub configure; configure x => 3;"#;
     assert_clean_parse(source);
     let ast = parse(source);
+    let mut repetitions = Vec::new();
+    collect_string_repetitions(&ast, &mut repetitions);
     assert!(
-        !contains_string_repetition(&ast),
+        repetitions.is_empty(),
         "x before a fat arrow must remain a key, not repetition:\n{}",
         ast.to_sexp(),
     );
+}
+
+#[test]
+fn adjacent_and_chained_x_operators_keep_their_own_shape() {
+    for (source, expected_repetitions) in [
+        (r#"my $value = "x" x 2 x 3;"#, 2),
+        (r#"my $value = "x" x foo(2);"#, 1),
+        (r#"my $value = "x" x 2 + 3;"#, 1),
+    ] {
+        assert_clean_parse(source);
+        let ast = parse(source);
+        let mut repetitions = Vec::new();
+        collect_string_repetitions(&ast, &mut repetitions);
+        assert_eq!(
+            repetitions.len(),
+            expected_repetitions,
+            "unexpected repetition-node count for source:\n{source}\n\nsexp:\n{}",
+            ast.to_sexp(),
+        );
+    }
 }
