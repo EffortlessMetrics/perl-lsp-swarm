@@ -31,6 +31,11 @@ pub use native::{
     RequireUseStrictRule, RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule,
     UndefComparisonRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
 };
+/// Proof-only rebuild instrumentation; see
+/// `native::native_registry::native_critic_scope_rebuild_count`. Never present
+/// in a production build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub use native::{native_critic_scope_rebuild_count, reset_native_critic_scope_rebuild_count};
 pub use normalized::{
     CriticFindingCandidate, CriticFindingContributor, CriticSourceIdentity,
     NormalizedCriticFinding, OwnedCriticObservedIdentity, normalize_critic_findings,

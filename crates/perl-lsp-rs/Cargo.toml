@@ -119,6 +119,9 @@ dap-phase3 = []  # DAP non-regression tests; no external runtime implementation 
 utf16-complete = ["perl-parser/utf16-complete"]  # Complete UTF-16 round-trip support
 
 [dev-dependencies]
+# Test builds only: turns on the core crate's proof-only native-critic rebuild
+# counter (#7286). A production build of `perl-lsp-rs` links core without it.
+perl-lsp-rs-core = { workspace = true, features = ["test-instrumentation"] }
 assert_cmd = "2.2.2"
 chrono = "0.4.43"
 insta = { workspace = true, features = ["yaml"] }

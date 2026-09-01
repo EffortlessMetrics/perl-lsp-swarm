@@ -24,6 +24,13 @@ pub use native_contract::{
     CriticTextEdit, FixSafety,
 };
 pub use native_registry::{NativeCriticProfile, NativeCriticRegistry};
+/// Proof-only rebuild instrumentation; see `native_registry`. Compiled for
+/// this crate's tests and for downstream crates that opt in with the
+/// `test-instrumentation` feature, never in a production build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub use native_registry::{
+    native_critic_scope_rebuild_count, reset_native_critic_scope_rebuild_count,
+};
 pub use native_suppressions::{CriticSuppression, CriticSuppressionMap, CriticSuppressionScope};
 
 /// Resolve scope analysis issues for a rule, using pre-computed results from

@@ -31,7 +31,7 @@
 
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
-use perl_pragma::{PerlVersion, PragmaQueryCursor, PragmaTracker, parse_perl_version};
+use perl_pragma::{PerlVersion, PragmaQueryCursor, PragmaState, parse_perl_version};
 
 use super::super::internal_types::Diagnostic;
 use super::super::walker::walk_node;
@@ -124,7 +124,25 @@ const SMARTMATCH_FEATURE_GATE_VERSION: PerlVersion = PerlVersion::new(5, 42);
 ///
 /// Walks the AST looking for uses of version-gated features and emits
 /// `PL900` warnings when the declared version does not support them.
+/// Public entry point: derives the pragma timeline from `node` itself. See
+/// `check_strict_warnings` for why the map-taking form is not public.
 pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    check_version_compat_with_pragma_map(
+        node,
+        &perl_pragma::PragmaTracker::build(node),
+        diagnostics,
+    );
+}
+
+/// Crate-internal variant taking a caller-supplied pragma timeline (#7286).
+///
+/// Deliberately not public, for the reason given on
+/// `check_strict_warnings_with_pragma_map`.
+pub(crate) fn check_version_compat_with_pragma_map(
+    node: &Node,
+    pragma_map: &[(std::ops::Range<usize>, PragmaState)],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     // Collect the declared version and builtin imports from top-level statements.
     let statements = match &node.kind {
         NodeKind::Program { statements } => statements,
@@ -177,12 +195,11 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         None => return,
     };
 
-    let pragma_map = PragmaTracker::build(node);
     let mut pragma_cursor = PragmaQueryCursor::new();
 
     // Second pass: walk AST for version-gated constructs.
     walk_node(node, &mut |n| {
-        let pragma_state = pragma_cursor.state_for_offset(&pragma_map, n.location.start);
+        let pragma_state = pragma_cursor.state_for_offset(pragma_map, n.location.start);
 
         match &n.kind {
             // `class Foo { }` — the `class` feature shipped in v5.38 and is still
