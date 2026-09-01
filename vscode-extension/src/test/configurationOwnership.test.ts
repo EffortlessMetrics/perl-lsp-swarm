@@ -1,11 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as vscode from 'vscode';
-import {
-  resolveResourceWriteTarget,
-  SETTING_OWNERSHIP,
-  settingOwnership,
-} from '../configurationOwnership';
+import { SETTING_OWNERSHIP, settingOwnership } from '../configurationOwnership';
 
 type ManifestProperty = { scope?: string };
 
@@ -130,64 +125,5 @@ describe('contributed setting ownership table (#14447)', () => {
       transport: 'workspace/configuration',
     });
     expect(settingOwnership('perl-lsp.notAThing')).toBeUndefined();
-  });
-});
-
-describe('resource write target (#14447)', () => {
-  const workspaceMock = vscode.workspace as unknown as {
-    workspaceFolders: unknown;
-    getWorkspaceFolder: jest.Mock;
-  };
-
-  afterEach(() => {
-    workspaceMock.workspaceFolders = undefined;
-    workspaceMock.getWorkspaceFolder.mockReset();
-    workspaceMock.getWorkspaceFolder.mockReturnValue(undefined);
-  });
-
-  test('a resource inside a workspace folder writes that folder', () => {
-    workspaceMock.workspaceFolders = [{ uri: { fsPath: '/workspace/a' } }];
-    workspaceMock.getWorkspaceFolder.mockReturnValue({ uri: { fsPath: '/workspace/a' } });
-
-    expect(resolveResourceWriteTarget(vscode.Uri.parse('file:///workspace/a/lib/M.pm'))).toBe(
-      vscode.ConfigurationTarget.WorkspaceFolder,
-    );
-  });
-
-  test('a resource owned by no folder falls back to the workspace', () => {
-    workspaceMock.workspaceFolders = [{ uri: { fsPath: '/workspace/a' } }];
-    workspaceMock.getWorkspaceFolder.mockReturnValue(undefined);
-
-    expect(resolveResourceWriteTarget(vscode.Uri.parse('file:///elsewhere/M.pm'))).toBe(
-      vscode.ConfigurationTarget.Workspace,
-    );
-  });
-
-  test('no resource at all falls back to the workspace', () => {
-    workspaceMock.workspaceFolders = [{ uri: { fsPath: '/workspace/a' } }];
-
-    expect(resolveResourceWriteTarget(undefined)).toBe(vscode.ConfigurationTarget.Workspace);
-  });
-
-  test('with no workspace open the value is written globally', () => {
-    workspaceMock.workspaceFolders = undefined;
-
-    expect(resolveResourceWriteTarget(vscode.Uri.parse('file:///tmp/M.pm'))).toBe(
-      vscode.ConfigurationTarget.Global,
-    );
-  });
-
-  test('a multi-root resource never resolves to the workspace-wide target', () => {
-    // The reported defect: a folder-local action wrote ConfigurationTarget
-    // .Workspace, publishing one folder's value to every other folder.
-    workspaceMock.workspaceFolders = [
-      { uri: { fsPath: '/workspace/a' } },
-      { uri: { fsPath: '/workspace/b' } },
-    ];
-    workspaceMock.getWorkspaceFolder.mockReturnValue({ uri: { fsPath: '/workspace/a' } });
-
-    expect(resolveResourceWriteTarget(vscode.Uri.parse('file:///workspace/a/lib/M.pm'))).not.toBe(
-      vscode.ConfigurationTarget.Workspace,
-    );
   });
 });

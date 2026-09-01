@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { buildLanguageClientConfigurationPayload } from './languageClientConfiguration';
+import { buildWorkspaceConfigurationPayload } from './languageClientConfiguration';
 
 /**
  * Folder-owned answers for the server's `workspace/configuration` pull (#14447).
@@ -45,16 +45,22 @@ export type ConfigurationParamsLike = {
 /**
  * The value of the `perl` section for one scope.
  *
- * Returns the *unwrapped* section content (`{ workspace, critic, perlcritic }`),
- * which is what `apply_workspace_config_layer` on the server consumes for a
- * `workspace/configuration` result. This deliberately reuses the same builder
- * as the `didChangeConfiguration` push so pull and push cannot describe the
- * same scope differently.
+ * Returns the *unwrapped* section content, which is what
+ * `apply_workspace_config_layer` consumes for a `workspace/configuration`
+ * result.
+ *
+ * Deliberately limited to the `workspace` section. The server applies a result
+ * item through `WorkspaceConfig::update_from_value_with_context`, which reads
+ * only `settings.get("workspace")`; Critic has no field there and is parsed
+ * solely from the session-global `didChangeConfiguration` push (#8253).
+ * Publishing Critic here would be inert on the wire but would assert a
+ * folder ownership the server does not honour, so the transport carries exactly
+ * what the ownership table says it carries — see the
+ * `only settings the server reads per folder claim the pull transport` contract.
  */
 export function buildPerlSectionValue(scope?: vscode.Uri): Record<string, unknown> {
-  const payload = buildLanguageClientConfigurationPayload(scope);
-  const settings = payload.settings as { perl?: Record<string, unknown> } | undefined;
-  return settings?.perl ?? {};
+  const config = vscode.workspace.getConfiguration('perl-lsp', scope);
+  return buildWorkspaceConfigurationPayload(config) ?? {};
 }
 
 function parseScopeUri(scopeUri: string | undefined): vscode.Uri | undefined {

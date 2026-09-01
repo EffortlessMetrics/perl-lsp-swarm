@@ -1,9 +1,6 @@
 import * as vscode from 'vscode';
-import {
-  buildPerlSectionValue,
-  PERL_CONFIGURATION_SECTION,
-  resolvePerlConfiguration,
-} from '../configurationPull';
+import { SETTING_OWNERSHIP } from '../configurationOwnership';
+import { PERL_CONFIGURATION_SECTION, resolvePerlConfiguration } from '../configurationPull';
 
 type FolderValues = Record<string, unknown>;
 
@@ -117,10 +114,7 @@ describe('workspace/configuration folder ownership (#14447)', () => {
       jest.fn(),
     );
 
-    expect(result[0]).toEqual({
-      workspace: { includePaths: ['a/lib'] },
-      critic: { severity: 1 },
-    });
+    expect(result[0]).toEqual({ workspace: { includePaths: ['a/lib'] } });
     // Folder B declares nothing, so it must inherit nothing from folder A.
     expect(result[1]).toEqual({});
   });
@@ -274,21 +268,39 @@ describe('workspace/configuration folder ownership (#14447)', () => {
     }
   });
 
-  test('pull and push describe the same scope identically', async () => {
+  test('the pull carries exactly the settings the ownership table assigns it', async () => {
+    // Binds the descriptive table to real transport behaviour: Critic is set
+    // here, and must NOT appear, because the table records Critic as
+    // didChangeConfiguration-only. Without this, the table could claim one
+    // thing while the wire did another.
     installScopedConfiguration({
       '': {},
-      [FOLDER_A]: { includePaths: ['a/lib'], 'critic.profile': 'strict' },
+      [FOLDER_A]: {
+        includePaths: ['a/lib'],
+        'critic.severity': 1,
+        'critic.profile': 'strict',
+        'perlcritic.enabled': true,
+      },
     });
 
-    const pulled = await resolvePerlConfiguration(
+    const result = await resolvePerlConfiguration(
       { items: [{ scopeUri: FOLDER_A, section: PERL_CONFIGURATION_SECTION }] },
       undefined,
       jest.fn(),
     );
 
-    // `buildPerlSectionValue` is the same builder the didChangeConfiguration
-    // push uses, so a divergence between the two transports is unrepresentable.
-    expect(pulled[0]).toEqual(buildPerlSectionValue(vscode.Uri.parse(FOLDER_A)));
+    const answer = result[0] as Record<string, unknown>;
+    expect(Object.keys(answer)).toEqual(['workspace']);
+    expect(answer.critic).toBeUndefined();
+    expect(answer.perlcritic).toBeUndefined();
+
+    const pulled = SETTING_OWNERSHIP.filter(
+      (row) => row.transport === 'workspace/configuration',
+    ).map((row) => row.key.slice('perl-lsp.'.length));
+    const workspaceSection = answer.workspace as Record<string, unknown>;
+    for (const key of Object.keys(workspaceSection)) {
+      expect(pulled).toContain(key);
+    }
   });
 
   test('machine-scoped external roots are not published as folder values', async () => {

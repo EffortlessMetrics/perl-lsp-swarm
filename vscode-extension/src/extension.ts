@@ -146,7 +146,6 @@ import {
 } from './languageClientConfiguration';
 export { buildDisabledFeaturesFromConfig } from './languageClientConfiguration';
 import { perlConfigurationMiddleware } from './configurationPull';
-import { resolveResourceWriteTarget } from './configurationOwnership';
 import {
   classifyStartupError,
   formatStartupFailureDialog,
@@ -594,10 +593,19 @@ export async function setPerlCriticSeverity(
 
   const severity = Number(selection.label);
   const config = vscode.workspace.getConfiguration('perl-lsp', resourceUri);
-  // `critic.severity` is resource-scoped, and this command acts on one active
-  // document. Writing `Workspace` applied the chosen severity to every folder in
-  // a multi-root workspace (#14447); write the owning folder instead.
-  const target = resolveResourceWriteTarget(resourceUri);
+  // `critic.severity` is declared `resource`, but the server keeps one
+  // session-global Critic state and only learns it through the unscoped
+  // `didChangeConfiguration` push (#8253; see CRITIC_SESSION_STATE_DEFECT in
+  // configurationOwnership.ts). Startup calls syncLanguageClientConfiguration
+  // with no scope, and an unscoped read cannot see a workspaceFolderValue — so
+  // writing the owning folder here would make the chosen severity work for the
+  // current session and then silently vanish on restart. Keep the write at a
+  // scope the session-global push can actually read until Critic becomes
+  // folder-owned server-side.
+  const target =
+    vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
   // Write the native `critic.severity` key — the product-surface setting.
   await config.update('critic.severity', severity, target);
   const payload = buildPerlCriticConfigurationPayload(resourceUri, severity);

@@ -1,5 +1,3 @@
-import * as vscode from 'vscode';
-
 /**
  * Checked ownership table for every contributed `perl-lsp.*` setting (#14447).
  *
@@ -370,30 +368,4 @@ const OWNERSHIP_BY_KEY = new Map(SETTING_OWNERSHIP.map((row) => [row.key, row]))
 /** Ownership row for a fully qualified `perl-lsp.*` key, when one exists. */
 export function settingOwnership(key: string): SettingOwnership | undefined {
   return OWNERSHIP_BY_KEY.get(key);
-}
-
-/**
- * Resolve the write target for a setting whose value is owned by one folder.
- *
- * A folder-local action must write `WorkspaceFolder` so the value stays bound
- * to the folder the user acted on. Writing `Workspace` in a multi-root
- * workspace silently applies the value to every other folder as well (#14447).
- *
- * Falls back to `Workspace` only when the resource belongs to no workspace
- * folder but a workspace exists, and to `Global` when there is no workspace at
- * all (for example a lone open file).
- */
-export function resolveResourceWriteTarget(
-  resource: vscode.Uri | undefined,
-): vscode.ConfigurationTarget {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) {
-    return vscode.ConfigurationTarget.Global;
-  }
-
-  if (resource && vscode.workspace.getWorkspaceFolder(resource)) {
-    return vscode.ConfigurationTarget.WorkspaceFolder;
-  }
-
-  return vscode.ConfigurationTarget.Workspace;
 }
