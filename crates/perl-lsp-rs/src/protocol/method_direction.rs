@@ -880,7 +880,7 @@ pub(crate) mod lexical_forms {
     const BYTE_RAW: &[u8] = br##("{ }")##;
     const CHARACTER: char = '}';
     const BYTE_CHARACTER: u8 = b'{';
-    const CONTINUED: &str = "opening\\
+    const CONTINUED: &str = "opening\
 ";
 }
 fn production() { send("production/after"); }
