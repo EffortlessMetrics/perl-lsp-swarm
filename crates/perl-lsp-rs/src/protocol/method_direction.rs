@@ -568,9 +568,48 @@ mod tests {
 
     /// Remove trailing `#[cfg(test)] mod … { … }` regions so test-only string
     /// literals cannot satisfy or pollute production-inventory scans.
-    enum TestModuleDeclaration {
+    enum TestModuleKind {
         External,
         Inline,
+    }
+
+    struct TestModuleDeclaration {
+        kind: TestModuleKind,
+        terminator_offset: usize,
+    }
+
+    fn skip_declaration_trivia(source: &str, mut index: usize) -> Option<usize> {
+        let bytes = source.as_bytes();
+        loop {
+            while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+                index += 1;
+            }
+            if bytes.get(index..).is_some_and(|tail| tail.starts_with(b"//")) {
+                return None;
+            }
+            if !bytes.get(index..).is_some_and(|tail| tail.starts_with(b"/*")) {
+                return Some(index);
+            }
+            let mut depth = 1;
+            index += 2;
+            while index < bytes.len() {
+                if bytes.get(index..).is_some_and(|tail| tail.starts_with(b"/*")) {
+                    depth += 1;
+                    index += 2;
+                } else if bytes.get(index..).is_some_and(|tail| tail.starts_with(b"*/")) {
+                    depth -= 1;
+                    index += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+            if depth != 0 {
+                return None;
+            }
+        }
     }
 
     fn test_module_declaration(line: &str) -> Option<TestModuleDeclaration> {
@@ -599,11 +638,16 @@ mod tests {
             return None;
         }
 
-        match rest[name_end..].trim_start().chars().next() {
-            Some(';') => Some(TestModuleDeclaration::External),
-            Some('{') => Some(TestModuleDeclaration::Inline),
-            _ => None,
-        }
+        let terminator_offset = skip_declaration_trivia(rest, name_end)?;
+        let kind = match rest[terminator_offset..].chars().next() {
+            Some(';') => TestModuleKind::External,
+            Some('{') => TestModuleKind::Inline,
+            _ => return None,
+        };
+        Some(TestModuleDeclaration {
+            kind,
+            terminator_offset: line.len() - rest.len() + terminator_offset,
+        })
     }
 
     #[derive(Clone, Copy)]
@@ -628,16 +672,34 @@ mod tests {
     }
 
     fn char_literal_ends_on_line(bytes: &[u8], start: usize) -> bool {
-        let mut index = start + 1;
-        while let Some(byte) = bytes.get(index) {
-            match byte {
-                b'\\' => index += 2,
-                b'\'' => return true,
-                b'\n' | b'\r' => return false,
-                _ => index += 1,
+        let Some(&first) = bytes.get(start + 1) else {
+            return false;
+        };
+        let mut index = start + 2;
+        if first == b'\\' {
+            if bytes.get(index) == Some(&b'u') && bytes.get(index + 1) == Some(&b'{') {
+                index += 2;
+                while bytes.get(index).is_some_and(|byte| *byte != b'}') {
+                    index += 1;
+                }
+                if bytes.get(index) == Some(&b'}') {
+                    index += 1;
+                }
+            } else {
+                index += 1;
             }
+        } else if first == b'\'' || first == b'\n' || first == b'\r' {
+            return false;
+        } else if first >= 0x80 {
+            let Ok(remainder) = std::str::from_utf8(&bytes[start + 1..]) else {
+                return false;
+            };
+            let Some(character) = remainder.chars().next() else {
+                return false;
+            };
+            index = start + 1 + character.len_utf8();
         }
-        false
+        bytes.get(index) == Some(&b'\'')
     }
 
     fn raw_string_ends_at(bytes: &[u8], index: usize, hashes: usize) -> bool {
@@ -651,6 +713,10 @@ mod tests {
         let bytes = line.as_bytes();
         let mut index = 0;
         let mut depth_delta = 0;
+
+        if let LexicalState::Quoted { delimiter, escaped: true } = *state {
+            *state = LexicalState::Quoted { delimiter, escaped: false };
+        }
 
         while index < bytes.len() {
             match *state {
@@ -751,15 +817,20 @@ mod tests {
                 continue;
             }
             let Some(next) = lines.peek() else { break };
-            let next_trimmed = next.trim_start();
-            let Some(declaration) = test_module_declaration(next_trimmed) else {
+            let Some(declaration) = test_module_declaration(next.trim_start()) else {
                 continue;
             };
             // Consume the attribute/mod pair. A `mod x;` declaration ends
             // here, including when trailing comments follow the semicolon; a
             // `mod x {` block is skipped by lexical brace counting.
             let Some(mod_line) = lines.next() else { break };
-            if matches!(declaration, TestModuleDeclaration::External) {
+            if matches!(declaration.kind, TestModuleKind::External) {
+                let mod_line = mod_line.trim_start();
+                let suffix = &mod_line[declaration.terminator_offset + 1..];
+                if !suffix.trim().is_empty() {
+                    result.push_str(suffix);
+                    result.push('\n');
+                }
                 continue;
             }
             let mut lexical_state = LexicalState::Normal;
@@ -796,6 +867,10 @@ pub(crate) mod external; // a comment containing {
 #[cfg(test)]
 mod plain_external;
 #[cfg(test)]
+pub(crate) mod commented /* comment containing { and } */ ;
+#[cfg(test)]
+pub(crate) mod same_line; fn after_external() { send("production/after_external"); }
+#[cfg(test)]
 pub(crate) mod lexical_forms {
     const CLOSE: &str = "}";
     const OPEN: &str = "{";
@@ -805,6 +880,8 @@ pub(crate) mod lexical_forms {
     const BYTE_RAW: &[u8] = br##("{ }")##;
     const CHARACTER: char = '}';
     const BYTE_CHARACTER: u8 = b'{';
+    const CONTINUED: &str = "opening\\
+";
 }
 fn production() { send("production/after"); }
 pub(crate) mod visible { const KEEP: &str = "visible/production"; }
@@ -817,6 +894,10 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
             assert!(!stripped.contains(test_only), "test-only literal leaked: {test_only}");
         }
         assert!(!stripped.contains("pub(crate) mod external;"));
+        assert!(!stripped.contains("pub(crate) mod commented"));
+        assert!(!stripped.contains("pub(crate) mod lexical_forms"));
+        assert!(!stripped.contains("CONTINUED"));
+        assert!(stripped.contains("production/after_external"));
         assert!(stripped.contains("production/after"));
         assert!(stripped.contains("pub(crate) mod visible"));
         assert!(stripped.contains("visible/production"));
