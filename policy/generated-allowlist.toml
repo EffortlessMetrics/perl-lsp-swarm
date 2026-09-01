@@ -68,3 +68,15 @@ covered_by = [
 ]
 created = "2026-08-29"
 review_after = "2026-11-27"
+
+[[allow]]
+id = "generated-oneliner-capability-matrix"
+path = "docs/project/status/oneliner_capability_matrix.md"
+kind = "status_page"
+generated_by = "cargo xtask oneliner-capability-matrix"
+regenerate = "cargo xtask oneliner-capability-matrix"
+owner = "docs/status"
+reason = "Command-line analysis capability matrix generated from the conformance corpus (#13735). Named separately from the broad status-page glob so policy reports can identify its real generator and its --check command."
+covered_by = ["cargo xtask check-generated", "cargo xtask oneliner-capability-matrix --check"]
+created = "2026-08-31"
+review_after = "2026-11-29"
