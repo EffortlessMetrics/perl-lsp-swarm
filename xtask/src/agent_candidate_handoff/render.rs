@@ -20,6 +20,12 @@ const AUTHORITY_BOUNDARY: &[&str] = &[
     "no hosted check, review, or merge authority is implied",
     "carried proof is local proof, not a current GitHub check",
     "transported Git objects are carried, not audited for secrets",
+    // `explain` reads the manifest and stops. Every number and identity below
+    // it is the envelope's own claim about itself, and a corrupt envelope
+    // explains exactly as confidently as a sound one. Saying so here is the
+    // difference between a projection and a verdict.
+    "this projection reports claims; only `check` verifies them",
+    "the repository identity is the producer's word; no receiver can check it",
 ];
 
 /// What one envelope claims, in a form another context can consume.
@@ -31,8 +37,17 @@ pub struct ExplainDocument {
     pub candidate_commit: String,
     /// Semantic identity digest.
     pub candidate_identity_digest: String,
-    /// Repository identity status as a stable token.
-    pub repository_identity: String,
+    /// Strength of the repository claim, as a stable token.
+    pub repository_identity_status: String,
+    /// Lowercase `owner/name`, absent when no identity is proven.
+    pub repository_identity_value: Option<String>,
+    /// Hosting authority an observed identity was read from.
+    ///
+    /// Carried through the projection rather than dropped: `owner/name` names a
+    /// different repository on every forge, so a consumer handed the bare pair
+    /// could publish to the wrong one — which is the whole reason the manifest
+    /// records a host at all.
+    pub repository_identity_host: Option<String>,
     /// Number of ordered parents.
     pub parent_count: usize,
     /// Number of recomputable change rows.
@@ -72,14 +87,19 @@ pub fn describe(manifest: &Manifest) -> ExplainDocument {
         schema_version: "agent_candidate_handoff_explain.v1",
         candidate_commit: manifest.candidate.commit.clone(),
         candidate_identity_digest: manifest.candidate_identity_digest.clone(),
-        repository_identity: match manifest.repository_identity.status {
-            RepositoryIdentityStatus::NotProven => "not_proven".to_string(),
-            RepositoryIdentityStatus::Observed | RepositoryIdentityStatus::Declared => manifest
-                .repository_identity
-                .value
-                .clone()
-                .unwrap_or_else(|| "not_proven".to_string()),
-        },
+        // Status is reported as status, never collapsed into the value.
+        // `Observed` and `Declared` are different claims — one was read from a
+        // remote, the other was typed by the caller and verified by nobody —
+        // and a projection that renders them identically invites a consumer to
+        // act on a guess as though it were an observation.
+        repository_identity_status: match manifest.repository_identity.status {
+            RepositoryIdentityStatus::NotProven => "not_proven",
+            RepositoryIdentityStatus::Observed => "observed",
+            RepositoryIdentityStatus::Declared => "declared",
+        }
+        .to_string(),
+        repository_identity_value: manifest.repository_identity.value.clone(),
+        repository_identity_host: manifest.repository_identity.host.clone(),
         parent_count: manifest.candidate.parents.len(),
         change_count: manifest.inventory.changes.len(),
         gitlink_count: manifest.inventory.gitlinks.len(),
@@ -96,7 +116,15 @@ pub fn render_explain_human(document: &ExplainDocument) -> String {
     let mut lines = vec![
         format!("candidate: {}", document.candidate_commit),
         format!("identity: {}", document.candidate_identity_digest),
-        format!("repository: {}", document.repository_identity),
+        format!(
+            "repository: {} ({})",
+            match (&document.repository_identity_value, &document.repository_identity_host) {
+                (Some(value), Some(host)) => format!("{host}/{value}"),
+                (Some(value), None) => value.clone(),
+                (None, _) => "none".to_string(),
+            },
+            document.repository_identity_status
+        ),
         format!(
             "shape: {} parents, {} changes, {} gitlinks, {} objects",
             document.parent_count,
@@ -159,6 +187,10 @@ const fn limitation_token(limitation: LimitationCode) -> &'static str {
         LimitationCode::LocalProofOnly => "local_proof_only",
         LimitationCode::TransportedObjectsNotSecretScanned => {
             "transported_objects_not_secret_scanned"
+        }
+        LimitationCode::InventoryRenamesAreDetected => "inventory_renames_are_detected",
+        LimitationCode::RepositoryIdentityNotReceiverVerifiable => {
+            "repository_identity_not_receiver_verifiable"
         }
         LimitationCode::TransportBytesNotVersionStable => "transport_bytes_not_version_stable",
         LimitationCode::RepositoryIdentityNotProven => "repository_identity_not_proven",

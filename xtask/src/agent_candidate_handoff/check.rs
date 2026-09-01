@@ -18,7 +18,8 @@ use super::create::{
 };
 use super::git::{is_full_object_id, run_git, run_git_with_stdin};
 use super::hygiene::{
-    is_proof_id, is_repository_host, is_repository_identity, is_safe_envelope_name, scan_secrets,
+    is_proof_id, is_repository_host, is_repository_identity, is_safe_envelope_name,
+    is_safe_repository_path, scan_secrets,
 };
 use super::model::{
     ChangeInventory, HANDOFF_MANIFEST_SCHEMA_V1, HANDOFF_RECEIPT_SCHEMA_V1, LimitationCode,
@@ -88,6 +89,12 @@ pub const MAX_DECLARED_OBJECTS: usize = 2_000_000;
 
 /// Ceiling on declared proof artifacts.
 pub const MAX_DECLARED_PROOFS: usize = 256;
+
+/// Ceiling on declared parent commits.
+pub const MAX_DECLARED_PARENTS: usize = 64;
+
+/// Ceiling on one retained producer-observation string.
+pub const MAX_OBSERVATION_FIELD_BYTES: usize = 512;
 
 /// Dimensions in evaluation order. Each is reported even when unreached.
 const DIMENSION_IDS: &[&str] = &[
@@ -324,7 +331,14 @@ fn check_envelope(envelope: &Path, stage: ReceiptStage) -> CheckReport {
             builder.finish(HandoffOutcome::RepositoryIdentityNotProven)
         }
         RepositoryIdentityStatus::Observed | RepositoryIdentityStatus::Declared => {
-            builder.pass("repository_identity", "repository identity is present and well formed");
+            // Deliberately not "verified": nothing in the envelope can check
+            // this value, and a dimension that says more than it proved is the
+            // failure mode this whole format exists to avoid.
+            builder.pass(
+                "repository_identity",
+                "repository identity is present and well formed; its truth is the producer's \
+                 claim and is not checkable from the envelope",
+            );
             builder.finish(HandoffOutcome::ValidHandoff)
         }
     }
@@ -352,6 +366,16 @@ fn validate_shape(manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
         if !is_full_object_id(value) {
             return Err(invalid(format!("`{field}` is not a full 40-hex object id")));
         }
+    }
+    // Every parent costs the validator several Git invocations, each with its
+    // own deadline but no shared budget, so an octopus commit is a lever: a
+    // small envelope can buy hours of validation. Real merges are far below
+    // this; an envelope above it is refused rather than worked through.
+    if candidate.parents.len() > MAX_DECLARED_PARENTS {
+        return Err(invalid(format!(
+            "the candidate declares {} parents, above the {MAX_DECLARED_PARENTS} ceiling",
+            candidate.parents.len()
+        )));
     }
     if candidate.parents.len() != candidate.parent_trees.len() {
         return Err(invalid("parents and parent_trees are not positionally aligned".to_string()));
@@ -506,7 +530,48 @@ fn validate_shape(manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
         }
     }
 
+    // The observation block is outside the semantic digest by design, so its
+    // size is bounded here instead: without a rule, a resealed envelope could
+    // grow the manifest without limit and without changing candidate identity.
+    let observation = &manifest.observation;
+    for (field, value) in [
+        ("producer_tool", &observation.producer_tool),
+        ("producer_version", &observation.producer_version),
+        ("git_version", &observation.git_version),
+    ] {
+        if value.len() > MAX_OBSERVATION_FIELD_BYTES {
+            return Err(invalid(format!(
+                "observation.{field} is {} bytes, above the {MAX_OBSERVATION_FIELD_BYTES}-byte ceiling",
+                value.len()
+            )));
+        }
+    }
+
+    // Inventory paths are read and reported by consumers, and a tree entry can
+    // be crafted to contain one. Git refuses to check such a tree out, but this
+    // format hands the paths onward as data, so they carry the same shape rule
+    // the envelope's own file names do.
     let inventory = &manifest.inventory;
+    for change in &inventory.changes {
+        for (field, value) in [("path", Some(&change.path)), ("old_path", change.old_path.as_ref())]
+        {
+            if let Some(value) = value
+                && !is_safe_repository_path(value)
+            {
+                return Err(invalid(format!(
+                    "inventory change `{field}` `{value}` is not a safe repository path"
+                )));
+            }
+        }
+    }
+    for gitlink in &inventory.gitlinks {
+        if !is_safe_repository_path(&gitlink.path) {
+            return Err(invalid(format!(
+                "gitlink path `{}` is not a safe repository path",
+                gitlink.path
+            )));
+        }
+    }
     if inventory.base_parent.as_ref() != candidate.parents.first() {
         return Err(invalid(
             "inventory base_parent is not the candidate's first parent".to_string(),
@@ -527,9 +592,32 @@ fn find_unsafe_content(manifest: &Manifest) -> Option<String> {
     if let Some(value) = &manifest.repository_identity.value {
         fields.push(("repository_identity.value".to_string(), value.as_str()));
     }
+    if let Some(host) = &manifest.repository_identity.host {
+        fields.push(("repository_identity.host".to_string(), host.as_str()));
+    }
     for change in &manifest.inventory.changes {
         fields.push((format!("inventory.changes[{}].path", change.path), change.path.as_str()));
+        // A rename retains the *old* path too, and a credential-named file
+        // renamed to something innocuous put the secret in `old_path` where
+        // nothing looked for it.
+        if let Some(old_path) = &change.old_path {
+            fields
+                .push((format!("inventory.changes[{}].old_path", change.path), old_path.as_str()));
+        }
     }
+    for gitlink in &manifest.inventory.gitlinks {
+        fields.push((format!("inventory.gitlinks[{}].path", gitlink.path), gitlink.path.as_str()));
+    }
+    // The producer observation block is retained, rendered, and — because it is
+    // deliberately outside the semantic digest so exports stay comparable — the
+    // one region a reseal can rewrite without changing candidate identity.
+    // Excluding it from the scan made `content_safety` assert something false
+    // about the very strings least protected by anything else.
+    let observation = &manifest.observation;
+    fields.push(("observation.producer_tool".to_string(), observation.producer_tool.as_str()));
+    fields
+        .push(("observation.producer_version".to_string(), observation.producer_version.as_str()));
+    fields.push(("observation.git_version".to_string(), observation.git_version.as_str()));
 
     for (field, value) in fields {
         if let Some(finding) = scan_secrets(&field, value).first() {
@@ -788,7 +876,10 @@ fn import_isolated(pack_bytes: &[u8]) -> Result<IsolatedOdb, (HandoffOutcome, St
     let directory = tempfile::TempDir::new().map_err(|error| {
         instrument(format!("could not create a temporary object database: {error}"))
     })?;
-    let init = run_git(directory.path(), &["init", "--bare", "--quiet"]).map_err(&instrument)?;
+    // An explicitly empty template, so no template directory can seed the fresh
+    // database with refs, hooks, or an `objects/info/alternates` file.
+    let init = run_git(directory.path(), &["init", "--bare", "--quiet", "--template="])
+        .map_err(&instrument)?;
     if !init.succeeded() {
         return Err(instrument(format!(
             "could not initialize a temporary object database: {}",
@@ -948,6 +1039,8 @@ fn mandatory_limitations(manifest: &Manifest) -> BTreeSet<LimitationCode> {
     required.insert(LimitationCode::LocalProofOnly);
     required.insert(LimitationCode::TransportBytesNotVersionStable);
     required.insert(LimitationCode::TransportedObjectsNotSecretScanned);
+    required.insert(LimitationCode::InventoryRenamesAreDetected);
+    required.insert(LimitationCode::RepositoryIdentityNotReceiverVerifiable);
     if manifest.candidate.is_root_commit {
         required.insert(LimitationCode::RootCommitDiffAgainstEmptyTree);
     }
@@ -978,6 +1071,18 @@ fn verify_limitations(manifest: &Manifest) -> Result<(), String> {
         return Err(format!(
             "the candidate's own facts require limitation `{missing:?}`, which is not declared"
         ));
+    }
+    // Superset was not enough. An *unearned* code is a false admission, and a
+    // false admission is as dishonest as a dropped one: adding
+    // `repository_identity_not_proven` to a manifest that proves an identity
+    // makes the envelope say both things at once, and `explain` prints both.
+    // Every code except one is derivable here, so equality costs nothing.
+    for extra in declared.difference(&required) {
+        if *extra != LimitationCode::RemoteUrlContainedCredentials {
+            return Err(format!(
+                "limitation `{extra:?}` is declared but the candidate's own facts do not support it"
+            ));
+        }
     }
     Ok(())
 }

@@ -84,6 +84,8 @@ pub fn create_handoff_with_validator(
     limitations.insert(LimitationCode::LocalProofOnly);
     limitations.insert(LimitationCode::TransportBytesNotVersionStable);
     limitations.insert(LimitationCode::TransportedObjectsNotSecretScanned);
+    limitations.insert(LimitationCode::InventoryRenamesAreDetected);
+    limitations.insert(LimitationCode::RepositoryIdentityNotReceiverVerifiable);
     if candidate.is_root_commit {
         limitations.insert(LimitationCode::RootCommitDiffAgainstEmptyTree);
     }

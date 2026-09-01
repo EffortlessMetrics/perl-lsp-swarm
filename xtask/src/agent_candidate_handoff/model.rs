@@ -293,6 +293,27 @@ pub enum LimitationCode {
     /// transport, not a content audit, and a secret already committed into the
     /// candidate's tree travels with it.
     TransportedObjectsNotSecretScanned,
+    /// Rename rows in the inventory come from Git's rename *detection*, run at
+    /// a pinned configuration, not from information the commit records.
+    ///
+    /// Git stores trees, not renames: a rename is inferred by comparing
+    /// content. The comparison is pinned so producer and validator ask the same
+    /// question, but it stays a heuristic, and a different Git version may
+    /// classify the same trees as a rename where this one saw an add and a
+    /// delete. The paths, modes, and object ids in each row are exact either
+    /// way; it is the *rename* label that is inferred.
+    InventoryRenamesAreDetected,
+    /// The repository identity is the producer's word, and no receiver can
+    /// check it against anything the envelope carries.
+    ///
+    /// Every other claim in this format is recomputable from the transported
+    /// objects. Repository identity is not: the remote it was read from is
+    /// deliberately never retained, so `observed` and `declared` are
+    /// indistinguishable to a validator, and a resealed envelope can present
+    /// either. The strength ladder is real information about how the *producer*
+    /// obtained the value, and nothing more — which matters because the
+    /// consumer of this field resolves it into a publication target.
+    RepositoryIdentityNotReceiverVerifiable,
     /// Exact pack bytes are reproducible for a given Git version and packing
     /// configuration — including across the ordinary cross-host difference of
     /// loose objects versus a pack, which is proven — but they are not claimed

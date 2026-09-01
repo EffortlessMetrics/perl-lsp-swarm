@@ -2585,3 +2585,445 @@ fn an_oversized_proof_artifact_is_refused_before_it_is_read() -> Result<()> {
     assert!(detail.contains("ceiling"), "the refusal must name the ceiling: {detail}");
     Ok(())
 }
+
+/// A nested namespace is not an `owner/name` pair, and guessing one is worse
+/// than proving none.
+///
+/// Truncating `gitlab.com/group/subgroup/app` to its last two segments yields
+/// `subgroup/app` — a name that plausibly belongs to a real and unrelated
+/// project on that same host. Recording the host does not save it: the host is
+/// right and the path is wrong. Nested namespaces are ordinary on GitLab and
+/// Azure DevOps, so this is the common case, not a corner.
+#[test]
+fn a_nested_namespace_remote_proves_no_identity_rather_than_guessing() -> Result<()> {
+    for remote in [
+        "https://gitlab.com/group/subgroup/app.git",
+        "https://dev.azure.com/org/project/_git/repo",
+        "git@ssh.dev.azure.com:v3/org/project/repo",
+    ] {
+        let fixture = Fixture::with_remote(Some(remote))?;
+        fixture.write("a.txt", b"a\n")?;
+        fixture.commit("root")?;
+        let destination = Destination::new()?;
+        let manifest = create_handoff(&request(&fixture, &destination))
+            .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+
+        assert_eq!(
+            manifest.repository_identity.status,
+            RepositoryIdentityStatus::NotProven,
+            "`{remote}` is not a readable owner/name and must prove no identity"
+        );
+        assert_eq!(
+            manifest.repository_identity.value, None,
+            "no guess may be recorded for {remote}"
+        );
+    }
+    Ok(())
+}
+
+/// A query string is not part of the path, so it cannot supply path segments.
+///
+/// Splitting on `/` across a query pulled the last two segments out of the
+/// query itself, pairing a correct host with a value from somewhere else
+/// entirely — a mismatched tuple, which is worse than no identity.
+#[test]
+fn a_query_string_does_not_contribute_path_segments() -> Result<()> {
+    let fixture = Fixture::with_remote(Some("https://github.com/acme/app.git?x=/evil/path"))?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    assert_eq!(manifest.repository_identity.value.as_deref(), Some("acme/app"));
+    assert_eq!(manifest.repository_identity.host.as_deref(), Some("github.com"));
+    Ok(())
+}
+
+/// `ssh://git@host/owner/name` is the plain SSH remote, not a credential.
+///
+/// Treating every userinfo as credential material put a *false*
+/// `remote_url_contained_credentials` in the manifest — a claim no receiver can
+/// contradict, because the URL is deliberately never retained — and threw away
+/// the repository identity of every workspace cloned over SSH in URL form.
+#[test]
+fn an_ssh_url_login_name_is_not_treated_as_a_credential() -> Result<()> {
+    let fixture = Fixture::with_remote(Some("ssh://git@github.com/acme/app.git"))?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    assert_eq!(manifest.repository_identity.status, RepositoryIdentityStatus::Observed);
+    assert_eq!(manifest.repository_identity.value.as_deref(), Some("acme/app"));
+    assert_eq!(manifest.repository_identity.host.as_deref(), Some("github.com"));
+    assert!(
+        !manifest.limitations.contains(&LimitationCode::RemoteUrlContainedCredentials),
+        "a login name is not a credential, and the manifest must not say it was"
+    );
+    Ok(())
+}
+
+/// A password component is still a credential under any scheme, including SSH.
+#[test]
+fn a_password_component_is_a_credential_under_every_scheme() -> Result<()> {
+    let token = synthetic_github_token();
+    for remote in [
+        format!("ssh://octocat:{token}@github.com/acme/app.git"),
+        format!("https://octocat:{token}@github.com/acme/app.git"),
+        // Percent-encoded colon hides the password separator.
+        format!("https://octocat%3A{token}@github.com/acme/app.git"),
+        // A bare userinfo over HTTPS is the ordinary way a token is embedded.
+        format!("https://{token}@github.com/acme/app.git"),
+    ] {
+        let fixture = Fixture::with_remote(Some(&remote))?;
+        fixture.write("a.txt", b"a\n")?;
+        fixture.commit("root")?;
+        let destination = Destination::new()?;
+        let manifest = create_handoff(&request(&fixture, &destination))
+            .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+
+        assert!(
+            manifest.limitations.contains(&LimitationCode::RemoteUrlContainedCredentials),
+            "credential material in `{remote}` must be recorded as refused"
+        );
+        assert_eq!(manifest.repository_identity.status, RepositoryIdentityStatus::NotProven);
+        let manifest_text = fs::read_to_string(destination.envelope().join(MANIFEST_FILE_NAME))?;
+        assert!(
+            !manifest_text.contains(&github_token_marker()),
+            "no token material may reach the envelope"
+        );
+    }
+    Ok(())
+}
+
+/// `explain` reports the strength and the host, not a bare pair.
+///
+/// A consumer that cannot tell an observation from a caller's typed guess, or
+/// that never learns which forge the pair names, can publish to the wrong
+/// place — which is the hazard the manifest records a host to prevent.
+#[test]
+fn explain_distinguishes_an_observation_from_a_declaration() -> Result<()> {
+    let observed = Fixture::with_remote(Some("https://github.com/acme/app.git"))?;
+    observed.write("a.txt", b"a\n")?;
+    observed.commit("root")?;
+    let observed_out = Destination::new()?;
+    export_valid(&observed, &observed_out)?;
+    let document = explain(&observed_out.envelope())
+        .map_err(|(outcome, detail)| anyhow::anyhow!("{outcome:?}: {detail}"))?;
+    assert_eq!(document.repository_identity_status, "observed");
+    assert_eq!(document.repository_identity_value.as_deref(), Some("acme/app"));
+    assert_eq!(document.repository_identity_host.as_deref(), Some("github.com"));
+
+    let declared = Fixture::with_remote(None)?;
+    declared.write("a.txt", b"a\n")?;
+    declared.commit("root")?;
+    let declared_out = Destination::new()?;
+    let mut requested = request(&declared, &declared_out);
+    requested.declared_repository_identity = Some("acme/app".to_string());
+    create_handoff(&requested)
+        .map_err(|(outcome, detail)| anyhow::anyhow!("create failed {outcome:?}: {detail}"))?;
+    let document = explain(&declared_out.envelope())
+        .map_err(|(outcome, detail)| anyhow::anyhow!("{outcome:?}: {detail}"))?;
+    assert_eq!(
+        document.repository_identity_status, "declared",
+        "a caller's guess must not render as an observation"
+    );
+    assert_eq!(document.repository_identity_host, None, "nobody observed a host for a declaration");
+    Ok(())
+}
+
+/// `explain` says out loud that it verified nothing.
+///
+/// It reports a tampered envelope exactly as confidently as a sound one, which
+/// is correct for a projection and dangerous if the reader does not know it.
+#[test]
+fn explain_states_that_it_verifies_nothing() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    export_valid(&fixture, &destination)?;
+
+    let pack_path = destination.envelope().join(PACK_FILE_NAME);
+    let mut pack = fs::read(&pack_path)?;
+    pack.extend_from_slice(b"tampered");
+    fs::write(&pack_path, &pack)?;
+
+    assert_eq!(
+        check_handoff(&destination.envelope()).outcome,
+        HandoffOutcome::DigestMismatch,
+        "the validator must still catch this"
+    );
+    let document = explain(&destination.envelope())
+        .map_err(|(outcome, detail)| anyhow::anyhow!("{outcome:?}: {detail}"))?;
+    assert!(
+        document
+            .does_not_establish
+            .iter()
+            .any(|statement| statement.contains("only `check` verifies")),
+        "explain must disclose that it is a projection, not a verdict"
+    );
+    Ok(())
+}
+
+/// The inventory admits that its rename rows are detected, not recorded.
+#[test]
+fn the_inventory_admits_rename_detection_is_a_heuristic() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    assert!(
+        manifest.limitations.contains(&LimitationCode::InventoryRenamesAreDetected),
+        "Git stores trees, not renames; the manifest must say the label is inferred"
+    );
+    Ok(())
+}
+
+/// Host configuration cannot supply an object the transport omitted.
+///
+/// Clearing Git's repository-local environment closed one route. `git init`
+/// honours `init.templateDir` from *global* config, and a template carrying
+/// `objects/info/alternates` points the fresh database at the host's own store
+/// — so an incomplete envelope validated on whichever machine happened to hold
+/// the blob, which is precisely the claim this format makes it cannot.
+#[test]
+fn global_git_configuration_cannot_complete_an_incomplete_envelope() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("seed.txt", b"seed\n")?;
+    fixture.commit("base")?;
+    fixture.write("image.bin", &[0u8, 1, 2, 3, 4, 5])?;
+    fixture.commit("add binary")?;
+
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    let binary_object = change_for(&manifest, "image.bin")
+        .and_then(|row| row.new_object.clone())
+        .context("binary object id")?;
+
+    // Drop the blob from the pack *only*, leaving it declared. That is what
+    // makes this a test of the alternate: `declared == required` still holds,
+    // so the sole remaining question is whether the object database the
+    // validator enumerates really contains just the envelope's own objects.
+    let mut reduced = manifest;
+    let packed: Vec<String> =
+        reduced.transport.object_ids.iter().filter(|id| **id != binary_object).cloned().collect();
+    let stdin = packed.join("\n");
+    let repacked = super::git::run_git_with_stdin(
+        fixture.path(),
+        &["pack-objects", "--stdout", "-q"],
+        stdin.as_bytes(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    assert!(repacked.succeeded());
+    fs::write(destination.envelope().join(PACK_FILE_NAME), &repacked.stdout_bytes)?;
+    reduced.transport.files[0].bytes = repacked.stdout_bytes.len() as u64;
+    reduced.transport.files[0].sha256 = super::content_digest_hex(&repacked.stdout_bytes);
+    rewrite_manifest_resealed(&destination.envelope(), reduced)?;
+
+    // A template directory whose fresh repositories borrow the producer's own
+    // object store, reached through *global* config rather than an environment
+    // variable the seam already clears.
+    let ambient = tempfile::TempDir::new()?;
+    let template = ambient.path().join("template");
+    fs::create_dir_all(template.join("objects/info"))?;
+    fs::write(
+        template.join("objects/info/alternates"),
+        format!("{}\n", fixture.path().join(".git/objects").display()),
+    )?;
+    let config = ambient.path().join("gitconfig");
+    fs::write(&config, format!("[init]\n\ttemplateDir = {}\n", template.display()))?;
+
+    // Prove the fixture is a real lever before relying on it: a bare repository
+    // created under this config must actually inherit the alternate, or this
+    // control would pass for want of an attack rather than for want of a hole.
+    let probe = ambient.path().join("probe");
+    let status = Command::new("git")
+        .args(["init", "--bare", "--quiet"])
+        .arg(&probe)
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .status()?;
+    assert!(status.success(), "the probe repository must initialise");
+    assert!(
+        probe.join("objects/info/alternates").exists(),
+        "the template must really seed an alternates file, or this control proves nothing"
+    );
+
+    // SAFETY: single-threaded within this test's scope; restored immediately.
+    unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", &config) };
+    let report = check_handoff(&destination.envelope());
+    unsafe { std::env::remove_var("GIT_CONFIG_GLOBAL") };
+
+    assert_eq!(
+        report.outcome,
+        HandoffOutcome::MissingObject,
+        "host configuration must not complete an envelope: {:#?}",
+        report.dimensions
+    );
+    Ok(())
+}
+
+/// An unearned limitation is a false admission, and is refused like a dropped one.
+///
+/// Adding `repository_identity_not_proven` to a manifest that proves an
+/// identity made the envelope assert both at once — and `explain` printed both.
+#[test]
+fn an_unearned_limitation_is_refused() -> Result<()> {
+    let fixture = Fixture::with_remote(Some("https://github.com/acme/app.git"))?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    assert!(!manifest.limitations.contains(&LimitationCode::RepositoryIdentityNotProven));
+
+    let mut tampered = manifest;
+    tampered.limitations.push(LimitationCode::RepositoryIdentityNotProven);
+    tampered.limitations.push(LimitationCode::MergeCommitDiffAgainstFirstParent);
+    tampered.limitations.sort();
+    rewrite_manifest_resealed(&destination.envelope(), tampered)?;
+
+    let report = check_handoff(&destination.envelope());
+    assert_eq!(report.outcome, HandoffOutcome::InvalidManifest);
+    let completeness = report
+        .dimensions
+        .iter()
+        .find(|dimension| dimension.id == "limitation_completeness")
+        .context("limitation_completeness dimension")?;
+    assert_eq!(completeness.verdict, DimensionVerdict::Invalid);
+    Ok(())
+}
+
+/// Every retained manifest string is scanned, not a chosen subset.
+///
+/// `content_safety` reported "no credential material in retained manifest
+/// strings" while credential material sat in a renamed file's `old_path` or in
+/// the producer observation block — a false statement about exactly the strings
+/// least protected by anything else, since the observation block is outside the
+/// semantic digest by design.
+#[test]
+fn credential_material_anywhere_in_the_manifest_is_found() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    for field in ["observation.producer_version", "observation.git_version"] {
+        let mut raw = raw_manifest(&destination.envelope())?;
+        let (section, key) = field.split_once('.').context("field path")?;
+        raw[section][key] = serde_json::Value::String(synthetic_github_token());
+        rewrite_manifest_raw(&destination.envelope(), &raw)?;
+
+        let report = check_handoff(&destination.envelope());
+        assert_eq!(
+            report.outcome,
+            HandoffOutcome::UnsafeContent,
+            "credential material in `{field}` must be found"
+        );
+
+        // Restore for the next case.
+        rewrite_manifest_resealed(&destination.envelope(), manifest.clone())?;
+    }
+
+    // The observation block is also bounded, so a reseal cannot grow the
+    // manifest without limit while leaving candidate identity untouched.
+    let mut raw = raw_manifest(&destination.envelope())?;
+    raw["observation"]["git_version"] = serde_json::Value::String("x".repeat(4096));
+    rewrite_manifest_raw(&destination.envelope(), &raw)?;
+    assert_eq!(check_handoff(&destination.envelope()).outcome, HandoffOutcome::InvalidManifest);
+    Ok(())
+}
+
+/// An inventory path that escapes its root is refused.
+///
+/// Git will not check out such a tree, but a tree object holding one can be
+/// written and packed, and this format hands inventory paths onward as data for
+/// other tools to join onto a root.
+#[test]
+fn an_inventory_path_that_escapes_its_root_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    for hostile in ["../../etc/evil", "/etc/evil", "a/../../b"] {
+        let mut raw = raw_manifest(&destination.envelope())?;
+        raw["inventory"]["changes"][0]["path"] = serde_json::Value::String(hostile.to_string());
+        rewrite_manifest_raw(&destination.envelope(), &raw)?;
+        let report = check_handoff(&destination.envelope());
+        assert_eq!(
+            report.outcome,
+            HandoffOutcome::InvalidManifest,
+            "`{hostile}` must not be reported as an inventory path"
+        );
+        rewrite_manifest_resealed(&destination.envelope(), manifest.clone())?;
+    }
+    Ok(())
+}
+
+/// A parent list large enough to be a lever is refused by shape.
+///
+/// Each parent costs several Git invocations, and the deadline is per child
+/// with no shared budget, so a small envelope could buy hours of validation.
+#[test]
+fn an_absurd_parent_count_is_refused_by_shape() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    let mut raw = raw_manifest(&destination.envelope())?;
+    let filler: Vec<serde_json::Value> = (0..super::check::MAX_DECLARED_PARENTS + 1)
+        .map(|index| serde_json::Value::String(format!("{index:040x}")))
+        .collect();
+    raw["candidate"]["parents"] = serde_json::Value::Array(filler.clone());
+    raw["candidate"]["parent_trees"] = serde_json::Value::Array(filler);
+    raw["candidate"]["is_merge_commit"] = serde_json::Value::Bool(true);
+    raw["candidate"]["is_root_commit"] = serde_json::Value::Bool(false);
+    rewrite_manifest_raw(&destination.envelope(), &raw)?;
+
+    let report = check_handoff(&destination.envelope());
+    assert_eq!(report.outcome, HandoffOutcome::InvalidManifest);
+    let shape = report
+        .dimensions
+        .iter()
+        .find(|dimension| dimension.id == "manifest_shape")
+        .context("manifest_shape dimension")?;
+    assert!(
+        shape.detail.contains("ceiling"),
+        "the refusal must name the ceiling: {}",
+        shape.detail
+    );
+    let _ = manifest;
+    Ok(())
+}
+
+/// The envelope admits that its repository identity is unverifiable by a receiver.
+#[test]
+fn the_manifest_admits_repository_identity_is_the_producers_word() -> Result<()> {
+    let fixture = Fixture::with_remote(Some("https://github.com/acme/app.git"))?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    assert!(
+        manifest.limitations.contains(&LimitationCode::RepositoryIdentityNotReceiverVerifiable),
+        "no receiver can check this value, and the manifest must say so"
+    );
+
+    let report = check_handoff(&destination.envelope());
+    let identity = report
+        .dimensions
+        .iter()
+        .find(|dimension| dimension.id == "repository_identity")
+        .context("repository_identity dimension")?;
+    assert!(
+        identity.detail.contains("producer's"),
+        "the dimension must not claim more than it proved: {}",
+        identity.detail
+    );
+    Ok(())
+}

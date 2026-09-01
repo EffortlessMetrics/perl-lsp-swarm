@@ -90,22 +90,32 @@ pub fn contains_netrc_password(value: &str) -> bool {
     })
 }
 
-/// Whether `value` contains a URL with a userinfo section.
+/// Whether `value` contains a URL whose userinfo is credential material.
 ///
-/// Any userinfo is treated as credential-bearing, not only `user:password`.
-/// The bare-token form `https://<token>@github.com/owner/name` is the ordinary
-/// way a PAT is embedded in a remote and carries no colon at all, and a
-/// percent-encoded `%3A` hides one; requiring a literal colon classified both
-/// as clean and let the manifest record such a remote as an observed, and
-/// therefore trustworthy, identity source.
+/// A userinfo with a password component is credential-bearing under any
+/// scheme, and a percent-encoded `%3A` hides that colon, so both count.
 ///
-/// `git@github.com:owner/name` has no `://` and is unaffected, so the ordinary
-/// SSH remote is not misread as credential-bearing.
+/// A *bare* userinfo is read by scheme, because the same syntax means
+/// different things:
+///
+/// - under `http`/`https` it is treated as credential material, since
+///   `https://<token>@github.com/owner/name` is the ordinary way a PAT is
+///   embedded in a remote and carries no colon at all;
+/// - under `ssh`, `git+ssh`, and `git` it is the login name. `ssh://git@host/…`
+///   is the plain SSH remote written in URL form, and SSH URLs do not carry
+///   passwords. Calling it credential-bearing put a *false*
+///   `remote_url_contained_credentials` in the manifest — a limitation no
+///   receiver can contradict, because the URL is deliberately never retained —
+///   and destroyed the repository identity of every workspace cloned that way.
+///
+/// `git@github.com:owner/name` has no `://` and is unaffected, so the scp-form
+/// SSH remote is not misread either.
 #[must_use]
 pub fn url_carries_credentials(value: &str) -> bool {
     let Some(scheme_end) = value.find("://") else {
         return false;
     };
+    let scheme = value[..scheme_end].to_ascii_lowercase();
     let after_scheme = &value[scheme_end + 3..];
     // Only a `@` before the first path separator is a userinfo section; a `@`
     // later in the URL belongs to the path or query.
@@ -113,7 +123,31 @@ pub fn url_carries_credentials(value: &str) -> bool {
     let Some(at_index) = authority.find('@') else {
         return false;
     };
-    !authority[..at_index].is_empty()
+    let userinfo = &authority[..at_index];
+    if userinfo.is_empty() {
+        return false;
+    }
+    if userinfo.contains(':') || userinfo.to_ascii_lowercase().contains("%3a") {
+        return true;
+    }
+    !matches!(scheme.as_str(), "ssh" | "git+ssh" | "git")
+}
+
+/// Whether a repository-relative path is safe to report and to join onto a root.
+///
+/// Git will not check out a tree containing `..` or an absolute entry, but a
+/// tree object holding one can still be written and packed, and this format
+/// hands inventory paths onward as data for other tools to act on. A path that
+/// escapes its root is refused here rather than passed along.
+#[must_use]
+pub fn is_safe_repository_path(value: &str) -> bool {
+    if value.is_empty() || value.len() > 4096 {
+        return false;
+    }
+    if value.starts_with('/') || value.contains('\\') || value.contains('\0') {
+        return false;
+    }
+    !value.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..")
 }
 
 /// Whether an envelope-relative name is safe to join onto a reader's root.
@@ -264,16 +298,23 @@ pub fn repository_identity_from_remote(
         return Ok(None);
     }
 
+    // A query or fragment is not part of the path, and splitting on `/` after
+    // it would pull segments out of the wrong place entirely.
+    let path = path.split(['?', '#', '\n', '\r']).next().unwrap_or(path);
     let path = path.trim_start_matches('/').trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     let segments: Vec<&str> = path.split('/').filter(|segment| !segment.is_empty()).collect();
-    // Take the final two segments so nested hosting prefixes do not confuse
-    // the owner/name pair.
-    let [.., owner, name] = segments.as_slice() else {
+    // Exactly two segments, never the *last* two. Truncating a longer path is
+    // a guess, and it is a guess that names a real and possibly unrelated
+    // repository: `gitlab.com/group/subgroup/app` would become `subgroup/app`,
+    // which is someone's project on that same host. Nested namespaces are
+    // ordinary on GitLab and Azure DevOps, so this was not a corner case. An
+    // identity this reader cannot read exactly is not proven.
+    let [owner, name] = segments.as_slice() else {
         return Ok(None);
     };
     let value = format!("{}/{}", owner.to_lowercase(), name.to_lowercase());
-    if !is_repository_identity(&value) {
+    if !is_repository_identity(&value) || !is_repository_host(&host) {
         return Ok(None);
     }
     Ok(Some(RemoteIdentity { host, value }))

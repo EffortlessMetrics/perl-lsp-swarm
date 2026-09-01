@@ -33,6 +33,21 @@ const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
 /// Polling interval while waiting for a child to exit.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// Configuration forced on every invocation, so ambient settings cannot move a
+/// result the manifest calls host-independent.
+///
+/// `pack.threads` keeps pack generation from varying with host parallelism.
+/// The rename settings matter for the same reason and were previously left
+/// ambient: `-M` asks for rename detection, but `diff.renameLimit` decides how
+/// hard Git tries, and Git silently reports renames as add/delete pairs once
+/// that limit is hit. The producer reads the source repository, where local
+/// config applies, while `check` recomputes in a bare temporary database where
+/// it does not — so a host-local limit could make a sound envelope fail
+/// recomputation on the receiver, or two hosts disagree about the same
+/// candidate. Pinning the value makes both sides ask Git the same question.
+const FORCED_CONFIG: &[&str] =
+    &["pack.threads=1", "diff.renames=true", "diff.renameLimit=32767", "core.quotePath=false"];
+
 /// Git's repository-local environment, cleared on every invocation.
 ///
 /// `check` claims to validate a candidate using only the objects the envelope
@@ -101,9 +116,9 @@ impl GitOutput {
 
 /// Run Git inside `repository`, capturing bounded output.
 ///
-/// `pack.threads=1` is forced on every invocation so pack generation does not
-/// vary with host parallelism. Errors are returned as text rather than raised,
-/// because callers classify instrument failure explicitly.
+/// [`FORCED_CONFIG`] is applied to every invocation so results do not vary with
+/// host configuration. Errors are returned as text rather than raised, because
+/// callers classify instrument failure explicitly.
 pub fn run_git(repository: &Path, arguments: &[&str]) -> Result<GitOutput, String> {
     run_bounded(repository, arguments, None)
 }
@@ -130,14 +145,25 @@ fn run_bounded(
     let label = arguments.join(" ");
     let mut command = Command::new("git");
     command
-        .arg("-c")
-        .arg("pack.threads=1")
+        .args(FORCED_CONFIG.iter().flat_map(|setting| ["-c", setting]))
         .args(arguments)
         .current_dir(repository)
         // Validation must never block on, or acquire, a credential. Every
         // command here is local plumbing, so a prompt would only ever be a
         // sign that something unexpected reached the network.
-        .env("GIT_TERMINAL_PROMPT", "0");
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // Ambient configuration is not the receiver's to inherit. Clearing the
+        // repository-local environment closed only one route into the
+        // validator: `git init --bare` honours `init.templateDir` from *global*
+        // config, and a template carrying `objects/info/alternates` lets the
+        // host's own object store answer for a blob the transport omitted — so
+        // an incomplete envelope validates on the machine that happens to have
+        // the object, which is exactly what this format promises cannot happen.
+        // Pointing both config files at an empty file makes every host-level
+        // setting inert, so what remains is the explicit list above.
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
     for variable in GIT_LOCAL_ENV_VARS {
         command.env_remove(variable);
     }
