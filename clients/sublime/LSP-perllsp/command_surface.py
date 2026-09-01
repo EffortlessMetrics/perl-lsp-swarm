@@ -8,6 +8,16 @@ from typing import Any, Collection, Iterable, Mapping, Sequence
 
 MAX_OUTPUT_CHARS = 64 * 1024
 
+# Individual bulk fields are budgeted so no single payload can consume the
+# global display budget and erase control/result fields rendered after it.
+# Control fields (success/error/reason/nextAction) additionally render ahead
+# of alphabetical order so failure semantics never depend on key sorting.
+MAX_FIELD_CHARS = 4 * 1024
+
+# Top-level result keys that carry control/result semantics rather than bulk
+# material. They always render first, in this declared order.
+CONTROL_RESULT_KEYS = ("success", "status", "error", "reason", "nextAction")
+
 
 class CommandSurfaceError(ValueError):
     pass
@@ -211,6 +221,18 @@ def _scalar(value: Any) -> str:
     return str(value)
 
 
+def _bounded_field(text: str) -> str:
+    """Bound one rendered scalar field so bulk material cannot consume the
+    global budget and erase control fields rendered after it."""
+    if len(text) <= MAX_FIELD_CHARS:
+        return text
+    omitted = len(text) - MAX_FIELD_CHARS
+    return (
+        text[:MAX_FIELD_CHARS]
+        + f"\n… {omitted} character(s) of this field omitted by LSP-perllsp."
+    )
+
+
 def _append_value(lines: list[str], label: str, value: Any, indent: int = 0) -> None:
     prefix = "  " * indent
     if isinstance(value, Mapping):
@@ -218,7 +240,7 @@ def _append_value(lines: list[str], label: str, value: Any, indent: int = 0) -> 
         if not value:
             lines.append(f"{prefix}  (empty)")
             return
-        for key in sorted(value, key=str):
+        for key in _ordered_keys(value):
             _append_value(lines, _humanize(str(key)), value[key], indent + 1)
         return
     if isinstance(value, (list, tuple)):
@@ -230,9 +252,28 @@ def _append_value(lines: list[str], label: str, value: Any, indent: int = 0) -> 
         return
     if isinstance(value, str) and "\n" in value:
         lines.append(f"{prefix}{label}:")
-        lines.extend(f"{prefix}  {line}" for line in value.splitlines())
+        rendered_lines = value.splitlines()
+        if sum(len(line) + 2 + len(prefix) for line in rendered_lines) > MAX_FIELD_CHARS:
+            bounded = _bounded_field(value)
+            lines.extend(f"{prefix}  {line}" for line in bounded.splitlines())
+            return
+        lines.extend(f"{prefix}  {line}" for line in rendered_lines)
         return
-    lines.append(f"{prefix}{label}: {_scalar(value)}")
+    rendered_scalar = _scalar(value)
+    if len(rendered_scalar) > MAX_FIELD_CHARS:
+        rendered_scalar = _bounded_field(rendered_scalar)
+    lines.append(f"{prefix}{label}: {rendered_scalar}")
+
+
+def _ordered_keys(value: Mapping) -> list[Any]:
+    """Control keys first in declared order, then every remaining key in
+    deterministic sorted order. Render order must never let a bulk payload
+    determine whether control semantics survive the output bound."""
+    keys = list(value)
+    control_present = [k for k in CONTROL_RESULT_KEYS if k in keys]
+    control_set = {str(k) for k in control_present}
+    rest = sorted((k for k in keys if str(k) not in control_set), key=str)
+    return control_present + rest
 
 
 def _bounded(text: str) -> str:
@@ -249,9 +290,10 @@ def format_result(caption: str, result: Any) -> str:
     elif isinstance(result, str):
         lines.append(result)
     elif isinstance(result, Mapping):
-        # Render the success status first so the failure signal survives the
-        # output bound below; bounded detail rows cannot guarantee it.
-        for key in sorted(result, key=lambda item: (0 if str(item) == "success" else 1, str(item))):
+        # Control/result semantics render ahead of bulk material so the
+        # output bound below can never erase failure state or next actions;
+        # bounded detail rows cannot guarantee it.
+        for key in _ordered_keys(result):
             _append_value(lines, _humanize(str(key)), result[key])
     elif isinstance(result, (list, tuple)):
         _append_value(lines, "Results", result)

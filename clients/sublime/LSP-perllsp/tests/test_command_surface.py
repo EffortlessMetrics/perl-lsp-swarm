@@ -208,6 +208,66 @@ class CommandSurfaceContractTests(unittest.TestCase):
         self.assertIn("perl.runFile", rendered)
         self.assertIn("interpreter unavailable", rendered)
 
+    def test_bulk_fields_cannot_erase_control_or_result_fields(self) -> None:
+        # A bulk field sorting before the control keys must not consume the
+        # display budget: failure state, error reason, and next actions all
+        # survive, and the bulk field itself is individually bounded.
+        result = surface.format_result(
+            "Perl: Run Workspace Tests",
+            {
+                "bulk": "y" * (surface.MAX_OUTPUT_CHARS * 4),
+                "success": False,
+                "error": "3 tests failed",
+                "nextAction": "fix the failing tests",
+            },
+        )
+        self.assertIn("Success: no", result)
+        self.assertIn("Error: 3 tests failed", result)
+        self.assertIn("Next Action: fix the failing tests", result)
+        self.assertIn("of this field omitted by LSP-perllsp", result)
+        self.assertLessEqual(len(result), surface.MAX_OUTPUT_CHARS)
+
+    def test_render_order_is_independent_of_mapping_key_sort_position(self) -> None:
+        # Mutation control: even when every control field sorts after the
+        # bulk field (a_bulk < error < nextAction < success), rendering must
+        # keep failure state, reason, and next actions visible.
+        adversarial = surface.format_result(
+            "Perl: Run Current File",
+            {
+                "a_bulk": "z" * (surface.MAX_OUTPUT_CHARS * 4),
+                "success": False,
+                "error": "interpreter missing",
+                "nextAction": "install Perl",
+            },
+        )
+        self.assertIn("Success: no", adversarial)
+        self.assertIn("Error: interpreter missing", adversarial)
+        self.assertIn("Next Action: install Perl", adversarial)
+
+        # Nested bulk material is bounded too, so a giant detail row cannot
+        # push later control rows out of the envelope.
+        nested = surface.format_result(
+            "Perl: Run Critic Command (Compatibility Surface)",
+            {
+                "success": False,
+                "details": {"stdout": "q" * (surface.MAX_OUTPUT_CHARS * 4)},
+                "nextAction": "inspect the critic log",
+            },
+        )
+        self.assertIn("Success: no", nested)
+        self.assertIn("Next Action: inspect the critic log", nested)
+        self.assertIn("of this field omitted by LSP-perllsp", nested)
+        self.assertLessEqual(len(nested), surface.MAX_OUTPUT_CHARS)
+
+    def test_under_budget_results_render_completely_and_deterministically(self) -> None:
+        result = {"success": True, "stdout": "all green\n", "note": "kept"}
+        first = surface.format_result("Perl: Run Current File", result)
+        self.assertIn("Success: yes", first)
+        self.assertIn("all green", first)
+        self.assertIn("Note: kept", first)
+        self.assertNotIn("omitted by LSP-perllsp", first)
+        self.assertEqual(first, surface.format_result("Perl: Run Current File", result))
+
     def test_navigation_target_is_deliberate(self) -> None:
         self.assertEqual(
             surface.navigation_target({"found": True, "path": "/workspace/t/example.t"}),
