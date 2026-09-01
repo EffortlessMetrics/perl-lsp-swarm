@@ -540,8 +540,14 @@ def validate_blocker_closeout(packet_value: Any, is_ancestor: Callable[[str, str
                 observation.proof_class == contract.proof_class and observation.claim_scope == contract.claim_scope,
                 f"proof observation for {claim_id} contradicts the semantic-controller claim contract",
             )
+        # A passed observation can establish a claim only for the observed
+        # landed subject.  Failed observations are equally decisive for a
+        # blocked packet: allowing a failure from another commit to block the
+        # current subject would let stale evidence control release state.
         if observation.status == "passed":
             _require(observation.subject_sha == observed_main_sha, "passed proof is cross-subject")
+        elif observation.status == "failed":
+            _require(observation.subject_sha == observed_main_sha, "failed proof is cross-subject")
 
     claim_effect = _object(packet["claim_effect"], "claim_effect")
     _exact_keys(claim_effect, "claim_effect", {"preserves", "narrows", "limitations"})

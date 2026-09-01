@@ -191,6 +191,18 @@
     "error": "passed proof is cross-subject"
   },
   {
+    "name": "reject_cross_subject_failed_proof",
+    "updates": {
+      "status": "blocked",
+      "proof.observations.0.status": "failed",
+      "proof.observations.0.subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "proof.passed": ["product.behavior"],
+      "proof.observations.0.evidence.kind": "github_check",
+      "proof.observations.0.evidence.ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/90005/job/90006"
+    },
+    "error": "failed proof is cross-subject"
+  },
+  {
     "name": "reject_stale_repository_receipt",
     "updates": {"proof.observations.0.evidence.ref": "repo:receipts/example-installed.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
     "error": "repository receipt subject SHA does not match proof observation subject_sha"
