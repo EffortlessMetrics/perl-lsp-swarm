@@ -72,6 +72,21 @@ pub fn logging_filter(
 /// (max 5 files) **in addition to** stderr. Invalid `RUST_LOG` values fall
 /// back to `default_filter`.
 pub fn init_logging(default_filter: &str) {
+    init_logging_with_env_lookup(default_filter, process_env_var);
+}
+
+fn process_env_var(key: &str) -> Result<String, std::env::VarError> {
+    std::env::var(key)
+}
+
+fn init_logging_with_env_lookup(
+    default_filter: &str,
+    get: fn(&str) -> Result<String, std::env::VarError>,
+) {
+    init_logging_with_log_path(default_filter, get("PERL_LSP_LOG_FILE").ok());
+}
+
+fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
     LOGGING_INIT.call_once(|| {
         let filter = EnvFilter::try_from_default_env()
             .or_else(|_| EnvFilter::try_new(default_filter))
@@ -80,7 +95,7 @@ pub fn init_logging(default_filter: &str) {
         let use_ansi = should_use_ansi_stderr();
 
         // If PERL_LSP_LOG_FILE is set, add a rolling file appender alongside stderr.
-        if let Ok(log_path) = std::env::var("PERL_LSP_LOG_FILE") {
+        if let Some(log_path) = log_path {
             let path = std::path::Path::new(&log_path);
             let log_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
             let log_file_prefix = path.file_name().and_then(|f| f.to_str()).unwrap_or("perl-lsp");
@@ -1333,7 +1348,25 @@ pub fn format_startup_banner(version: &str, profile: FeatureProfile, is_socket: 
     reason = "Startup banner fires before the tracing subscriber is configured — intentional stderr output"
 )]
 pub fn startup_banner(version: &str, profile: FeatureProfile, transport: TransportMode) {
-    if std::env::var("PERL_LSP_QUIET").is_ok() {
+    startup_banner_with_env_lookup(version, profile, transport, process_env_var);
+}
+
+fn startup_banner_with_env_lookup(
+    version: &str,
+    profile: FeatureProfile,
+    transport: TransportMode,
+    get: fn(&str) -> Result<String, std::env::VarError>,
+) {
+    startup_banner_with_quiet(version, profile, transport, get("PERL_LSP_QUIET").is_ok());
+}
+
+fn startup_banner_with_quiet(
+    version: &str,
+    profile: FeatureProfile,
+    transport: TransportMode,
+    quiet: bool,
+) {
+    if quiet {
         return;
     }
     eprintln!("{}", format_startup_banner(version, profile, transport.is_socket()));
@@ -1399,27 +1432,38 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
-    fn init_logging_does_not_panic_with_log_file() {
-        let dir = std::env::temp_dir().join("perl-lsp-test-log-rotation");
-        let _ = std::fs::create_dir_all(&dir);
-        let log_path = dir.join("test.log");
-
-        // Set the env var for this test — init_logging is Once-guarded so the
-        // file path may not actually be used if another test already initialized,
-        // but this must not panic regardless.
-        // SAFETY: test-only, single-threaded access to this env var.
-        unsafe {
-            std::env::set_var("PERL_LSP_LOG_FILE", log_path.to_str().unwrap_or_default());
+    fn init_logging_does_not_panic_with_log_file() -> Result<(), Box<dyn std::error::Error>> {
+        const MARKER: &str = "PERL_LSP_WAVE_A1_LOG_CHILD";
+        const TOKEN: &str = "wave-a1-log-token";
+        if std::env::var_os(MARKER).is_some() {
+            super::init_logging("debug");
+            tracing::info!(target: "wave_a1", "{TOKEN}");
+            return Ok(());
         }
-        super::init_logging("debug");
-        // SAFETY: test-only cleanup.
-        unsafe {
-            std::env::remove_var("PERL_LSP_LOG_FILE");
-        }
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = tempfile::tempdir()?;
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "runtime::launcher::tests::init_logging_does_not_panic_with_log_file",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env("PERL_LSP_LOG_FILE", dir.path().join("wave-a1.log"))
+            .output()?;
+        assert!(output.status.success(), "logging child failed: {output:?}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let found = loop {
+            let found = std::fs::read_dir(dir.path())?
+                .filter_map(Result::ok)
+                .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+                .any(|contents| contents.contains(TOKEN));
+            if found || std::time::Instant::now() >= deadline {
+                break found;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
+        assert!(found, "rolling log must contain marker {TOKEN}");
+        Ok(())
     }
 
     #[test]
@@ -1934,29 +1978,40 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
-    fn startup_banner_suppressed_by_quiet_env() {
-        // Save previous value to avoid test pollution even if test panics.
-        let previous = std::env::var_os("PERL_LSP_QUIET");
-
-        // SAFETY: test-only env var manipulation; previous value is restored after test.
-        unsafe {
-            std::env::set_var("PERL_LSP_QUIET", "1");
+    fn startup_banner_suppressed_by_quiet_env() -> Result<(), Box<dyn std::error::Error>> {
+        const MARKER: &str = "PERL_LSP_WAVE_A1_BANNER_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            super::startup_banner(
+                "wave-a1-banner-token",
+                super::FeatureProfile::current(),
+                super::TransportMode::Stdio,
+            );
+            return Ok(());
         }
-
-        // startup_banner must not panic when PERL_LSP_QUIET is set.
-        // The transport argument must propagate through without crashing.
-        super::startup_banner(
-            "0.12.0",
-            super::FeatureProfile::current(),
-            super::TransportMode::Stdio,
-        );
-
-        // SAFETY: restore previous value.
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PERL_LSP_QUIET", value) },
-            None => unsafe { std::env::remove_var("PERL_LSP_QUIET") },
-        }
+        let visible = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "runtime::launcher::tests::startup_banner_suppressed_by_quiet_env",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env_remove("PERL_LSP_QUIET")
+            .output()?;
+        assert!(visible.status.success());
+        let visible_output = String::from_utf8_lossy(&visible.stderr);
+        assert!(visible_output.contains("wave-a1-banner-token"));
+        let suppressed = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "runtime::launcher::tests::startup_banner_suppressed_by_quiet_env",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env("PERL_LSP_QUIET", "1")
+            .output()?;
+        assert!(suppressed.status.success());
+        assert!(!String::from_utf8_lossy(&suppressed.stderr).contains("wave-a1-banner-token"));
+        Ok(())
     }
 
     // ANSI detection helpers
