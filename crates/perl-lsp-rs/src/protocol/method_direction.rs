@@ -566,6 +566,24 @@ mod tests {
     // the live source of this crate; neither depends on a hand-maintained
     // list of method names.
 
+    /// Strip a leading visibility qualifier (`pub`, `pub(crate)`,
+    /// `pub(super)`, `pub(in path)`) so `#[cfg(test)] pub(crate) mod … { … }`
+    /// regions are recognized exactly like bare `mod` declarations by
+    /// `strip_test_modules`.
+    fn strip_visibility_qualifier(line: &str) -> &str {
+        let Some(rest) = line.strip_prefix("pub") else {
+            return line;
+        };
+        let rest = rest.trim_start();
+        match rest.strip_prefix('(') {
+            Some(inner) => match inner.find(')') {
+                Some(end) => inner[end + 1..].trim_start(),
+                None => rest,
+            },
+            None => rest,
+        }
+    }
+
     /// Remove trailing `#[cfg(test)] mod … { … }` regions so test-only string
     /// literals cannot satisfy or pollute production-inventory scans.
     fn strip_test_modules(source: &str) -> String {
@@ -574,9 +592,7 @@ mod tests {
             if let Some(rest) = trimmed.strip_prefix("mod ") {
                 return Some(rest);
             }
-            let rest = trimmed.strip_prefix("pub")?.trim_start();
-            let rest =
-                if rest.starts_with('(') { rest.split_once(')')?.1.trim_start() } else { rest };
+            let rest = strip_visibility_qualifier(trimmed);
             rest.strip_prefix("mod ")
         }
 
@@ -820,6 +836,24 @@ sender.send_notification("production/method", json!({}));
                 "`{banned}` appears in routing code outside a comment (#8896)"
             );
         }
+    }
+
+    /// `#[cfg(test)]` regions declared with a visibility qualifier
+    /// (`pub(crate) mod tests`) must be stripped like bare `mod` regions;
+    /// `runtime/outbound.rs` uses exactly that shape (#14282) and an
+    /// unstripped region scans its test-only outbound sends as production
+    /// violations.
+    #[test]
+    fn strip_test_modules_removes_visibility_qualified_test_regions() {
+        let source = "#[cfg(test)]\npub(crate) mod tests {\n    \
+            sender.send_notification(\"slot/one\", json!({}))?;\n}\n\n\
+            fn keep() -> &'static str {\n    \"production\"\n}\n";
+        let stripped = strip_test_modules(source);
+        assert!(
+            !stripped.contains("slot/one"),
+            "visibility-qualified test region must be stripped"
+        );
+        assert!(stripped.contains("fn keep()"), "production code must survive");
     }
 
     fn core_method_constants() -> BTreeSet<(String, String)> {
