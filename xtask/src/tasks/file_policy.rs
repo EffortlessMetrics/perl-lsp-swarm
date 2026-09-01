@@ -765,6 +765,22 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
         .get(key("exact-tree"))
         .and_then(serde_yaml_ng::Value::as_mapping)
         .ok_or_else(|| eyre!("preapproved v4 workflow must define exact-tree job"))?;
+    let allowed_job_keys = ["name", "runs-on", "timeout-minutes", "env", "steps"];
+    if job.keys().any(|key| key.as_str().is_none_or(|name| !allowed_job_keys.contains(&name))) {
+        bail!("preapproved v4 exact-tree job contains an unapproved control field");
+    }
+    if job.get(key("runs-on")).and_then(serde_yaml_ng::Value::as_str) != Some("ubuntu-24.04") {
+        bail!("preapproved v4 exact-tree job must use ubuntu-24.04");
+    }
+    let env = job
+        .get(key("env"))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("preapproved v4 exact-tree job must define env"))?;
+    for variable in ["BASE_SHA", "SUBJECT_INPUT_SHA", "PR_HEAD_SHA", "PR_NUMBER", "EVALUATOR_SHA"] {
+        if !env.contains_key(key(variable)) {
+            bail!("preapproved v4 workflow is missing {variable} identity input");
+        }
+    }
     let steps = job
         .get(key("steps"))
         .and_then(serde_yaml_ng::Value::as_sequence)
@@ -792,19 +808,26 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
             .map(str::to_owned)
     };
     let checkout = steps.first().ok_or_else(|| eyre!("v4 checkout step is missing"))?;
-    if !checkout
+    let trusted_checkout = checkout
         .as_mapping()
         .and_then(|map| map.get(key("uses")))
         .and_then(serde_yaml_ng::Value::as_str)
         .is_some_and(|uses| uses.starts_with("actions/checkout@"))
-        || !checkout
+        && checkout
             .as_mapping()
             .and_then(|map| map.get(key("with")))
             .and_then(serde_yaml_ng::Value::as_mapping)
             .and_then(|with| with.get(key("ref")))
             .and_then(serde_yaml_ng::Value::as_str)
             .is_some_and(|reference| reference == "${{ env.EVALUATOR_SHA }}")
-    {
+        && checkout
+            .as_mapping()
+            .and_then(|map| map.get(key("with")))
+            .and_then(serde_yaml_ng::Value::as_mapping)
+            .and_then(|with| with.get(key("persist-credentials")))
+            .and_then(serde_yaml_ng::Value::as_bool)
+            == Some(false);
+    if !trusted_checkout {
         bail!("v4 must checkout the trusted evaluator SHA first");
     }
     let materializer = steps.get(1).ok_or_else(|| eyre!("v4 materializer step is missing"))?;
@@ -813,7 +836,7 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
         || step_id(materializer).as_deref() != Some("materialize")
         || materializer_run.as_deref()
             != Some(
-                "cargo run --locked -p xtask -- ci-subject-materialize --event-name \"$GITHUB_EVENT_NAME\" --event-path \"$GITHUB_EVENT_PATH\" --repository \"$GITHUB_REPOSITORY\" --receipt target/policy/ci-subject-materialization.json --env-file \"$GITHUB_ENV\"",
+                "cargo run --locked -p xtask -- ci-subject-materialize --event-name \"$GITHUB_EVENT_NAME\" --event-path \"$GITHUB_EVENT_PATH\" --repository \"$GITHUB_REPOSITORY\" --github-sha \"$SUBJECT_INPUT_SHA\" --base-sha \"$BASE_SHA\" --head-sha \"$SUBJECT_INPUT_SHA\" --receipt target/policy/ci-subject-materialization.json --env-file \"$GITHUB_ENV\"",
             )
         || !materializer
             .as_mapping()
@@ -827,6 +850,7 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
     let expected_evaluator = "cargo run --locked -p xtask -- non-rust exact-tree --base-sha \"$BASE_SHA\" --subject-sha \"$SUBJECT_SHA\" ${PR_HEAD_SHA:+--pr-head-sha \"$PR_HEAD_SHA\"} --event-name \"$GITHUB_EVENT_NAME\" --repository \"$GITHUB_REPOSITORY\" --receipt target/policy/non-rust-policy-exact-tree.json";
     let evaluator_run = step_run(evaluator);
     if step_name(evaluator).as_deref() != Some("Run trusted exact-tree evaluator")
+        || step_id(evaluator).as_deref() != Some("evaluate")
         || evaluator_run.as_deref() != Some(expected_evaluator)
         || evaluator
             .as_mapping()
@@ -4151,15 +4175,25 @@ permissions:
   contents: read
 jobs:
   exact-tree:
+    name: Non-Rust policy exact-tree
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event.before }}
+      SUBJECT_INPUT_SHA: ${{ github.sha }}
+      PR_HEAD_SHA: ''
+      PR_NUMBER: ''
+      EVALUATOR_SHA: ${{ github.sha }}
     steps:
       - name: Checkout trusted evaluator
         uses: actions/checkout@0123456789012345678901234567890123456789
         with:
           ref: ${{ env.EVALUATOR_SHA }}
+          persist-credentials: false
       - name: Materialize trusted PR subject
         id: materialize
         continue-on-error: true
-        run: 'cargo run --locked -p xtask -- ci-subject-materialize --event-name "$GITHUB_EVENT_NAME" --event-path "$GITHUB_EVENT_PATH" --repository "$GITHUB_REPOSITORY" --receipt target/policy/ci-subject-materialization.json --env-file "$GITHUB_ENV"'
+        run: 'cargo run --locked -p xtask -- ci-subject-materialize --event-name "$GITHUB_EVENT_NAME" --event-path "$GITHUB_EVENT_PATH" --repository "$GITHUB_REPOSITORY" --github-sha "$SUBJECT_INPUT_SHA" --base-sha "$BASE_SHA" --head-sha "$SUBJECT_INPUT_SHA" --receipt target/policy/ci-subject-materialization.json --env-file "$GITHUB_ENV"'
       - name: Run trusted exact-tree evaluator
         id: evaluate
         if: steps.materialize.outcome == 'success'

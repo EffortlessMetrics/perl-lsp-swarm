@@ -5,8 +5,11 @@
 //! object and merged into a tree by Git.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Context, Result, eyre};
 use serde::Serialize;
@@ -18,6 +21,7 @@ const SCHEMA_VERSION: &str = "ci-subject-materialization.v1";
 const PRODUCER: &str = "cargo-xtask-ci-subject-materializer";
 const MECHANISM: &str = "git-merge-tree-write-tree";
 const GIT_COMMIT_DATE: &str = "2000-01-01T00:00:00+0000";
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Serialize)]
 struct Receipt {
@@ -89,15 +93,20 @@ pub fn run(config: Config) -> Result<()> {
         write_receipt(&config.receipt, &receipt)?;
         return Err(error);
     }
-    receipt.outcome = "pass";
-    write_receipt(&config.receipt, &receipt)?;
     if let Some(path) = config.env_file {
-        write_env(
+        if let Err(error) = write_env(
             &path,
             receipt.derived_subject_sha.as_deref(),
             receipt.derived_subject_tree_sha.as_deref(),
-        )?;
+        ) {
+            receipt.failure_stage = Some("environment-export".to_string());
+            receipt.error = Some(error.to_string());
+            write_receipt(&config.receipt, &receipt)?;
+            return Err(error);
+        }
     }
+    receipt.outcome = "pass";
+    write_receipt(&config.receipt, &receipt)?;
     println!("ci subject materialization: PASS ({})", config.receipt.display());
     Ok(())
 }
@@ -115,6 +124,10 @@ fn materialize(root: &Path, config: &Config, receipt: &mut Receipt) -> Result<()
     };
     let input = ci_subject::input_from_config(&subject_config)
         .map_err(|error| stage_error(receipt, "event-input", error))?;
+    let local_repository = ci_subject::repository_identity(root)
+        .map_err(|error| stage_error(receipt, "repository", error))?;
+    ci_subject::ensure_repository(&input.repository, &local_repository)
+        .map_err(|error| stage_error(receipt, "repository", error))?;
     receipt.event_base_sha = Some(input.base_sha.clone());
     receipt.event_head_sha = Some(input.head_sha.clone());
 
@@ -124,11 +137,14 @@ fn materialize(root: &Path, config: &Config, receipt: &mut Receipt) -> Result<()
         .map_err(|error| stage_error(receipt, "head-validation", error))?;
     ci_subject::ensure_commit(root, &input.base_sha)
         .map_err(|error| stage_error(receipt, "base-fetch", error))?;
-    ci_subject::ensure_commit(root, &input.head_sha)
-        .map_err(|error| stage_error(receipt, "head-fetch", error))?;
+    if input.event_kind != CiEventKind::PullRequest {
+        ci_subject::ensure_commit(root, &input.head_sha)
+            .map_err(|error| stage_error(receipt, "head-fetch", error))?;
+    }
 
     if input.event_kind == CiEventKind::PullRequest {
-        let event = read_event(config)?;
+        let event =
+            read_event(config).map_err(|error| stage_error(receipt, "event-input", error))?;
         let number = event
             .get("pull_request")
             .and_then(|value| value.get("number"))
@@ -137,13 +153,13 @@ fn materialize(root: &Path, config: &Config, receipt: &mut Receipt) -> Result<()
                 stage_error(receipt, "head-ref", eyre!("pull request number is required"))
             })?;
         let refspec = format!("refs/pull/{number}/head");
-        ci_subject::git_stdout(
-            root,
-            &["fetch", "--no-tags", "--no-write-fetch-head", "origin", &refspec],
-        )
-        .map_err(|error| stage_error(receipt, "head-ref", error))?;
-        let fetched = ci_subject::git_stdout(root, &["rev-parse", "FETCH_HEAD^{commit}"])
+        let local_head_ref = "refs/ci-subject/pr-head";
+        let head_refspec = format!("+{refspec}:{local_head_ref}");
+        ci_subject::git_stdout(root, &["fetch", "--no-tags", "origin", &head_refspec])
             .map_err(|error| stage_error(receipt, "head-ref", error))?;
+        let fetched =
+            ci_subject::git_stdout(root, &["rev-parse", &format!("{local_head_ref}^{{commit}}")])
+                .map_err(|error| stage_error(receipt, "head-ref", error))?;
         receipt.fetched_head_sha = Some(fetched.clone());
         if fetched != input.head_sha {
             return Err(stage_error(
@@ -154,6 +170,24 @@ fn materialize(root: &Path, config: &Config, receipt: &mut Receipt) -> Result<()
                     input.head_sha
                 ),
             ));
+        }
+        ci_subject::ensure_commit(root, &input.head_sha)
+            .map_err(|error| stage_error(receipt, "head-fetch", error))?;
+        let local_merge_ref = "refs/ci-subject/pr-merge";
+        let merge_refspec = format!("+refs/pull/{number}/merge:{local_merge_ref}");
+        if ci_subject::git_stdout(root, &["fetch", "--no-tags", "origin", &merge_refspec]).is_ok()
+            && let Ok(observed) = ci_subject::git_stdout(
+                root,
+                &["rev-parse", &format!("{local_merge_ref}^{{commit}}")],
+            )
+        {
+            receipt.observed_merge_ref_sha = Some(observed.clone());
+            if let Ok(parents) =
+                ci_subject::git_stdout(root, &["rev-list", "--parents", "-n", "1", &observed])
+            {
+                receipt.observed_merge_ref_parents =
+                    parents.split_whitespace().skip(1).map(str::to_string).collect();
+            }
         }
     } else {
         receipt.fetched_head_sha = Some(input.head_sha.clone());
@@ -169,11 +203,13 @@ fn materialize(root: &Path, config: &Config, receipt: &mut Receipt) -> Result<()
 }
 
 fn merge_tree(root: &Path, input: &SubjectInput) -> Result<String> {
-    let output = Command::new("git")
-        .args(["merge-tree", "--write-tree", &input.base_sha, &input.head_sha])
-        .current_dir(root)
-        .output()
-        .context("running git merge-tree --write-tree")?;
+    let output = run_git_bounded(
+        Command::new("git")
+            .args(["merge-tree", "--write-tree", &input.base_sha, &input.head_sha])
+            .current_dir(root),
+        None,
+    )
+    .context("running git merge-tree --write-tree")?;
     if !output.status.success() {
         return Err(eyre!(
             "git merge-tree reported a conflict: {}",
@@ -192,26 +228,20 @@ fn merge_tree(root: &Path, input: &SubjectInput) -> Result<String> {
 }
 
 fn synthetic_commit(root: &Path, input: &SubjectInput, tree: &str) -> Result<String> {
-    let mut child = Command::new("git")
-        .args(["commit-tree", tree, "-p", &input.base_sha, "-p", &input.head_sha, "-F", "-"])
-        .current_dir(root)
-        .env("GIT_AUTHOR_NAME", "perl-lsp trusted subject")
-        .env("GIT_AUTHOR_EMAIL", "ci-subject@invalid")
-        .env("GIT_COMMITTER_NAME", "perl-lsp trusted subject")
-        .env("GIT_COMMITTER_EMAIL", "ci-subject@invalid")
-        .env("GIT_AUTHOR_DATE", GIT_COMMIT_DATE)
-        .env("GIT_COMMITTER_DATE", GIT_COMMIT_DATE)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("starting git commit-tree")?;
-    use std::io::Write;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| eyre!("git commit-tree stdin unavailable"))?
-        .write_all(b"perl-lsp trusted integration subject\n")?;
-    let output = child.wait_with_output().context("waiting for git commit-tree")?;
+    let mut command = Command::new("git");
+    let output = run_git_bounded(
+        command
+            .args(["commit-tree", tree, "-p", &input.base_sha, "-p", &input.head_sha, "-F", "-"])
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "perl-lsp trusted subject")
+            .env("GIT_AUTHOR_EMAIL", "ci-subject@invalid")
+            .env("GIT_COMMITTER_NAME", "perl-lsp trusted subject")
+            .env("GIT_COMMITTER_EMAIL", "ci-subject@invalid")
+            .env("GIT_AUTHOR_DATE", GIT_COMMIT_DATE)
+            .env("GIT_COMMITTER_DATE", GIT_COMMIT_DATE),
+        Some(b"perl-lsp trusted integration subject\n"),
+    )
+    .context("running git commit-tree")?;
     if !output.status.success() {
         return Err(eyre!(
             "git commit-tree failed: {}",
@@ -221,6 +251,35 @@ fn synthetic_commit(root: &Path, input: &SubjectInput, tree: &str) -> Result<Str
     let subject = String::from_utf8(output.stdout)?.trim().to_string();
     ci_subject::validate_sha(&subject, "derived subject").map_err(|error| eyre!(error))?;
     Ok(subject)
+}
+
+fn run_git_bounded(command: &mut Command, input: Option<&[u8]>) -> Result<Output> {
+    let mut child = command
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(input) = input {
+        let mut stdin = child.stdin.take().ok_or_else(|| eyre!("git command stdin unavailable"))?;
+        stdin.write_all(input)?;
+        drop(stdin);
+    }
+    wait_bounded(child)
+}
+
+fn wait_bounded(mut child: Child) -> Result<Output> {
+    let deadline = Instant::now() + GIT_COMMAND_TIMEOUT;
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output().context("collecting git command output");
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            let _ = child.wait();
+            return Err(eyre!("git command exceeded {} seconds", GIT_COMMAND_TIMEOUT.as_secs()));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn read_event(config: &Config) -> Result<Value> {
@@ -267,4 +326,99 @@ fn write_env(path: &Path, subject: Option<&str>, tree: Option<&str>) -> Result<(
             writeln!(file, "SUBJECT_TREE_SHA={tree}")
         })
         .with_context(|| format!("writing GitHub environment file {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use color_eyre::eyre::{Result, ensure, eyre};
+
+    fn git(root: &Path, args: &[&str]) -> Result<String> {
+        let output = Command::new("git").args(args).current_dir(root).output()?;
+        if !output.status.success() {
+            return Err(eyre!("git {} failed", args.join(" ")));
+        }
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    }
+
+    #[test]
+    fn explicit_subject_is_stable_and_exports_identity() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        git(temp.path(), &["init", "--quiet"])?;
+        git(temp.path(), &["config", "user.name", "test"])?;
+        git(temp.path(), &["config", "user.email", "test@example.invalid"])?;
+        git(temp.path(), &["remote", "add", "origin", "https://github.com/owner/repo.git"])?;
+        fs::write(temp.path().join("tracked.txt"), "base\n")?;
+        git(temp.path(), &["add", "tracked.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "base"])?;
+        let base = git(temp.path(), &["rev-parse", "HEAD"])?;
+        fs::write(temp.path().join("tracked.txt"), "head\n")?;
+        git(temp.path(), &["add", "tracked.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "head"])?;
+        let head = git(temp.path(), &["rev-parse", "HEAD"])?;
+
+        let first = temp.path().join("first.json");
+        let first_env = temp.path().join("first.env");
+        let config = || Config {
+            event_name: Some("explicit".to_string()),
+            event_path: None,
+            repository: Some("owner/repo".to_string()),
+            github_sha: None,
+            base_sha: Some(base.clone()),
+            head_sha: Some(head.clone()),
+            receipt: first.clone(),
+            env_file: Some(first_env.clone()),
+            root: Some(temp.path().to_path_buf()),
+        };
+        run(config())?;
+        let first_value: Value = serde_json::from_slice(&fs::read(&first)?)?;
+        let subject = first_value["derived_subject_sha"]
+            .as_str()
+            .ok_or_else(|| eyre!("receipt omitted subject SHA"))?
+            .to_string();
+        let tree = first_value["derived_subject_tree_sha"]
+            .as_str()
+            .ok_or_else(|| eyre!("receipt omitted subject tree SHA"))?
+            .to_string();
+        ensure!(first_value["outcome"] == "pass");
+        ensure!(fs::read_to_string(&first_env)?.contains(&format!("SUBJECT_SHA={subject}")));
+        ensure!(fs::read_to_string(&first_env)?.contains(&format!("SUBJECT_TREE_SHA={tree}")));
+
+        let second = temp.path().join("second.json");
+        let second_env = temp.path().join("second.env");
+        let mut second_config = config();
+        second_config.receipt = second.clone();
+        second_config.env_file = Some(second_env);
+        run(second_config)?;
+        let second_value: Value = serde_json::from_slice(&fs::read(second)?)?;
+        ensure!(second_value["derived_subject_sha"] == subject);
+        ensure!(second_value["derived_subject_tree_sha"] == tree);
+        ensure!(second_value["event_base_sha"] == base);
+        ensure!(second_value["event_head_sha"] == head);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_input_retains_typed_failure_receipt() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receipt = temp.path().join("failure.json");
+        let config = Config {
+            event_name: Some("explicit".to_string()),
+            event_path: None,
+            repository: Some("owner/repo".to_string()),
+            github_sha: None,
+            base_sha: None,
+            head_sha: None,
+            receipt: receipt.clone(),
+            env_file: None,
+            root: Some(temp.path().to_path_buf()),
+        };
+        let result = run(config);
+        ensure!(result.is_err());
+        let value: Value = serde_json::from_slice(&fs::read(receipt)?)?;
+        ensure!(value["outcome"] == "fail");
+        ensure!(value["failure_stage"] == "event-input");
+        ensure!(value["error"].as_str().is_some());
+        Ok(())
+    }
 }
