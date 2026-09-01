@@ -135,6 +135,17 @@ def _validate_evidence(
     return evidence
 
 
+def _profile_artifact_digest(
+    subjects: list[dict[str, str]], profile: str, name: str
+) -> str:
+    """Return the one artifact digest proved for an installed profile."""
+
+    digests = {item["artifact_sha256"] for item in subjects if item["artifact_profile"] == profile}
+    _require(bool(digests), f"{name} has no evidence for {profile}")
+    _require(len(digests) == 1, f"{name} has conflicting artifact identities for {profile}")
+    return next(iter(digests))
+
+
 def _authority_digest(row: dict[str, Any]) -> str:
     payload = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     return hashlib.sha256(payload).hexdigest()
@@ -145,13 +156,32 @@ def _validate_authorities(value: Any) -> dict[tuple[str, str], dict[str, Any]]:
     _require(isinstance(entries, list) and entries, "authority catalog.rows must be a non-empty list")
     result: dict[tuple[str, str], dict[str, Any]] = {}
     for index, raw in enumerate(entries):
-        item = _object(raw, f"authority catalog.rows[{index}]")
+        item = _exact_keys(
+            raw,
+            {"authority", "row_id", "digest", "row", "source"},
+            f"authority catalog.rows[{index}]",
+        )
         authority = _string(item.get("authority"), f"authority catalog.rows[{index}].authority")
         row_id = _string(item.get("row_id"), f"authority catalog.rows[{index}].row_id")
         canonical = item.get("row")
         canonical = _object(canonical, f"authority catalog.rows[{index}].row")
         _require(canonical.get("authority") == authority and canonical.get("row_id") == row_id,
                  f"authority catalog.rows[{index}] identity does not match its row")
+        source = _exact_keys(
+            item.get("source"),
+            {"authority_issue", "row_id"},
+            f"authority catalog.rows[{index}].source",
+        )
+        _require(
+            ISSUE_URL_PATTERN.fullmatch(_string(source.get("authority_issue"), f"authority catalog.rows[{index}].source.authority_issue"))
+            is not None,
+            f"authority catalog.rows[{index}].source.authority_issue must be a canonical issue URL",
+        )
+        _require(source.get("row_id") == row_id,
+                 f"authority catalog.rows[{index}].source row identity does not match its row")
+        digest = _sha256(item.get("digest"), f"authority catalog.rows[{index}].digest")
+        _require(digest == _authority_digest(canonical),
+                 f"authority catalog.rows[{index}].digest does not match its canonical row")
         key = (authority, row_id)
         _require(key not in result, f"authority catalog duplicates {authority}:{row_id}")
         result[key] = canonical
@@ -249,22 +279,25 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
             for profile, subjects in evidence_by_profile.items():
                 _require(any(item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"] for item in subjects),
                          f"projection.rows[{index}].READY requires exact installed evidence for {profile} and ordinary journey")
-                _require(any(item["kind"] in {"installed_journey", "refusal_boundary"} and item["journey_id"] in row["failure_journeys"] for item in subjects),
+                artifact_digest = _profile_artifact_digest(subjects, profile, f"projection.rows[{index}].READY")
+                _require(any(item["kind"] == "refusal_boundary" and item["journey_id"] in row["failure_journeys"] for item in subjects),
                          f"projection.rows[{index}].READY requires applicable failure or refusal evidence for {profile}")
-                ordinary_digests = {item["artifact_sha256"] for item in subjects if item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"]}
-                failure_evidence = [item for item in subjects if item["kind"] in {"installed_journey", "refusal_boundary"} and item["journey_id"] in row["failure_journeys"]]
-                _require(all(item["artifact_sha256"] in ordinary_digests for item in failure_evidence),
+                ordinary_evidence = [item for item in subjects if item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"]]
+                _require(all(item["artifact_sha256"] == artifact_digest for item in ordinary_evidence),
+                         f"projection.rows[{index}].READY ordinary evidence must use one artifact digest for {profile}")
+                failure_evidence = [item for item in subjects if item["kind"] == "refusal_boundary" and item["journey_id"] in row["failure_journeys"]]
+                _require(all(item["artifact_sha256"] == artifact_digest for item in failure_evidence),
                          f"projection.rows[{index}].READY failure evidence must use the ordinary artifact digest for {profile}")
         elif disposition == "BOUNDED_PREVIEW":
             _require(claim_effect == "limit", f"projection.rows[{index}].BOUNDED_PREVIEW must limit its public claim")
             for profile, subjects in evidence_by_profile.items():
                 _require(any(item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"] for item in subjects),
                          f"projection.rows[{index}].BOUNDED_PREVIEW requires exact installed evidence for {profile} and ordinary journey")
+                artifact_digest = _profile_artifact_digest(subjects, profile, f"projection.rows[{index}].BOUNDED_PREVIEW")
                 _require(any(item["kind"] == "refusal_boundary" and item["journey_id"] in row["failure_journeys"] for item in subjects),
                          f"projection.rows[{index}].BOUNDED_PREVIEW requires refusal-boundary evidence for {profile} and a failure journey")
-                ordinary_digests = {item["artifact_sha256"] for item in subjects if item["kind"] == "installed_journey" and item["journey_id"] == row["ordinary_journey"]}
                 refusal_evidence = [item for item in subjects if item["kind"] == "refusal_boundary" and item["journey_id"] in row["failure_journeys"]]
-                _require(all(item["artifact_sha256"] in ordinary_digests for item in refusal_evidence),
+                _require(all(item["artifact_sha256"] == artifact_digest for item in refusal_evidence),
                          f"projection.rows[{index}].BOUNDED_PREVIEW refusal evidence must use the ordinary artifact digest for {profile}")
         elif disposition == "DISABLED":
             _require(claim_effect == "remove_or_withhold", f"projection.rows[{index}].DISABLED must remove or withhold its claim")
@@ -272,6 +305,11 @@ def validate_projection(schema: Any, projection: Any, authorities: Any = None) -
             _require(row["opt_in"] is False, f"projection.rows[{index}].DISABLED cannot remain opt-in reachable")
             for profile, subjects in evidence_by_profile.items():
                 _require(any(item["kind"] == "artifact_absence" for item in subjects),
+                         f"projection.rows[{index}].DISABLED requires artifact-absence evidence for {profile}")
+                artifact_digest = _profile_artifact_digest(subjects, profile, f"projection.rows[{index}].DISABLED")
+                _require(all(item["kind"] == "artifact_absence" for item in subjects),
+                         f"projection.rows[{index}].DISABLED cannot mix absence and installed evidence for {profile}")
+                _require(any(item["kind"] == "artifact_absence" and item["artifact_sha256"] == artifact_digest for item in subjects),
                          f"projection.rows[{index}].DISABLED requires artifact-absence evidence for {profile}")
         else:
             _require(claim_effect == "remove_or_withhold", f"projection.rows[{index}].{disposition} must remove or withhold its claim")

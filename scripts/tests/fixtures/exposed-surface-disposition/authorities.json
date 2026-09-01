@@ -1,5 +1,5 @@
 {
   "rows": [
-    {"authority":"effective_lsp_surface","row_id":"provider.diagnostics","row":{"authority":"effective_lsp_surface","row_id":"provider.diagnostics","contract":"diagnostics-current-document"}}
+    {"authority":"effective_lsp_surface","row_id":"provider.diagnostics","digest":"9ebf24dbfdea2fbbd59a71167845c62e17b5227de4a32d33ce8db2b289c9c77a","source":{"authority_issue":"https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9662","row_id":"provider.diagnostics"},"row":{"authority":"effective_lsp_surface","row_id":"provider.diagnostics","contract":"diagnostics-current-document"}}
   ]
 }

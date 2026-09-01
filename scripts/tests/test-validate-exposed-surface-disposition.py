@@ -74,7 +74,7 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
 
         projection = copy.deepcopy(self.projection)
         projection["rows"][0]["surface_ref"]["digest"] = "0" * 64
-        self.assert_invalid(projection, "surface_ref.digest")
+        self.assert_invalid(projection, "does not match canonical authority row")
 
         projection = copy.deepcopy(self.projection)
         projection["rows"][0]["surface_ref"]["row_id"] = "unknown"
@@ -89,6 +89,11 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
         authorities["rows"].append({
             "authority": "effective_lsp_surface",
             "row_id": "provider.hover",
+            "digest": "db5019f0d23f7dabd4a5ca5dd06ce46307b67563c303a3aba02b81fbe14231bb",
+            "source": {
+                "authority_issue": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9662",
+                "row_id": "provider.hover",
+            },
             "row": {
                 "authority": "effective_lsp_surface",
                 "row_id": "provider.hover",
@@ -96,6 +101,17 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
             },
         })
         with self.assertRaisesRegex(ValueError, "missing canonical authority rows"):
+            MODULE.validate_projection(self.schema, self.projection, authorities)
+
+    def test_rejects_unbound_authority_provenance_or_digest(self) -> None:
+        authorities = copy.deepcopy(self.authorities)
+        authorities["rows"][0]["source"]["row_id"] = "provider.hover"
+        with self.assertRaisesRegex(ValueError, "source row identity"):
+            MODULE.validate_projection(self.schema, self.projection, authorities)
+
+        authorities = copy.deepcopy(self.authorities)
+        authorities["rows"][0]["digest"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "digest does not match"):
             MODULE.validate_projection(self.schema, self.projection, authorities)
 
     def test_rejects_cross_subject_or_cross_profile_evidence(self) -> None:
@@ -126,7 +142,11 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
 
         projection = copy.deepcopy(self.projection)
         projection["rows"][0]["evidence_subjects"][1]["artifact_sha256"] = "c" * 64
-        self.assert_invalid(projection, "READY failure evidence must use the ordinary artifact digest")
+        self.assert_invalid(projection, "conflicting artifact identities")
+
+        projection = copy.deepcopy(self.projection)
+        projection["rows"][0]["evidence_subjects"][1]["kind"] = "installed_journey"
+        self.assert_invalid(projection, "READY requires applicable failure or refusal evidence")
 
         projection = copy.deepcopy(self.projection)
         projection["rows"][0]["failure_journeys"] = [projection["rows"][0]["ordinary_journey"]]
@@ -149,6 +169,26 @@ class ExposedSurfaceDispositionValidationTests(unittest.TestCase):
 
         row["opt_in"] = False
         self.assert_invalid(projection, "requires artifact-absence evidence")
+
+        projection = copy.deepcopy(self.projection)
+        row = projection["rows"][0]
+        row["disposition"] = "DISABLED"
+        row["claim_effect"] = "remove_or_withhold"
+        row["default_reachable"] = False
+        row["opt_in"] = False
+        row["evidence_subjects"][0]["kind"] = "artifact_absence"
+        self.assert_invalid(projection, "cannot mix absence and installed evidence")
+
+        projection = copy.deepcopy(self.projection)
+        row = projection["rows"][0]
+        row["disposition"] = "DISABLED"
+        row["claim_effect"] = "remove_or_withhold"
+        row["default_reachable"] = False
+        row["opt_in"] = False
+        for subject in row["evidence_subjects"]:
+            subject["kind"] = "artifact_absence"
+        row["evidence_subjects"][1]["artifact_sha256"] = "c" * 64
+        self.assert_invalid(projection, "conflicting artifact identities")
 
     def test_rejects_bounded_preview_without_refusal_boundary(self) -> None:
         projection = copy.deepcopy(self.projection)
