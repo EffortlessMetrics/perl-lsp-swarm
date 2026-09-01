@@ -1467,7 +1467,10 @@ fn a_second_declared_transport_file_is_refused() -> Result<()> {
 
 /// An envelope that reads through a symlink is not self-contained: it stops
 /// validating the moment the external target moves.
-#[cfg(unix)]
+///
+/// The refusal is cross-platform: `read_envelope_file` uses `symlink_metadata`,
+/// which Windows honours for reparse points. Only the fixture is
+/// platform-shaped, so the control runs on both.
 #[test]
 fn a_symlinked_transport_entry_is_refused() -> Result<()> {
     let fixture = Fixture::new()?;
@@ -1480,7 +1483,9 @@ fn a_symlinked_transport_entry_is_refused() -> Result<()> {
     let target = outside.path().join("elsewhere.pack");
     fs::copy(destination.envelope().join(PACK_FILE_NAME), &target)?;
     fs::remove_file(destination.envelope().join(PACK_FILE_NAME))?;
-    std::os::unix::fs::symlink(&target, destination.envelope().join(PACK_FILE_NAME))?;
+    if !link_manifest(&target, &destination.envelope().join(PACK_FILE_NAME))? {
+        return Ok(());
+    }
 
     let report = check_handoff(&destination.envelope());
     assert_eq!(
@@ -2074,7 +2079,12 @@ fn explain_refuses_a_manifest_the_validator_would_refuse() -> Result<()> {
     let outside = destination.root().join("outside-manifest.json");
     fs::copy(destination.envelope().join(MANIFEST_FILE_NAME), &outside)?;
     fs::remove_file(destination.envelope().join(MANIFEST_FILE_NAME))?;
-    std::os::unix::fs::symlink(&outside, destination.envelope().join(MANIFEST_FILE_NAME))?;
+    if !link_manifest(&outside, &destination.envelope().join(MANIFEST_FILE_NAME))? {
+        // Windows without the symlink privilege: no reparse point could be
+        // created, so there is nothing to refuse. A typed skip is honest; a
+        // weakened fixture asserting against a plain copy would not be.
+        return Ok(());
+    }
 
     let Err((outcome, detail)) = explain(&destination.envelope()) else {
         bail!("explain must not read a manifest through a symbolic link");
@@ -2082,6 +2092,34 @@ fn explain_refuses_a_manifest_the_validator_would_refuse() -> Result<()> {
     assert_eq!(outcome, HandoffOutcome::InvalidManifest);
     assert!(detail.contains("symbolic link"), "the refusal must name the reason: {detail}");
     Ok(())
+}
+
+/// Create the symbolic link a refusal control needs, or report that the
+/// platform would not let us make one.
+///
+/// The refusal under test is cross-platform — `read_envelope_file` uses
+/// `symlink_metadata` and `file_type().is_symlink()`, which Windows honours for
+/// reparse points — so the control belongs on both platforms and only the
+/// *fixture* is platform-shaped. On Windows, creating a file symlink needs
+/// `SeCreateSymbolicLinkPrivilege`; without it the honest outcome is a visible
+/// skip rather than a red X or a fixture quietly downgraded to a copy, which
+/// would assert nothing. `PLSW_REQUIRE_SYMLINK_PRIVILEGE` turns that skip into
+/// a hard failure on proof surfaces.
+fn link_manifest(target: &Path, link: &Path) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)?;
+        Ok(true)
+    }
+    #[cfg(windows)]
+    {
+        Ok(perl_tdd_support::try_create_file_symlink(target, link)?.is_some())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, link);
+        Ok(false)
+    }
 }
 
 /// A commit message this format cannot retain verbatim is refused, not mangled.
