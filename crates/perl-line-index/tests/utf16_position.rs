@@ -153,10 +153,10 @@ fn test_utf16_first_line_unaffected_by_second_line() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-/// CRLF line endings are included in the addressable line text: callers may
-/// address the `\r` and the `\n`, but the first byte of the next line is not
-/// reachable through this line (#9837).  The newline is the one-past-content
-/// position and remains valid as a range end.
+/// CRLF line endings are treated as one non-addressable terminator for UTF-16
+/// positions: the one-past-content position maps to the `\r` byte, the `\n`
+/// byte is not addressable, and the first byte of the next line is not
+/// reachable through this line (#9837).
 #[test]
 fn test_utf16_crlf_line_accepts_newline_and_range_end_positions()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -202,8 +202,8 @@ fn test_utf16_one_past_newline_on_nonfinal_line_is_rejected()
     Ok(())
 }
 
-/// #9837 regression on CRLF: the same rejection must hold when the line ends
-/// with `\r\n`, matching `position_to_byte_checked` exactly.
+/// #9837 regression on CRLF: the same rejection of the next-line start must
+/// hold when the line ends with `\r\n`, as it does for `position_to_byte_checked`.
 #[test]
 fn test_utf16_crlf_one_past_next_line_start_is_rejected() -> Result<(), Box<dyn std::error::Error>>
 {
