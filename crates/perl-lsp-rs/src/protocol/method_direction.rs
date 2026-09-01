@@ -1018,15 +1018,135 @@ mod tests {
         source
     }
 
+    fn test_cfg_attribute_start(source: &str) -> Option<usize> {
+        let bytes = source.as_bytes();
+        let mut state = LexicalState::Normal;
+        let mut index = 0;
+        while index < bytes.len() {
+            match state {
+                LexicalState::Normal => {
+                    if bytes[index..].starts_with(b"//") {
+                        return None;
+                    }
+                    if bytes[index..].starts_with(b"/*") {
+                        state = LexicalState::BlockComment(1);
+                        index += 2;
+                    } else if let Some((next, hashes)) = raw_string_start(bytes, index) {
+                        state = LexicalState::RawString { hashes };
+                        index = next;
+                    } else if bytes[index] == b'"'
+                        || (bytes[index] == b'b' && bytes.get(index + 1) == Some(&b'"'))
+                    {
+                        state = LexicalState::Quoted { delimiter: b'"', escaped: false };
+                        index += usize::from(bytes[index] == b'b') + 1;
+                    } else if bytes[index] == b'\'' && char_literal_ends_on_line(bytes, index) {
+                        state = LexicalState::Quoted { delimiter: b'\'', escaped: false };
+                        index += 1;
+                    } else if bytes[index..].starts_with(b"#[cfg(test)]") {
+                        return Some(index);
+                    } else {
+                        index += 1;
+                    }
+                }
+                LexicalState::BlockComment(depth) => {
+                    if bytes[index..].starts_with(b"/*") {
+                        state = LexicalState::BlockComment(depth + 1);
+                        index += 2;
+                    } else if bytes[index..].starts_with(b"*/") {
+                        index += 2;
+                        state = if depth == 1 {
+                            LexicalState::Normal
+                        } else {
+                            LexicalState::BlockComment(depth - 1)
+                        };
+                    } else {
+                        index += 1;
+                    }
+                }
+                LexicalState::Quoted { delimiter, escaped } => {
+                    if escaped {
+                        state = LexicalState::Quoted { delimiter, escaped: false };
+                    } else if bytes[index] == b'\\' {
+                        state = LexicalState::Quoted { delimiter, escaped: true };
+                    } else if bytes[index] == delimiter {
+                        state = LexicalState::Normal;
+                    }
+                    index += 1;
+                }
+                LexicalState::RawString { hashes } => {
+                    if raw_string_ends_at(bytes, index, hashes) {
+                        state = LexicalState::Normal;
+                        index += hashes + 1;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn strip_test_modules(source: &str) -> String {
         let mut result = String::with_capacity(source.len());
         let lines: Vec<&str> = source.lines().collect();
         let mut line_index = 0;
         while let Some(&line) = lines.get(line_index) {
             line_index += 1;
-            result.push_str(line);
+            let Some(attribute_start) = test_cfg_attribute_start(line) else {
+                result.push_str(line);
+                result.push('\n');
+                continue;
+            };
+            let attribute_end = attribute_start + "#[cfg(test)]".len();
+            let prefix = &line[..attribute_start];
+            let inline_declaration = &line[attribute_end..];
+
+            if !inline_declaration.trim().is_empty() {
+                if let Some(declaration) = test_module_declaration(inline_declaration) {
+                    if matches!(declaration.kind, TestModuleKind::External) {
+                        let suffix = skip_declaration_trivia(
+                            inline_declaration,
+                            declaration.terminator_offset + 1,
+                        )
+                        .and_then(|start| inline_declaration.get(start..))
+                        .map(strip_line_comment)
+                        .unwrap_or_default();
+                        let kept = format!("{}{}", prefix, suffix.trim_end());
+                        if !kept.trim().is_empty() {
+                            result.push_str(kept.trim_end());
+                            result.push('\n');
+                        }
+                        continue;
+                    }
+                    let mut lexical_state = LexicalState::Normal;
+                    let (_, close) = scan_structural_braces(
+                        inline_declaration,
+                        &mut lexical_state,
+                        0,
+                        declaration.terminator_offset,
+                    );
+                    if let Some(close) = close {
+                        let suffix = skip_declaration_trivia(inline_declaration, close + 1)
+                            .and_then(|start| inline_declaration.get(start..))
+                            .map(strip_line_comment)
+                            .unwrap_or_default();
+                        let kept = format!("{}{}", prefix, suffix.trim_end());
+                        if !kept.trim().is_empty() {
+                            result.push_str(kept.trim_end());
+                            result.push('\n');
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            result.push_str(prefix);
             result.push('\n');
-            if line.trim() != "#[cfg(test)]" {
+            if !inline_declaration.trim().is_empty() {
+                // An attribute that is not followed by a complete same-line
+                // module remains ordinary source; do not hide it.
+                result.push_str(inline_declaration);
+                result.push('\n');
                 continue;
             }
 
@@ -1130,6 +1250,9 @@ mod tests {
     #[test]
     fn strip_test_modules_handles_visible_and_external_test_modules() {
         let source = r#"
+#[cfg(test)] mod same_line_inline { fn send() { client.send_request("test-only/same-line-inline"); } } fn after_same_line_inline() { send("production/after-same-line-inline"); }
+#[cfg(test)] pub(crate) mod same_line_external; // client.send_request("test-only/same-line-external")
+#[cfg(test)] mod same_line_external_suffix; fn after_same_line_external() { send("production/after-same-line-external"); }
 #[cfg(test)]
 mod plain { const PLAIN: &str = "plain/test"; }
 #[cfg(test)]
@@ -1199,11 +1322,20 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
 "#;
 
         let stripped = strip_test_modules(source);
-        for test_only in
-            ["plain/test", "pub/test", "crate/test", "super/test", "self/test", "scoped/test"]
-        {
+        for test_only in [
+            "test-only/same-line-inline",
+            "test-only/same-line-external",
+            "plain/test",
+            "pub/test",
+            "crate/test",
+            "super/test",
+            "self/test",
+            "scoped/test",
+        ] {
             assert!(!stripped.contains(test_only), "test-only literal leaked: {test_only}");
         }
+        assert!(stripped.contains("production/after-same-line-inline"));
+        assert!(stripped.contains("production/after-same-line-external"));
         assert!(!stripped.contains("pub(crate) mod external;"));
         assert!(!stripped.contains("test-only/external-comment"));
         assert!(!stripped.contains("test-only/visibility-comment"));
