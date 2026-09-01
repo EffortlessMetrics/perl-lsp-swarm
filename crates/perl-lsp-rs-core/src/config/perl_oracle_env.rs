@@ -188,7 +188,8 @@ impl PerlOracleEnv {
     ///
     /// [`into_command`]: PerlOracleEnv::into_command
     pub fn configure_command(&self, cmd: &mut Command) {
-        self.configure_command_with_env(cmd, &self.ambient_env);
+        let ambient_env = Self::capture_ambient_env();
+        self.configure_command_with_env(cmd, &ambient_env);
     }
 
     /// Apply the environment contract using an explicit parent environment.
@@ -204,26 +205,26 @@ impl PerlOracleEnv {
         // 2. PATH: preserved so the interpreter can resolve its own helpers
         //    and module hooks that fork sub-processes. Without PATH many system
         //    Perl installations silently break.
-        if let Some(path_val) = ambient_env.get("PATH") {
+        if let Some(path_val) = ambient_value(ambient_env, "PATH") {
             cmd.env("PATH", path_val);
         }
 
         // 3. Conditionally allowlisted Perl env vars.
         if self.allow_perl5lib
-            && let Some(val) = ambient_env.get("PERL5LIB")
+            && let Some(val) = ambient_value(ambient_env, "PERL5LIB")
         {
             cmd.env("PERL5LIB", val);
         }
         if self.allow_perl5opt
-            && let Some(val) = ambient_env.get("PERL5OPT")
+            && let Some(val) = ambient_value(ambient_env, "PERL5OPT")
         {
             cmd.env("PERL5OPT", val);
         }
         if self.allow_local_lib {
-            if let Some(val) = ambient_env.get("PERL_LOCAL_LIB_ROOT") {
+            if let Some(val) = ambient_value(ambient_env, "PERL_LOCAL_LIB_ROOT") {
                 cmd.env("PERL_LOCAL_LIB_ROOT", val);
             }
-            if let Some(val) = ambient_env.get("PERL_LOCAL_LIB_PREFIX") {
+            if let Some(val) = ambient_value(ambient_env, "PERL_LOCAL_LIB_PREFIX") {
                 cmd.env("PERL_LOCAL_LIB_PREFIX", val);
             }
         }
@@ -550,6 +551,17 @@ impl PerlOracleEnv {
     }
 }
 
+fn ambient_value<'a>(
+    ambient: &'a BTreeMap<String, std::ffi::OsString>,
+    key: &str,
+) -> Option<&'a std::ffi::OsString> {
+    if cfg!(windows) {
+        ambient.iter().find_map(|(name, value)| name.eq_ignore_ascii_case(key).then_some(value))
+    } else {
+        ambient.get(key)
+    }
+}
+
 // ── WASM stub ─────────────────────────────────────────────────────────────────
 
 /// Stub for WASM targets where subprocess spawning is not available.
@@ -613,27 +625,7 @@ impl PerlOracleEnv {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use std::sync::{LazyLock, Mutex, MutexGuard};
-
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-
-    static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    fn env_lock() -> TestResult<MutexGuard<'static, ()>> {
-        ENV_MUTEX
-            .lock()
-            .map_err(|_| std::io::Error::other("perl oracle env test mutex poisoned").into())
-    }
-
-    fn env_snapshot() -> crate::test_support::EnvSnapshot {
-        crate::test_support::EnvSnapshot::capture(&[
-            "PERL5LIB",
-            "PERL5OPT",
-            "PERL_LOCAL_LIB_ROOT",
-            "PERL_LOCAL_LIB_PREFIX",
-            "HOME",
-        ])
-    }
 
     /// Helper: build a minimal `PerlOracleEnv` for unit tests that don't
     /// need a real Perl binary.
@@ -769,10 +761,7 @@ mod tests {
     /// The perldoc oracle strips poisoned ambient env by default, while still
     /// allowing `PERL5LIB` only when the user explicitly enabled it.
     #[test]
-    #[serial_test::serial]
     fn for_perldoc_strips_poisoned_env_and_gates_perl5lib() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -809,7 +798,7 @@ mod tests {
             let mut allowed = allowed;
             allowed.ambient_env.insert("PERL5LIB".to_owned(), poison_path.clone().into());
             let mut cmd = std::process::Command::new(&perl);
-            allowed.configure_command(&mut cmd);
+            allowed.configure_command_with_env(&mut cmd, &allowed.ambient_env);
             cmd.args([
                 "-e",
                 "print join('|', $ENV{PERL5LIB}//'UNSET', $ENV{PERL5OPT}//'UNSET', \
@@ -873,10 +862,7 @@ mod tests {
     /// poisoned-env regression guard for the #8685 seam.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[serial_test::serial]
     fn for_language_probe_strips_perl5opt() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -888,10 +874,12 @@ mod tests {
             ..WorkspaceConfig::default()
         };
 
-        let oracle = PerlOracleEnv::for_language_probe(&config, cwd)
+        let mut oracle = PerlOracleEnv::for_language_probe(&config, cwd)
             .ok_or("for_language_probe returned None unexpectedly")?;
 
-        let mut cmd = oracle.into_command();
+        oracle.ambient_env.insert("PERL5OPT".to_owned(), "-Mevil".into());
+        let mut cmd = std::process::Command::new(&oracle.perl_binary);
+        oracle.configure_command_with_env(&mut cmd, &oracle.ambient_env);
         cmd.args(["-e", "print $ENV{PERL5OPT} // 'UNSET'"]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -909,10 +897,7 @@ mod tests {
     /// poisoned-env regression guard for the #8685 seam.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[serial_test::serial]
     fn for_language_probe_strips_perl5lib_when_disabled() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -925,12 +910,13 @@ mod tests {
             ..WorkspaceConfig::default()
         };
 
-        let oracle = PerlOracleEnv::for_language_probe(&config, cwd)
+        let mut oracle = PerlOracleEnv::for_language_probe(&config, cwd)
             .ok_or("for_language_probe returned None unexpectedly")?;
 
         let poison_dir = tempfile::tempdir()?;
         let poison_path = poison_dir.path().to_string_lossy().into_owned();
 
+        oracle.ambient_env.insert("PERL5LIB".to_owned(), poison_path.clone().into());
         let mut cmd = oracle.into_command();
         cmd.args(["-e", "print $ENV{PERL5LIB} // 'UNSET'"]);
         cmd.stdout(std::process::Stdio::piped());
@@ -998,10 +984,7 @@ mod tests {
     /// `for_module_resolution` strips PERL5OPT and respects PERL5LIB opt-in.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[serial_test::serial]
     fn for_module_resolution_strips_perl5opt_and_gates_perl5lib() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1083,10 +1066,7 @@ mod tests {
     /// `for_dap_bridge` blocks poisoned ambient Perl env unless debug config opts in.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[serial_test::serial]
     fn for_dap_bridge_gates_perl5lib_and_perl5opt() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1097,7 +1077,9 @@ mod tests {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         let result = (|| -> TestResult<(String, String)> {
-            let denied = PerlOracleEnv::for_dap_bridge(perl.clone(), cwd.clone(), false, false);
+            let mut denied = PerlOracleEnv::for_dap_bridge(perl.clone(), cwd.clone(), false, false);
+            denied.ambient_env.insert("PERL5LIB".to_owned(), poison_path.clone().into());
+            denied.ambient_env.insert("PERL5OPT".to_owned(), "-Mstrict".into());
             let mut cmd = denied.into_command();
             cmd.args(["-e", "print join('|', $ENV{PERL5LIB}//'UNSET', $ENV{PERL5OPT}//'UNSET')"]);
             cmd.stdout(std::process::Stdio::piped());
@@ -1108,7 +1090,8 @@ mod tests {
             let mut allowed = allowed;
             allowed.ambient_env.insert("PERL5LIB".to_owned(), poison_path.clone().into());
             allowed.ambient_env.insert("PERL5OPT".to_owned(), "-Mstrict".into());
-            let mut cmd = allowed.into_command();
+            let mut cmd = std::process::Command::new(&allowed.perl_binary);
+            allowed.configure_command_with_env(&mut cmd, &allowed.ambient_env);
             cmd.args(["-e", "print join('|', $ENV{PERL5LIB}//'UNSET', $ENV{PERL5OPT}//'UNSET')"]);
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
@@ -1140,11 +1123,8 @@ mod tests {
 
     /// `for_dap_test_fixture` uses the deny-all-ambient fixture contract.
     #[test]
-    #[serial_test::serial]
     fn for_dap_test_fixture_denies_ambient_perl_env() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
-        let Some(oracle) = PerlOracleEnv::for_dap_test_fixture() else {
+        let Some(mut oracle) = PerlOracleEnv::for_dap_test_fixture() else {
             return Ok(());
         };
 
@@ -1159,16 +1139,15 @@ mod tests {
     /// `for_dap_test_fixture` strips parent-process Perl env from actual Perl
     /// fixture invocations.
     #[test]
-    #[serial_test::serial]
     fn for_dap_test_fixture_strips_poisoned_env_from_invocation() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
-        let Some(oracle) = PerlOracleEnv::for_dap_test_fixture() else {
+        let Some(mut oracle) = PerlOracleEnv::for_dap_test_fixture() else {
             return Ok(());
         };
 
         let poison_dir = tempfile::tempdir()?;
         let poison_path = poison_dir.path().to_string_lossy().into_owned();
+        oracle.ambient_env.insert("PERL5LIB".to_owned(), poison_path.clone().into());
+        oracle.ambient_env.insert("PERL5OPT".to_owned(), "-Mstrict".into());
 
         let result = (|| -> TestResult<String> {
             let mut cmd = oracle.into_command();
@@ -1194,10 +1173,7 @@ mod tests {
     /// `for_startup_inc_probe` with `usePerl5lib=false` must strip PERL5LIB:
     /// regression guard for the #8493 incident.
     #[test]
-    #[serial_test::serial]
     fn for_startup_inc_probe_strips_when_use_perl5lib_false() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()), // no perl — skip
@@ -1210,15 +1186,17 @@ mod tests {
             ..WorkspaceConfig::default()
         };
 
-        let oracle = PerlOracleEnv::for_startup_inc_probe(&config)
+        let mut oracle = PerlOracleEnv::for_startup_inc_probe(&config)
             .ok_or("for_startup_inc_probe returned None unexpectedly")?;
 
         // Set PERL5LIB in the parent process and assert the subprocess does NOT
         // inherit it when allow_perl5lib=false.
         let poison_dir = tempfile::tempdir()?;
         let poison_path = poison_dir.path().to_string_lossy().into_owned();
+        oracle.ambient_env.insert("PERL5LIB".to_owned(), poison_path.clone().into());
 
-        let mut cmd = oracle.into_command();
+        let mut cmd = std::process::Command::new(&oracle.perl_binary);
+        oracle.configure_command_with_env(&mut cmd, &oracle.ambient_env);
         cmd.args(["-e", "print $ENV{PERL5LIB} // 'UNSET'"]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -1242,10 +1220,7 @@ mod tests {
     /// PERL5LIB is stripped by default (`allow_perl5lib=false`).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[serial_test::serial]
     fn perl_oracle_env_strips_perl5lib_by_default() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1256,6 +1231,8 @@ mod tests {
 
         let mut oracle = dummy_env(false, false, false);
         oracle.perl_binary = perl;
+        oracle.ambient_env.insert("PERL5LIB".to_owned(), poison_path.clone().into());
+        oracle.ambient_env.insert("PERL5OPT".to_owned(), "-Mevil".into());
 
         let mut cmd = oracle.into_command();
         cmd.args(["-e", "print $ENV{PERL5LIB} // 'UNSET'"]);
@@ -1274,10 +1251,7 @@ mod tests {
     /// PERL5LIB passes through when `allow_perl5lib=true`.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[serial_test::serial]
     fn perl_oracle_env_allows_perl5lib_when_opted_in() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1306,10 +1280,7 @@ mod tests {
     /// PERL5OPT is always stripped (no `allow_perl5opt` flag is true).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[serial_test::serial]
     fn perl_oracle_env_strips_perl5opt() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1317,6 +1288,7 @@ mod tests {
 
         let mut oracle = dummy_env(false, false, false);
         oracle.perl_binary = perl;
+        oracle.ambient_env.insert("PERL5OPT".to_owned(), "-Mevil".into());
 
         let mut cmd = oracle.into_command();
         cmd.args(["-e", "print $ENV{PERL5OPT} // 'UNSET'"]);
@@ -1335,10 +1307,7 @@ mod tests {
     /// HOME is stripped (not in allow-set).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[serial_test::serial]
     fn perl_oracle_env_strips_home() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1349,6 +1318,7 @@ mod tests {
 
         let mut oracle = dummy_env(false, false, false);
         oracle.perl_binary = perl;
+        oracle.ambient_env.insert("HOME".to_owned(), poison_path.clone().into());
 
         let mut cmd = oracle.into_command();
         cmd.args(["-e", "print $ENV{HOME} // 'UNSET'"]);
@@ -1366,10 +1336,7 @@ mod tests {
     /// PERL_LOCAL_LIB_ROOT is stripped by default.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[serial_test::serial]
     fn perl_oracle_env_strips_local_lib() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
@@ -1380,6 +1347,7 @@ mod tests {
 
         let mut oracle = dummy_env(false, false, false);
         oracle.perl_binary = perl;
+        oracle.ambient_env.insert("PERL_LOCAL_LIB_ROOT".to_owned(), poison_path.into());
 
         let mut cmd = oracle.into_command();
         cmd.args(["-e", "print $ENV{PERL_LOCAL_LIB_ROOT} // 'UNSET'"]);
@@ -1424,21 +1392,20 @@ mod tests {
     /// (canonical acceptance test for the #8688 incident).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[serial_test::serial]
     fn for_version_probe_strips_poisoned_env() -> TestResult {
-        let _env_guard = env_lock()?;
-        let _env_snapshot = env_snapshot();
         let perl = match perl_path() {
             Some(p) => p,
             None => return Ok(()),
         };
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let oracle = PerlOracleEnv::for_version_probe(perl, cwd);
+        let mut oracle = PerlOracleEnv::for_version_probe(perl, cwd);
 
         let poison_dir = tempfile::tempdir()?;
         let poison_path = poison_dir.path().to_string_lossy().into_owned();
 
+        oracle.ambient_env.insert("PERL5LIB".to_owned(), poison_path.clone().into());
+        oracle.ambient_env.insert("PERL5OPT".to_owned(), "-Mevil".into());
         let mut cmd = oracle.into_command();
         cmd.args(["-e", "print join('|', $ENV{PERL5LIB}//'UNSET', $ENV{PERL5OPT}//'UNSET')"]);
         cmd.stdout(std::process::Stdio::piped());

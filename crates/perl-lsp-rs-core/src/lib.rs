@@ -30,6 +30,7 @@ pub(crate) mod test_support {
 
     impl EnvSnapshot {
         /// Capture the current values of `keys` for restoration on drop.
+        #[must_use = "an EnvSnapshot must stay alive until the environment mutation is complete"]
         pub(crate) fn capture(keys: &[&str]) -> Self {
             Self {
                 values: keys
@@ -62,6 +63,8 @@ pub(crate) mod test_support {
         #[serial_test::serial]
         fn restores_present_and_absent_keys() {
             let _lock = ENV_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _outer_snapshot =
+                EnvSnapshot::capture(&["PERL_LSP_SNAPSHOT_PRESENT", "PERL_LSP_SNAPSHOT_ABSENT"]);
             unsafe { std::env::set_var("PERL_LSP_SNAPSHOT_PRESENT", "before") };
             unsafe { std::env::remove_var("PERL_LSP_SNAPSHOT_ABSENT") };
             {
@@ -77,13 +80,13 @@ pub(crate) mod test_support {
                 Some(OsString::from("before"))
             );
             assert_eq!(std::env::var_os("PERL_LSP_SNAPSHOT_ABSENT"), None);
-            unsafe { std::env::remove_var("PERL_LSP_SNAPSHOT_PRESENT") };
         }
 
         #[test]
         #[serial_test::serial]
         fn restores_after_early_error_and_panic() {
             let _lock = ENV_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _outer_snapshot = EnvSnapshot::capture(&["PERL_LSP_SNAPSHOT_EARLY"]);
             unsafe { std::env::set_var("PERL_LSP_SNAPSHOT_EARLY", "before") };
             let result: Result<(), &str> = {
                 let _snapshot = EnvSnapshot::capture(&["PERL_LSP_SNAPSHOT_EARLY"]);
@@ -99,13 +102,14 @@ pub(crate) mod test_support {
             });
             assert!(panic_result.is_err());
             assert_eq!(std::env::var_os("PERL_LSP_SNAPSHOT_EARLY"), Some(OsString::from("before")));
-            unsafe { std::env::remove_var("PERL_LSP_SNAPSHOT_EARLY") };
         }
 
         #[test]
         #[serial_test::serial]
         fn restores_multiple_keys_in_reverse_order() {
             let _lock = ENV_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _outer_snapshot =
+                EnvSnapshot::capture(&["PERL_LSP_SNAPSHOT_ONE", "PERL_LSP_SNAPSHOT_TWO"]);
             unsafe { std::env::set_var("PERL_LSP_SNAPSHOT_ONE", "one") };
             unsafe { std::env::set_var("PERL_LSP_SNAPSHOT_TWO", "two") };
             {
@@ -116,10 +120,6 @@ pub(crate) mod test_support {
             }
             assert_eq!(std::env::var_os("PERL_LSP_SNAPSHOT_ONE"), Some(OsString::from("one")));
             assert_eq!(std::env::var_os("PERL_LSP_SNAPSHOT_TWO"), Some(OsString::from("two")));
-            unsafe {
-                std::env::remove_var("PERL_LSP_SNAPSHOT_ONE");
-                std::env::remove_var("PERL_LSP_SNAPSHOT_TWO");
-            }
         }
 
         #[cfg(unix)]
@@ -128,6 +128,7 @@ pub(crate) mod test_support {
         fn restores_non_utf8_value() {
             use std::os::unix::ffi::OsStringExt;
             let _lock = ENV_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _outer_snapshot = EnvSnapshot::capture(&["PERL_LSP_SNAPSHOT_NON_UTF8"]);
             let original = OsString::from_vec(vec![b'b', 0xff]);
             unsafe { std::env::set_var("PERL_LSP_SNAPSHOT_NON_UTF8", &original) };
             {
@@ -135,7 +136,6 @@ pub(crate) mod test_support {
                 unsafe { std::env::set_var("PERL_LSP_SNAPSHOT_NON_UTF8", "changed") };
             }
             assert_eq!(std::env::var_os("PERL_LSP_SNAPSHOT_NON_UTF8"), Some(original));
-            unsafe { std::env::remove_var("PERL_LSP_SNAPSHOT_NON_UTF8") };
         }
     }
 }

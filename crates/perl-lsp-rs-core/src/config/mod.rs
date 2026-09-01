@@ -3862,6 +3862,15 @@ profile = "recommended"
             std::fs::set_permissions(&bin_path, perms)?;
         }
 
+        let probe_path = std::env::join_paths(
+            std::iter::once(dir.path().to_owned())
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+        )?;
+        let probe = std::process::Command::new(bin_name).env("PATH", &probe_path).status()?;
+        if !probe.success() {
+            return Err(format!("PATH probe for {bin_name} failed").into());
+        }
+
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "formatting": { "enabled": true }
