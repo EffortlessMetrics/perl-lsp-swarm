@@ -1,9 +1,12 @@
 //! Typed parse outcome, diagnostic, and original-source range vocabulary.
 //!
-//! This module is substrate only. It does not change
-//! [`crate::PureRustPerlParser::parse`] or `parse_with_recovery`, and it does
-//! not add `parse_strict`. Constructors exist so later train rows can consume
-//! the types without implying that current recovery already accounts for source.
+//! This module is vocabulary only: it does not add `parse_strict` or
+//! `parse_recovering`, and it does not imply that current recovery accounts for
+//! source. Its one integrated consumer is the heredoc contract (#8220), which
+//! reports through [`crate::PureRustPerlParser::parse_heredoc_outcome`] and did
+//! change what [`crate::PureRustPerlParser::parse`] returns for heredocs.
+//! `parse_with_recovery` is unchanged, and whole-source accounting remains a
+//! later train row.
 //!
 //! Parser-domain completeness, rejection, and operational failure are distinct
 //! types and cannot be stored in one another's success path.

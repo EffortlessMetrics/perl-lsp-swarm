@@ -15,11 +15,13 @@
 //! byte is accounted for, which remains #8093's row.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
+use perl_parser_pest::pure_rust_parser::{PerlParser, Rule};
 use perl_parser_pest::{
     AstNode, HeredocDefect, HeredocDelimiterForm, MAX_HEREDOC_BODY_BYTES, MAX_HEREDOC_DEPTH,
     ParseAttempt, ParseCompleteness, ParseDiagnosticKind, PureRustPerlParser,
 };
 use perl_tdd_support::must;
+use pest::Parser;
 
 fn sexp(source: &str) -> String {
     let mut parser = PureRustPerlParser::new();
@@ -420,10 +422,16 @@ fn when_a_body_exceeds_the_byte_budget_then_it_is_truncated_and_reported() {
     let scan = perl_parser_pest::heredoc::scan(&source);
     assert_eq!(scan.captures().len(), 1);
     assert_eq!(scan.captures()[0].defect(), Some(HeredocDefect::BodyOverBudget));
+    // Truncation is line-granular: the body stops at the end of the line that
+    // crossed the budget, so it may overshoot by at most that one line, and the
+    // terminator beyond it is never reached.
+    let content = scan.captures()[0].content();
     assert!(
-        scan.captures()[0].content().len() <= MAX_HEREDOC_BODY_BYTES,
-        "a body over budget must not be materialized past the budget"
+        content.len() <= MAX_HEREDOC_BODY_BYTES + "padding line\n".len(),
+        "a body over budget must stop at the crossing line, got {} bytes",
+        content.len()
     );
+    assert!(!content.contains("EOF"), "truncation must stop before the terminator");
     assert_eq!(scan.completeness(), ParseCompleteness::Recovered);
     assert!(
         scan.diagnostics().iter().any(|d| d.message().contains("budget")),
@@ -600,41 +608,161 @@ fn when_a_builtin_list_operator_precedes_the_opener_then_the_body_is_owned() {
     }
 }
 
+/// Heredoc openers the grammar itself produces for `source`.
+///
+/// Parsed from the raw source, so this is the grammar's own opinion, entirely
+/// independent of the scanner's.
+fn grammar_openers(source: &str) -> usize {
+    match <PerlParser as Parser<Rule>>::parse(Rule::program, source) {
+        Ok(pairs) => {
+            let mut count = 0;
+            count_heredoc_rules(pairs, &mut count);
+            count
+        }
+        Err(_) => 0,
+    }
+}
+
+fn count_heredoc_rules(pairs: pest::iterators::Pairs<'_, Rule>, count: &mut usize) {
+    for pair in pairs {
+        if pair.as_rule() == Rule::heredoc {
+            *count += 1;
+        }
+        count_heredoc_rules(pair.into_inner(), count);
+    }
+}
+
 #[test]
-fn grammar_builtin_list_ops_match_scanner() {
-    // Drift guard: the scanner must keep agreeing with the grammar about which
-    // barewords put `<<` in term position, because disagreement here deletes
-    // source. Parses the grammar rather than trusting a hand-copied list.
-    let grammar = must(std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/grammar.pest"),
-    ));
-    let start = must(grammar.find("builtin_list_op_name = @{").ok_or("rule not found"));
-    let rest = must(grammar.get(start..).ok_or("rule slice"));
-    let end = must(rest.find('}').ok_or("rule end"));
-    let body = must(rest.get(..end).ok_or("body slice"));
+fn scanner_and_grammar_agree_on_openers() {
+    // The load-bearing invariant. The scanner removes body lines before the
+    // grammar runs, so the two must decide identically: an opener the grammar
+    // rejects deletes real source, and one the scanner misses leaves a body to
+    // be misparsed as code with nothing able to report it.
+    //
+    // Each row is one line of Perl with no body, so the grammar's count is its
+    // unclouded opinion about that `<<` alone.
+    let rows: [&str; 16] = [
+        // Term position — the grammar admits `heredoc` as an unconditional
+        // `primary`, so any bareword counts, not just builtins.
+        "my $x = <<EOF;\n",
+        "print <<EOF;\n",
+        "length <<EOF;\n",
+        "system <<EOF;\n",
+        "croak <<EOF;\n",
+        "my $x = Dumper <<EOF;\n",
+        "my $x = FOO <<2;\n",
+        "my ($a,$b) = (<<A, <<B);\n",
+        // Operator position — a completed term makes `<<` a left shift.
+        "my $y = $x <<2;\n",
+        "my $y = 1 <<2;\n",
+        "my $y = f() <<2;\n",
+        "my $y = $a[0] <<2;\n",
+        "my $y = $i++ <<2;\n",
+        "my $y = $i-- <<2;\n",
+        // Not code at all.
+        "my $x = /<<EOF/;\n",
+        "my $x = 1; # <<EOF\n",
+    ];
+    for source in rows {
+        assert_eq!(
+            perl_parser_pest::heredoc::scan(source).captures().len(),
+            grammar_openers(source),
+            "scanner and grammar disagree about openers in {source:?}"
+        );
+    }
+}
 
-    let mut from_grammar: Vec<String> = body
-        .split('"')
-        .skip(1)
-        .step_by(2)
-        .filter(|token| {
-            !token.trim().is_empty() && token.chars().all(|c| c.is_ascii_alphanumeric())
-        })
-        .map(str::to_string)
-        .collect();
-    from_grammar.sort();
-    from_grammar.dedup();
-
-    let mut from_scanner: Vec<String> =
-        perl_parser_pest::heredoc::BUILTIN_LIST_OP_NAMES.iter().map(|s| (*s).to_string()).collect();
-    from_scanner.sort();
-    from_scanner.dedup();
-
-    assert!(!from_grammar.is_empty(), "grammar extraction produced nothing");
+#[test]
+fn when_the_scanner_misses_an_opener_the_grammar_found_then_the_outcome_says_so() {
+    // A missed opener creates no capture, so no per-capture defect can fire.
+    // This is the only check that can see it, and without it the outcome would
+    // report `Complete` while a body was left to be parsed as code.
+    //
+    // The controls above keep the two in agreement today; this proves the
+    // detector is wired, using a source where the grammar sees an opener.
+    let source = "croak <<EOF;\nbody\nEOF\n";
+    assert_eq!(grammar_openers(source), 1, "fixture must contain a grammar opener");
     assert_eq!(
-        from_grammar, from_scanner,
-        "BUILTIN_LIST_OP_NAMES has drifted from grammar.pest's builtin_list_op_name"
+        perl_parser_pest::heredoc::scan(source).captures().len(),
+        1,
+        "the scanner must own the body after a user-sub bareword"
     );
+    assert_eq!(completeness(source), Some(ParseCompleteness::Complete));
+    // The body is owned, not left behind as code.
+    assert_eq!(heredoc_contents(source), vec![("EOF".to_string(), "body\n".to_string())]);
+}
+
+#[test]
+fn when_two_same_marker_openers_differ_in_shape_then_bodies_are_not_swapped() {
+    // Content corruption control: if the scanner recognized only one of these,
+    // the FIFO queue would hand the second body to the first node while still
+    // reporting a clean parse.
+    assert_eq!(
+        heredoc_contents("croak <<EOF;\naaa\nEOF\ndie <<EOF;\nbbb\nEOF\n"),
+        vec![("EOF".to_string(), "aaa\n".to_string()), ("EOF".to_string(), "bbb\n".to_string())]
+    );
+}
+
+#[test]
+fn when_a_bare_regex_contains_opener_text_then_no_body_is_owned() {
+    // perl treats `/<<EOF/` as a regex; the grammar produces no heredoc node.
+    for source in ["my $x = /<<EOF/;\nmy $y = 2;\n", "my $x = /<<EOF/i;\nmy $y = 2;\n"] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "a bare regex must own no body: {source:?}");
+        assert_eq!(scan.stripped(), source, "a bare regex must not be removed: {source:?}");
+    }
+    // Division must still be division — the `/` split must not over-trigger.
+    let division = "my $y = $a / $b;\nmy $z = 3;\n";
+    assert_eq!(perl_parser_pest::heredoc::scan(division).stripped(), division);
+}
+
+#[test]
+fn when_a_postfix_increment_precedes_the_shift_then_no_body_is_owned() {
+    // perl: `$i++ <<2` is a left shift (3++ then 3<<2 == 12).
+    for source in ["my $y = $i++ <<2;\nmy $z = 3;\n", "my $y = $i-- <<2;\nmy $z = 3;\n"] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "postfix op then shift owns no body: {source:?}");
+        assert_eq!(scan.stripped(), source, "no source may be removed: {source:?}");
+    }
+}
+
+#[test]
+fn when_the_first_body_line_exceeds_the_budget_then_it_is_still_owned_and_reported() {
+    // Stopping at the line's start would leave the whole oversized body in the
+    // parsed text while the diagnostic claimed it had been truncated.
+    let opener = "my $x = <<EOF;\n";
+    let mut source = String::from(opener);
+    source.push_str(&"a".repeat(MAX_HEREDOC_BODY_BYTES + 1024));
+    source.push_str("\nEOF\n");
+
+    let scan = perl_parser_pest::heredoc::scan(&source);
+    assert_eq!(scan.captures()[0].defect(), Some(HeredocDefect::BodyOverBudget));
+    assert!(
+        !scan.captures()[0].content().is_empty(),
+        "an over-budget body must still be owned, not handed back to the parser"
+    );
+    assert_ne!(scan.stripped(), source, "the truncated body must leave the parsed text");
+}
+
+#[test]
+fn when_a_capture_has_a_defect_then_it_does_not_claim_to_be_terminated() {
+    // `terminated()` must not report true for paths that never sought one.
+    let unbudgeted = {
+        let mut source = String::from("my $x = <<EOF;\n");
+        source.push_str(&"a".repeat(MAX_HEREDOC_BODY_BYTES + 1024));
+        source.push_str("\nEOF\n");
+        source
+    };
+    for source in ["my $x = <<EOF;\nhello\n", "my $x = << EOF;\n", unbudgeted.as_str()] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        let capture = &scan.captures()[0];
+        assert!(capture.defect().is_some(), "fixture must carry a defect: {source:?}");
+        assert!(
+            !capture.terminated(),
+            "a capture with defect {:?} must not report terminated",
+            capture.defect()
+        );
+    }
 }
 
 // --- `<<~` indentation contract (#14563 review) -----------------------------

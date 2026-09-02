@@ -31,21 +31,26 @@
 //!
 //! # Ownership rules
 //!
-//! Openers are recognized in *term* position only, mirroring the production
-//! lexer's `LexerMode::ExpectOperator` split, so `1 << 2` and `1 <<2` stay left
-//! shifts. After a bareword, term position is decided by
-//! [`BUILTIN_LIST_OP_NAMES`], which mirrors the grammar's `builtin_list_op_name`
-//! — the scanner must agree with the grammar, because recognizing an opener the
-//! grammar rejects deletes real source. A bare marker must follow `<<`/`<<~`
-//! immediately, matching Perl's "use of bare `<<` to mean `<<\"\"` is
-//! forbidden"; quoted and escaped markers may be separated by horizontal
-//! whitespace.
+//! Openers are recognized in *term* position only, which is the grammar's own
+//! split: any bareword leaves `<<` in term position (the grammar admits
+//! `heredoc` as an unconditional `primary`, so `croak <<EOF` counts as much as
+//! `print <<EOF`), while a variable, number, `f()`, `$a[0]`, a postfix
+//! `++`/`--`, or a closing bracket completes a term and makes `<<` a left
+//! shift. The scanner must agree with the grammar in both directions —
+//! recognizing an opener the grammar rejects deletes real source, and missing
+//! one the grammar accepts leaves a body to be parsed as code — so
+//! `scanner_and_grammar_agree_on_openers` pins the two together, and
+//! [`PureRustPerlParser::parse_heredoc_outcome`] reports any residual
+//! disagreement rather than letting it pass as a clean parse. A bare marker
+//! must follow `<<`/`<<~` immediately, matching Perl's "use of bare `<<` to
+//! mean `<<\"\"` is forbidden"; quoted and escaped markers may be separated by
+//! horizontal whitespace.
 //!
 //! Non-code regions own no openers, and recognizing them needs context the
-//! current line does not carry, so the walk tracks it: comments, single-line
-//! strings and quote-like operators, quoted runs left open by a previous line,
-//! POD blocks (`=word` through `=cut`), and everything after `__DATA__` or
-//! `__END__`. `<<MARKER`-shaped text in any of them is data.
+//! current line does not carry, so the walk tracks it: comments, strings,
+//! quote-like operators and bare regex literals, runs left open by a previous
+//! line, POD blocks (`=word` through `=cut`), and everything after `__DATA__`
+//! or `__END__`. `<<MARKER`-shaped text in any of them is data.
 //!
 //! A terminator line is the marker alone, followed immediately by a line ending
 //! or end of input — a trailing space does *not* terminate, matching Perl. For
@@ -200,10 +205,13 @@ impl HeredocCapture {
         self.defect
     }
 
-    /// Whether a terminator line was found.
+    /// Whether a terminator line was actually found.
+    ///
+    /// False for every defect: an over-budget body stops before its terminator
+    /// is sought, and a separated bare marker never looks for one.
     #[must_use]
     pub const fn terminated(&self) -> bool {
-        !matches!(self.defect, Some(HeredocDefect::MissingTerminator))
+        self.defect.is_none()
     }
 }
 
@@ -408,7 +416,14 @@ impl<'a> Scanner<'a> {
             cursor += 1;
         }
 
-        let body_line_end = terminator.or(over_budget_at).unwrap_or(lines.len());
+        // An over-budget body is owned through the line that crossed the
+        // budget. Stopping at its start would leave the whole oversized body in
+        // the parsed text while the diagnostic claimed it was truncated.
+        let body_line_end = match (terminator, over_budget_at) {
+            (Some(line_index), _) => line_index,
+            (None, Some(line_index)) => line_index.saturating_add(1).min(lines.len()),
+            (None, None) => lines.len(),
+        };
         let content_end = lines.get(body_line_end).map_or(self.source.len(), |line| line.start);
         let raw_body = self.source.get(body_start..content_end).unwrap_or_default();
 
@@ -450,7 +465,8 @@ impl<'a> Scanner<'a> {
                     RecoveryAction::Skip,
                     format!(
                         "heredoc `{}` body exceeds the {MAX_HEREDOC_BODY_BYTES}-byte budget; \
-                         the body was truncated at that boundary and its terminator was not sought",
+                         it was truncated at the end of the line that crossed the budget \
+                         and its terminator was not sought",
                         opener.marker
                     ),
                 );
@@ -644,142 +660,15 @@ fn split_inclusive_lines(text: &str) -> impl Iterator<Item = &str> {
 
 // --- Opener recognition ----------------------------------------------------
 
-/// Words after which a `<<` still starts a term rather than a left shift.
-///
-/// Public so the drift guard in the contract suite can compare it with the
-/// grammar without reaching into private state.
-///
-/// This must agree with the grammar, because the scanner removes body lines the
-/// grammar would otherwise parse: recognizing an opener the grammar rejects
-/// deletes real source. The grammar admits a heredoc as an argument of
-/// `builtin_list_op`, so its `builtin_list_op_name` alternation is the
-/// authority — `BUILTIN_LIST_OP_NAMES` mirrors it and
-/// `grammar_builtin_list_ops_match_scanner` in `heredoc_body_contract.rs`
-/// parses `grammar.pest` and fails if the two ever drift.
-///
-/// The remaining entries are control-flow and low-precedence operators after
-/// which Perl also expects a term. A `<<` after any other bareword is treated
-/// as a shift, matching the grammar's `shift_expression`; a heredoc opened
-/// after a user-defined sub name therefore owns no body and reports empty
-/// content rather than removing source.
-pub const BUILTIN_LIST_OP_NAMES: [&str; 108] = [
-    "print",
-    "say",
-    "warn",
-    "die",
-    "printf",
-    "bless",
-    "open",
-    "close",
-    "push",
-    "pop",
-    "shift",
-    "unshift",
-    "splice",
-    "grep",
-    "map",
-    "sort",
-    "join",
-    "split",
-    "substr",
-    "sprintf",
-    "chomp",
-    "chop",
-    "defined",
-    "undef",
-    "ref",
-    "scalar",
-    "keys",
-    "values",
-    "each",
-    "delete",
-    "exists",
-    "length",
-    "reverse",
-    "index",
-    "rindex",
-    "ord",
-    "chr",
-    "lc",
-    "uc",
-    "lcfirst",
-    "ucfirst",
-    "abs",
-    "int",
-    "hex",
-    "oct",
-    "sqrt",
-    "exp",
-    "log",
-    "sin",
-    "cos",
-    "atan2",
-    "rand",
-    "srand",
-    "time",
-    "localtime",
-    "gmtime",
-    "stat",
-    "lstat",
-    "glob",
-    "readdir",
-    "telldir",
-    "seekdir",
-    "rewinddir",
-    "closedir",
-    "opendir",
-    "rename",
-    "unlink",
-    "chmod",
-    "chown",
-    "mkdir",
-    "rmdir",
-    "symlink",
-    "readlink",
-    "link",
-    "truncate",
-    "pack",
-    "unpack",
-    "vec",
-    "binmode",
-    "eof",
-    "fileno",
-    "flock",
-    "getc",
-    "read",
-    "readline",
-    "seek",
-    "tell",
-    "sysopen",
-    "sysread",
-    "syswrite",
-    "sysseek",
-    "syscall",
-    "select",
-    "eval",
-    "exit",
-    "fork",
-    "wait",
-    "waitpid",
-    "system",
-    "exec",
-    "kill",
-    "sleep",
-    "alarm",
-    "getpgrp",
-    "getppid",
-    "getpriority",
-    "setpgrp",
-    "setpriority",
-];
-
-/// Control-flow and operator keywords after which Perl expects a term.
-const TERM_POSITION_KEYWORDS: [&str; 8] =
-    ["return", "and", "or", "not", "if", "unless", "while", "until"];
-
-fn is_term_position_word(word: &str) -> bool {
-    BUILTIN_LIST_OP_NAMES.contains(&word) || TERM_POSITION_KEYWORDS.contains(&word)
-}
+// A `<<` starts a term after a bareword, and a shift after a value. This is the
+// grammar's own split, verified against it by
+// `scanner_and_grammar_agree_on_openers` in `heredoc_body_contract.rs`: the
+// grammar admits `heredoc` as an unconditional `primary`, so `croak <<EOF`,
+// `print <<EOF`, and even `FOO <<2` all produce a heredoc node, while `$x`, a
+// number, `f()`, `$a[0]`, and a postfix `++`/`--` complete a term and make `<<`
+// a left shift. The scanner must agree in both directions: an opener the
+// grammar rejects deletes real source, and one it misses leaves a body to be
+// misparsed as code. Applied in `is_term_position`.
 
 /// Non-code region the line walk is currently inside.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -845,6 +734,19 @@ fn scan_line_openers(
                     return Some(open);
                 }
                 index = next;
+            }
+            // A `/` in term position opens a bare regex; in operator position
+            // it is division. The grammar makes the same split, so `/<<EOF/`
+            // must not yield an opener.
+            b'/' if is_term_position(line, bytes, index) => {
+                let (next, open) = skip_delimited(bytes, index, b'/');
+                if let Some(open) = open {
+                    return Some(open);
+                }
+                index = next;
+                while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
+                    index += 1;
+                }
             }
             b'<' if bytes.get(index + 1) == Some(&b'<') => {
                 match parse_opener(line, bytes, index, line_start) {
@@ -1112,12 +1014,20 @@ fn is_term_position(line: &str, bytes: &[u8], index: usize) -> bool {
     match *previous {
         b')' | b']' | b'}' | b'\'' | b'"' | b'`' => false,
         byte if byte.is_ascii_digit() => false,
+        // A postfix `++`/`--` completes its term, so `$i++ <<2` is a shift.
+        b'+' | b'-' if cursor.checked_sub(2).and_then(|at| bytes.get(at)) == Some(previous) => {
+            false
+        }
         byte if is_word_byte(byte) => {
             let word_start = line
                 .get(..cursor)
                 .map(|head| head.trim_end_matches(is_word_char).len())
                 .unwrap_or(cursor);
-            line.get(word_start..cursor).is_some_and(is_term_position_word)
+            // A sigil before the word makes it a variable, not a bareword.
+            !word_start
+                .checked_sub(1)
+                .and_then(|at| bytes.get(at))
+                .is_some_and(|byte| matches!(byte, b'$' | b'@' | b'%' | b'&' | b'*'))
         }
         _ => true,
     }
@@ -1156,6 +1066,35 @@ impl PureRustPerlParser {
                 ));
             }
         };
+
+        // The grammar decides which `<<` is an opener independently of the
+        // scanner. When it finds more openers than the scanner captured, the
+        // scanner missed one: its body was never removed and is being parsed as
+        // code. Nothing else can see that — a missed opener produces no capture
+        // — so without this check the outcome would report `Complete` while a
+        // body was lost, which is the exact failure this contract forbids.
+        let grammar_openers = self.heredoc_nodes_built();
+        let captured = scan.captures().len();
+        if grammar_openers > captured
+            && let Some(range) = source_range(0, source.len(), source)
+        {
+            {
+                diagnostics.push(ParseDiagnostic::new(
+                    ParseDiagnosticKind::SkippedSource,
+                    range,
+                    format!(
+                        "the grammar produced {grammar_openers} heredoc openers but the \
+                         scanner owned {captured}; at least one body was not removed and \
+                         is being parsed as code"
+                    ),
+                    None,
+                    Some(RecoveryAction::Skip),
+                ));
+                if !recovery_ranges.contains(&range) {
+                    recovery_ranges.push(range);
+                }
+            }
+        }
 
         // A captured body whose opener never reached an AST node would vanish
         // without this: the bytes left the parsed source but nothing represents

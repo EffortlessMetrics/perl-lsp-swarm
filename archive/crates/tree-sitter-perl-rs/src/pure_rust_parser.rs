@@ -328,11 +328,22 @@ pub struct PureRustPerlParser {
     _pratt_parser: PrattParser,
     /// Bodies owned by the heredoc pre-pass, awaiting attachment (#8220).
     heredocs: HeredocQueue,
+    /// Heredoc openers the grammar produced during the last parse.
+    ///
+    /// The scanner and the grammar decide independently which `<<` is an
+    /// opener. Counting the grammar's decisions makes a disagreement visible
+    /// instead of silent: without it, an opener the scanner never recognized
+    /// creates no capture, so nothing could report the body it failed to own.
+    heredoc_nodes_built: usize,
 }
 
 impl PureRustPerlParser {
     pub fn new() -> Self {
-        Self { _pratt_parser: PrattParser::new(), heredocs: HeredocQueue::default() }
+        Self {
+            _pratt_parser: PrattParser::new(),
+            heredocs: HeredocQueue::default(),
+            heredoc_nodes_built: 0,
+        }
     }
 
     #[inline(always)]
@@ -352,6 +363,7 @@ impl PureRustPerlParser {
     ) -> Result<AstNode, Box<dyn std::error::Error>> {
         let normalized = Self::normalize_source(scan.stripped());
         self.heredocs = HeredocQueue::from_scan(scan);
+        self.heredoc_nodes_built = 0;
 
         match <PerlParser as Parser<Rule>>::parse(Rule::program, &normalized) {
             Ok(pairs) => self.build_ast(pairs),
@@ -365,6 +377,11 @@ impl PureRustPerlParser {
     /// Captured heredoc bodies no opener node claimed during the last parse.
     pub(crate) fn queued_heredoc_bodies(&self) -> usize {
         self.heredocs.remaining()
+    }
+
+    /// Heredoc openers the grammar produced during the last parse.
+    pub(crate) const fn heredoc_nodes_built(&self) -> usize {
+        self.heredoc_nodes_built
     }
 
     fn normalize_source(source: &str) -> String {
@@ -1414,6 +1431,7 @@ impl PureRustPerlParser {
                 // attaching another heredoc's body. An empty content therefore
                 // means an empty body, an unowned opener, or a direct
                 // `build_node` call by a bridge consumer.
+                self.heredoc_nodes_built = self.heredoc_nodes_built.saturating_add(1);
                 let content = self.heredocs.take(&marker).map_or_else(|| Arc::from(""), Arc::from);
                 Ok(Some(AstNode::Heredoc { marker, indented, quoted, content }))
             }

@@ -75,11 +75,14 @@ lexing remains `perl-lexer`'s.
 The pre-pass removes body lines before the grammar sees them, so a false opener deletes
 real source. Two invariants keep that safe, and both have drift guards:
 
-- term position after a bareword is decided by `heredoc::BUILTIN_LIST_OP_NAMES`, which
-  must stay equal to the grammar's `builtin_list_op_name`
-  (`grammar_builtin_list_ops_match_scanner` parses `grammar.pest` and fails on drift);
-- non-code regions own no openers — comments, strings and quote-like operators including
-  runs left open across lines, POD, and everything after `__DATA__`/`__END__`.
+- the scanner and the grammar must decide identically which `<<` is an opener.
+  `scanner_and_grammar_agree_on_openers` parses each row with the grammar directly and
+  compares, and `parse_heredoc_outcome` reports any residual disagreement instead of
+  returning a clean parse, because an opener the scanner misses creates no capture and
+  no per-capture defect could otherwise see it;
+- non-code regions own no openers — comments, strings, quote-like operators and bare
+  regex literals including runs left open across lines, POD, and everything after
+  `__DATA__`/`__END__`.
 
 Expectations in `tests/heredoc_body_contract.rs` are derived from real `perl` behavior,
 not from this crate's output; keep it that way when extending them. When adding a
