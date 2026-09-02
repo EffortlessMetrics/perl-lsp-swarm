@@ -4,11 +4,13 @@ use perl_lsp_rs_core::providers::inline_completion::{
     PreparedInlineCompletionContext,
 };
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const LSP_CLIENT_SUPPORT_POLICY: &str = "policy/lsp-client-support.toml";
+const RECEIPT_SCHEMA_VERSION: &str = "supported-editor-inline-smoke.v2";
 
 const ROUTES: &[SupportedEditorRouteRequirement] = &[
     SupportedEditorRouteRequirement {
@@ -318,7 +320,7 @@ fn summarize_supported_editor_routes(
     let next_edit_boundary = summarize_next_edit_supported_editor_boundary()?;
 
     Ok(SupportedEditorInlineSmokeReceipt {
-        schema_version: "supported-editor-inline-smoke.v1",
+        schema_version: RECEIPT_SCHEMA_VERSION,
         provider: "inline_completion",
         provider_action: "supported_editor_inline_smoke_bundle",
         claim_boundary: "machine-readable supported-editor inline smoke bundle only; verifies repository proof surfaces, command contracts, and default-off next-edit boundary state, not live editor UI automation, source mirror, release, AI behavior, editor-visible next-edit suggestions, or runtime multiline behavior",
@@ -468,8 +470,118 @@ fn write_receipt(path: &Path, receipt: &SupportedEditorInlineSmokeReceipt) -> Re
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(receipt)?;
+    let value = serde_json::to_value(receipt)?;
+    validate_receipt_schema(&value)?;
+    let json = serde_json::to_string_pretty(&value)?;
     fs::write(path, format!("{json}\n"))?;
+    Ok(())
+}
+
+fn validate_receipt_schema(value: &Value) -> Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| color_eyre::eyre::eyre!("supported editor receipt must be an object"))?;
+    for key in [
+        "schema_version",
+        "provider",
+        "provider_action",
+        "claim_boundary",
+        "route_count",
+        "all_supported_routes_registered",
+        "supported_editor_routes",
+        "next_edit_boundary",
+        "future_gated",
+    ] {
+        if !object.contains_key(key) {
+            bail!("supported editor receipt is missing `{key}`");
+        }
+    }
+    if object.keys().any(|key| {
+        ![
+            "schema_version",
+            "provider",
+            "provider_action",
+            "claim_boundary",
+            "route_count",
+            "all_supported_routes_registered",
+            "supported_editor_routes",
+            "next_edit_boundary",
+            "future_gated",
+        ]
+        .contains(&key.as_str())
+    }) {
+        bail!("supported editor receipt contains an unknown top-level field");
+    }
+    if object.get("schema_version").and_then(Value::as_str) != Some(RECEIPT_SCHEMA_VERSION) {
+        bail!("supported editor receipt has unsupported schema_version");
+    }
+    let routes = object
+        .get("supported_editor_routes")
+        .and_then(Value::as_object)
+        .ok_or_else(|| color_eyre::eyre::eyre!("supported editor routes must be an object"))?;
+    let route_count = object.get("route_count").and_then(Value::as_u64).ok_or_else(|| {
+        color_eyre::eyre::eyre!("supported editor route_count must be an integer")
+    })?;
+    if route_count != routes.len() as u64 {
+        bail!("supported editor route_count does not match route population");
+    }
+    for (route_name, route) in routes {
+        let route = route.as_object().ok_or_else(|| {
+            color_eyre::eyre::eyre!("supported editor route `{route_name}` must be an object")
+        })?;
+        for key in ["status", "claim", "proof_plane_count", "proof_planes"] {
+            if !route.contains_key(key) {
+                bail!("supported editor route `{route_name}` is missing `{key}`");
+            }
+        }
+        let planes = route.get("proof_planes").and_then(Value::as_object).ok_or_else(|| {
+            color_eyre::eyre::eyre!("route `{route_name}` proof_planes must be an object")
+        })?;
+        let plane_count =
+            route.get("proof_plane_count").and_then(Value::as_u64).ok_or_else(|| {
+                color_eyre::eyre::eyre!("route `{route_name}` proof_plane_count must be an integer")
+            })?;
+        if plane_count != planes.len() as u64 {
+            bail!("route `{route_name}` proof_plane_count does not match proof_planes");
+        }
+        for (plane_name, plane) in planes {
+            let plane = plane.as_object().ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "route `{route_name}` plane `{plane_name}` must be an object"
+                )
+            })?;
+            for key in ["status", "proof_surface_count", "proof_surfaces"] {
+                if !plane.contains_key(key) {
+                    bail!("route `{route_name}` plane `{plane_name}` is missing `{key}`");
+                }
+            }
+            if let Some(status) = plane.get("status").and_then(Value::as_str) {
+                if !matches!(status, "registered" | "not_proven" | "limited" | "client_not_exposed")
+                {
+                    bail!(
+                        "route `{route_name}` plane `{plane_name}` has unknown status `{status}`"
+                    );
+                }
+            } else {
+                bail!("route `{route_name}` plane `{plane_name}` status must be a string");
+            }
+            let surfaces =
+                plane.get("proof_surfaces").and_then(Value::as_array).ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "route `{route_name}` plane `{plane_name}` proof_surfaces must be an array"
+                    )
+                })?;
+            let surface_count = plane
+                .get("proof_surface_count")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| color_eyre::eyre::eyre!("route `{route_name}` plane `{plane_name}` proof_surface_count must be an integer"))?;
+            if surface_count != surfaces.len() as u64 {
+                bail!(
+                    "route `{route_name}` plane `{plane_name}` proof_surface_count does not match proof_surfaces"
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -732,7 +844,7 @@ mod tests {
 
         assert_eq!(
             value.get("schema_version").and_then(Value::as_str),
-            Some("supported-editor-inline-smoke.v1")
+            Some(RECEIPT_SCHEMA_VERSION)
         );
         assert_eq!(
             value.get("provider_action").and_then(Value::as_str),
@@ -805,6 +917,72 @@ mod tests {
             Some("registered")
         );
 
+        Ok(())
+    }
+
+    fn sample_receipt_value() -> Result<Value> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), ROUTES)?;
+        let receipt = summarize_supported_editor_routes(temp.path(), ROUTES)?;
+        Ok(serde_json::to_value(receipt)?)
+    }
+
+    #[test]
+    fn receipt_schema_rejects_missing_version() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample receipt must be an object"))?;
+        object.remove("schema_version");
+        let error = validate_receipt_schema(&value)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing schema version must fail"))?;
+        assert!(error.to_string().contains("missing `schema_version`"));
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_schema_rejects_unknown_version() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample receipt must be an object"))?;
+        object.insert(
+            "schema_version".to_string(),
+            Value::String("supported-editor-inline-smoke.v1".to_string()),
+        );
+        let error = validate_receipt_schema(&value)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("unknown schema version must fail"))?;
+        assert!(error.to_string().contains("unsupported schema_version"));
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_schema_rejects_unknown_field() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample receipt must be an object"))?;
+        object.insert("unexpected".to_string(), Value::Bool(true));
+        let error = validate_receipt_schema(&value)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("unknown field must fail"))?;
+        assert!(error.to_string().contains("unknown top-level field"));
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_schema_rejects_inconsistent_route_count() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample receipt must be an object"))?;
+        object.insert("route_count".to_string(), Value::from(999_u64));
+        let error = validate_receipt_schema(&value)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("inconsistent route count must fail"))?;
+        assert!(error.to_string().contains("route_count does not match"));
         Ok(())
     }
 
