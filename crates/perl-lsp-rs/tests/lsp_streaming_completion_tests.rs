@@ -792,6 +792,83 @@ mod mock_streaming_completion_tests {
         }
     }
 
+    /// Backend that reports a saturated concurrency ceiling before emitting
+    /// anything (`#8300`).
+    struct MockSaturatedBackend;
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+        for MockSaturatedBackend
+    {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            _sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            Err(perl_lsp_rs_core::providers::inline_completion::BackendError::Saturated)
+        }
+    }
+
+    /// A backend error that produced no text must still reach the deterministic
+    /// route on the streaming path, exactly as it does on the buffered one.
+    ///
+    /// Before this, only `BackendError::Provider` routed to fallback, so a
+    /// stream that terminated before emitting anything ended empty even with
+    /// fallback configured — the user got no suggestion at all.
+    #[test]
+    fn streaming_saturation_falls_back_to_deterministic_completions() {
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, true);
+        server.test_install_ai_backend(Some(Arc::new(MockSaturatedBackend)));
+
+        let uri = "file:///streaming-saturated-fallback.pl";
+        open_doc(&server, uri, "use ");
+        let result = request_streaming_completion(&server, uri, 4, "stream-saturated-fb");
+        assert!(result.is_null());
+
+        let progress =
+            wait_for_progress_messages(&capture, "stream-saturated-fb", Duration::from_millis(500));
+        let final_message =
+            progress.last().expect("the stream must always send a terminal isFinal notification");
+        assert!(final_message["params"]["value"]["isFinal"].as_bool().unwrap_or(false));
+
+        let items =
+            final_message["params"]["value"]["items"].as_array().expect("items array").clone();
+        assert!(
+            !items.is_empty(),
+            "a saturated stream with fallback enabled must emit deterministic completions, got: {items:?}"
+        );
+    }
+
+    /// With fallback disabled the same saturation ends the stream empty — a
+    /// typed final-empty decision, not a failure surfaced to the editor.
+    #[test]
+    fn streaming_saturation_without_fallback_ends_empty() {
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, false);
+        server.test_install_ai_backend(Some(Arc::new(MockSaturatedBackend)));
+
+        let uri = "file:///streaming-saturated-nofb.pl";
+        open_doc(&server, uri, "use ");
+        let result = request_streaming_completion(&server, uri, 4, "stream-saturated-nofb");
+        assert!(result.is_null());
+
+        let progress = wait_for_progress_messages(
+            &capture,
+            "stream-saturated-nofb",
+            Duration::from_millis(500),
+        );
+        let final_message =
+            progress.last().expect("the stream must always send a terminal isFinal notification");
+        assert!(final_message["params"]["value"]["isFinal"].as_bool().unwrap_or(false));
+        assert!(
+            final_message["params"]["value"]["items"].as_array().is_some_and(Vec::is_empty),
+            "fallback disabled must end the stream empty"
+        );
+    }
+
     struct MockAuthBackend;
 
     impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend for MockAuthBackend {
