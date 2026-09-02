@@ -1769,6 +1769,24 @@ fn after_raw() { client.send_request("production/after-raw"); }
     }
 
     #[test]
+    fn strip_test_modules_discards_multiline_block_comment_suffix() {
+        let source = r#"
+#[cfg(test)] mod before {} /* comment suffix starts here
+client.send_request("comment-only/multiline-suffix", value);
+*/
+#[cfg(test)] mod later {
+    fn send() { client.send_request("test-only/later-after-comment"); }
+}
+fn production() { client.send_request("production/after-multiline-suffix", value); }
+"#;
+
+        let stripped = strip_test_modules(source);
+        assert!(!stripped.contains("comment-only/multiline-suffix"));
+        assert!(!stripped.contains("test-only/later-after-comment"));
+        assert!(stripped.contains("production/after-multiline-suffix"));
+    }
+
+    #[test]
     fn strip_test_modules_handles_same_line_forms_and_keeps_enclosing_braces() {
         let source = r#"
 fn inline_parent() {
