@@ -614,7 +614,7 @@ fn is_plain_module_name(text: &str) -> bool {
             match characters.next() {
                 Some(first)
                     if (index == 0 && (first.is_alphabetic() || first == '_'))
-                        || (index > 0 && (first.is_alphanumeric() || first == '_')) =>
+                        || (index > 0 && (first.is_ascii_alphanumeric() || first == '_')) =>
                 {
                     characters.all(|character| character.is_alphanumeric() || character == '_')
                 }

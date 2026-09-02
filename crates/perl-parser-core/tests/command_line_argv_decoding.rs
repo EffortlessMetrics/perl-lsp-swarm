@@ -649,7 +649,7 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
     );
 
     // And a plain dotted-looking name is still not plain.
-    for opaque in ["Foo::", "::Foo", "1Foo", "Foo-Bar"] {
+    for opaque in ["Foo::", "::Foo", "1Foo", "Foo-Bar", "Foo::٢"] {
         let argv = format!("-M{opaque}");
         let invocation = perl(&[argv.as_str(), "-e", "print"]);
         let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
