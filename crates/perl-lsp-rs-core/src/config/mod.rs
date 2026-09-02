@@ -5216,7 +5216,12 @@ profile = "recommended"
         // itself fires at ~250 ms — after interpreter boot, so the write can
         // only land near t≈1.05 s — and the 2 s window keeps ~1 s of margin
         // past that moment while halving the happy-path wait; absence after
-        // the window is the proof.
+        // the window is the proof. Known residual: a regression removing BOTH
+        // kill and wait is caught under normal scheduling but could
+        // false-green under >2 s total starvation of the leaked child, and a
+        // symmetric polling-thread stall across the deadline false-reds (the
+        // safe direction); closing that needs `output_with_timeout` to expose
+        // the child handle, a production API change out of scope here.
         let kill_proof_window = Duration::from_secs(2);
         let proof_start = Instant::now();
         while proof_start.elapsed() < kill_proof_window {

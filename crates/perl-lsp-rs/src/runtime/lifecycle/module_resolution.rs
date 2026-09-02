@@ -769,7 +769,7 @@ mod tests {
     /// this test flaked ~22% even with retries, #13201). The synthetic variants
     /// mirror what a real probe yields for `-I dir` and `-I dir<MAIN_SEPARATOR>`;
     /// the live `perl_args` -> `@INC` wiring itself is proven by
-    /// `get_system_inc_probe_returns_perl_arg_include_paths` in `perl-lsp-rs-core`
+    /// `get_system_inc_probe_surfaces_perl_arg_include_path` in `perl-lsp-rs-core`
     /// under a widened, deterministic probe budget.
     #[test]
     fn append_system_inc_paths_from_skips_dot_and_dedupes_normalized_variants() -> TestResult {
