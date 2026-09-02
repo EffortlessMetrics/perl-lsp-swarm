@@ -560,6 +560,28 @@ fn long_switches_are_limited_to_the_two_perl_accepts() {
 }
 
 #[test]
+fn informational_switches_terminate_further_argv_decoding() {
+    let invocation = perl(&["--help", "-Z"]);
+    assert_eq!(neutral(&invocation), vec![NeutralSwitch::LongHelp]);
+    assert!(invocation.program_arguments.is_empty());
+
+    let invocation = perl(&["-hv", "-Z"]);
+    assert!(neutral(&invocation).contains(&NeutralSwitch::Usage));
+}
+
+#[test]
+fn record_separator_and_line_ending_octal_values_are_limited_to_three_digits() {
+    assert!(matches!(
+        perl_error(&["-07777e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: '7', .. }
+    ));
+    assert!(matches!(
+        perl_error(&["-l7777e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: '7', .. }
+    ));
+}
+
+#[test]
 fn unsupported_switches_are_reported_rather_than_ignored() {
     // `-x` moves where program text starts inside a file this decoder never
     // reads. Silently dropping it would publish a source claim that is wrong.

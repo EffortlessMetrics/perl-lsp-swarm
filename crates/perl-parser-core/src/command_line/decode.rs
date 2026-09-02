@@ -73,9 +73,16 @@ pub fn decode<S: AsRef<str>>(
         if argument.starts_with("--") {
             decode_long_switch(argument, index, &mut invocation)?;
             index += 1;
-            continue;
+            break;
         }
+        let neutral_before = invocation.neutral_switches.len();
         index = decode_cluster(argv, index, &mut invocation)?;
+        if invocation.neutral_switches[neutral_before..]
+            .iter()
+            .any(|switch| matches!(switch.switch, NeutralSwitch::Usage | NeutralSwitch::Version))
+        {
+            break;
+        }
     }
 
     invocation.program = if invocation.source_fragments.is_empty() {
@@ -185,6 +192,25 @@ impl<'a> Cluster<'a> {
         self.at = start + taken;
         (value, ArgvSpan::new(self.index, start, self.at))
     }
+
+    fn take_limited_run(
+        &mut self,
+        accept: impl Fn(char) -> bool,
+        limit: usize,
+    ) -> (&'a str, ArgvSpan) {
+        let start = self.at;
+        let mut end = start;
+        let mut count = 0;
+        for character in self.remaining().chars() {
+            if count == limit || !accept(character) {
+                break;
+            }
+            end += character.len_utf8();
+            count += 1;
+        }
+        self.at = end;
+        (self.text.get(start..end).unwrap_or_default(), ArgvSpan::new(self.index, start, end))
+    }
 }
 
 /// Decode one cluster, returning the index of the next unread argument.
@@ -291,7 +317,7 @@ fn decode_cluster<S: AsRef<str>>(
             }
             // Optional digit runs; bundling continues after them.
             'l' => {
-                let (digits, digits_span) = cluster.take_run(is_octal_digit);
+                let (digits, digits_span) = cluster.take_limited_run(is_octal_digit, 3);
                 let span = if digits.is_empty() { letter_span } else { digits_span };
                 let octal_digits = (!digits.is_empty()).then(|| digits.to_owned());
                 push_fact(
@@ -400,7 +426,7 @@ fn take_record_separator_digits(
         return (Some(RecordSeparatorDigits::Hex(digits.to_owned())), span);
     }
 
-    let (digits, span) = cluster.take_run(is_octal_digit);
+    let (digits, span) = cluster.take_limited_run(is_octal_digit, 3);
     if digits.is_empty() {
         return (None, letter_span);
     }
