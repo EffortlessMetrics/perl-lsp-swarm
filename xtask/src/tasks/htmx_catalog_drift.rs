@@ -253,7 +253,7 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
         // Illustration and a blank line both end any table in progress. Tables
         // are contiguous, so a later table in the same section must present its
         // own separator before its rows count as data.
-        let Some(content) = inert.content(line.trim_start()) else {
+        let Some(content) = inert.content(line) else {
             in_body = false;
             continue;
         };
@@ -356,7 +356,7 @@ fn locate_section(document: &str, section: &SectionSpec) -> Result<(usize, usize
         // wrong read this task exists to prevent. It also makes an ordinary
         // documentation example collide with the real heading and fail as
         // ambiguous, which refuses a document that is perfectly readable.
-        let Some(content) = inert.content(line.trim()) else {
+        let Some(content) = inert.content(line) else {
             continue;
         };
         let trimmed = content.trim();
@@ -435,15 +435,18 @@ impl InertScanner {
         Self { inside: None }
     }
 
-    /// Advance over one trimmed line and return the document content in it.
+    /// Advance over one raw line and return the document content in it.
     ///
-    /// `None` for a fence delimiter, for everything inside a fence, and for a
-    /// line whose text is entirely commented out. Otherwise the line with its
-    /// commented spans removed, which is the text the caller must read: a row
-    /// carrying a trailing comment is still a row, and skipping the whole line
-    /// would drop a name silently — the failure this task exists to prevent —
-    /// while reading the commented span would invent one.
-    fn content<'line>(&mut self, trimmed_line: &'line str) -> Option<Cow<'line, str>> {
+    /// `None` for a fence delimiter, for everything inside a fence, for an
+    /// indented code block, and for a line whose text is entirely commented
+    /// out. Otherwise the line, trimmed and with its commented spans removed,
+    /// which is the text the caller must read: a row carrying a trailing
+    /// comment is still a row, and skipping the whole line would drop a name
+    /// silently — the failure this task exists to prevent — while reading the
+    /// commented span would invent one.
+    fn content<'line>(&mut self, line: &'line str) -> Option<Cow<'line, str>> {
+        let trimmed_line = line.trim_start();
+
         match self.inside {
             // Only the fence's own close ends it. An info-string line such as
             // ```` ```rust ```` is content inside an open fence: treating it as
@@ -461,6 +464,11 @@ impl InertScanner {
             // A fence marker inside a comment is commented-out text and must
             // not open a fence; only the comment's own close ends the region.
             Some(InertRegion::Comment) => self.visible_content(trimmed_line),
+            // An indented code block is sample text with no delimiter to look
+            // for. Reading it as document structure lets an indented heading
+            // end the section early, dropping every row below it into a clean
+            // report, and lets one stand in for a section that is gone.
+            None if indented_code_columns(line) => None,
             None => match fence_delimiter(trimmed_line) {
                 Some(delimiter) => {
                     self.inside = Some(InertRegion::Fence {
@@ -527,6 +535,41 @@ impl InertScanner {
             Some(InertRegion::Comment) => Some("HTML comment"),
         }
     }
+}
+
+/// Is this line indented far enough to be an indented code block?
+///
+/// Markdown allows a block construct up to three leading columns; at four it is
+/// a code block instead, so a heading, fence or table row indented that far is
+/// sample text. A tab advances to the next multiple of four, as Markdown counts
+/// it. A whitespace-only line is not code — it is the blank line that ends a
+/// table, and treating it as code would be the same skip by another name.
+///
+/// This is the one place the scan trusts the specification rather than refusing
+/// what it cannot account for: a data row indented four columns is code, not a
+/// row, so skipping it is correct rather than a silent drop. The reviewed
+/// reference document has no indented line at all, and
+/// `a_row_indented_less_than_a_code_block_is_still_read` pins the safe side of
+/// the boundary.
+fn indented_code_columns(line: &str) -> bool {
+    // A whitespace-only line is the blank line that ends a table, not code.
+    if line.trim().is_empty() {
+        return false;
+    }
+
+    let mut columns = 0;
+    for character in line.chars() {
+        match character {
+            ' ' => columns += 1,
+            '\t' => columns += 4 - (columns % 4),
+            _ => break,
+        }
+        if columns >= 4 {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// A code-fence delimiter line.
@@ -633,8 +676,8 @@ fn closes_a_link(tail: &str) -> bool {
 mod tests {
     use super::{
         CORE_ATTRIBUTES, DirectionChange, DriftReport, REQUEST_HEADERS, catalog_attributes,
-        catalog_headers, compare_snapshot, reference_attributes, reference_headers, section_names,
-        table_row_name,
+        catalog_headers, compare_snapshot, indented_code_columns, reference_attributes,
+        reference_headers, section_names, table_row_name,
     };
     use perl_lsp_rs_core::providers::{
         HTMX_ATTRIBUTES, HTMX_CATALOG_PROVENANCE, HTMX_HEADERS, HtmxHeaderDirection,
@@ -943,6 +986,76 @@ let example = 1;
             error.to_string().contains("has no core attributes section"),
             "the refusal must name the missing section, not a downstream symptom: {error}"
         );
+    }
+
+    #[test]
+    fn an_indented_code_heading_does_not_truncate_the_section() {
+        // Four columns of indent make a code block, so the heading inside it is
+        // sample text. Reading it as a real heading ends the section early and
+        // drops every row below — here a genuine upstream addition — into a
+        // clean report.
+        let indented = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+    ## Not really a heading {#sample}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-post`](@/attributes/hx-post.md) | added upstream |
+";
+
+        assert!(
+            section_names(indented, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-post"])
+        );
+    }
+
+    #[test]
+    fn an_indented_code_heading_does_not_become_the_section() {
+        // The locator half: a section shown inside an indented example must not
+        // stand in for one the document no longer has.
+        let indented = "\
+# Reference
+
+    ## Core Attribute Reference {#attributes}
+    | Attribute | Description |
+    |-----------|-------------|
+    | [`hx-phantom`](@/attributes/hx-phantom.md) | sample |
+
+## Something Else {#other}
+";
+
+        let error = section_names(indented, &CORE_ATTRIBUTES)
+            .expect_err("a heading inside an indented code block is not the section");
+        assert!(
+            error.to_string().contains("has no core attributes section"),
+            "the refusal must name the missing section: {error}"
+        );
+    }
+
+    #[test]
+    fn a_row_indented_less_than_a_code_block_is_still_read() {
+        // The safe side of the boundary. Markdown allows a block up to three
+        // leading columns; treating those as code would skip a real row
+        // silently, which is worse than the defect above. A tab reaches four
+        // columns on its own and is code.
+        let shallow = "\
+## Core Attribute Reference {#attributes}
+
+   | Attribute | Description |
+   |-----------|-------------|
+   | [`hx-get`](@/attributes/hx-get.md) | three columns is still a row |
+";
+
+        assert!(section_names(shallow, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
+        assert!(!indented_code_columns("   | still a row |"));
+        assert!(indented_code_columns("    | code |"));
+        assert!(indented_code_columns("\t| code |"));
+        assert!(!indented_code_columns("  \t"), "a whitespace-only line is a blank line, not code");
     }
 
     #[test]
