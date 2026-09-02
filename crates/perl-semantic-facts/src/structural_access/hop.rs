@@ -9,7 +9,9 @@ use super::{
     StructuralAggregateDisposition, StructuralHopCertainty, StructuralHopOutcome,
 };
 use crate::semantic_identity::SemanticIdentityFingerprint;
-use crate::{SemanticConfidence, SemanticProducer, SemanticProvenance, SemanticReasonCode};
+use crate::{
+    SemanticConfidence, SemanticProducer, SemanticProvenance, SemanticReasonCode, ValueShape,
+};
 
 /// One local transition in a structural access chain.
 ///
@@ -215,6 +217,8 @@ impl StructuralAccessHop {
     ///    producer that budgeted exactly enough may still answer definitely.
     /// 6. Identity fields that name something are non-empty and ranges are
     ///    not inverted. A static key is exempt: `$h{""}` is a real member.
+    ///    A package-bearing outcome shape is *not* exempt: see
+    ///    [`validate_shape_identity`].
     /// 7. Limitations are sorted and duplicate-free, as the constructor
     ///    leaves them.
     ///
@@ -235,6 +239,21 @@ impl StructuralAccessHop {
                 end_byte: self.spelling.anchor.end_byte,
             });
         }
+        // Law 6, for the outcome's own payload. The aggregate and spelling are
+        // checked above; the shape a hop claims to have selected or observed
+        // carries an identity too, and serde reaches it without a constructor.
+        match &self.outcome {
+            StructuralHopOutcome::Selected { shape, .. }
+            | StructuralHopOutcome::ShapeMismatch { observed: shape } => {
+                validate_shape_identity(shape)?;
+            }
+            StructuralHopOutcome::AbsentMember
+            | StructuralHopOutcome::UnknownMember
+            | StructuralHopOutcome::StaleGeneration
+            | StructuralHopOutcome::BudgetExhausted
+            | StructuralHopOutcome::Boundary(_) => {}
+        }
+
         // A static key is deliberately *not* checked for emptiness. `$h{""}`
         // and `$h{" "}` are legal Perl accesses naming distinct members, so an
         // empty or blank key is a real identity here, unlike a blank aggregate
@@ -362,5 +381,41 @@ impl StructuralAccessHop {
             .discriminant("completeness", self.completeness.tag())
             .discriminant("disposition", self.disposition.tag())
             .finish()
+    }
+}
+
+/// Whether a shape that names a package actually names one.
+///
+/// [`ValueShape::PackageName`] and [`ValueShape::Object`] both carry a package
+/// string that identifies what was selected. A blank one identifies nothing,
+/// and no honest producer emits one:
+///
+/// - `package ;` is a syntax error, so a blank [`ValueShape::PackageName`]
+///   cannot describe real source at all.
+/// - `bless $ref, ""` is accepted by the interpreter, but it warns
+///   (`Explicit blessing to '' (assuming package main)`) and the resulting
+///   class is `main`, not the empty string. The honest record for that case is
+///   `Object { package: "main" }`.
+///
+/// Verified against the interpreter rather than assumed, because the sibling
+/// question — whether `$h{""}` is a real hash member — went the other way, and
+/// a static key is deliberately exempt from this law for exactly that reason.
+///
+/// The remaining shapes carry no identity to check.
+fn validate_shape_identity(shape: &ValueShape) -> Result<(), StructuralAccessContractError> {
+    match shape {
+        ValueShape::PackageName { package } if package.trim().is_empty() => Err(
+            StructuralAccessContractError::EmptyIdentityField("ValueShape::PackageName.package"),
+        ),
+        ValueShape::Object { package, .. } if package.trim().is_empty() => {
+            Err(StructuralAccessContractError::EmptyIdentityField("ValueShape::Object.package"))
+        }
+        ValueShape::PackageName { .. }
+        | ValueShape::Object { .. }
+        | ValueShape::Unknown
+        | ValueShape::Scalar
+        | ValueShape::ArrayRef
+        | ValueShape::HashRef
+        | ValueShape::CodeRef => Ok(()),
     }
 }

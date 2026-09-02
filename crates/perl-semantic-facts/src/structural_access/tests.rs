@@ -1601,3 +1601,113 @@ fn an_outcome_independent_of_the_aggregate_stays_definite_when_it_moves()
     }
     Ok(())
 }
+
+// ── Package identity in outcome shapes (found by Devin review) ────────────
+
+#[test]
+fn a_blank_object_package_is_rejected_at_construction() -> Result<(), Box<dyn Error>> {
+    // `bless $ref, ""` is accepted by the interpreter, but it warns and the
+    // resulting class is `main`, not the empty string. A record claiming an
+    // object blessed into "" therefore names something that cannot exist.
+    let build = |package: &str| {
+        selecting_hop(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "{k}",
+            ValueShape::Object { package: package.to_string(), confidence: Confidence::High },
+        )
+    };
+    let error = contract_error(build("   "))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::EmptyIdentityField(field)
+            if field == "ValueShape::Object.package"),
+        "a blank object package must be rejected, got {error:?}"
+    );
+    // Negative control: the class the interpreter actually produces for that
+    // blessing, and an ordinary one, both remain constructible.
+    build("main")?;
+    build("Staff")?;
+    Ok(())
+}
+
+#[test]
+fn a_blank_package_name_shape_is_rejected_at_construction() -> Result<(), Box<dyn Error>> {
+    // `package ;` is a syntax error, so a blank package name cannot describe
+    // real source at all.
+    let build = |package: &str| {
+        selecting_hop(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "{k}",
+            ValueShape::PackageName { package: package.to_string() },
+        )
+    };
+    let error = contract_error(build(""))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::EmptyIdentityField(field)
+            if field == "ValueShape::PackageName.package"),
+        "a blank package name must be rejected, got {error:?}"
+    );
+    build("Foo::Bar")?;
+    Ok(())
+}
+
+#[test]
+fn a_blank_package_in_a_shape_mismatch_is_rejected() -> Result<(), Box<dyn Error>> {
+    // The mismatch arm carries an identity for the same reason the selected
+    // arm does: it names the shape the aggregate actually had.
+    let build = |package: &str| {
+        StructuralAccessHop::new(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            spelling("{k}", 0, 3)?,
+            StructuralHopOutcome::ShapeMismatch {
+                observed: ValueShape::PackageName { package: package.to_string() },
+            },
+            StructuralHopCertainty::Definite,
+            StructuralAggregateCompleteness::Closed,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticReasonCode::ExactSource,
+            StructuralAccessBudget::new(10, 9)?,
+            Vec::new(),
+        )
+    };
+    contract_error(build(" "))?;
+    build("Foo")?;
+    Ok(())
+}
+
+#[test]
+fn a_blank_object_package_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["hops"][0]["outcome"]["Selected"]["shape"] =
+        serde_json::json!({ "Object": { "package": "  ", "confidence": "High" } });
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "a blank object package must not survive the transport boundary"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_honest_object_package_still_survives_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    // Negative control for the law above: the same substitution with a real
+    // package name must still validate, so the law rejects blankness rather
+    // than the shape.
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["hops"][0]["outcome"]["Selected"]["shape"] =
+        serde_json::json!({ "Object": { "package": "Staff", "confidence": "High" } });
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    decoded.validate()?;
+    Ok(())
+}
