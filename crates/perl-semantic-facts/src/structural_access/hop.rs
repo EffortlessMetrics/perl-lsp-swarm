@@ -295,12 +295,18 @@ impl StructuralAccessHop {
             ));
         }
 
-        // Law 4: a definite claim requires an aggregate that did not move.
+        // Law 4: a definite claim *about the aggregate's contents* requires an
+        // aggregate that did not move. An outcome whose truth does not depend
+        // on those contents is exempt: a budget definitely ran out, a
+        // generation is definitely stale, and a boundary definitely stopped the
+        // hop, whatever later happened to the aggregate. Applying stability to
+        // those would reject honest records.
         if matches!(self.certainty, StructuralHopCertainty::Definite)
+            && self.outcome.depends_on_aggregate_contents()
             && !self.disposition.is_stable()
         {
             return Err(StructuralAccessContractError::ContradictoryStatus(
-                "an escaped or mutated aggregate cannot support a definite outcome",
+                "an escaped or mutated aggregate cannot support a definite claim about its contents",
             ));
         }
 

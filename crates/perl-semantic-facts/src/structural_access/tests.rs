@@ -1549,3 +1549,55 @@ fn fingerprints_do_not_follow_rust_debug_names() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn an_outcome_independent_of_the_aggregate_stays_definite_when_it_moves()
+-> Result<(), Box<dyn Error>> {
+    // A budget definitely ran out, a generation is definitely stale, and a
+    // boundary definitely stopped the hop — none of which depends on what the
+    // aggregate turned out to hold, so escape or mutation cannot undermine
+    // them. Requiring stability here would reject honest records.
+    let build = |outcome: StructuralHopOutcome, disposition, budget| {
+        StructuralAccessHop::new(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            spelling("->{k}", 0, 5)?,
+            outcome,
+            StructuralHopCertainty::Definite,
+            StructuralAggregateCompleteness::Open,
+            disposition,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::Low),
+            SemanticReasonCode::ExactSource,
+            budget,
+            Vec::new(),
+        )
+    };
+    let nominal = StructuralAccessBudget::new(10, 9)?;
+    let spent = StructuralAccessBudget::new(1, 0)?;
+    for disposition in [
+        StructuralAggregateDisposition::Escaped,
+        StructuralAggregateDisposition::Mutated,
+        StructuralAggregateDisposition::EscapedAndMutated,
+    ] {
+        build(StructuralHopOutcome::StaleGeneration, disposition, nominal)?;
+        build(StructuralHopOutcome::BudgetExhausted, disposition, spent)?;
+        build(
+            StructuralHopOutcome::Boundary(dynamic_boundary(
+                BoundaryKind::DynamicValue,
+                SemanticReasonCode::DynamicValue,
+            )),
+            disposition,
+            nominal,
+        )?;
+
+        // The content-dependent outcomes stay constrained.
+        let error =
+            contract_error(build(StructuralHopOutcome::UnknownMember, disposition, nominal))?;
+        assert!(matches!(error, StructuralAccessContractError::ContradictoryStatus(_)));
+    }
+    Ok(())
+}

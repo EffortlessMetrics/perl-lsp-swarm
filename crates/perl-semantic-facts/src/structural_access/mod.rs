@@ -706,6 +706,26 @@ impl StructuralHopOutcome {
         matches!(self, Self::Selected { .. })
     }
 
+    /// Whether this outcome's truth depends on what the aggregate contains.
+    ///
+    /// Selecting a value, finding a member absent or unobserved, and finding a
+    /// shape mismatch are all claims about the aggregate's contents, so an
+    /// aggregate that escaped or was mutated undermines them.
+    ///
+    /// A stale generation, an exhausted budget and a boundary are not: each
+    /// holds regardless of what the aggregate turned out to contain, and can
+    /// be definite even over an aggregate that moved.
+    #[must_use]
+    pub const fn depends_on_aggregate_contents(&self) -> bool {
+        match self {
+            Self::Selected { .. }
+            | Self::AbsentMember
+            | Self::UnknownMember
+            | Self::ShapeMismatch { .. } => true,
+            Self::StaleGeneration | Self::BudgetExhausted | Self::Boundary(_) => false,
+        }
+    }
+
     /// Fold this outcome's identity into a fingerprint.
     pub(super) fn fold(&self, accumulator: Fingerprint) -> Fingerprint {
         let accumulator = accumulator.discriminant("outcome-kind", self.tag());
