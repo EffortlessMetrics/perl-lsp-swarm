@@ -386,6 +386,82 @@ fn when_a_closing_delimiter_is_followed_by_x_then_the_operator_decides() {
 }
 
 #[test]
+fn when_a_quote_like_spelling_names_a_declaration_then_its_heredocs_are_owned() {
+    // perl 5.38 accepts `package s { ... }` and `sub s { ... }`: after those
+    // keywords the word is a name, not a substitution. Reading it as `s{...}{...}`
+    // consumed to a bogus delimiter, and every opener inside the block was then
+    // missed — the body stayed in the text to be misparsed as code.
+    for source in [
+        "package s {\n  sub hi { my $x = <<EOF;\nbody\nEOF\n  return $x; }\n}\n",
+        "package q {\n  sub hi { my $x = <<EOF;\nbody\nEOF\n  return $x; }\n}\n",
+        "sub s { 1 }\nmy $x = <<EOF;\nbody\nEOF\n",
+        "sub y { 1 }\nmy $x = <<EOF;\nbody\nEOF\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(scan.captures().len(), 1, "declaration name is not an operator: {source:?}");
+        assert_eq!(
+            scan.captures().first().map(|capture| capture.content()),
+            Some("body\n"),
+            "the body must be owned for: {source:?}"
+        );
+    }
+
+    // The guard must not disarm the operator itself: `s/a/b/` is still a
+    // substitution and owns nothing, and no source is removed.
+    for source in ["my $y = s/a/b/;\nmy $z = 3;\n", "my $y = s{a}{b};\nmy $z = 3;\n"] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "substitution still owns nothing: {source:?}");
+        assert_eq!(scan.stripped(), source, "no source may be removed for: {source:?}");
+    }
+}
+
+#[test]
+fn when_a_replacement_stands_off_from_its_pattern_then_a_later_heredoc_is_owned() {
+    // perl 5.38: `s{a} {b}` substitutes normally and a heredoc after it still
+    // attaches. The same-line path took the gap itself as the second section's
+    // delimiter, so the run swallowed following lines; `continue_construct`
+    // already skipped that whitespace, so the two paths also disagreed.
+    for source in [
+        "$t =~ s{a} {b};\nmy $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "$t =~ s{a}\t{b};\nmy $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "$t =~ tr{a} {b};\nmy $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        // The gapless form must keep working.
+        "$t =~ s{a}{b};\nmy $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(scan.captures().len(), 1, "the heredoc after it must be seen: {source:?}");
+        assert_eq!(
+            scan.captures().first().map(|capture| capture.content()),
+            Some("body\n"),
+            "the body must be owned for: {source:?}"
+        );
+        assert!(
+            scan.stripped().contains("my $z = 3;"),
+            "code after the terminator must survive: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn when_a_control_character_variable_precedes_a_shift_then_no_body_is_owned() {
+    // perl 5.38: with `$^W` set to 1, `$^W <<2` is 4 — a left shift. The
+    // punctuation-variable rule only inspects two bytes and cannot see these
+    // three-byte names, so `<<2` was taken for an opener and the rest of the
+    // file was consumed as body text.
+    //
+    // This crate's grammar *does* admit a heredoc here, so the scanner and the
+    // grammar deliberately disagree, exactly as they do for `=cutlass` POD
+    // prose. That disagreement is reported by `parse_heredoc_outcome` rather
+    // than silently resolved, and refusing to delete real source is the safe
+    // side of it — which is why these rows are not in the agreement matrix.
+    for source in ["my $y = $^W <<2;\nmy $z = 3;\n", "my $y = $^H <<2;\nmy $z = 3;\n"] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "control-char variable is a value: {source:?}");
+        assert_eq!(scan.stripped(), source, "no source may be removed for: {source:?}");
+    }
+}
+
+#[test]
 fn when_opener_follows_defined_or_then_the_body_is_owned() {
     // perl 5.38: `my $x = $u // <<EOF;` assigns the heredoc body when `$u` is
     // undef, so `//` here is the defined-or *operator* and `<<EOF` starts a

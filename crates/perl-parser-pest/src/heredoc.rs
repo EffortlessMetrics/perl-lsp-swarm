@@ -1014,6 +1014,26 @@ fn skip_quoted(bytes: &[u8], open: usize, delimiter: u8) -> (usize, Option<OpenC
 /// Quote-like operators whose contents must not be scanned for openers.
 const QUOTE_LIKE_OPERATORS: [&str; 9] = ["qq", "qw", "qx", "qr", "tr", "q", "m", "s", "y"];
 
+/// Whether the word at `index` is preceded by a keyword that makes it a name.
+///
+/// `package` and `sub` are followed by an identifier, so a quote-like spelling
+/// there is that identifier rather than an operator.
+fn follows_declaration_keyword(line: &str, bytes: &[u8], index: usize) -> bool {
+    let mut before = index;
+    while before > 0 && matches!(bytes[before - 1], b' ' | b'\t') {
+        before -= 1;
+    }
+    if before == index {
+        // A quote-like operator may abut its delimiter, but a declaration name
+        // is always separated from its keyword by whitespace.
+        return false;
+    }
+    let Some(head) = line.get(..before) else { return false };
+    let keyword_start = head.trim_end_matches(is_word_char).len();
+    let Some(keyword) = line.get(keyword_start..before) else { return false };
+    matches!(keyword, "package" | "sub")
+}
+
 /// Whether a quote-like operator admits trailing modifier letters.
 ///
 /// The matching operators are Perl's regex-family ones; `q`, `qq`, `qw`, and
@@ -1043,6 +1063,13 @@ fn skip_quote_like(
     if index > 0 && is_word_byte(bytes[index - 1]) {
         return None;
     }
+    // `package s { ... }` and `sub s { ... }` name a namespace or a sub, not a
+    // substitution — perl accepts both, and a heredoc inside such a block is a
+    // real heredoc. Reading the name as an operator consumes to a bogus
+    // delimiter and the block's openers are then missed entirely.
+    if follows_declaration_keyword(line, bytes, index) {
+        return None;
+    }
     let rest = line.get(index..)?;
     let name = QUOTE_LIKE_OPERATORS
         .into_iter()
@@ -1063,8 +1090,19 @@ fn skip_quote_like(
     let mut end = cursor;
     for section in 0..sections {
         let opener = if section == 0 || closing_delimiter(open) != open {
-            // Bracketing delimiters restart with their own opener for section 2.
-            if section == 0 { open } else { *bytes.get(end)? }
+            // Bracketing delimiters restart with their own opener for section 2,
+            // which Perl lets stand off from the first: `s{a} {b}`. Without
+            // skipping that gap the space itself became the delimiter, and the
+            // run swallowed following lines. `continue_construct` already skips
+            // it, so this also keeps the same-line and carried paths agreeing.
+            if section == 0 {
+                open
+            } else {
+                while end < bytes.len() && matches!(bytes[end], b' ' | b'\t') {
+                    end += 1;
+                }
+                *bytes.get(end)?
+            }
         } else {
             open
         };
@@ -1266,6 +1304,13 @@ fn is_term_position(line: &str, bytes: &[u8], index: usize, last_term_end: usize
             // A sigil before the word makes it a variable; `::` makes it a
             // qualified name, which the grammar also treats as a value.
             if word_start >= 2 && bytes.get(word_start - 2..word_start) == Some(b"::") {
+                return false;
+            }
+            // `$^W` and friends are control-character variables: a completed
+            // term, so `$^W <<2` is a shift (perl: `$^W` of 1 gives 4). The
+            // punctuation-variable arm below only sees two bytes and misses
+            // these three-byte names.
+            if word_start >= 2 && bytes.get(word_start - 2..word_start) == Some(b"$^".as_slice()) {
                 return false;
             }
             // `->name` is a method call, and Perl gives it no unparenthesized
