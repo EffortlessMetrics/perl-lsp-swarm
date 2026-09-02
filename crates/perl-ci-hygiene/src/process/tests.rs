@@ -692,15 +692,23 @@ mod windows_launch_parity {
 
     #[test]
     fn broken_link_candidate_fails_closed_for_probe_and_launch() -> TestResult {
+        // Windows os error 1314: "A required privilege is not held by the
+        // client." Symlink creation needs SeCreateSymbolicLinkPrivilege; a
+        // runner without it cannot produce the subject, so only that error is
+        // a typed skip — every other creation failure must fail the test
+        // (same policy as perl-tdd-support::symlink_privilege).
+        const SYMLINK_PRIVILEGE_NOT_HELD: i32 = 1314;
+
         let temp = TempDir::new("launch-parity-broken-link")?;
         let link = temp.path().join("probe-parity-link.exe");
         if let Err(error) =
             std::os::windows::fs::symlink_file(temp.path().join("missing-target.exe"), &link)
         {
-            // Symlink creation needs a privilege the runner may not hold;
-            // without a real broken link this case cannot prove anything.
-            eprintln!("skipping broken-link parity: symlink_file denied: {error}");
-            return Ok(());
+            if error.raw_os_error() == Some(SYMLINK_PRIVILEGE_NOT_HELD) {
+                eprintln!("skipping broken-link parity: symlink privilege not held");
+                return Ok(());
+            }
+            return Err(error.into());
         }
         let path = joined_path(&[temp.path()])?;
 
