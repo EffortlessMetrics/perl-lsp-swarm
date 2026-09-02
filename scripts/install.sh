@@ -754,10 +754,22 @@ inspect_standalone_tar_gz() {
     entry_count=0
     offset=0
     while :; do
-        header="$(read_tar_header "$bound_file" "$offset")"
+        # `|| header=""` keeps a failing reader (a missing `od`, a pipeline
+        # error under `set -o pipefail`) from aborting the installer at the
+        # assignment, so the empty case below can fail closed with a
+        # diagnostic instead of the run dying mid-inspection with none.
+        header="$(read_tar_header "$bound_file" "$offset")" || header=""
         case "$header" in
             END)
                 break
+                ;;
+            '')
+                # The decoder itself did not run — a missing or failing `od`
+                # or `awk`, not a verdict about the archive. Instrument
+                # failure is not evidence of safety, so it fails closed with
+                # its own diagnostic rather than falling through as an
+                # unreadable entry or, worse, an empty one.
+                fail_archive_staging "unable to read archive headers at offset $offset: the host od/awk reader produced no output"
                 ;;
             BAD)
                 fail_archive_staging "malformed release archive: unreadable tar header at offset $offset"

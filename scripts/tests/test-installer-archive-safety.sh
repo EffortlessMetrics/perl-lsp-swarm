@@ -381,6 +381,32 @@ else
     fail_case "dataless entry type declaring a size fails closed" "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
+# Instrument failure is not evidence of safety. With the header reader
+# unavailable the adapter must fail closed with its own diagnostic, not die
+# silently part-way through inspection (#11508).
+sentinel_setup
+make_case valid_posix
+ARCHIVE_PATH="$TMP/valid_posix.tar.gz"
+BROKEN_OD="$TMP/broken-od"
+mkdir -p "$BROKEN_OD"
+printf '#!/bin/sh\nexit 127\n' > "$BROKEN_OD/od"
+chmod +x "$BROKEN_OD/od"
+# An env prefix on a function call persists in bash, so PATH is saved and
+# restored explicitly rather than leaking the broken reader into later cases.
+SAVED_PATH="$PATH"
+PATH="$BROKEN_OD:$PATH"
+run_extract
+PATH="$SAVED_PATH"
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" == *"unable to read archive headers"* ]] \
+    && assert_sentinel_untouched \
+    && assert_install_untouched; then
+    pass "unavailable header reader fails closed with a diagnostic"
+else
+    fail_case "unavailable header reader fails closed with a diagnostic" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
 # The receipt names the tar that staged the members. Inspection no longer
 # depends on it, but the profile has to be visible in installer evidence for a
 # host report to mean anything (#11508).
