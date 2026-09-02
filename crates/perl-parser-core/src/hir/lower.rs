@@ -2005,11 +2005,17 @@ impl Lowerer {
             return;
         };
 
-        // `as` renames the installed exporter, and `into`/`into_level`/
-        // `installer` control where and how it installs. A custom `installer`
-        // may well install normally, but nothing here proves it does, so an
-        // ordinary `use` of this module is not shown to install these symbols
-        // into the importing package.
+        // The `-setup` collector uses `build_exporter`, not `setup_exporter`,
+        // so `into` and `as` "are not accepted here" as plain keys. The
+        // documentation's own `-setup` example spells the rename as the dashed
+        // `-as => 'do_import'` *inside* the setup hash — which this scan
+        // catches, since the parser splits `-as` into `-` and `as` and the
+        // `as` token sits at the hash's top level. Either spelling leaves an
+        // ordinary `use` of the module unable to prove it installs these
+        // symbols: the dashed form renames the exporter away from `import`,
+        // and the plain form is a key the `-setup` path does not accept. A
+        // custom `installer` may well install normally, but nothing here
+        // proves it does.
         if let Some(key) = SUB_EXPORTER_INSTALL_REDIRECT_KEYS
             .iter()
             .find(|key| hash_entry_value(setup, key).is_some())
@@ -3178,9 +3184,12 @@ fn sub_exporter_declaration_confidence(
 /// Sub::Exporter setup keys that leave an ordinary `use` of the module unable
 /// to prove it installs the configured symbols into the importing package.
 ///
-/// `as` renames the installed exporter, so the module may have no `import` at
+/// `as` covers the documented `-setup` rename `-as => 'do_import'`, which
+/// installs the exporter under another name so the module has no `import` at
 /// all; `into` and `into_level` name a different destination; `installer`
 /// replaces the installation itself, which may or may not be equivalent.
+/// `into` and `as` as *plain* keys are not accepted by the `-setup` path at
+/// all, which is a second reason not to read past them.
 const SUB_EXPORTER_INSTALL_REDIRECT_KEYS: &[&str] = &["as", "into", "into_level", "installer"];
 
 /// Every top-level key Sub::Exporter's documentation defines for a setup hash.

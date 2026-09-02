@@ -1038,3 +1038,53 @@ fn every_documented_setup_key_together_still_publishes() {
     );
     assert!(export_boundaries(&file, "My::Utils").is_empty());
 }
+
+#[test]
+fn the_documented_dashed_as_rename_publishes_no_exports() {
+    // The `-setup` collector uses `build_exporter`, so the documentation
+    // spells the exporter rename as a dashed `-as` *inside* the setup hash:
+    //
+    //     use Sub::Exporter
+    //       { into => 'Target::Package' },
+    //       -setup => { -as => 'do_import', exports => [ ... ] };
+    //
+    // A module installing its exporter as `do_import` has no `import`, so an
+    // ordinary `use Module qw(foo)` installs nothing. This is the spelling
+    // that actually reaches the `-setup` path, so it is the one worth pinning.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { -as => 'do_import', exports => [qw(foo)] };\n",
+    );
+
+    assert!(
+        declarations(&file, "My::Utils").is_empty(),
+        "a renamed exporter installs no `import`, so nothing is published"
+    );
+    assert_eq!(
+        export_boundaries(&file, "My::Utils"),
+        vec![(
+            Some("as".to_string()),
+            "Sub::Exporter setup is not shown to install exports \
+             into the importing package"
+                .to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_leading_config_hashref_before_setup_publishes_no_exports() {
+    // The other half of the documented example: `into` is passed as a separate
+    // leading hashref, outside the `-setup` value. That form does redirect
+    // installation, and it must not slip past by virtue of sitting outside the
+    // setup hash this pass reads.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter { into => 'Target::Package' }, -setup => { exports => [qw(foo)] };\n",
+    );
+
+    assert!(
+        declarations(&file, "My::Utils").is_empty(),
+        "a leading config hashref must not leave the exports published"
+    );
+    assert!(!export_boundaries(&file, "My::Utils").is_empty());
+}
