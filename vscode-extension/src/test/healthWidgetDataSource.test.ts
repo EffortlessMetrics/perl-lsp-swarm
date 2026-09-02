@@ -365,9 +365,11 @@ describe('HealthWidgetDataSource — bounded file count', () => {
     const widget = new HealthWidget(item);
     widget.onStateChange(ClientState.Running);
     let fail = false;
+    let calls = 0;
     let createListener: (() => void) | undefined;
     const workspace: WorkspaceTelemetry = {
       findFiles: async () => {
+        calls += 1;
         if (fail) {
           throw new Error('boom');
         }
@@ -385,8 +387,13 @@ describe('HealthWidgetDataSource — bounded file count', () => {
     expect(widget.fileCount).toBe(0);
 
     fail = true;
-    await source.refreshFileCount();
+    createListener?.();
+    // The event handler starts the replacement scan without exposing its
+    // promise. Let that scheduled rejection and its cleanup continuation run
+    // before asserting the unavailable result.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+    expect(calls).toBe(6);
     expect(widget.fileCount).toBeUndefined();
     expect(item.text).toBe('$(check) perl-lsp');
     source.dispose();
