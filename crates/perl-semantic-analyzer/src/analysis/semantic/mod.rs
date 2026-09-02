@@ -47,11 +47,30 @@ use crate::analysis::class_model::{
 use crate::analysis::generated_member_extractor::GeneratedMemberExtractor;
 use crate::analysis::package_graph_extractor::PackageGraphExtractor;
 use crate::ast::Node;
-use crate::symbol::{Symbol, SymbolExtractor, SymbolTable, is_universal_method};
+use crate::symbol::{
+    Symbol, SymbolExtractor, SymbolTable, is_method_modifier_keyword, is_universal_method,
+};
 use perl_semantic_facts::{Confidence, FileId, GeneratedMember, PackageEdge, Provenance};
 use std::collections::{HashMap, HashSet};
 
 const MAX_MRO_TRAVERSAL_DEPTH: usize = 1024;
+
+/// Return `true` if `declaration` marks a symbol as a synthetic method modifier.
+///
+/// Modifier symbols are minted by `SymbolExtractor` with the introducing keyword
+/// (`before`, `after`, ...) recorded as their `declaration`.
+fn is_method_modifier_declaration(declaration: Option<&str>) -> bool {
+    declaration.is_some_and(is_method_modifier_keyword)
+}
+
+/// The package that declared `symbol`, taken from its qualified name.
+///
+/// Modifier symbols are qualified as `Package::method`, so stripping the method
+/// name yields the declaring package. Returns `None` for an unqualified symbol,
+/// which keeps an unattributable modifier unresolved instead of guessing.
+fn declaring_package_of(symbol: &Symbol) -> Option<&str> {
+    symbol.qualified_name.strip_suffix(&symbol.name)?.strip_suffix("::")
+}
 
 #[derive(Debug)]
 /// Semantic analyzer providing comprehensive IDE features for Perl code.
@@ -263,24 +282,48 @@ impl SemanticAnalyzer {
     }
 
     /// If `symbol` is a method modifier target, find the underlying method symbol.
+    ///
+    /// Resolution is bound to the package that declared the modifier: first that
+    /// package's own method, then its ancestors in the package's configured
+    /// method-resolution order. A target that neither provides is left unresolved
+    /// rather than redirected to a same-named method in an unrelated package.
     fn resolve_method_modifier_target<'a>(&'a self, symbol: &'a Symbol) -> Option<&'a Symbol> {
-        if !matches!(
-            symbol.declaration.as_deref(),
-            Some("before" | "after" | "around" | "override" | "augment")
-        ) {
+        if !is_method_modifier_declaration(symbol.declaration.as_deref()) {
             return None;
         }
 
-        self.symbol_table
-            .find_symbol(&symbol.name, symbol.scope_id, crate::symbol::SymbolKind::Subroutine)
-            .into_iter()
-            .find(|candidate| {
-                candidate.location != symbol.location
-                    && !matches!(
-                        candidate.declaration.as_deref(),
-                        Some("before" | "after" | "around" | "override" | "augment")
-                    )
-            })
+        let declaring_package = declaring_package_of(symbol)?;
+
+        if let Some(local) = self.method_symbol_in_package(declaring_package, symbol) {
+            return Some(local);
+        }
+
+        let inherited = self.resolve_inherited_method_location(declaring_package, &symbol.name)?;
+        self.method_symbol_at(&symbol.name, inherited)
+    }
+
+    /// Find the non-modifier method named `symbol.name` declared by `package` itself.
+    fn method_symbol_in_package<'a>(
+        &'a self,
+        package: &str,
+        symbol: &'a Symbol,
+    ) -> Option<&'a Symbol> {
+        let qualified = format!("{package}::{}", symbol.name);
+        self.symbol_table.symbols.get(&symbol.name)?.iter().find(|candidate| {
+            candidate.kind == crate::symbol::SymbolKind::Subroutine
+                && candidate.qualified_name == qualified
+                && candidate.location != symbol.location
+                && !is_method_modifier_declaration(candidate.declaration.as_deref())
+        })
+    }
+
+    /// Find the non-modifier method named `name` declared at `location`.
+    fn method_symbol_at(&self, name: &str, location: SourceLocation) -> Option<&Symbol> {
+        self.symbol_table.symbols.get(name)?.iter().find(|candidate| {
+            candidate.kind == crate::symbol::SymbolKind::Subroutine
+                && candidate.location == location
+                && !is_method_modifier_declaration(candidate.declaration.as_deref())
+        })
     }
 
     /// Check if an operator is a file test operator.
@@ -2447,6 +2490,163 @@ my %config = (key => "value");
             );
         }
 
+        Ok(())
+    }
+
+    /// Byte offset of the modifier's quoted target name in `code`.
+    fn modifier_target_offset(code: &str, modifier: &str, target: &str) -> Option<usize> {
+        let modifier_start = code.find(modifier)?;
+        code[modifier_start..].find(target).map(|found| modifier_start + found)
+    }
+
+    #[test]
+    fn test_method_modifier_target_prefers_declaring_package_over_same_named_method()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Both packages define `save`. The modifier belongs to `Demo`, so it must
+        // resolve to `Demo::save` and never to the earlier `Other::save`.
+        let code = concat!(
+            "package Other;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "package Demo;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 2;\n",
+            "}\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let other_save = code.find("sub save").ok_or("Other::save not found")?;
+        let demo_save = code[other_save + 1..]
+            .find("sub save")
+            .map(|f| f + other_save + 1)
+            .ok_or("Demo::save not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_eq!(
+            sym.qualified_name, "Demo::save",
+            "modifier must resolve inside its own package, got {}",
+            sym.qualified_name
+        );
+        assert_eq!(
+            sym.location.start, demo_save,
+            "modifier target should land on Demo::save, not Other::save"
+        );
+        assert_ne!(
+            sym.location.start, other_save,
+            "modifier target must not leak into the unrelated Other package"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_modifier_target_unresolved_in_declaring_package_is_not_redirected()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `Demo` declares no `save` and inherits none. The only `save` in the file
+        // belongs to the unrelated `Other`, so there is no honest target and the
+        // definition must stay on the modifier declaration itself.
+        let code = concat!(
+            "package Other;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "package Demo;\n",
+            "use Moo;\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let other_save = code.find("sub save").ok_or("Other::save not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_ne!(
+            sym.location.start, other_save,
+            "unresolved modifier target must not jump to a same-named method in another package"
+        );
+        assert_eq!(
+            sym.declaration.as_deref(),
+            Some("before"),
+            "definition should remain on the modifier declaration when no target is provable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_modifier_target_resolves_through_parent_class()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `Child` does not declare `save`; it inherits it. Resolution must reach
+        // `Base::save` through the class's method-resolution order, and the
+        // unrelated `Bystander::save` must never win.
+        let code = concat!(
+            "package Bystander;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 0;\n",
+            "}\n",
+            "\n",
+            "package Base;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let bystander_save = code.find("sub save").ok_or("Bystander::save not found")?;
+        let base_save = code[bystander_save + 1..]
+            .find("sub save")
+            .map(|f| f + bystander_save + 1)
+            .ok_or("Base::save not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_eq!(
+            sym.location.start, base_save,
+            "inherited modifier target should resolve to Base::save through the MRO"
+        );
+        assert_ne!(
+            sym.location.start, bystander_save,
+            "inherited resolution must not pick the unrelated Bystander::save"
+        );
         Ok(())
     }
 
