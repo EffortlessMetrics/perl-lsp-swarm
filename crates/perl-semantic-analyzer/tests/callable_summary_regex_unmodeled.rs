@@ -12,6 +12,13 @@
 //! still records every regex construct as unsupported (canonical PIR-A regex
 //! operations are #7137).
 //!
+//! Counting all four is wider than that restoration, and deliberately so. A
+//! *bound* `$x =~ …` previously lowered to `HirExpr::Call` and was never
+//! counted, so such callables reported `Complete` and now report `Limited`.
+//! `bound_regex_operations_downgrade_place_completeness` states that transition
+//! outright, and `a_plain_call_keeps_place_complete` pins the contrast that
+//! justifies it, so neither half can drift unnoticed.
+//!
 //! These tests pin the law directly, so the guard cannot be dropped again by a
 //! refactor that only looks at the HIR variant list.
 //!
@@ -86,6 +93,57 @@ fn regex_family_bodies_never_report_place_or_effect_complete() -> TestResult {
                 "{label}: {facet:?} must not be Complete while PIR does not model {source:?}"
             );
         }
+    }
+    Ok(())
+}
+
+/// A plain call keeps `Place` complete — the documented contrast.
+///
+/// `HirExpr::Call` is also recorded as PIR-unsupported, yet it is deliberately
+/// not counted by `count_unmodeled`, because a call's places are its arguments
+/// and those *are* modeled. (Its `Effect` facet is blocked separately, by the
+/// unresolved outbound-call dependency.)
+///
+/// Pinning this keeps the asymmetry a reviewed decision rather than an
+/// accident: if a later change starts counting calls, or stops counting the
+/// regex families, exactly one of these two tests fails and says which.
+#[test]
+fn a_plain_call_keeps_place_complete() -> TestResult {
+    let assembly = assemble("sub f { my $x; foo($x); return $x; }", "gen-call")?;
+    let packet = assembly.summaries.first().ok_or("expected a summary")?;
+    packet.validate().map_err(|v| format!("packet must validate: {v:?}"))?;
+
+    assert_eq!(
+        facet_status(packet, SummaryFacetKind::Place)?,
+        SummaryFacetStatus::Complete,
+        "a call must not be counted as an unmodeled place"
+    );
+    Ok(())
+}
+
+/// The bound forms are the ones whose completeness this change actually moved.
+///
+/// Before the regex families were typed, a bound `$x =~ …` lowered to
+/// `HirExpr::Call` and was not counted, so these callables reported `Complete`.
+/// They report `Limited` now. This test states that transition explicitly so it
+/// is a signed-off behavior change rather than a side effect noticed later.
+#[test]
+fn bound_regex_operations_downgrade_place_completeness() -> TestResult {
+    for source in [
+        "sub f { my $x; $x =~ s/a/b/g; return $x; }",
+        "sub f { my $x; my $y = $x =~ /a/; return $y; }",
+        "sub f { my $x; $x =~ tr/a-z/A-Z/; return $x; }",
+    ] {
+        let assembly = assemble(source, "gen-bound")?;
+        let packet = assembly
+            .summaries
+            .first()
+            .ok_or_else(|| format!("expected a summary for {source:?}"))?;
+        assert_ne!(
+            facet_status(packet, SummaryFacetKind::Place)?,
+            SummaryFacetStatus::Complete,
+            "bound regex operation must cap Place completeness in {source:?}"
+        );
     }
     Ok(())
 }

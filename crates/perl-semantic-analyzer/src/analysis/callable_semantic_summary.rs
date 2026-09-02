@@ -443,9 +443,26 @@ fn count_unmodeled(body: &HirBody) -> u32 {
             // Regex families (#7136). Canonical body HIR models these as typed
             // forms, but per-body PIR lowering still records all four as
             // unsupported (canonical PIR-A regex operations are #7137), so they
-            // remain unmodeled for this law. Counting them is also what keeps
-            // the previous behavior honest: before they were typed, `qr//`
-            // lowered to `Opaque` and was already counted here.
+            // remain unmodeled for this law.
+            //
+            // This is deliberately wider than restoring the previous behavior,
+            // and the difference is worth stating: before the families were
+            // typed, only the unbound form was counted (`qr//` and bare
+            // `/.../` lowered to `Opaque`), while a bound `$x =~ …` lowered to
+            // `HirExpr::Call` and was not counted. A callable whose only
+            // unmodeled content is a bound match, substitution or
+            // transliteration therefore reported `Complete` before and reports
+            // `Limited` now.
+            //
+            // That downgrade is the honest reading of this law rather than an
+            // accident of the refactor: `s///` and `tr///` write a place PIR
+            // does not record, and a match writes capture/match state, so a
+            // body containing one has evidence this assembler cannot see. The
+            // contrast with `HirExpr::Call` — which is also PIR-unsupported yet
+            // still leaves `Place` complete — is consistent for the same
+            // reason: a call's places are its arguments, which *are* modeled,
+            // and its `Effect` facet is already blocked separately by the
+            // unresolved outbound-call dependency.
             | HirExpr::Regex(_)
             | HirExpr::Match(_)
             | HirExpr::Substitution(_)

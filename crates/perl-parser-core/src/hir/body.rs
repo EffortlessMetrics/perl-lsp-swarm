@@ -581,7 +581,14 @@ pub enum ReplacementEvaluation {
     Literal,
     /// `/e` — the replacement is evaluated once as Perl code.
     Expression,
-    /// `/ee` — the replacement is evaluated, and its result evaluated again.
+    /// `/ee` or more — the replacement is evaluated, and its result evaluated
+    /// again.
+    ///
+    /// Perl adds one evaluation pass per `e`, and `/eee` and beyond are legal,
+    /// so this variant buckets every count of two or more. The distinction it
+    /// preserves is the one consumers act on — whether a second evaluation of
+    /// generated code happens at all — not the exact pass count. A consumer
+    /// needing that depth must read [`HirSubstitution::modifiers`].
     DoubleEval,
 }
 
