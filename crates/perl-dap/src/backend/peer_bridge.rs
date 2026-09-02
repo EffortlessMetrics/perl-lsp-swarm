@@ -32,7 +32,7 @@ use super::{
     StackTraceParams,
 };
 use crate::breakpoint_oracle::{AstBreakpointOracle, BreakpointOracle};
-use crate::debug_adapter::DapMessage;
+use crate::debug_adapter::{DapMessage, DapRequestRoute};
 use crate::model::{
     DebugBreakpoint, DebugEvent, DebugFunctionBreakpoint, DebugSource, FrameId, OutputCategory,
     StopReason, ThreadId, VariablesRef,
@@ -49,10 +49,51 @@ pub struct DapPeerBridge {
 }
 
 impl DapPeerBridge {
+    /// The one synthetic execution context this peer frontend advertises:
+    /// `threads` reports id 1 and runtime context discovery across the peer
+    /// bridge is not proven (#8294).
+    const ADVERTISED_THREAD_ID: i64 = 1;
+
     /// Create a bridge over `backend`.
     #[must_use]
     pub fn new(backend: Box<dyn DebugBackend>) -> Self {
         Self { backend, seq: 0, terminated_emitted: false }
+    }
+
+    /// Strict identity gate for every thread-scoped request (#8294): the
+    /// request must name the advertised synthetic execution context. A
+    /// missing, unknown, or stale id fails the request before any backend
+    /// method runs; the failed response is pushed onto `out` and `None`
+    /// returned.
+    fn validate_thread_scoped(
+        &mut self,
+        command: &str,
+        request_seq: i64,
+        args: Option<&Value>,
+        out: &mut Vec<DapMessage>,
+    ) -> Option<ThreadId> {
+        let reported = args.and_then(|a| a.get("threadId")).and_then(Value::as_i64);
+        if reported != Some(Self::ADVERTISED_THREAD_ID) {
+            let detail = match reported {
+                Some(id) => {
+                    format!("unknown or stale `threadId` {id}")
+                }
+                None => "missing `threadId`".to_string(),
+            };
+            out.push(self.response(
+                request_seq,
+                command,
+                false,
+                None,
+                Some(format!(
+                    "{detail}; this peer frontend advertises only the synthetic execution \
+                     context {}. Re-request `threads` to obtain the current id.",
+                    Self::ADVERTISED_THREAD_ID
+                )),
+            ));
+            return None;
+        }
+        Some(ThreadId(reported.unwrap_or(Self::ADVERTISED_THREAD_ID)))
     }
 
     fn next_seq(&mut self) -> i64 {
@@ -107,16 +148,25 @@ impl DapPeerBridge {
             // is future work for cooperative mode; the v1 integration target does
             // not require peers to send it — see PTKDB_PEER_INTEGRATION_TARGET.md.)
             DebugEvent::Initialized => {}
-            DebugEvent::Stopped { reason, thread_id, .. } => {
+            DebugEvent::Stopped { reason, thread_id: _, .. } => {
+                // Same identity contract as `validate_thread_scoped`: the
+                // editor must only ever observe the advertised synthetic
+                // execution context, so a backend event reporting a foreign id
+                // is normalized here instead of being forwarded verbatim
+                // (#8294) — otherwise the editor would see an id that every
+                // thread-scoped request then rejects.
                 let body = json!({
                     "reason": dap_stop_reason(&reason),
-                    "threadId": thread_id.0,
+                    "threadId": Self::ADVERTISED_THREAD_ID,
                     "allThreadsStopped": true,
                 });
                 out.push(self.event("stopped", Some(body)));
             }
-            DebugEvent::Continued { thread_id } => {
-                let body = json!({ "threadId": thread_id.0, "allThreadsContinued": true });
+            DebugEvent::Continued { thread_id: _ } => {
+                // Normalized for the same identity contract as the stopped
+                // event above (#8294).
+                let body =
+                    json!({ "threadId": Self::ADVERTISED_THREAD_ID, "allThreadsContinued": true });
                 out.push(self.event("continued", Some(body)));
             }
             DebugEvent::Output { category, output } => {
@@ -164,8 +214,10 @@ impl DapPeerBridge {
         arguments: Option<Value>,
     ) -> Vec<DapMessage> {
         let mut out = Vec::new();
-        match command {
-            "initialize" => {
+        match DapRequestRoute::from_command(command)
+            .filter(DapRequestRoute::available_in_peer_frontends)
+        {
+            Some(DapRequestRoute::Initialize) => {
                 let params = parse_initialize(arguments.as_ref());
                 match self.backend.initialize(params) {
                     Ok(()) => {
@@ -178,25 +230,27 @@ impl DapPeerBridge {
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "launch" => {
+            Some(DapRequestRoute::Launch) => {
                 let params = parse_launch(arguments.as_ref());
                 match self.backend.launch(params) {
                     Ok(_) => out.push(self.response(request_seq, command, true, None, None)),
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "attach" => {
+            Some(DapRequestRoute::Attach) => {
                 let params = parse_attach(arguments.as_ref());
                 match self.backend.attach(params) {
                     Ok(_) => out.push(self.response(request_seq, command, true, None, None)),
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "setBreakpoints" => match self.handle_set_breakpoints(arguments.as_ref()) {
+            Some(DapRequestRoute::SetBreakpoints) => match self
+                .handle_set_breakpoints(arguments.as_ref())
+            {
                 Ok(body) => out.push(self.response(request_seq, command, true, Some(body), None)),
                 Err(e) => out.push(self.error(request_seq, command, e)),
             },
-            "setFunctionBreakpoints" => {
+            Some(DapRequestRoute::SetFunctionBreakpoints) => {
                 match self.handle_set_function_breakpoints(arguments.as_ref()) {
                     Ok(body) => {
                         out.push(self.response(request_seq, command, true, Some(body), None))
@@ -204,57 +258,79 @@ impl DapPeerBridge {
                     Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "continue" => {
-                let tid = thread_id_arg(arguments.as_ref());
-                match self.backend.continue_thread(tid) {
-                    Ok(r) => {
-                        let body = json!({ "allThreadsContinued": r.all_threads_continued });
-                        out.push(self.response(request_seq, command, true, Some(body), None));
+            Some(DapRequestRoute::Continue) => {
+                if let Some(tid) =
+                    self.validate_thread_scoped(command, request_seq, arguments.as_ref(), &mut out)
+                {
+                    match self.backend.continue_thread(tid) {
+                        Ok(r) => {
+                            let body = json!({ "allThreadsContinued": r.all_threads_continued });
+                            out.push(self.response(request_seq, command, true, Some(body), None));
+                        }
+                        Err(e) => out.push(self.error(request_seq, command, e)),
                     }
-                    Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
-            "next" => self.step(request_seq, command, arguments.as_ref(), Step::Next, &mut out),
-            "stepIn" => self.step(request_seq, command, arguments.as_ref(), Step::In, &mut out),
-            "stepOut" => self.step(request_seq, command, arguments.as_ref(), Step::Out, &mut out),
-            "pause" => {
-                let tid = thread_id_arg(arguments.as_ref());
-                match self.backend.pause(tid) {
-                    Ok(()) => out.push(self.response(request_seq, command, true, None, None)),
-                    Err(e) => out.push(self.error(request_seq, command, e)),
+            Some(DapRequestRoute::Next) => {
+                self.step(request_seq, command, arguments.as_ref(), Step::Next, &mut out)
+            }
+            Some(DapRequestRoute::StepIn) => {
+                self.step(request_seq, command, arguments.as_ref(), Step::In, &mut out)
+            }
+            Some(DapRequestRoute::StepOut) => {
+                self.step(request_seq, command, arguments.as_ref(), Step::Out, &mut out)
+            }
+            Some(DapRequestRoute::Pause) => {
+                if let Some(tid) =
+                    self.validate_thread_scoped(command, request_seq, arguments.as_ref(), &mut out)
+                {
+                    match self.backend.pause(tid) {
+                        Ok(()) => out.push(self.response(request_seq, command, true, None, None)),
+                        Err(e) => out.push(self.error(request_seq, command, e)),
+                    }
                 }
             }
-            "stackTrace" => match self.handle_stack_trace(arguments.as_ref()) {
+            Some(DapRequestRoute::StackTrace) => {
+                if let Some(thread_id) =
+                    self.validate_thread_scoped(command, request_seq, arguments.as_ref(), &mut out)
+                {
+                    match self.handle_stack_trace(thread_id, arguments.as_ref()) {
+                        Ok(body) => {
+                            out.push(self.response(request_seq, command, true, Some(body), None))
+                        }
+                        Err(e) => out.push(self.error(request_seq, command, e)),
+                    }
+                }
+            }
+            Some(DapRequestRoute::Scopes) => match self.handle_scopes(arguments.as_ref()) {
                 Ok(body) => out.push(self.response(request_seq, command, true, Some(body), None)),
                 Err(e) => out.push(self.error(request_seq, command, e)),
             },
-            "scopes" => match self.handle_scopes(arguments.as_ref()) {
+            Some(DapRequestRoute::Variables) => match self.handle_variables(arguments.as_ref()) {
                 Ok(body) => out.push(self.response(request_seq, command, true, Some(body), None)),
                 Err(e) => out.push(self.error(request_seq, command, e)),
             },
-            "variables" => match self.handle_variables(arguments.as_ref()) {
+            Some(DapRequestRoute::Evaluate) => match self.handle_evaluate(arguments.as_ref()) {
                 Ok(body) => out.push(self.response(request_seq, command, true, Some(body), None)),
                 Err(e) => out.push(self.error(request_seq, command, e)),
             },
-            "evaluate" => match self.handle_evaluate(arguments.as_ref()) {
-                Ok(body) => out.push(self.response(request_seq, command, true, Some(body), None)),
-                Err(e) => out.push(self.error(request_seq, command, e)),
-            },
-            "threads" => {
-                // Perl's stock debugger is single-threaded; report one thread.
+            Some(DapRequestRoute::Threads) => {
+                // One synthetic main execution context; runtime context
+                // discovery across the peer bridge is not proven (#8294).
+
                 let body = json!({ "threads": [{ "id": 1, "name": "main" }] });
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
-            "configurationDone" => {
+            Some(DapRequestRoute::ConfigurationDone) => {
                 out.push(self.response(request_seq, command, true, None, None));
             }
-            "breakpointLocations" => {
+            Some(DapRequestRoute::BreakpointLocations) => {
                 // Answered locally from the AST oracle (the source file is on the
                 // same host as perl-dap), independent of the peer.
                 let body = handle_breakpoint_locations(arguments.as_ref());
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
-            "terminate" => {
+            Some(DapRequestRoute::Terminate) => {
                 // DAP `terminate` (the editor's Stop button when the adapter
                 // advertises `supportsTerminateRequest`): end the debuggee. In
                 // mirror mode the peer owns the process, so this is best-effort —
@@ -268,7 +344,7 @@ impl DapPeerBridge {
                 self.terminated_emitted = true;
                 out.push(self.event("terminated", None));
             }
-            "disconnect" => {
+            Some(DapRequestRoute::Disconnect) => {
                 let terminate = arguments
                     .as_ref()
                     .and_then(|a| a.get("terminateDebuggee"))
@@ -286,11 +362,11 @@ impl DapPeerBridge {
                     out.push(self.event("terminated", None));
                 }
             }
-            other => {
+            None | Some(_) => {
                 // Lenient: acknowledge unrecognized requests so a client is not
                 // wedged, but carry no body. (mirror-MVP behavior.)
-                tracing::warn!(command = other, "peer bridge: unhandled DAP request");
-                out.push(self.response(request_seq, other, true, None, None));
+                tracing::warn!(command, "peer bridge: unhandled DAP request");
+                out.push(self.response(request_seq, command, true, None, None));
             }
         }
         // Surface any events the backend queued while handling the request.
@@ -306,7 +382,9 @@ impl DapPeerBridge {
         which: Step,
         out: &mut Vec<DapMessage>,
     ) {
-        let tid = thread_id_arg(args);
+        let Some(tid) = self.validate_thread_scoped(command, request_seq, args, out) else {
+            return;
+        };
         let result = match which {
             Step::Next => self.backend.next(tid),
             Step::In => self.backend.step_in(tid),
@@ -320,6 +398,28 @@ impl DapPeerBridge {
 
     fn error(&mut self, request_seq: i64, command: &str, e: super::BackendError) -> DapMessage {
         self.response(request_seq, command, false, None, Some(e.to_string()))
+    }
+
+    /// The `supportsEvaluateForHovers` value this session advertises.
+    ///
+    /// One source for both `capabilities_body` and the hover request gate
+    /// (#9573), so this bridge cannot advertise one thing and enforce another.
+    fn advertised_evaluate_for_hovers(&self) -> bool {
+        // Gated on the PEER authority, not the native one (#9573). Reading the
+        // native gate here would mean promoting native silently opened hover to
+        // a live external debugger's evaluator, which has no pure inspection of
+        // its own. Still intersected with catalog ∩ backend so that, if the peer
+        // gate is ever promoted, it cannot over-advertise against a peer that
+        // cannot evaluate at all.
+        let negotiated = intersect_dap_capabilities(
+            &CatalogDapFlags::from_catalog(),
+            &self.backend.capabilities(),
+        );
+        crate::backend::capabilities::peer_bridge_hover_admission(
+            crate::backend::capabilities::advertises_evaluate_for_hovers(),
+            crate::backend::capabilities::PEER_BRIDGE_ADVERTISES_EVALUATE_FOR_HOVERS,
+            negotiated.supports_evaluate,
+        )
     }
 
     fn capabilities_body(&self) -> Value {
@@ -337,7 +437,9 @@ impl DapPeerBridge {
             "supportsLogPoints": negotiated.supports_log_points,
             "supportsFunctionBreakpoints": negotiated.supports_function_breakpoints,
             "supportsDataBreakpoints": negotiated.supports_data_breakpoints,
-            "supportsEvaluateForHovers": negotiated.supports_evaluate_for_hovers,
+            // One source with the hover request gate (#9573), and gated on the
+            // peer authority rather than the native one.
+            "supportsEvaluateForHovers": self.advertised_evaluate_for_hovers(),
             "supportsSetVariable": negotiated.supports_set_variable,
         })
     }
@@ -430,9 +532,13 @@ impl DapPeerBridge {
         Ok(json!({ "breakpoints": bps }))
     }
 
-    fn handle_stack_trace(&mut self, args: Option<&Value>) -> super::BackendResult<Value> {
+    fn handle_stack_trace(
+        &mut self,
+        thread_id: ThreadId,
+        args: Option<&Value>,
+    ) -> super::BackendResult<Value> {
         let params = StackTraceParams {
-            thread_id: thread_id_arg(args),
+            thread_id,
             start_frame: args
                 .and_then(|a| a.get("startFrame"))
                 .and_then(Value::as_u64)
@@ -495,6 +601,18 @@ impl DapPeerBridge {
     }
 
     fn handle_evaluate(&mut self, args: Option<&Value>) -> super::BackendResult<Value> {
+        // #9573: refuse hover before delegating to the peer backend, gated on the
+        // exact value `capabilities_body` advertises for this session so the
+        // advertisement and the admission cannot disagree — today, or after a
+        // future promotion.
+        if crate::backend::capabilities::refuse_hover_evaluation(
+            self.advertised_evaluate_for_hovers(),
+            args.and_then(|a| a.get("context")).and_then(Value::as_str),
+        ) {
+            return Err(super::BackendError::Unsupported(
+                crate::backend::capabilities::HOVER_UNSUPPORTED_MESSAGE.to_string(),
+            ));
+        }
         let expression = args
             .and_then(|a| a.get("expression"))
             .and_then(Value::as_str)
@@ -731,10 +849,6 @@ fn parse_attach(args: Option<&Value>) -> AttachBackendParams {
     }
 }
 
-fn thread_id_arg(args: Option<&Value>) -> ThreadId {
-    ThreadId(args.and_then(|a| a.get("threadId")).and_then(Value::as_i64).unwrap_or(1))
-}
-
 fn dap_source(v: Option<&Value>) -> DebugSource {
     let path = v.and_then(|s| s.get("path")).and_then(Value::as_str).unwrap_or_default();
     DebugSource {
@@ -820,10 +934,18 @@ mod tests {
     use crate::model::{
         DebugPosition, DebugScope, DebugStackFrame, DebugVariable, ResolvedBreakpoint,
     };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     #[derive(Default)]
     struct ScriptBackend {
         events: Vec<DebugEvent>,
+        /// Counts real `evaluate` calls that reached the backend.
+        ///
+        /// Shared with the test because the bridge takes ownership of the
+        /// backend. This turns "no debugger command was written" into a direct
+        /// observation instead of an inference from the response (#9573).
+        evaluate_calls: Arc<AtomicUsize>,
     }
 
     impl DebugBackend for ScriptBackend {
@@ -887,6 +1009,15 @@ mod tests {
             Ok(())
         }
         fn pause(&mut self, _t: ThreadId) -> BackendResult<()> {
+            // Deliberately reports a FOREIGN id (9 != the advertised synthetic
+            // context): `backend_events_normalize_foreign_thread_ids...` uses
+            // this to prove the bridge normalizes identity-bearing backend
+            // events instead of forwarding raw ids.
+            self.events.push(DebugEvent::Stopped {
+                reason: StopReason::Pause,
+                thread_id: ThreadId(9),
+                position: None,
+            });
             Ok(())
         }
         fn stack_trace(&mut self, _p: StackTraceParams) -> BackendResult<Vec<DebugStackFrame>> {
@@ -916,6 +1047,7 @@ mod tests {
             }])
         }
         fn evaluate(&mut self, p: EvaluateParams) -> BackendResult<EvaluateResult> {
+            self.evaluate_calls.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(EvaluateResult {
                 result: format!("={}", p.expression),
                 type_name: None,
@@ -1071,6 +1203,69 @@ mod tests {
         Ok(())
     }
 
+    /// Thread-scoped requests that do not name the advertised synthetic
+    /// execution context fail before any backend method runs (#8294): the
+    /// failed response is the only emitted message and no backend event is
+    /// queued.
+    #[test]
+    fn thread_scoped_requests_reject_unknown_or_missing_ids_before_the_backend_runs()
+    -> Result<(), String> {
+        let mut b = bridge();
+        for (command, args) in [
+            ("continue", Some(json!({ "threadId": 7 }))),
+            ("continue", None),
+            ("pause", Some(json!({ "threadId": 0 }))),
+            ("next", Some(json!({ "threadId": -1 }))),
+            ("stepIn", Some(json!({}))),
+            ("stackTrace", Some(json!({ "threadId": 2 }))),
+        ] {
+            let out = b.dispatch(9, command, args);
+            match &out[0] {
+                DapMessage::Response { command: cmd, success, message, .. } => {
+                    assert_eq!(cmd, command);
+                    assert!(!success, "a non-advertised threadId must fail {command}: {out:?}");
+                    let message = message.as_deref().unwrap_or_default();
+                    assert!(
+                        message.contains("synthetic execution context"),
+                        "the rejection must name the advertised synthetic context: {message}"
+                    );
+                }
+                other => return Err(format!("expected a response for {command}, got {other:?}")),
+            }
+            // `continue` is load-bearing here: its backend mock queues
+            // continued+stopped events, so a single-message out proves the
+            // backend method never ran.
+            assert_eq!(out.len(), 1, "no backend side effects may follow {command}: {out:?}");
+        }
+        Ok(())
+    }
+
+    /// Backend events carry identity too: a backend that reports a foreign
+    /// thread id still produces editor-visible stopped events named by the
+    /// advertised synthetic context, never by the backend's raw id — otherwise
+    /// the editor would observe an id that every thread-scoped request then
+    /// rejects (#8294).
+    #[test]
+    fn backend_events_normalize_foreign_thread_ids_to_the_advertised_context() -> Result<(), String>
+    {
+        let mut b = bridge();
+        // The mock backend queues a stopped event with foreign id 9 on pause;
+        // the pause itself must name the advertised id to be accepted.
+        let out = b.dispatch(11, "pause", Some(json!({ "threadId": 1 })));
+        let (cmd, ok, _) = as_response(&out[0])?;
+        assert_eq!(cmd, "pause");
+        assert!(ok);
+        let events: Vec<&str> = out[1..].iter().map(event_name).collect::<Result<_, _>>()?;
+        assert_eq!(events, vec!["stopped"]);
+        if let DapMessage::Event { body: Some(body), .. } = &out[1] {
+            assert_eq!(body["threadId"], 1, "the foreign backend id must be normalized");
+            assert_eq!(body["allThreadsStopped"], true);
+        } else {
+            return Err("expected a stopped event body".into());
+        }
+        Ok(())
+    }
+
     #[test]
     fn stack_scopes_variables_evaluate_round_trip() -> Result<(), String> {
         let mut b = bridge();
@@ -1091,6 +1286,140 @@ mod tests {
 
         let ev = b.dispatch(7, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
         assert_eq!(must_some(as_response(&ev[0])?.2)["result"], "=$x");
+        Ok(())
+    }
+
+    /// #9573: the external-peer bridge refuses hover before delegating.
+    ///
+    /// Discriminating because the backend here IS connected: without the gate a
+    /// hover request would succeed with a `=$x` result, exactly as the `watch`
+    /// case above does. The `watch` control in this same test proves the gate
+    /// did not simply break all evaluation.
+    #[test]
+    fn hover_context_is_refused_before_delegating_to_the_peer() -> Result<(), String> {
+        let mut b = bridge();
+
+        for context in ["hover", "Hover", "HOVER"] {
+            let out =
+                b.dispatch(7, "evaluate", Some(json!({ "expression": "$x", "context": context })));
+            let (cmd, ok, body) = as_response(&out[0])?;
+            assert_eq!(cmd, "evaluate");
+            assert!(!ok, "hover-context evaluate must be refused ({context})");
+            assert!(body.is_none(), "a refused hover must not carry a result body ({context})");
+            if let DapMessage::Response { message, .. } = &out[0] {
+                let message = message.as_deref().unwrap_or("");
+                assert!(
+                    message.contains("supportsEvaluateForHovers"),
+                    "{context}: expected the #9573 hover refusal, got {message:?}"
+                );
+            }
+        }
+
+        // Negative control: watch still evaluates against the same live backend.
+        let ok = b.dispatch(8, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
+        assert_eq!(must_some(as_response(&ok[0])?.2)["result"], "=$x");
+        Ok(())
+    }
+
+    /// #9573 same-session receipt: false capability AND zero backend invocation.
+    ///
+    /// One initialized session carries both halves of the claim, which is what
+    /// makes this a receipt rather than two unrelated assertions:
+    ///
+    /// 1. `initialize` advertises `supportsEvaluateForHovers: false`;
+    /// 2. a hover request in that same session is refused;
+    /// 3. the backend recorded **zero** evaluate invocations.
+    ///
+    /// Step 3 upgrades "no debugger command was written" from an inference
+    /// about the response to a direct observation of the backend. The trailing
+    /// `watch` control is what keeps it honest: it drives the counter to 1
+    /// through the same seam, so a counter that never increments (or a bridge
+    /// that stopped delegating entirely) fails instead of reading as success.
+    #[test]
+    fn same_session_hover_is_false_and_never_reaches_the_backend() -> Result<(), String> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut b = DapPeerBridge::new(Box::new(ScriptBackend {
+            events: Vec::new(),
+            evaluate_calls: Arc::clone(&calls),
+        }));
+
+        let init = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
+        let caps = must_some(as_response(&init[0])?.2);
+        assert_eq!(
+            caps["supportsEvaluateForHovers"], false,
+            "the session must advertise hover false"
+        );
+
+        let hover =
+            b.dispatch(2, "evaluate", Some(json!({ "expression": "$x", "context": "hover" })));
+        let (_, ok, body) = as_response(&hover[0])?;
+        assert!(!ok, "hover must be refused in this same session");
+        assert!(body.is_none(), "a refused hover must not carry a result body");
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            0,
+            "a refused hover must reach the backend zero times — no evaluate was delegated"
+        );
+
+        // Control: the counter is live, and ordinary evaluation still delegates.
+        let watch =
+            b.dispatch(3, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
+        assert_eq!(must_some(as_response(&watch[0])?.2)["result"], "=$x");
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            1,
+            "watch must still reach the backend, or the zero above proves nothing"
+        );
+        Ok(())
+    }
+
+    /// #9573: the peer bridge's hover gate is independent of the native gate.
+    ///
+    /// `ScriptBackend` reports `ptkdb_v1_defaults`, which has `evaluate: true`
+    /// — exactly the shape that would ride along if this mode read the native
+    /// authority. Both the advertised value and the admission decision must
+    /// stay closed here regardless of what the native gate says, because an
+    /// external peer runs its own evaluator with no pure inspection of its own.
+    ///
+    /// This is checked through the live negotiation path rather than by
+    /// asserting the constant, so promoting the native gate and re-running this
+    /// test is a real falsifier: if the coupling ever comes back, this fails.
+    #[test]
+    fn native_promotion_cannot_open_peer_hover() -> Result<(), String> {
+        let mut b = bridge();
+
+        let init = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
+        let caps = must_some(as_response(&init[0])?.2);
+
+        // Precondition: this peer *can* evaluate, so the assertion below is
+        // discriminating rather than trivially satisfied by an inert backend.
+        let evaluated =
+            b.dispatch(2, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
+        assert_eq!(
+            must_some(as_response(&evaluated[0])?.2)["result"],
+            "=$x",
+            "precondition: the peer backend can evaluate"
+        );
+
+        assert_eq!(
+            caps["supportsEvaluateForHovers"], false,
+            "an evaluate-capable peer must still not advertise hover, whatever the native gate says"
+        );
+
+        let hover =
+            b.dispatch(3, "evaluate", Some(json!({ "expression": "$x", "context": "hover" })));
+        let (_, ok, _) = as_response(&hover[0])?;
+        assert!(!ok, "an evaluate-capable peer must still refuse hover");
+        Ok(())
+    }
+
+    /// #9573: the advertised capability agrees with the enforced behaviour.
+    #[test]
+    fn peer_bridge_never_advertises_hover() -> Result<(), String> {
+        let mut b = bridge();
+        let out = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
+        let caps = must_some(as_response(&out[0])?.2);
+        assert_eq!(caps["supportsEvaluateForHovers"], false);
         Ok(())
     }
 
