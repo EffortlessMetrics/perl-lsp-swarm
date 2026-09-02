@@ -255,11 +255,16 @@ fn is_section_heading(line: &str, anchor: &str) -> bool {
 ///
 /// Names are backtick-quoted in the first cell, optionally wrapped in a link.
 /// Header and separator rows carry no backticks and are skipped.
+///
+/// Both delimiters are required. Accepting an unterminated backtick would let a
+/// malformed row yield the rest of the cell as a "name", which reports as
+/// spurious drift instead of being skipped; a row with no closing backtick is
+/// not a well-formed name row, and if every row in a section is malformed the
+/// caller's zero-names check still fails closed.
 fn table_row_name(line: &str) -> Option<String> {
     let first_cell = line.strip_prefix('|')?.split('|').next()?;
-    let mut spans = first_cell.split('`');
-    spans.next()?;
-    let name = spans.next()?;
+    let (_, after_open) = first_cell.split_once('`')?;
+    let (name, _) = after_open.split_once('`')?;
     (!name.is_empty()).then(|| name.to_string())
 }
 
@@ -367,6 +372,32 @@ mod tests {
 
         assert!(core.is_ok_and(|names| names == ["hx-get", "hx-on*"]));
         assert!(request.is_ok_and(|names| names == ["HX-Boosted", "HX-Trigger"]));
+    }
+
+    #[test]
+    fn an_unterminated_backtick_is_not_read_as_a_name() {
+        // Accepting a single backtick would yield "hx-get | issues a GET" as the
+        // name and report it as drift. The row is malformed, so it is skipped;
+        // the section's other row still parses, and a section of only such rows
+        // fails closed on the zero-names check.
+        let malformed = "\
+## Core Attribute Reference {#attributes}
+
+| `hx-get | issues a GET to the specified URL |
+| [`hx-post`](@/attributes/hx-post.md) | issues a POST |
+";
+
+        assert!(section_names(malformed, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-post"]));
+
+        let all_malformed = "\
+## Core Attribute Reference {#attributes}
+
+| `hx-get | issues a GET to the specified URL |
+";
+        assert!(
+            section_names(all_malformed, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("vacuous"))
+        );
     }
 
     #[test]
