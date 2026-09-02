@@ -100,7 +100,12 @@ MIN_TRANSITION_TERMS = 12
 MIN_UNPROVED_CHARS = 30
 
 CATEGORY_HEADING = re.compile(r"^### ([a-z0-9-]+)\s*$")
-FIELD_LINE = re.compile(r"^- \*\*([^:*]+):\*\* (.+)$")
+# A label with no value is still a label. Requiring a non-empty value here made
+# `- **Coverage note:**` match nothing, so it folded into the preceding field as
+# text and never reached the unknown-label or repeated-label rules -- while a
+# reader saw a labelled claim, continuation line and all. The value is captured
+# as possibly-empty so every label a reader can see is one the checks below read.
+FIELD_LINE = re.compile(r"^- \*\*([^:*]+):\*\* ?(.*)$")
 # Ledger paths are relative to the corpus directory and use POSIX separators,
 # including when a future lane is kept in a subdirectory. Every segment must
 # begin with a character other than `.`, which is what actually rejects `..`
@@ -594,6 +599,27 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             "Coverage note",
             str(caught.exception),
             "the failure must name the unknown field",
+        )
+
+        # An empty label is still a label. Before `FIELD_LINE` captured a
+        # possibly-empty value, this matched nothing, folded into the preceding
+        # field as text, and reached no rule -- while the rendered page showed a
+        # reader `Coverage note:` and the sentence beneath it.
+        with self.assertRaises(AssertionError) as caught:
+            parse_ledger(row("- **Coverage note:**", "  IS covered after all"))
+        self.assertIn(
+            "Coverage note",
+            str(caught.exception),
+            "an empty unknown label must be rejected like a populated one",
+        )
+
+        # The same hole let a repeated label slip past by carrying no value.
+        with self.assertRaises(AssertionError) as caught:
+            parse_ledger(row("- **Status:**"))
+        self.assertIn(
+            "Status",
+            str(caught.exception),
+            "an empty repeated label must still be caught",
         )
 
     def test_a_ledger_preamble_is_rejected(self) -> None:
