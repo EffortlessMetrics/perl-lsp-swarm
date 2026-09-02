@@ -27,6 +27,7 @@
 //! stable identities and counts, never private absolute paths.
 
 use sha2::{Digest, Sha256};
+use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 
 /// User/machine-owned source of a startup authority decision.
@@ -108,6 +109,42 @@ impl LaunchAuthorityMode {
 pub struct TrustedRoot {
     canonical: PathBuf,
     identity: String,
+    filesystem_identity: FilesystemIdentity,
+}
+
+/// Identity of the directory object captured at startup.  Pathnames are not
+/// sufficient authority: a root can be renamed and replaced while the adapter
+/// is alive.  Rechecking this identity makes such retargeting fail closed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FilesystemIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    created: Option<std::time::SystemTime>,
+    #[cfg(windows)]
+    modified: Option<std::time::SystemTime>,
+    #[cfg(not(any(unix, windows)))]
+    canonical: PathBuf,
+}
+
+impl FilesystemIdentity {
+    fn from_metadata(metadata: &Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            return Self { device: metadata.dev(), inode: metadata.ino() };
+        }
+        #[cfg(windows)]
+        {
+            return Self { created: metadata.created().ok(), modified: metadata.modified().ok() };
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Self { canonical: PathBuf::new() }
+        }
+    }
 }
 
 impl TrustedRoot {
@@ -230,6 +267,15 @@ fn canonicalize_trusted_root(raw: &Path) -> Result<PathBuf, LaunchAuthorityError
         .map_err(|_| LaunchAuthorityError::TrustedRootNotFound { path: raw.to_path_buf() })
 }
 
+fn trusted_root_is_current(root: &TrustedRoot) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(&root.canonical) else {
+        return false;
+    };
+    metadata.is_dir()
+        && !metadata.file_type().is_symlink()
+        && FilesystemIdentity::from_metadata(&metadata) == root.filesystem_identity
+}
+
 /// Return the first recorded raw input whose canonical directory matches
 /// `canonical`, i.e. an alias of a directory already trusted through a
 /// different spelling.
@@ -289,9 +335,14 @@ impl LaunchAuthority {
                 });
             }
             seen_canonical.push((raw.clone(), canonical.clone()));
+            let filesystem_identity = FilesystemIdentity::from_metadata(
+                &std::fs::symlink_metadata(&canonical)
+                    .map_err(|_| LaunchAuthorityError::TrustedRootNotFound { path: raw.clone() })?,
+            );
             roots.push(TrustedRoot {
                 identity: short_identity(&canonical.to_string_lossy()),
                 canonical,
+                filesystem_identity,
             });
         }
         roots.sort_by(|left, right| left.identity.cmp(&right.identity));
@@ -368,6 +419,9 @@ impl LaunchAuthority {
             LaunchAuthorityMode::ExplicitUnbounded => Ok(()),
             LaunchAuthorityMode::WorkspaceBound => {
                 for root in &self.roots {
+                    if !trusted_root_is_current(root) {
+                        continue;
+                    }
                     if crate::security::validate_path(program, root.canonical()).is_ok() {
                         return Ok(());
                     }
@@ -389,6 +443,9 @@ impl LaunchAuthority {
             LaunchAuthorityMode::ExplicitUnbounded => Ok(None),
             LaunchAuthorityMode::WorkspaceBound => {
                 for root in &self.roots {
+                    if !trusted_root_is_current(root) {
+                        continue;
+                    }
                     if let Ok(narrowed) =
                         crate::security::validate_path(requested, root.canonical())
                     {
@@ -657,6 +714,26 @@ mod tests {
         assert!(authority.admits_launch_path(&outside).is_err());
         let _ = std::fs::remove_file(&outside);
         cleanup(&root);
+    }
+
+    #[test]
+    fn workspace_bound_rejects_root_replacement_after_startup() {
+        let root = make_root("retarget");
+        let startup =
+            LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
+        let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let displaced = tempfile_name("retarget-displaced");
+        let _ = std::fs::remove_dir_all(&displaced);
+        std::fs::rename(&root, &displaced).expect("displace startup root");
+        std::fs::create_dir_all(&root).expect("replacement root");
+        let replacement_program = root.join("replacement.pl");
+        std::fs::write(&replacement_program, b"print 1;").expect("replacement script");
+
+        assert!(authority.admits_launch_path(&replacement_program).is_err());
+        assert!(authority.narrow_launch_root(&root).is_err());
+
+        cleanup(&root);
+        cleanup(&displaced);
     }
 
     #[test]
