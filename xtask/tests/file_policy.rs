@@ -259,7 +259,8 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
         .unwrap_or_default();
     assert_eq!(mapped, 1, "gate must be mapped exactly once in the policy shard");
 
-    let shard_gates = policy_shard_gates(&root)?;
+    let job = merge_gate_shards_job(&root)?;
+    let shard_gates = policy_shard_gates(&job)?;
 
     // Negative control for the parse, asserted before membership. A membership
     // test over an empty or mis-navigated list is silently false rather than
@@ -282,7 +283,33 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
          the `policy` shard declares {shard_gates:?}"
     );
 
+    // Being listed in the matrix is not the same as being run. The step that
+    // consumes `matrix.gates` must stay unconditional: a step-level `if:` that
+    // excludes the policy shard drops every gate in it while GitHub still
+    // reports the check green, because a skipped step reports success. That is
+    // the same "contract that cannot go red" failure this suite exists to catch
+    // (#14585), so assert the execution seam and not only the declaration.
+    let runner = shard_runner_step(&job)?;
+    ensure!(
+        runner.get("if").is_none(),
+        "the `merge-gate-shards` step consuming `matrix.gates` must run for every \
+         shard; an `if:` on it can drop the policy shard's gates entirely while \
+         the check still reports success"
+    );
+
     Ok(())
+}
+
+/// The `merge-gate-shards` job, parsed once for both the matrix row and the
+/// step that consumes it.
+fn merge_gate_shards_job(root: &Path) -> Result<Value> {
+    let workflow: Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(root.join(".github/workflows/ci.yml"))?)?;
+    workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("merge-gate-shards"))
+        .cloned()
+        .ok_or_else(|| eyre!("ci.yml no longer defines a `merge-gate-shards` job"))
 }
 
 /// Gate names the `policy` merge-gate shard actually declares, in matrix order.
@@ -293,28 +320,50 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
 /// turned a wiring contract into an ordering assertion. Membership survives
 /// insertion, removal, and reordering of neighbouring gates; only actually
 /// dropping the gate from the shard fails it.
-fn policy_shard_gates(root: &Path) -> Result<Vec<String>> {
-    let workflow: Value =
-        serde_yaml_ng::from_str(&std::fs::read_to_string(root.join(".github/workflows/ci.yml"))?)?;
-    let gates = workflow
-        .get("jobs")
-        .and_then(|jobs| jobs.get("merge-gate-shards"))
-        .and_then(|job| job.get("strategy"))
+fn policy_shard_gates(job: &Value) -> Result<Vec<String>> {
+    let row = job
+        .get("strategy")
         .and_then(|strategy| strategy.get("matrix"))
         .and_then(|matrix| matrix.get("include"))
         .and_then(Value::as_sequence)
         .and_then(|shards| {
             shards.iter().find(|shard| shard.get("name").and_then(Value::as_str) == Some("policy"))
         })
-        .and_then(|shard| shard.get("gates"))
-        .and_then(Value::as_str)
         .ok_or_else(|| {
             eyre!(
-                "ci.yml no longer declares a `policy` row with a `gates` list under \
+                "ci.yml no longer declares a `policy` row under \
                  jobs.merge-gate-shards.strategy.matrix.include"
             )
         })?;
+    let gates = row.get("gates").and_then(Value::as_str).ok_or_else(|| {
+        eyre!(
+            "the `policy` matrix row's `gates` is missing or is not a whitespace-separated scalar"
+        )
+    })?;
     Ok(gates.split_whitespace().map(str::to_owned).collect())
+}
+
+/// The step that actually executes a shard's gate list, located by the
+/// `SHARD_GATES` environment binding rather than by step name, so renaming the
+/// step does not quietly bypass the conditional check above.
+fn shard_runner_step(job: &Value) -> Result<Value> {
+    job.get("steps")
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find(|step| {
+                step.get("env")
+                    .and_then(|env| env.get("SHARD_GATES"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|binding| binding.contains("matrix.gates"))
+            })
+        })
+        .cloned()
+        .ok_or_else(|| {
+            eyre!(
+                "no `merge-gate-shards` step binds SHARD_GATES to `matrix.gates`; \
+                 the shard's gate list is no longer executed where this test looks"
+            )
+        })
 }
 
 /// Every gate name defined in `.ci/gate-policy.yaml`.
