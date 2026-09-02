@@ -27,7 +27,18 @@ pub enum ModuleResolutionOutcome {
     /// An existing module was selected. Carries the winning URI.
     Resolved(String),
     /// The request was valid, the denominator was complete, and nothing matched.
+    ///
+    /// This is an *exact* absence. Only a search that can prove it inspected every
+    /// authorized root may report it.
     NotFound,
+    /// Nothing matched, but the search denominator was never proven complete.
+    ///
+    /// This is the strongest claim a three-state legacy result supports. The
+    /// current resolver skips any include root whose joined path fails
+    /// workspace-boundary validation, and treats an I/O error from a filesystem
+    /// probe as "absent"; neither is recorded, so a miss it reports may have left
+    /// roots uninspected.
+    NotProvenAbsent,
     /// The request never became a valid lookup subject.
     InvalidRequest(ModuleRequestError),
     /// The request is dynamic or only partially static; no exact lookup ran.
@@ -80,6 +91,7 @@ impl ModuleResolutionOutcome {
         match self {
             Self::Resolved(_) => "module_resolution.resolved",
             Self::NotFound => "module_resolution.not_found",
+            Self::NotProvenAbsent => "module_resolution.not_proven_absent",
             Self::InvalidRequest(_) => "module_resolution.invalid_request",
             Self::Dynamic(_) => "module_resolution.dynamic",
             Self::Ambiguous => "module_resolution.ambiguous",
@@ -113,6 +125,9 @@ impl fmt::Display for ModuleResolutionOutcome {
         match self {
             Self::Resolved(uri) => write!(f, "resolved to {uri}"),
             Self::NotFound => f.write_str("not found"),
+            Self::NotProvenAbsent => {
+                f.write_str("no candidate matched, but the denominator was not proven complete")
+            }
             Self::InvalidRequest(error) => write!(f, "invalid request: {error}"),
             Self::Dynamic(boundary) => write!(f, "dynamic request: {boundary}"),
             Self::Ambiguous => f.write_str("ambiguous"),
@@ -144,13 +159,22 @@ impl fmt::Display for ModuleResolutionOutcome {
 ///
 /// The legacy enum cannot prove the invalid, dynamic, ambiguous,
 /// outside-authority, environment-unavailable, or I/O-limited states, so this
-/// adapter never manufactures them. It maps only the three states the legacy
-/// enum can actually witness.
+/// adapter never manufactures them.
+///
+/// It also refuses to manufacture an *exact* absence. A legacy `NotFound` widens
+/// to [`ModuleResolutionOutcome::NotProvenAbsent`], never to
+/// [`ModuleResolutionOutcome::NotFound`]: the resolver behind that enum skips any
+/// include root whose joined path fails workspace-boundary validation
+/// (`full_path_for_root` returns `None` and the traversal `continue`s) and cannot
+/// tell a filesystem probe's I/O error from a genuine absence. Neither leaves a
+/// completeness signal, so the miss it reports is not a proven absence. Widening
+/// it to the exact state would let a consumer report "this module does not exist"
+/// on evidence that never established it.
 #[must_use]
 pub fn outcome_from_uri_resolution(resolution: &ModuleUriResolution) -> ModuleResolutionOutcome {
     match resolution {
         ModuleUriResolution::Resolved(uri) => ModuleResolutionOutcome::Resolved(uri.clone()),
-        ModuleUriResolution::NotFound => ModuleResolutionOutcome::NotFound,
+        ModuleUriResolution::NotFound => ModuleResolutionOutcome::NotProvenAbsent,
         ModuleUriResolution::TimedOut => ModuleResolutionOutcome::TimedOut,
     }
 }
@@ -173,13 +197,21 @@ pub fn outcome_from_uri_resolution(resolution: &ModuleUriResolution) -> ModuleRe
 /// `Ambiguous`, `OutsideAuthority`, `EnvironmentUnavailable`, or `IoLimited`
 /// into `NotFound` — silently erasing a classification is exactly the defect
 /// this vocabulary exists to prevent.
+///
+/// Both `NotFound` and `NotProvenAbsent` narrow to the legacy `NotFound`. That is
+/// not erasure but the direction of the conversion: the legacy state means the
+/// weaker of the two, so an exact absence is representable in it and merely stops
+/// being *marked* exact. Widening back therefore yields `NotProvenAbsent`, and a
+/// completeness claim is never round-tripped into existence.
 #[must_use]
 pub fn uri_resolution_from_outcome(
     outcome: &ModuleResolutionOutcome,
 ) -> Option<ModuleUriResolution> {
     match outcome {
         ModuleResolutionOutcome::Resolved(uri) => Some(ModuleUriResolution::Resolved(uri.clone())),
-        ModuleResolutionOutcome::NotFound => Some(ModuleUriResolution::NotFound),
+        ModuleResolutionOutcome::NotFound | ModuleResolutionOutcome::NotProvenAbsent => {
+            Some(ModuleUriResolution::NotFound)
+        }
         ModuleResolutionOutcome::TimedOut => Some(ModuleUriResolution::TimedOut),
         ModuleResolutionOutcome::InvalidRequest(_)
         | ModuleResolutionOutcome::Dynamic(_)
@@ -214,6 +246,12 @@ mod tests {
                 "widening then narrowing must be lossless for {legacy:?}"
             );
         }
+
+        assert_eq!(
+            outcome_from_uri_resolution(&ModuleUriResolution::NotFound),
+            ModuleResolutionOutcome::NotProvenAbsent,
+            "a legacy miss cannot widen into a proven absence"
+        );
     }
 
     #[test]
@@ -255,6 +293,7 @@ mod tests {
         );
 
         for truncated in [
+            ModuleResolutionOutcome::NotProvenAbsent,
             ModuleResolutionOutcome::TimedOut,
             ModuleResolutionOutcome::IoLimited,
             ModuleResolutionOutcome::EnvironmentUnavailable,
@@ -274,6 +313,7 @@ mod tests {
         let outcomes = [
             ModuleResolutionOutcome::Resolved(String::new()),
             ModuleResolutionOutcome::NotFound,
+            ModuleResolutionOutcome::NotProvenAbsent,
             ModuleResolutionOutcome::Dynamic(RequestBoundary::ComputedExpression),
             ModuleResolutionOutcome::Ambiguous,
             ModuleResolutionOutcome::OutsideAuthority,
@@ -314,6 +354,7 @@ mod tests {
 
         for causeless in [
             ModuleResolutionOutcome::NotFound,
+            ModuleResolutionOutcome::NotProvenAbsent,
             ModuleResolutionOutcome::TimedOut,
             ModuleResolutionOutcome::Ambiguous,
             ModuleResolutionOutcome::Resolved(String::new()),

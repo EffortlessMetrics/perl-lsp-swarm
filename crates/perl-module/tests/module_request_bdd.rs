@@ -112,11 +112,27 @@ fn given_a_timed_out_search_when_reported_then_it_does_not_claim_an_exact_denomi
 }
 
 #[test]
-fn given_a_complete_miss_when_reported_then_it_claims_an_exact_denominator() {
+fn given_a_legacy_miss_when_widened_then_it_does_not_claim_a_proven_absence() {
     let outcome = outcome_from_uri_resolution(&ModuleUriResolution::NotFound);
 
-    assert_eq!(outcome, ModuleResolutionOutcome::NotFound);
-    assert!(outcome.has_complete_denominator());
+    assert_eq!(
+        outcome,
+        ModuleResolutionOutcome::NotProvenAbsent,
+        "the three-state resolver skips boundary-rejected roots without recording it, \
+         so its miss is not a proven absence"
+    );
+    assert!(
+        !outcome.has_complete_denominator(),
+        "an unproven absence must never be reported as `this module does not exist`"
+    );
+}
+
+#[test]
+fn given_a_proven_complete_miss_when_reported_then_it_claims_an_exact_denominator() {
+    // The exact state still exists and still means what it says — it just has to
+    // be established by a search that can prove its denominator, not minted by
+    // widening a weaker result.
+    assert!(ModuleResolutionOutcome::NotFound.has_complete_denominator());
 }
 
 #[test]
