@@ -1195,6 +1195,67 @@ pub fn declared_proof_subject(bytes: &[u8]) -> ProofSubject {
     found.map_or(ProofSubject::Unstated, ProofSubject::Stated)
 }
 
+/// Ceiling on attempts to claim an unused staging directory name.
+///
+/// Each attempt fails only because another live export already holds that
+/// name, so exhausting this many in a row means something other than
+/// contention is wrong and the export should say so rather than spin.
+const MAX_STAGING_ATTEMPTS: u32 = 1024;
+
+/// Counter distinguishing concurrent exports inside one process.
+static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Claim a staging directory this invocation exclusively owns.
+///
+/// The name cannot be derived from the destination and the process id alone.
+/// Two library calls in one process exporting to the same absent destination
+/// both pass the `out.exists()` check — `out` stays absent for the whole of
+/// staging, and only `publish` creates it — so they would derive one identical
+/// path, and the second would delete the first's *live* directory and recreate
+/// it. From there both wrote a manifest, pack, proofs, and receipt over each
+/// other, and one caller could validate the directory while the other replaced
+/// its bytes, so `create` could return success for an envelope that no longer
+/// matched what was validated. That is the exact guarantee staging exists to
+/// provide, so the name has to be unique per invocation rather than per
+/// process.
+///
+/// `create_dir` is the allocation primitive because it is atomic: it fails with
+/// `AlreadyExists` rather than joining a directory somebody else owns, so the
+/// winner of a race is decided by the filesystem instead of by a check this
+/// code performs and then acts on. Nothing here removes a directory it did not
+/// create — a name already taken is skipped, never reclaimed — because a
+/// directory that exists may belong to a live export.
+///
+/// The consequence is that a crashed producer leaves its staging directory
+/// behind, since no later run will clear it. That is the deliberate trade:
+/// a leaked temporary directory is recoverable by hand, and deleting another
+/// export's live state is not. `StagedEnvelope`'s `Drop` still removes the one
+/// this invocation created on every path except publication.
+pub(super) fn allocate_staging(
+    parent: &Path,
+    file_name: &str,
+) -> Result<PathBuf, (HandoffOutcome, String)> {
+    let process = std::process::id();
+    for _ in 0..MAX_STAGING_ATTEMPTS {
+        let sequence = STAGING_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let candidate = parent.join(format!(".{file_name}.staging-{process}-{sequence}"));
+        return match fs::create_dir(&candidate) {
+            Ok(()) => Ok(candidate),
+            // Taken by another live export, or left by a crashed one. Either
+            // way it is not this invocation's to use or to remove.
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => Err((
+                HandoffOutcome::InstrumentFailure,
+                format!("could not write the staging directory: {error}"),
+            )),
+        };
+    }
+    Err((
+        HandoffOutcome::InstrumentFailure,
+        format!("could not claim a staging directory after {MAX_STAGING_ATTEMPTS} attempts"),
+    ))
+}
+
 /// Write the envelope into a staging directory beside its destination.
 ///
 /// The staging directory is a sibling so the later rename stays on one
@@ -1226,11 +1287,7 @@ fn stage_envelope(
     let parent = out.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|error| io(error, "the destination directory"))?;
 
-    let staging = parent.join(format!(".{file_name}.staging-{}", std::process::id()));
-    if staging.exists() {
-        fs::remove_dir_all(&staging).map_err(|error| io(error, "a stale staging directory"))?;
-    }
-    fs::create_dir_all(&staging).map_err(|error| io(error, "the staging directory"))?;
+    let staging = allocate_staging(parent, &file_name)?;
     let staged = StagedEnvelope { directory: staging, published: false };
 
     let write =

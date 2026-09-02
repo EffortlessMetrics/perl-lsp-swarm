@@ -3194,6 +3194,118 @@ fn a_staging_directory_claiming_validation_is_refused() -> Result<()> {
     Ok(())
 }
 
+/// Two concurrent exports to one destination cannot corrupt each other.
+///
+/// The destination check cannot exclude this: `out` stays absent for the whole
+/// of staging — only `publish` creates it — so both callers pass it. When the
+/// staging name was derived from the destination and the process id alone, both
+/// derived the same path, and the second deleted the first's *live* directory
+/// and recreated it. From there their manifest, pack, proof, receipt, and
+/// self-check writes interleaved on one pathname, so one caller could validate
+/// the directory while the other replaced its bytes and `create` could return
+/// success for an envelope that no longer matched what was validated.
+///
+/// This is the end-to-end shape of the defect, and it is deliberately *not*
+/// the discriminating proof for it. Both threads do seconds of Git work after
+/// the barrier and before the narrow validate-then-publish window, so they do
+/// not reliably collide inside it: with the racy naming restored this control
+/// still passed three runs out of three. It is kept because the property it
+/// asserts is the one that matters — whatever a caller is told succeeded must
+/// still validate — but the allocation rule is proved deterministically by
+/// `staging_allocation_never_reclaims_another_invocations_directory`.
+#[test]
+fn concurrent_exports_to_one_destination_cannot_corrupt_each_other() -> Result<()> {
+    use std::sync::{Arc, Barrier};
+
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+
+    let barrier = Arc::new(Barrier::new(2));
+    let outcomes: Vec<_> = (0..2)
+        .map(|_| {
+            let barrier = Arc::clone(&barrier);
+            let inputs = request(&fixture, &destination);
+            std::thread::spawn(move || {
+                barrier.wait();
+                create_handoff(&inputs)
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|handle| handle.join().expect("export thread must not panic"))
+        .collect();
+
+    let succeeded = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
+    assert!(
+        succeeded <= 1,
+        "one destination can be published at most once, but {succeeded} exports claimed it"
+    );
+
+    // Whatever was published must still be the bytes that were validated. This
+    // is the claim the race broke: `create` returning `Ok` for an envelope a
+    // concurrent caller had since overwritten.
+    if succeeded == 1 {
+        assert_eq!(
+            check_handoff(&destination.envelope()).outcome,
+            HandoffOutcome::ValidHandoff,
+            "a successful export must publish an envelope that still validates"
+        );
+    }
+
+    // The loser must not leave the destination in a state that reads as valid
+    // without having been published, and must not have removed the winner's
+    // work. Any staging directory that survives belongs to a crashed
+    // invocation, never to the one that succeeded.
+    let parent = destination.envelope().parent().unwrap_or(Path::new(".")).to_path_buf();
+    let leftover_staging = fs::read_dir(&parent)?
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".staging-"))
+        .count();
+    assert_eq!(leftover_staging, 0, "neither export may leave its staging directory behind");
+    Ok(())
+}
+
+/// One invocation's staging directory is never reclaimed by another.
+///
+/// This is the rule the concurrent-export defect reduces to, and unlike the
+/// end-to-end race it can be settled without timing. Two allocations stand in
+/// for two live exports: the first writes a marker, and the second must neither
+/// receive the same path nor remove what the first put there.
+///
+/// With the previous naming — destination plus process id, then
+/// `remove_dir_all` on collision — the second call returned the same path and
+/// deleted the marker, which is precisely how one export could destroy
+/// another's staged bytes between its validation and its publish.
+#[test]
+fn staging_allocation_never_reclaims_another_invocations_directory() -> Result<()> {
+    let root = tempfile::TempDir::new()?;
+
+    let first = super::create::allocate_staging(root.path(), "envelope")
+        .map_err(|(outcome, detail)| format!("{outcome:?}: {detail}"))
+        .map_err(anyhow::Error::msg)?;
+    let marker = first.join("manifest.json");
+    fs::write(&marker, b"first invocation's staged bytes")?;
+
+    let second = super::create::allocate_staging(root.path(), "envelope")
+        .map_err(|(outcome, detail)| format!("{outcome:?}: {detail}"))
+        .map_err(anyhow::Error::msg)?;
+
+    assert_ne!(first, second, "two live exports must not be handed the same staging directory");
+    assert!(
+        marker.is_file(),
+        "allocating a staging directory must not remove another invocation's staged bytes"
+    );
+    assert_eq!(
+        fs::read(&marker)?,
+        b"first invocation's staged bytes",
+        "the first invocation's bytes must be untouched"
+    );
+    assert!(second.is_dir(), "the second allocation must still produce a usable directory");
+    Ok(())
+}
+
 /// The aggregate proof ceiling is the format's, so the validator applies it too.
 ///
 /// The producer refuses a set of artifacts totalling more than
