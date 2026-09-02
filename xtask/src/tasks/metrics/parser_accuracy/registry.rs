@@ -238,6 +238,21 @@ impl MetricRegistry {
                     policy.min_sample_count
                 );
             }
+            // TOML has `nan` and `inf` float literals, and every comparison against NaN is
+            // false — so a NaN bound would silently disable the range check it declares
+            // rather than failing, letting a negative or unbounded value through.
+            if !policy.min.is_finite() {
+                bail!(
+                    "{REGISTRY_PATH} metric '{}' declares a non-finite min ({})",
+                    policy.name,
+                    policy.min
+                );
+            }
+            if let Some(max) = policy.max
+                && !max.is_finite()
+            {
+                bail!("{REGISTRY_PATH} metric '{}' declares a non-finite max ({max})", policy.name);
+            }
             if let Some(max) = policy.max
                 && max < policy.min
             {
@@ -630,6 +645,44 @@ cadences = ["pr"]
         )
         .expect_err("duplicate registry entry must fail");
         assert!(err.to_string().contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn nan_registry_bound_is_rejected() {
+        // The dangerous shape: every comparison against NaN is false, so `value < min`
+        // never trips and a NaN lower bound silently disables the range check instead of
+        // failing. TOML has a `nan` literal, so this is reachable from authored policy.
+        let err = one_metric_registry(
+            r#"name = "nan_bound"
+family = "line"
+kind = "count"
+direction = "down"
+min = nan
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr"]
+"#,
+        )
+        .expect_err("a NaN bound must fail");
+        assert!(err.to_string().contains("non-finite min"), "{err}");
+    }
+
+    #[test]
+    fn infinite_registry_max_is_rejected() {
+        let err = one_metric_registry(
+            r#"name = "inf_bound"
+family = "line"
+kind = "count"
+direction = "down"
+min = 0.0
+max = inf
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr"]
+"#,
+        )
+        .expect_err("an infinite bound must fail");
+        assert!(err.to_string().contains("non-finite max"), "{err}");
     }
 
     #[test]
