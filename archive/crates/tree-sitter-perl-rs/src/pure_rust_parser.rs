@@ -340,6 +340,77 @@ pub struct PureRustPerlParser {
     heredoc_nodes_built: usize,
 }
 
+/// Byte-span rewrites `normalize_source` applied, one entry per pass.
+///
+/// Each pass records `(start, end, replacement_len)` in the coordinates of the
+/// text *that pass* was given, so translation applies the passes in order — a
+/// later pass's spans are in the earlier pass's output coordinates, and merging
+/// them into one list would be wrong.
+///
+/// An offset landing inside a rewritten span has no image and translates to
+/// `None`. A heredoc opener never does, since neither pattern can match text
+/// containing `<<`, but failing closed there is the safe direction.
+#[derive(Debug, Default)]
+pub(crate) struct Rewrites(Vec<Vec<(usize, usize, usize)>>);
+
+impl Rewrites {
+    /// No rewrite happened, so every offset maps to itself.
+    const fn identity() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Replace every match of `re` in `input`, recording each rewrite.
+    fn apply(
+        re: &Regex,
+        input: &str,
+        mut replacement: impl FnMut(&regex::Captures<'_>) -> String,
+    ) -> (String, Vec<(usize, usize, usize)>) {
+        let mut out = String::with_capacity(input.len());
+        let mut edits = Vec::new();
+        let mut last = 0;
+        for caps in re.captures_iter(input) {
+            let Some(whole) = caps.get(0) else { continue };
+            let replaced = replacement(&caps);
+            out.push_str(input.get(last..whole.start()).unwrap_or_default());
+            edits.push((whole.start(), whole.end(), replaced.len()));
+            out.push_str(&replaced);
+            last = whole.end();
+        }
+        out.push_str(input.get(last..).unwrap_or_default());
+        (out, edits)
+    }
+
+    /// Build from the passes in the order they were applied.
+    fn from_passes(passes: Vec<Vec<(usize, usize, usize)>>) -> Self {
+        Self(passes)
+    }
+
+    /// Carry `offset` through every pass, or `None` if it lands inside a
+    /// rewritten span.
+    fn translate(&self, offset: usize) -> Option<usize> {
+        let mut current = offset;
+        for pass in &self.0 {
+            current = Self::translate_pass(pass, current)?;
+        }
+        Some(current)
+    }
+
+    /// Carry `offset` through one pass. Edits are ascending and non-overlapping.
+    fn translate_pass(edits: &[(usize, usize, usize)], offset: usize) -> Option<usize> {
+        let mut delta: isize = 0;
+        for &(start, end, new_len) in edits {
+            if offset < start {
+                break;
+            }
+            if offset < end {
+                return None;
+            }
+            delta += isize::try_from(new_len).ok()? - isize::try_from(end - start).ok()?;
+        }
+        usize::try_from(isize::try_from(offset).ok()? + delta).ok()
+    }
+}
+
 impl PureRustPerlParser {
     pub fn new() -> Self {
         Self {
@@ -365,19 +436,21 @@ impl PureRustPerlParser {
         &mut self,
         scan: &HeredocScan,
     ) -> Result<AstNode, Box<dyn std::error::Error>> {
-        let normalized = Self::normalize_source(scan.stripped());
-        self.heredocs = HeredocQueue::from_scan(scan);
+        let (normalized, rewrites) = Self::normalize_source_mapped(scan.stripped());
+        // The scanner records opener offsets into the *stripped* text, but Pest
+        // parses the normalized text. Carrying them through the rewrites keeps a
+        // usable identity for every capture; if any offset cannot be carried the
+        // queue reports it and attachment fails closed rather than guessing by
+        // marker text, which would let a phantom opener take a later body.
+        self.heredocs = HeredocQueue::from_scan_translated(scan, |at| rewrites.translate(at));
         self.heredoc_nodes_built = 0;
-        // The scanner's opener offsets are into the *stripped* text. They are
-        // usable to identify an opener only while the text Pest actually parses
-        // shares that coordinate system: normalization rewrites spans, and the
-        // recovery path parses fragments whose spans are fragment-relative.
-        self.heredoc_offsets_exact = normalized == scan.stripped();
+        self.heredoc_offsets_exact = self.heredocs.offsets_are_usable();
 
         match <PerlParser as Parser<Rule>>::parse(Rule::program, &normalized) {
             Ok(pairs) => self.build_ast(pairs),
             Err(e) => {
-                // Attempt partial parsing by trying to parse individual statements
+                // Recovery parses individual statements, so pair spans are
+                // fragment-relative and cannot be compared with these offsets.
                 self.heredoc_offsets_exact = false;
                 self.parse_with_recovery(&normalized, e)
             }
@@ -394,7 +467,14 @@ impl PureRustPerlParser {
         self.heredoc_nodes_built
     }
 
-    fn normalize_source(source: &str) -> String {
+    /// Normalize `source` and record where each rewrite landed.
+    ///
+    /// The heredoc pre-pass records opener offsets into the *stripped* text,
+    /// but Pest parses the normalized text. Returning the rewrites lets those
+    /// offsets be translated into the coordinate system Pest actually reports,
+    /// so a capture keeps a usable identity instead of falling back to matching
+    /// on marker text alone.
+    fn normalize_source_mapped(source: &str) -> (String, Rewrites) {
         static SIMPLE_SCALAR_DEREF_RE: LazyLock<Option<Regex>> =
             LazyLock::new(|| Regex::new(r"\$\$(?P<name>[A-Za-z_][A-Za-z0-9_:]*)").ok());
         static ASSIGN_BITNOT_RE: LazyLock<Option<Regex>> =
@@ -403,24 +483,18 @@ impl PureRustPerlParser {
         // These are fixed patterns; if one ever fails to compile, skip normalization
         // rather than panicking inside production parser code.
         let Some(scalar_deref_re) = SIMPLE_SCALAR_DEREF_RE.as_ref() else {
-            return source.to_string();
+            return (source.to_string(), Rewrites::identity());
         };
         let Some(assign_bitnot_re) = ASSIGN_BITNOT_RE.as_ref() else {
-            return source.to_string();
+            return (source.to_string(), Rewrites::identity());
         };
 
-        let normalized_derefs = scalar_deref_re
-            .replace_all(source, |caps: &regex::Captures<'_>| {
-                let variable = format!("${}", &caps["name"]);
-                format!("${{{}}}", variable)
-            })
-            .into_owned();
-
-        assign_bitnot_re
-            .replace_all(&normalized_derefs, |caps: &regex::Captures<'_>| {
-                format!("= bitnot({})", &caps["expr"])
-            })
-            .into_owned()
+        let (derefs, first) =
+            Rewrites::apply(scalar_deref_re, source, |caps| format!("${{${}}}", &caps["name"]));
+        let (normalized, second) = Rewrites::apply(assign_bitnot_re, &derefs, |caps| {
+            format!("= bitnot({})", &caps["expr"])
+        });
+        (normalized, Rewrites::from_passes(vec![first, second]))
     }
 
     fn parse_with_recovery(

@@ -1613,6 +1613,7 @@ impl PureRustPerlParser {
         }
 
         let completeness = completeness_for(&diagnostics);
+        let recovery_ranges = merge_recovery_ranges(recovery_ranges, source);
         match ParseOutcome::try_new(ast, completeness, diagnostics, recovery_ranges, source) {
             Ok(outcome) => ParseAttempt::outcome(outcome),
             Err(error) => ParseAttempt::failed(ParserFailure::instrument(error.to_string())),
@@ -1625,6 +1626,32 @@ impl PureRustPerlParser {
         let claimed = scan.captures().len().saturating_sub(remaining);
         scan.captures().get(claimed..).unwrap_or_default().iter().collect()
     }
+}
+
+/// Merge overlapping recovery ranges into their union.
+///
+/// `ParseOutcome` requires non-overlapping ranges, and two honest diagnostics
+/// can legitimately cover overlapping spans: a scanner/grammar disagreement
+/// names the whole source because it cannot localize which opener was missed,
+/// while an unattached body names exactly its own bytes. Reporting the union is
+/// the truthful reconciliation — dropping either diagnostic to avoid the
+/// overlap would lose a real finding, and both remain in `diagnostics`.
+fn merge_recovery_ranges(mut ranges: Vec<SourceRange>, source: &str) -> Vec<SourceRange> {
+    ranges.sort_by_key(|range| (range.start(), range.end()));
+    let mut merged: Vec<SourceRange> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        let overlaps = merged.last().is_some_and(|last| range.start() <= last.end());
+        if overlaps {
+            if let Some(last) = merged.last_mut()
+                && let Some(union) = source_range(last.start(), last.end().max(range.end()), source)
+            {
+                *last = union;
+            }
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
 }
 
 /// Heredoc-contract completeness implied by `diagnostics`.
@@ -1646,39 +1673,69 @@ fn completeness_for(diagnostics: &[ParseDiagnostic]) -> ParseCompleteness {
 #[derive(Debug, Default)]
 pub(crate) struct HeredocQueue {
     pending: VecDeque<(usize, String, String)>,
+    /// Whether every queued offset is comparable with the parser's spans.
+    offsets_usable: bool,
 }
 
 impl HeredocQueue {
-    pub(crate) fn from_scan(scan: &HeredocScan) -> Self {
-        Self {
-            pending: scan
-                .captures()
-                .iter()
-                .map(|capture| {
-                    (
-                        capture.stripped_opener,
-                        capture.marker().to_string(),
-                        capture.content().to_string(),
-                    )
-                })
-                .collect(),
-        }
+    /// Build the queue, carrying each opener offset into the coordinate system
+    /// the parser will report spans in.
+    ///
+    /// `translate` returns `None` when an offset cannot be carried; the capture
+    /// is still queued (the queue must stay aligned with the grammar's openers)
+    /// but its offset is recorded as unusable, and `offsets_are_usable` then
+    /// reports that the whole queue must fail closed rather than fall back to
+    /// matching on marker text.
+    pub(crate) fn from_scan_translated(
+        scan: &HeredocScan,
+        mut translate: impl FnMut(usize) -> Option<usize>,
+    ) -> Self {
+        let mut usable = true;
+        let pending = scan
+            .captures()
+            .iter()
+            .map(|capture| {
+                let offset = translate(capture.stripped_opener);
+                if offset.is_none() {
+                    usable = false;
+                }
+                (
+                    offset.unwrap_or(usize::MAX),
+                    capture.marker().to_string(),
+                    capture.content().to_string(),
+                )
+            })
+            .collect();
+        Self { pending, offsets_usable: usable }
     }
 
-    /// Take the body for the opener spelled `marker`, when it is the next
-    /// queued capture.
+    /// Whether every queued opener offset survived translation.
+    pub(crate) const fn offsets_are_usable(&self) -> bool {
+        self.offsets_usable
+    }
+
+    /// Take the body for the opener at `at` spelled `marker`, when it is the
+    /// next queued capture.
     ///
-    /// `at` is the opener's offset in the stripped text when the caller's spans
-    /// are still in that coordinate system; it must then match too. The marker
-    /// alone is not enough there: when the grammar reports an opener the
-    /// scanner did not own — a known, reported disagreement — and a later real
-    /// heredoc repeats its marker, matching on the marker alone let the phantom
-    /// opener take the real body and leave the real heredoc empty. `None` means
-    /// the caller cannot supply a comparable offset, so the marker decides.
+    /// `at` is the opener's offset in the coordinate system the parser reports
+    /// spans in; both it and the marker must match. The marker alone is not
+    /// enough: when the grammar reports an opener the scanner did not own — a
+    /// known, reported disagreement — and a later real heredoc repeats its
+    /// marker, matching on the marker alone lets the phantom opener take the
+    /// real body and leave the real heredoc empty.
+    ///
+    /// `None` means the caller has no comparable offset, which happens only on
+    /// the recovery path where spans are fragment-relative. Nothing is attached
+    /// then. Guessing by marker text there would reintroduce exactly the
+    /// misattachment above, and a diagnostic raised afterwards cannot un-attach
+    /// a body from the wrong node — so this fails closed, and the unattached
+    /// bodies are reported by `parse_heredoc_outcome`.
     pub(crate) fn take(&mut self, marker: &str, at: Option<usize>) -> Option<String> {
-        let matches = self.pending.front().is_some_and(|(offset, queued, _)| {
-            queued == marker && at.is_none_or(|at| *offset == at)
-        });
+        let at = at?;
+        let matches = self
+            .pending
+            .front()
+            .is_some_and(|(offset, queued, _)| *offset == at && queued == marker);
         if matches {
             return self.pending.pop_front().map(|(_, _, content)| content);
         }

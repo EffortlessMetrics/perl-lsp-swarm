@@ -1204,6 +1204,63 @@ fn when_a_phantom_opener_repeats_a_later_marker_then_the_real_heredoc_keeps_its_
 }
 
 #[test]
+fn when_normalization_rewrites_the_source_then_opener_identity_survives_it() -> Result<(), String> {
+    // `normalize_source` rewrites the stripped text before Pest parses it, so a
+    // capture's stripped-text offset is not directly comparable with a pair's
+    // span. Falling back to marker-only matching there reintroduced the phantom
+    // -opener theft this contract exists to prevent, and a diagnostic raised
+    // afterwards cannot un-attach a body from the wrong node.
+    //
+    // `$$name` triggers the rewrite; `$^W <<EOF` is the known grammar
+    // over-report; the repeated `EOF` marker is what let the phantom take the
+    // real body.
+    let source = "my $v = $$name;\nmy $a = $^W <<EOF;\nmy $b = <<EOF;\nbody\nEOF\nmy $z = 3;\n";
+    let contents = heredoc_contents(source);
+    assert_eq!(
+        contents.iter().filter(|(_, content)| content == "body\n").count(),
+        1,
+        "exactly one node owns the body; got {contents:?}"
+    );
+    assert_eq!(
+        contents.last().map(|(marker, content)| (marker.as_str(), content.as_str())),
+        Some(("EOF", "body\n")),
+        "the last opener in source order is the real one and must own the body; got {contents:?}"
+    );
+
+    let mut parser = PureRustPerlParser::new();
+    let ParseAttempt::Outcome(outcome) = parser.parse_heredoc_outcome(source) else {
+        return Err("expected a parser-domain outcome".to_string());
+    };
+    assert_ne!(
+        outcome.completeness(),
+        ParseCompleteness::Complete,
+        "the grammar over-report must still be reported"
+    );
+
+    // The control that makes the above meaningful: with the same rewrite but no
+    // over-report, the body must still attach and the parse must be clean. A
+    // translation that silently gave up would fail here rather than here-passing
+    // by attaching nothing.
+    let plain = "my $v = $$name;\nmy $b = <<EOF;\nbody\nEOF\nmy $z = 3;\n";
+    assert_eq!(
+        heredoc_contents(plain),
+        vec![("EOF".to_string(), "body\n".to_string())],
+        "a rewritten source must still attach its body"
+    );
+    let mut clean = PureRustPerlParser::new();
+    let ParseAttempt::Outcome(outcome) = clean.parse_heredoc_outcome(plain) else {
+        return Err("expected a parser-domain outcome".to_string());
+    };
+    assert_eq!(
+        outcome.completeness(),
+        ParseCompleteness::Complete,
+        "normalization alone must not make a heredoc parse non-Complete; got {:?}",
+        outcome.diagnostics()
+    );
+    Ok(())
+}
+
+#[test]
 fn when_the_first_body_line_exceeds_the_budget_then_it_is_still_owned_and_reported() {
     // Stopping at the line's start would leave the whole oversized body in the
     // parsed text while the diagnostic claimed it had been truncated.
@@ -1521,6 +1578,25 @@ fn when_the_grammar_over_reports_inside_a_multiline_substitution_then_it_is_not_
         outcome.diagnostics().iter().any(|d| d.message().contains("scanner owned")),
         "the disagreement must be named; got {:?}",
         outcome.diagnostics()
+    );
+
+    // This fixture reaches the recovery path, where Pest's spans are
+    // fragment-relative and no capture offset is comparable. Attachment must
+    // then fail closed: guessing by marker text would hand the real body to the
+    // phantom opener, and the body would look attached while being on the wrong
+    // node. The unattached-body diagnostic is what proves nothing was guessed —
+    // it disappears the moment marker-only matching is restored.
+    assert!(
+        outcome
+            .diagnostics()
+            .iter()
+            .any(|d| d.message().contains("owned a body but its opener produced no node")),
+        "an unowned body must be reported, not silently attached elsewhere; got {:?}",
+        outcome.diagnostics()
+    );
+    assert!(
+        heredoc_contents(source).iter().all(|(_, content)| content != "body\n"),
+        "no node may claim the body when opener identity is unavailable"
     );
     Ok(())
 }
