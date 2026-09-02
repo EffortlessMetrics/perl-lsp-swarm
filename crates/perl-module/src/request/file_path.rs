@@ -30,16 +30,9 @@ pub enum ModuleFilePathError {
     DriveQualified,
     /// The input contained a `..` traversal component.
     Traversal,
-    /// The input is still wrapped in its source quote delimiters.
-    ///
-    /// A quoted `require` operand must be handed over *decoded*. An undecoded
-    /// token would otherwise validate as a filename that literally contains the
-    /// quote bytes, and the resolver would search for `'Foo/Bar.pm'` rather than
-    /// `Foo/Bar.pm`.
-    UndecodedQuoting {
-        /// The delimiter the input is wrapped in.
-        delimiter: char,
-    },
+    /// A token given to [`ModuleFilePath::from_quoted_token`] carried no
+    /// matching pair of `'` or `"` delimiters to strip.
+    UnquotedToken,
 }
 
 impl fmt::Display for ModuleFilePathError {
@@ -56,11 +49,9 @@ impl fmt::Display for ModuleFilePathError {
             Self::UncPrefix => f.write_str("literal file request uses a UNC prefix"),
             Self::DriveQualified => f.write_str("literal file request is drive-qualified"),
             Self::Traversal => f.write_str("literal file request contains a `..` component"),
-            Self::UndecodedQuoting { delimiter } => write!(
-                f,
-                "literal file request is still wrapped in `{delimiter}` delimiters; \
-                 pass the decoded operand, not the raw source token"
-            ),
+            Self::UnquotedToken => {
+                f.write_str("source token is not wrapped in a matching pair of quote delimiters")
+            }
         }
     }
 }
@@ -79,7 +70,7 @@ impl ModuleFilePathError {
             Self::UncPrefix => "module_file_path.unc_prefix",
             Self::DriveQualified => "module_file_path.drive_qualified",
             Self::Traversal => "module_file_path.traversal",
-            Self::UndecodedQuoting { .. } => "module_file_path.undecoded_quoting",
+            Self::UnquotedToken => "module_file_path.unquoted_token",
         }
     }
 }
@@ -91,21 +82,29 @@ impl ModuleFilePathError {
 /// nothing about the filesystem. Existence, root admission, and containment
 /// remain the resolver's job.
 ///
-/// # Input contract
+/// # Decoded value versus raw token
 ///
-/// The input is the **decoded** operand — the string value Perl would look up —
-/// not the raw source token. `require 'Foo/Bar.pm'` must be presented as
-/// `Foo/Bar.pm`, with its delimiters already removed by the lexer or by the
-/// caller's HIR conversion. Handing over an undecoded token is rejected as
-/// [`ModuleFilePathError::UndecodedQuoting`] rather than accepted as a filename
-/// that happens to contain quote bytes.
+/// Whether a string is a decoded operand or a still-quoted source token is not
+/// recoverable from the string itself: Perl permits quote characters in a
+/// filename, so `'Foo.pm'` is both a plausible raw token *and* a legitimate
+/// decoded filename. Guessing would reject valid requests.
+///
+/// The caller therefore states which it holds, by choosing a constructor:
+///
+/// - [`Self::parse`] takes the **decoded** operand — the value Perl looks up.
+/// - [`Self::from_quoted_token`] takes the **raw** source token, delimiters
+///   included, and strips exactly one matching outer pair.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModuleFilePath {
     literal: String,
 }
 
 impl ModuleFilePath {
-    /// Validate `text` as a literal relative file request.
+    /// Validate an already-decoded literal relative file request.
+    ///
+    /// `text` is the value Perl looks up, so quote characters in it are filename
+    /// bytes and are preserved. Pass a still-quoted source token to
+    /// [`Self::from_quoted_token`] instead.
     ///
     /// # Errors
     ///
@@ -123,10 +122,6 @@ impl ModuleFilePath {
             if character.is_control() {
                 return Err(ModuleFilePathError::ControlCharacter { character });
             }
-        }
-
-        if let Some(delimiter) = undecoded_quote_delimiter(text) {
-            return Err(ModuleFilePathError::UndecodedQuoting { delimiter });
         }
 
         if text.starts_with("\\\\") || text.starts_with("//") {
@@ -153,6 +148,37 @@ impl ModuleFilePath {
         }
 
         Ok(Self { literal: text.to_string() })
+    }
+
+    /// Decode a raw source token and validate the operand inside it.
+    ///
+    /// Strips exactly one matching outer pair of `'` or `"` delimiters, then
+    /// applies [`Self::parse`] to the remainder. Use this for a token that still
+    /// carries its delimiters — a `perl_parser_core::hir` require target keeps
+    /// the string node's value verbatim, and `hir::model::normalize_module_target`
+    /// exists to strip exactly this.
+    ///
+    /// Escape sequences inside a double-quoted token are **not** interpreted;
+    /// this only removes the delimiters. A caller that needs real interpolation
+    /// must decode first and use [`Self::parse`].
+    ///
+    /// # Errors
+    ///
+    /// [`ModuleFilePathError::UnquotedToken`] when `token` is not wrapped in a
+    /// matching delimiter pair, otherwise the classified error for the decoded
+    /// operand.
+    pub fn from_quoted_token(token: &str) -> Result<Self, ModuleFilePathError> {
+        let mut chars = token.chars();
+        let Some(delimiter) = chars.next().filter(|first| *first == '\'' || *first == '"') else {
+            return Err(ModuleFilePathError::UnquotedToken);
+        };
+        let Some(last) = chars.next_back().filter(|last| *last == delimiter) else {
+            return Err(ModuleFilePathError::UnquotedToken);
+        };
+        let _ = last;
+
+        let decoded = &token[delimiter.len_utf8()..token.len() - delimiter.len_utf8()];
+        Self::parse(decoded)
     }
 
     /// The literal request text exactly as written in source.
@@ -186,21 +212,6 @@ impl TryFrom<&str> for ModuleFilePath {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::parse(value)
     }
-}
-
-/// Detect an operand still wrapped in a matching pair of source quote delimiters.
-///
-/// Deliberately narrow: only a value that both opens and closes with the same
-/// `'` or `"` delimiter is treated as undecoded. A filename that merely contains
-/// a quote (`it's.pl`, `a"b.pm`) is a legitimate POSIX filename and stays valid.
-fn undecoded_quote_delimiter(text: &str) -> Option<char> {
-    let mut chars = text.chars();
-    let first = chars.next()?;
-    if first != '\'' && first != '"' {
-        return None;
-    }
-    let last = chars.next_back()?;
-    (last == first).then_some(first)
 }
 
 /// Detect drive-qualified syntax such as `C:`, `C:foo`, or `C:\foo`.
@@ -270,7 +281,6 @@ mod tests {
             ("../../etc/passwd", ModuleFilePathError::Traversal),
             ("Foo/../../etc/passwd", ModuleFilePathError::Traversal),
             ("Foo\\..\\..\\etc", ModuleFilePathError::Traversal),
-            ("'Foo.pm'", ModuleFilePathError::UndecodedQuoting { delimiter: '\'' }),
         ];
 
         for (input, expected) in cases {
@@ -283,30 +293,56 @@ mod tests {
     }
 
     #[test]
-    fn an_undecoded_quoted_token_is_refused() {
-        // The HIR require target can still carry its delimiters — `hir/model.rs`
-        // strips them in `normalize_module_target` for exactly this reason. If the
-        // caller forgets, the resolver would search for `'Foo/Bar.pm'`.
-        for (input, delimiter) in
-            [("'Foo/Bar.pm'", '\''), ("\"Foo::Bar\"", '"'), ("''", '\''), ("\"\"", '"')]
-        {
+    fn a_raw_token_is_decoded_by_its_own_constructor() -> Result<(), ModuleFilePathError> {
+        // The HIR require target keeps the string node's value verbatim, which is
+        // why `hir::model::normalize_module_target` strips delimiters. This is the
+        // typed way to hand such a token over.
+        for (token, decoded) in [
+            ("'Foo/Bar.pm'", "Foo/Bar.pm"),
+            ("\"Foo/Bar.pm\"", "Foo/Bar.pm"),
+            ("'Foo::Bar'", "Foo::Bar"),
+        ] {
+            let path = ModuleFilePath::from_quoted_token(token)?;
+            assert_eq!(path.literal(), decoded, "`{token}` must decode to `{decoded}`");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_quoted_filename_is_a_valid_decoded_operand() -> Result<(), ModuleFilePathError> {
+        // Perl permits quote characters in a filename, so a decoded operand that
+        // happens to be wrapped in them is legitimate and must not be second-guessed.
+        // `parse` never infers encoded state from the value.
+        for input in ["'Foo.pm'", "\"Foo.pm\"", "it's.pl", "a\"b.pm", "don't/stop.pm", "'", "\""] {
+            let path = ModuleFilePath::parse(input)?;
+            assert_eq!(path.literal(), input, "`{input}` is a decoded filename, not a token");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_unquoted_token_is_refused_by_the_token_constructor() {
+        for token in ["Foo.pm", "'Foo", "Foo'", "\"Foo", "'Foo\"", "", "'"] {
             assert_eq!(
-                ModuleFilePath::parse(input),
-                Err(ModuleFilePathError::UndecodedQuoting { delimiter }),
-                "`{input}` is a raw source token, not a decoded operand"
+                ModuleFilePath::from_quoted_token(token),
+                Err(ModuleFilePathError::UnquotedToken),
+                "`{token}` carries no matching delimiter pair to strip"
             );
         }
     }
 
     #[test]
-    fn a_quote_inside_a_filename_stays_valid() -> Result<(), ModuleFilePathError> {
-        // Only a matching wrapping pair is undecoded quoting; these are legitimate
-        // POSIX filenames and must not be caught by the guard.
-        for input in ["it's.pl", "a\"b.pm", "'", "\"", "don't/stop.pm", "a'b\"c.pm"] {
-            let path = ModuleFilePath::parse(input)?;
-            assert_eq!(path.literal(), input);
-        }
-        Ok(())
+    fn a_decoded_token_still_faces_every_validation_rule() {
+        assert_eq!(
+            ModuleFilePath::from_quoted_token("'../../etc/passwd'"),
+            Err(ModuleFilePathError::Traversal),
+            "stripping delimiters must not skip traversal validation"
+        );
+        assert_eq!(
+            ModuleFilePath::from_quoted_token("'/etc/passwd'"),
+            Err(ModuleFilePathError::Absolute)
+        );
+        assert_eq!(ModuleFilePath::from_quoted_token("''"), Err(ModuleFilePathError::Empty));
     }
 
     #[test]
@@ -318,7 +354,7 @@ mod tests {
 
     #[test]
     fn every_rejection_has_a_stable_boundary_id() {
-        for input in ["", "Foo\0", "/abs", "\\\\unc", "C:x", "../x", "'q'"] {
+        for input in ["", "Foo\0", "/abs", "\\\\unc", "C:x", "../x"] {
             let boundary_id = ModuleFilePath::parse(input).err().map(|error| error.boundary_id());
             assert!(
                 boundary_id.is_some_and(|id| id.starts_with("module_file_path.")),
