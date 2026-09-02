@@ -489,16 +489,36 @@ fn table_row_name(line: &str) -> Option<String> {
     let accounted_for = match before.trim() {
         // `name`
         "" => after.trim().is_empty(),
-        // [`name`](target) — the target must not itself contain a backtick, so
-        // a trailing second token cannot hide inside it.
-        "[" => {
-            let tail = after.trim();
-            tail.starts_with("](") && tail.ends_with(')') && !tail.contains('`')
-        }
+        // [`name`](destination)
+        "[" => closes_a_link(after.trim()),
         _ => false,
     };
 
     accounted_for.then(|| name.to_string())
+}
+
+/// Is `tail` exactly the `](destination)` that closes a linked name?
+///
+/// The check has to prove the final parenthesis is the link's own. Accepting any
+/// tail that merely starts `](` and ends `)` reads
+/// `` [`hx-get`](@/attributes/hx-get.md) trailing) `` as the bare name `hx-get`
+/// and discards the rest of the cell — the same silent partial read
+/// [`table_row_name`] exists to prevent, one level down.
+///
+/// Upstream destinations are single unbroken tokens (`@/attributes/hx-get.md`),
+/// so requiring the destination to carry no whitespace, parenthesis or backtick
+/// makes that final parenthesis unambiguous. A destination this rule cannot
+/// account for — a link title, an angle-bracketed target, a target with balanced
+/// parentheses — fails closed rather than being guessed at, because guessing is
+/// what produces a clean report against a document that changed.
+fn closes_a_link(tail: &str) -> bool {
+    let Some(destination) = tail.strip_prefix("](").and_then(|rest| rest.strip_suffix(')')) else {
+        return false;
+    };
+
+    !destination.is_empty()
+        && !destination.contains(['`', '(', ')'])
+        && !destination.chars().any(char::is_whitespace)
 }
 
 #[cfg(test)]
@@ -627,6 +647,13 @@ mod tests {
             "| `hx-get` trailing prose | described |",
             "| [`hx-get`]@/attributes/hx-get.md | described |",
             "| prefix [`hx-get`](@/attributes/hx-get.md) | described |",
+            // Trailing text that itself ends in a closing parenthesis: the
+            // final `)` is the trailing text's, not the link's, so a check that
+            // only looks at the two ends accepts this and drops the suffix.
+            "| [`hx-get`](@/attributes/hx-get.md) trailing) | described |",
+            "| [`hx-get`](@/attributes/hx-get.md) `hx-new`) | described |",
+            "| [`hx-get`]() | described |",
+            "| [`hx-get`](@/attributes/hx-get.md \"a title\") | described |",
         ] {
             let section = format!(
                 "## Core Attribute Reference {{#attributes}}\n\n\
