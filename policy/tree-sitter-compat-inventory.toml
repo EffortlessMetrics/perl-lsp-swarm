@@ -1,0 +1,463 @@
+# `perl-tree-sitter-compat` consumer and behavior inventory
+#
+# Controlling issue #8880, train #8877 row PR-09. This ledger is the removal
+# denominator for the duplicate Tree-sitter facade: #8889 migrates what must
+# survive and #8890 deletes the crate. Neither can act without knowing what the
+# crate owns and who actually depends on it.
+#
+# Read by `cargo xtask compat-inventory`, which reconciles every row against the
+# crate's real surface and fails closed on an unexplained reference, a missing
+# or stale row, a disagreeing item kind, a changed source digest, or a changed
+# authority digest.
+#
+# Dispositions
+#   already_equivalent             a canonical owner already provides the behavior
+#   unique_and_required            exists only here and must survive migration
+#   unique_but_invalid_or_obsolete exists only here but must not be carried across
+#   migration_only_entry_point     reaches the crate but carries no authority of
+#                                  its own; retires when the crate does
+#   unused                         nothing consumes it and no product claim rests
+#                                  on it
+#   unknown_blocking               disposition not established; blocks the task
+#
+# Where the required/unused line falls
+#   `docs/explanation/TREE_SITTER_COMPATIBILITY.md` names `parse_to_tree`,
+#   `to_ts_node`, `highlights`, and `to_sexp` as the current Tier-A compatibility
+#   surface. Those, and the types they return, carry a product claim and are
+#   `unique_and_required` even though no in-tree caller links against them today.
+#   Public surface outside that claim, with no consumer and no proof, is
+#   `unused` — it is incidental API, not behavior the migration owes anything to.
+#
+# On `unused`: the crate currently has zero Cargo dependents, which is what
+# permits that disposition at all. A text search could not establish it, because
+# a manifest can declare a dependency that no `use` line ever names.
+#
+# Discovery boundary: rows are derived from `fn` / `struct` / `enum` declarations
+# carrying `pub` or a restricted visibility, and their inherent methods. Trait
+# implementations are public
+# behaviour but are not separate rows, because a trait impl has no declaration
+# of its own to disposition. The crate has two — `Display` and
+# `std::error::Error` on `TreeError` — and they are recorded on that type's row
+# so the migration owner still sees them.
+#
+# On #8880's "public/internal symbol": the internal population is empty, and that
+# emptiness is checked rather than claimed. Discovery records `pub(crate)`,
+# `pub(super)`, and `pub(in ...)` items alongside public ones and tags each row
+# with its `visibility`; a discovered internal symbol with no row fails the task
+# exactly as a public one does. The crate declares none today, so every row below
+# omits `visibility` and takes the `public` default. What remains below `pub` is
+# module-private, which by construction cannot be consumed from outside the crate
+# and therefore cannot require migration — it is deleted with the crate under
+# #8890, and carries no row. A symbol whose visibility changes also fails the
+# task: its disposition was audited against the old reachability.
+#
+# On `reference_kind`: the kinds a path decides are enforced. A row under
+# `crates/perl-tree-sitter-compat/` must be `own_crate`, `Cargo.lock` must be
+# `lockfile`, and a manifest declaring a Cargo dependency must be
+# `cargo_dependency` — that last one is load-bearing, because `unused` is
+# permitted only when the Cargo population is empty. The remaining kinds
+# (`documentation`, `policy`, `tooling`, `rust_import`) describe what a file
+# DOES with the reference, which its path cannot settle, so they are an
+# auditor's judgment and are not machine-checked. No reconciliation rule branches
+# on them; for those rows the ledger proves the reference exists and carries
+# exactly one disposition, not that its label is the best one.
+#
+# A row's disposition is about the BEHAVIOUR, not only the symbol. A symbol may
+# be obsolete as an authority while the behaviour it produces is still required
+# by another row; `pascal_to_snake` is exactly that case and carries a migration
+# dependency despite being `unique_but_invalid_or_obsolete`.
+
+schema_version = "tree_sitter_compat_inventory.v1"
+package = "perl-tree-sitter-compat"
+controlling_issue = "#8880"
+migration_owner = "#8889"
+removal_owner = "#8890"
+
+# Digest over the crate's tracked `.rs` and `Cargo.toml` files. A source change
+# invalidates every disposition below and fails the task until they are
+# re-audited. Prose files are excluded so a README edit does not force a
+# re-audit.
+source_digest = "sha256:8808149a51e4a706dea655c3d7c4e015f3653746c3179d2777f62c68444d7590"
+
+# Digest of the external documents that ADJUDICATE these dispositions, as
+# distinct from the crate source they describe. `docs/explanation/
+# TREE_SITTER_COMPATIBILITY.md` names the Tier-A compatibility surface, and the
+# required/unused line below is drawn directly from that list. Editing the
+# Tier-A set changes the reasoning behind several rows while leaving the crate
+# source — and therefore `source_digest` — untouched, so that evidence is bound
+# separately and a change to it fails the task until the affected rows are
+# re-audited.
+authority_digest = "sha256:9f481f0dd02f7b88ec1853059d28eb1fd13033bc0691b56770b6fb50aea03c5a"
+
+# ---------------------------------------------------------------------------
+# Public symbols
+# ---------------------------------------------------------------------------
+
+[[symbols]]
+name = "TreeError"
+module = "convert"
+kind = "enum"
+disposition = "unique_and_required"
+canonical_owner = "#8790"
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::parse_failures_at_different_offsets_differ_by_native_diagnostic"
+migration_dependency = "#8889"
+removal_condition = "Retires when #8790 projects parser-evidence-backed error/missing/recovery state and #8889 moves the offset/kind mapping onto it."
+note = "Maps native ParseError to a compat parse failure carrying offset and kind. No other crate projects native parse failure into a Tree-sitter-shaped error. Its Display and std::error::Error impls migrate with it: they are public behaviour (pinned by convert.rs::tree_error_displays_readably) that this inventory records here rather than as separate rows, because discovery covers declarations, not trait impls — see the boundary note at the head of this file."
+
+[[symbols]]
+name = "parse_to_tree"
+module = "convert"
+kind = "function"
+disposition = "unique_and_required"
+canonical_owner = "#8751"
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::sexp_round_trips_a_realistic_snippet"
+migration_dependency = "#8889"
+removal_condition = "Retires when #8751 constructs the immutable CompatTree from an exact parser snapshot and #8889 repoints callers at it."
+note = "Named by docs/explanation/TREE_SITTER_COMPATIBILITY.md as part of the current Tier-A surface. Entry point that turns Perl source into a Tree-sitter-shaped tree."
+
+[[symbols]]
+name = "to_ts_node"
+module = "convert"
+kind = "function"
+disposition = "unique_and_required"
+canonical_owner = "#8751"
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::nodes_carry_byte_and_point_ranges"
+migration_dependency = "#8889"
+removal_condition = "Retires when #8751 owns native-AST-to-compat-node construction and #8926 geometry supplies the byte/point ranges."
+note = "Named by docs/explanation/TREE_SITTER_COMPATIBILITY.md as part of the current Tier-A surface. Converts one native AST node, carrying byte offsets and UTF-8 points. The fixture exercises it transitively: adapter.rs never imports to_ts_node, but parse_to_tree reaches it for every node, and nodes_carry_byte_and_point_ranges asserts the ranges it produces."
+
+[[symbols]]
+name = "Highlight"
+module = "highlight"
+kind = "struct"
+disposition = "unique_and_required"
+canonical_owner = "#8883"
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::highlights_cover_keywords_variables_and_literals"
+migration_dependency = "#8889"
+removal_condition = "Retires when #8883 versions the canonical highlights query set and #8889 moves capture emission onto it."
+note = "Byte-range plus capture name. The only highlight capture record in the workspace; tree-sitter-perl-rs carries no highlight surface."
+
+[[symbols]]
+name = "capture_for"
+module = "highlight"
+kind = "function"
+disposition = "unique_and_required"
+canonical_owner = "#8883"
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::highlights_cover_keywords_variables_and_literals"
+migration_dependency = "#8889"
+removal_condition = "Retires when #8883 owns the node-kind-to-capture mapping as a query set rather than a match arm."
+note = "Node-kind to capture-name mapping, exercised transitively through highlights. Hand-written today; #8883 replaces it with a canonical query."
+
+[[symbols]]
+name = "highlights"
+module = "highlight"
+kind = "function"
+disposition = "unique_and_required"
+canonical_owner = "#8883"
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::highlights_cover_keywords_variables_and_literals"
+migration_dependency = "#8889"
+removal_condition = "Retires when #8883 executes canonical highlight captures over the compat tree."
+note = "Named by docs/explanation/TREE_SITTER_COMPATIBILITY.md as part of the current Tier-A surface. Walks the tree and emits node-granular captures."
+
+[[symbols]]
+name = "TsNode"
+module = "node"
+kind = "struct"
+disposition = "unique_and_required"
+canonical_owner = "#8803"
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::serializes_to_json"
+migration_dependency = "#8889"
+removal_condition = "Retires when #8803 lands the public Tree/Node/TreeCursor cutover and #8889 moves the serializable shape onto it."
+note = "The owned, serializable compat node. tree-sitter-perl-rs::Node borrows from a live tree and is not Serialize, so this shape is not already provided."
+
+[[symbols]]
+name = "TsNode::child"
+module = "node"
+kind = "method"
+disposition = "already_equivalent"
+canonical_owner = "#8803"
+removal_condition = "Retires with TsNode; no behavior needs porting because tree-sitter-perl-rs::Node::child already exposes the same indexed child navigation."
+note = "tree-sitter-perl-rs/src/lib.rs:688 provides Node::child with the same semantics over the canonical tree representation."
+
+[[symbols]]
+name = "TsNode::child_count"
+module = "node"
+kind = "method"
+disposition = "already_equivalent"
+canonical_owner = "#8803"
+removal_condition = "Retires with TsNode; tree-sitter-perl-rs::Node::child_count already provides it."
+note = "tree-sitter-perl-rs/src/lib.rs:683 provides Node::child_count with the same semantics."
+
+[[symbols]]
+name = "TsNode::descendant_count"
+module = "node"
+kind = "method"
+disposition = "unused"
+note = "Unique to this crate — tree-sitter-perl-rs has no descendant_count — but no consumer links against it and no documented Tier-A claim names it. It does have a crate-local unit test (node.rs::descendant_count_walks_the_subtree), which retires with the crate; what it lacks is a consumer and a product claim, not coverage. Incidental API. If #8803 later needs a subtree size it should derive one from the canonical tree rather than port this."
+
+[[symbols]]
+name = "TsPoint"
+module = "node"
+kind = "struct"
+disposition = "unique_and_required"
+canonical_owner = "#9526"
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::serializes_to_json"
+migration_dependency = "#8889"
+removal_condition = "Retires when #9526 becomes the single Tree-sitter byte/Point/range authority AND that authority carries a serializable point type. Deleting this before then breaks TsNode's derived Serialize."
+note = "The row/UTF-8-column semantics match tree-sitter-perl-rs::Point (src/lib.rs:83), but the shape is not already provided: that crate has no serde dependency at all, and its Point is #[non_exhaustive], so it is neither Serialize nor externally constructible. TsPoint is a field type of TsNode, whose derived Serialize — pinned by serializes_to_json — requires it. Same reasoning as the TsNode row; recording this as already_equivalent would let #8890 delete a serializable point type nothing replaces."
+
+[[symbols]]
+name = "pascal_to_snake"
+module = "node"
+kind = "function"
+disposition = "unique_but_invalid_or_obsolete"
+canonical_owner = "#8708"
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::sexp_round_trips_a_realistic_snippet"
+migration_dependency = "#8889"
+removal_condition = "The implementation must not be carried across — a name transform cannot be the node-kind authority — but the naming behaviour is load-bearing and must not be dropped with it. #8708's generated registry has to produce the kind names first; only then may #8889 repoint to_ts_node at it and #8890 delete this function."
+note = "Derives tree-sitter node-kind names from native NodeKind spelling. The crate's own CLAUDE.md flags this as the seam most likely to silently diverge from real grammars when upstream variants are added, which is precisely why #8708 supersedes the heuristic rather than adopting it. Obsolete as an authority, but not free-standing: convert.rs:92 sets TsNode.kind from it, so the snake_case names pinned by sexp_round_trips_a_realistic_snippet are this function's output. It therefore carries a migration dependency despite being obsolete — deleting it without the registry replacement would silently change required to_ts_node behaviour."
+
+[[symbols]]
+name = "to_sexp"
+module = "sexp"
+kind = "function"
+disposition = "unique_and_required"
+canonical_owner = "#9160"
+fixture = "crates/perl-tree-sitter-compat/tests/adapter.rs::deterministic_across_parses"
+migration_dependency = "#8889"
+removal_condition = "Retires when #9160 cuts the compatibility S-expression output over to the exact CompatTree produced by #8803."
+note = "Named by docs/explanation/TREE_SITTER_COMPATIBILITY.md as part of the current Tier-A surface. Not already equivalent: tree-sitter-perl-rs::Node::to_sexp documents itself at src/lib.rs:675 as a non-normative debug projection and explicitly defers compatibility serialization to this crate."
+
+[[symbols]]
+name = "to_sexp_pretty"
+module = "sexp"
+kind = "function"
+disposition = "unused"
+note = "Indented variant of to_sexp. No consumer links against it and the documented Tier-A surface (TREE_SITTER_COMPATIBILITY.md) names only to_sexp. It has a crate-local unit test (sexp.rs::pretty_indents_children) that retires with the crate, and the crate README does advertise it alongside to_sexp — that README claim is inside the crate being removed and is not a Tier-A product claim, so it does not make the function required. Incidental debug convenience."
+
+# ---------------------------------------------------------------------------
+# References
+# ---------------------------------------------------------------------------
+#
+# Every tracked file that mentions the package or its Rust module path. Zero of
+# them declare a Cargo dependency, so no consumer requires a forwarding shim
+# under #8889's "a temporary forwarding interval exists only when PR-09 proves a
+# real consumer" rule.
+
+[[consumers]]
+path = ".ci/gate-policy.yaml"
+reference_kind = "policy"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The `-p perl-tree-sitter-compat` gate argument is removed when the crate is deleted."
+note = "Builds and tests the crate in a CI gate. This is an operational reference, not a code dependency: it names the package to cargo, nothing links against it."
+
+[[consumers]]
+path = ".ci/policies/agent-context-policy.toml"
+reference_kind = "policy"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The package name is dropped from the tracked-context comment when the crate is deleted."
+note = "Names the crate in a comment listing packages tracked for agent-context coverage."
+
+[[consumers]]
+path = ".spec/11246-clippy-map-err-ignore-boundaries/denominator.csv"
+reference_kind = "documentation"
+disposition = "unused"
+note = "Historical denominator row recorded by the #11246 clippy audit, noting that TreeError::ParseFailed drops parser error position. A record of a past measurement; it needs no edit when the crate is removed."
+
+[[consumers]]
+path = "Cargo.lock"
+reference_kind = "lockfile"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Regenerated when the crate is deleted from the workspace."
+note = "Lockfile entry for the workspace member."
+
+[[consumers]]
+path = "Cargo.toml"
+reference_kind = "workspace_manifest"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The workspace member entry and the workspace.dependencies row are removed when the crate is deleted."
+note = "Declares the crate as a workspace member and publishes a workspace dependency alias. The alias is unused: no member manifest references it."
+
+[[consumers]]
+path = "crates/perl-tree-sitter-compat/CLAUDE.md"
+reference_kind = "own_crate"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Deleted with the crate."
+note = "Package-local owner guidance for the crate itself."
+
+[[consumers]]
+path = "crates/perl-tree-sitter-compat/Cargo.toml"
+reference_kind = "own_crate"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Deleted with the crate."
+note = "The crate's own manifest. Not counted as a Cargo dependent: a package is not a consumer of itself."
+
+[[consumers]]
+path = "crates/perl-tree-sitter-compat/README.md"
+reference_kind = "own_crate"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Deleted with the crate."
+note = "The crate's own README."
+
+[[consumers]]
+path = "crates/perl-tree-sitter-compat/src/lib.rs"
+reference_kind = "own_crate"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Deleted with the crate."
+note = "Crate root declaring the four modules and the eleven root re-exports."
+
+[[consumers]]
+path = "crates/perl-tree-sitter-compat/tests/adapter.rs"
+reference_kind = "own_crate"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8889"
+removal_condition = "Migrates rather than being deleted outright: it is the named fixture for every unique_and_required row above, so #8889 must carry its assertions onto the canonical surface before #8890 removes the file."
+note = "The crate's only test file. Seven tests covering S-expression shape, byte/point ranges, highlight captures, JSON round-trip, determinism, parse-failure discrimination, and error recovery."
+
+[[consumers]]
+path = "crates/perl-workspace-core/CLAUDE.md"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The downstream-consumer sentence is corrected when the crate is deleted."
+note = "Names this crate as perl-workspace-core's only current downstream consumer. That claim is upstream-facing: it describes who uses perl-workspace-core, not who uses this crate."
+
+[[consumers]]
+path = "crates/perl-workspace-core/README.md"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The consumer reference is corrected when the crate is deleted."
+note = "Same upstream-facing claim as the neighbouring CLAUDE.md."
+
+[[consumers]]
+path = "crates/tree-sitter-perl-rs/src/lib.rs"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8803"
+removal_condition = "The deferral comment is resolved when #8803 lands compatibility serialization on the canonical tree."
+note = "A doc comment on Node::to_sexp, not an import: it records that Node::to_sexp is a non-normative debug projection and defers compatibility serialization to this crate under issue 8047. This is the evidence that sexp::to_sexp is not already equivalent."
+
+[[consumers]]
+path = "docs/adr/PLSP-ADR-0006-perl-workspace-core-facts-substrate.md"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The ADR records the crate's retirement when it is deleted."
+note = "The ADR that introduced this adapter as PR 9 of the facts-substrate programme. Normative history; it must record the outcome rather than be edited away."
+
+[[consumers]]
+path = "docs/architecture/repository-topology.md"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Regenerated by `cargo xtask repo-topology` after the package row is removed."
+note = "Generated projection of policy/repository-topology.toml carrying the crate's ownership row."
+
+[[consumers]]
+path = "docs/explanation/TREE_SITTER_COMPATIBILITY.md"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#9171"
+removal_condition = "Reconciled by #9171 when public wording is cut over to the generated compatibility status."
+note = "The public claim surface. Names parse_to_tree, to_ts_node, highlights, and to_sexp as the current Tier-A surface, which is the evidence separating the required rows above from incidental API."
+
+[[consumers]]
+path = "docs/policy/NON_RUST_INVENTORY.md"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Regenerated by `cargo xtask non-rust inventory --write` after the crate's files are deleted."
+note = "Generated tracked-file inventory listing the crate's non-Rust files."
+
+[[consumers]]
+path = "docs/project/status/quality.md"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Regenerated after the crate is deleted."
+note = "Generated quality status table carrying a per-crate row for the package."
+
+[[consumers]]
+path = "docs/reference/CHANGE_SET_SHADOW_PARITY.md"
+reference_kind = "documentation"
+disposition = "unused"
+note = "A recorded parity comparison between two change-set classifiers. The package name appears inside captured reverse-dependency closures from a past observation, not as a live claim; the record needs no edit when the crate is removed."
+
+[[consumers]]
+path = "docs/reference/NATIVE_STACK_POLICY.md"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#9171"
+removal_condition = "Reconciled by #9171 with the rest of the public wording cutover."
+note = "Policy prose describing the native stack and where compatibility output lives."
+
+[[consumers]]
+path = "docs/reviews/3313-deep-review.md"
+reference_kind = "documentation"
+disposition = "unused"
+note = "Historical deep review of PR #3313, which introduced perl-workspace-core and this crate. A dated record of a past review; it needs no edit when the crate is removed."
+
+[[consumers]]
+path = "docs/specs/protocol-type-substrate-matrix.json"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Regenerated by `cargo xtask generate-protocol-type-substrate-matrix` after the crate is deleted."
+note = "Generated substrate matrix carrying a row for the package."
+
+[[consumers]]
+path = "docs/specs/protocol-type-substrate-matrix.md"
+reference_kind = "documentation"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Regenerated alongside its JSON counterpart after the crate is deleted."
+note = "Markdown projection of the substrate matrix."
+
+[[consumers]]
+path = "policy/repository-topology.toml"
+reference_kind = "policy"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The package row is removed when the crate is deleted; #7400 owns the placement question until then."
+note = "Ownership authority row recording placement as pending with migration owner #7400 and a private workspace publish disposition."
+
+[[consumers]]
+path = "policy/ripr-suppressions.toml"
+reference_kind = "policy"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The suppression is deleted when the crate is deleted, or earlier if a production entrypoint consumes it."
+note = "Suppresses reachability analysis on the grounds that the crate is not wired into any production binary. That stated removal criterion is independent evidence for the zero-consumer finding."
+
+[[consumers]]
+path = "xtask/src/main.rs"
+reference_kind = "tooling"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The compat-inventory subcommand is removed when the crate it inventories is deleted."
+note = "Registers the `cargo xtask compat-inventory` subcommand that maintains this ledger."
+
+[[consumers]]
+path = "xtask/src/tasks/check_agent_context.rs"
+reference_kind = "tooling"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The package name is dropped from the tracked-context list when the crate is deleted."
+note = "Names the package in an agent-context coverage list. Operates on the package by name; it does not depend on the crate."
+
+[[consumers]]
+path = "xtask/src/tasks/compat_inventory.rs"
+reference_kind = "tooling"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "Deleted with the crate it inventories, once #8889 and #8890 have consumed the ledger."
+note = "The inventory generator and validator itself. It names the package as data, not as a dependency."

@@ -248,6 +248,8 @@ pub use api::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lint::{KNOWN_FLAGS, LintConfig, check_sections};
+    use anyhow::{Result, ensure};
     use perl_tdd_support::{must, must_some};
     use std::fs;
     use std::path::PathBuf;
@@ -258,6 +260,30 @@ mod tests {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
         path.push(format!("{}_{}.txt", prefix, nanos));
         path
+    }
+
+    fn check_parsed_flags(flags: &[&str]) -> Result<(crate::lint::LintResult, String)> {
+        let path = temp_file("perl_corpus_marker_flags");
+        let contents = format!(
+            "==========================================\nMarker flags\n==========================================\n# @id: marker.flags\n# @flags: {}\ndie \"expected failure\";\n",
+            flags.join(" ")
+        );
+        fs::write(&path, contents)?;
+
+        let sections = parse_file(&path)?;
+        ensure!(sections.len() == 1, "expected one parsed marker section");
+        let expected_flags = flags.iter().map(|flag| (*flag).to_string()).collect::<Vec<_>>();
+        let section =
+            sections.first().ok_or_else(|| anyhow::anyhow!("parsed marker section missing"))?;
+        ensure!(section.flags == expected_flags, "parsed @flags metadata did not match");
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| anyhow::anyhow!("temporary marker path has no file name"))?;
+        let result = check_sections(&sections, &LintConfig::default());
+        fs::remove_file(&path)?;
+
+        Ok((result, file_name))
     }
 
     #[test]
@@ -307,5 +333,42 @@ my $y = 2;
         assert_eq!(tagged_section.tags, vec!["alpha".to_string(), "beta".to_string()]);
         assert_eq!(tagged_section.flags, vec!["parser-sensitive".to_string()]);
         assert_eq!(tagged_section.body, "my $y = 2;");
+    }
+
+    #[test]
+    fn parsed_canonical_marker_flags_reach_check_sections() -> Result<()> {
+        let canonical_flags = ["expected-error", "todo", "wip"];
+        for flag in canonical_flags {
+            ensure!(KNOWN_FLAGS.contains(&flag), "canonical marker flag {flag:?} is missing");
+
+            let (result, _) = check_parsed_flags(&[flag])?;
+            ensure!(
+                result.is_ok(),
+                "canonical marker flag produced lint errors: {:?}",
+                result.errors
+            );
+            ensure!(
+                result.warnings.is_empty(),
+                "canonical marker flag produced warnings: {:?}",
+                result.warnings
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parsed_unknown_marker_neighbour_still_warns() -> Result<()> {
+        let unknown_flag = "expected-errors";
+        let (result, file_name) = check_parsed_flags(&[unknown_flag])?;
+        let expected_warning =
+            format!("Unknown flag '{unknown_flag}' in {file_name}: marker.flags");
+
+        ensure!(result.is_ok(), "unknown flags should remain warnings, not errors");
+        ensure!(
+            result.warnings == vec![expected_warning],
+            "unknown-marker control produced unexpected warnings: {:?}",
+            result.warnings
+        );
+        Ok(())
     }
 }
