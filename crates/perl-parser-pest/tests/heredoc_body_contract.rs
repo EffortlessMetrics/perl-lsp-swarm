@@ -737,32 +737,39 @@ fn when_the_first_body_line_exceeds_the_budget_then_it_is_still_owned_and_report
 
     let scan = perl_parser_pest::heredoc::scan(&source);
     assert_eq!(scan.captures()[0].defect(), Some(HeredocDefect::BodyOverBudget));
+    // No whole line fits the budget, so nothing is materialized — but the bytes
+    // are *dropped*, not handed back to Pest, and the search for the terminator
+    // still ran, so neither the body nor its terminator can reappear as code.
+    assert!(scan.captures()[0].content().is_empty());
+    assert!(scan.captures()[0].terminated(), "the terminator is still found past the budget");
+    assert!(!scan.stripped().contains("aaaa"), "the over-budget body must leave the parsed text");
     assert!(
-        !scan.captures()[0].content().is_empty(),
-        "an over-budget body must still be owned, not handed back to the parser"
+        !scan.stripped().contains("\nEOF\n"),
+        "the terminator must not reappear as code: {:?}",
+        scan.stripped()
     );
-    assert_ne!(scan.stripped(), source, "the truncated body must leave the parsed text");
 }
 
 #[test]
-fn when_a_capture_has_a_defect_then_it_does_not_claim_to_be_terminated() {
-    // `terminated()` must not report true for paths that never sought one.
-    let unbudgeted = {
-        let mut source = String::from("my $x = <<EOF;\n");
-        source.push_str(&"a".repeat(MAX_HEREDOC_BODY_BYTES + 1024));
-        source.push_str("\nEOF\n");
-        source
-    };
-    for source in ["my $x = <<EOF;\nhello\n", "my $x = << EOF;\n", unbudgeted.as_str()] {
+fn when_no_terminator_was_found_then_the_capture_does_not_claim_one() {
+    // `terminated()` reports whether a terminator was actually found, so it must
+    // be false exactly for the paths that find none — a body that ran to end of
+    // input, and a separated bare marker that never looks.
+    for source in ["my $x = <<EOF;\nhello\n", "my $x = << EOF;\n"] {
         let scan = perl_parser_pest::heredoc::scan(source);
         let capture = &scan.captures()[0];
         assert!(capture.defect().is_some(), "fixture must carry a defect: {source:?}");
-        assert!(
-            !capture.terminated(),
-            "a capture with defect {:?} must not report terminated",
-            capture.defect()
-        );
+        assert!(!capture.terminated(), "no terminator exists in {source:?}");
     }
+    // An over-budget body is the discriminating case: it carries a defect, but
+    // its terminator *was* found, so conflating the two would be wrong in the
+    // other direction.
+    let mut over_budget = String::from("my $x = <<EOF;\n");
+    over_budget.push_str(&"a".repeat(MAX_HEREDOC_BODY_BYTES + 1024));
+    over_budget.push_str("\nEOF\n");
+    let scan = perl_parser_pest::heredoc::scan(&over_budget);
+    assert_eq!(scan.captures()[0].defect(), Some(HeredocDefect::BodyOverBudget));
+    assert!(scan.captures()[0].terminated());
 }
 
 // --- `<<~` indentation contract (#14563 review) -----------------------------
@@ -791,4 +798,95 @@ fn when_indented_terminator_is_less_indented_than_body_then_it_terminates() {
         heredoc_contents("my $x = <<~EOF;\n    hi\n  EOF\n"),
         vec![("EOF".to_string(), "  hi\n".to_string())]
     );
+}
+
+// --- Review round 2 ---------------------------------------------------------
+
+#[test]
+fn when_pod_prose_starts_with_a_cut_prefix_then_pod_does_not_end() {
+    // perl: `=cutlass` is prose, not the `=cut` directive — the block runs to
+    // the real `=cut`. A prefix match ended POD early and exposed the rest of
+    // the prose to opener scanning, deleting it.
+    let source =
+        "my $x=1;\n=pod\n\n=cutlass\n\nmy $y = <<EOF;\nhi\nEOF\n\n=cut\nprint \"after\";\n";
+    let scan = perl_parser_pest::heredoc::scan(source);
+    assert!(scan.captures().is_empty(), "POD prose after `=cutlass` must own no body");
+    assert_eq!(scan.stripped(), source, "no POD prose may be removed");
+}
+
+#[test]
+fn when_pod_ends_with_a_real_cut_then_code_resumes() {
+    // The exact-match fix must not make `=cut` unrecognizable.
+    for ending in ["=cut\n", "=cut some trailing prose\n"] {
+        let source = format!("=pod\n\ntext\n\n{ending}\nmy $x = <<EOF;\nbody\nEOF\n");
+        assert_eq!(
+            heredoc_contents(&source),
+            vec![("EOF".to_string(), "body\n".to_string())],
+            "code after {ending:?} must resume"
+        );
+    }
+}
+
+#[test]
+fn when_a_format_body_contains_opener_text_then_no_body_is_owned() {
+    // perl accepts this and the grammar produces no heredoc node; a format
+    // body is picture data terminated by a lone `.`.
+    let source = "format STDOUT =\n<<EOF\n.\nprint \"after\";\n";
+    let scan = perl_parser_pest::heredoc::scan(source);
+    assert!(scan.captures().is_empty(), "a format body must own no body");
+    assert_eq!(scan.stripped(), source, "a format body must not be removed");
+}
+
+#[test]
+fn when_a_format_body_ends_then_a_later_heredoc_is_still_owned() {
+    assert_eq!(
+        heredoc_contents("format STDOUT =\n@<<<\n.\nmy $x = <<EOF;\nbody\nEOF\n"),
+        vec![("EOF".to_string(), "body\n".to_string())],
+        "code after the format terminator must resume"
+    );
+}
+
+#[test]
+fn when_a_body_is_truncated_then_the_rest_of_it_never_reenters_parsing() {
+    // The budget bounds the content this crate materializes, not how far it
+    // looks for the terminator. Abandoning the search left the remaining body
+    // lines and the terminator in the parsed text to be read as code — the
+    // exact loss this contract exists to prevent.
+    let mut source = String::from("my $x = <<EOF;\n");
+    source.push_str(&"a".repeat(MAX_HEREDOC_BODY_BYTES + 1024));
+    source.push_str("\nsentinel body line\nEOF\nprint \"after\";\n");
+
+    let scan = perl_parser_pest::heredoc::scan(&source);
+    assert_eq!(scan.captures()[0].defect(), Some(HeredocDefect::BodyOverBudget));
+    assert!(
+        !scan.stripped().contains("sentinel body line"),
+        "body lines past the budget must be dropped, not parsed as code"
+    );
+    assert!(!scan.stripped().contains("\nEOF\n"), "the terminator must not reappear as code");
+    assert!(scan.stripped().contains("print \"after\""), "code after the heredoc must survive");
+    assert!(
+        scan.diagnostics().iter().any(|d| d.message().contains("dropped rather than parsed")),
+        "the diagnostic must say what happened to the dropped bytes"
+    );
+}
+
+#[test]
+fn filehandle_form_heredocs_are_a_known_grammar_limitation_not_a_scanner_gap() {
+    // perl treats `print $fh <<EOF` as a heredoc, but this crate's grammar does
+    // not admit the filehandle form at all — it produces no heredoc node. The
+    // scanner therefore owns nothing, which is the *safe* direction: owning the
+    // body would remove source the grammar still expects to parse.
+    //
+    // Pinned as a limitation so the boundary is explicit rather than silent. It
+    // belongs to the grammar, not to this contract.
+    for source in
+        ["print $fh <<EOF;\n", "printf $fh <<EOF;\n", "say $fh <<EOF;\n", "print {$fh} <<EOF;\n"]
+    {
+        assert_eq!(grammar_openers(source), 0, "grammar must still not admit {source:?}");
+        assert_eq!(
+            perl_parser_pest::heredoc::scan(source).captures().len(),
+            0,
+            "the scanner must agree with the grammar for {source:?}"
+        );
+    }
 }

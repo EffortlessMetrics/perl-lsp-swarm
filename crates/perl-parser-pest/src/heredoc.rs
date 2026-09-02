@@ -49,8 +49,17 @@
 //! Non-code regions own no openers, and recognizing them needs context the
 //! current line does not carry, so the walk tracks it: comments, strings,
 //! quote-like operators and bare regex literals, runs left open by a previous
-//! line, POD blocks (`=word` through `=cut`), and everything after `__DATA__`
-//! or `__END__`. `<<MARKER`-shaped text in any of them is data.
+//! line, POD blocks (`=word` through a whole-directive `=cut`), `format` bodies
+//! (through a lone `.`), and everything after `__DATA__` or `__END__`.
+//! `<<MARKER`-shaped text in any of them is data.
+//!
+//! Completeness covers the openers the **grammar** recognizes. Perl's
+//! filehandle form, `print $fh <<EOF`, is not among them: this crate's grammar
+//! does not admit it, so the scanner owns nothing there — the safe direction,
+//! since owning it would remove source the grammar still parses. That gap
+//! belongs to the grammar, and
+//! `filehandle_form_heredocs_are_a_known_grammar_limitation_not_a_scanner_gap`
+//! pins it so it stays explicit.
 //!
 //! A terminator line is the marker alone, followed immediately by a line ending
 //! or end of input — a trailing space does *not* terminate, matching Perl. For
@@ -157,6 +166,7 @@ pub struct HeredocCapture {
     opener: SourceRange,
     body: SourceRange,
     defect: Option<HeredocDefect>,
+    terminated: bool,
 }
 
 impl HeredocCapture {
@@ -207,11 +217,12 @@ impl HeredocCapture {
 
     /// Whether a terminator line was actually found.
     ///
-    /// False for every defect: an over-budget body stops before its terminator
-    /// is sought, and a separated bare marker never looks for one.
+    /// Tracked directly rather than inferred from [`Self::defect`]: an
+    /// over-budget body still finds its terminator, and a separated bare marker
+    /// never looks for one.
     #[must_use]
     pub const fn terminated(&self) -> bool {
-        self.defect.is_none()
+        self.terminated
     }
 }
 
@@ -329,7 +340,13 @@ impl<'a> Scanner<'a> {
                 // Everything after the sentinel is data, never code.
                 Region::Data => continue,
                 Region::Pod => {
-                    if content.starts_with("=cut") {
+                    if is_pod_end(content) {
+                        region = Region::Code;
+                    }
+                    continue;
+                }
+                Region::Format => {
+                    if content.trim_end() == "." {
                         region = Region::Code;
                     }
                     continue;
@@ -344,6 +361,10 @@ impl<'a> Scanner<'a> {
                 }
                 if is_pod_start(content) {
                     region = Region::Pod;
+                    continue;
+                }
+                if is_format_start(content) {
+                    region = Region::Format;
                     continue;
                 }
             }
@@ -382,7 +403,13 @@ impl<'a> Scanner<'a> {
         let body_start = lines.get(index).map_or(self.source.len(), |line| line.start);
         let mut cursor = index;
         let mut terminator: Option<usize> = None;
-        let mut over_budget_at: Option<usize> = None;
+        // Last line whose end still fits the byte budget. The budget bounds the
+        // content this crate materializes, not how far it looks for the
+        // terminator: abandoning the search would leave the rest of the body and
+        // its terminator in the parsed text to be read as code, which is the
+        // loss this contract exists to prevent.
+        let mut content_line_end = index;
+        let mut truncated = false;
         // Common indentation of the non-blank body lines seen so far. `<<~`
         // only accepts a terminator whose own indentation is a prefix of it.
         let mut body_indent: Option<&str> = None;
@@ -390,10 +417,6 @@ impl<'a> Scanner<'a> {
 
         while cursor < lines.len() {
             let line = lines[cursor];
-            if line.end.saturating_sub(body_start) > MAX_HEREDOC_BODY_BYTES {
-                over_budget_at = Some(cursor);
-                break;
-            }
             let content = &self.source[line.start..line.content_end];
             if is_terminator_line(
                 content,
@@ -404,6 +427,11 @@ impl<'a> Scanner<'a> {
             ) {
                 terminator = Some(cursor);
                 break;
+            }
+            if line.end.saturating_sub(body_start) > MAX_HEREDOC_BODY_BYTES {
+                truncated = true;
+            } else {
+                content_line_end = cursor + 1;
             }
             let indent = leading_horizontal_whitespace(content);
             if indent.len() != content.len() {
@@ -416,15 +444,12 @@ impl<'a> Scanner<'a> {
             cursor += 1;
         }
 
-        // An over-budget body is owned through the line that crossed the
-        // budget. Stopping at its start would leave the whole oversized body in
-        // the parsed text while the diagnostic claimed it was truncated.
-        let body_line_end = match (terminator, over_budget_at) {
-            (Some(line_index), _) => line_index,
-            (None, Some(line_index)) => line_index.saturating_add(1).min(lines.len()),
-            (None, None) => lines.len(),
-        };
-        let content_end = lines.get(body_line_end).map_or(self.source.len(), |line| line.start);
+        // Body lines end at the terminator, or at end of input without one.
+        let body_line_end = terminator.unwrap_or(lines.len());
+        if !truncated {
+            content_line_end = body_line_end;
+        }
+        let content_end = lines.get(content_line_end).map_or(self.source.len(), |line| line.start);
         let raw_body = self.source.get(body_start..content_end).unwrap_or_default();
 
         let indent = terminator
@@ -434,10 +459,13 @@ impl<'a> Scanner<'a> {
             .unwrap_or("");
         let content = strip_body_indent(raw_body, indent);
 
-        // The removed span covers the body and, when present, the terminator line.
-        let removed_end = terminator
-            .and_then(|line_index| lines.get(line_index))
-            .map_or(content_end, |line| line.end);
+        // The removed span always covers the whole body and, when present, the
+        // terminator line — including bytes past the budget, which are dropped
+        // rather than materialized or handed back to the parser.
+        let removed_end = terminator.and_then(|line_index| lines.get(line_index)).map_or_else(
+            || lines.get(body_line_end).map_or(self.source.len(), |line| line.start),
+            |line| line.end,
+        );
         let resume = match terminator {
             Some(line_index) => line_index + 1,
             None => body_line_end,
@@ -448,42 +476,39 @@ impl<'a> Scanner<'a> {
             return resume;
         };
 
-        let defect = if terminator.is_some() {
-            None
-        } else if over_budget_at.is_some() {
-            Some(HeredocDefect::BodyOverBudget)
-        } else {
-            Some(HeredocDefect::MissingTerminator)
-        };
-
-        match defect {
-            None => {}
-            Some(HeredocDefect::BodyOverBudget) => {
-                self.record_defect(
-                    body_range,
-                    ParseDiagnosticKind::SkippedSource,
-                    RecoveryAction::Skip,
-                    format!(
-                        "heredoc `{}` body exceeds the {MAX_HEREDOC_BODY_BYTES}-byte budget; \
-                         it was truncated at the end of the line that crossed the budget \
-                         and its terminator was not sought",
-                        opener.marker
-                    ),
-                );
-            }
-            Some(_) => {
-                self.record_defect(
-                    body_range,
-                    ParseDiagnosticKind::RecoveredFragment,
-                    RecoveryAction::ResumeAfter,
-                    format!(
-                        "heredoc `{}` has no terminator line; the remainder of the source \
-                         was taken as its body",
-                        opener.marker
-                    ),
-                );
-            }
+        if truncated {
+            self.record_defect(
+                body_range,
+                ParseDiagnosticKind::SkippedSource,
+                RecoveryAction::Skip,
+                format!(
+                    "heredoc `{}` body exceeds the {MAX_HEREDOC_BODY_BYTES}-byte budget; \
+                     the content stops at the last line within budget and the remaining \
+                     body bytes were dropped rather than parsed as code",
+                    opener.marker
+                ),
+            );
         }
+        if terminator.is_none() {
+            self.record_defect(
+                body_range,
+                ParseDiagnosticKind::RecoveredFragment,
+                RecoveryAction::ResumeAfter,
+                format!(
+                    "heredoc `{}` has no terminator line; the remainder of the source \
+                     was taken as its body",
+                    opener.marker
+                ),
+            );
+        }
+
+        let defect = if truncated {
+            Some(HeredocDefect::BodyOverBudget)
+        } else if terminator.is_none() {
+            Some(HeredocDefect::MissingTerminator)
+        } else {
+            None
+        };
 
         self.captures.push(HeredocCapture {
             marker: opener.marker,
@@ -493,10 +518,9 @@ impl<'a> Scanner<'a> {
             opener: opener.opener,
             body: body_range,
             defect,
+            terminated: terminator.is_some(),
         });
 
-        // Everything up to `removed_end` leaves the parsed source. When the body
-        // ran over budget the remainder is still parsed, so resume there.
         resume
     }
 
@@ -523,6 +547,7 @@ impl<'a> Scanner<'a> {
             opener: opener.opener,
             body: opener.opener,
             defect: Some(HeredocDefect::SeparatedBareMarker),
+            terminated: false,
         });
     }
 
@@ -677,6 +702,8 @@ enum Region {
     Code,
     /// A POD block, from `=word` to `=cut`.
     Pod,
+    /// A `format NAME =` body, up to a line holding only `.`.
+    Format,
     /// After `__DATA__` or `__END__`; never code again.
     Data,
 }
@@ -698,7 +725,30 @@ fn is_data_sentinel(line: &str) -> bool {
 /// POD starts at a line beginning `=` followed by an identifier, except `=cut`.
 fn is_pod_start(line: &str) -> bool {
     line.strip_prefix('=').is_some_and(|rest| rest.starts_with(|ch: char| ch.is_ascii_alphabetic()))
-        && !line.starts_with("=cut")
+        && !is_pod_end(line)
+}
+
+/// POD ends at `=cut` as a whole directive.
+///
+/// A prefix match would end POD at prose like `=cutlass` and expose the rest of
+/// the block to opener scanning.
+fn is_pod_end(line: &str) -> bool {
+    line.strip_prefix("=cut").is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
+}
+
+/// A `format` declaration opens a picture-line body terminated by a lone `.`.
+///
+/// Its body is data to Perl, and this crate's grammar does not admit a heredoc
+/// inside it, so scanning it for openers would delete real source.
+fn is_format_start(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(rest) = trimmed.strip_prefix("format") else {
+        return false;
+    };
+    if !rest.starts_with([' ', '\t', '=']) {
+        return false;
+    }
+    rest.trim_end().ends_with('=')
 }
 
 /// Find every heredoc opener on one physical line.
