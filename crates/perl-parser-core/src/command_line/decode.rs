@@ -16,6 +16,10 @@ use super::model::{
 /// numeric form and is accepted instead.
 const UNICODE_OPTION_LETTERS: &str = "aioADEILOS";
 
+/// The largest numeric `-C` value perl defines. `perl -C511` runs and
+/// `perl -C512` reports `Unknown Unicode option value 512`.
+const UNICODE_OPTION_VALUE_MAX: u32 = 511;
+
 /// Decode an already-tokenized Perl invocation.
 ///
 /// `lead` says whether `argv[0]` is the interpreter; it is a caller declaration
@@ -493,20 +497,55 @@ fn check_unicode_options(value: &str, span: ArgvSpan) -> Result<(), InvocationDe
     // The two forms never mix: `-C7a`, `-CS7` and `-Ca7` are all rejected, each
     // naming the first character that does not belong to the form already
     // started.
-    let numeric = value.starts_with(|character: char| character.is_ascii_digit());
+    if value.starts_with(|character: char| character.is_ascii_digit()) {
+        return check_unicode_option_number(value, span);
+    }
     for (offset, character) in value.char_indices() {
-        let accepted = if numeric {
-            character.is_ascii_digit()
-        } else {
-            UNICODE_OPTION_LETTERS.contains(character)
-        };
-        if !accepted {
+        if !UNICODE_OPTION_LETTERS.contains(character) {
             let start = span.start + offset;
             return Err(InvocationDecodeError::UnknownUnicodeOption {
                 character,
                 span: ArgvSpan::new(span.argument_index, start, start + character.len_utf8()),
             });
         }
+    }
+    Ok(())
+}
+
+/// Check the numeric `-C` form.
+///
+/// Perl refuses a number it cannot read at all — `perl -C0777` and `perl -C007`
+/// both report `Invalid number ... for -C option`, because a leading zero is not
+/// an octal escape here but a malformed decimal — and separately refuses a
+/// readable number that sets bits it does not define, as `perl -C512` reports
+/// `Unknown Unicode option value 512`.
+fn check_unicode_option_number(value: &str, span: ArgvSpan) -> Result<(), InvocationDecodeError> {
+    let malformed =
+        || InvocationDecodeError::MalformedUnicodeOptionNumber { value: value.to_owned(), span };
+    if !value.chars().all(|character| character.is_ascii_digit()) {
+        // A digit-led value that is not all digits is a letter error, and perl
+        // names the letter rather than the number.
+        for (offset, character) in value.char_indices() {
+            if !character.is_ascii_digit() {
+                let start = span.start + offset;
+                return Err(InvocationDecodeError::UnknownUnicodeOption {
+                    character,
+                    span: ArgvSpan::new(span.argument_index, start, start + character.len_utf8()),
+                });
+            }
+        }
+    }
+    if value.len() > 1 && value.starts_with('0') {
+        return Err(malformed());
+    }
+    let Ok(number) = value.parse::<u32>() else {
+        return Err(malformed());
+    };
+    if number > UNICODE_OPTION_VALUE_MAX {
+        return Err(InvocationDecodeError::UnsupportedUnicodeOptionValue {
+            value: value.to_owned(),
+            span,
+        });
     }
     Ok(())
 }
@@ -528,7 +567,7 @@ fn take_record_separator_digits(
     letter_span: ArgvSpan,
 ) -> (Option<RecordSeparatorDigits>, ArgvSpan) {
     let remaining = cluster.remaining();
-    let hexadecimal = remaining.strip_prefix(['x', 'X']).is_some_and(|after| {
+    let hexadecimal = remaining.strip_prefix('x').is_some_and(|after| {
         !after.is_empty() && after.chars().all(|character| character.is_ascii_hexdigit())
     });
 
@@ -607,15 +646,28 @@ fn decode_module_spec(
 ///
 /// Perl compiles `use <text>;` whatever `text` is, so this classifies rather
 /// than validates: a false answer means the argument is arbitrary code.
+///
+/// Only the *first* component carries an identifier-start rule. Perl loads
+/// `Foo::1` and `Foo::1Bar` happily, and even `Foo::` (as `Foo/.pm`), while
+/// `1Foo` is a syntax error and `::Foo` is refused outright. Applying the
+/// identifier rule to every component would report ordinary module names as
+/// arbitrary code, which is the false positive this classification cannot
+/// afford: the flag exists to mark real code injection such as
+/// `-M'strict;print 99'`.
 fn is_plain_module_name(text: &str) -> bool {
-    !text.is_empty()
-        && text.split("::").all(|segment| {
-            let mut characters = segment.chars();
-            match characters.next() {
-                Some(first) if first.is_alphabetic() || first == '_' => {
-                    characters.all(|character| character.is_alphanumeric() || character == '_')
-                }
-                _ => false,
-            }
-        })
+    let mut components = text.split("::");
+    let Some(first) = components.next() else {
+        return false;
+    };
+    let mut characters = first.chars();
+    let leads = matches!(characters.next(), Some(c) if c.is_alphabetic() || c == '_');
+    if !leads || !characters.all(is_name_character) {
+        return false;
+    }
+    components.all(|component| component.chars().all(is_name_character))
+}
+
+/// A character Perl accepts inside a package-name component.
+fn is_name_character(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
 }
