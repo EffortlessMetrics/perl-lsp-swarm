@@ -210,6 +210,26 @@ fn duplicate_identical_occurrence_is_not_covered_by_one_claim() {
 }
 
 #[test]
+fn repeated_tokens_on_one_line_require_repeated_hash_claims() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let line = "cargo xtask perl-kwalitee and perl-kwalitee report";
+    write(&dir, "ci/nightly.sh", &format!("{line}\n")).expect("write repeated caller");
+    let ledger = format!(
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n{}",
+        entry("ci/nightly.sh", "release_readiness", "independent_readiness_rails", &[line]),
+    );
+    write(&dir, "policy/kwalitee-namespace-inventory.toml", &ledger).expect("write ledger");
+    let output = inventory(dir.path()).arg("--check").output().expect("run inventory");
+    assert!(!output.status.success(), "one hash must not cover two same-line tokens");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unclassified duplicate occurrence")
+            || stderr.contains("occurrence(s) on disk"),
+        "failure must identify the repeated token count: {stderr}"
+    );
+}
+
+#[test]
 fn one_occurrence_cannot_carry_two_classifications() {
     let dir = classified_tree().expect("fixture tree");
     let ledger_path = dir.path().join("policy/kwalitee-namespace-inventory.toml");
@@ -268,6 +288,36 @@ fn broad_exclusions_are_rejected_before_scanning() {
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("too broad"),
         "failure should identify broad exclusion: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_file_and_directory_are_rejected_without_escape_or_cycles() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let outside = tempfile::tempdir().expect("outside tempdir");
+    write(&outside, "escaped.md", &format!("{CALLER_LINE}\n")).expect("write outside file");
+    symlink(outside.path().join("escaped.md"), dir.path().join("linked.md"))
+        .expect("link outside file");
+    let output = inventory(dir.path()).arg("--check").output().expect("run inventory");
+    assert!(!output.status.success(), "escaping file links must fail closed");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("symlinked inventory path"),
+        "failure must identify the unsupported link: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let dir = tempfile::tempdir().expect("cycle tree");
+    fs::create_dir(dir.path().join("nested")).expect("nested directory");
+    symlink(dir.path(), dir.path().join("nested/cycle")).expect("link cycle");
+    let output = inventory(dir.path()).arg("--check").output().expect("run cycle inventory");
+    assert!(!output.status.success(), "directory cycles must fail closed");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("symlinked inventory path"),
+        "cycle failure must identify the unsupported link: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

@@ -174,9 +174,6 @@ fn walk(
             Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
             Err(_) => bail!("walked path {} escapes root {}", path.display(), root.display()),
         };
-        if surface_excluded(&name, &rel, excluded) {
-            continue;
-        }
         // `DirEntry::metadata` follows links.  That is unsafe for an
         // inventory rooted at `root`: a linked directory can escape the
         // selected tree (and a link cycle can recurse forever).  Refuse
@@ -185,6 +182,13 @@ fn walk(
             .with_context(|| format!("stat {}", path.display()))?;
         if meta.file_type().is_symlink() {
             bail!("symlinked inventory path is not supported: {rel}");
+        }
+        // Bare component exclusions identify root-level cache/worktree
+        // directories, not files.  Inspect metadata before applying them so
+        // a file with a cache-like name cannot hide a reference, and so links
+        // are rejected even when their name matches an exclusion.
+        if surface_excluded(&name, &rel, excluded, meta.is_dir()) {
+            continue;
         }
         if meta.is_dir() {
             walk(root, &path, excluded, found)?;
@@ -203,12 +207,15 @@ fn walk(
 /// patterns such as `.wt-*`).  Component patterns are deliberately not
 /// applied at arbitrary depth: a tracked directory named `node_modules` or
 /// `.wt-*` below `crates/` is repository content, not a claim worktree/cache.
-fn surface_excluded(_component: &str, rel: &str, excluded: &[&str]) -> bool {
+fn surface_excluded(_component: &str, rel: &str, excluded: &[&str], is_dir: bool) -> bool {
     excluded.iter().any(|pattern| {
         if pattern.contains('/') {
             let prefix = pattern.trim_end_matches('*').trim_end_matches('/');
             rel == prefix || rel.starts_with(&format!("{prefix}/"))
         } else {
+            if !is_dir {
+                return false;
+            }
             // Bare component exclusions are root-relative. Match the first
             // relative component so descendants of an excluded root are
             // skipped, while a same-named directory below `crates/` remains
