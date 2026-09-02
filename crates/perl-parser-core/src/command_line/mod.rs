@@ -48,9 +48,10 @@
 //! - those digit runs are bounded exactly as perl bounds them — three digits
 //!   after `-0`, and `3 + (first == '0')` after `-l` — so `-l0123` is one value
 //!   while `-l1234` is `-l123` followed by an unrecognized `-4`;
-//! - `-0x` is a hexadecimal separator only when the marker is followed by hex
-//!   digits all the way to the end of the cluster; `-0x41n` is `-0` and then
-//!   `-x` with the value `41n`;
+//! - `-0x` is a hexadecimal separator only when the lowercase marker is
+//!   followed by hex digits all the way to the end of the cluster; `-0x41n` is
+//!   `-0` and then `-x` with the value `41n`, and `-0X41` is `-0 -X` and then
+//!   an unrecognized `-41`;
 //! - `-V` and `-d` take an attached value only in their `:` form, so `-Vfoo` is
 //!   `-V -f` and then an unrecognized `o`, and `-dx` is `-d` then `-x`;
 //! - `-C` accepts a decimal count or the option letters `aioADEILOS`, never a

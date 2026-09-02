@@ -127,7 +127,8 @@ pub struct ModuleSpec {
 pub enum RecordSeparatorDigits {
     /// `-0<octal>`, such as `-0777`.
     Octal(String),
-    /// `-0x<hex>`, such as `-0x41`.
+    /// `-0x<hex>`, such as `-0x41`. Only lowercase `x` marks this form:
+    /// `perl -0X41` reports `Unrecognized switch: -41`.
     Hex(String),
 }
 
@@ -440,6 +441,25 @@ pub enum InvocationDecodeError {
         /// The first character Perl would reject.
         character: char,
         /// Where that character is.
+        span: ArgvSpan,
+    },
+    /// `-C` was given a number Perl will not read, such as one with a leading
+    /// zero or one too large to fit. Perl reports
+    /// `Invalid number '<value>' for -C option.`
+    #[error("`-C` cannot read the number `{value}` in argument {}", span.argument_index)]
+    MalformedUnicodeOptionNumber {
+        /// The digits as written.
+        value: String,
+        /// Where they are.
+        span: ArgvSpan,
+    },
+    /// `-C` was given a number that sets bits Perl does not define. Perl reports
+    /// `Unknown Unicode option value <n>.`
+    #[error("`-C` does not define the value `{value}` in argument {}", span.argument_index)]
+    UnsupportedUnicodeOptionValue {
+        /// The digits as written.
+        value: String,
+        /// Where they are.
         span: ArgvSpan,
     },
 }

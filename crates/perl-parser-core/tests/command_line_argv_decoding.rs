@@ -434,6 +434,34 @@ fn unicode_option_values_perl_rejects_are_refused() {
         perl_error(&["-C7S", "-e", "print"]),
         InvocationDecodeError::UnknownUnicodeOption { character: 'S', .. }
     ));
+
+    // The numeric form has its own two refusals, which perl reports separately:
+    // `Invalid number '0777' for -C option` (a leading zero is a malformed
+    // decimal here, not an octal escape) and `Unknown Unicode option value 512`.
+    for malformed in ["-C0777", "-C007", "-C99999999999"] {
+        assert!(
+            matches!(
+                perl_error(&[malformed, "-e", "print"]),
+                InvocationDecodeError::MalformedUnicodeOptionNumber { .. }
+            ),
+            "{malformed} should be refused as an unreadable number"
+        );
+    }
+    for unsupported in ["-C512", "-C1023"] {
+        assert!(
+            matches!(
+                perl_error(&[unsupported, "-e", "print"]),
+                InvocationDecodeError::UnsupportedUnicodeOptionValue { .. }
+            ),
+            "{unsupported} sets bits perl does not define"
+        );
+    }
+    // 511 is the largest value perl defines, and `-C0` is the one legal
+    // leading zero.
+    for accepted in ["-C511", "-C0", "-C500"] {
+        let invocation = perl(&[accepted, "-e", "print"]);
+        assert_eq!(neutral(&invocation), vec![NeutralSwitch::UnicodeFlags], "{accepted}");
+    }
 }
 
 // ---- record separator radix -------------------------------------------
@@ -468,6 +496,14 @@ fn hexadecimal_record_separators_need_the_marker_and_a_digit() {
         "`n` inside the -x value is not a read loop"
     );
 
+    // Only lowercase `x` marks the hexadecimal form. `perl -0X41` reports
+    // `Unrecognized switch: -41`, because `X` is the -X switch and `41` is then
+    // read as switches.
+    assert!(matches!(
+        perl_error(&["-0X41", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: '4', .. }
+    ));
+
     // Long hex runs are not capped the way octal is.
     let long_hex = perl(&["-0x000041", "-e", "print"]);
     assert_eq!(
@@ -485,13 +521,15 @@ fn uppercase_hex_marker_is_not_accepted_and_numeric_module_components_are_plain(
         InvocationDecodeError::UnrecognizedSwitch { switch: '4', .. }
     ));
 
-    let numeric_component = perl(&["-MFoo::1", "-e", "print"]);
-    let ContextFactKind::ModuleImport { spec, .. } = &numeric_component.context_facts[0].kind
-    else {
-        panic!("expected a module import");
-    };
-    assert!(spec.module_is_plain_name);
-    assert!(numeric_component.ambiguities.is_empty());
+    for module in ["Foo::1", "Foo::1::2"] {
+        let argument = format!("-M{module}");
+        let invocation = perl(&[argument.as_str(), "-e", "print"]);
+        let ContextFactKind::ModuleImport { spec, .. } = &invocation.context_facts[0].kind else {
+            panic!("expected a module import");
+        };
+        assert!(spec.module_is_plain_name, "{module} is a valid module name");
+        assert!(invocation.ambiguities.is_empty());
+    }
 }
 
 #[test]
@@ -648,8 +686,23 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
         vec![AmbiguityKind::ModuleExpressionIsNotAModuleName]
     );
 
-    // And a plain dotted-looking name is still not plain.
-    for opaque in ["Foo::", "::Foo", "1Foo", "Foo-Bar", "Foo::٢"] {
+    // Only the first component carries an identifier-start rule. perl loads
+    // `Foo::1` and even `Foo::` (as `Foo/.pm`), so reporting those as arbitrary
+    // code would be a false positive on ordinary module names — the failure
+    // mode this flag can least afford, since consumers use it to spot injection.
+    for plain in ["Foo::1", "Foo::1Bar", "Foo::_x", "_Foo", "Foo9", "Foo::Bar::9", "Foo::"] {
+        let argv = format!("-M{plain}");
+        let invocation = perl(&[argv.as_str(), "-e", "print"]);
+        let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
+            panic!("expected a module import");
+        };
+        assert!(spec.module_is_plain_name, "perl loads {plain:?} as a module");
+        assert!(invocation.ambiguities.is_empty(), "{plain:?} raised a false ambiguity");
+    }
+
+    // `perl -M::Foo` is refused outright, `1Foo` is a syntax error, and
+    // `Foo-Bar` compiles as an expression (`use Foo` minus `Bar`).
+    for opaque in ["::Foo", "1Foo", "Foo-Bar", "Foo::٢"] {
         let argv = format!("-M{opaque}");
         let invocation = perl(&[argv.as_str(), "-e", "print"]);
         let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
