@@ -293,7 +293,6 @@ export class HealthWidgetDataSource {
       if (this.disposed || generation !== this.fileCountGeneration) {
         return;
       }
-      this.fileCountPromise = undefined;
       // A failed replacement scan is unavailable, not the prior exact count.
       this.widget.setFileCount(undefined);
     }

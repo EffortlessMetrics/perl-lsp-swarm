@@ -9,6 +9,12 @@ import type { LanguagesTelemetry, WorkspaceTelemetry } from '../healthWidgetData
 import type { ThemeColor } from 'vscode';
 import type { Diagnostic, Disposable, StatusBarItem, Uri } from 'vscode';
 
+interface TestFileSystemWatcher extends Disposable {
+  onDidCreate(listener: (uri: Uri) => void): Disposable;
+  onDidChange(listener: (uri: Uri) => void): Disposable;
+  onDidDelete(listener: (uri: Uri) => void): Disposable;
+}
+
 function makeStatusBarItem(): StatusBarItem {
   return {
     text: '',
@@ -61,6 +67,7 @@ function makeLanguages(initial: Array<[Uri, Diagnostic[]]>): TestLanguages {
 interface TestWorkspace extends WorkspaceTelemetry {
   calls: Array<{ include: string; maxResults: number | undefined }>;
   fireCreate(files?: readonly Uri[]): void;
+  fireExternalCreate(file?: Uri): void;
   setFileCounts(next: number[]): void;
 }
 
@@ -68,6 +75,7 @@ function makeWorkspace(initialFileCounts: number[]): TestWorkspace {
   const calls: Array<{ include: string; maxResults: number | undefined }> = [];
   let fileCounts = [...initialFileCounts];
   let createListener: ((event: { files: readonly Uri[] }) => void) | undefined;
+  let externalCreateListener: ((uri: Uri) => void) | undefined;
   return {
     findFiles(include: string, _exclude?: string | null, maxResults?: number): Thenable<Uri[]> {
       calls.push({ include, maxResults });
@@ -86,9 +94,31 @@ function makeWorkspace(initialFileCounts: number[]): TestWorkspace {
         },
       };
     },
+    createFileSystemWatcher(): TestFileSystemWatcher {
+      return {
+        onDidCreate(listener): Disposable {
+          externalCreateListener = listener;
+          return {
+            dispose: () => {
+              externalCreateListener = undefined;
+            },
+          };
+        },
+        onDidChange(): Disposable {
+          return { dispose: () => {} };
+        },
+        onDidDelete(): Disposable {
+          return { dispose: () => {} };
+        },
+        dispose(): void {},
+      };
+    },
     calls,
     fireCreate(files = [uri('/ws/new.pm')]): void {
       createListener?.({ files });
+    },
+    fireExternalCreate(file = uri('/ws/external.pm')): void {
+      externalCreateListener?.(file);
     },
     setFileCounts(next: number[]): void {
       fileCounts = [...next];
@@ -247,6 +277,89 @@ describe('HealthWidgetDataSource — bounded file count', () => {
     source.dispose();
   });
 
+  test('an external filesystem create invalidates the cached count', async () => {
+    const item = makeStatusBarItem();
+    const widget = new HealthWidget(item);
+    widget.onStateChange(ClientState.Running);
+    const workspace = makeWorkspace([1, 0, 0, 0, 0]);
+    const source = new HealthWidgetDataSource(widget, makeLanguages([]), workspace);
+
+    source.start();
+    await source.refreshFileCount();
+    expect(widget.fileCount).toBe(1);
+
+    workspace.setFileCounts([2, 0, 0, 0, 0]);
+    workspace.fireExternalCreate();
+    await source.refreshFileCount();
+
+    expect(widget.fileCount).toBe(2);
+    expect(workspace.calls).toHaveLength(10);
+    source.dispose();
+  });
+
+  test('repeated external events keep at most one scan active and queue one replacement', async () => {
+    const item = makeStatusBarItem();
+    const widget = new HealthWidget(item);
+    widget.onStateChange(ClientState.Running);
+    const pending: Array<(uris: Uri[]) => void> = [];
+    let active = 0;
+    let maxActive = 0;
+    let calls = 0;
+    const workspace: TestWorkspace = {
+      calls: [],
+      findFiles: () => {
+        calls += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        return new Promise<Uri[]>((resolve) => {
+          pending.push((uris) => {
+            active -= 1;
+            resolve(uris);
+          });
+        });
+      },
+      createFileSystemWatcher(): TestFileSystemWatcher {
+        return {
+          onDidCreate(listener): Disposable {
+            (
+              workspace as TestWorkspace & { fireExternalCreate: (file?: Uri) => void }
+            ).fireExternalCreate = (file = uri('/ws/external.pm')) => listener(file);
+            return { dispose: () => {} };
+          },
+          onDidChange: () => ({ dispose: () => {} }),
+          onDidDelete: () => ({ dispose: () => {} }),
+          dispose: () => {},
+        };
+      },
+      fireCreate: () => {},
+      fireExternalCreate: () => {},
+      setFileCounts: () => {},
+    };
+    const source = new HealthWidgetDataSource(widget, makeLanguages([]), workspace);
+
+    source.start();
+    expect(calls).toBe(1);
+    for (let index = 0; index < 20; index += 1) {
+      workspace.fireExternalCreate();
+    }
+    expect(calls).toBe(1);
+    expect(maxActive).toBe(1);
+
+    pending.shift()?.([]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toBe(2);
+    expect(maxActive).toBe(1);
+
+    for (let index = 0; index < 5; index += 1) {
+      pending.shift()?.([]);
+      await Promise.resolve();
+    }
+    await source.refreshFileCount();
+    expect(maxActive).toBe(1);
+    source.dispose();
+  });
+
   test('a failed replacement scan clears the prior exact-looking count', async () => {
     const item = makeStatusBarItem();
     const widget = new HealthWidget(item);
@@ -272,7 +385,6 @@ describe('HealthWidgetDataSource — bounded file count', () => {
     expect(widget.fileCount).toBe(0);
 
     fail = true;
-    createListener?.();
     await source.refreshFileCount();
 
     expect(widget.fileCount).toBeUndefined();
