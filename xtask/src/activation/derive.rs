@@ -862,10 +862,12 @@ mod tests {
         assert!(write(
             &root,
             "crates/demo/Cargo.toml",
-            "[package]\nname = \"demo\"\nbench = \"not-an-array\"\n"
+            "bench = \"not-an-array\"\n\n[package]\nname = \"demo\"\n"
         ));
-        let message =
-            derive_benches(&root).expect_err("wrong-shaped bench data must fail").to_string();
+        let message = match derive_benches(&root) {
+            Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
+            Err(error) => error.to_string(),
+        };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("`bench` must be an array"), "{message}");
     }
@@ -876,11 +878,12 @@ mod tests {
         assert!(write(
             &root,
             "crates/demo/Cargo.toml",
-            "[package]\nname = \"demo\"\nfeatures = [\"test-api\"]\n"
+            "features = [\"test-api\"]\n\n[package]\nname = \"demo\"\n"
         ));
-        let message = derive_test_features(&root)
-            .expect_err("wrong-shaped feature data must fail")
-            .to_string();
+        let message = match derive_test_features(&root) {
+            Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
+            Err(error) => error.to_string(),
+        };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("`features` must be a table"), "{message}");
     }
@@ -893,9 +896,10 @@ mod tests {
             "crates/demo/Cargo.toml",
             "[package]\nname = \"demo\"\n[features]\ntest-api = \"not-an-array\"\n"
         ));
-        let message = derive_test_features(&root)
-            .expect_err("wrong-shaped feature entry must fail")
-            .to_string();
+        let message = match derive_test_features(&root) {
+            Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
+            Err(error) => error.to_string(),
+        };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("feature `test-api` must be an array"), "{message}");
     }
