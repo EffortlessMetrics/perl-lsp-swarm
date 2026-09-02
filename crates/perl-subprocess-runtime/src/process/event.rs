@@ -101,12 +101,33 @@ impl ProcessEventKind {
                 | TerminationPhase::GroupReaped,
             ) => Some(EventAdmissionError::ChildTerminationBeforeStart),
             Self::Terminal(disposition) => {
-                if disposition.establishes_child_settlement()
-                    || matches!(disposition, TerminalDisposition::CancelledRunning(_))
-                {
-                    Some(EventAdmissionError::ChildSettlementBeforeStart)
-                } else {
-                    None
+                // Exhaustive on purpose. Listing what is *allowed* before a
+                // start, rather than what is refused, means a new terminal
+                // variant has to be classified here instead of defaulting to
+                // admissible — which is how this rule kept shipping
+                // half-applied.
+                match disposition {
+                    // Outcomes of a run that never began.
+                    TerminalDisposition::SpawnRejected(_)
+                    | TerminalDisposition::SpawnFailed { .. }
+                    | TerminalDisposition::CancelledBeforeStart(_)
+                    | TerminalDisposition::UnsupportedBackend
+                    | TerminalDisposition::StaleOrUnauthorized(_)
+                    // A supervisor can fail, and a deadline can elapse, before
+                    // a spawn ever completes; neither asserts a child ran.
+                    | TerminalDisposition::SupervisorFailed
+                    | TerminalDisposition::TimedOut
+                    | TerminalDisposition::NotProven => None,
+                    // Each of these presupposes a child: its own exit or
+                    // signal, a cancellation while running, output that
+                    // reached a budget, or cleanup of work that started.
+                    TerminalDisposition::CompletedExit { .. }
+                    | TerminalDisposition::Signaled { .. }
+                    | TerminalDisposition::CancelledRunning(_)
+                    | TerminalDisposition::OutputLimitExceeded
+                    | TerminalDisposition::CleanupFailed => {
+                        Some(EventAdmissionError::ChildSettlementBeforeStart)
+                    }
                 }
             }
         }

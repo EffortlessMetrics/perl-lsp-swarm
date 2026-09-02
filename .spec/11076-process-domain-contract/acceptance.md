@@ -714,3 +714,49 @@ mapping to control flags that #11076 does not specify.
 Two findings this round *did* meet the bar and were fixed: one finished a rule
 left half-done, the other corrected a claim. That is the line, and it was set
 before this round's findings arrived, not after seeing them.
+
+### Fifteenth external round (Devin, `0195714`) — three defects from one commit
+
+All three findings are consequences of the previous round's single commit.
+
+| Finding | Disposition | Mutation replay |
+|---|---|---|
+| `supervisor_failure` accepted public stream evidence without running `check_stream`, and derived limitations from `None` rather than the streams it stored | **Fixed** — incoherent evidence is dropped, limitations derive from what is stored | KILLED |
+| a missing fingerprint was accepted even when retention was unbounded, so a result could claim complete output with no content identity | **Fixed** — `AvailableContentLacksIdentity` | KILLED |
+| `OutputLimitExceeded` and `CleanupFailed` were admissible before a start | **Fixed** — the terminal match is now exhaustive | KILLED |
+
+The first two are the cost of the round-17 change, and they are the same
+mistake in two directions. Widening `supervisor_failure` to take stream
+evidence turned an infallible constructor into an unchecked publication
+channel: *being unable to fail is not a licence to publish evidence nothing
+checked*. It now drops incoherent evidence rather than propagating it, and
+derives limitations from the streams it actually stores.
+
+Making `observed_fingerprint` optional opened the matching hole. `None` was
+meant to say "the supervisor could not establish the identity", but nothing
+confined it to that case. When retention is unbounded the retained bytes are
+the whole of what was observed, so the identity is available and omitting it
+would let `claims_complete_output` be true with no identity at all. `None` is
+now legal only where the content was genuinely dropped. `observed_but_unidentified(_, 0)`
+was corrected in the same pass: reading nothing is not reading something
+unidentifiable, so zero bytes publish the identity of emptiness.
+
+**An escape hatch introduced for one honest case has to be confined to that
+case in the same change, or it becomes a hole everywhere else.**
+
+The third is the fourth time the same rule shipped half-applied, one round
+after it was consolidated into a single predicate specifically to stop that.
+Consolidating was not enough because the terminal arm still asked "is this one
+of the kinds I thought of?" rather than classifying every variant. It is now an
+exhaustive match that lists what is *allowed* before a start, so a new terminal
+variant fails to compile until someone decides which side it is on. That is the
+first version of this rule that cannot silently regress.
+
+## Note on regression rate
+
+Nine of the findings across these rounds were defects this PR's own repairs
+introduced, three of them from one commit. That rate is itself evidence: the
+domain's cross-field surface is large enough that a local change routinely has
+non-local consequences, and the controls — not the reasoning — are what caught
+them. Every fix here is mutation-replayed for that reason, including the ones
+that looked obvious.

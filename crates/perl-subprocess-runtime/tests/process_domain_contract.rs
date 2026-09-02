@@ -4076,3 +4076,156 @@ fn the_fingerprint_is_fixed_size_however_large_the_plan() -> TestResult {
     assert_ne!(small.semantic_fingerprint(), large.semantic_fingerprint());
     Ok(())
 }
+
+// ──────────────── controls added after the fifteenth bot review round ────────
+
+#[test]
+fn a_stream_that_kept_its_content_must_publish_its_identity() -> TestResult {
+    // The wrong implementation this kills: treating a missing fingerprint as
+    // always acceptable once it became optional. `None` means the supervisor
+    // *could not establish* the identity. When retention was unbounded the
+    // retained bytes are the whole of what was observed, so the identity is
+    // available — withholding it would let a result claim complete output
+    // carrying no content identity at all.
+    let withheld = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            4,
+            None,
+            b"kept".to_vec(),
+            TruncationState::complete(),
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(withheld.is_err(), "a complete stream published no identity for content it kept");
+
+    // Observation-truncated evidence keeps everything it saw, so the same
+    // applies there.
+    let withheld_truncated = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            4,
+            None,
+            b"kept".to_vec(),
+            TruncationState::observation_truncated(4),
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(withheld_truncated.is_err());
+
+    // But evidence that dropped what it read genuinely cannot identify it, and
+    // that shape stays representable — this is the case the option exists for.
+    let dropped = StreamEvidence::observed_but_unidentified(StreamChannel::Stdout, 10);
+    assert_eq!(dropped.observed_fingerprint(), None);
+    result_with(
+        dropped,
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::SupervisorFailed,
+        CleanupDisposition::NotObserved,
+        TreeDisposition::Unknown,
+    )?;
+
+    // Reading nothing is not the same as reading something unidentifiable:
+    // zero bytes have a known identity, so one is published.
+    let nothing = StreamEvidence::observed_but_unidentified(StreamChannel::Stdout, 0);
+    assert_eq!(nothing.observed_bytes(), 0);
+    assert!(nothing.observed_fingerprint().is_some());
+    Ok(())
+}
+
+#[test]
+fn the_infallible_fallback_does_not_publish_evidence_nothing_checked() -> TestResult {
+    // The wrong implementation this kills: widening an infallible constructor
+    // to take public evidence and then skipping the coherence check that every
+    // other assembly path runs. Being unable to fail is not a licence to
+    // publish a swapped channel or an impossible count.
+    let swapped = perl_subprocess_runtime::process::ProcessResult::supervisor_failure(
+        PlanId::new("plan-1"),
+        valid_linux_one_shot().semantic_fingerprint(),
+        perl_subprocess_runtime::process::RunId::new("run-1"),
+        perl_subprocess_runtime::process::BackendIdentity::new(
+            "fake",
+            perl_subprocess_runtime::process::EvidenceClass::Fake,
+        ),
+        perl_subprocess_runtime::process::WorkMetadata::default(),
+        // stderr evidence handed to the stdout slot.
+        StreamEvidence::complete(StreamChannel::Stderr, b"wrong channel".to_vec()),
+        StreamEvidence::empty(StreamChannel::Stderr),
+    );
+    assert_eq!(
+        swapped.stdout().channel(),
+        StreamChannel::Stdout,
+        "the fallback published evidence for the wrong channel"
+    );
+    assert_eq!(swapped.stdout().observed_bytes(), 0, "incoherent evidence was propagated");
+
+    // Coherent evidence is kept, so the drop is not a blanket erasure.
+    let kept = perl_subprocess_runtime::process::ProcessResult::supervisor_failure(
+        PlanId::new("plan-1"),
+        valid_linux_one_shot().semantic_fingerprint(),
+        perl_subprocess_runtime::process::RunId::new("run-1"),
+        perl_subprocess_runtime::process::BackendIdentity::new(
+            "fake",
+            perl_subprocess_runtime::process::EvidenceClass::Fake,
+        ),
+        perl_subprocess_runtime::process::WorkMetadata::default(),
+        StreamEvidence::observed_but_unidentified(StreamChannel::Stdout, 7),
+        StreamEvidence::empty(StreamChannel::Stderr),
+    );
+    assert_eq!(kept.stdout().observed_bytes(), 7);
+    assert!(kept.limitations().contains(&Limitation::OutputIncomplete));
+    Ok(())
+}
+
+#[test]
+fn no_terminal_that_presupposes_a_child_is_admissible_before_the_start() -> TestResult {
+    // The wrong implementation this kills: classifying only the child's own
+    // settlement. `OutputLimitExceeded` requires output a child produced, and
+    // `CleanupFailed` requires work that started. The predicate is now
+    // exhaustive over the terminal variants so a new one must be classified
+    // rather than defaulting to admissible.
+    for disposition in [
+        TerminalDisposition::OutputLimitExceeded,
+        TerminalDisposition::CleanupFailed,
+        TerminalDisposition::CompletedExit { code: 0 },
+        TerminalDisposition::Signaled { signal: 9 },
+        TerminalDisposition::CancelledRunning(CancellationReason::Shutdown),
+    ] {
+        let mut fresh = perl_subprocess_runtime::process::EventLedger::new(
+            perl_subprocess_runtime::process::RunId::new("run-pre"),
+        );
+        assert!(
+            fresh.admit(ProcessEventKind::Terminal(disposition.clone())).is_err(),
+            "{disposition:?} settled a child that never started"
+        );
+        let mut started = perl_subprocess_runtime::process::EventLedger::new(
+            perl_subprocess_runtime::process::RunId::new("run-post"),
+        );
+        started.admit(ProcessEventKind::Started)?;
+        started
+            .admit(ProcessEventKind::Terminal(disposition.clone()))
+            .map_err(|_| format!("{disposition:?} was refused after the child started"))?;
+    }
+
+    // A supervisor failure, a timeout, and a not-proven outcome can all happen
+    // before a spawn completes, and stay admissible.
+    for disposition in [
+        TerminalDisposition::SupervisorFailed,
+        TerminalDisposition::TimedOut,
+        TerminalDisposition::NotProven,
+    ] {
+        let mut fresh = perl_subprocess_runtime::process::EventLedger::new(
+            perl_subprocess_runtime::process::RunId::new("run-ok"),
+        );
+        fresh
+            .admit(ProcessEventKind::Terminal(disposition.clone()))
+            .map_err(|_| format!("{disposition:?} was refused before a start"))?;
+    }
+    Ok(())
+}

@@ -188,12 +188,19 @@ impl StreamEvidence {
     /// count the ledger admitted is a fact, the content is not retained, and
     /// no identity is claimed for it.
     pub fn observed_but_unidentified(channel: StreamChannel, observed_bytes: u64) -> Self {
-        let truncation = if observed_bytes == 0 {
-            TruncationState::complete()
-        } else {
-            TruncationState::retention_truncated(0)
-        };
-        Self::new(channel, observed_bytes, None, Vec::new(), truncation)
+        if observed_bytes == 0 {
+            // Nothing was read, so the content is known: it is empty. Claiming
+            // an unknown identity for nothing would be the false-negative this
+            // constructor exists to avoid, in the other direction.
+            return Self::empty(channel);
+        }
+        Self::new(
+            channel,
+            observed_bytes,
+            None,
+            Vec::new(),
+            TruncationState::retention_truncated(0),
+        )
     }
 
     /// The bytes actually retained.
@@ -619,6 +626,17 @@ pub enum ResultInconsistency {
     /// failure above a completed exit, so this pairing would let a run whose
     /// cleanup failed report an ordinary success.
     CompletedExitWithFailedCleanup,
+    /// Retained content was available and no identity was published for it.
+    ///
+    /// A missing `observed_fingerprint` means *the supervisor could not
+    /// establish the identity*. When retention was unbounded the retained
+    /// bytes are the whole of what was observed, so the identity is available
+    /// and withholding it would let a result claim complete output with no
+    /// content identity at all.
+    AvailableContentLacksIdentity {
+        /// The channel whose content identity is missing.
+        channel: StreamChannel,
+    },
     /// An output-limit outcome carried no stream that reached a bound.
     ///
     /// `OutputLimitExceeded` says a capture budget stopped the run, so at
@@ -665,6 +683,9 @@ impl std::fmt::Display for ResultInconsistency {
             }
             Self::CompletedExitWithFailedCleanup => {
                 f.write_str("a completed exit cannot be paired with a failed cleanup")
+            }
+            Self::AvailableContentLacksIdentity { channel } => {
+                write!(f, "{channel:?} retained its content but published no identity for it")
             }
             Self::OutputLimitWithoutATruncatedStream => {
                 f.write_str("an output-limit outcome carried no stream that reached its bound")
@@ -777,11 +798,23 @@ fn check_stream(
     // exactly when retention was unbounded, established by the branch above.
     // Observation stopping early does not weaken that: the bytes it did see
     // were all kept, so their identity must match.
-    if truncation.retention_limit().is_none()
-        && let Some(fingerprint) = evidence.observed_fingerprint()
-        && fingerprint != ContentFingerprint::of(evidence.retained())
-    {
-        return Err(ResultInconsistency::CompleteEvidenceFingerprintMismatch { channel: expected });
+    if truncation.retention_limit().is_none() {
+        // Retention was unbounded, so the retained bytes are the whole of what
+        // was observed and the identity is available. `None` here would be a
+        // supervisor declining to publish an identity it demonstrably has.
+        match evidence.observed_fingerprint() {
+            None => {
+                return Err(ResultInconsistency::AvailableContentLacksIdentity {
+                    channel: expected,
+                });
+            }
+            Some(fingerprint) if fingerprint != ContentFingerprint::of(evidence.retained()) => {
+                return Err(ResultInconsistency::CompleteEvidenceFingerprintMismatch {
+                    channel: expected,
+                });
+            }
+            Some(_) => {}
+        }
     }
     Ok(())
 }
@@ -929,8 +962,30 @@ impl ProcessResult {
         let cleanup = CleanupDisposition::NotObserved;
         let tree = TreeDisposition::Unknown;
         let disposition = TerminalDisposition::SupervisorFailed;
+        // This constructor is infallible by design — a backend needs a result
+        // it can always produce — but that must not become a way to publish
+        // evidence nothing checked. Incoherent evidence is dropped rather than
+        // propagated: a fallback that republished a swapped channel or an
+        // impossible count would be worse than one that says less.
+        let stdout = match check_stream(&stdout, StreamChannel::Stdout) {
+            Ok(()) => stdout,
+            Err(_) => StreamEvidence::empty(StreamChannel::Stdout),
+        };
+        let stderr = match check_stream(&stderr, StreamChannel::Stderr) {
+            Ok(()) => stderr,
+            Err(_) => StreamEvidence::empty(StreamChannel::Stderr),
+        };
         let mut limitations = Vec::new();
-        derive_limitations(&mut limitations, &disposition, cleanup, tree, None, &backend);
+        // Derived from the evidence actually stored, so the limitations cannot
+        // describe streams this result does not carry.
+        derive_limitations(
+            &mut limitations,
+            &disposition,
+            cleanup,
+            tree,
+            Some((&stdout, &stderr)),
+            &backend,
+        );
         Self {
             schema_version: super::PROCESS_DOMAIN_SCHEMA_VERSION,
             plan_id,
