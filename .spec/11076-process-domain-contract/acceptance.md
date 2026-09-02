@@ -760,3 +760,48 @@ domain's cross-field surface is large enough that a local change routinely has
 non-local consequences, and the controls — not the reasoning — are what caught
 them. Every fix here is mutation-replayed for that reason, including the ones
 that looked obvious.
+
+### First CodeRabbit review (`07a1382`) — a different lens, and a bypass it found
+
+CodeRabbit was rate-limited for every earlier round, so this was its first pass.
+It found things fourteen Devin rounds had not, which is the case for keeping a
+second reviewer even when the first is productive.
+
+| Severity | Finding | Disposition | Mutation replay |
+|---|---|---|---|
+| security | `bash -o errexit -c 'cmd'` bypassed the shell gate: `errexit` is `-o`'s value, the scan mistook it for the operand that ends option parsing, and never examined the `-c` | **Fixed** — options whose value is the next word consume it; `/K` added alongside `/C` | KILLED |
+| correctness | `contradictions` compared names byte-exactly while admission folded case, so `allow("PERL5LIB")` + `deny("perl5lib")` passed *both* gates | **Fixed** — one case rule for contradiction detection; `encode` stays exact | KILLED |
+| correctness | `OutputLimitExceeded` required an *observation* bound, making a run stopped by a retention budget unrepresentable | **Fixed** — `is_complete()`, the predicate the rule's own doc named | KILLED |
+| claim | the acceptance row still called the canonical encoding "bounded" | **Fixed** — the row now separates the 128-bit fingerprint from the uncapped, linear, non-amplifying encoding | — |
+| claim | the row claimed "no file outside the crate is touched" — **false** | **Fixed** — it names the three `.spec/` files and the regenerated inventory, and claims only that no product source is touched | — |
+| defect | three table rows had three cells in a four-column table, so a field was dropped when rendered | **Fixed** | — |
+| defect | `#11085` at line start parsed as a Markdown heading | **Fixed** | — |
+| clarity | the reconciliation baseline read as though it dated the branch's mergeability | **Fixed** — it dates the *findings*; mergeability is the live `merge-tree` check | — |
+
+**The bypass is the one that matters.** It is in the rule added three rounds
+earlier to fix an over-rejection, and it is the risk that narrowing a security
+gate always carries: `-o` takes the following word, so the scan stopped at
+`errexit` and the `-c` after it went unexamined. Reproduced standalone before
+fixing. `/K` was the same class of omission — `cmd.exe /K "..."` runs its
+command string exactly as `/C` does.
+
+**The case-rule finding invalidates a rationale I recorded earlier.** The
+checklist said set membership could stay byte-exact while only detection folded
+case. That was wrong in combination: the two rules disagreeing is precisely
+what let one variable spelled two ways clear both gates. Byte-exactness is kept
+where it belongs — the canonical encoding — and contradiction detection now
+matches admission.
+
+**And the false file-scope claim** is the fifth claim in this packet found
+asserting more than was true. It is the same failure as the "bounded" tick and
+the two `rustfmt` corrections: prose written once and never re-checked against
+what the diff actually does.
+
+## Base integration, second time
+
+`origin/main` moved to `5c2a257` mid-round and `docs/policy/NON_RUST_INVENTORY.md`
+conflicted again — the same generated file, for the same reason: another lane
+regenerated it. Resolved the same way, by merging the base in and regenerating
+with `cargo xtask non-rust inventory --write` rather than hand-resolving. Both
+sides survive: main's DAP reload rows and this packet's three `.spec/` rows are
+present, and the unclassified count is unchanged at 2239.
