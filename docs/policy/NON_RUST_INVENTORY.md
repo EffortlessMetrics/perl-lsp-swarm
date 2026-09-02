@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12640 |
-| Rust-family files | 3931 |
-| Non-Rust files | 8709 |
-| Allowlisted | 6470 |
+| Total tracked files | 12651 |
+| Rust-family files | 3940 |
+| Non-Rust files | 8711 |
+| Allowlisted | 6472 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 501 |
-| documentation | 2843 |
+| documentation | 2844 |
 | generated | 2 |
 | production | 354 |
-| test | 2090 |
+| test | 2091 |
 | tooling | 680 |
 | unclassified | 2239 |
 
@@ -2363,6 +2363,7 @@
 | `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14596-Added-module-request-types.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -4092,6 +4093,7 @@
 | `crates/perl-lsp-ux-tests/fixtures/editor_intelligence/returned_hash/cases.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `crates/perl-module/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-module/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-module/tests/module_request_prop.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-parser-bench/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser-bench/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser-bench/README.md` | documentation | `non-rust-root-governance-docs` | docs |
