@@ -1018,29 +1018,28 @@ mod tests {
         source
     }
 
-    fn test_cfg_attribute_start(source: &str) -> Option<usize> {
+    fn test_cfg_attribute_start(source: &str, state: &mut LexicalState) -> Option<usize> {
         let bytes = source.as_bytes();
-        let mut state = LexicalState::Normal;
         let mut index = 0;
         while index < bytes.len() {
-            match state {
+            match *state {
                 LexicalState::Normal => {
                     if bytes[index..].starts_with(b"//") {
                         return None;
                     }
                     if bytes[index..].starts_with(b"/*") {
-                        state = LexicalState::BlockComment(1);
+                        *state = LexicalState::BlockComment(1);
                         index += 2;
                     } else if let Some((next, hashes)) = raw_string_start(bytes, index) {
-                        state = LexicalState::RawString { hashes };
+                        *state = LexicalState::RawString { hashes };
                         index = next;
                     } else if bytes[index] == b'"'
                         || (bytes[index] == b'b' && bytes.get(index + 1) == Some(&b'"'))
                     {
-                        state = LexicalState::Quoted { delimiter: b'"', escaped: false };
+                        *state = LexicalState::Quoted { delimiter: b'"', escaped: false };
                         index += usize::from(bytes[index] == b'b') + 1;
                     } else if bytes[index] == b'\'' && char_literal_ends_on_line(bytes, index) {
-                        state = LexicalState::Quoted { delimiter: b'\'', escaped: false };
+                        *state = LexicalState::Quoted { delimiter: b'\'', escaped: false };
                         index += 1;
                     } else if bytes[index..].starts_with(b"#[cfg(test)]") {
                         return Some(index);
@@ -1050,11 +1049,11 @@ mod tests {
                 }
                 LexicalState::BlockComment(depth) => {
                     if bytes[index..].starts_with(b"/*") {
-                        state = LexicalState::BlockComment(depth + 1);
+                        *state = LexicalState::BlockComment(depth + 1);
                         index += 2;
                     } else if bytes[index..].starts_with(b"*/") {
                         index += 2;
-                        state = if depth == 1 {
+                        *state = if depth == 1 {
                             LexicalState::Normal
                         } else {
                             LexicalState::BlockComment(depth - 1)
@@ -1065,17 +1064,17 @@ mod tests {
                 }
                 LexicalState::Quoted { delimiter, escaped } => {
                     if escaped {
-                        state = LexicalState::Quoted { delimiter, escaped: false };
+                        *state = LexicalState::Quoted { delimiter, escaped: false };
                     } else if bytes[index] == b'\\' {
-                        state = LexicalState::Quoted { delimiter, escaped: true };
+                        *state = LexicalState::Quoted { delimiter, escaped: true };
                     } else if bytes[index] == delimiter {
-                        state = LexicalState::Normal;
+                        *state = LexicalState::Normal;
                     }
                     index += 1;
                 }
                 LexicalState::RawString { hashes } => {
                     if raw_string_ends_at(bytes, index, hashes) {
-                        state = LexicalState::Normal;
+                        *state = LexicalState::Normal;
                         index += hashes + 1;
                     } else {
                         index += 1;
@@ -1090,9 +1089,11 @@ mod tests {
         let mut result = String::with_capacity(source.len());
         let lines: Vec<&str> = source.lines().collect();
         let mut line_index = 0;
+        let mut source_lexical_state = LexicalState::Normal;
         while let Some(&line) = lines.get(line_index) {
             line_index += 1;
-            let Some(attribute_start) = test_cfg_attribute_start(line) else {
+            let Some(attribute_start) = test_cfg_attribute_start(line, &mut source_lexical_state)
+            else {
                 result.push_str(line);
                 result.push('\n');
                 continue;
@@ -1119,7 +1120,7 @@ mod tests {
                         continue;
                     }
                     let mut lexical_state = LexicalState::Normal;
-                    let (_, close) = scan_structural_braces(
+                    let (initial_depth, close) = scan_structural_braces(
                         inline_declaration,
                         &mut lexical_state,
                         0,
@@ -1128,6 +1129,38 @@ mod tests {
                     if let Some(close) = close {
                         let suffix = skip_declaration_trivia(inline_declaration, close + 1)
                             .and_then(|start| inline_declaration.get(start..))
+                            .map(strip_line_comment)
+                            .unwrap_or_default();
+                        let kept = format!("{}{}", prefix, suffix.trim_end());
+                        if !kept.trim().is_empty() {
+                            result.push_str(kept.trim_end());
+                            result.push('\n');
+                        }
+                        continue;
+                    }
+
+                    // The declaration starts on the attribute line but its
+                    // body may close on a later line. Continue the same
+                    // structural scan instead of emitting the body as
+                    // production source.
+                    let mut depth = initial_depth;
+                    let mut module_close = None;
+                    while depth > 0 {
+                        let Some(&body_line) = lines.get(line_index) else { break };
+                        line_index += 1;
+                        let (delta, body_close) =
+                            scan_structural_braces(body_line, &mut lexical_state, depth, 0);
+                        depth += delta;
+                        if body_close.is_some() {
+                            module_close = body_close.map(|offset| (line_index - 1, offset));
+                            break;
+                        }
+                    }
+                    if let Some((closing_line_index, close)) = module_close {
+                        let closing_line =
+                            lines.get(closing_line_index).copied().unwrap_or_default();
+                        let suffix = skip_declaration_trivia(closing_line, close + 1)
+                            .and_then(|start| closing_line.get(start..))
                             .map(strip_line_comment)
                             .unwrap_or_default();
                         let kept = format!("{}{}", prefix, suffix.trim_end());
@@ -1244,7 +1277,96 @@ mod tests {
                 result.push('\n');
             }
         }
-        result
+        strip_non_code_comments(&result)
+    }
+
+    /// The inventory matcher below intentionally operates on source text. Remove
+    /// comments before it sees that text so comment examples cannot masquerade as
+    /// outbound method literals. Newlines are retained to keep diagnostics stable.
+    fn strip_non_code_comments(source: &str) -> String {
+        let bytes = source.as_bytes();
+        let mut output = String::with_capacity(source.len());
+        let mut state = LexicalState::Normal;
+        let mut index = 0;
+        while index < bytes.len() {
+            match state {
+                LexicalState::Normal if bytes[index..].starts_with(b"//") => {
+                    output.push(' ');
+                    index += 2;
+                    while index < bytes.len() && bytes[index] != b'\n' {
+                        index += 1;
+                    }
+                }
+                LexicalState::Normal if bytes[index..].starts_with(b"/*") => {
+                    output.push(' ');
+                    state = LexicalState::BlockComment(1);
+                    index += 2;
+                }
+                LexicalState::Normal => {
+                    if let Some((next, hashes)) = raw_string_start(bytes, index) {
+                        output.push_str(&source[index..next]);
+                        state = LexicalState::RawString { hashes };
+                        index = next;
+                    } else if bytes[index] == b'"'
+                        || (bytes[index] == b'\'' && char_literal_ends_on_line(bytes, index))
+                    {
+                        output.push(bytes[index] as char);
+                        state = LexicalState::Quoted { delimiter: bytes[index], escaped: false };
+                        index += 1;
+                    } else {
+                        let character_len =
+                            source[index..].chars().next().map_or(1, char::len_utf8);
+                        output.push_str(&source[index..index + character_len]);
+                        index += character_len;
+                    }
+                }
+                LexicalState::BlockComment(depth) => {
+                    if bytes[index..].starts_with(b"/*") {
+                        state = LexicalState::BlockComment(depth + 1);
+                        index += 2;
+                    } else if bytes[index..].starts_with(b"*/") {
+                        state = if depth == 1 {
+                            LexicalState::Normal
+                        } else {
+                            LexicalState::BlockComment(depth - 1)
+                        };
+                        index += 2;
+                    } else {
+                        if bytes[index] == b'\n' {
+                            output.push('\n');
+                        }
+                        index += 1;
+                    }
+                }
+                LexicalState::Quoted { delimiter, escaped } => {
+                    let character_len = source[index..].chars().next().map_or(1, char::len_utf8);
+                    output.push_str(&source[index..index + character_len]);
+                    state = if escaped {
+                        LexicalState::Quoted { delimiter, escaped: false }
+                    } else if bytes[index] == b'\\' {
+                        LexicalState::Quoted { delimiter, escaped: true }
+                    } else if bytes[index] == delimiter {
+                        LexicalState::Normal
+                    } else {
+                        LexicalState::Quoted { delimiter, escaped: false }
+                    };
+                    index += character_len;
+                }
+                LexicalState::RawString { hashes } => {
+                    let character_len = source[index..].chars().next().map_or(1, char::len_utf8);
+                    output.push_str(&source[index..index + character_len]);
+                    if raw_string_ends_at(bytes, index, hashes) {
+                        state = LexicalState::Normal;
+                        for _ in 0..hashes.min(bytes.len().saturating_sub(index + 1)) {
+                            index += 1;
+                            output.push(bytes[index] as char);
+                        }
+                    }
+                    index += character_len;
+                }
+            }
+        }
+        output
     }
 
     #[test]
@@ -1354,6 +1476,28 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         assert!(stripped.contains("production/after"));
         assert!(stripped.contains("pub(crate) mod visible"));
         assert!(stripped.contains("visible/production"));
+    }
+
+    #[test]
+    fn strip_test_modules_preserves_lexical_state_across_lines() {
+        let source = r####"
+/* a comment containing
+#[cfg(test)] mod fake { client.send_request("comment-only"); }
+*/
+const RAW: &str = r###"
+#[cfg(test)] mod fake_raw { client.send_request("raw-only"); }
+"###;
+#[cfg(test)] mod multiline {
+    fn send() { client.send_request("test-only/multiline-body"); }
+}
+fn production() { client.send_request("production/after-multiline"); }
+"####;
+
+        let stripped = strip_test_modules(source);
+        assert!(!stripped.contains("comment-only"));
+        assert!(stripped.contains("raw-only"));
+        assert!(!stripped.contains("test-only/multiline-body"));
+        assert!(stripped.contains("production/after-multiline"));
     }
 
     fn quoted_literals(line: &str) -> Vec<&str> {
