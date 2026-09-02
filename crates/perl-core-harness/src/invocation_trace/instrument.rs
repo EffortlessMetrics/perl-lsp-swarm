@@ -1180,6 +1180,12 @@ pub(crate) fn required_limitations() -> Vec<String> {
 /// validate the written evidence by reconstruction before reporting the
 /// terminal disposition. Every non-complete state is a typed failure exit.
 pub fn observe_invocations_command(config: &ObserveInvocationsConfig) -> Result<()> {
+    // Invalidate prior evidence before any fallible capture/setup step. An
+    // early error (for example, a malformed patch specification) must not
+    // leave receipts from a previous successful run available to consumers.
+    clear_stale_output(&config.output, true)?;
+    clear_stale_output(&config.trace_output, true)?;
+    clear_stale_output(&config.work_output, true)?;
     let observation = observe_invocations(config)?;
     // Absent receipts must not leave a previous run's successful evidence in
     // place: file-based consumers would ingest stale proof for this run.

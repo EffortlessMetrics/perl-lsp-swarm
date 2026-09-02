@@ -1022,6 +1022,22 @@ fn failed_reruns_clear_stale_successful_outputs() -> Result<()> {
     observe_invocations_command(&config)?;
     assert!(config.output.is_file() && config.trace_output.is_file());
 
+    // Setup errors happen before an observation exists. They must invalidate
+    // receipts from the prior successful run just as a typed observation
+    // failure does.
+    fs::write(&patch, b"not-json")?;
+    let Err(error) = observe_invocations_command(&config) else {
+        bail!("a malformed patch specification must fail before capture");
+    };
+    assert!(error.to_string().contains("patch"), "unexpected setup error: {error}");
+    assert!(!config.output.exists(), "early errors must remove stale parent receipt");
+    assert!(!config.trace_output.exists(), "early errors must remove stale trace receipt");
+    assert!(!config.work_output.exists(), "early errors must remove stale work receipt");
+
+    // Restore the valid specification before exercising the typed observation
+    // failure below.
+    let _ = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
+
     // The same destinations, now a capture whose parent cannot be built: the
     // previous successful evidence must not survive the typed failure.
     fs::write(tree.join("t").join(".trace-fixture-mode"), "empty")?;
