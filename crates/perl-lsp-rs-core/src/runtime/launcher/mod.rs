@@ -11,7 +11,7 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 use std::io::IsTerminal;
-use std::sync::{Mutex, Once};
+use std::sync::{Mutex, MutexGuard, Once, PoisonError};
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
@@ -30,6 +30,11 @@ static LOGGING_INIT: Once = Once::new();
 /// Owns the non-blocking file writer until the server's shutdown path drains it.
 static LOG_FILE_GUARD: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> =
     Mutex::new(None);
+
+fn lock_log_file_guard() -> MutexGuard<'static, Option<tracing_appender::non_blocking::WorkerGuard>>
+{
+    LOG_FILE_GUARD.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Default port used by socket transport.
 pub const DEFAULT_LSP_PORT: u16 = 9257;
@@ -108,9 +113,7 @@ fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
                 .build(log_dir)
             {
                 let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-                if let Ok(mut file_guard) = LOG_FILE_GUARD.lock() {
-                    *file_guard = Some(guard);
-                }
+                *lock_log_file_guard() = Some(guard);
 
                 let stderr_layer = tracing_subscriber::fmt::layer()
                     .with_writer(io::stderr)
@@ -148,9 +151,8 @@ fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
 /// exits. Call this from the server shutdown path so final diagnostics are not
 /// lost to process teardown.
 pub fn shutdown_logging() {
-    if let Ok(mut file_guard) = LOG_FILE_GUARD.lock() {
-        drop(file_guard.take());
-    }
+    let writer_guard = lock_log_file_guard().take();
+    drop(writer_guard);
 }
 
 fn env_truthy(var_name: &str) -> Option<bool> {
@@ -1584,21 +1586,25 @@ mod tests {
             super::shutdown_logging();
             return Ok(());
         }
-        let dir = tempfile::tempdir()?;
-        let log_file = dir.path().join("wave-a1-cpu-sat.log");
-        let output = {
-            let _load = saturate_cpu();
-            spawn_log_file_child(
-                "runtime::launcher::tests::init_logging_persists_marker_under_cpu_saturation_after_guard_drop",
-                MARKER,
-                &log_file,
-            )?
-        };
-        assert!(output.status.success(), "logging child failed: {output:?}");
-        assert!(
-            rolling_log_contains_token(dir.path(), TOKEN)?,
-            "rolling log must contain marker {TOKEN} immediately after child exit under CPU saturation"
-        );
+        // Three loaded children: a no-drop mutant failed 5/8 here, so one trial
+        // can still go green. Three cuts the false-green chance without a poll.
+        for trial in 0..3 {
+            let dir = tempfile::tempdir()?;
+            let log_file = dir.path().join(format!("wave-a1-cpu-sat-{trial}.log"));
+            let output = {
+                let _load = saturate_cpu();
+                spawn_log_file_child(
+                    "runtime::launcher::tests::init_logging_persists_marker_under_cpu_saturation_after_guard_drop",
+                    MARKER,
+                    &log_file,
+                )?
+            };
+            assert!(output.status.success(), "logging child failed on trial {trial}: {output:?}");
+            assert!(
+                rolling_log_contains_token(dir.path(), TOKEN)?,
+                "rolling log must contain marker {TOKEN} immediately after child exit under CPU saturation (trial {trial})"
+            );
+        }
         Ok(())
     }
 
@@ -1634,13 +1640,16 @@ mod tests {
         let mut writer = install_test_file_guard(poison_dir.path(), "guard-poison")?;
         writer.write_all(format!("{POISON_TOKEN}\n").as_bytes())?;
         poison_log_file_guard();
-        let found = {
+        {
             let _load = saturate_cpu();
             super::shutdown_logging();
-            rolling_log_contains_token(poison_dir.path(), POISON_TOKEN)?
-        };
+            assert!(
+                super::lock_log_file_guard().is_none(),
+                "shutdown_logging must take the guard even when the mutex is poisoned"
+            );
+        }
         assert!(
-            found,
+            rolling_log_contains_token(poison_dir.path(), POISON_TOKEN)?,
             "rolling log must contain marker {POISON_TOKEN} after shutdown recovers a poisoned mutex"
         );
         Ok(())
