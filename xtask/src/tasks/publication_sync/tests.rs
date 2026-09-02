@@ -559,8 +559,8 @@ fn a_stale_reconciliation_receipt_is_blocked() -> Result<()> {
     // Resolve the checkout to the mutated commit, so the checkout binding is
     // satisfied and only reconciliation staleness is on trial. Without this the
     // dominating `checkout_not_prepared_swarm` finding would mask the rule.
-    fn mutated_checkout(_repo_root: &Path) -> Option<String> {
-        Some("9999999999999999999999999999999999999999".to_string())
+    fn mutated_checkout(_repo_root: &Path) -> Option<CheckoutFacts> {
+        Some(clean_checkout("9999999999999999999999999999999999999999"))
     }
 
     let receipt = plan_with_checkout(&document, mutated_checkout)?;
@@ -963,8 +963,22 @@ fn materialize_repo(document: &Value) -> Result<(tempfile::TempDir, PathBuf, Pat
 
 /// A checkout resolver that answers with the fixture's declared prepared swarm
 /// commit, so the end-to-end tests exercise the planner rather than git.
-fn fixture_checkout(_repo_root: &Path) -> Option<String> {
-    Some("1111111111111111111111111111111111111111".to_string())
+fn fixture_checkout(_repo_root: &Path) -> Option<CheckoutFacts> {
+    Some(clean_checkout("1111111111111111111111111111111111111111"))
+}
+
+/// A checkout at `head` whose worktree agrees with that commit everywhere.
+fn clean_checkout(head: &str) -> CheckoutFacts {
+    CheckoutFacts { head: head.to_string(), dirty: BTreeSet::new() }
+}
+
+/// A checkout at the prepared swarm commit whose worktree disagrees with it at
+/// `dirty`.
+fn checkout_dirty_at(dirty: &[&str]) -> CheckoutFacts {
+    CheckoutFacts {
+        head: "1111111111111111111111111111111111111111".to_string(),
+        dirty: dirty.iter().map(|path| (*path).to_string()).collect(),
+    }
 }
 
 /// A minimal product-surface ledger in the real allowlist's shape.
@@ -1955,8 +1969,8 @@ fn prose_in_the_authority_field_is_still_unresolved() -> Result<()> {
 fn a_checkout_that_is_not_the_prepared_swarm_commit_is_not_proven() -> Result<()> {
     // The product surface and every path shape come from this checkout. They
     // are only evidence about the projection if the checkout is S.
-    fn other_commit(_root: &Path) -> Option<String> {
-        Some("9999999999999999999999999999999999999999".to_string())
+    fn other_commit(_root: &Path) -> Option<CheckoutFacts> {
+        Some(clean_checkout("9999999999999999999999999999999999999999"))
     }
     let receipt = plan_with_checkout(&clean_value()?, other_commit)?;
     assert_verdict(&receipt, Verdict::NotProven)?;
@@ -1965,7 +1979,7 @@ fn a_checkout_that_is_not_the_prepared_swarm_commit_is_not_proven() -> Result<()
 
 #[test]
 fn an_unresolvable_checkout_is_not_proven() -> Result<()> {
-    fn unresolvable(_root: &Path) -> Option<String> {
+    fn unresolvable(_root: &Path) -> Option<CheckoutFacts> {
         None
     }
     let receipt = plan_with_checkout(&clean_value()?, unresolvable)?;
@@ -2057,4 +2071,133 @@ fn file_identity(path: &Path) -> Result<(u64, u64)> {
 #[cfg(not(unix))]
 fn file_identity(path: &Path) -> Result<Vec<u8>> {
     Ok(fs::read(path)?)
+}
+
+// ---------------------------------------------------------------------------
+// Consumed-path coverage and worktree integrity
+
+/// The alias guard and the worktree-integrity check must both see every path
+/// evaluation can read. An earlier alias guard carried its own copy of the
+/// authority rule and fell behind when that rule widened, so this pins the
+/// three kinds of path that copy was missing.
+#[test]
+fn the_consumed_path_set_covers_every_path_evaluation_reads() -> Result<()> {
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[0]["authority_ref"] = json!("NOTICE.md");
+    let manifest: Manifest = serde_json::from_value(document)?;
+    let consumed = consumed_repository_paths(&manifest);
+
+    for expected in [
+        // The ledger the product surface is classified against.
+        "policy/non-rust-allowlist.toml",
+        // A declared release input.
+        "docs/release/0.18.0/public_claims.json",
+        // A row path — probed for shape when the row displaces.
+        "README.md",
+        // The crate-root probe `validate_rows` performs on that row path.
+        "README.md/Cargo.toml",
+        // A root-level authority document. The guard's old `contains('/')`
+        // copy of the authority rule excluded exactly this.
+        "NOTICE.md",
+    ] {
+        if !consumed.contains(expected) {
+            bail!("consumed path set is missing {expected}: {consumed:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_receipt_cannot_be_written_over_a_row_path() -> Result<()> {
+    // `validate_rows` probes each displacing row path, so a receipt written
+    // there destroys a file the verdict was computed from.
+    let document = clean_value()?;
+    let (root, manifest_path, _) = materialize_repo(&document)?;
+
+    let over_row = plan_with(
+        PlanConfig {
+            manifest: manifest_path,
+            repo_root: root.path().to_path_buf(),
+            receipt: root.path().join("README.md"),
+        },
+        fixture_checkout,
+    );
+    if over_row.is_ok() {
+        bail!("the receipt was allowed to overwrite a declared row path");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_consumed_path_that_differs_from_the_checkout_is_not_proven() -> Result<()> {
+    // HEAD matching is not enough: the planner reads the worktree, so a
+    // modified declared input is read as if it were part of S.
+    fn dirty_input(_root: &Path) -> Option<CheckoutFacts> {
+        Some(checkout_dirty_at(&["docs/release/0.18.0/public_claims.json"]))
+    }
+
+    let receipt = plan_with_checkout(&clean_value()?, dirty_input)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "consumed_path_not_at_checkout")
+}
+
+#[test]
+fn a_dirty_descendant_of_a_row_directory_is_not_proven() -> Result<()> {
+    // A row takes its whole subtree, so a changed descendant changes what the
+    // row would carry even though the row path itself is unchanged.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[3]["path"] = json!("docs/policy");
+
+    // Assert the cheaper rule does not already catch this: the dirty path is
+    // not itself a consumed path, so only the subtree rule can find it.
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let descendant = "docs/policy/UNRELATED_NOTE.md";
+    if consumed_repository_paths(&manifest).contains(descendant) {
+        bail!("{descendant} is directly consumed, so this control proves nothing about subtrees");
+    }
+
+    fn dirty_descendant(_root: &Path) -> Option<CheckoutFacts> {
+        Some(checkout_dirty_at(&["docs/policy/UNRELATED_NOTE.md"]))
+    }
+
+    let receipt = plan_with_checkout(&document, dirty_descendant)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "consumed_path_not_at_checkout")
+}
+
+#[test]
+fn a_dirty_path_the_plan_never_reads_does_not_block() -> Result<()> {
+    // Opposite direction. A working tree is nearly always dirty somewhere —
+    // the candidate manifest itself is normally uncommitted. Refusing on any
+    // dirt at all would make the command unusable and the rule vacuous.
+    fn dirty_elsewhere(_root: &Path) -> Option<CheckoutFacts> {
+        Some(checkout_dirty_at(&["candidate/manifest.json", "target/scratch.txt"]))
+    }
+
+    let receipt = plan_with_checkout(&clean_value()?, dirty_elsewhere)?;
+    if !receipt.findings.is_empty() {
+        bail!("unrelated worktree changes produced findings: {:?}", receipt.findings);
+    }
+    assert_verdict(&receipt, Verdict::Pass)
+}
+
+/// `git status --porcelain` shapes the planner has to read correctly.
+#[test]
+fn status_parsing_recovers_modified_untracked_and_renamed_paths() -> Result<()> {
+    let parsed = parse_status_paths(
+        " M docs/how-to/PUBLICATION_SYNC.md\n\
+         ?? fixtures/publication_sync/extra.json\n\
+         R  schemas/old.json -> schemas/new.json\n",
+    );
+    for expected in [
+        "docs/how-to/PUBLICATION_SYNC.md",
+        "fixtures/publication_sync/extra.json",
+        "schemas/old.json",
+        "schemas/new.json",
+    ] {
+        if !parsed.contains(expected) {
+            bail!("status parsing lost {expected}: {parsed:?}");
+        }
+    }
+    Ok(())
 }

@@ -868,31 +868,11 @@ fn ensure_receipt_does_not_alias_inputs(config: &PlanConfig, raw: &[u8]) -> Resu
     };
 
     let mut consumed: Vec<PathBuf> = vec![config.manifest.clone()];
-    consumed.push(config.repo_root.join("policy/non-rust-allowlist.toml"));
+    consumed.push(config.repo_root.join(PRODUCT_SURFACE_LEDGER));
     if let Ok(manifest) = serde_json::from_slice::<Manifest>(raw) {
-        for input in &manifest.inputs {
-            consumed.push(config.repo_root.join(&input.path));
-        }
-        for row in &manifest.paths {
-            if valid_repository_path(&row.authority_ref) && row.authority_ref.contains('/') {
-                consumed.push(config.repo_root.join(&row.authority_ref));
-            }
-        }
-        let controls = [
-            &manifest.live_controls.branch_rules,
-            &manifest.live_controls.environments,
-            &manifest.live_controls.quality_exceptions,
-        ];
-        let evidence = manifest
-            .invariants
-            .iter()
-            .flat_map(|invariant| invariant.evidence.iter())
-            .chain(controls.into_iter().flat_map(|control| control.evidence.iter()));
-        for entry in evidence {
-            if valid_repository_path(&entry.reference) {
-                consumed.push(config.repo_root.join(&entry.reference));
-            }
-        }
+        consumed.extend(
+            consumed_repository_paths(&manifest).iter().map(|path| config.repo_root.join(path)),
+        );
     }
 
     for input in consumed {
@@ -904,6 +884,62 @@ fn ensure_receipt_does_not_alias_inputs(config: &PlanConfig, raw: &[u8]) -> Resu
         }
     }
     Ok(())
+}
+
+/// The product-surface ledger. Named once so the guard, the integrity check and
+/// the loader cannot disagree about which file that is.
+const PRODUCT_SURFACE_LEDGER: &str = "policy/non-rust-allowlist.toml";
+
+/// Every repository-relative path this plan may read.
+///
+/// Deliberately a superset of what any one evaluation actually reads: which row
+/// probes fire depends on the manifest's own action and classification, so a
+/// coverage set computed from those decisions would vary with the document it
+/// is guarding. That is precisely the drift that let an earlier version of the
+/// alias guard miss row paths and root-level authority documents — it carried
+/// its own copy of the authority rule, and the copy fell behind when the rule
+/// widened. Both callers consume this one set instead.
+///
+/// A superset is the safe direction for both of them: the alias guard refuses
+/// to overwrite more files, and the integrity check refuses more stale ones.
+fn consumed_repository_paths(manifest: &Manifest) -> BTreeSet<String> {
+    let mut consumed = BTreeSet::new();
+    consumed.insert(PRODUCT_SURFACE_LEDGER.to_string());
+
+    for input in &manifest.inputs {
+        consumed.insert(input.path.clone());
+    }
+
+    for row in &manifest.paths {
+        consumed.insert(row.path.clone());
+        // The crate-root probe `validate_rows` performs on a displacing row.
+        consumed.insert(format!("{}/Cargo.toml", row.path));
+        if valid_repository_path(&row.authority_ref) && looks_like_document(&row.authority_ref) {
+            consumed.insert(row.authority_ref.clone());
+        }
+    }
+
+    for entry in evidence_entries(manifest) {
+        if valid_repository_path(&entry.reference) {
+            consumed.insert(entry.reference.clone());
+        }
+    }
+
+    consumed
+}
+
+/// Every evidence entry a manifest carries, across invariants and live controls.
+fn evidence_entries(manifest: &Manifest) -> impl Iterator<Item = &Evidence> {
+    let controls = [
+        &manifest.live_controls.branch_rules,
+        &manifest.live_controls.environments,
+        &manifest.live_controls.quality_exceptions,
+    ];
+    manifest
+        .invariants
+        .iter()
+        .flat_map(|invariant| invariant.evidence.iter())
+        .chain(controls.into_iter().flat_map(|control| control.evidence.iter()))
 }
 
 /// Canonical identity of a path that may not exist yet: the canonical parent
@@ -1027,27 +1063,73 @@ enum LoadFailure {
 /// stays deterministic and testable without a repository fixture tree.
 type InputLoader = fn(&Path, &str) -> Result<Vec<u8>, LoadFailure>;
 
-/// Resolves the commit a checkout is at. Injected for the same reason.
-type CheckoutResolver = fn(&Path) -> Option<String>;
+/// What Git says about the checkout the planner is reading from.
+///
+/// `head` alone is not enough to bind a repository fact to a commit: the
+/// planner reads bytes from the worktree, and a modified or untracked file
+/// differs from the commit while `HEAD` still matches. `dirty` carries the
+/// paths where the worktree and the commit disagree, so a fact read from one
+/// of them can be refused rather than reported as evidence about `S`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckoutFacts {
+    head: String,
+    dirty: BTreeSet<String>,
+}
 
-/// The commit `repo_root` is checked out at, or `None` when that cannot be
+/// Resolves the checkout facts. Injected for the same reason as the loader.
+type CheckoutResolver = fn(&Path) -> Option<CheckoutFacts>;
+
+/// What Git reports about `repo_root`, or `None` when that cannot be
 /// established.
 ///
-/// This is the planner's one Git read, and it is an identity question rather
-/// than a tree question: everything else still comes from declared inputs.
-fn resolve_checkout(repo_root: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()?;
+/// These are the planner's only Git reads. Both are questions about the
+/// checkout's identity rather than about the declared trees: everything the
+/// plan judges still comes from declared inputs.
+fn resolve_checkout(repo_root: &Path) -> Option<CheckoutFacts> {
+    let head = git_output(repo_root, &["rev-parse", "HEAD"])?;
+    let head = head.trim().to_string();
+    if !is_object_name(&head) {
+        return None;
+    }
+
+    // `--untracked-files=all` lists files rather than directories, so an
+    // untracked file inside an otherwise clean directory is still named.
+    let status = git_output(repo_root, &["status", "--porcelain", "--untracked-files=all"])?;
+    Some(CheckoutFacts { head, dirty: parse_status_paths(&status) })
+}
+
+fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
+    let output =
+        std::process::Command::new("git").arg("-C").arg(repo_root).args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }
-    let head = String::from_utf8(output.stdout).ok()?;
-    let head = head.trim().to_string();
-    is_object_name(&head).then_some(head)
+    String::from_utf8(output.stdout).ok()
+}
+
+/// Repository-relative paths from `git status --porcelain` output.
+///
+/// Each line is a two-character status followed by a space and the path. A
+/// rename is spelled `orig -> new`; both sides are recorded, because the
+/// planner cares that either location disagrees with the commit.
+fn parse_status_paths(status: &str) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    for line in status.lines() {
+        let Some(rest) = line.get(3..) else {
+            continue;
+        };
+        let rest = rest.trim_matches('"');
+        match rest.split_once(" -> ") {
+            Some((origin, destination)) => {
+                paths.insert(origin.trim_matches('"').to_string());
+                paths.insert(destination.trim_matches('"').to_string());
+            }
+            None => {
+                paths.insert(rest.to_string());
+            }
+        }
+    }
+    paths
 }
 
 /// Read a repository-relative artifact, refusing anything that resolves outside
@@ -1407,26 +1489,75 @@ fn validate_checkout_identity(
     checkout: CheckoutResolver,
     state: &mut PlanState,
 ) {
-    match checkout(repo_root) {
-        Some(head) if head == manifest.prepared_swarm_sha => {}
-        Some(head) => state.not_proven(
-            "checkout_not_prepared_swarm",
-            format!(
-                "the repository root is at {head} but this manifest projects prepared_swarm_sha {}; its product surface and path shapes are not evidence about the projection",
-                manifest.prepared_swarm_sha
-            ),
-            "release/ci",
-        ),
-        None => state.not_proven(
-            "checkout_unresolvable",
-            format!(
-                "the commit at {} could not be established, so its product surface and path shapes cannot be bound to prepared_swarm_sha {}",
-                repo_root.display(),
-                manifest.prepared_swarm_sha
-            ),
-            "release/ci",
-        ),
+    let facts = match checkout(repo_root) {
+        Some(facts) if facts.head == manifest.prepared_swarm_sha => facts,
+        Some(facts) => {
+            state.not_proven(
+                "checkout_not_prepared_swarm",
+                format!(
+                    "the repository root is at {} but this manifest projects prepared_swarm_sha {}; its product surface and path shapes are not evidence about the projection",
+                    facts.head, manifest.prepared_swarm_sha
+                ),
+                "release/ci",
+            );
+            return;
+        }
+        None => {
+            state.not_proven(
+                "checkout_unresolvable",
+                format!(
+                    "the commit at {} could not be established, so its product surface and path shapes cannot be bound to prepared_swarm_sha {}",
+                    repo_root.display(),
+                    manifest.prepared_swarm_sha
+                ),
+                "release/ci",
+            );
+            return;
+        }
+    };
+
+    validate_worktree_integrity(manifest, &facts, state);
+}
+
+/// `HEAD` matching is necessary but not sufficient. The planner reads bytes from
+/// the worktree, not from the commit, so a modified or untracked file is read as
+/// if it were part of `S` while the receipt claims the answers belong to
+/// `prepared_swarm_sha`. Every path this plan may consult must therefore agree
+/// with the commit as well as descend from it.
+///
+/// A directory row is dirty when anything beneath it is: the row displaces the
+/// whole subtree, so a changed descendant changes what the row would carry.
+///
+/// The manifest and the receipt destination are deliberately out of scope. They
+/// are the documents under judgment and the output, not repository facts the
+/// plan reads as evidence, and requiring a candidate manifest to be committed
+/// before it can be judged would make the command useless.
+fn validate_worktree_integrity(manifest: &Manifest, facts: &CheckoutFacts, state: &mut PlanState) {
+    if facts.dirty.is_empty() {
+        return;
     }
+
+    let mut stale: Vec<String> = Vec::new();
+    for path in consumed_repository_paths(manifest) {
+        let subtree = format!("{path}/");
+        if facts.dirty.iter().any(|entry| entry == &path || entry.starts_with(&subtree)) {
+            stale.push(path);
+        }
+    }
+
+    if stale.is_empty() {
+        return;
+    }
+    stale.sort();
+    state.not_proven(
+        "consumed_path_not_at_checkout",
+        format!(
+            "the repository root is at prepared_swarm_sha {} but these paths this plan reads differ from that commit in the worktree, so what was read is not evidence about the projection: {}",
+            manifest.prepared_swarm_sha,
+            stale.join(", ")
+        ),
+        "release/ci",
+    );
 }
 
 /// Report one unreadable repository artifact, keeping "absent", "escapes the
