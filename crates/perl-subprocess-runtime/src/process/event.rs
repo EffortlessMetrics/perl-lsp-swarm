@@ -76,6 +76,42 @@ pub enum ProcessEventKind {
 }
 
 impl ProcessEventKind {
+    /// Which pre-start presupposition this event breaks, if any.
+    ///
+    /// An event that only makes sense once a child exists is refused before
+    /// the start. Keeping the whole rule in one place is deliberate: stating
+    /// it per field is what allowed output, terminal causes, and termination
+    /// steps each to be found as separate holes.
+    ///
+    /// The kinds that legitimately precede a start are `Started` itself, a
+    /// cancellation *request* (a request is not an act on a child), and a
+    /// deadline elapsing — a run can miss its deadline before it ever spawns.
+    pub(crate) fn pre_start_violation(&self) -> Option<EventAdmissionError> {
+        match self {
+            Self::Started => None,
+            Self::StdoutBytes(_) | Self::StderrBytes(_) | Self::LimitReached(_) => {
+                Some(EventAdmissionError::ChildOutputBeforeStart)
+            }
+            Self::TerminationPhase(
+                TerminationPhase::CancellationRequested(_) | TerminationPhase::DeadlineReached,
+            ) => None,
+            Self::TerminationPhase(
+                TerminationPhase::GracefulSignalSent
+                | TerminationPhase::ForcedSignalSent
+                | TerminationPhase::GroupReaped,
+            ) => Some(EventAdmissionError::ChildTerminationBeforeStart),
+            Self::Terminal(disposition) => {
+                if disposition.establishes_child_settlement()
+                    || matches!(disposition, TerminalDisposition::CancelledRunning(_))
+                {
+                    Some(EventAdmissionError::ChildSettlementBeforeStart)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     /// Whether this event settles the run.
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Terminal(_))
@@ -128,6 +164,12 @@ pub enum EventAdmissionError {
     /// admissible, because those are exactly the outcomes of a run that never
     /// started.
     ChildSettlementBeforeStart,
+    /// A termination step that acts on a child arrived before it started.
+    ///
+    /// Sending a signal or reaping a process group requires something to
+    /// signal or reap. Requesting a cancellation or reaching a deadline do
+    /// not, and stay admissible before a start.
+    ChildTerminationBeforeStart,
     /// A child-output event arrived before the child started.
     ///
     /// Output requires a child, and a result pairing a no-child outcome with
@@ -155,6 +197,9 @@ impl std::fmt::Display for EventAdmissionError {
             Self::ChildStartedTwice => f.write_str("a run cannot start twice"),
             Self::ChildSettlementBeforeStart => {
                 f.write_str("a child-settled terminal arrived before the child started")
+            }
+            Self::ChildTerminationBeforeStart => {
+                f.write_str("a termination step acted on a child that had not started")
             }
             Self::ChildOutputBeforeStart => {
                 f.write_str("a child-output event arrived before the child started")
@@ -237,15 +282,14 @@ impl EventLedger {
         // double-counts them. Either way a consumer reassembling the stream
         // from these events gets something the run never produced, so the
         // offset is verified rather than trusted.
-        // The same rule as the output one below, for terminal causes: an exit,
-        // a signal, or a cancellation while running are the child's own
-        // account, and a child that never started has no account to give.
-        if let ProcessEventKind::Terminal(disposition) = &kind
-            && !self.child_started
-            && (disposition.establishes_child_settlement()
-                || matches!(disposition, TerminalDisposition::CancelledRunning(_)))
+        // One rule, one place. Every kind that presupposes a running child is
+        // refused before the start, and each says which presupposition it
+        // broke. Scattering this check per field is what let output, then
+        // terminals, then termination phases each be found separately.
+        if !self.child_started
+            && let Some(violation) = kind.pre_start_violation()
         {
-            return Err(EventAdmissionError::ChildSettlementBeforeStart);
+            return Err(violation);
         }
         let chunk = match &kind {
             ProcessEventKind::StdoutBytes(evidence) => Some((evidence, self.stdout_observed)),
@@ -253,14 +297,6 @@ impl EventLedger {
             _ => None,
         };
         if let Some((evidence, already_observed)) = chunk {
-            // Output requires a child. The domain already refuses a result
-            // that pairs a no-child outcome with output bytes; admitting the
-            // event that would produce such a result is the same
-            // contradiction one step earlier, so it is refused here rather
-            // than reconciled away later.
-            if !self.child_started {
-                return Err(EventAdmissionError::ChildOutputBeforeStart);
-            }
             if evidence.offset != already_observed {
                 return Err(EventAdmissionError::ChunkOffsetDiscontinuous {
                     expected: already_observed,

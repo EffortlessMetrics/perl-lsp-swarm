@@ -12,7 +12,7 @@ Every row below is proven by a named test in
 | Terminal process, supervisor, cleanup, truncation, stale, unsupported and not-proven states remain distinct | `a_control_plane_termination_never_becomes_an_ordinary_success`, `precedence_is_total_and_ordered`, `a_nonzero_exit_is_an_executed_result_not_an_instrument_failure`, `a_signal_and_an_unobserved_settlement_stay_distinct_from_success` |
 | Exact executable, argv, cwd, environment, budgets, operation, authorization, source/configuration references and claim boundary are retained | `the_supervisor_records_the_exact_plan_it_was_given`, `validation_binds_the_fingerprint_it_validated` |
 | Deterministic fake/recording supervisors support cheap, race-free consumer tests | the `FakeSupervisor` tests; `the_fake_supervisor_reads_no_clock_and_spawns_no_thread` pins the determinism mechanism itself |
-| Canonical encoding/fingerprints are deterministic, bounded, versioned and path/secret-safe at the public boundary | `canonical_encoding_is_stable_under_construction_order`, `a_meaning_change_moves_the_fingerprint`, `environment_values_never_reach_a_public_identity`, `private_paths_and_bytes_are_redacted_in_debug_output`, `the_canonical_encoding_of_a_fixture_plan_is_locked_to_the_schema_version` |
+| Canonical encoding/fingerprints are deterministic, bounded, versioned and path/secret-safe at the public boundary — see the boundedness note below, which narrows what "bounded" is proven to mean | `canonical_encoding_is_stable_under_construction_order`, `a_meaning_change_moves_the_fingerprint`, `environment_values_never_reach_a_public_identity`, `private_paths_and_bytes_are_redacted_in_debug_output`, `the_canonical_encoding_of_a_fixture_plan_is_locked_to_the_schema_version` |
 | Existing callers compile only through an explicitly temporary bounded adapter where unavoidable | `the_legacy_seam_is_contained_and_owned` for the ledger, `no_unrecorded_second_execution_seam_exists_in_the_crate` for the crate; `process::legacy` records what the seam cannot express and that `#1975` owns removal |
 | No OS process spawn or product behavior change occurs in this PR | `the_domain_never_reaches_for_an_operating_system_process_api`; no file outside the crate is touched |
 
@@ -610,3 +610,47 @@ account for most of the findings here:
 3. **Fixtures asserting more than they test.** Five fixtures encoded the very
    defect their neighbourhood was meant to guard, because their incidental
    fields were never scrutinised.
+
+### Thirteenth external round (Devin, `1d07ba1`)
+
+| Finding | Disposition | Mutation replay |
+|---|---|---|
+| signals, group reaping, and limit events were admissible before a start | **Fixed** — and the whole pre-start rule moved into one predicate | KILLED (×2) |
+| the acceptance row claims a *bounded* canonical encoding that nothing proved | **Claim narrowed and then proven** — see below | — |
+
+The first finding is the third time the same rule was found half-applied, so
+this round the rule stopped being a per-field check. `ProcessEventKind::pre_start_violation`
+now answers, in one place, whether an event presupposes a running child;
+`admit` consults it once. Adding a variant to the enum forces a decision in
+that match rather than silently defaulting to admissible, which is what let
+output, then terminal causes, then termination phases each be found separately.
+
+The exception set matters as much as the rule and is controlled: `Started`
+itself, a cancellation *request* (requesting is not acting on a child), and a
+deadline elapsing (a run can miss its deadline before it ever spawns) all stay
+legal pre-start.
+
+## On the boundedness claim
+
+The acceptance row said the canonical encoding is "bounded" and none of the
+tests beside it proved that word — they prove determinism, meaning-change
+detection, secret-safety, and schema locking. The report offered the right
+alternative: either bound it, or stop presenting the claim as proven.
+
+I did not add length caps. The limits that actually bite — `ARG_MAX`, the
+environment block size — are the platform's, differ per target, and are
+enforced at spawn by the backend that knows which platform it is on. A number
+invented here would be policy this domain does not own and would refuse plans a
+real system accepts. Bounding *untrusted input* belongs to whoever accepts it,
+which is not this type.
+
+What is true, and is now stated at `canonical_bytes` and tested by
+`the_fingerprint_is_fixed_size_however_large_the_plan`:
+
+- the **fingerprint** is bounded — 128 bits for any plan;
+- the **encoding** is linear in the plan's own size and performs no
+  amplification, so it cannot turn a small plan into a large buffer;
+- the **bytes are not capped**, and the control asserts they grow with the
+  plan, so nobody reads the row as promising otherwise.
+
+That is a narrower claim than the row implied, which is the point.

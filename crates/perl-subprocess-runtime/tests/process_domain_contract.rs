@@ -3949,3 +3949,116 @@ fn an_output_limit_outcome_must_name_the_bound_that_stopped_it() -> TestResult {
     )?;
     Ok(())
 }
+
+#[test]
+fn every_event_that_presupposes_a_child_is_refused_before_the_start() -> TestResult {
+    // The wrong implementation this kills: stating the pre-start rule per
+    // field. Output was checked, then terminal causes, then nothing else —
+    // leaving signals, group reaping, and limit events free to describe work
+    // on a child that did not exist. The rule now lives in one predicate, and
+    // this control walks every kind through both positions so a new variant
+    // cannot be quietly omitted from it.
+    let chunk = perl_subprocess_runtime::process::StreamChunkEvidence {
+        byte_count: 1,
+        offset: 0,
+        retained: true,
+    };
+    let limit = perl_subprocess_runtime::process::LimitEvidence {
+        channel: StreamChannel::Stdout,
+        limit_bytes: 1,
+        run_continues: false,
+    };
+    let requires_a_child = [
+        ProcessEventKind::StdoutBytes(chunk),
+        ProcessEventKind::StderrBytes(chunk),
+        ProcessEventKind::LimitReached(limit),
+        ProcessEventKind::TerminationPhase(
+            perl_subprocess_runtime::process::TerminationPhase::GracefulSignalSent,
+        ),
+        ProcessEventKind::TerminationPhase(
+            perl_subprocess_runtime::process::TerminationPhase::ForcedSignalSent,
+        ),
+        ProcessEventKind::TerminationPhase(
+            perl_subprocess_runtime::process::TerminationPhase::GroupReaped,
+        ),
+    ];
+    for kind in &requires_a_child {
+        let mut fresh = perl_subprocess_runtime::process::EventLedger::new(
+            perl_subprocess_runtime::process::RunId::new("run-pre"),
+        );
+        assert!(
+            fresh.admit(kind.clone()).is_err(),
+            "{kind:?} was admitted for a child that had not started"
+        );
+        // The same event is admissible once the child exists.
+        let mut started = perl_subprocess_runtime::process::EventLedger::new(
+            perl_subprocess_runtime::process::RunId::new("run-post"),
+        );
+        started.admit(ProcessEventKind::Started)?;
+        started
+            .admit(kind.clone())
+            .map_err(|_| format!("{kind:?} was refused after the child started"))?;
+    }
+
+    // A cancellation *request* is not an act on a child, and a deadline can
+    // elapse before a spawn ever completes. Both stay legal pre-start, or the
+    // rule would make an ordinary pre-start timeout unrepresentable.
+    for phase in [
+        perl_subprocess_runtime::process::TerminationPhase::CancellationRequested(
+            CancellationReason::Shutdown,
+        ),
+        perl_subprocess_runtime::process::TerminationPhase::DeadlineReached,
+    ] {
+        let mut fresh = perl_subprocess_runtime::process::EventLedger::new(
+            perl_subprocess_runtime::process::RunId::new("run-phase"),
+        );
+        fresh
+            .admit(ProcessEventKind::TerminationPhase(phase))
+            .map_err(|_| format!("{phase:?} was refused before a start"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn the_fingerprint_is_fixed_size_however_large_the_plan() -> TestResult {
+    // What "bounded" is actually proven to mean. The acceptance row claims a
+    // bounded canonical encoding, and the honest reading is narrow: the
+    // fingerprint is fixed-size for any plan, and the encoding is linear in
+    // the plan's own size with no amplification. The bytes themselves are not
+    // capped, and this control exists so that claim is tested rather than
+    // asserted.
+    let small = valid_linux_one_shot();
+    let mut builder = ProcessPlan::builder(
+        PlanId::new("plan-run-file-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        resolved_perl(),
+        allow_listed_environment(),
+    );
+    let long_argument = "x".repeat(200_000);
+    builder = builder
+        .argv(["-w", long_argument.as_str()])
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace/project"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(30)))
+        .termination(TerminationPolicy::ProcessTree {
+            graceful: Duration::from_millis(500),
+            then_forced: true,
+        })
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only());
+    let large = builder.build();
+
+    // The encoding grows with the plan — it is not capped, and saying so is
+    // the point.
+    assert!(
+        large.canonical_bytes().len() > small.canonical_bytes().len() + 100_000,
+        "the encoding did not carry the argument it was given"
+    );
+    // The fingerprint does not.
+    assert_eq!(small.semantic_fingerprint().to_string().len(), 32);
+    assert_eq!(large.semantic_fingerprint().to_string().len(), 32);
+    assert_ne!(small.semantic_fingerprint(), large.semantic_fingerprint());
+    Ok(())
+}

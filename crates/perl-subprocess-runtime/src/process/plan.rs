@@ -459,6 +459,23 @@ impl ProcessPlan {
     ///
     /// Deterministic under construction order: sets and maps are ordered, and
     /// every field is tagged and length-prefixed.
+    ///
+    /// # What is and is not bounded
+    ///
+    /// The *fingerprint* is bounded: 128 bits for any plan, however large.
+    /// These *bytes* are not — they are linear in the plan's own size, since
+    /// every identifier, argument, and variable name is written once. The
+    /// encoding performs no amplification, so it cannot turn a small plan into
+    /// a large buffer, but a caller that builds a plan with a megabyte of argv
+    /// gets a megabyte of encoding.
+    ///
+    /// This domain deliberately caps neither. The limits that actually bite —
+    /// `ARG_MAX`, the environment block size — are the platform's, they differ
+    /// per target, and they are enforced at spawn by the backend that knows
+    /// which platform it is on. Inventing a number here would be policy this
+    /// domain does not own, and would reject plans a real system accepts.
+    /// Whoever accepts *untrusted* plan input is the right place to bound the
+    /// input, and that is not this type.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut encoder = CanonicalEncoder::new();
         self.encode(&mut encoder);
@@ -466,6 +483,9 @@ impl ProcessPlan {
     }
 
     /// The plan's public semantic fingerprint.
+    ///
+    /// Fixed size for any plan: see [`Self::canonical_bytes`] for what that
+    /// does and does not bound.
     pub fn semantic_fingerprint(&self) -> PlanFingerprint {
         let mut encoder = CanonicalEncoder::new();
         self.encode(&mut encoder);
