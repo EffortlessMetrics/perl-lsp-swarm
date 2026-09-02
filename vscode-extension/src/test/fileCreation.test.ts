@@ -184,13 +184,28 @@ function installScopedConfiguration(
   folderValues: ReadonlyArray<readonly [string, boolean]> = [],
 ): void {
   (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(
-    (section?: string, scope?: { fsPath: string }) => ({
+    (section?: string, scope?: unknown) => ({
       get: (key: string, defaultValue?: unknown) => {
         if (section !== 'perl-lsp' || key !== 'autoPopulateNewFiles') {
           return defaultValue;
         }
-        if (scope) {
-          const folder = folderValues.find(([root]) => scope.fsPath.startsWith(`${root}/`));
+        if (scope !== undefined) {
+          // The real `ConfigurationScope` also accepts a `WorkspaceFolder` and a
+          // `TextDocument`. This fake deliberately answers only a `Uri`, because
+          // resolving the gate against the created file itself is the claim: a
+          // handler that passed `getWorkspaceFolder(uri)` instead would resolve
+          // folder overrides too, and a fake that quietly accepted it would stop
+          // discriminating between the two. Fail loudly rather than fall through
+          // to the workspace value, which would read as a passing test.
+          if (typeof (scope as { fsPath?: unknown }).fsPath !== 'string') {
+            throw new Error(
+              `getConfiguration scope must be the created file Uri, got ${JSON.stringify(scope)}`,
+            );
+          }
+          const { fsPath } = scope as { fsPath: string };
+          // Anchor on a trailing separator so `/ws/enabled-other/x.pm` cannot
+          // match the `/ws/enabled` row.
+          const folder = folderValues.find(([root]) => fsPath.startsWith(`${root}/`));
           if (folder) {
             return folder[1];
           }
@@ -283,6 +298,17 @@ describe('populateCreatedFiles gates on the folder each file was created in (#14
     await populateCreatedFiles(creationEvent('/elsewhere/lib/Foo.pm'));
 
     expect(populatedPaths()).toEqual([]);
+  });
+
+  test('a sibling folder with a shared name prefix does not inherit the override', async () => {
+    // `/ws/disabled-legacy` is a different root from `/ws/disabled`; an
+    // unanchored prefix match in the fake would silently hand it the override
+    // and make the disabled-folder cases above pass for the wrong reason.
+    installScopedConfiguration(true, [[DISABLED_ROOT, false]]);
+
+    await populateCreatedFiles(creationEvent(`${DISABLED_ROOT}-legacy/lib/Kept.pm`));
+
+    expect(populatedPaths()).toEqual([`${DISABLED_ROOT}-legacy/lib/Kept.pm`]);
   });
 
   test('an enabled folder still skips files that already have content', async () => {
