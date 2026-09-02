@@ -58,12 +58,47 @@ use super::transaction::{
     ReloadTransactionPhase,
 };
 
-/// Marker prefix for the read-only preflight observation.
+/// Marker stem for the read-only preflight observation.
 const PREFLIGHT_MARKER: &str = "PERLLSP_RELOAD_PREFLIGHT";
-/// Marker prefix for the mutation acknowledgement.
+/// Marker stem for the mutation acknowledgement.
 const MUTATION_MARKER: &str = "PERLLSP_RELOAD_MUTATION";
-/// Marker prefix for the post-mutation read-back observation.
+/// Marker stem for the post-mutation read-back observation.
 const READBACK_MARKER: &str = "PERLLSP_RELOAD_READBACK";
+
+/// Bind a marker stem to one transaction's operation identity.
+///
+/// A fixed marker is forgeable by the debuggee's own output: a module
+/// whose body or `BEGIN` block prints `PERLLSP_RELOAD_MUTATION 0` lands
+/// that line in the same frame as the real acknowledgement, and a
+/// first-match parser reads the module's text as the transaction's
+/// answer. Binding the marker to the operation identity means output
+/// written before this transaction existed cannot name it, and parsing
+/// takes the *last* match so a same-frame echo cannot pre-empt the real
+/// terminal value either.
+fn marker_for(stem: &str, operation_identity: u64) -> String {
+    format!("{stem}_{operation_identity}")
+}
+
+/// Encode a string as Perl-safe hex for `pack("H*", ...)`.
+///
+/// The alternative — quoting the value into `q(...)` — forces a choice
+/// between rejecting legitimate paths and risking injection. Windows
+/// separators (`C:\ws\lib\App\Core.pm`) and parenthesised directories
+/// (`/opt/Perl (local)/lib/App/Core.pm`) are ordinary paths, but a
+/// backslash can escape a `q()` delimiter and a paren can close it early.
+///
+/// Hex sidesteps the dilemma: the command text contains only `[0-9a-f]`,
+/// so no input can terminate the quote or introduce a statement, and
+/// every byte sequence a filesystem can produce round-trips exactly.
+fn perl_hex(value: &str) -> String {
+    value.as_bytes().iter().fold(String::with_capacity(value.len() * 2), |mut out, byte| {
+        use std::fmt::Write as _;
+        // Writing to a String cannot fail; the result is discarded rather
+        // than unwrapped so no panicking accessor appears here.
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
+}
 
 /// Why a framed exchange did not produce an answer.
 ///
@@ -255,20 +290,24 @@ fn module_key_is_safe(inc_key: &str) -> bool {
     segments > 0
 }
 
-/// Whether a resolved runtime path is safe to interpolate into command text.
+/// Whether a resolved runtime path can be carried into command text.
 ///
-/// Paths are not module keys: they legitimately contain spaces, dots, and
-/// platform separators, so this cannot reuse the key allowlist. It bans
-/// exactly what would break `q(...)` quoting or escape the statement — the
-/// parentheses that delimit the quote, a backslash that could escape one,
-/// quotes, and any control character or newline. Everything else, spaces
-/// included, is inert inside `q()` because it does not interpolate.
+/// Because the path is hex-encoded rather than quoted, this is a
+/// plausibility check on the *identity*, not an injection guard — the
+/// injection question is answered by [`perl_hex`], which cannot emit a
+/// character with syntactic meaning.
+///
+/// That distinction matters. An allowlist tight enough to make `q(...)`
+/// quoting safe has to reject backslashes and parentheses, which would
+/// make `C:\ws\lib\App\Core.pm` and `/opt/Perl (local)/lib/App/Core.pm`
+/// permanently unreloadable. Those are ordinary paths, not attacks, and a
+/// guard that refuses them is a bug rather than caution.
+///
+/// So this rejects only what cannot be a usable path at all: empty,
+/// absurdly long, or containing a NUL — which no filesystem path may
+/// contain and which would truncate the decoded value inside Perl.
 fn runtime_path_is_safe(path: &str) -> bool {
-    !path.trim().is_empty()
-        && path.len() <= 4096
-        && !path
-            .chars()
-            .any(|c| matches!(c, '(' | ')' | '\\' | '\'' | '"' | '\u{0}') || c.is_control())
+    !path.trim().is_empty() && path.len() <= 4096 && !path.contains('\u{0}')
 }
 
 /// The three command sets one transaction issues, derived from the subject.
@@ -331,14 +370,21 @@ pub fn plan_commands(
     if !runtime_path_is_safe(path) {
         return Err(CommandPlanError::UnsafeRuntimePath);
     }
-    // `q(...)` quoting is safe because both allowlists exclude every
-    // parenthesis, quote, backslash, and statement separator.
-    let observe = |marker: &str| {
+    // Both values reach Perl as hex, decoded inside the debuggee, so the
+    // command text carries no character that could close a quote or start
+    // a statement — and every legitimate platform path survives verbatim.
+    let key_hex = perl_hex(key);
+    let path_hex = perl_hex(path);
+    let operation = subject.operation_identity();
+    let observe = |stem: &str| {
+        let marker = marker_for(stem, operation);
         format!(
-            "p \"{marker} \" . (exists $INC{{q({key})}} ? q(present) : q(absent)) \
-             . \" \" . (defined $INC{{q({key})}} ? $INC{{q({key})}} : q(-))"
+            "p do {{ my $k = pack(q(H*),q({key_hex})); \
+             \"{marker} \" . (exists $INC{{$k}} ? q(present) : q(absent)) \
+             . \" \" . (defined $INC{{$k}} ? $INC{{$k}} : q(-)) }}"
         )
     };
+    let mutation_marker = marker_for(MUTATION_MARKER, operation);
     Ok(ReloadCommandPlan {
         preflight: vec![observe(PREFLIGHT_MARKER)],
         // `require` the *admitted absolute path*, never the `%INC` key.
@@ -357,10 +403,11 @@ pub fn plan_commands(
         // dropped and the canonical key is repointed at the same path the
         // subject is bound to.
         mutation: vec![format!(
-            "p do {{ delete $INC{{q({key})}}; delete $INC{{q({path})}}; \
-             my $ok = eval {{ require q({path}); 1 }} ? 1 : 0; \
-             if ($ok) {{ delete $INC{{q({path})}}; $INC{{q({key})}} = q({path}); }} \
-             \"{MUTATION_MARKER} $ok\" }}"
+            "p do {{ my $k = pack(q(H*),q({key_hex})); my $p = pack(q(H*),q({path_hex})); \
+             delete $INC{{$k}}; delete $INC{{$p}}; \
+             my $ok = eval {{ require $p; 1 }} ? 1 : 0; \
+             if ($ok) {{ delete $INC{{$p}}; $INC{{$k}} = $p; }} \
+             \"{mutation_marker} $ok\" }}"
         )],
         read_back: vec![observe(READBACK_MARKER)],
     })
@@ -414,9 +461,10 @@ fn sanitize_frame_line(line: &str) -> String {
 /// parse as `/ws/my`, mismatch the bound subject, and refuse a perfectly
 /// current subject as `AmbiguousRuntimeMapping`.
 fn parse_registration(lines: &[String], marker: &str) -> Option<RegistrationObservation> {
+    let mut found = None;
     for line in lines {
         let line = sanitize_frame_line(line);
-        let Some(index) = line.find(marker) else {
+        let Some(index) = line.rfind(marker) else {
             continue;
         };
         let rest = line.get(index + marker.len()..).unwrap_or("").trim();
@@ -430,9 +478,11 @@ fn parse_registration(lines: &[String], marker: &str) -> Option<RegistrationObse
             _ => continue,
         };
         let path = if remainder.is_empty() { "-" } else { remainder };
-        return Some(RegistrationObservation { present, path: path.to_string() });
+        // Keep scanning: the debuggee's own output can carry a marker-like
+        // line, and the transaction's own answer is the last one in frame.
+        found = Some(RegistrationObservation { present, path: path.to_string() });
     }
-    None
+    found
 }
 
 /// Parse the mutation acknowledgement flag out of framed output lines.
@@ -441,20 +491,24 @@ fn parse_registration(lines: &[String], marker: &str) -> Option<RegistrationObse
 /// `Some(false)` means it reported failure; `None` means no marker came
 /// back at all, which after the boundary is an ambiguous acknowledgement,
 /// never a success and never a clean failure.
-fn parse_mutation_ack(lines: &[String]) -> Option<bool> {
+fn parse_mutation_ack(lines: &[String], marker: &str) -> Option<bool> {
+    let mut found = None;
     for line in lines {
         let line = sanitize_frame_line(line);
-        let Some(index) = line.find(MUTATION_MARKER) else {
+        let Some(index) = line.rfind(marker) else {
             continue;
         };
-        let rest = line.get(index + MUTATION_MARKER.len()..).unwrap_or("");
+        let rest = line.get(index + marker.len()..).unwrap_or("");
         match rest.split_whitespace().next() {
-            Some("1") => return Some(true),
-            Some("0") => return Some(false),
+            // Keep scanning rather than returning: reloaded module code
+            // that prints a marker-like line lands in the same frame, and
+            // the acknowledgement `p` emits is the last value in it.
+            Some("1") => found = Some(true),
+            Some("0") => found = Some(false),
             _ => continue,
         }
     }
-    None
+    found
 }
 
 /// The outcome of one executed reload transaction.
@@ -534,6 +588,12 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
     clock: &mut RuntimeModuleGenerationClock,
 ) -> ReloadExecution {
     let subject = plan.subject();
+    // Markers are bound to this transaction's operation identity, so the
+    // debuggee's own output cannot name this exchange's answer.
+    let operation = subject.operation_identity();
+    let preflight_marker = marker_for(PREFLIGHT_MARKER, operation);
+    let mutation_marker = marker_for(MUTATION_MARKER, operation);
+    let readback_marker = marker_for(READBACK_MARKER, operation);
 
     // Admission: the command plan is derivable at all. An unsafe key or an
     // unimplemented mechanism refuses here, before the debuggee is touched.
@@ -602,7 +662,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
     // Preflight observation: still registered, at the bound path?
     match channel.run_readonly(commands.preflight()) {
         ChannelSettlement::Acknowledged(lines) => {
-            match parse_registration(&lines, PREFLIGHT_MARKER) {
+            match parse_registration(&lines, &preflight_marker) {
                 Some(observation) if !observation.present => {
                     return refuse_preflight(LoadedModuleReloadEligibility::NotLoaded, clock);
                 }
@@ -714,7 +774,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
                 clock,
             );
         }
-        ChannelSettlement::Acknowledged(lines) => parse_mutation_ack(&lines),
+        ChannelSettlement::Acknowledged(lines) => parse_mutation_ack(&lines, &mutation_marker),
     };
 
     // Read-back runs whatever the acknowledgement said: a failed `require`
@@ -741,7 +801,7 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
             return indeterminate(kind.post_boundary_cause(), clock);
         }
     };
-    let Some(observation) = parse_registration(&read_back, READBACK_MARKER) else {
+    let Some(observation) = parse_registration(&read_back, &readback_marker) else {
         return indeterminate(IndeterminateCause::ReadBackInconclusive, clock);
     };
 
@@ -776,6 +836,13 @@ mod tests {
 
     const KEY: &str = "App/Core.pm";
     const PATH: &str = "/ws/lib/App/Core.pm";
+    /// Operation identity every test subject carries.
+    const OP: u64 = 9;
+
+    /// The operation-bound marker a transaction for `OP` actually emits.
+    fn mark(stem: &str) -> String {
+        marker_for(stem, OP)
+    }
 
     fn candidate() -> SubjectCandidate {
         SubjectCandidate {
@@ -860,10 +927,10 @@ mod tests {
         fn happy() -> ScriptedChannel {
             ScriptedChannel::new(
                 vec![
-                    ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH),
-                    ScriptedChannel::ok(READBACK_MARKER, true, PATH),
+                    ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH),
+                    ScriptedChannel::ok(&mark(READBACK_MARKER), true, PATH),
                 ],
-                ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+                ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
             )
         }
     }
@@ -914,9 +981,9 @@ mod tests {
     fn every_execution_holds_the_possibly_applied_boundary() -> TestResult {
         let readonly_settlements = || {
             vec![
-                ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH),
-                ScriptedChannel::ok(PREFLIGHT_MARKER, false, PATH),
-                ScriptedChannel::ok(PREFLIGHT_MARKER, true, "/other/App/Core.pm"),
+                ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH),
+                ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), false, PATH),
+                ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, "/other/App/Core.pm"),
                 ChannelSettlement::Acknowledged(vec!["  DB<2> ".to_string()]),
                 ChannelSettlement::NotIssued("no stdin".to_string()),
                 ChannelSettlement::Unsettled(UnsettledKind::Timeout),
@@ -925,8 +992,8 @@ mod tests {
             ]
         };
         let mutation_settlements = vec![
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 0")]),
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
+            ChannelSettlement::Acknowledged(vec![format!("{} 0", mark(MUTATION_MARKER))]),
             ChannelSettlement::Acknowledged(vec!["  DB<3> ".to_string()]),
             ChannelSettlement::NotIssued("write failed".to_string()),
             ChannelSettlement::Unsettled(UnsettledKind::Timeout),
@@ -935,9 +1002,9 @@ mod tests {
         ];
         let read_back_settlements = || {
             vec![
-                ScriptedChannel::ok(READBACK_MARKER, true, PATH),
-                ScriptedChannel::ok(READBACK_MARKER, false, PATH),
-                ScriptedChannel::ok(READBACK_MARKER, true, "/other/App/Core.pm"),
+                ScriptedChannel::ok(&mark(READBACK_MARKER), true, PATH),
+                ScriptedChannel::ok(&mark(READBACK_MARKER), false, PATH),
+                ScriptedChannel::ok(&mark(READBACK_MARKER), true, "/other/App/Core.pm"),
                 ChannelSettlement::Acknowledged(vec!["  DB<4> ".to_string()]),
                 ChannelSettlement::NotIssued("gone".to_string()),
                 ChannelSettlement::Unsettled(UnsettledKind::Timeout),
@@ -1076,7 +1143,7 @@ mod tests {
     fn race_03_preflight_failure_never_mutates() -> TestResult {
         let mut channel = ScriptedChannel::new(
             vec![ChannelSettlement::NotIssued("no session".to_string())],
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
         );
         let execution = run(&mut channel)?;
         assert_eq!(
@@ -1130,8 +1197,8 @@ mod tests {
     #[test]
     fn race_06_same_name_other_include_root_refuses() -> TestResult {
         let mut channel = ScriptedChannel::new(
-            vec![ScriptedChannel::ok(PREFLIGHT_MARKER, true, "/other/lib/App/Core.pm")],
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+            vec![ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, "/other/lib/App/Core.pm")],
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
         );
         let execution = run(&mut channel)?;
         assert_eq!(
@@ -1151,10 +1218,10 @@ mod tests {
     fn race_07_runtime_rejection_is_possibly_applied() -> TestResult {
         let mut channel = ScriptedChannel::new(
             vec![
-                ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH),
-                ScriptedChannel::ok(READBACK_MARKER, false, "-"),
+                ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH),
+                ScriptedChannel::ok(&mark(READBACK_MARKER), false, "-"),
             ],
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 0")]),
+            ChannelSettlement::Acknowledged(vec![format!("{} 0", mark(MUTATION_MARKER))]),
         );
         let execution = run(&mut channel)?;
         assert_eq!(
@@ -1175,7 +1242,7 @@ mod tests {
     fn race_08_timeout_before_boundary_advances_nothing() -> TestResult {
         let mut channel = ScriptedChannel::new(
             vec![ChannelSettlement::Unsettled(UnsettledKind::Timeout)],
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
         );
         let execution = run(&mut channel)?;
         assert_eq!(
@@ -1202,7 +1269,7 @@ mod tests {
             (UnsettledKind::TransportLoss, IndeterminateCause::TransportLossAfterMutationBegan),
         ] {
             let mut channel = ScriptedChannel::new(
-                vec![ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH)],
+                vec![ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH)],
                 ChannelSettlement::Unsettled(kind),
             );
             let execution = run(&mut channel)?;
@@ -1228,7 +1295,7 @@ mod tests {
     fn race_10_cancellation_splits_at_the_boundary() -> TestResult {
         let mut before = ScriptedChannel::new(
             vec![ChannelSettlement::Unsettled(UnsettledKind::Cancelled)],
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
         );
         let execution = run(&mut before)?;
         assert_eq!(
@@ -1242,7 +1309,7 @@ mod tests {
         assert!(before.issued_mutations.is_empty());
 
         let mut after = ScriptedChannel::new(
-            vec![ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH)],
+            vec![ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH)],
             ChannelSettlement::Unsettled(UnsettledKind::Cancelled),
         );
         let execution = run(&mut after)?;
@@ -1263,10 +1330,10 @@ mod tests {
     fn race_11_debuggee_exit_during_transaction() -> TestResult {
         let mut channel = ScriptedChannel::new(
             vec![
-                ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH),
+                ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH),
                 ChannelSettlement::NotIssued("process exited".to_string()),
             ],
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
         );
         let execution = run(&mut channel)?;
         assert_eq!(
@@ -1338,8 +1405,8 @@ mod tests {
     fn prompt_alone_is_not_an_acknowledgement() -> TestResult {
         let mut channel = ScriptedChannel::new(
             vec![
-                ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH),
-                ScriptedChannel::ok(READBACK_MARKER, true, PATH),
+                ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH),
+                ScriptedChannel::ok(&mark(READBACK_MARKER), true, PATH),
             ],
             ChannelSettlement::Acknowledged(vec![
                 "  DB<2> ".to_string(),
@@ -1437,20 +1504,23 @@ mod tests {
             .chain(commands.read_back().iter())
         {
             assert!(!command.contains('\n'), "no command may embed a newline: {command}");
-            assert!(command.contains(KEY));
+            // The key is carried as hex, not as literal text.
+            assert!(command.contains(&perl_hex(KEY)), "key must be hex-encoded: {command}");
+            assert!(!command.contains(KEY), "key must not appear literally: {command}");
         }
         assert!(commands.mutation()[0].contains("delete $INC"));
         // The mutation requires the admitted absolute path, not the key,
         // so a reordered @INC cannot redirect it to another file.
-        assert!(
-            commands.mutation()[0].contains(&format!("require q({PATH})")),
-            "mutation must bind require to the admitted path: {}",
-            commands.mutation()[0]
-        );
+        // The mutation requires the admitted path, decoded from hex, so a
+        // reordered @INC cannot redirect it to another file.
+        assert!(commands.mutation()[0].contains(&perl_hex(PATH)));
+        assert!(commands.mutation()[0].contains("require $p"));
         // The read-only observations never interpolate the path; they only
         // report what the runtime says so it can be compared.
-        assert!(!commands.preflight()[0].contains(PATH));
-        assert!(!commands.read_back()[0].contains(PATH));
+        // The read-only observations never carry the path at all; they
+        // report what the runtime says so it can be compared.
+        assert!(!commands.preflight()[0].contains(&perl_hex(PATH)));
+        assert!(!commands.read_back()[0].contains(&perl_hex(PATH)));
         // Preflight is read-only: it never deletes, requires, or evals.
         assert!(!commands.preflight()[0].contains("delete"));
         assert!(!commands.preflight()[0].contains("require"));
@@ -1649,12 +1719,25 @@ mod tests {
                 Ok(Some(_)) => break,
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
+                        // Kill *and* reap: `Child::drop` does neither, so a
+                        // timed-out run would otherwise leave a zombie, and
+                        // repeated timeouts would accumulate them. Joining
+                        // the readers also releases the pipe ends.
                         let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = out_reader.join();
+                        let _ = err_reader.join();
                         return Err("perl -d exceeded the 20s deadline".to_string());
                     }
                     std::thread::sleep(std::time::Duration::from_millis(25));
                 }
-                Err(error) => return Err(format!("wait perl -d: {error}")),
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = out_reader.join();
+                    let _ = err_reader.join();
+                    return Err(format!("wait perl -d: {error}"));
+                }
             }
         }
         let mut merged = out_reader.join().unwrap_or_default();
@@ -1667,12 +1750,21 @@ mod tests {
     }
 
     /// Read one marker's trailing field out of live debuggee output.
+    /// Takes the **last** match, mirroring the production parsers.
+    ///
+    /// This matters: the fixture's replacement module deliberately prints
+    /// forged marker lines during `require`, so a first-match helper would
+    /// read the module's text instead of the transaction's answer — and
+    /// would report a passing executor as broken.
     fn live_field(run: &LiveRun, marker: &str) -> Option<String> {
-        run.stdout.lines().find_map(|line| {
-            let index = line.find(marker)?;
-            let rest = line.get(index + marker.len()..)?;
-            rest.split_whitespace().next().map(|field| field.to_string())
-        })
+        run.stdout
+            .lines()
+            .filter_map(|line| {
+                let index = line.rfind(marker)?;
+                let rest = line.get(index + marker.len()..)?;
+                rest.split_whitespace().next().map(|field| field.to_string())
+            })
+            .next_back()
     }
 
     /// The generated command plan, executed against a real `perl -d`,
@@ -1747,11 +1839,28 @@ mod tests {
             // The harness rewrites the module on disk from inside the
             // debuggee, so the rewrite is serialized with the transaction
             // exactly the way an editor save would be.
-            let escaped_path = resolved.replace('\\', "\\\\").replace('"', "\\\"");
+            // The replacement module deliberately forges the transaction's
+            // own markers before defining anything. `require` runs this
+            // body inside the mutation exchange, so both lines land in the
+            // same frame as the real acknowledgement — a first-match
+            // parser would read the module's `0` and report a successful
+            // reload as indeterminate. The executor must still recognise
+            // its own answer.
+            let forged_stem = format!("{MUTATION_MARKER} 0");
+            let forged_exact = format!("{} 0", mark(MUTATION_MARKER));
+            let replacement = format!(
+                "print STDERR \"{forged_stem}\\n\"; \
+                 print STDERR \"{forged_exact}\\n\"; \
+                 package App::Core; sub answer {{ 42 }} 1;\n"
+            );
+            // Both the destination and the contents travel as hex, so this
+            // harness has no quoting problem of its own to get wrong.
             let rewrite = format!(
-                "p do {{ open(my $fh, '>', \"{escaped_path}\") or die; \
-                 print $fh \"package App::Core; sub answer {{ 42 }} 1;\"; \
-                 close $fh; \"PERLLSP_TEST_REWROTE ok\" }}"
+                "p do {{ my $f = pack(q(H*),q({})); my $c = pack(q(H*),q({})); \
+                 open(my $fh, q(>), $f) or die; print $fh $c; close $fh; \
+                 \"PERLLSP_TEST_REWROTE ok\" }}",
+                perl_hex(&resolved),
+                perl_hex(&replacement)
             );
             let mut stream =
                 vec!["p \"PERLLSP_TEST_BEFORE \" . App::Core::answer()".to_string(), rewrite];
@@ -1779,21 +1888,35 @@ mod tests {
 
             // The generated commands are valid Perl and produced markers.
             assert_eq!(
-                live_field(&run, PREFLIGHT_MARKER).as_deref(),
+                live_field(&run, &mark(PREFLIGHT_MARKER)).as_deref(),
                 Some("present"),
                 "preflight must observe the loaded module; {}",
                 context()
             );
             assert_eq!(
-                live_field(&run, MUTATION_MARKER).as_deref(),
+                live_field(&run, &mark(MUTATION_MARKER)).as_deref(),
                 Some("1"),
                 "mutation must report a successful require; {}",
                 context()
             );
             assert_eq!(
-                live_field(&run, READBACK_MARKER).as_deref(),
+                live_field(&run, &mark(READBACK_MARKER)).as_deref(),
                 Some("present"),
                 "read-back must observe the refreshed registration; {}",
+                context()
+            );
+
+            // The forgery really did reach the stream, so the marker
+            // binding and last-match parsing are load-bearing here rather
+            // than incidentally satisfied.
+            assert!(
+                run.stdout.contains(&forged_stem),
+                "the fixture must actually forge the bare marker; {}",
+                context()
+            );
+            assert!(
+                run.stdout.contains(&forged_exact),
+                "the fixture must actually forge the operation-bound marker; {}",
                 context()
             );
 
@@ -1808,9 +1931,9 @@ mod tests {
             // Close the loop: the debuggee's own lines, parsed by the
             // production parser, drive the executor to `Reloaded`.
             let mut channel = ReplayChannel {
-                preflight: run.lines_with(PREFLIGHT_MARKER),
-                mutation: run.lines_with(MUTATION_MARKER),
-                read_back: run.lines_with(READBACK_MARKER),
+                preflight: run.lines_with(&mark(PREFLIGHT_MARKER)),
+                mutation: run.lines_with(&mark(MUTATION_MARKER)),
+                read_back: run.lines_with(&mark(READBACK_MARKER)),
                 readonly_calls: 0,
             };
             let plan = plan_reload(&subject, &admitted_observation())
@@ -1842,12 +1965,18 @@ mod tests {
     /// reading them as "absent".
     #[test]
     fn registration_parsing_refuses_malformed_frames() {
-        assert_eq!(parse_registration(&[], PREFLIGHT_MARKER), None);
+        assert_eq!(parse_registration(&[], &mark(PREFLIGHT_MARKER)), None);
         assert_eq!(
-            parse_registration(&[format!("{PREFLIGHT_MARKER} maybe /p")], PREFLIGHT_MARKER),
+            parse_registration(
+                &[format!("{} maybe /p", mark(PREFLIGHT_MARKER))],
+                &mark(PREFLIGHT_MARKER)
+            ),
             None
         );
-        assert_eq!(parse_registration(&[PREFLIGHT_MARKER.to_string()], PREFLIGHT_MARKER), None);
+        assert_eq!(
+            parse_registration(&[PREFLIGHT_MARKER.to_string()], &mark(PREFLIGHT_MARKER)),
+            None
+        );
         let present = parse_registration(
             &[format!("  DB<2> {PREFLIGHT_MARKER} present /ws/lib/App/Core.pm")],
             PREFLIGHT_MARKER,
@@ -1859,10 +1988,19 @@ mod tests {
                 path: "/ws/lib/App/Core.pm".to_string()
             })
         );
-        assert_eq!(parse_mutation_ack(&[]), None);
-        assert_eq!(parse_mutation_ack(&[format!("{MUTATION_MARKER} 2")]), None);
-        assert_eq!(parse_mutation_ack(&[format!("{MUTATION_MARKER} 1")]), Some(true));
-        assert_eq!(parse_mutation_ack(&[format!("{MUTATION_MARKER} 0")]), Some(false));
+        assert_eq!(parse_mutation_ack(&[], &mark(MUTATION_MARKER)), None);
+        assert_eq!(
+            parse_mutation_ack(&[format!("{} 2", mark(MUTATION_MARKER))], &mark(MUTATION_MARKER)),
+            None
+        );
+        assert_eq!(
+            parse_mutation_ack(&[format!("{} 1", mark(MUTATION_MARKER))], &mark(MUTATION_MARKER)),
+            Some(true)
+        );
+        assert_eq!(
+            parse_mutation_ack(&[format!("{} 0", mark(MUTATION_MARKER))], &mark(MUTATION_MARKER)),
+            Some(false)
+        );
     }
 
     /// A resolved path containing spaces round-trips intact.
@@ -1874,7 +2012,10 @@ mod tests {
     fn paths_with_spaces_are_not_truncated() -> TestResult {
         let spaced = "/ws/my lib/App/Core.pm";
         assert_eq!(
-            parse_registration(&[format!("{READBACK_MARKER} present {spaced}")], READBACK_MARKER),
+            parse_registration(
+                &[format!("{} present {spaced}", mark(READBACK_MARKER))],
+                &mark(READBACK_MARKER)
+            ),
             Some(RegistrationObservation { present: true, path: spaced.to_string() })
         );
 
@@ -1886,10 +2027,10 @@ mod tests {
             .map_err(|_| "spaced subject must admit")?;
         let mut channel = ScriptedChannel::new(
             vec![
-                ScriptedChannel::ok(PREFLIGHT_MARKER, true, spaced),
-                ScriptedChannel::ok(READBACK_MARKER, true, spaced),
+                ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, spaced),
+                ScriptedChannel::ok(&mark(READBACK_MARKER), true, spaced),
             ],
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
         );
         let mut clock = RuntimeModuleGenerationClock::new();
         let execution =
@@ -1903,8 +2044,8 @@ mod tests {
         // A genuinely different path still refuses, so the fix did not
         // turn the mapping check into a rubber stamp.
         let mut moved = ScriptedChannel::new(
-            vec![ScriptedChannel::ok(PREFLIGHT_MARKER, true, "/ws/other lib/App/Core.pm")],
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+            vec![ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, "/ws/other lib/App/Core.pm")],
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
         );
         let mut clock = RuntimeModuleGenerationClock::new();
         let execution =
@@ -2009,60 +2150,80 @@ mod tests {
         Ok(())
     }
 
-    /// A hostile resolved path is refused before any command is built.
+    /// Subject values reach Perl as hex, so no path or key character can
+    /// have syntactic meaning in the command text.
     ///
-    /// The mutation interpolates the admitted path, so the path needs its
-    /// own guard. It must still accept the shapes real paths take —
-    /// spaces, dots, dashes, unicode — or the fix for `@INC` redirection
-    /// would break ordinary workspaces.
+    /// This replaces an earlier allowlist that banned parens, backslashes
+    /// and quotes. That guard made injection impossible by making
+    /// `C:\\ws\\lib\\App\\Core.pm` and `/opt/Perl (local)/lib/App/Core.pm`
+    /// permanently unreloadable — ordinary paths on ordinary systems.
+    /// Encoding removes the dilemma instead of choosing a side of it.
     #[test]
-    fn unsafe_runtime_paths_are_refused_before_any_command() -> TestResult {
+    fn hostile_path_characters_are_encoded_not_executed() -> TestResult {
         let hostile = [
             "/ws/lib/App/Core.pm) ; system(q(id)); q(",
             "/ws/lib/App/Core.pm\nq foo",
-            "/ws/lib/(App)/Core.pm",
             "/ws/lib/App/Core.pm\\",
             "/ws/lib/App/Core.pm'",
             "/ws/lib/App/Core.pm\"",
-            "/ws/lib/App/\u{0}Core.pm",
-            "   ",
+            "/opt/Perl (local)/lib/App/Core.pm",
+            "C:\\Users\\dev\\ws\\lib\\App\\Core.pm",
         ];
         for path in hostile {
-            assert!(!runtime_path_is_safe(path), "{path:?} must be refused");
             let subject =
-                SubjectCandidate { resolved_runtime_path: path.to_string(), ..candidate() }.bind();
-            if let Ok(subject) = subject {
-                assert_eq!(
-                    plan_commands(&subject, ReloadMechanism::IncDeletionAndRequire),
-                    Err(CommandPlanError::UnsafeRuntimePath),
-                    "{path:?} must not produce commands"
+                SubjectCandidate { resolved_runtime_path: path.to_string(), ..candidate() }
+                    .bind()
+                    .map_err(|_| "subject must bind")?;
+            let commands = plan_commands(&subject, ReloadMechanism::IncDeletionAndRequire)
+                .map_err(|_| "encoded path must plan")?;
+            let mutation = &commands.mutation()[0];
+            // Characters this module never writes itself, so their
+            // presence could only come from the subject. (`"` is excluded
+            // deliberately: the command's own marker string is
+            // double-quoted Perl written here, not subject data.)
+            for bad in ['\n', '\\', '\''] {
+                assert!(
+                    !mutation.contains(bad),
+                    "{path:?} leaked {bad:?} into the command: {mutation}"
                 );
             }
-        }
-        // Real paths still pass, so the guard is not "reject everything".
-        for path in [
-            PATH,
-            "/ws/my lib/App/Core.pm",
-            "/ws/lib-2.0/App/Core.pm",
-            "C:/Users/dev/ws/lib/App/Core.pm",
-            "/ws/proyectos/lib/App/Core.pm",
-        ] {
-            assert!(runtime_path_is_safe(path), "{path:?} must be accepted");
+            // Parens appear only as the `q(...)` delimiters this module
+            // writes, never from the subject: every hex payload is
+            // strictly [0-9a-f].
+            assert!(
+                mutation.contains(&format!("q({})", perl_hex(path))),
+                "{path:?} must be carried as hex: {mutation}"
+            );
+            assert!(!mutation.contains(path), "{path:?} must not appear literally: {mutation}");
         }
         Ok(())
     }
 
-    /// A hostile path refuses the whole transaction without touching the
-    /// debuggee.
+    /// Only a genuinely unusable path is refused.
     #[test]
-    fn unsafe_path_refuses_the_transaction() -> TestResult {
-        let hostile = SubjectCandidate {
-            resolved_runtime_path: "/ws/lib/App/Core.pm) ; die; q(".to_string(),
+    fn unusable_runtime_paths_are_refused() -> TestResult {
+        for path in ["", "   ", "/ws/lib/App/\u{0}Core.pm"] {
+            assert!(!runtime_path_is_safe(path), "{path:?} must be refused");
+        }
+        assert!(!runtime_path_is_safe(&"x".repeat(5000)));
+        for path in [
+            PATH,
+            "/ws/my lib/App/Core.pm",
+            "C:\\Users\\dev\\ws\\lib\\App\\Core.pm",
+            "/opt/Perl (local)/lib/App/Core.pm",
+            "/ws/proyectos/lib/App/Core.pm",
+        ] {
+            assert!(runtime_path_is_safe(path), "{path:?} must be accepted");
+        }
+
+        // A NUL-bearing path refuses the whole transaction untouched.
+        let unusable = SubjectCandidate {
+            resolved_runtime_path: "/ws/lib/App/\u{0}Core.pm".to_string(),
             ..candidate()
         }
         .bind()
-        .map_err(|_| "hostile path must still bind")?;
-        let plan = plan_reload(&hostile, &admitted_observation())
+        .map_err(|_| "candidate must bind")?;
+        let plan = plan_reload(&unusable, &admitted_observation())
             .map_err(|_| "admission is observation-driven")?;
         let mut clock = RuntimeModuleGenerationClock::new();
         let mut channel = ScriptedChannel::happy();
@@ -2110,10 +2271,13 @@ mod tests {
         let mut channel = ScriptedChannel::new(
             // Preflight consumes the only queued settlement; the read-back
             // call past the end falls back.
-            vec![ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH)],
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+            vec![ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH)],
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
         );
-        assert_eq!(channel.run_readonly(&[]), ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH));
+        assert_eq!(
+            channel.run_readonly(&[]),
+            ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH)
+        );
         assert_eq!(
             channel.run_readonly(&[]),
             ChannelSettlement::Unsettled(UnsettledKind::Timeout),
@@ -2123,8 +2287,8 @@ mod tests {
         // And through the executor: an exhausted read-back after a
         // successful mutation is possibly applied, never Reloaded.
         let mut channel = ScriptedChannel::new(
-            vec![ScriptedChannel::ok(PREFLIGHT_MARKER, true, PATH)],
-            ChannelSettlement::Acknowledged(vec![format!("{MUTATION_MARKER} 1")]),
+            vec![ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, PATH)],
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
         );
         let execution = run(&mut channel)?;
         assert_eq!(
@@ -2146,15 +2310,22 @@ mod tests {
     #[test]
     fn ansi_decorated_frames_parse_cleanly() {
         let decorated = format!(
-            "\u{1b}[4m  DB<2> \u{1b}[24m\u{1b}[1m\u{1b}[m\u{0f}{READBACK_MARKER} present {PATH}"
+            "\u{1b}[4m  DB<2> \u{1b}[24m\u{1b}[1m\u{1b}[m\u{0f}{} present {PATH}",
+            mark(READBACK_MARKER)
         );
         assert_eq!(
-            parse_registration(&[decorated], READBACK_MARKER),
+            parse_registration(&[decorated], &mark(READBACK_MARKER)),
             Some(RegistrationObservation { present: true, path: PATH.to_string() })
         );
-        let decorated_ack = format!("\u{1b}[4m  DB<3> \u{1b}[24m\u{0f}{MUTATION_MARKER} 1");
-        assert_eq!(parse_mutation_ack(&[decorated_ack]), Some(true));
+        let decorated_ack = format!("\u{1b}[4m  DB<3> \u{1b}[24m\u{0f}{} 1", mark(MUTATION_MARKER));
+        assert_eq!(parse_mutation_ack(&[decorated_ack], &mark(MUTATION_MARKER)), Some(true));
         // Sanitizing must not invent a marker where there is none.
-        assert_eq!(parse_mutation_ack(&["\u{1b}[4m  DB<4> \u{1b}[24m".to_string()]), None);
+        assert_eq!(
+            parse_mutation_ack(
+                &["\u{1b}[4m  DB<4> \u{1b}[24m".to_string()],
+                &mark(MUTATION_MARKER)
+            ),
+            None
+        );
     }
 }
