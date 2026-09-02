@@ -24,8 +24,8 @@ use super::hygiene::{
     is_safe_repository_path, scan_secrets,
 };
 use super::model::{
-    ChangeInventory, HANDOFF_MANIFEST_SCHEMA_V1, HANDOFF_RECEIPT_SCHEMA_V1, LimitationCode,
-    MANIFEST_FILE_NAME, Manifest, PACK_FILE_NAME, PROOF_DIR_NAME, ProducerReceipt,
+    ChangeInventory, GITLINK_MODE, HANDOFF_MANIFEST_SCHEMA_V1, HANDOFF_RECEIPT_SCHEMA_V1,
+    LimitationCode, MANIFEST_FILE_NAME, Manifest, PACK_FILE_NAME, PROOF_DIR_NAME, ProducerReceipt,
     RECEIPT_FILE_NAME, RepositoryIdentitySource, RepositoryIdentityStatus, TransportFormat,
 };
 use super::{HandoffOutcome, is_digest_hex};
@@ -1160,7 +1160,7 @@ fn verify_object_presence(odb: &Path, manifest: &Manifest) -> Result<(), (Handof
             };
             // A gitlink names a commit in another repository and is recorded
             // rather than transported, so it is not part of this closure.
-            if *mode != "160000" {
+            if *mode != GITLINK_MODE {
                 required.insert((*object).to_string());
             }
         }
@@ -1229,7 +1229,7 @@ fn mandatory_limitations(manifest: &Manifest) -> BTreeSet<LimitationCode> {
     if manifest.candidate.is_merge_commit {
         required.insert(LimitationCode::MergeCommitDiffAgainstFirstParent);
     }
-    if !manifest.inventory.gitlinks.is_empty() {
+    if manifest.inventory.references_untransported_gitlink() {
         required.insert(LimitationCode::SubmoduleGitlinkNotTransported);
     }
     if manifest.repository_identity.status == RepositoryIdentityStatus::NotProven {

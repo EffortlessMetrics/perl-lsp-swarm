@@ -459,6 +459,219 @@ fn submodule_gitlink_is_recorded_but_not_transported() -> Result<()> {
     Ok(())
 }
 
+/// Removing the last submodule still declares the untransported-gitlink boundary.
+///
+/// `gitlinks` is collected from the candidate tree, so a candidate that deletes
+/// its only submodule leaves it empty — and the limitation was derived from
+/// exactly that emptiness. The inventory still carries a `160000` row whose
+/// `old_object` names the submodule commit, and that commit is deliberately not
+/// transported, so the envelope named an object it does not carry with nothing
+/// declaring the boundary. A consumer reading the limitations would conclude
+/// every referenced object was present.
+///
+/// Both the producer and the validator derive the limitation set independently
+/// and then require them to be equal, so this defect was symmetric: both sides
+/// omitted the code and agreed with each other. Agreement is not correctness
+/// when the rule is written twice, which is why the derivation is now one
+/// function on `ChangeInventory` that both sides call.
+#[test]
+fn a_deleted_submodule_still_declares_the_gitlink_boundary() -> Result<()> {
+    let upstream = Fixture::with_remote(None)?;
+    upstream.write("inner.txt", b"inner\n")?;
+    let inner_commit = upstream.commit("inner")?;
+
+    let fixture = Fixture::new()?;
+    fixture.write("outer.txt", b"outer\n")?;
+    fixture.commit("base")?;
+    fixture.git(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("160000,{inner_commit},vendor/inner"),
+    ])?;
+    fixture.commit_staged("add gitlink")?;
+    // The candidate removes the only submodule, emptying `gitlinks`.
+    fixture.git(&["rm", "--cached", "vendor/inner"])?;
+    fixture.commit_staged("remove gitlink")?;
+
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    // Anti-vacuity: the fixture must actually produce the shape the defect
+    // needs — an empty gitlink list beside a retained `160000` inventory row —
+    // or this control would pass for a candidate that simply has no submodule.
+    assert!(
+        manifest.inventory.gitlinks.is_empty(),
+        "the candidate tree no longer holds a gitlink, which is the whole point"
+    );
+    let deleted = manifest
+        .inventory
+        .changes
+        .iter()
+        .find(|change| change.path == "vendor/inner")
+        .context("the deleted gitlink must still be an inventory row")?;
+    assert_eq!(deleted.old_mode.as_deref(), Some("160000"));
+    assert_eq!(deleted.old_object.as_deref(), Some(inner_commit.as_str()));
+    assert!(
+        !manifest.transport.object_ids.contains(&inner_commit),
+        "a submodule commit is never transported, deleted or not"
+    );
+
+    // The boundary must be declared even though the candidate tree is clean.
+    assert!(
+        manifest.limitations.contains(&LimitationCode::SubmoduleGitlinkNotTransported),
+        "an inventory naming an untransported submodule commit must declare that boundary"
+    );
+    assert_eq!(
+        check_handoff(&destination.envelope()).outcome,
+        HandoffOutcome::ValidHandoff,
+        "the validator must derive the same limitation, not refuse the producer's"
+    );
+    Ok(())
+}
+
+/// Replacing a submodule with a regular file declares the same boundary.
+///
+/// The sibling case to deletion, and the reason the rule reads both sides of
+/// every change row rather than only the base side: a type change away from
+/// `160000` leaves no gitlink in the candidate tree either, while the old-side
+/// commit stays named in the inventory and untransported.
+#[test]
+fn a_submodule_replaced_by_a_file_still_declares_the_gitlink_boundary() -> Result<()> {
+    let upstream = Fixture::with_remote(None)?;
+    upstream.write("inner.txt", b"inner\n")?;
+    let inner_commit = upstream.commit("inner")?;
+
+    let fixture = Fixture::new()?;
+    fixture.write("outer.txt", b"outer\n")?;
+    fixture.commit("base")?;
+    fixture.git(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("160000,{inner_commit},vendor/inner"),
+    ])?;
+    fixture.commit_staged("add gitlink")?;
+    fixture.git(&["rm", "--cached", "vendor/inner"])?;
+    fixture.write("vendor/inner", b"now an ordinary file\n")?;
+    fixture.commit("replace gitlink with a file")?;
+
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    assert!(manifest.inventory.gitlinks.is_empty(), "the gitlink is gone from the tree");
+    let replaced = manifest
+        .inventory
+        .changes
+        .iter()
+        .find(|change| change.path == "vendor/inner")
+        .context("the replaced path must be an inventory row")?;
+    assert_eq!(replaced.old_mode.as_deref(), Some("160000"));
+    assert_eq!(replaced.new_mode.as_deref(), Some("100644"), "the candidate side is a real file");
+    assert!(
+        manifest.limitations.contains(&LimitationCode::SubmoduleGitlinkNotTransported),
+        "a type change away from a gitlink still names an untransported commit"
+    );
+    assert_eq!(check_handoff(&destination.envelope()).outcome, HandoffOutcome::ValidHandoff);
+    Ok(())
+}
+
+/// A partial clone missing an object fails locally instead of fetching it.
+///
+/// The producer claims to touch no network and need no credential. A partial
+/// clone breaks that claim from underneath: its object store is *deliberately*
+/// incomplete, and Git repairs a missing object by fetching from the promisor
+/// remote — silently, from plumbing that looks entirely local, and needing no
+/// credential at all on a public remote. `GIT_TERMINAL_PROMPT=0` does not stop
+/// it, because nothing is prompting.
+///
+/// Measured before the fix, on a real promisor clone with one blob removed:
+/// `cat-file -e` returned success and left a new `.promisor` pack behind. The
+/// export would have reported a candidate it had just downloaded.
+///
+/// The fixture points the promisor remote at a path that does not exist, so any
+/// fetch attempt must fail loudly and name the remote. The assertion is on
+/// *which* failure occurs: refusing locally is right, and reaching for the
+/// remote is the defect, so a diagnostic mentioning the remote fails this test
+/// even though both cases are non-success.
+///
+/// `GIT_NO_LAZY_FETCH` needs Git 2.42; this module's floor is 2.24. The control
+/// skips visibly below that rather than asserting a guarantee the running Git
+/// cannot make.
+#[test]
+fn a_partial_clone_refuses_locally_instead_of_fetching() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"base content\n")?;
+    fixture.commit("base")?;
+    fixture.write("b.txt", b"candidate content\n")?;
+    fixture.commit("candidate")?;
+
+    let version = fixture.git(&["version"])?;
+    if !git_supports_no_lazy_fetch(&version) {
+        // The running Git predates `GIT_NO_LAZY_FETCH`, so it cannot make the
+        // guarantee under test. A typed skip is honest; asserting a boundary
+        // this Git does not implement would be a fixture pretending to prove
+        // something.
+        return Ok(());
+    }
+
+    // Make the repository look exactly like a partial clone whose promisor
+    // remote is gone: the marker Git consults before attempting a lazy fetch.
+    let unreachable = fixture.path().join("no-such-remote.git");
+    fixture.git(&["remote", "set-url", "origin", &unreachable.display().to_string()])?;
+    fixture.git(&["config", "remote.origin.promisor", "true"])?;
+    fixture.git(&["config", "remote.origin.partialclonefilter", "blob:none"])?;
+
+    // Remove one blob the export must read, so the promisor path is reachable.
+    let blob = fixture.git(&["rev-parse", "HEAD:b.txt"])?.trim().to_string();
+    let loose = fixture.path().join(".git/objects").join(&blob[..2]).join(&blob[2..]);
+    fixture.git(&["unpack-objects", "-q"]).ok();
+    if loose.exists() {
+        fs::remove_file(&loose)?;
+    } else {
+        // The blob is inside a pack, so this fixture cannot make it absent
+        // without rewriting the object store. Skip rather than assert against
+        // a repository that is not actually missing anything.
+        return Ok(());
+    }
+
+    let destination = Destination::new()?;
+    let (outcome, detail) = create_handoff(&request(&fixture, &destination))
+        .err()
+        .context("an export missing a candidate object must not succeed")?;
+
+    assert!(
+        !detail.contains("Could not read from remote")
+            && !detail.contains("does not appear to be a git repository"),
+        "the export reached for the promisor remote instead of refusing locally: {detail}"
+    );
+    assert!(
+        matches!(outcome, HandoffOutcome::MissingObject | HandoffOutcome::InstrumentFailure),
+        "a locally missing object is a candidate/instrument failure, got {outcome:?}: {detail}"
+    );
+    assert!(
+        !destination.envelope().exists(),
+        "a refused export publishes nothing, including from a partial clone"
+    );
+    Ok(())
+}
+
+/// Whether `git --version` output is at least 2.42, when `GIT_NO_LAZY_FETCH`
+/// was introduced.
+fn git_supports_no_lazy_fetch(version: &str) -> bool {
+    let Some(rest) = version.split_whitespace().nth(2) else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    let (Some(major), Some(minor)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) else {
+        return false;
+    };
+    (major, minor) >= (2, 42)
+}
+
 #[test]
 fn unicode_and_whitespace_paths_round_trip_exactly() -> Result<()> {
     let fixture = Fixture::new()?;

@@ -216,6 +216,22 @@ fn run_bounded(
         // command here is local plumbing, so a prompt would only ever be a
         // sign that something unexpected reached the network.
         .env("GIT_TERMINAL_PROMPT", "0")
+        // Refusing the prompt is not refusing the network. In a partial clone
+        // the local object store is deliberately incomplete and Git repairs
+        // that by fetching from the promisor remote — silently, needing no
+        // credential on a public remote, and from plumbing that looks purely
+        // local. Measured: with a blob removed from a promisor clone,
+        // `cat-file -e` returned success and left a new `.promisor` pack
+        // behind, so an export claiming to touch no network had just used one.
+        // With this set the same command warns that lazy fetching is disabled
+        // and fails locally, which is the honest answer: the object is not
+        // here.
+        //
+        // Requires Git 2.42. This module's floor is 2.24 (`--end-of-options`),
+        // and older Git ignores the variable, so on 2.24..2.42 a partial clone
+        // can still fetch. Raising the floor for it would cost more than the
+        // case is worth; the boundary is stated rather than implied.
+        .env("GIT_NO_LAZY_FETCH", "1")
         // Ambient configuration is not the receiver's to inherit. Clearing the
         // repository-local environment closed only one route into the
         // validator: `git init --bare` honours `init.templateDir` from *global*

@@ -19,10 +19,11 @@ use super::hygiene::{
 };
 use super::model::{
     CandidateIdentity, ChangeInventory, ChangeRecord, ChangeStatus, CommitPerson, EntryClass,
-    GitlinkDisposition, GitlinkRecord, HANDOFF_MANIFEST_SCHEMA_V1, HANDOFF_RECEIPT_SCHEMA_V1,
-    LimitationCode, MANIFEST_FILE_NAME, Manifest, PACK_FILE_NAME, PROOF_DIR_NAME,
-    ProducerObservation, ProducerReceipt, ProofReference, RECEIPT_FILE_NAME, RepositoryIdentity,
-    RepositoryIdentitySource, RepositoryIdentityStatus, Transport, TransportFile, TransportFormat,
+    GITLINK_MODE, GitlinkDisposition, GitlinkRecord, HANDOFF_MANIFEST_SCHEMA_V1,
+    HANDOFF_RECEIPT_SCHEMA_V1, LimitationCode, MANIFEST_FILE_NAME, Manifest, PACK_FILE_NAME,
+    PROOF_DIR_NAME, ProducerObservation, ProducerReceipt, ProofReference, RECEIPT_FILE_NAME,
+    RepositoryIdentity, RepositoryIdentitySource, RepositoryIdentityStatus, Transport,
+    TransportFile, TransportFormat,
 };
 use super::{HandoffOutcome, canonical_json, content_digest_hex};
 
@@ -117,7 +118,7 @@ pub fn create_handoff_with_validator(
 
     let repository_identity = resolve_repository_identity(repository, request, &mut limitations)?;
     let inventory = build_inventory(repository, &candidate)?;
-    if !inventory.gitlinks.is_empty() {
+    if inventory.references_untransported_gitlink() {
         limitations.insert(LimitationCode::SubmoduleGitlinkNotTransported);
     }
 
@@ -819,7 +820,7 @@ pub fn entry_class_for(mode: &str) -> Result<EntryClass, (HandoffOutcome, String
         "100644" => Ok(EntryClass::RegularFile),
         "100755" => Ok(EntryClass::ExecutableFile),
         "120000" => Ok(EntryClass::Symlink),
-        "160000" => Ok(EntryClass::Gitlink),
+        GITLINK_MODE => Ok(EntryClass::Gitlink),
         "000000" => Ok(EntryClass::Absent),
         other => Err((
             HandoffOutcome::UnsupportedObjectClass,
@@ -866,7 +867,7 @@ pub fn collect_gitlinks(
         let [mode, kind, object] = columns.as_slice() else {
             return Err(malformed());
         };
-        if *mode == "160000" && *kind == "commit" {
+        if *mode == GITLINK_MODE && *kind == "commit" {
             if !is_full_object_id(object) {
                 return Err((
                     HandoffOutcome::InstrumentFailure,

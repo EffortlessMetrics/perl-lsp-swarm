@@ -215,6 +215,36 @@ pub struct ChangeInventory {
     pub gitlinks: Vec<GitlinkRecord>,
 }
 
+/// Tree entry mode for a submodule reference.
+pub const GITLINK_MODE: &str = "160000";
+
+impl ChangeInventory {
+    /// Whether this candidate involves a submodule commit the envelope does not
+    /// carry.
+    ///
+    /// Not the same question as "does the candidate tree still contain a
+    /// submodule". `gitlinks` is collected from the candidate tree alone, so a
+    /// candidate that *deletes* its last submodule — or replaces one with a
+    /// regular file — leaves it empty while the inventory still records a
+    /// `160000` row whose `old_object` names the submodule commit. That commit
+    /// is deliberately not transported, so the envelope would name an object it
+    /// does not carry with nothing declaring the boundary.
+    ///
+    /// Both sides of the format read this one function. The producer and the
+    /// validator each derive the limitation set independently, and a rule
+    /// written twice is a rule that can disagree with itself — which for a
+    /// derived-and-compared set means an envelope that validates while claiming
+    /// the wrong thing.
+    #[must_use]
+    pub fn references_untransported_gitlink(&self) -> bool {
+        !self.gitlinks.is_empty()
+            || self.changes.iter().any(|change| {
+                change.old_mode.as_deref() == Some(GITLINK_MODE)
+                    || change.new_mode.as_deref() == Some(GITLINK_MODE)
+            })
+    }
+}
+
 /// Object transport representation.
 ///
 /// Only a Git-native complete object set is admitted. A textual patch cannot
