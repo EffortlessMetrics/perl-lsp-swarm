@@ -43,7 +43,7 @@ const EXPECTED_LEDGER_DECISIONS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "relative-pattern-watcher",
-        "`RelativePattern` watcher registrations",
+        "`RelativePattern` watcher registrations (3.17 watcher globs)",
         "accepted-disposition",
         "n/a",
     ),
