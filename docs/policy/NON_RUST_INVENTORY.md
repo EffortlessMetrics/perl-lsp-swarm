@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12643 |
-| Rust-family files | 3933 |
-| Non-Rust files | 8710 |
-| Allowlisted | 6471 |
+| Total tracked files | 12647 |
+| Rust-family files | 3936 |
+| Non-Rust files | 8711 |
+| Allowlisted | 6472 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 501 |
+| config | 502 |
 | documentation | 2844 |
 | generated | 2 |
 | production | 354 |
@@ -6444,6 +6444,7 @@
 | `policy/generated-status-contract.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/generated-status-evidence.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/install-surface-registry.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/kwalitee-namespace-inventory.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/lsp-client-support.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/non-rust-allowlist.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/non-rust-debt.toml` | config | `non-rust-policy-ledgers` | release/ci |
