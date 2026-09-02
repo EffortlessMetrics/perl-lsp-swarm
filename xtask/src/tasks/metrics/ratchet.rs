@@ -597,4 +597,90 @@ mod tests {
             "error message must mention schema version mismatch; got: {msg}"
         );
     }
+
+    // -------------------------------------------------------------------------
+    // Bootstrap mode, proved end-to-end through `run_ratchet_check`.
+    //
+    // `docs/project/metrics/RATCHET.md` promises operators that a receipt-backed
+    // route passes before any sweep has produced a receipt.  Until #14175 that
+    // promise was only ever asserted as a literal string in a workflow file,
+    // which proves nothing about what the checker does.  These two tests pin the
+    // observable behavior instead: a missing receipt passes, and the regression
+    // case is the negative control showing that pass does not come from a
+    // checker incapable of failing.
+    //
+    // What they deliberately do not pin: that the fallback substitutes the
+    // *baseline values* rather than an empty map.  Both choices return `Ok`
+    // here, because `check_floor_metrics` skips metrics absent from `current`
+    // (see `test_ratchet_missing_current_skipped`), so the two are
+    // indistinguishable through this function's result.  Separating them would
+    // mean reshaping `run_ratchet_check` to expose its resolved current
+    // metrics, which #14175 scopes out.  Worth knowing if that skip ever
+    // becomes fail-closed: the two fallbacks would stop agreeing, and this
+    // suite would not notice.
+    // -------------------------------------------------------------------------
+    const BOOTSTRAP_BASELINE: &str = r#"{
+  "schema_version": 1,
+  "measured_at": "2026-05-03T00:00:00Z",
+  "subsystem": "test",
+  "commit": "baseline",
+  "floor_metrics": {
+    "system_clean_rate": 0.9
+  },
+  "improvement_metrics": {},
+  "tolerance_pct": 0.0
+}"#;
+
+    fn bootstrap_repo_root() -> Result<tempfile::TempDir> {
+        let dir = tempfile::tempdir()?;
+        let baseline_dir = dir.path().join(".ci/metrics/baselines");
+        std::fs::create_dir_all(&baseline_dir)?;
+        std::fs::write(baseline_dir.join("test.json"), BOOTSTRAP_BASELINE)?;
+        Ok(dir)
+    }
+
+    #[test]
+    fn ratchet_check_passes_in_bootstrap_mode_when_no_receipt_exists() -> Result<()> {
+        let dir = bootstrap_repo_root()?;
+
+        assert!(
+            !dir.path().join("target/receipts/metrics/test.json").exists(),
+            "bootstrap mode is only exercised when no receipt is on disk"
+        );
+
+        run_ratchet_check(dir.path(), "test", None, false).map_err(|err| {
+            eyre!("bootstrap mode must pass when no receipt exists, but it failed: {err}")
+        })?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn ratchet_check_fails_when_a_receipt_records_a_floor_regression() -> Result<()> {
+        let dir = bootstrap_repo_root()?;
+        let receipt_dir = dir.path().join("target/receipts/metrics");
+        std::fs::create_dir_all(&receipt_dir)?;
+        std::fs::write(
+            receipt_dir.join("test.json"),
+            r#"{
+  "subsystem": "test",
+  "generated_at": "2026-05-03T00:00:00Z",
+  "commit": "current",
+  "floor_metrics": {
+    "system_clean_rate": 0.5
+  },
+  "improvement_metrics": {}
+}"#,
+        )?;
+
+        let result = run_ratchet_check(dir.path(), "test", None, false);
+
+        assert!(
+            result.is_err(),
+            "a receipt below the committed floor must fail; otherwise the bootstrap \
+             pass above proves nothing"
+        );
+
+        Ok(())
+    }
 }
