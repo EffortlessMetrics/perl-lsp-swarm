@@ -4770,6 +4770,17 @@ enum AgentCandidateHandoffCommand {
     /// Reads only committed objects, so dirty, ignored, and untracked files
     /// cannot enter the envelope: an untracked file becomes transportable only
     /// once it is committed into the exact tree.
+    ///
+    /// The destination is written by staging and renaming, which fixes two
+    /// boundaries worth stating rather than leaving to be assumed. A non-empty
+    /// destination is never overwritten; an existing envelope, or any other
+    /// directory holding files, is refused. And the export is not `fsync`ed, so
+    /// a crash immediately after a successful `create` can leave the
+    /// destination absent — but never present and wrong: a destination that
+    /// survives a crash is either a complete envelope or a staging directory
+    /// `check` refuses, because the receipt only reads `validated` after the
+    /// self-check passed. The repair for the absent case is to run `create`
+    /// again, which is byte-identical for an unchanged candidate.
     Create {
         /// Repository to read. Never mutated.
         #[arg(long, default_value = ".")]
