@@ -30,10 +30,12 @@ One invariant sometimes needs a row in both `[workspace.lints.rust]` and `[works
 
 | identity | covers | silent on |
 |---|---|---|
-| `rust::let_underscore_lock` | `std::sync` mutex and read/write guards | `parking_lot` guards |
-| `clippy::let_underscore_lock` | `parking_lot` mutex and read/write guards | the standard-library guards Clippy uplifted to rustc |
+| `rust::let_underscore_lock` | `std::sync` mutex and read/write guards | all `parking_lot` guards |
+| `clippy::let_underscore_lock` | borrowed `parking_lot` mutex and read/write guards | the standard-library guards Clippy uplifted to rustc, and `parking_lot`'s owned arc guards |
 
 Deleting either row uncovers real lock types rather than removing a duplicate, so both are pinned in the checker's required dispositions and cannot be demoted without an explicit policy change. Their coverage boundary is measured against the selected toolchain — not asserted from the ledger — by the lock-partition tests in `xtask/src/tasks/check_lint_policy/tests/lock_partition.rs`.
+
+Split-tool coverage does not imply *complete* coverage, and the union has one measured hole: neither lint recognises `parking_lot`'s owned guards from `lock_arc`, `read_arc`, or `write_arc`, so `let _ = shared.lock_arc();` compiles silently. The workspace enables the `arc_lock` feature and `perl-workspace`'s `workspace_index` holds an `ArcMutexGuard`, so the family is production-reachable; the gap is owned by #14579. The lock-partition tests assert the hole as it stands, so if a future toolchain closes it the test fails and this table gets widened rather than quietly going stale.
 
 A row whose lint is already deny-by-default upstream is still stated explicitly. The default is the toolchain's current choice, not this repository's contract, and an upstream level change would otherwise remove the invariant silently.
 
