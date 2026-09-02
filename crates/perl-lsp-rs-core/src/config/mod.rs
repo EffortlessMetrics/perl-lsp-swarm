@@ -1984,7 +1984,7 @@ fn output_with_timeout(mut command: Command, timeout: Duration) -> std::io::Resu
 ///
 /// Unknown TOML keys are silently ignored for forward compatibility.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
     /// `[perl]` section: module resolution settings.
@@ -2007,7 +2007,7 @@ pub struct ProjectConfig {
 }
 
 /// `[perl]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectPerlConfig {
     /// Additional include paths for module resolution.
@@ -2019,8 +2019,9 @@ pub struct ProjectPerlConfig {
     pub discovery_extensions: Vec<String>,
     /// Additional directory names skipped during workspace discovery.
     pub discovery_skipped_dirs: Vec<String>,
-    /// Perl version string (e.g. "5.38") — parsed but not yet wired to diagnostics.
-    /// Reserved for future use; ignored in this implementation.
+    /// Trusted per-folder Perl version string (e.g. "5.38") used as the PL900
+    /// fallback target when the source has no `use VERSION` declaration.
+    /// Invalid values fail closed and source declarations always win.
     pub version: Option<String>,
     /// Whether to read `PERL5LIB` from the environment and include it in the
     /// module search path.  Unset means "leave the server default unchanged".
@@ -2031,7 +2032,7 @@ pub struct ProjectPerlConfig {
 }
 
 /// `[diagnostics]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectDiagnosticsConfig {
     /// Whether perlcritic is enabled. Maps to `ServerConfig.perlcritic_enabled`.
@@ -2041,7 +2042,7 @@ pub struct ProjectDiagnosticsConfig {
 }
 
 /// `[critic]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectCriticConfig {
     /// Critic engine (`legacy`, `perlcritic`, or `native`).
@@ -2055,7 +2056,7 @@ pub struct ProjectCriticConfig {
 }
 
 /// `[features]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectFeaturesConfig {
     /// Whether inlay hints are enabled globally. Maps to `ServerConfig.inlay_hints_enabled`.
@@ -2078,7 +2079,7 @@ pub struct ProjectFeaturesConfig {
 /// activate a remote AI backend or override user-owned provider/model choice.
 /// Those settings arrive only through the LSP client configuration channel
 /// (`ServerConfig::update_from_value`'s `aiCompletion` block).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectAiCompletionConfig {
     /// Opt-out only: when `false`, disables AI completions for this workspace.
@@ -2094,7 +2095,7 @@ pub struct ProjectAiCompletionConfig {
 /// ignored/deprecation reason instead of apparent success; it can never
 /// enable the internal scaffold gate or report ready/enabled.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectNextEditConfig {
     /// Legacy `enabled` flag. Ignored; kept only for the deprecation reason.
@@ -2102,7 +2103,7 @@ pub struct ProjectNextEditConfig {
 }
 
 /// `[formatting]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectFormattingConfig {
     /// Whether LSP formatting is enabled.

@@ -512,7 +512,7 @@ do
   ok(item.data.completion_item.data == nil, "caseA: fixture item carries no data field")
 
   local selected = item.onselect(1, item)
-  ok(selected == false, "caseA: selection defers while resolution is pending")
+  ok(selected == true, "caseA: selection is claimed while resolution is pending")
   ok(count_edits(doc) == 0,
     "caseA: no document mutation begins while resolve is in flight")
 
@@ -583,10 +583,10 @@ do
 
   item.onhover(1, item)
   local queued = item.onselect(1, item)
-  ok(queued == false and count_edits(doc) == 0,
-    "caseC: joining an in-flight resolve defers application without mutating")
+  ok(queued == true and count_edits(doc) == 0,
+    "caseC: joining an in-flight resolve claims selection without mutating")
   -- Repeated menu callbacks while pending stay inert.
-  ok(item.onselect(2, item) == false and count_edits(doc) == 0,
+  ok(item.onselect(2, item) == true and count_edits(doc) == 0,
     "caseC: repeat selection callbacks while pending stay inert")
 
   ok(play_response(server, "completionItem/resolve", { result = {
@@ -627,7 +627,7 @@ do
   })
   local item = items["foo"]
 
-  ok(item.onselect(1, item) == false,
+  ok(item.onselect(1, item) == true,
     "caseD: unresolved selection defers")
   ok(play_response(server, "completionItem/resolve", { result = {
     label = "foo",
@@ -665,7 +665,7 @@ do
   })
   local item = items["foo"]
 
-  ok(item.onselect(1, item) == false, "caseE: selection defers to resolution")
+  ok(item.onselect(1, item) == true, "caseE: selection is claimed for resolution")
   ok(play_response(server, "completionItem/resolve", { result = {
     label = "foo",
     documentation = { kind = "markdown", value = "**docs**" },
@@ -702,7 +702,7 @@ do
   })
   local item = items["bar"]
 
-  ok(item.onselect(1, item) == false, "caseF: unresolved selection defers")
+  ok(item.onselect(1, item) == true, "caseF: unresolved selection is claimed")
   local resolve_entry
   for _, entry in ipairs(server.outbound) do
     if entry.method == "completionItem/resolve" then resolve_entry = entry end
@@ -736,7 +736,7 @@ do
   })
   local item2 = items2["qux"]
   ok(item2 ~= nil, "caseF: label-only item populated")
-  ok(item2.onselect(1, item2) == false, "caseF: label-only selection defers too")
+  ok(item2.onselect(1, item2) == true, "caseF: label-only selection is claimed too")
   local entry2
   for _, entry in ipairs(server.outbound) do
     if entry.method == "completionItem/resolve" then entry2 = entry end
@@ -776,7 +776,7 @@ do
   })
   local item = items["foo"]
 
-  ok(item.onselect(1, item) == false, "caseG: selection defers")
+  ok(item.onselect(1, item) == true, "caseG: selection is claimed")
   accept_edit(lsp, doc, server, 1, 3, "x")
   doc._selection = { line = 1, col = 3 }
 
@@ -811,7 +811,7 @@ do
   })
   local item = items["foo"]
 
-  ok(item.onselect(1, item) == false, "caseH: selection defers")
+  ok(item.onselect(1, item) == true, "caseH: selection is claimed")
 
   local replacement = make_server("perllsp", RESOLVE_CAPS)
   register(lsp, "perllsp", replacement)
@@ -853,7 +853,7 @@ do
   })
   local item = items["foo"]
 
-  ok(item.onselect(1, item) == false, "caseI: first selection defers")
+  ok(item.onselect(1, item) == true, "caseI: first selection is claimed")
   ok(play_response(server, "completionItem/resolve", { result = {
     label = "foo",
     textEdit = { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 2 } },
@@ -921,7 +921,7 @@ do
     { label = "err_fn", kind = 3 },
   })
   local item = items["err_fn"]
-  ok(item.onselect(1, item) == false, "caseK: selection defers")
+  ok(item.onselect(1, item) == true, "caseK: selection is claimed")
   ok(play_response(server, "completionItem/resolve",
     { error = { code = -32603, message = "resolve exploded" } }),
     "caseK: resolve request reached the wire")
@@ -935,7 +935,7 @@ do
                    newText = "nul_fn()" } },
   })
   local item2 = items2["nul_fn"]
-  ok(item2.onselect(1, item2) == false, "caseK: null-result selection defers")
+  ok(item2.onselect(1, item2) == true, "caseK: null-result selection is claimed")
   ok(play_response(server, "completionItem/resolve", { result = nil }),
     "caseK: null resolve response played")
   ok(has_insert(doc, "nul_fn()"),
@@ -1004,7 +1004,7 @@ do
                    newText = "foo()" } },
   })
   local item = items["foo"]
-  ok(item.onselect(1, item) == false, "caseM: selection defers")
+  ok(item.onselect(1, item) == true, "caseM: selection is claimed")
 
   local dv_b = setmetatable({ doc = doc_b }, require "core.docview")
   activate(dv_b)

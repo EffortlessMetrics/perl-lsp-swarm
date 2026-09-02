@@ -153,6 +153,21 @@ created = "2026-08-26"
 review_after = "2027-02-26"
 
 [[allow]]
+id = "non-rust-ripr-facts-packet-goldens"
+glob = "crates/perl-ripr-facts/tests/golden/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ripr/facts-producer"
+reason = "Golden ripr-perl-facts-v1 packets captured from the pre-split producer, pinning packet bytes, ordering, ids and fingerprints across the #9271 module split. They are the zero-drift oracle for the #4747 v2 migration train: regenerating them by hand would defeat their purpose, so they change only when a reviewed emission change is intended."
+covered_by = [
+  "cargo test -p perl-ripr-facts --test packet_characterization --locked",
+]
+created = "2026-08-31"
+review_after = "2027-02-28"
+
+[[allow]]
 id = "non-rust-agent-review-packet-golden-markdown"
 glob = "fixtures/agent_review_packet/golden/*.md"
 kind = "test_fixture"
@@ -3575,6 +3590,38 @@ covered_by = [
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-critic-rule-proof-schema"
+path = "schemas/critic_rule_proof.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "critic"
+classification = "config"
+owner = "native-critic"
+reason = "JSON Schema for the critic_rule_proof.v1 rule-proof manifest (#6973); the xtask checker enforces schema, identity/remediation authorities, fixture digests, and live critic propositions."
+covered_by = [
+  "cargo xtask critic-rule-proof check",
+  "cargo test -p xtask --locked --test critic_rule_proof",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-critic-rule-proof-manifest"
+path = "fixtures/critic-rule-proof/manifest.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "native-critic"
+reason = "Pilot rule-proof manifest (#6973) binding fixture identities, evidence classes, and expected critic propositions."
+covered_by = [
+  "cargo xtask critic-rule-proof check",
+  "cargo test -p xtask --locked --test critic_rule_proof",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
 
 [[allow]]
 id = "non-rust-compiler-lexical-cutline-schema"

@@ -852,14 +852,7 @@ end
 ---applied by any path without resolution supplying a textEdit.
 local function completion_self_complete(item)
   if item.textEdit then return true end
-  if
-    snippets_found
-    and item.insertText
-    and item.insertTextFormat == Server.insert_text_format.Snippet
-  then
-    return true
-  end
-  return false
+  return item.insertText ~= nil
 end
 
 ---Resolved view over the original item (#11188): resolved fields win; fields
@@ -1002,6 +995,13 @@ local function apply_selected_completion(item, rstate)
       snippets.execute {format = 'lsp', template = effective.insertText}
       edit_applied = true
     end
+  elseif dv and effective.insertText then
+    local doc = dv.doc
+    local line2, col2 = doc:get_selection()
+    local line1, col1 = doc:position_offset(line2, col2, translate.start_of_word)
+    doc:set_selection(line1, col1, line2, col2)
+    doc:text_input(effective.insertText)
+    edit_applied = true
   end
   if edit_applied and effective.additionalTextEdits and #effective.additionalTextEdits > 0 then
     -- Apply the edits in reverse order, so that their ranges are not shifted
@@ -1191,11 +1191,18 @@ local function autocomplete_onselect(index, item)
     or rstate.state == "timed_out"
     or rstate.state == "stale"
   then
-    return apply_selected_completion(item, rstate)
+    local applied = apply_selected_completion(item, rstate)
+    -- A resolving item owns the selection even when its terminal refuses to
+    -- mutate (for example a stale or failed label-only result). Returning
+    -- false would make Lite XL insert the internal menu key as a fallback.
+    return applied or rstate.supported
   end
   if rstate.state == "in_flight" then
     rstate.pending_apply = true
-    return false
+    -- Lite XL inserts item.text when onselect returns false. Claim the
+    -- selection while resolve is pending so duplicate-key suffixes cannot
+    -- leak before the guarded terminal applies the result.
+    return true
   end
   -- unresolved: selection triggers the exact pre-apply resolution itself.
   rstate.pending_apply = true
@@ -1206,7 +1213,8 @@ local function autocomplete_onselect(index, item)
     -- so selection surfaces that real outcome instead of a deferral.
     return rstate.applied
   end
-  return false
+  -- The asynchronous terminal performs the sole document mutation.
+  return true
 end
 
 --
@@ -2759,9 +2767,20 @@ end
 function lsp.request_references(doc, line, col)
   if not doc.lsp_open then return end
 
-  for _, name in pairs(lsp.get_active_servers(doc.filename, true)) do
+  -- get_active_servers returns an ordered array. Preserve that order here so
+  -- a non-provider is observably considered before a later provider; using
+  -- pairs would make the regression depend on hash traversal order.
+  for _, name in ipairs(lsp.get_active_servers(doc.filename, true)) do
     local server = lsp.servers_running[name]
-    if server.capabilities.hoverProvider then
+    -- Local patch (#9019): gate references on the standard
+    -- referencesProvider capability, not hoverProvider; hover support says
+    -- nothing about textDocument/references. A server without
+    -- referencesProvider must not terminate the scan either: the first
+    -- active server that lacks it must not make a later valid references
+    -- provider unreachable solely because of iteration order
+    -- (complementary ungrouped servers; exclusive-group selection stays
+    -- with #10660).
+    if server.capabilities.referencesProvider then
       local request_params = get_buffer_position_params(doc, line, col)
       -- Local patch (#11165): no wire identity means no request.
       if not request_params then
@@ -2813,9 +2832,10 @@ function lsp.request_references(doc, line, col)
           end
         end
       })
+      -- Local patch (#9019): first references-capable server serves; the
+      -- scan continues past servers without referencesProvider.
       break
     end
-    break
   end
 end
 

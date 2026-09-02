@@ -416,6 +416,19 @@ local function activate(dv)
   core_mod.active_view = dv
 end
 
+-- Model Lite XL's real autocomplete:complete command. Its add() transform
+-- copies the map key into item.text, and a falsy onselect invokes the plain
+-- fallback. Keeping this in the harness makes suffix leaks and double
+-- insertion observable instead of bypassing the consumer contract.
+local function plugin_select(key, item)
+  item.text = key
+  local handled = item.onselect(1, item)
+  if not handled then
+    core_mod.active_view.doc:text_input(item.text)
+  end
+  return handled
+end
+
 -- ===========================================================================
 -- Case H: a plain completion may display a short label while requesting a
 -- different insertText. The fallback must preserve the protocol insertion
@@ -437,6 +450,11 @@ do
     row.data.insert_text == "function_call",
     "caseH: the distinct protocol insertText is preserved for fallback"
   )
+  local dv = setmetatable({ doc = doc }, require "core.docview")
+  activate(dv)
+  ok(plugin_select("fn", row) == true, "caseH: insertText selection is claimed")
+  ok(#doc.edits == 1 and doc.edits[1].text == "function_call",
+    "caseH: the protocol insertText reaches the document")
 end
 
 -- ===========================================================================
@@ -537,11 +555,10 @@ do
   ok(suffixed ~= nil, "caseD: the duplicate row exists")
   -- Model the autocomplete plugin's add() transform: menu rows carry their
   -- internal key as text, and onselect receives the transformed row.
-  suffixed.text = "foo#2"
   local dv = setmetatable({ doc = doc }, require "core.docview")
   activate(dv)
 
-  local applied = suffixed.onselect(2, suffixed)
+  local applied = plugin_select("foo#2", suffixed)
   ok(applied == true, "caseD: the suffixed row claims the application")
   ok(
     #doc.edits == 1 and doc.edits[1].op == "text_input" and doc.edits[1].text == "foo",
