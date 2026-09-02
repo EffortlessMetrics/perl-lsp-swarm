@@ -238,14 +238,21 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
         // ``` fence would otherwise read as the close, so the example's own
         // lines would be parsed and the real closing fence would re-open,
         // silently swallowing every genuine row after it.
-        if let Some((marker, length)) = fence_marker(trimmed) {
+        if let Some(delimiter) = fence_delimiter(trimmed) {
             match fence {
                 None => {
-                    fence = Some((marker, length));
+                    fence = Some((delimiter.marker, delimiter.length));
                     in_body = false;
                 }
                 Some((open_marker, open_length)) => {
-                    if marker == open_marker && length >= open_length {
+                    // An info-string line such as ```` ```rust ```` is content
+                    // inside an open fence, not its close. Treating it as the
+                    // close would parse the sample and let the real closer
+                    // re-open the fence over genuine rows.
+                    if delimiter.can_close
+                        && delimiter.marker == open_marker
+                        && delimiter.length >= open_length
+                    {
                         fence = None;
                     }
                 }
@@ -364,17 +371,39 @@ fn heading_depth(trimmed_line: &str) -> usize {
     trimmed_line.chars().take_while(|character| *character == '#').count()
 }
 
-/// A code-fence delimiter as its marker character and run length.
-///
-/// Both markers and the length matter: a fence closes only on the same
-/// character, at least as long as the one that opened it.
-fn fence_marker(trimmed_line: &str) -> Option<(char, usize)> {
+/// A code-fence delimiter line.
+struct FenceDelimiter {
+    /// Marker character, `` ` `` or `~`. A fence closes only on its own.
+    marker: char,
+    /// Length of the marker run. A close is at least as long as its opener.
+    length: usize,
+    /// Whether this line can close a fence.
+    ///
+    /// An opening fence may carry an info string (```` ```markdown ````); a
+    /// closing fence carries nothing but its run. Without this distinction an
+    /// info-string line inside an open fence reads as the close.
+    can_close: bool,
+}
+
+fn fence_delimiter(trimmed_line: &str) -> Option<FenceDelimiter> {
     let marker = trimmed_line.chars().next()?;
     if marker != '`' && marker != '~' {
         return None;
     }
+
     let length = trimmed_line.chars().take_while(|character| *character == marker).count();
-    (length >= 3).then_some((marker, length))
+    if length < 3 {
+        return None;
+    }
+
+    // Both markers are ASCII, so the run's character count is also its byte
+    // offset and this slice cannot split a code point.
+    let can_close = match trimmed_line.get(length..) {
+        Some(info) => info.trim().is_empty(),
+        None => true,
+    };
+
+    Some(FenceDelimiter { marker, length, can_close })
 }
 
 /// Read the name out of a reference table row.
@@ -658,6 +687,35 @@ mod tests {
 
         assert!(
             section_names(mixed, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-post"])
+        );
+    }
+
+    #[test]
+    fn an_info_string_line_inside_a_fence_does_not_close_it() {
+        // A nested ```` ```rust ```` line is content, not the close: only a bare
+        // run closes a fence. Treating it as the close would parse the sample
+        // and let the real closer re-open the fence over the rows after it.
+        let nested = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+````markdown
+```rust
+| `hx-phantom` | only an example |
+```
+````
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-post`](@/attributes/hx-post.md) | issues a POST |
+";
+
+        assert!(
+            section_names(nested, &CORE_ATTRIBUTES)
                 .is_ok_and(|names| names == ["hx-get", "hx-post"])
         );
     }
