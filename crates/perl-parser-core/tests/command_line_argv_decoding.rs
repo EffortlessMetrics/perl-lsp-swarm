@@ -774,6 +774,14 @@ fn help_and_version_stop_decoding_because_perl_stops() {
         perl_error(&["-Z", "-v"]),
         InvocationDecodeError::UnrecognizedSwitch { switch: 'Z', .. }
     ));
+
+    // A fragment written before the terminating switch is still recorded — it
+    // was on the command line — but it is not a one-liner to analyze, because
+    // `perl -e 'print "body"' -v` prints the version banner and never runs it.
+    let fragment_then_version = perl(&["-e", "print \"body\"", "-v"]);
+    assert_eq!(fragments(&fragment_then_version), vec![(SourceSwitch::E, "print \"body\"")]);
+    assert_eq!(fragment_then_version.program, ProgramSource::NotReached);
+    assert!(!fragment_then_version.is_one_liner(), "nothing runs, so nothing is analyzable");
 }
 
 #[test]
