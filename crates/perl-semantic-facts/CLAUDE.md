@@ -4,8 +4,12 @@
 
 Neutral semantic-fact vocabulary for Perl analysis layers: strongly-typed
 IDs and serializable fact records shared between parser-derived semantics,
-semantic-analyzer synthesis, and workspace indexing. A single-file (`lib.rs`)
-type-definition crate.
+semantic-analyzer synthesis, and workspace indexing. A types-only crate: it
+defines vocabulary and validates it, and performs no analysis.
+
+`lib.rs` holds the shared vocabulary, but this is no longer a single-file
+crate — `src/` also carries several contract modules of its own, listed below
+only where this guide describes them.
 
 ## Owns
 
@@ -21,6 +25,10 @@ type-definition crate.
 - Export/import modeling: `ExportSet`, `ExportTag`, `ImportSpec`,
   `ImportKind`, `ImportSymbols`, `UseLibFact`.
 - Visibility resolution: `VisibleSymbol`, `VisibleSymbolContext`.
+- `structural_access/` -- the ordered structural access-hop contract (#13619):
+  `StructuralAccessChain`, `StructuralAccessHop` and their vocabulary, for
+  recording `$config->{groups}{staff}[0]` hop by hop. Validated constructors,
+  private fields, deterministic fingerprints. No producer consumes it yet.
 
 ## Does not own
 
@@ -36,9 +44,13 @@ is a types-only vocabulary crate.
 
 ## Read first
 
-- `src/lib.rs` -- the entire crate; read the top doc comment first for the
-  "does not" boundary, then the ID newtypes and kind enums before the fact
-  record structs (records reference the IDs/kinds).
+- `src/lib.rs` -- the shared vocabulary; read the top doc comment first for
+  the "does not" boundary, then the ID newtypes and kind enums before the
+  fact record structs (records reference the IDs/kinds).
+- `src/structural_access/mod.rs` -- read its module doc before touching any
+  file in that directory. It states the ownership fence, the
+  spelling-is-evidence rule, and the transport trust boundary, all of which
+  its laws depend on.
 
 ## Focused validation
 
@@ -46,6 +58,12 @@ is a types-only vocabulary crate.
 (property-based) guards serde round-tripping for every fact type --
 required since these records cross process/cache boundaries as JSON.
 `tests/bdd_semantic_facts.rs` covers behavioral scenarios.
+
+For `structural_access/`: `cargo test -p perl-semantic-facts --lib
+structural_access` runs the in-module falsifiers, and
+`tests/structural_access_roundtrip.rs` drives the same public API from
+outside the crate. Each falsifier is named for the wrong implementation it
+rejects, so a failure names the law that broke.
 
 ## Review hotspots
 
@@ -56,9 +74,26 @@ required since these records cross process/cache boundaries as JSON.
   `LiteralRequireImport` is documented as more precise than `ExactAst` for
   a narrow case) -- read each variant's doc comment before adding a new one
   or assuming a general reliability ordering across all of them.
+- `structural_access/` fingerprints: every component folds through its own
+  labelled, length-prefixed field. Joining components into one string
+  reintroduces cross-field collisions that were shipped and fixed once
+  already. Borrowed enums fold through explicit stable tags, never `Debug`
+  text, so a variant rename cannot move a persisted digest.
+- `structural_access/` validation laws are cross-field and several are
+  deliberately *narrow*. A shape or status that cannot distinguish two cases
+  must not decide between them -- `ValueShape::Scalar` covers `undef`, which
+  Perl autovivifies, so it constrains no operator. Four laws in the original
+  PR were too strict for exactly this reason; check the "asserts too little"
+  question before adding or tightening one.
 
 ## Claim boundary
 
-Describes the fact vocabulary as authored (types and their doc comments).
-Does not assert which analysis stage actually populates which fact kind at
-runtime -- that logic lives in the consuming crates listed above.
+Describes the fact vocabulary as authored (types and their doc comments),
+plus the `structural_access/` contract as authored. Does not assert which
+analysis stage actually populates which fact kind at runtime -- that logic
+lives in the consuming crates listed above, and no producer emits a
+structural access chain yet.
+
+This guide documents `lib.rs` and `structural_access/`. The crate's other
+modules under `src/` are not described here; read them directly rather than
+assuming this file covers them.

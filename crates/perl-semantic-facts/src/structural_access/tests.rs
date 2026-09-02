@@ -50,6 +50,16 @@ fn base_variable() -> StructuralAccessAggregate {
     StructuralAccessAggregate::Variable { sigil: "$".to_string(), name: "config".to_string() }
 }
 
+/// `%config` — the aggregate a plain `{}` subscript actually addresses.
+fn hash_variable() -> StructuralAccessAggregate {
+    StructuralAccessAggregate::Variable { sigil: "%".to_string(), name: "config".to_string() }
+}
+
+/// `@config` — the aggregate a plain `[]` subscript actually addresses.
+fn array_variable() -> StructuralAccessAggregate {
+    StructuralAccessAggregate::Variable { sigil: "@".to_string(), name: "config".to_string() }
+}
+
 fn dynamic_boundary(kind: BoundaryKind, reason: SemanticReasonCode) -> BoundaryLink {
     BoundaryLink::new(Some(FactId(3)), kind, BoundaryDisposition::Degrade, reason)
 }
@@ -226,7 +236,7 @@ fn arrow_and_plain_first_hops_do_not_collide() -> Result<(), Box<dyn Error>> {
         vec![
             selecting_hop(
                 0,
-                base_variable(),
+                hash_variable(),
                 StructuralAccessOperator::HashSlot,
                 StructuralAccessSelector::StaticKey("b".to_string()),
                 "{b}",
@@ -374,7 +384,7 @@ fn spelling_is_evidence_and_never_participates_in_identity() -> Result<(), Box<d
     let build = |text: &str, start: u32, end: u32| {
         StructuralAccessHop::new(
             0,
-            base_variable(),
+            hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("groups".to_string()),
             spelling(text, start, end)?,
@@ -415,10 +425,13 @@ fn a_dynamic_key_hop_never_digests_as_a_dynamic_index_hop() -> Result<(), Box<dy
     // discriminant must still keep them apart on its own: dropping it would
     // leave both folding the identical boundary text.
     let boundary = dynamic_boundary(BoundaryKind::DynamicValue, SemanticReasonCode::DynamicValue);
-    let build = |operator, selector| {
+    let build = |operator: StructuralAccessOperator, selector| {
+        // The aggregate has to move with the operator: a plain `{}` addresses
+        // `%config` and a plain `[]` addresses `@config`.
+        let aggregate = if operator.is_keyed() { hash_variable() } else { array_variable() };
         StructuralAccessHop::new(
             0,
-            base_variable(),
+            aggregate,
             operator,
             selector,
             spelling("[$i]", 0, 4)?,
@@ -473,7 +486,7 @@ fn an_index_selector_cannot_ride_a_hash_operator() -> Result<(), Box<dyn Error>>
     // an indexed operator must reject a key selector
     let error = contract_error(StructuralAccessHop::new(
         0,
-        base_variable(),
+        array_variable(),
         StructuralAccessOperator::ArrayIndex,
         StructuralAccessSelector::StaticKey("b".to_string()),
         spelling("[b]", 0, 3)?,
@@ -528,7 +541,7 @@ fn a_later_hop_must_select_out_of_its_immediate_predecessor() -> Result<(), Box<
     // only the first hop may name an input aggregate
     let error = contract_error(selecting_hop(
         1,
-        base_variable(),
+        hash_variable(),
         StructuralAccessOperator::HashSlot,
         StructuralAccessSelector::StaticKey("b".to_string()),
         "{b}",
@@ -803,7 +816,7 @@ fn an_unnameable_aggregate_uses_a_typed_identity_not_a_rendered_label() -> Resul
 fn negative_static_indices_stay_exact() -> Result<(), Box<dyn Error>> {
     let last = selecting_hop(
         0,
-        StructuralAccessAggregate::Variable { sigil: "$".to_string(), name: "rows".to_string() },
+        StructuralAccessAggregate::Variable { sigil: "@".to_string(), name: "rows".to_string() },
         StructuralAccessOperator::ArrayIndex,
         StructuralAccessSelector::StaticIndex(-1),
         "[-1]",
@@ -811,7 +824,7 @@ fn negative_static_indices_stay_exact() -> Result<(), Box<dyn Error>> {
     )?;
     let first = selecting_hop(
         0,
-        StructuralAccessAggregate::Variable { sigil: "$".to_string(), name: "rows".to_string() },
+        StructuralAccessAggregate::Variable { sigil: "@".to_string(), name: "rows".to_string() },
         StructuralAccessOperator::ArrayIndex,
         StructuralAccessSelector::StaticIndex(1),
         "[1]",
@@ -888,6 +901,10 @@ fn a_non_canonical_sigil_cannot_name_a_variable() -> Result<(), Box<dyn Error>> 
     // rendered label stand in for a typed identity — `receiver_facts.rs`
     // degrading a nested base to the AST kind name `Binary` is the exact
     // failure #13619 exists to remove, and `Binary` is non-blank.
+    // Driven through an arrow operator on purpose: `->{}` dereferences
+    // whatever the base holds, so it fixes no sigil and leaves this test
+    // measuring only the canonical-sigil law. A plain `{}` would additionally
+    // require `%`, and every control but one would fail for the wrong reason.
     let build = |sigil: &str| {
         selecting_hop(
             0,
@@ -895,9 +912,9 @@ fn a_non_canonical_sigil_cannot_name_a_variable() -> Result<(), Box<dyn Error>> 
                 sigil: sigil.to_string(),
                 name: "config".to_string(),
             },
-            StructuralAccessOperator::HashSlot,
+            StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
-            "{k}",
+            "->{k}",
             ValueShape::Scalar,
         )
     };
@@ -934,7 +951,7 @@ fn a_subject_field_boundary_shift_does_not_collide() -> Result<(), Box<dyn Error
             )?,
             vec![selecting_hop(
                 0,
-                base_variable(),
+                hash_variable(),
                 StructuralAccessOperator::HashSlot,
                 StructuralAccessSelector::StaticKey("k".to_string()),
                 "{k}",
@@ -954,7 +971,7 @@ fn an_unknown_generation_is_not_a_known_empty_generation() -> Result<(), Box<dyn
             StructuralAccessSubject::new(DOCUMENT, generation, None, None)?,
             vec![selecting_hop(
                 0,
-                base_variable(),
+                hash_variable(),
                 StructuralAccessOperator::HashSlot,
                 StructuralAccessSelector::StaticKey("k".to_string()),
                 "{k}",
@@ -974,7 +991,7 @@ fn an_absent_project_generation_is_not_an_unknown_one() -> Result<(), Box<dyn Er
             StructuralAccessSubject::new(DOCUMENT, SourceGeneration::known("gen"), None, project)?,
             vec![selecting_hop(
                 0,
-                base_variable(),
+                hash_variable(),
                 StructuralAccessOperator::HashSlot,
                 StructuralAccessSelector::StaticKey("k".to_string()),
                 "{k}",
@@ -1008,7 +1025,7 @@ fn a_selected_value_fact_is_not_its_absence() -> Result<(), Box<dyn Error>> {
     let build = |value_fact: Option<FactId>| {
         StructuralAccessHop::new(
             0,
-            base_variable(),
+            hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
             spelling("{k}", 0, 3)?,
@@ -1032,7 +1049,7 @@ fn a_selected_value_fact_is_not_its_absence() -> Result<(), Box<dyn Error>> {
 fn a_static_key_never_digests_as_the_same_static_index() -> Result<(), Box<dyn Error>> {
     let keyed = selecting_hop(
         0,
-        base_variable(),
+        hash_variable(),
         StructuralAccessOperator::HashSlot,
         StructuralAccessSelector::StaticKey("5".to_string()),
         "{5}",
@@ -1040,7 +1057,7 @@ fn a_static_key_never_digests_as_the_same_static_index() -> Result<(), Box<dyn E
     )?;
     let indexed = selecting_hop(
         0,
-        base_variable(),
+        array_variable(),
         StructuralAccessOperator::ArrayIndex,
         StructuralAccessSelector::StaticIndex(5),
         "[5]",
@@ -1055,7 +1072,7 @@ fn a_package_name_shape_never_digests_as_an_object_shape() -> Result<(), Box<dyn
     let build = |shape: ValueShape| {
         selecting_hop(
             0,
-            base_variable(),
+            hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
             "{k}",
@@ -1075,7 +1092,7 @@ fn spending_the_last_unit_is_not_itself_a_defect() -> Result<(), Box<dyn Error>>
     // gets a definite answer. Nothing about that is dishonest.
     StructuralAccessHop::new(
         0,
-        base_variable(),
+        hash_variable(),
         StructuralAccessOperator::HashSlot,
         StructuralAccessSelector::StaticKey("k".to_string()),
         spelling("{k}", 0, 3)?,
@@ -1099,7 +1116,7 @@ fn a_hop_anchored_in_another_document_cannot_join_the_chain() -> Result<(), Box<
     // part of it.
     let foreign = StructuralAccessHop::new(
         0,
-        base_variable(),
+        hash_variable(),
         StructuralAccessOperator::HashSlot,
         StructuralAccessSelector::StaticKey("k".to_string()),
         StructuralAccessSpelling::new("{k}", SourceAnchor::new(None, FileId(999), 0, 3))?,
@@ -1155,7 +1172,7 @@ fn empty_and_blank_hash_keys_are_real_members() -> Result<(), Box<dyn Error>> {
     let build = |key: &str| {
         selecting_hop(
             0,
-            base_variable(),
+            hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey(key.to_string()),
             "{...}",
@@ -1361,7 +1378,7 @@ fn workspace_root_presence_reaches_the_chain_fingerprint() -> Result<(), Box<dyn
         )?,
         vec![selecting_hop(
             0,
-            base_variable(),
+            hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
             "{k}",
@@ -1372,7 +1389,7 @@ fn workspace_root_presence_reaches_the_chain_fingerprint() -> Result<(), Box<dyn
         StructuralAccessSubject::new(DOCUMENT, SourceGeneration::known("g"), None, None)?,
         vec![selecting_hop(
             0,
-            base_variable(),
+            hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
             "{k}",
@@ -1651,7 +1668,7 @@ fn a_blank_object_package_is_rejected_at_construction() -> Result<(), Box<dyn Er
     let build = |package: &str| {
         selecting_hop(
             0,
-            base_variable(),
+            hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
             "{k}",
@@ -1678,7 +1695,7 @@ fn a_blank_package_name_shape_is_rejected_at_construction() -> Result<(), Box<dy
     let build = |package: &str| {
         selecting_hop(
             0,
-            base_variable(),
+            hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
             "{k}",
@@ -1702,7 +1719,7 @@ fn a_blank_package_in_a_shape_mismatch_is_rejected() -> Result<(), Box<dyn Error
     let build = |package: &str| {
         StructuralAccessHop::new(
             0,
-            base_variable(),
+            hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
             spelling("{k}", 0, 3)?,
@@ -2130,6 +2147,103 @@ fn a_refused_promotion_cannot_survive_the_transport_boundary() -> Result<(), Box
     assert!(
         decoded.validate().is_err(),
         "a promoted fact behind a refusing boundary must not survive transport"
+    );
+    chain.validate()?;
+    Ok(())
+}
+
+// ── Plain subscripts address their own container (found by Devin) ─────────
+
+#[test]
+fn a_plain_subscript_must_name_its_own_container() -> Result<(), Box<dyn Error>> {
+    // `$config{groups}` reads `%config` and `$config[0]` reads `@config`. The
+    // leading `$` belongs to the element, not to the aggregate, and all three
+    // of `$config`, `@config` and `%config` can coexist as distinct variables
+    // — verified against the interpreter. Recording the aggregate as
+    // `$config` therefore names a different variable than the access reads.
+    let build = |sigil: &str, operator, text| {
+        selecting_hop(
+            0,
+            StructuralAccessAggregate::Variable {
+                sigil: sigil.to_string(),
+                name: "config".to_string(),
+            },
+            operator,
+            if operator == StructuralAccessOperator::HashSlot {
+                StructuralAccessSelector::StaticKey("groups".to_string())
+            } else {
+                StructuralAccessSelector::StaticIndex(0)
+            },
+            text,
+            ValueShape::Scalar,
+        )
+    };
+    // A plain hash slot on anything but `%`, and a plain index on anything
+    // but `@`, names the wrong variable.
+    for wrong in ["$", "@", "&", "*"] {
+        contract_error(build(wrong, StructuralAccessOperator::HashSlot, "{groups}"))?;
+    }
+    for wrong in ["$", "%", "&", "*"] {
+        contract_error(build(wrong, StructuralAccessOperator::ArrayIndex, "[0]"))?;
+    }
+    // The honest records for the same source.
+    build("%", StructuralAccessOperator::HashSlot, "{groups}")?;
+    build("@", StructuralAccessOperator::ArrayIndex, "[0]")?;
+    Ok(())
+}
+
+#[test]
+fn an_arrow_subscript_does_not_fix_the_aggregate_sigil() -> Result<(), Box<dyn Error>> {
+    // Negative control, and the boundary of the law above. `->{}` and `->[]`
+    // dereference whatever the base holds, so the operator fixes no sigil:
+    // `$config->{k}` is the ordinary case, and constraining the arrow forms
+    // would reject it. Every canonical sigil stays admissible here.
+    for sigil in ["$", "@", "%", "&", "*"] {
+        for (operator, selector, text) in [
+            (
+                StructuralAccessOperator::HashRefSlot,
+                StructuralAccessSelector::StaticKey("k".to_string()),
+                "->{k}",
+            ),
+            (
+                StructuralAccessOperator::ArrayRefIndex,
+                StructuralAccessSelector::StaticIndex(0),
+                "->[0]",
+            ),
+        ] {
+            selecting_hop(
+                0,
+                StructuralAccessAggregate::Variable {
+                    sigil: sigil.to_string(),
+                    name: "config".to_string(),
+                },
+                operator,
+                selector,
+                text,
+                ValueShape::Scalar,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_wrong_container_sigil_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    let honest = selecting_hop(
+        0,
+        hash_variable(),
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessSelector::StaticKey("groups".to_string()),
+        "{groups}",
+        ValueShape::Scalar,
+    )?;
+    let chain = StructuralAccessChain::new(subject()?, vec![honest])?;
+    let mut value = serde_json::to_value(&chain)?;
+    value["hops"][0]["aggregate"]["Variable"]["sigil"] = serde_json::json!("$");
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "a plain subscript naming a scalar of the same name must not survive transport"
     );
     chain.validate()?;
     Ok(())

@@ -243,6 +243,42 @@ impl StructuralAccessHop {
                 end_byte: self.spelling.anchor.end_byte,
             });
         }
+        // Law 10: a plain subscript on a named variable addresses that
+        // variable's own container, never a scalar that merely shares its name.
+        //
+        // `$config{groups}` reads `%config` and `$config[0]` reads `@config`;
+        // the leading `$` is the sigil of the *element*, not of the aggregate.
+        // All three of `$config`, `@config` and `%config` can coexist as
+        // distinct variables, so recording the aggregate as `$config` names a
+        // different variable than the one the access reads — the same defect
+        // as labelling a base with an AST kind name, reached by a subtler
+        // route. Verified against the interpreter.
+        //
+        // Only the plain forms are constrained. `->{}` and `->[]` dereference
+        // whatever the base holds, so their aggregate's sigil is not fixed by
+        // the operator and forcing one would reject honest records.
+        //
+        // A dereferenced base such as `$$ref{k}` is not a named variable at
+        // all — the hash it subscripts has no name — so it belongs in
+        // `Fact` or `DynamicBoundary`, which is why this law can be exact
+        // about the `Variable` case without catching that one.
+        if let StructuralAccessAggregate::Variable { sigil, .. } = &self.aggregate {
+            let required = match self.operator {
+                StructuralAccessOperator::HashSlot => Some("%"),
+                StructuralAccessOperator::ArrayIndex => Some("@"),
+                StructuralAccessOperator::HashRefSlot | StructuralAccessOperator::ArrayRefIndex => {
+                    None
+                }
+            };
+            if let Some(required) = required
+                && sigil != required
+            {
+                return Err(StructuralAccessContractError::ContradictoryStatus(
+                    "a plain subscript addresses the variable's own container sigil",
+                ));
+            }
+        }
+
         // Law 9: a boundary that refuses promotion cannot carry a promoted
         // value fact.
         //
