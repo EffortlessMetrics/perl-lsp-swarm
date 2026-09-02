@@ -489,6 +489,97 @@ mod tests {
     }
 
     #[test]
+    fn pull_request_target_materializes_exact_head_and_rejects_stale_ref() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let remote = temp.path().join("remote.git");
+        git(temp.path(), &["init", "--quiet"])?;
+        git(temp.path(), &["config", "user.name", "test"])?;
+        git(temp.path(), &["config", "user.email", "test@example.invalid"])?;
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().ok_or_else(|| eyre!("remote path is not UTF-8"))?],
+        )?;
+        git(temp.path(), &["remote", "add", "origin", "https://github.com/owner/repo.git"])?;
+        // Git's URL rewrite needs the actual local remote path as its value;
+        // configure it separately because the path contains platform-specific
+        // separators on Windows.
+        git(
+            temp.path(),
+            &[
+                "config",
+                &format!("url.{}.insteadOf", remote.to_string_lossy()),
+                "https://github.com/owner/repo.git",
+            ],
+        )?;
+        fs::write(temp.path().join("tracked.txt"), "base\n")?;
+        git(temp.path(), &["add", "tracked.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "base"])?;
+        let base = git(temp.path(), &["rev-parse", "HEAD"])?;
+        fs::write(temp.path().join("tracked.txt"), "head\n")?;
+        git(temp.path(), &["add", "tracked.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "head"])?;
+        let head = git(temp.path(), &["rev-parse", "HEAD"])?;
+        let root_path =
+            temp.path().to_str().ok_or_else(|| eyre!("fixture root path is not UTF-8"))?;
+        git(&remote, &["fetch", "--quiet", root_path, "HEAD:refs/heads/fixture-head"])?;
+        git(&remote, &["update-ref", "refs/pull/42/head", &head])?;
+
+        let event_path = temp.path().join("event.json");
+        fs::write(
+            &event_path,
+            serde_json::json!({
+                "repository": {"full_name": "owner/repo"},
+                "pull_request": {
+                    "number": 42,
+                    "base": {"sha": base, "repo": {"full_name": "owner/repo"}},
+                    "head": {"sha": head, "repo": {"full_name": "fork/repo"}}
+                }
+            })
+            .to_string(),
+        )?;
+        let receipt = temp.path().join("receipt.json");
+        run(Config {
+            event_name: Some("pull_request_target".to_string()),
+            event_path: Some(event_path.clone()),
+            repository: Some("owner/repo".to_string()),
+            github_sha: None,
+            base_sha: None,
+            head_sha: None,
+            receipt: receipt.clone(),
+            env_file: None,
+            root: Some(temp.path().to_path_buf()),
+        })?;
+        let value: Value = serde_json::from_slice(&fs::read(&receipt)?)?;
+        ensure!(value["outcome"] == "pass");
+        ensure!(value["event_head_sha"] == head);
+        ensure!(value["fetched_head_sha"] == head);
+        let subject =
+            value["derived_subject_sha"].as_str().ok_or_else(|| eyre!("subject missing"))?;
+        ensure!(git(temp.path(), &["rev-parse", &format!("{subject}^1")])? == base);
+        ensure!(git(temp.path(), &["rev-parse", &format!("{subject}^2")])? == head);
+
+        git(&remote, &["update-ref", "refs/pull/42/head", &base])?;
+        let stale_receipt = temp.path().join("stale.json");
+        let error = run(Config {
+            event_name: Some("pull_request_target".to_string()),
+            event_path: Some(event_path),
+            repository: Some("owner/repo".to_string()),
+            github_sha: None,
+            base_sha: None,
+            head_sha: None,
+            receipt: stale_receipt.clone(),
+            env_file: None,
+            root: Some(temp.path().to_path_buf()),
+        })
+        .expect_err("stale PR head must fail closed");
+        ensure!(error.to_string().contains("pull request head ref resolved"));
+        let stale: Value = serde_json::from_slice(&fs::read(stale_receipt)?)?;
+        ensure!(stale["outcome"] == "fail");
+        ensure!(stale["failure_stage"] == "head-ref");
+        Ok(())
+    }
+
+    #[test]
     fn missing_input_retains_typed_failure_receipt() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let receipt = temp.path().join("failure.json");
