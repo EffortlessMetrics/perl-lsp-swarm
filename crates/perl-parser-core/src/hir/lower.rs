@@ -2026,6 +2026,27 @@ impl Lowerer {
             return;
         }
 
+        // A key outside Sub::Exporter's documented set means this pass does not
+        // know what the configuration does. The four keys above are the ones
+        // documented to redirect installation, but that set is closed only for
+        // the documented vocabulary: an unrecognized key may be a newer
+        // release's installation-affecting option, or may make Sub::Exporter
+        // reject the setup outright. Either way the `exports` list read below
+        // is not shown to be what a consumer receives, so it is recorded as a
+        // boundary rather than published.
+        if let Some(key) = sub_exporter_unknown_setup_key(setup) {
+            self.record_dynamic_stash_boundary(
+                Some(package),
+                Some(key),
+                range,
+                Some(item_id),
+                StashDynamicBoundaryKind::DynamicExportDeclaration,
+                "Sub::Exporter setup carries a key this pass does not recognize, \
+                 so its exports are not shown to be what a consumer receives",
+            );
+            return;
+        }
+
         let export_names = match hash_entry_value(setup, "exports") {
             None => None,
             Some(value) => match sub_exporter_export_names(value) {
@@ -3161,6 +3182,33 @@ fn sub_exporter_declaration_confidence(
 /// all; `into` and `into_level` name a different destination; `installer`
 /// replaces the installation itself, which may or may not be equivalent.
 const SUB_EXPORTER_INSTALL_REDIRECT_KEYS: &[&str] = &["as", "into", "into_level", "installer"];
+
+/// Every top-level key Sub::Exporter's documentation defines for a setup hash.
+///
+/// The pod enumerates `exports`, `groups`, `collectors`, `into_level`, `into`,
+/// `generator` and `installer`; `as` comes from the same document's
+/// `setup_exporter` configuration. This is the vocabulary this pass can reason
+/// about — anything else is a configuration whose meaning is unknown here.
+const SUB_EXPORTER_KNOWN_SETUP_KEYS: &[&str] =
+    &["as", "collectors", "exports", "generator", "groups", "installer", "into", "into_level"];
+
+/// The first top-level setup key outside the documented vocabulary, if any.
+///
+/// An entry that is not a readable `key => value` pair counts as unknown too:
+/// a setup body this pass cannot parse into keys is not one whose `exports` it
+/// can claim to have understood.
+fn sub_exporter_unknown_setup_key(setup: &[String]) -> Option<String> {
+    comma_separated_entries(setup).into_iter().find_map(|entry| {
+        let key = unquote_literal(entry.first()?).to_string();
+        // A flattened hash or an expression is not a readable `key => value`
+        // pair, so which keys it contributes is unknown — including whether
+        // one of them redirects installation.
+        if entry.get(1).map(String::as_str) != Some("=>") {
+            return Some(key);
+        }
+        (!SUB_EXPORTER_KNOWN_SETUP_KEYS.contains(&key.as_str())).then_some(key)
+    })
+}
 
 /// Token slice inside a `use Sub::Exporter -setup => { ... }` configuration hash.
 ///

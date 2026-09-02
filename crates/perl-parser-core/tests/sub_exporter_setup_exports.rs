@@ -943,3 +943,98 @@ fn a_quoted_literal_option_key_still_publishes_its_member() {
     );
     assert!(export_boundaries(&file, "My::Utils").is_empty());
 }
+
+#[test]
+fn an_unrecognized_setup_key_publishes_no_exports() {
+    // The documented vocabulary is exports/groups/collectors/into/into_level/
+    // generator/installer/as. A key outside it means this pass cannot say what
+    // the configuration does — it may be a newer release's option that affects
+    // installation, or one Sub::Exporter rejects outright. Either way the
+    // `exports` list is not shown to be what a consumer receives.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports  => [qw(foo bar)],\n\
+             mystery  => 1,\n\
+         };\n",
+    );
+
+    assert!(
+        declarations(&file, "My::Utils").is_empty(),
+        "an unrecognized setup key publishes nothing"
+    );
+    assert_eq!(
+        export_boundaries(&file, "My::Utils"),
+        vec![(
+            Some("mystery".to_string()),
+            "Sub::Exporter setup carries a key this pass does not recognize, \
+             so its exports are not shown to be what a consumer receives"
+                .to_string()
+        )]
+    );
+}
+
+#[test]
+fn the_exporter_key_is_covered_by_the_same_rule() {
+    // `exporter` is not in the documented key list, so it needs no separate
+    // claim about what it means: the general rule withholds the exports and
+    // names the key in the boundary.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports  => [qw(foo)],\n\
+             exporter => \\&install_it,\n\
+         };\n",
+    );
+
+    assert!(declarations(&file, "My::Utils").is_empty());
+    assert_eq!(
+        export_boundaries(&file, "My::Utils")
+            .into_iter()
+            .map(|(symbol, _)| symbol)
+            .collect::<Vec<_>>(),
+        vec![Some("exporter".to_string())]
+    );
+}
+
+#[test]
+fn a_flattened_hash_in_the_setup_publishes_no_exports() {
+    // `%defaults` is not a readable `key => value` pair, so which keys it
+    // contributes is unknown — including whether one of them redirects
+    // installation. The setup is not readable as a whole.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { %defaults, exports => [qw(foo)] };\n",
+    );
+
+    assert!(declarations(&file, "My::Utils").is_empty());
+    assert!(!export_boundaries(&file, "My::Utils").is_empty());
+}
+
+#[test]
+fn every_documented_setup_key_together_still_publishes() {
+    // The control against the allowlist over-tightening: a setup using the
+    // documented non-redirecting keys still lowers its exports normally.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => {\n\
+             exports    => [qw(foo bar)],\n\
+             groups     => { default => [qw(foo)] },\n\
+             collectors => [qw(config)],\n\
+         };\n",
+    );
+
+    assert_eq!(
+        declarations(&file, "My::Utils"),
+        vec![
+            (ExportDeclarationKind::Optional, None, vec!["foo".to_string(), "bar".to_string()]),
+            (ExportDeclarationKind::Default, None, vec!["foo".to_string()]),
+            (
+                ExportDeclarationKind::Tag,
+                Some("all".to_string()),
+                vec!["foo".to_string(), "bar".to_string()]
+            ),
+        ]
+    );
+    assert!(export_boundaries(&file, "My::Utils").is_empty());
+}
