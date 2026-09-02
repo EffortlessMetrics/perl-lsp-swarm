@@ -270,7 +270,7 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
     // shard should not be allowed to carry.
     let defined = defined_gate_names(&policy)?;
     let undefined: Vec<&str> =
-        shard_gates.iter().map(String::as_str).filter(|name| !defined.contains(*name)).collect();
+        shard_gates.iter().map(String::as_str).filter(|&name| !defined.contains(name)).collect();
     ensure!(
         undefined.is_empty(),
         "the `policy` shard names gates that .ci/gate-policy.yaml does not define: {undefined:?}"
