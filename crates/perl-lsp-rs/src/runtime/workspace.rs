@@ -37,7 +37,7 @@ use perl_parser::workspace_index::{
     DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
 };
 #[cfg(feature = "workspace")]
-use perl_parser_core::source_file::{is_perl_source_path, is_perl_source_uri};
+use perl_parser_core::source_file::{is_perl_source_bytes, is_perl_source_path};
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFallbackState,
@@ -46,6 +46,8 @@ use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "workspace")]
+use std::io::Read;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -72,6 +74,14 @@ const WORKSPACE_CONFIGURATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(30
 #[allow(dead_code)]
 fn is_perl_source_file(path: &Path) -> bool {
     is_perl_source_path(path)
+}
+
+// Production classification goes through `read_perl_source_file`'s
+// same-object byte classification; this URI-shaped wrapper is retained for
+// the test suite that pins the URI-to-disk classification contract.
+#[cfg(all(feature = "workspace", test))]
+fn is_perl_source_uri_on_disk(uri: &str) -> bool {
+    uri_to_fs_path(uri).is_some_and(|path| is_perl_source_path(&path))
 }
 
 #[cfg(feature = "workspace")]
@@ -102,7 +112,7 @@ fn is_permission_denied_error(e: &std::io::Error) -> bool {
 }
 
 #[cfg(feature = "workspace")]
-use crate::util::read_text_file_with_encoding;
+use crate::util::{decode_text_bytes, read_text_file_with_encoding};
 #[cfg(feature = "workspace")]
 use perl_workspace::monitoring::{IndexingPhase, WorkspaceIndexingReceipt};
 
@@ -115,6 +125,33 @@ pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<Stri
             None
         }
     })
+}
+
+#[cfg(feature = "workspace")]
+fn read_perl_source_file(path: &Path) -> std::io::Result<Option<String>> {
+    // Screen non-regular objects before opening: opening a FIFO for reading
+    // can block on Unix, and watcher/discovery threads call this helper
+    // directly. Classification still decides from actual bytes below, so an
+    // object swapped into this screen window stays fail-closed.
+    if let Ok(metadata) = std::fs::metadata(path)
+        && !metadata.is_file()
+    {
+        return Ok(None);
+    }
+    let mut file = std::fs::File::open(path)?;
+    // Classify from a bounded prefix before paying for an unbounded read of a
+    // large extensionless non-Perl artifact. `is_perl_source_bytes` inspects
+    // only the shebang window, so the prefix is sufficient for every path it
+    // can classify, and recognized extensions short-circuit on the path.
+    const CLASSIFICATION_PROBE_BYTES: u64 = 4096;
+    let mut prefix = Vec::new();
+    (&mut file).take(CLASSIFICATION_PROBE_BYTES).read_to_end(&mut prefix)?;
+    if !is_perl_source_bytes(path, &prefix) {
+        return Ok(None);
+    }
+    let mut bytes = prefix;
+    file.read_to_end(&mut bytes)?;
+    Ok(Some(decode_text_bytes(&bytes)))
 }
 
 /// RAII guard that clears the `indexing_in_progress` flag on drop.
@@ -1383,6 +1420,7 @@ impl LspServer {
     /// Updates both ServerConfig and WorkspaceConfig when the client
     /// notifies of configuration changes.
     pub(super) fn handle_did_change_configuration(&self, params: Option<Value>) {
+        self.invalidate_workspace_identity();
         if let Some(params) = params
             && let Some(settings) = params.get("settings")
         {
@@ -1554,6 +1592,16 @@ impl LspServer {
                 if let Err(e) = self.refresh_controller.refresh_all(self) {
                     tracing::warn!(error = %e, "Failed to refresh client after config change");
                 }
+
+                self.invalidate_workspace_identity();
+
+                let open_uris: Vec<String> = {
+                    let documents = self.documents.lock();
+                    documents.keys().cloned().collect()
+                };
+                for open_uri in open_uris {
+                    self.publish_diagnostics_debounced(&open_uri);
+                }
             }
         }
 
@@ -1680,15 +1728,48 @@ impl LspServer {
 
         let mut loaded_content: Option<String> = None;
 
-        // Re-index the file if it is a Perl source file.
+        // Clear any prior disk-backed facts before classifying the current
+        // path. This is required when an indexed extensionless Perl script
+        // loses its shebang: it is no longer a Perl source, but its old
+        // symbols must not remain searchable. Open documents returned above
+        // and therefore retain buffer authority.
         #[cfg(feature = "workspace")]
-        if let Some(coordinator) = self.coordinator()
-            && is_perl_source_uri(uri)
-        {
-            if loaded_content.is_none() {
-                loaded_content = read_watched_file_content(uri, "re-indexing");
-            }
+        if let Some(coordinator) = self.coordinator() {
+            let disk_classification: Option<bool> = if let Some(path) = uri_to_fs_path(uri) {
+                match read_perl_source_file(&path) {
+                    Ok(content) => {
+                        loaded_content = content;
+                        Some(loaded_content.is_some())
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "Failed to read file for re-indexing ({}): {}",
+                            path.display(),
+                            e
+                        );
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            let _transition = self.indexing_transition_lock.lock();
+                            if !self.document_is_open(uri) {
+                                coordinator.index().clear_file(uri);
+                            }
+                        }
+                        // A transient read failure (save/replace window,
+                        // permission change, sharing violation) must not evict
+                        // existing facts: keep prior index state until a later
+                        // event confirms the disk content, mirroring the
+                        // rename destination branch.
+                        None
+                    }
+                }
+            } else {
+                Some(false)
+            };
 
+            // Re-check after the disk read/classification. If didOpen raced
+            // this watcher event, do not clear its prior disk facts here;
+            // the open buffer remains authoritative and its own lifecycle
+            // will reconcile the index.
+            let _transition = self.indexing_transition_lock.lock();
             if self.document_is_open(uri) {
                 self.record_backing_file_transition(uri, BackingFileTransition::Changed);
                 tracing::debug!(
@@ -1696,22 +1777,26 @@ impl LspServer {
                      buffer remains authoritative; disk re-index skipped (#8041)",
                     uri
                 );
-                if let Some(coordinator) = self.coordinator() {
-                    coordinator.notify_parse_complete(uri);
-                }
+                coordinator.notify_parse_complete(uri);
                 return;
             }
 
             let workspace_index = coordinator.index();
-            if let Ok(url) = url::Url::parse(uri)
-                && let Some(content) = loaded_content.as_ref()
-            {
-                // Clear old index data before re-indexing
+            // An unknown disk state (transient read failure above) keeps the
+            // existing facts instead of clearing them.
+            if let Some(is_perl_source) = disk_classification {
                 workspace_index.clear_file(uri);
-                match workspace_index.index_file(url, content.clone()) {
-                    Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
-                    Err(e) => {
-                        tracing::warn!("Failed to re-index file {}: {}", uri, e);
+
+                // Re-index the file if it is a Perl source file.
+                if is_perl_source
+                    && let Ok(url) = url::Url::parse(uri)
+                    && let Some(content) = loaded_content.as_ref()
+                {
+                    match workspace_index.index_file(url, content.clone()) {
+                        Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
+                        Err(e) => {
+                            tracing::warn!("Failed to re-index file {}: {}", uri, e);
+                        }
                     }
                 }
             }
@@ -1911,37 +1996,10 @@ impl LspServer {
                     continue;
                 }
 
-                // Index the new file if it's a Perl file
-                // Note: Mutation operation - use coordinator with lifecycle tracking
-                #[cfg(feature = "workspace")]
-                if let Some(coordinator) = self.coordinator()
-                    && is_perl_source_uri(uri)
-                    && let Some(path) = uri_to_fs_path(uri)
-                {
-                    match read_text_file_with_encoding(&path) {
-                        Ok(content) => {
-                            coordinator.notify_change(uri);
-                            if let Ok(url) = url::Url::parse(uri) {
-                                match coordinator.index().index_file(url, content) {
-                                    Ok(()) => {
-                                        tracing::debug!("Indexed new file: {}", uri)
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Failed to index new file {}: {}", uri, e)
-                                    }
-                                }
-                            }
-                            coordinator.notify_parse_complete(uri);
-                        }
-                        Err(e) => {
-                            tracing::debug!(
-                                "Failed to read new file for indexing ({}): {}",
-                                path.display(),
-                                e
-                            );
-                        }
-                    }
-                }
+                // Explicit creates use the same filesystem-byte classifier as
+                // watched changes. This keeps extensionless shebang scripts
+                // live and evicts their facts when the shebang is removed.
+                self.process_file_watcher_uri_immediate(uri);
             }
 
             // Trigger client refresh after file creations
@@ -1986,18 +2044,19 @@ impl LspServer {
                 // resolved by the client's own didSave/didClose/didOpen
                 // lifecycle. Silently retargeting the buffer would change its
                 // identity without that authority.
-                let old_document_open = self.document_is_open(&old_uri);
-                if old_document_open {
-                    self.record_backing_file_transition(
-                        &old_uri,
-                        BackingFileTransition::RenamedOrMoved { new_uri: new_uri.clone() },
-                    );
-                }
-
                 // Update the index for the renamed file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator() {
+                    let _transition = self.indexing_transition_lock.lock();
+                    let old_document_open = self.document_is_open(&old_uri);
+                    if old_document_open {
+                        self.record_backing_file_transition(
+                            &old_uri,
+                            BackingFileTransition::RenamedOrMoved { new_uri: new_uri.clone() },
+                        );
+                    }
+
                     coordinator.notify_change(&old_uri);
                     coordinator.notify_change(&new_uri);
 
@@ -2008,13 +2067,19 @@ impl LspServer {
                     // Index new file if it's a Perl file. When a document is
                     // open at the new URI, its buffer — not disk bytes — is
                     // authoritative for that subject, so skip disk indexing.
-                    if is_perl_source_uri(&new_uri)
-                        && !self.document_is_open(&new_uri)
-                        && let Some(path) = uri_to_fs_path(&new_uri)
-                    {
-                        match read_text_file_with_encoding(&path) {
-                            Ok(content) => {
-                                if let Ok(url) = url::Url::parse(&new_uri) {
+                    if let Some(path) = uri_to_fs_path(&new_uri) {
+                        match read_perl_source_file(&path) {
+                            Ok(Some(content)) => {
+                                // Match the create/watcher authority rule:
+                                // disk I/O can race didOpen, so the decision
+                                // must be made again after the read completes.
+                                if self.document_is_open(&new_uri) {
+                                    tracing::debug!(
+                                        new_uri,
+                                        "File opened while rename read was in flight — indexing skipped"
+                                    );
+                                } else if let Ok(url) = url::Url::parse(&new_uri) {
+                                    coordinator.index().clear_file(&new_uri);
                                     match coordinator.index().index_file(url, content) {
                                         Ok(()) => {
                                             tracing::debug!("Indexed renamed file: {}", new_uri)
@@ -2027,12 +2092,22 @@ impl LspServer {
                                     }
                                 }
                             }
+                            Ok(None) => {
+                                if !self.document_is_open(&new_uri) {
+                                    coordinator.index().clear_file(&new_uri);
+                                }
+                            }
                             Err(e) => {
                                 tracing::debug!(
                                     "Failed to read renamed file for indexing ({}): {}",
                                     path.display(),
                                     e
                                 );
+                                if e.kind() == std::io::ErrorKind::NotFound
+                                    && !self.document_is_open(&new_uri)
+                                {
+                                    coordinator.index().clear_file(&new_uri);
+                                }
                             }
                         }
                     }
@@ -2128,6 +2203,22 @@ impl LspServer {
             // Trigger client refresh after workspace folder changes
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after workspace folder changes");
+            }
+
+            self.invalidate_workspace_identity();
+
+            // Legacy push clients never observe `workspace/diagnostic/refresh`
+            // (the action above is pull-only), so their already-open documents
+            // would keep stale PL900 rows after a folder reload installs a new
+            // `[perl].version` until the next edit or reopen. Schedule push
+            // republish for every open document; the sink boundary re-validates
+            // currency and the debouncer coalesces the burst (#13195 review).
+            let open_uris: Vec<String> = {
+                let documents = self.documents.lock();
+                documents.keys().cloned().collect()
+            };
+            for open_uri in open_uris {
+                self.publish_diagnostics_debounced(&open_uri);
             }
 
             // Rebuild workspace index after folder changes
@@ -2888,6 +2979,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::io::{self, Write};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn workspace_symbol_resolve_missing_params_name_method_and_field() {
@@ -2897,6 +2989,319 @@ mod tests {
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(err.message, "workspace/symbol/resolve: missing required parameter 'params'");
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn filesystem_watcher_classifier_accepts_shebang_files_but_not_uri_only_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let perl_path = directory.path().join("tool");
+        let shell_path = directory.path().join("shell-tool");
+        std::fs::write(&perl_path, "#!/usr/bin/env perl\n1;\n")?;
+        std::fs::write(&shell_path, "#!/bin/sh # perl\necho hi\n")?;
+        let perl_uri = url::Url::from_file_path(&perl_path).map_err(|_| "invalid Perl URI")?;
+        let shell_uri = url::Url::from_file_path(&shell_path).map_err(|_| "invalid shell URI")?;
+
+        assert!(!perl_parser_core::source_file::is_perl_source_uri(perl_uri.as_str()));
+        assert!(super::is_perl_source_uri_on_disk(perl_uri.as_str()));
+        assert!(!super::is_perl_source_uri_on_disk(shell_uri.as_str()));
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn file_lifecycle_paths_index_extensionless_shebang_scripts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let old_path = directory.path().join("tool");
+        let new_path = directory.path().join("renamed-tool");
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub created_tool { 1 }\n1;\n")?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid old URI")?;
+        let new_uri = url::Url::from_file_path(&new_path).map_err(|_| "invalid new URI")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+
+        server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": old_uri.to_string() }]
+        })))?;
+        let created = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("created_tool");
+        assert_eq!(created.len(), 1, "didCreateFiles must index an extensionless Perl script");
+
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub changed_tool { 1 }\n1;\n")?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": old_uri.to_string(), "type": 2 }]
+        })))?;
+        let changed = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("changed_tool");
+        assert_eq!(changed.len(), 1, "watched changes must re-index an extensionless Perl script");
+
+        std::fs::write(&old_path, "plain text after the shebang is removed\n")?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": old_uri.to_string(), "type": 2 }]
+        })))?;
+        let stale = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("changed_tool");
+        assert!(stale.is_empty(), "removing the shebang must evict stale workspace symbols");
+
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub changed_tool { 1 }\n1;\n")?;
+        std::fs::rename(&old_path, &new_path)?;
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri.to_string(), "newUri": new_uri.to_string() }]
+        })))?;
+        let renamed = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("changed_tool");
+        assert_eq!(renamed.len(), 1, "renames must index an extensionless Perl script");
+        assert!(
+            server
+                .coordinator()
+                .ok_or("missing index coordinator")?
+                .index()
+                .file_symbols(old_uri.as_str())
+                .is_empty(),
+            "renames must remove the old extensionless file identity"
+        );
+        assert_eq!(
+            server
+                .coordinator()
+                .ok_or("missing index coordinator")?
+                .index()
+                .file_symbols(new_uri.as_str())
+                .len(),
+            1,
+            "renames must retain the new extensionless file identity"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "workspace", unix))]
+    #[test]
+    fn changed_events_retain_facts_when_the_disk_read_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir()?;
+        let script_path = directory.path().join("transient-tool");
+        let script_uri = url::Url::from_file_path(&script_path).map_err(|_| "invalid URI")?;
+        std::fs::write(&script_path, "#!/usr/bin/env perl\nsub transient_tool { 1 }\n1;\n")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": script_uri.to_string(), "type": 2 }]
+        })))?;
+        let index = server.coordinator().ok_or("missing index coordinator")?.index();
+        assert!(
+            index
+                .file_symbols(script_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "transient_tool"),
+            "the readable script must be indexed by its changed event"
+        );
+
+        // A permission change makes the next read fail with an error that is
+        // not NotFound. The facts indexed before the failure must survive the
+        // event instead of being evicted as confirmed non-Perl content.
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o000))?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": script_uri.to_string(), "type": 2 }]
+        })))?;
+        assert!(
+            index
+                .file_symbols(script_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "transient_tool"),
+            "a transient read failure must retain existing facts"
+        );
+
+        // A later confirmed read still reconciles the index.
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o644))?;
+        std::fs::write(&script_path, "#!/usr/bin/env perl\nsub transient_tool_v2 { 1 }\n1;\n")?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": script_uri.to_string(), "type": 2 }]
+        })))?;
+        assert!(
+            index
+                .file_symbols(script_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "transient_tool_v2"),
+            "a confirmed later read must refresh the retained facts"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn file_lifecycle_events_never_index_disk_bytes_behind_open_buffer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let create_path = directory.path().join("created-tool");
+        let change_path = directory.path().join("changed-tool");
+        let old_path = directory.path().join("old-tool");
+        let rename_path = directory.path().join("renamed-tool");
+        let create_uri =
+            url::Url::from_file_path(&create_path).map_err(|_| "invalid create URI")?;
+        let change_uri =
+            url::Url::from_file_path(&change_path).map_err(|_| "invalid change URI")?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid old URI")?;
+        let rename_uri =
+            url::Url::from_file_path(&rename_path).map_err(|_| "invalid rename URI")?;
+
+        std::fs::write(&create_path, "#!/usr/bin/env perl\nsub disk_create { 1 }\n1;\n")?;
+        std::fs::write(&change_path, "#!/usr/bin/env perl\nsub disk_change { 1 }\n1;\n")?;
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub disk_rename { 1 }\n1;\n")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+
+        // A synchronously observed didOpen is the deterministic stand-in for
+        // the lifecycle race: every disk operation must re-check this same
+        // authority before mutating the workspace index.
+        server.test_apply_did_open(create_uri.as_str(), "sub buffer_create { 1 }\n1;\n", 1)?;
+        let index = server.coordinator().ok_or("missing index coordinator")?.index();
+        assert!(
+            index
+                .file_symbols(create_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "buffer_create"),
+            "didOpen must publish buffer_create facts before a create event"
+        );
+        server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": create_uri.to_string() }]
+        })))?;
+
+        server.test_apply_did_open(change_uri.as_str(), "sub buffer_change { 1 }\n1;\n", 1)?;
+        assert!(
+            index
+                .file_symbols(change_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "buffer_change"),
+            "didOpen must publish buffer_change facts before a watcher event"
+        );
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": change_uri.to_string(), "type": 2 }]
+        })))?;
+
+        index.index_initial_file(
+            url::Url::parse(old_uri.as_str())?,
+            "#!/usr/bin/env perl\nsub disk_rename { 1 }\n1;\n".to_string(),
+        )?;
+        std::fs::rename(&old_path, &rename_path)?;
+        server.test_apply_did_open(rename_uri.as_str(), "sub buffer_rename { 1 }\n1;\n", 1)?;
+        assert!(
+            index
+                .file_symbols(rename_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "buffer_rename"),
+            "didOpen must publish buffer_rename facts before a rename event"
+        );
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri.to_string(), "newUri": rename_uri.to_string() }]
+        })))?;
+
+        for disk_symbol in ["disk_create", "disk_change", "disk_rename"] {
+            assert!(
+                index.find_symbols(disk_symbol).is_empty(),
+                "open-buffer lifecycle must not index disk symbol {disk_symbol}"
+            );
+        }
+        assert!(
+            index.file_symbols(old_uri.as_str()).is_empty(),
+            "rename must remove the old index identity"
+        );
+        let renamed_symbols = index.file_symbols(rename_uri.as_str());
+        assert!(
+            renamed_symbols.iter().any(|symbol| symbol.name == "buffer_rename"),
+            "rename must preserve the new open-buffer facts"
+        );
+        assert!(
+            renamed_symbols.iter().all(|symbol| symbol.uri == rename_uri.as_str()),
+            "rename must keep every surviving fact on the new URI identity"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn failed_file_lifecycle_reads_clear_stale_closed_file_facts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let create_path = directory.path().join("created-tool");
+        let old_path = directory.path().join("old-tool");
+        let new_path = directory.path().join("renamed-tool");
+        let create_uri =
+            url::Url::from_file_path(&create_path).map_err(|_| "invalid create URI")?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid old URI")?;
+        let new_uri = url::Url::from_file_path(&new_path).map_err(|_| "invalid new URI")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+        let index = server.coordinator().ok_or("missing index coordinator")?.index();
+
+        index.index_initial_file(
+            url::Url::parse(create_uri.as_str())?,
+            "sub stale_create { 1 }\n1;\n".to_string(),
+        )?;
+        std::fs::write(&create_path, "not Perl source\n")?;
+        server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": create_uri.to_string() }]
+        })))?;
+        assert!(
+            index.find_symbols("stale_create").is_empty(),
+            "failed create classification must clear stale closed-file facts"
+        );
+
+        index.index_initial_file(
+            url::Url::parse(old_uri.as_str())?,
+            "sub stale_old { 1 }\n1;\n".to_string(),
+        )?;
+        index.index_initial_file(
+            url::Url::parse(new_uri.as_str())?,
+            "sub stale_new { 1 }\n1;\n".to_string(),
+        )?;
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri.to_string(), "newUri": new_uri.to_string() }]
+        })))?;
+        assert!(
+            index.find_symbols("stale_old").is_empty(),
+            "rename must remove the old file identity"
+        );
+        assert!(
+            index.find_symbols("stale_new").is_empty(),
+            "failed rename read must clear stale destination facts"
+        );
+        Ok(())
     }
 
     /// #8262 counterexample: the case-sensitive name-index prefix search returns
@@ -3158,6 +3563,29 @@ mod tests {
         );
         assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
         Ok(())
+    }
+
+    #[test]
+    fn configuration_change_invalidates_identity_before_and_after_application() {
+        let server = LspServer::new();
+        let before = server.workspace_identity_generation.load(Ordering::SeqCst);
+
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "workspace": {
+                        "resolutionTimeout": 123
+                    }
+                }
+            }
+        })));
+
+        let after = server.workspace_identity_generation.load(Ordering::SeqCst);
+        assert!(
+            after >= before + 2,
+            "configuration changes must invalidate both before and after application: \
+             before={before}, after={after}"
+        );
     }
 
     #[test]

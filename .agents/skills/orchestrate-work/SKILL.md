@@ -189,13 +189,22 @@ unpushed commits, a viable but unpublished candidate. What exists is evidence; d
 discard it to make the ledger tidy.
 
 - push surviving work-in-progress to a named salvage branch and **open a salvage PR**
-  for it immediately — or reuse the lane's existing PR if it has one. The hosted
-  workflows validate pull requests and main, not arbitrary branch pushes, so a
-  branch-only push starts no hosted proof; without the PR, the claim retains
-  `NOT_PROVEN`. With the salvage PR open, remote CI becomes the verification of
-  record rather than a local re-proof the quiet lane can no longer run;
+  for it immediately — or reuse the lane's existing PR if it has one. Before either,
+  establish a single writer: either verify through the task handle that the task is dead
+  and cannot resume, then confirm its process tree has exited and its locks are gone; or
+  obtain the prior writer's acknowledged authority handoff, stop or revoke that writer
+  so it cannot resume, and only then record the transfer in the durable subject.
+  Process-group exit, budget exhaustion, silence, or a unilateral transfer record alone
+  is insufficient; reusing the existing PR assumes this lane is now its single writer.
+  The hosted workflows validate pull requests and main, not arbitrary branch pushes,
+  so a branch-only push starts no hosted proof; without the PR, the claim retains
+  `NOT_PROVEN`. With the salvage PR
+  open, remote CI becomes the verification of record rather than a local re-proof the
+  quiet lane can no longer run;
 - order relaunches by dependency-gate priority, not by which lane died first;
-- type the result as synthesized/salvaged, not `FAILED_NO_RETURN`.
+- type the result as synthesized/salvaged, not `FAILED_NO_RETURN` — that types the
+  artifact's provenance; the claim's own state remains what the salvaged evidence
+  proves (`NOT_PROVEN` or `PARTIAL`) until affected proof and judgment catch up.
 
 Practiced and receipted: mass-kill salvage PRs #12465 (salvaged #12150), #12435
 (salvaged #8921), #12474 (salvaged #8924) — each pushed the quiet lane's WIP and let

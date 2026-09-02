@@ -15,37 +15,43 @@
       "path": "base/cond.t",
       "status": "pass",
       "assertions_passed": 4,
-      "assertions_total": 4
+      "assertions_total": 4,
+      "mechanism": "fixture_replay"
     },
     {
       "path": "base/if.t",
       "status": "pass",
       "assertions_passed": 2,
-      "assertions_total": 2
+      "assertions_total": 2,
+      "mechanism": "fixture_replay"
     },
     {
       "path": "base/num.t",
       "status": "pass",
       "assertions_passed": 56,
-      "assertions_total": 56
+      "assertions_total": 56,
+      "mechanism": "fixture_replay"
     },
     {
       "path": "base/pat.t",
       "status": "pass",
       "assertions_passed": 2,
-      "assertions_total": 2
+      "assertions_total": 2,
+      "mechanism": "fixture_replay"
     },
     {
       "path": "base/translate.t",
       "status": "pass",
       "assertions_passed": 257,
-      "assertions_total": 257
+      "assertions_total": 257,
+      "mechanism": "fixture_replay"
     },
     {
       "path": "base/while.t",
       "status": "pass",
       "assertions_passed": 4,
-      "assertions_total": 4
+      "assertions_total": 4,
+      "mechanism": "fixture_replay"
     }
   ]
 }

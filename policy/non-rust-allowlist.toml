@@ -153,6 +153,21 @@ created = "2026-08-26"
 review_after = "2027-02-26"
 
 [[allow]]
+id = "non-rust-ripr-facts-packet-goldens"
+glob = "crates/perl-ripr-facts/tests/golden/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ripr/facts-producer"
+reason = "Golden ripr-perl-facts-v1 packets captured from the pre-split producer, pinning packet bytes, ordering, ids and fingerprints across the #9271 module split. They are the zero-drift oracle for the #4747 v2 migration train: regenerating them by hand would defeat their purpose, so they change only when a reviewed emission change is intended."
+covered_by = [
+  "cargo test -p perl-ripr-facts --test packet_characterization --locked",
+]
+created = "2026-08-31"
+review_after = "2027-02-28"
+
+[[allow]]
 id = "non-rust-agent-review-packet-golden-markdown"
 glob = "fixtures/agent_review_packet/golden/*.md"
 kind = "test_fixture"
@@ -167,6 +182,21 @@ covered_by = [
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-lsp-318-changelog-fixture"
+glob = "xtask/tests/fixtures/lsp-318-changelog/*.md"
+kind = "test_fixture"
+language = "markdown"
+surface = "fixtures"
+classification = "test"
+owner = "protocol/lsp-318-claims"
+reason = "Byte-for-byte vendored official LSP 3.18 specification at a pinned upstream revision with recorded provenance; the changelog-totality test parses the 3.18.0 bullet inventory from it so handwritten classifications cannot invent, drop, or rename official additions (#13107). Declared before the broad root-governance *.md glob so the specific fixture rule wins (#13607)."
+covered_by = [
+  "cargo test -p xtask --test lsp_318_changelog_totality --locked",
+]
+created = "2026-08-28"
+review_after = "2027-02-28"
 
 [[allow]]
 id = "non-rust-root-governance-docs"
@@ -1228,6 +1258,23 @@ covered_by = [
 ]
 created = "2026-08-08"
 review_after = "2026-11-08"
+
+[[allow]]
+id = "non-rust-blocker-closeout-schema"
+path = "schemas/blocker_closeout.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned terminal blocker-closeout packet schema binding semantic-controller, merged contribution, current review, proof, and claim-effect identities for release freeze fan-in (#13858)."
+covered_by = [
+  "python -m unittest scripts/tests/test-validate-blocker-closeout.py",
+  "python scripts/validate_blocker_closeout.py --packet scripts/tests/fixtures/blocker_closeout/valid_resolved.json --repository .",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-30"
+review_after = "2026-11-30"
 
 # =============================================================================
 # Receipts / status / metrics
@@ -3529,6 +3576,38 @@ created = "2026-08-24"
 review_after = "2026-11-24"
 
 [[allow]]
+id = "non-rust-critic-rule-proof-schema"
+path = "schemas/critic_rule_proof.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "critic"
+classification = "config"
+owner = "native-critic"
+reason = "JSON Schema for the critic_rule_proof.v1 rule-proof manifest (#6973); the xtask checker enforces schema, identity/remediation authorities, fixture digests, and live critic propositions."
+covered_by = [
+  "cargo xtask critic-rule-proof check",
+  "cargo test -p xtask --locked --test critic_rule_proof",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-critic-rule-proof-manifest"
+path = "fixtures/critic-rule-proof/manifest.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "native-critic"
+reason = "Pilot rule-proof manifest (#6973) binding fixture identities, evidence classes, and expected critic propositions."
+covered_by = [
+  "cargo xtask critic-rule-proof check",
+  "cargo test -p xtask --locked --test critic_rule_proof",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
 id = "non-rust-compiler-lexical-cutline-schema"
 path = "schemas/compiler_lexical_cutline_cases.v1.schema.json"
 kind = "compiler_contract"
@@ -3649,6 +3728,67 @@ broad_glob_reason = "Benchmark results accumulate per run."
 created = "2026-08-24"
 review_after = "2027-02-20"
 
+[[allow]]
+id = "non-rust-distribution-kwalitee-catalog-v1"
+path = "crates/perl-kwalitee/distribution_kwalitee_catalog.v1.toml"
+kind = "config"
+language = "toml"
+surface = "tooling"
+classification = "config"
+owner = "distribution/kwalitee"
+reason = "Frozen machine-readable CPANTS-compatible catalog v1 (#7170); decoded and validated by perl-kwalitee tests, not by a second runtime language."
+covered_by = [
+  "cargo test -p perl-kwalitee --all-targets --locked",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-distribution-kwalitee-fixture-contract-v1"
+path = "crates/perl-kwalitee/distribution_kwalitee_fixtures.v1.toml"
+kind = "config"
+language = "toml"
+surface = "tooling"
+classification = "config"
+owner = "distribution/kwalitee"
+reason = "Frozen fixture-identity contract for catalog v1 (#7170); expected facts are independently authored and catalog-bound."
+covered_by = [
+  "cargo test -p perl-kwalitee --all-targets --locked",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-distribution-kwalitee-fixture-trees"
+glob = "crates/perl-kwalitee/fixtures/distribution/**"
+kind = "language_fixture"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "distribution/kwalitee"
+reason = "Committed catalog-bound distribution fixture trees for Kwalitee contract tests. Perl/metadata files are the subject under test, not runtime tooling."
+covered_by = [
+  "cargo test -p perl-kwalitee --all-targets --locked",
+]
+broad_glob_reason = "Each catalog metric may grow a reserved tree under a stable fixture id; the Rust fixture contract enumerates the allowed relative paths."
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-product-health-status-fixtures"
+glob = "fixtures/product_health_status/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/product-health"
+reason = "Synthetic product-health rail registry, source packets, and the immutable golden product_health_status.v1 snapshot (#12360); the golden bytes are re-assembled deterministically and compared byte-for-byte by tests, and the closed packet envelope is fail-closed validated."
+covered_by = [
+  "cargo test -p xtask --locked product_health_status",
+  "cargo run -p xtask -- product-health check fixtures/product_health_status/expected/status.json",
+]
+created = "2026-08-26"
+review_after = "2027-02-26"
 
 [[allow]]
 id = "non-rust-ci-route-plan-golden-vectors"

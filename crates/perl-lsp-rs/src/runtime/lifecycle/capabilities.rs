@@ -118,13 +118,6 @@ fn workspace_capabilities(
     workspace
 }
 
-/// The LSP protocol version this server implements.
-///
-/// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
-/// The server uses 3.18 extensions (e.g. `inlineCompletionProvider`), so the
-/// advertised version reflects the highest spec whose features are surfaced.
-const LSP_PROTOCOL_VERSION: &str = "3.18";
-
 fn is_opencode_client(params: &Value) -> bool {
     params
         .get("clientInfo")
@@ -876,7 +869,6 @@ impl LspServer {
 
         Ok(Some(json!({
             "capabilities": capabilities,
-            "protocolVersion": LSP_PROTOCOL_VERSION,
             "serverInfo": {
                 "name": "perl-lsp",
                 "version": env!("CARGO_PKG_VERSION")
@@ -935,7 +927,7 @@ pub(crate) fn apply_disabled_feature_id(
     }
 }
 
-fn disabled_feature_ids_from_init_options(init_opts: &Value) -> Vec<&str> {
+pub(crate) fn disabled_feature_ids_from_init_options(init_opts: &Value) -> Vec<&str> {
     let top_level = init_opts.get("disabledFeatures").and_then(Value::as_array);
     let namespaced_hyphen =
         init_opts.get("perl-lsp").and_then(|v| v.get("disabledFeatures")).and_then(Value::as_array);

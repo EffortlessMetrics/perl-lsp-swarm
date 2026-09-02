@@ -11,9 +11,12 @@ on the same axis regardless of which runner type or OS the work runs on.
 
 ---
 
-## Rust 1.95 rollout note
+## Current control-plane note
 
-The Rust 1.95 / 0.14.0 rollout tunes the existing LEM, risk-pack, lane, receipt, and CI actuals control plane rather than adding a parallel process. Learned estimates should remain actuals-backed and must not hard-enforce below the 125 LEM ceiling before calibration. See [perl-lsp-rust-1.95-rollout.md](perl-lsp-rust-1.95-rollout.md).
+LEM uses the existing lane, risk-pack, receipt, and CI-actuals control plane.
+Learned estimates are documented in [`learned-estimates.md`](learned-estimates.md)
+and must remain actuals-backed; the current ceiling and override behavior are
+defined below and in `policy/ci-budget.toml`.
 
 ## Definition
 
