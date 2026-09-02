@@ -8,8 +8,13 @@ use super::model::{
     Ambiguity, AmbiguityKind, ArgvLead, ArgvSpan, ContextFact, ContextFactKind,
     InvocationDecodeError, ModuleForm, ModuleSpec, NeutralSwitch, NeutralSwitchUse, PerlInvocation,
     ProgramArgument, ProgramSource, RecordSeparatorDigits, SourceFragment, SourceSwitch,
-    UnsupportedSwitch, UnsupportedSwitchKind,
+    TerminatingAction, TerminatingActionKind, UnsupportedSwitch, UnsupportedSwitchKind,
 };
+
+/// The Unicode option letters `-C` accepts. Any other letter makes Perl report
+/// `Unknown Unicode option letter`; a value of only decimal digits is the
+/// numeric form and is accepted instead.
+const UNICODE_OPTION_LETTERS: &str = "aioADEILOS";
 
 /// Decode an already-tokenized Perl invocation.
 ///
@@ -48,6 +53,8 @@ pub fn decode<S: AsRef<str>>(
         neutral_switches: Vec::new(),
         unsupported_switches: Vec::new(),
         ambiguities: Vec::new(),
+        terminating_action: None,
+        uninterpreted_arguments: Vec::new(),
         terminator: None,
         program: ProgramSource::Unspecified,
         program_arguments: Vec::new(),
@@ -73,9 +80,29 @@ pub fn decode<S: AsRef<str>>(
         if argument.starts_with("--") {
             decode_long_switch(argument, index, &mut invocation)?;
             index += 1;
+            if invocation.terminating_action.is_some() {
+                break;
+            }
             continue;
         }
         index = decode_cluster(argv, index, &mut invocation)?;
+        if invocation.terminating_action.is_some() {
+            break;
+        }
+    }
+
+    // Perl acted and exited inside switch processing, so everything left is
+    // text it never looked at.
+    if invocation.terminating_action.is_some() {
+        for (offset, argument) in argv.iter().skip(index).enumerate() {
+            let argument = argument.as_ref();
+            invocation.uninterpreted_arguments.push(ProgramArgument {
+                text: argument.to_owned(),
+                span: whole_argument_span(index + offset, argument),
+            });
+        }
+        invocation.program = ProgramSource::NotReached;
+        return Ok(invocation);
     }
 
     invocation.program = if invocation.source_fragments.is_empty() {
@@ -120,9 +147,9 @@ fn decode_long_switch(
     index: usize,
     invocation: &mut PerlInvocation,
 ) -> Result<(), InvocationDecodeError> {
-    let switch = match argument {
-        "--version" => NeutralSwitch::LongVersion,
-        "--help" => NeutralSwitch::LongHelp,
+    let kind = match argument {
+        "--version" => TerminatingActionKind::Version,
+        "--help" => TerminatingActionKind::Usage,
         _ => {
             return Err(InvocationDecodeError::UnrecognizedLongSwitch {
                 spelling: argument.to_owned(),
@@ -130,13 +157,8 @@ fn decode_long_switch(
             });
         }
     };
-    let span = whole_argument_span(index, argument);
-    invocation.neutral_switches.push(NeutralSwitchUse {
-        switch,
-        value: None,
-        span,
-        switch_span: span,
-    });
+    invocation.terminating_action =
+        Some(TerminatingAction { kind, span: whole_argument_span(index, argument) });
     Ok(())
 }
 
@@ -176,11 +198,43 @@ impl<'a> Cluster<'a> {
         (value, span)
     }
 
-    /// Consume the leading run of characters matching `accept`.
-    fn take_run(&mut self, accept: impl Fn(char) -> bool) -> (&'a str, ArgvSpan) {
+    /// Consume a value whose byte length `measure` computes from the remaining
+    /// cluster text. A length of zero consumes nothing.
+    ///
+    /// This exists because several perl switches take a value only in one
+    /// shape — `-V:configvar`, `-d[t][:MOD]` — and must otherwise leave the
+    /// cluster alone so bundling continues.
+    fn take_prefixed_value(
+        &mut self,
+        measure: impl Fn(&'a str) -> usize,
+    ) -> Option<(&'a str, ArgvSpan)> {
+        let remaining = self.remaining();
+        let taken = measure(remaining).min(remaining.len());
+        let value = remaining.get(..taken)?;
+        if value.is_empty() {
+            return None;
+        }
+        let start = self.at;
+        self.at += taken;
+        Some((value, ArgvSpan::new(self.index, start, self.at)))
+    }
+
+    /// Consume the leading run of characters matching `accept`, at most `limit`
+    /// of them.
+    ///
+    /// The limit is not a detail: perl reads a bounded number of octal digits
+    /// and then keeps decoding the cluster, so an unbounded run would swallow
+    /// switches perl still sees.
+    fn take_run(&mut self, accept: impl Fn(char) -> bool, limit: usize) -> (&'a str, ArgvSpan) {
         let start = self.at;
         let remaining = self.remaining();
-        let taken = remaining.find(|character: char| !accept(character)).unwrap_or(remaining.len());
+        let taken = remaining
+            .char_indices()
+            .take(limit)
+            .take_while(|(_, character)| accept(*character))
+            .map(|(offset, character)| offset + character.len_utf8())
+            .last()
+            .unwrap_or(0);
         let value = remaining.get(..taken).unwrap_or_default();
         self.at = start + taken;
         (value, ArgvSpan::new(self.index, start, self.at))
@@ -274,12 +328,14 @@ fn decode_cluster<S: AsRef<str>>(
                 break;
             }
             'F' => {
-                let (pattern, pattern_span) = cluster.rest();
-                let span = if pattern.is_empty() { letter_span } else { pattern_span };
+                let (pattern, span) = cluster.rest();
                 if pattern.is_empty() {
-                    invocation
-                        .ambiguities
-                        .push(Ambiguity { kind: AmbiguityKind::EmptySplitPattern, span });
+                    // Point the ambiguity at the switch: an empty value's own
+                    // span is zero-width and has nothing to underline.
+                    invocation.ambiguities.push(Ambiguity {
+                        kind: AmbiguityKind::EmptySplitPattern,
+                        span: letter_span,
+                    });
                 }
                 push_fact(
                     invocation,
@@ -291,7 +347,10 @@ fn decode_cluster<S: AsRef<str>>(
             }
             // Optional digit runs; bundling continues after them.
             'l' => {
-                let (digits, digits_span) = cluster.take_run(is_octal_digit);
+                // perl.c reads `3 + (*s == '0')` octal digits here, so `-l0123`
+                // is one four-digit value but `-l1234` is `-l123` then `-4`.
+                let limit = if cluster.remaining().starts_with('0') { 4 } else { 3 };
+                let (digits, digits_span) = cluster.take_run(is_octal_digit, limit);
                 let span = if digits.is_empty() { letter_span } else { digits_span };
                 let octal_digits = (!digits.is_empty()).then(|| digits.to_owned());
                 push_fact(
@@ -330,13 +389,16 @@ fn decode_cluster<S: AsRef<str>>(
                 invocation.unsupported_switches.push(UnsupportedSwitch { kind, spelling, span });
                 break;
             }
-            // Neutral switches taking an optional attached value.
-            'C' | 'i' | 'V' => {
+            // `-C` and `-i` swallow the rest of the cluster as their value.
+            'C' | 'i' => {
                 let (value, value_span) = cluster.rest();
-                let switch = match letter {
-                    'C' => NeutralSwitch::UnicodeFlags,
-                    'i' => NeutralSwitch::InPlaceEdit,
-                    _ => NeutralSwitch::Configuration,
+                if letter == 'C' {
+                    check_unicode_options(value, value_span)?;
+                }
+                let switch = if letter == 'C' {
+                    NeutralSwitch::UnicodeFlags
+                } else {
+                    NeutralSwitch::InPlaceEdit
                 };
                 let span = if value.is_empty() { letter_span } else { value_span };
                 invocation.neutral_switches.push(NeutralSwitchUse {
@@ -345,6 +407,39 @@ fn decode_cluster<S: AsRef<str>>(
                     span,
                     switch_span: letter_span,
                 });
+                break;
+            }
+            // `-V` and `-d` take a value only in their `:` form. `perl -Vfoo`
+            // reports `Unrecognized switch: -oo`, so swallowing the tail would
+            // hide switches perl still decodes.
+            // `-V[:configvar]`: a value only in the colon form. `perl -Vfoo`
+            // reports `Unrecognized switch: -oo`, so swallowing the tail would
+            // hide switches perl still decodes.
+            'V' => {
+                let value = cluster.take_prefixed_value(|remaining| {
+                    usize::from(remaining.starts_with(':')) * remaining.len()
+                });
+                push_neutral(invocation, NeutralSwitch::Configuration, value, letter_span);
+            }
+            // `-d[t][:MOD]`: the optional `t` belongs to `-d`, which is why
+            // `-dt:Trace` still loads Devel::Trace. Anything after that is the
+            // next switch again: `-dtx` ends with the `-x` switch.
+            'd' => {
+                let value = cluster.take_prefixed_value(|remaining| {
+                    let flag = usize::from(remaining.starts_with('t'));
+                    let rest = remaining.get(flag..).unwrap_or_default();
+                    if rest.starts_with(':') { remaining.len() } else { flag }
+                });
+                push_neutral(invocation, NeutralSwitch::Debugger, value, letter_span);
+            }
+            // Perl acts on these immediately and exits, so decoding stops here.
+            'v' | 'h' => {
+                let kind = if letter == 'v' {
+                    TerminatingActionKind::Version
+                } else {
+                    TerminatingActionKind::Usage
+                };
+                invocation.terminating_action = Some(TerminatingAction { kind, span: letter_span });
                 break;
             }
             // Neutral switches taking no value; bundling continues.
@@ -367,6 +462,19 @@ fn decode_cluster<S: AsRef<str>>(
     Ok(next_index)
 }
 
+fn push_neutral(
+    invocation: &mut PerlInvocation,
+    switch: NeutralSwitch,
+    value: Option<(&str, ArgvSpan)>,
+    switch_span: ArgvSpan,
+) {
+    let (value, span) = match value {
+        Some((text, span)) => (Some(text.to_owned()), span),
+        None => (None, switch_span),
+    };
+    invocation.neutral_switches.push(NeutralSwitchUse { switch, value, span, switch_span });
+}
+
 fn push_fact(
     invocation: &mut PerlInvocation,
     kind: ContextFactKind,
@@ -376,50 +484,81 @@ fn push_fact(
     invocation.context_facts.push(ContextFact { kind, span, switch_span });
 }
 
+/// Reject a `-C` value perl would reject.
+///
+/// Perl accepts either a decimal count or a string of its Unicode option
+/// letters, and refuses the mixed forms too: `perl -C7S` reports
+/// `Unknown Unicode option letter 'S'`.
+fn check_unicode_options(value: &str, span: ArgvSpan) -> Result<(), InvocationDecodeError> {
+    // The two forms never mix: `-C7a`, `-CS7` and `-Ca7` are all rejected, each
+    // naming the first character that does not belong to the form already
+    // started.
+    let numeric = value.starts_with(|character: char| character.is_ascii_digit());
+    for (offset, character) in value.char_indices() {
+        let accepted = if numeric {
+            character.is_ascii_digit()
+        } else {
+            UNICODE_OPTION_LETTERS.contains(character)
+        };
+        if !accepted {
+            let start = span.start + offset;
+            return Err(InvocationDecodeError::UnknownUnicodeOption {
+                character,
+                span: ArgvSpan::new(span.argument_index, start, start + character.len_utf8()),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn is_octal_digit(character: char) -> bool {
     matches!(character, '0'..='7')
 }
 
 /// Read the digits after `-0`.
 ///
-/// The hexadecimal form needs both the `x` marker and at least one hex digit:
-/// `perl -0x` is `-0` followed by the `-x` switch, not an empty hex separator.
+/// Two boundaries here are easy to get wrong and both are pinned against real
+/// perl. The hexadecimal form is taken only when the marker is followed by hex
+/// digits *all the way to the end of the cluster*: `perl -0x41n` is `-0`
+/// followed by `-x` with the value `41n`, not a `0x41` separator plus `-n`. The
+/// octal form reads at most three digits, so `-01234` is `-0123` then `-4`,
+/// which perl rejects as an unrecognized switch.
 fn take_record_separator_digits(
     cluster: &mut Cluster<'_>,
     letter_span: ArgvSpan,
 ) -> (Option<RecordSeparatorDigits>, ArgvSpan) {
     let remaining = cluster.remaining();
-    let hexadecimal = remaining
-        .strip_prefix('x')
-        .or_else(|| remaining.strip_prefix('X'))
-        .is_some_and(|after| after.starts_with(|character: char| character.is_ascii_hexdigit()));
+    let hexadecimal = remaining.strip_prefix(['x', 'X']).is_some_and(|after| {
+        !after.is_empty() && after.chars().all(|character| character.is_ascii_hexdigit())
+    });
 
     if hexadecimal {
         let _marker = cluster.next_letter();
-        let (digits, span) = cluster.take_run(|character| character.is_ascii_hexdigit());
+        let (digits, span) =
+            cluster.take_run(|character| character.is_ascii_hexdigit(), usize::MAX);
         return (Some(RecordSeparatorDigits::Hex(digits.to_owned())), span);
     }
 
-    let (digits, span) = cluster.take_run(is_octal_digit);
+    let (digits, span) = cluster.take_run(is_octal_digit, OCTAL_SEPARATOR_DIGIT_LIMIT);
     if digits.is_empty() {
         return (None, letter_span);
     }
     (Some(RecordSeparatorDigits::Octal(digits.to_owned())), span)
 }
 
+/// Octal digits perl reads after `-0`, before it resumes decoding the cluster.
+const OCTAL_SEPARATOR_DIGIT_LIMIT: usize = 3;
+
 fn neutral_switch(letter: char) -> Option<NeutralSwitch> {
     Some(match letter {
         'c' => NeutralSwitch::CompileOnly,
-        'd' => NeutralSwitch::Debugger,
         'f' => NeutralSwitch::NoSiteCustomize,
-        'h' => NeutralSwitch::Usage,
         's' => NeutralSwitch::ProgramSwitches,
         'S' => NeutralSwitch::SearchPath,
         't' => NeutralSwitch::TaintWarnings,
         'T' => NeutralSwitch::TaintChecks,
         'u' => NeutralSwitch::DumpCore,
         'U' => NeutralSwitch::AllowUnsafe,
-        'v' => NeutralSwitch::Version,
         'w' => NeutralSwitch::Warnings,
         'W' => NeutralSwitch::AllWarnings,
         'X' => NeutralSwitch::NoWarnings,

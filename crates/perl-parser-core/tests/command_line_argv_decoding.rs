@@ -17,7 +17,7 @@
 use perl_parser_core::command_line::{
     Ambiguity, AmbiguityKind, ArgvLead, ArgvSpan, ContextFact, ContextFactKind,
     InvocationDecodeError, ModuleForm, NeutralSwitch, PerlInvocation, ProgramSource,
-    RecordSeparatorDigits, SourceSwitch, UnsupportedSwitchKind, decode,
+    RecordSeparatorDigits, SourceSwitch, TerminatingActionKind, UnsupportedSwitchKind, decode,
 };
 
 /// Decode `argv` with a leading interpreter argument, expecting success.
@@ -113,7 +113,7 @@ fn located_values(invocation: &PerlInvocation) -> Vec<(String, ArgvSpan)> {
     for switch in &invocation.unsupported_switches {
         values.push((switch.spelling.clone(), switch.span));
     }
-    for argument in &invocation.program_arguments {
+    for argument in invocation.program_arguments.iter().chain(&invocation.uninterpreted_arguments) {
         values.push((argument.text.clone(), argument.span));
     }
     if let ProgramSource::ScriptFile { path, span } = &invocation.program {
@@ -122,16 +122,22 @@ fn located_values(invocation: &PerlInvocation) -> Vec<(String, ArgvSpan)> {
     values
 }
 
-/// Assert that every non-empty decoded value is exactly the bytes its span names.
+/// Assert that every decoded value is exactly the bytes its span names.
+///
+/// An empty value still has to carry a span that lands inside its argument:
+/// an empty `-e ''` fragment, a bare `-F`, and `-MFoo=` all produce one, and
+/// skipping them would leave that whole class of spans unchecked.
 fn spans_locate_their_values(argv: &[&str], invocation: &PerlInvocation) {
     for (value, span) in located_values(invocation) {
-        if value.is_empty() {
-            continue;
-        }
         let argument = match argv.get(span.argument_index) {
             Some(argument) => *argument,
             None => panic!("span {span:?} names argument {} of {argv:?}", span.argument_index),
         };
+        assert!(
+            span.start <= span.end && span.end <= argument.len(),
+            "span {span:?} is not inside {argument:?} (len {})",
+            argument.len()
+        );
         let slice = argument.get(span.start..span.end);
         assert_eq!(
             slice,
@@ -276,6 +282,60 @@ fn line_ending_digits_are_octal_only() {
 }
 
 #[test]
+fn octal_digit_runs_stop_where_perl_stops_reading_them() {
+    // perl.c reads `3 + (*s == '0')` octal digits after `-l`, and three after
+    // `-0`. So `perl -l1234` reports `Unrecognized switch: -4`, and
+    // `perl -l0123` is a single four-digit value. An unbounded run would accept
+    // command lines perl refuses outright.
+    let leading_zero = perl(&["-l0123", "-e", "print"]);
+    assert_eq!(
+        facts(&leading_zero)[0],
+        ContextFactKind::LineEnding { octal_digits: Some("0123".to_owned()) },
+        "`-l` reads a fourth digit only when the run starts with `0`"
+    );
+    assert!(matches!(
+        perl_error(&["-l1234", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: '4', .. }
+    ));
+    assert!(matches!(
+        perl_error(&["-l01234", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: '4', .. }
+    ));
+
+    // `-0` has no leading-zero exception: perl reads three digits either way,
+    // so `perl -00123` reports `Unrecognized switch: -3`.
+    let separator = perl(&["-0777", "-e", "print"]);
+    assert_eq!(
+        facts(&separator)[0],
+        ContextFactKind::RecordSeparator {
+            digits: Some(RecordSeparatorDigits::Octal("777".to_owned()))
+        }
+    );
+    for overlong in [vec!["-07777"], vec!["-01234"]] {
+        let mut argv = overlong.clone();
+        argv.extend_from_slice(&["-e", "print"]);
+        assert!(
+            matches!(
+                decode(
+                    &{
+                        let mut full = vec!["perl"];
+                        full.extend_from_slice(&argv);
+                        full
+                    },
+                    ArgvLead::Interpreter
+                ),
+                Err(InvocationDecodeError::UnrecognizedSwitch { .. })
+            ),
+            "{overlong:?} leaves a digit perl refuses"
+        );
+    }
+    assert!(matches!(
+        perl_error(&["-00123", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: '3', .. }
+    ));
+}
+
+#[test]
 fn a_value_taking_switch_swallows_the_rest_of_its_cluster() {
     // `perl -ine 'print'` is `-i` with the backup extension `ne`, and then
     // `print` is a *file name*, not a program. perl reports
@@ -292,14 +352,88 @@ fn a_value_taking_switch_swallows_the_rest_of_its_cluster() {
 }
 
 #[test]
-fn unicode_flags_and_configuration_queries_take_their_cluster_tail() {
-    let invocation = perl(&["-CSD", "-V:osname", "-e", "print"]);
-    assert_eq!(
-        neutral(&invocation),
-        vec![NeutralSwitch::UnicodeFlags, NeutralSwitch::Configuration]
-    );
+fn unicode_flags_take_their_cluster_tail() {
+    let invocation = perl(&["-CSD", "-e", "print"]);
+    assert_eq!(neutral(&invocation), vec![NeutralSwitch::UnicodeFlags]);
     assert_eq!(invocation.neutral_switches[0].value.as_deref(), Some("SD"));
-    assert_eq!(invocation.neutral_switches[1].value.as_deref(), Some(":osname"));
+}
+
+#[test]
+fn configuration_and_debugger_take_a_value_only_in_their_colon_form() {
+    // `perl -V:osname` queries one variable, but `perl -Vfoo` reports
+    // `Unrecognized switch: -oo` — `-V` did not swallow `foo`, it decoded `-f`
+    // and then choked on `oo`. Same shape for `-d`: `-d:Trace` loads
+    // Devel::Trace, while `-dx` is `-d` followed by the `-x` switch.
+    let query = perl(&["-V:osname", "-e", "print"]);
+    assert_eq!(neutral(&query), vec![NeutralSwitch::Configuration]);
+    assert_eq!(query.neutral_switches[0].value.as_deref(), Some(":osname"));
+
+    let bundled = perl(&["-Vf", "-e", "print"]);
+    assert_eq!(
+        neutral(&bundled),
+        vec![NeutralSwitch::Configuration, NeutralSwitch::NoSiteCustomize],
+        "`-V` leaves `f` to the cluster"
+    );
+    assert_eq!(bundled.neutral_switches[0].value, None);
+
+    // perl reports `Unrecognized switch: -oo` here, so the `o` must survive.
+    assert!(matches!(
+        perl_error(&["-Vfoo", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: 'o', .. }
+    ));
+
+    // `-d[t][:MOD]`: the optional `t` belongs to `-d`. `perl -dt:Trace` still
+    // loads Devel::Trace, so reading `t` as the `-t` taint switch would both
+    // invent a taint flag and then refuse the `:` that follows.
+    for (argv, value) in [
+        (vec!["-d:Trace"], Some(":Trace")),
+        (vec!["-dt:Trace"], Some("t:Trace")),
+        (vec!["-dt"], Some("t")),
+        (vec!["-d"], None),
+    ] {
+        let mut full = argv.clone();
+        full.extend_from_slice(&["-e", "print"]);
+        let invocation = perl(&full);
+        assert_eq!(neutral(&invocation), vec![NeutralSwitch::Debugger], "{argv:?}");
+        assert_eq!(invocation.neutral_switches[0].value.as_deref(), value, "{argv:?}");
+    }
+
+    // But only that much: `perl -dtx` still ends with the `-x` switch.
+    let debugger_bundled = perl(&["-dtx", "script.pl"]);
+    assert_eq!(neutral(&debugger_bundled), vec![NeutralSwitch::Debugger]);
+    assert_eq!(debugger_bundled.neutral_switches[0].value.as_deref(), Some("t"));
+    assert_eq!(
+        debugger_bundled.unsupported_switches[0].kind,
+        UnsupportedSwitchKind::ScriptTextOffset,
+        "`x` after `-dt` is still the -x switch"
+    );
+
+    // `perl -VZ` reports `Unrecognized switch: -Z`, so `-V` must not eat it.
+    assert!(matches!(
+        perl_error(&["-VZ", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: 'Z', .. }
+    ));
+}
+
+#[test]
+fn unicode_option_values_perl_rejects_are_refused() {
+    // perl: `Unknown Unicode option letter 'f'.` The accepted alphabet is
+    // `aioADEILOS`, or a decimal count; perl refuses the mixed form too
+    // (`-C7S` reports `Unknown Unicode option letter 'S'`).
+    for accepted in [vec!["-CSD"], vec!["-CIOE"], vec!["-C7"], vec!["-C255"], vec!["-C"]] {
+        let mut argv = accepted.clone();
+        argv.extend_from_slice(&["-e", "print"]);
+        let invocation = perl(&argv);
+        assert_eq!(neutral(&invocation), vec![NeutralSwitch::UnicodeFlags], "{accepted:?}");
+    }
+    assert!(matches!(
+        perl_error(&["-Cfoo", "-e", "print"]),
+        InvocationDecodeError::UnknownUnicodeOption { character: 'f', .. }
+    ));
+    assert!(matches!(
+        perl_error(&["-C7S", "-e", "print"]),
+        InvocationDecodeError::UnknownUnicodeOption { character: 'S', .. }
+    ));
 }
 
 // ---- record separator radix -------------------------------------------
@@ -321,6 +455,27 @@ fn hexadecimal_record_separators_need_the_marker_and_a_digit() {
     assert_eq!(facts(&bare_marker)[0], ContextFactKind::RecordSeparator { digits: None });
     assert_eq!(bare_marker.unsupported_switches.len(), 1);
     assert_eq!(bare_marker.unsupported_switches[0].kind, UnsupportedSwitchKind::ScriptTextOffset);
+
+    // The marker needs hex digits all the way to the end of the cluster.
+    // `perl -0x41n` reports `No Perl script found in input`, so perl read `-x`
+    // with the value `41n` — not a `0x41` separator followed by `-n`. Taking
+    // the hex prefix would invent a read loop that perl never runs.
+    let poisoned_tail = perl(&["-0x41n", "script.pl"]);
+    assert_eq!(facts(&poisoned_tail), vec![ContextFactKind::RecordSeparator { digits: None }]);
+    assert_eq!(poisoned_tail.unsupported_switches[0].spelling, "x41n");
+    assert!(
+        !facts(&poisoned_tail).contains(&ContextFactKind::ReadLoop),
+        "`n` inside the -x value is not a read loop"
+    );
+
+    // Long hex runs are not capped the way octal is.
+    let long_hex = perl(&["-0x000041", "-e", "print"]);
+    assert_eq!(
+        facts(&long_hex)[0],
+        ContextFactKind::RecordSeparator {
+            digits: Some(RecordSeparatorDigits::Hex("000041".to_owned()))
+        }
+    );
 }
 
 #[test]
@@ -463,6 +618,29 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
         invocation.ambiguities.iter().map(|ambiguity| ambiguity.kind).collect::<Vec<_>>(),
         vec![AmbiguityKind::ModuleExpressionIsNotAModuleName]
     );
+
+    // Whitespace is not the discriminator, and treating it as one would be a
+    // security bug: `perl -M'strict;print 99' -e 'print "END\n"'` prints
+    // `99END`, so a semicolon with no space runs injected code at compile time.
+    let injected = perl(&["-Mstrict;print 99", "-e", "print"]);
+    let ContextFactKind::ModuleImport { spec, .. } = &facts(&injected)[0] else {
+        panic!("expected a module import");
+    };
+    assert!(!spec.module_is_plain_name, "`strict;print 99` is code, not a module name");
+    assert_eq!(
+        injected.ambiguities.iter().map(|ambiguity| ambiguity.kind).collect::<Vec<_>>(),
+        vec![AmbiguityKind::ModuleExpressionIsNotAModuleName]
+    );
+
+    // And a plain dotted-looking name is still not plain.
+    for opaque in ["Foo::", "::Foo", "1Foo", "Foo-Bar"] {
+        let argv = format!("-M{opaque}");
+        let invocation = perl(&[argv.as_str(), "-e", "print"]);
+        let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
+            panic!("expected a module import");
+        };
+        assert!(!spec.module_is_plain_name, "{opaque:?} should not read as a module name");
+    }
 }
 
 #[test]
@@ -552,10 +730,49 @@ fn recognized_analysis_neutral_switches_are_kept_but_produce_no_facts() {
 #[test]
 fn long_switches_are_limited_to_the_two_perl_accepts() {
     let invocation = perl(&["--version"]);
-    assert_eq!(neutral(&invocation), vec![NeutralSwitch::LongVersion]);
+    assert_eq!(
+        invocation.terminating_action.map(|action| action.kind),
+        Some(TerminatingActionKind::Version)
+    );
     assert!(matches!(
         perl_error(&["--foo", "-e", "print"]),
         InvocationDecodeError::UnrecognizedLongSwitch { .. }
+    ));
+}
+
+#[test]
+fn help_and_version_stop_decoding_because_perl_stops() {
+    // `perl -v -Z` prints the version banner and exits 0: perl acts on `-v`
+    // during switch processing, so `-Z` is never read. A decoder that kept
+    // scanning would refuse a command line that works.
+    for (argv, kind) in [
+        (vec!["-v", "-Z"], TerminatingActionKind::Version),
+        (vec!["-h", "-Z"], TerminatingActionKind::Usage),
+        (vec!["--version", "-Z"], TerminatingActionKind::Version),
+        (vec!["--help", "-Z"], TerminatingActionKind::Usage),
+    ] {
+        let invocation = perl(&argv);
+        assert_eq!(
+            invocation.terminating_action.map(|action| action.kind),
+            Some(kind),
+            "{argv:?} should terminate decoding"
+        );
+        assert_eq!(invocation.program, ProgramSource::NotReached);
+        assert_eq!(
+            invocation
+                .uninterpreted_arguments
+                .iter()
+                .map(|argument| argument.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["-Z"],
+            "text after a terminating switch is never interpreted"
+        );
+    }
+
+    // Ordering still matters: `perl -Z -v` reports `Unrecognized switch: -Z`.
+    assert!(matches!(
+        perl_error(&["-Z", "-v"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: 'Z', .. }
     ));
 }
 
@@ -716,6 +933,10 @@ mod properties {
         prop_oneof![
             2 => "-[a-zA-Z0-9]{0,4}",
             2 => "-[a-zA-Z]{1,2}[^\\p{Cc}]{0,6}",
+            // Digit-heavy tails: the octal-run limits live past four
+            // characters, which the branches above cannot reach.
+            2 => "-[l0][0-9]{0,8}",
+            1 => "-0[xX][0-9a-fA-F]{0,6}[a-z]{0,2}",
             1 => Just("--".to_owned()),
             1 => Just("-".to_owned()),
             2 => "[^\\p{Cc}]{0,8}",
@@ -776,13 +997,21 @@ mod properties {
                 for unsupported in &invocation.unsupported_switches {
                     mark(unsupported.span.argument_index);
                 }
+                for uninterpreted in &invocation.uninterpreted_arguments {
+                    mark(uninterpreted.span.argument_index);
+                }
+                if let Some(action) = invocation.terminating_action {
+                    mark(action.span.argument_index);
+                }
                 if let Some(terminator) = invocation.terminator {
                     mark(terminator.argument_index);
                 }
                 match &invocation.program {
                     ProgramSource::ScriptFile { span, .. }
                     | ProgramSource::StandardInput { span } => mark(span.argument_index),
-                    ProgramSource::CommandLineFragments | ProgramSource::Unspecified => {}
+                    ProgramSource::CommandLineFragments
+                    | ProgramSource::Unspecified
+                    | ProgramSource::NotReached => {}
                 }
                 prop_assert!(
                     touched.iter().all(|seen| *seen),
