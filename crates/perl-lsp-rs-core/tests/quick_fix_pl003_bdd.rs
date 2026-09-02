@@ -73,6 +73,30 @@ fn pl003_missing_semicolon_fix_preserves_trailing_newline() {
 }
 
 #[test]
+fn pl003_missing_semicolon_skips_whitespace_only_trailing_lines() {
+    let source = "my $value = 1\n   \n\t\n";
+    let actions = actions_for(source, "missing semicolon at end of input");
+
+    assert_eq!(actions.len(), 1);
+    assert_eq!(apply_first(source, &actions[0]), "my $value = 1;\n   \n\t\n");
+}
+
+#[test]
+fn pl003_missing_semicolon_preserves_crlf_after_last_content_line() {
+    let source = "my $value = 1   \r\n   \r\n";
+    let actions = actions_for(source, "missing semicolon at end of input");
+
+    assert_eq!(actions.len(), 1);
+    assert_eq!(apply_first(source, &actions[0]), "my $value = 1;   \r\n   \r\n");
+}
+
+#[test]
+fn pl003_missing_semicolon_does_not_fabricate_action_for_whitespace_only_input() {
+    let source = " \t\r\n\n";
+    assert!(actions_for(source, "missing semicolon at end of input").is_empty());
+}
+
+#[test]
 fn pl003_does_not_add_a_brace_for_an_unclosed_parenthesis() {
     let source = "if ($ok";
     let actions = actions_for(source, "Unexpected end of input");

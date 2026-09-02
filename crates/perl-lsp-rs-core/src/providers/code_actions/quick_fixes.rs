@@ -1428,7 +1428,12 @@ pub fn fix_parse_error(
             // start of the last non-empty content line so the semicolon is placed after the last
             // token rather than after the trailing newline.
             let search_start = if range_start >= source.len() {
-                let last_content_end = source.trim_end_matches(['\n', '\r']).len();
+                let Some(last_content_byte) =
+                    source.as_bytes().iter().rposition(|byte| !byte.is_ascii_whitespace())
+                else {
+                    return actions;
+                };
+                let last_content_end = last_content_byte + 1;
                 source[..last_content_end].rfind('\n').map(|p| p + 1).unwrap_or(0)
             } else {
                 range_start
