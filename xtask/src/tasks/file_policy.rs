@@ -3612,16 +3612,17 @@ review_after = "2026-06-01"
 
     /// The repository root, for proofs that must bind to the shipped policy
     /// rather than a fixture copy of it.
-    fn repo_root() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
+    fn repo_root() -> Result<std::path::PathBuf> {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir
             .parent()
-            .expect("xtask/ always has a workspace-root parent")
-            .to_path_buf()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| eyre!("{} has no workspace-root parent", manifest_dir.display()))
     }
 
     /// The single production rule that governs unreleased Changie fragments.
     fn changie_fragment_entry() -> Result<AllowEntry> {
-        let allowlist = load_allowlist(&repo_root())?;
+        let allowlist = load_allowlist(&repo_root()?)?;
         allowlist
             .allow
             .into_iter()
@@ -3673,7 +3674,7 @@ review_after = "2026-06-01"
         // was written `*.md` and only reached them through the loose matcher.
         // The breadth is now declared instead of accidental; this proves the
         // fix did not quietly shrink what the policy governs.
-        let allowlist = load_allowlist(&repo_root())?;
+        let allowlist = load_allowlist(&repo_root()?)?;
         let prepared = prepare_allow_entries(&allowlist.allow);
 
         for nested in [
@@ -3812,7 +3813,7 @@ review_after = "2026-11-13"
 
     #[test]
     fn no_per_fragment_allowlist_rows_remain() -> Result<()> {
-        let allowlist = load_allowlist(&repo_root())?;
+        let allowlist = load_allowlist(&repo_root()?)?;
 
         let per_fragment: Vec<&str> = allowlist
             .allow
@@ -3834,7 +3835,7 @@ review_after = "2026-11-13"
 
     #[test]
     fn every_tracked_fragment_resolves_to_the_single_typed_rule() -> Result<()> {
-        let root = repo_root();
+        let root = repo_root()?;
         let allowlist = load_allowlist(&root)?;
         let prepared = prepare_allow_entries(&allowlist.allow);
 
