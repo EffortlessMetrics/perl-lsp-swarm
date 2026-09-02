@@ -1002,3 +1002,63 @@ the sixth of this PR. The replay named a control that did not exist yet, so
 zero tests ran and the run exited green. The `(control ran: …)` column added
 to the runner is what made it obvious; a bare pass/fail would have recorded a
 weak control that was in fact an absent one.
+
+### Eighteenth review round (`d0c3a44`) — the pattern once more, and an equivalent mutant
+
+| Severity | Finding | Disposition | Mutation replay |
+|---|---|---|---|
+| correctness | a no-child outcome could carry `observation_truncated(0)`: the pre-start rule keyed on byte counts, and a bound reached at zero carries no bytes to count | **Fixed** — a capture bound reached is child evidence, whatever the count | KILLED (+1 equivalent mutant, below) |
+| claim | the plan fingerprint's secret-blindness was documented as a property but not as a prohibition | **Fixed** — the doc now names the misuse: it is not an execution-input cache key | — |
+
+**Standing pattern 1, a fifth time.** "Evidence only a child could produce" was
+stated for the byte count and not for the truncation state beside it.
+`observation_truncated(0)` asserts that *reading stopped at its limit* — a
+claim only output can support — while reporting zero observed bytes, so a
+refused start could publish a bound its non-existent child had reached.
+
+**A mutation survived, and this time it was neither a weak control nor a
+harness artifact.** Replacing `!is_complete()` with
+`observation_was_truncated()` changes nothing observable, because a
+retention-only bound with zero observed bytes is *unrepresentable*:
+`check_stream` requires the observed count to **exceed** a retention bound, and
+zero cannot exceed zero. The two predicates therefore agree on every reachable
+input. `!is_complete()` is kept anyway — it states the property directly rather
+than inheriting its correctness from a different rule's arithmetic, and it
+stays right if that rule ever moves.
+
+**Finding that required correcting my own new fixture — pattern 3 again.** The
+first version of the control also passed `retention_truncated(0)` and asserted
+only `is_err()`. It did fail — through `check_stream`, not through the rule
+under test — so the fixture would have passed against the very defect it was
+written for. It now asserts the specific inconsistency by message. Writing a
+control and *then* replaying the mutation is what exposed this; the assertion
+alone looked fine.
+
+### CI: the account in the PR body needed correcting
+
+`eb4b6bd` was the first head with no superseding push, and it produced the first
+complete hosted evidence. `get_job_logs --failed_only` over its `CI` run returns
+**0 failed jobs of 22**, and nothing failed on any other workflow for that head:
+`Compile All Targets (bit-rot guard)`, `Conflict marker check`, all eight
+`CI Gate shard`s, `CI Gate (Advisory Aggregate)`, `EM CI Routed Rust`,
+`Merge Gate Target`, `Gate Enforcement Contract`, `Documentation Build (PR)`,
+and `PR Candidate-Set Reconciliation` all succeeded. `Public API Surface
+(facade PR)` and `Semver Compatibility (facade PR)` succeeded too, which
+settles the earlier open question about whether those rails run in scope for
+this crate or as scoped no-ops.
+
+The run's overall `cancelled` conclusion came from one advisory job — `PR Smoke
+(Fast Feedback, advisory)`, whose `Run PR-fast via shared xtask gate runner`
+step was cancelled after roughly 48 minutes while every other step in the job
+succeeded. **That is not the explanation the PR body had been giving.** The
+body said every red was a run cancelled by my own next push; true of the
+earlier heads, each checked from its log, and false here, where nothing
+superseded the run. Corrected on the PR rather than repeated.
+
+### Base integration, third time
+
+`origin/main` moved to `b5f3f84` and `docs/policy/NON_RUST_INVENTORY.md`
+conflicted again — the same generated file, for the third time, always because
+another lane regenerated it. Resolved the same way: merge the base in and
+regenerate with `cargo xtask non-rust inventory --write`. Both sides survive and
+the unclassified count is unchanged at 2239.

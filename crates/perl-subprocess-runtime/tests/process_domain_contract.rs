@@ -3114,6 +3114,42 @@ fn an_outcome_where_no_child_started_cannot_carry_child_evidence() -> TestResult
             "{disposition:?} terminated a process group for a child that never ran"
         );
 
+        // A capture bound reached is child evidence too, and it carries no
+        // bytes for a count to catch. `observation_truncated(0)` says reading
+        // stopped at its limit — a claim only output can support — while
+        // reporting zero observed bytes, so a rule keyed on the count alone
+        // let a refused start report a bound its non-existent child hit.
+        //
+        // The error is matched by its own message rather than by `is_err()`.
+        // The first version of this control also passed `retention_truncated(0)`
+        // and asserted only that assembly failed — which it did, but through
+        // `check_stream` rather than through the rule under test, because a
+        // retention bound must be *exceeded* by the observed count and zero
+        // cannot exceed zero. That fixture passed against the very defect it
+        // was written for; asserting the specific inconsistency is what makes
+        // the difference visible.
+        let claims_a_bound = result_with(
+            StreamEvidence::new(
+                StreamChannel::Stdout,
+                0,
+                Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"")),
+                Vec::new(),
+                TruncationState::observation_truncated(0),
+            ),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::NotRequired,
+            TreeDisposition::NotRequired,
+        );
+        let message = match claims_a_bound {
+            Ok(_) => String::from("assembly succeeded"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(
+            message, "an outcome in which no child started cannot carry child evidence",
+            "{disposition:?} did not refuse a capture bound reached before any start"
+        );
+
         // The coherent shape is admissible.
         result_with(
             StreamEvidence::empty(StreamChannel::Stdout),

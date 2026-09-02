@@ -1030,7 +1030,16 @@ impl ProcessResult {
             return Err(ResultInconsistency::SettledChildCarriesNoChildCleanup);
         }
         if disposition.asserts_no_child_started() {
-            let produced_output = stdout.observed_bytes() > 0 || stderr.observed_bytes() > 0;
+            // Two facts, not one. A byte count above zero is the obvious
+            // evidence of a child, but a truncation state is evidence too: it
+            // says a capture bound was *reached*, which only output can do.
+            // `observation_truncated(0)` carries a zero count and still makes
+            // that claim, so keying on the count alone let a refused start
+            // report a bound its non-existent child had hit.
+            let produced_output = stdout.observed_bytes() > 0
+                || stderr.observed_bytes() > 0
+                || !stdout.truncation().is_complete()
+                || !stderr.truncation().is_complete();
             let cleanup_claims_a_child =
                 matches!(cleanup, CleanupDisposition::Completed | CleanupDisposition::Failed);
             let tree_claims_a_child = matches!(
