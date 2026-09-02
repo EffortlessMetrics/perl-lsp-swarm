@@ -24,6 +24,19 @@ Every governed lint has exactly one current state:
 
 A lint cannot appear in two states. A Cargo lint without a ledger entry fails, as does an active ledger entry missing from Cargo. Due lints cannot remain ordinary planned work indefinitely.
 
+### Split-tool coverage
+
+One invariant sometimes needs a row in both `[workspace.lints.rust]` and `[workspace.lints.clippy]`, because rustc and Clippy each cover part of the surface. The rows share a name but are distinct governed identities, and neither is redundant:
+
+| identity | covers | silent on |
+|---|---|---|
+| `rust::let_underscore_lock` | `std::sync` mutex and read/write guards | `parking_lot` guards |
+| `clippy::let_underscore_lock` | `parking_lot` mutex and read/write guards | the standard-library guards Clippy uplifted to rustc |
+
+Deleting either row uncovers real lock types rather than removing a duplicate, so both are pinned in the checker's required dispositions and cannot be demoted without an explicit policy change. Their coverage boundary is measured against the selected toolchain — not asserted from the ledger — by the lock-partition tests in `xtask/src/tasks/check_lint_policy/tests/lock_partition.rs`.
+
+A row whose lint is already deny-by-default upstream is still stated explicitly. The default is the toolchain's current choice, not this repository's contract, and an upstream level change would otherwise remove the invariant silently.
+
 ## Workspace posture
 
 The policy governs the lint levels inherited by production and test targets. Its maintained enforcement surface is the required workspace `--lib` gate, the production `--bins` gate, and the explicitly listed all-targets kernel cohort; that cohort is intentionally non-exhaustive. This document therefore does not claim that every test target is currently checked by the strict Clippy gate. Test failures within the enforced surface should use `Result`, `?`, or repository assertion helpers that preserve the underlying error. The old Clippy test-carveout keys are not accepted policy and cannot return through `clippy.toml`.
