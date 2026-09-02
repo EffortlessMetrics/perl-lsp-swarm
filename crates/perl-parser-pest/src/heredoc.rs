@@ -777,6 +777,14 @@ struct OpenConstruct {
     /// multiline replacement as code, so `<<MARKER` inside it would delete
     /// following source.
     sections_remaining: usize,
+    /// Whether trailing modifier letters belong to this construct.
+    ///
+    /// `m`, `qr`, `s`, `tr`, `y`, and a bare regex take them; `q`, `qq`, `qw`,
+    /// `qx`, and plain strings do not. The same-line paths consume them before
+    /// marking the term complete, so a carried construct must too — otherwise
+    /// the `ix` in `qr{…}ix <<2` reads as a bareword and the shift is taken for
+    /// an opener, which deletes the following source.
+    takes_modifiers: bool,
 }
 
 /// `__DATA__` / `__END__` end the code region for the rest of the source.
@@ -835,11 +843,20 @@ fn scan_line_openers(
     let mut last_term_end = usize::MAX;
 
     if let Some(construct) = carried {
+        let takes_modifiers = construct.takes_modifiers;
         let (next, still_open) = continue_construct(bytes, construct);
         if let Some(open) = still_open {
             return Some(open);
         }
         index = next;
+        // The same-line paths advance over trailing modifiers before marking the
+        // term complete; a construct closing here must too, or `qr{...}ix <<2`
+        // reads `ix` as a bareword and the shift is taken for an opener.
+        if takes_modifiers {
+            while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
+                index += 1;
+            }
+        }
         last_term_end = index;
     }
 
@@ -878,7 +895,7 @@ fn scan_line_openers(
             b'/' if is_term_position(line, bytes, index, last_term_end) => {
                 let (next, open) = skip_delimited(bytes, index, b'/');
                 if let Some(open) = open {
-                    return Some(open);
+                    return Some(OpenConstruct { takes_modifiers: true, ..open });
                 }
                 index = next;
                 while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
@@ -952,7 +969,10 @@ fn continue_construct(bytes: &[u8], construct: OpenConstruct) -> (usize, Option<
                 };
                 let (after, still_open) = skip_delimited(bytes, index, opener);
                 return match still_open {
-                    Some(open) => (bytes.len(), Some(open)),
+                    Some(open) => (
+                        bytes.len(),
+                        Some(OpenConstruct { takes_modifiers: construct.takes_modifiers, ..open }),
+                    ),
                     None => (after, None),
                 };
             }
@@ -981,12 +1001,27 @@ fn skip_quoted(bytes: &[u8], open: usize, delimiter: u8) -> (usize, Option<OpenC
     // Unterminated on this line: the run continues on the next one.
     (
         bytes.len(),
-        Some(OpenConstruct { open: delimiter, close: delimiter, depth: 1, sections_remaining: 0 }),
+        Some(OpenConstruct {
+            open: delimiter,
+            close: delimiter,
+            depth: 1,
+            sections_remaining: 0,
+            takes_modifiers: false,
+        }),
     )
 }
 
 /// Quote-like operators whose contents must not be scanned for openers.
 const QUOTE_LIKE_OPERATORS: [&str; 9] = ["qq", "qw", "qx", "qr", "tr", "q", "m", "s", "y"];
+
+/// Whether a quote-like operator admits trailing modifier letters.
+///
+/// The matching operators are Perl's regex-family ones; `q`, `qq`, `qw`, and
+/// `qx` produce a value with no modifiers, so a letter after them starts new
+/// code rather than completing the term.
+fn operator_takes_modifiers(name: &str) -> bool {
+    matches!(name, "m" | "qr" | "s" | "tr" | "y")
+}
 
 /// Skip a quote-like operator (`q{...}`, `qq(...)`, `m/.../`, `s{...}{...}`)
 /// starting at `index`. Returns `None` when no operator starts here.
@@ -1038,7 +1073,11 @@ fn skip_quote_like(
             let remaining = sections - section - 1;
             return Some((
                 bytes.len(),
-                Some(OpenConstruct { sections_remaining: remaining, ..open }),
+                Some(OpenConstruct {
+                    sections_remaining: remaining,
+                    takes_modifiers: operator_takes_modifiers(name),
+                    ..open
+                }),
             ));
         }
         end = next;
@@ -1084,7 +1123,10 @@ fn skip_delimited(bytes: &[u8], open_index: usize, open: u8) -> (usize, Option<O
         index += 1;
     }
     // Unterminated on this line: the construct continues on the next one.
-    (bytes.len(), Some(OpenConstruct { open, close, depth, sections_remaining: 0 }))
+    (
+        bytes.len(),
+        Some(OpenConstruct { open, close, depth, sections_remaining: 0, takes_modifiers: false }),
+    )
 }
 
 const fn is_word_byte(byte: u8) -> bool {

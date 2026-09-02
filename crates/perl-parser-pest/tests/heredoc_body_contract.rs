@@ -342,6 +342,50 @@ fn when_shift_follows_a_method_call_then_following_source_survives() {
 }
 
 #[test]
+fn when_a_multiline_quote_like_closes_with_modifiers_then_the_shift_owns_no_body() {
+    // perl 5.38: `my $x = qr{\nfoo\n}ix <<2;` compiles and the next statement
+    // runs, so `<<2` is a left shift. The same-line paths already consume
+    // trailing modifiers, but a construct carried across lines closed at its
+    // delimiter and left `ix` looking like a bareword — which made the scanner
+    // take the shift for an opener and delete every following line.
+    for source in [
+        "my $x = qr{\nfoo\n}ix <<2;\nmy $z = 3;\n",
+        "my $x = m{\nfoo\n}i <<2;\nmy $z = 3;\n",
+        "my $x = s{\nfoo\n}{bar}g <<2;\nmy $z = 3;\n",
+        "my $x = tr{\nabc\n}{xyz}r <<2;\nmy $z = 3;\n",
+        // A bare regex left open across lines carries modifiers too.
+        "my $x = /a\nb/i <<2;\nmy $z = 3;\n",
+        "my $x = $t =~ /a\nb/gi <<2;\nmy $z = 3;\n",
+        // The no-modifier form was already correct; keeping it here pins that
+        // the fix consumes modifiers rather than blanket-skipping letters.
+        "my $x = qr{\nfoo\n} <<2;\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "carried-construct shift owns no body: {source:?}");
+        assert_eq!(scan.stripped(), source, "no source may be removed for: {source:?}");
+    }
+}
+
+#[test]
+fn when_a_closing_delimiter_is_followed_by_x_then_the_operator_decides() {
+    // The sharpest case for *which* operators take modifiers, because the same
+    // byte means opposite things. perl 5.38: `qq{a}x 3` is "aaa" — after `qq`,
+    // `x` is the repetition operator, so it is code and `<<2` still opens a
+    // heredoc. After `qr`, the same `x` is the /x regex modifier, completing the
+    // term and making `<<2` a shift. Treating every quote-like operator as
+    // modifier-taking swallows the repetition operator and loses the body.
+    let owned = "my $x = qq{\na\n}x <<EOF;\nbody\nEOF\nmy $z = 3;\n";
+    let scan = perl_parser_pest::heredoc::scan(owned);
+    assert_eq!(scan.captures().len(), 1, "`x` after qq is repetition, not a modifier");
+    assert_eq!(scan.captures().first().map(|capture| capture.content()), Some("body\n"));
+
+    let shifted = "my $x = qr{\na\n}x <<2;\nmy $z = 3;\n";
+    let scan = perl_parser_pest::heredoc::scan(shifted);
+    assert!(scan.captures().is_empty(), "`x` after qr is a modifier, so `<<2` is a shift");
+    assert_eq!(scan.stripped(), shifted, "no source may be removed for: {shifted:?}");
+}
+
+#[test]
 fn when_opener_follows_defined_or_then_the_body_is_owned() {
     // perl 5.38: `my $x = $u // <<EOF;` assigns the heredoc body when `$u` is
     // undef, so `//` here is the defined-or *operator* and `<<EOF` starts a
@@ -703,7 +747,7 @@ fn scanner_and_grammar_agree_on_openers() {
     //
     // Each row is one line of Perl with no body, so the grammar's count is its
     // unclouded opinion about that `<<` alone.
-    let rows: [&str; 30] = [
+    let rows: [&str; 35] = [
         // Term position — the grammar admits `heredoc` as an unconditional
         // `primary`, so any bareword counts, not just builtins.
         "my $x = <<EOF;\n",
@@ -729,6 +773,15 @@ fn scanner_and_grammar_agree_on_openers() {
         "my $y = $o->val <<2;\n",
         "my $y = $o -> val <<2;\n",
         "my $y = Foo->new <<2;\n",
+        // A carried quote-like construct completes only after its modifiers.
+        "my $y = qr{\nfoo\n}ix <<2;\n",
+        "my $y = m{\nfoo\n}i <<2;\n",
+        "my $y = s{\nfoo\n}{bar}g <<2;\n",
+        // The same byte, opposite meanings: `x` is the repetition operator after
+        // `qq` (so `<<2` still opens) and the /x modifier after `qr` (so it does
+        // not). Only an operator-aware rule agrees with the grammar on both.
+        "my $y = qq{\na\n}x <<2;\n",
+        "my $y = qr{\na\n}x <<2;\n",
         // Completed terms the preceding byte alone cannot recognize: a regex
         // ends in `/` or a flag letter, a special variable in punctuation, a
         // hex literal in a letter, a qualified name in a word byte.
