@@ -14,6 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (`perl-dap`): the workspace boundary is now a typed startup
+  authority.** `DapConfig.workspace_root: Option<PathBuf>` is replaced by
+  `workspace_authority: WorkspaceAuthority`, and `DebugAdapter::set_workspace_root`
+  is removed in favour of `DebugAdapter::with_workspace_authority`. One mutable
+  field previously served as both the trusted authority granted at adapter
+  startup and the effective boundary of a single debug session, so a per-launch
+  `workspaceRoot` was written back over the startup grant: it destroyed a
+  configured trusted root for every later session, and with no configured root
+  it became persistent adapter authority that the next session inherited
+  (#14587; parent #8145). The authority is now fixed at construction and a
+  fresh session boundary is derived per launch, so a narrowing `workspaceRoot`
+  cannot outlive its own session. Callers that passed `workspace_root: None`
+  should pass `workspace_authority: WorkspaceAuthority::unconfigured()` for
+  identical behavior. Launch behavior for an adapter started without the new
+  CLI flags is unchanged.
+
 - **Breaking (`perl-lsp-rs-core`): `performance::IncrementalParser` removed.**
   The type performed no parsing: it silently swapped reversed endpoints,
   fabricated one-byte extents for zero-length insertions, and answered
@@ -47,6 +63,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#3645, #3690, #3721, #3736, #3755)
 
 ### Added
+
+- **`perl-dap --workspace-root <DIR>` and `--allow-unbounded-workspace`.**
+  Until now the shipped adapter hardcoded "no workspace root", so the
+  workspace-bounded launch path was unreachable in the product and every
+  session ran unbounded. `--workspace-root` confines debug launches to one or
+  more trusted directories (repeat the flag for a multi-root workspace); a
+  launch-supplied `workspaceRoot` may narrow that boundary but never widen it,
+  and neither the debugged program's own directory nor its `cwd` can establish
+  one. `--allow-unbounded-workspace` makes single-file debugging outside a
+  workspace an explicit operator choice. Passing both, or a root that is not an
+  existing directory, fails startup. Starting with neither flag behaves exactly
+  as before and now logs one warning naming the remedy (#14587; parent #8145).
 
 - **Test2 framework awareness (reader/integration, not a Test2 runtime).**
   `perl-lsp` now reads Test2 source and Test2 runner output and drives the
