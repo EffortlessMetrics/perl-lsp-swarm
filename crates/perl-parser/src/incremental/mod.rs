@@ -5,11 +5,13 @@
 mod checkpoint;
 mod diagnostics;
 mod edit;
+mod geometry_attachment;
 mod lex;
 mod reparse;
 mod snapshot;
 mod state;
 mod strategy;
+mod whitespace_geometry;
 
 use anyhow::Result;
 
@@ -18,6 +20,12 @@ pub use perl_line_index::LineIndex;
 pub use checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
 pub use diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult};
 pub use edit::Edit;
+pub use geometry_attachment::{
+    SOURCE_GEOMETRY_ATTACHMENT_SCHEMA_VERSION, SourceGeometryAttachment,
+    SourceGeometryAttachmentState, SourceGeometryInstrumentFailureReason, SourceGeometryLimitation,
+    SourceGeometryPayload, SourceGeometrySubject, SourceGeometryUnavailableReason,
+    SourceGeometryValidationError,
+};
 pub use lex::MAX_STORED_LEX_CHECKPOINTS;
 use reparse::{apply_single_edit, apply_text_edit_to_state, full_reparse};
 pub use snapshot::{
@@ -26,6 +34,9 @@ pub use snapshot::{
 };
 pub use state::IncrementalState;
 pub use strategy::MAX_EDIT_SIZE;
+
+/// Small edit batches keep fast-path validation linear and cheap; larger batches fall back to a full parse.
+pub(crate) const MAX_INCREMENTAL_EDIT_BATCH: usize = 10;
 
 // Keep the raw engine private; the public facade normalizes complete-tree accounting.
 /// Canonical advanced-reuse analyzer and public accounting types.
