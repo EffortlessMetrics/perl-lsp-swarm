@@ -133,8 +133,15 @@ pub fn discards_by_explicit_drop(dropped_via_std_drop: &Mutex<u32>, dropped_via_
 }
 
 pub fn discards_mapped_guard(dropped_mapped_pl: &PlMutex<(u32, u32)>) {
-    let guard = dropped_mapped_pl.lock();
-    let _ = PlMutexGuard::map(guard, |value| &mut value.0);
+    let dropped_mapped_pl_guard = dropped_mapped_pl.lock();
+    let _ = PlMutexGuard::map(dropped_mapped_pl_guard, |value| &mut value.0);
+}
+
+pub fn holds_mapped_guard(held_mapped_pl: &PlMutex<(u32, u32)>) -> u32 {
+    let held_mapped_pl_guard = held_mapped_pl.lock();
+    let mut mapped = PlMutexGuard::map(held_mapped_pl_guard, |value| &mut value.0);
+    *mapped = mapped.wrapping_add(1);
+    *mapped
 }
 
 pub fn holds_arc_guards(held_arc_mutex: &Arc<PlMutex<u32>>, held_arc_rwlock: &Arc<PlRwLock<u32>>) -> u32 {

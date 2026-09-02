@@ -146,3 +146,87 @@ fn synchronized_manual_ilog2_rollback_fails_closed_through_validate_all() -> Res
     assert!(error.to_string().contains("must remain at level deny"));
     Ok(())
 }
+
+#[test]
+fn synchronized_lock_guard_rollback_fails_closed_through_validate_all() -> Result<()> {
+    // The sibling `disposition` tests exercise the ratchet against a synthetic
+    // ledger, which proves the validator's logic but not that the *shipped*
+    // Cargo.toml and catalog fragments are actually bound by it. This runs the
+    // same rollback through `validate_all` on the real repository inputs, so a
+    // row that drifted out of the required set — or a catalog fragment the
+    // loader stopped reading — fails here rather than passing on a fixture.
+    for (cargo_tool, cargo_key, identity) in [
+        ("rust", "let_underscore_lock", "rust::let_underscore_lock"),
+        ("clippy", "let_underscore_lock", "clippy::let_underscore_lock"),
+    ] {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or_else(|| eyre!("xtask manifest should have the workspace root as its parent"))?;
+        let mut cargo = super::read::read_toml(root.join(super::ROOT_MANIFEST))?;
+        let mut lint_ledger = super::read::load_lint_ledger(root)?;
+        let debt_ledger: DebtLedger = super::read::read_toml_as(root.join(super::DEBT_LEDGER))?;
+
+        // Demote in both authorities at once. Cargo.toml and the ledger still
+        // agree afterwards, so reconciliation cannot see it; only the pinned
+        // required disposition fails it closed.
+        *cargo
+            .get_mut("workspace")
+            .and_then(|workspace| workspace.get_mut("lints"))
+            .and_then(|lints| lints.get_mut(cargo_tool))
+            .and_then(|table| table.get_mut(cargo_key))
+            .ok_or_else(|| eyre!("workspace {cargo_tool} lints should carry {cargo_key}"))? =
+            Value::String("warn".to_owned());
+        lint_ledger
+            .lint
+            .iter_mut()
+            .find(|lint| lint.name == identity)
+            .ok_or_else(|| eyre!("lint ledger should carry {identity}"))?
+            .level = "warn".to_owned();
+
+        let Err(error) =
+            super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, test_date()?)
+        else {
+            bail!("synchronized {identity} rollback must fail closed through validate_all");
+        };
+        assert!(error.to_string().contains(identity));
+        assert!(error.to_string().contains("must remain at level deny"));
+    }
+    Ok(())
+}
+
+#[test]
+fn removing_either_lock_guard_row_from_cargo_fails_closed_through_validate_all() -> Result<()> {
+    // The other direction on the real inputs: an unsynchronized removal, where
+    // the ledger still claims the row is active but Cargo.toml no longer
+    // carries it. Reconciliation owns this one, and it must name the exact
+    // identity rather than failing somewhere generic.
+    for (cargo_tool, cargo_key, identity) in [
+        ("rust", "let_underscore_lock", "rust::let_underscore_lock"),
+        ("clippy", "let_underscore_lock", "clippy::let_underscore_lock"),
+    ] {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or_else(|| eyre!("xtask manifest should have the workspace root as its parent"))?;
+        let mut cargo = super::read::read_toml(root.join(super::ROOT_MANIFEST))?;
+        let lint_ledger = super::read::load_lint_ledger(root)?;
+        let debt_ledger: DebtLedger = super::read::read_toml_as(root.join(super::DEBT_LEDGER))?;
+
+        cargo
+            .get_mut("workspace")
+            .and_then(|workspace| workspace.get_mut("lints"))
+            .and_then(|lints| lints.get_mut(cargo_tool))
+            .and_then(Value::as_table_mut)
+            .ok_or_else(|| eyre!("workspace.lints.{cargo_tool} should be a table"))?
+            .remove(cargo_key)
+            .ok_or_else(|| eyre!("workspace {cargo_tool} lints should carry {cargo_key}"))?;
+
+        let Err(error) =
+            super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, test_date()?)
+        else {
+            bail!("removing {identity} from Cargo.toml must fail closed through validate_all");
+        };
+        assert!(error.to_string().contains(identity));
+        assert!(error.to_string().contains("missing from Cargo.toml"));
+    }
+    Ok(())
+}
