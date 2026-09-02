@@ -429,10 +429,19 @@ impl DebugAdapter {
         if raw.is_absolute() {
             return raw.to_path_buf();
         }
-        let base = cwd.map_or_else(
-            || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            Path::to_path_buf,
-        );
+        // The base must itself be absolute. A launch `cwd` may be relative, and
+        // the spawned child resolves a relative `current_dir` against *this*
+        // process's working directory — so joining a relative `cwd` straight
+        // onto the program would leave the result relative, and the same
+        // segment would then be applied twice: once by the join and again by
+        // the child. `{program: "script.pl", cwd: "sub"}` would authorize
+        // `<root>/sub/script.pl` and open `<cwd>/sub/sub/script.pl`.
+        let process_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let base = match cwd {
+            Some(path) if path.is_absolute() => path.to_path_buf(),
+            Some(path) => process_cwd.join(path),
+            None => process_cwd,
+        };
         base.join(raw)
     }
 
@@ -2501,6 +2510,35 @@ mod tests {
             !resolved.starts_with("/trusted"),
             "resolution must never silently land inside a trusted root it was not given"
         );
+    }
+
+    /// A relative `cwd` must still yield an absolute program path.
+    ///
+    /// Devin review of #14592: the first version of this helper joined a
+    /// relative `cwd` straight onto the program, leaving the result relative.
+    /// The same segment was then applied twice — once here and again by the
+    /// spawned child, which resolves a relative `current_dir` against this
+    /// process's working directory — so `{program: "script.pl", cwd: "sub"}`
+    /// authorized `<root>/sub/script.pl` while `perl` opened
+    /// `<cwd>/sub/sub/script.pl`.
+    #[test]
+    fn a_relative_launch_cwd_still_yields_one_absolute_program_path() {
+        let resolved = DebugAdapter::resolve_launch_program("script.pl", Some(Path::new("sub")));
+        assert!(
+            resolved.is_absolute(),
+            "authorization and execution can only agree on an absolute path, got {resolved:?}"
+        );
+
+        let expected = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("sub")
+            .join("script.pl");
+        assert_eq!(resolved, expected);
+
+        // The `sub` segment appears exactly once.
+        let occurrences =
+            resolved.components().filter(|c| c.as_os_str() == std::ffi::OsStr::new("sub")).count();
+        assert_eq!(occurrences, 1, "the launch cwd must not be applied twice: {resolved:?}");
     }
 
     #[test]
