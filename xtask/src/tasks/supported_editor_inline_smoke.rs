@@ -30,7 +30,7 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
     },
     SupportedEditorRouteRequirement {
         route: "lsp4ij_upstream_integration",
-        claim: "the JetBrains path documents the `perllsp --stdio` launch identity, executably proves the static/dynamic inline-completion protocol split, and keeps actual IntelliJ/LSP4IJ host support explicitly unproven here",
+        claim: "the JetBrains path documents the `perllsp --stdio` launch identity and records the repository's static/dynamic inline-completion protocol evidence markers; this receipt does not execute the protocol or prove actual IntelliJ/LSP4IJ host support",
         proof_planes: &[
             ProofPlaneRequirement {
                 plane: "launch_identity",
@@ -654,6 +654,8 @@ mod tests {
             .supported_editor_routes
             .get("lsp4ij_upstream_integration")
             .ok_or_else(|| color_eyre::eyre::eyre!("missing lsp4ij route"))?;
+        assert!(lsp4ij.claim.contains("records the repository's"));
+        assert!(lsp4ij.claim.contains("does not execute the protocol"));
         let launch = lsp4ij
             .proof_planes
             .get("launch_identity")
