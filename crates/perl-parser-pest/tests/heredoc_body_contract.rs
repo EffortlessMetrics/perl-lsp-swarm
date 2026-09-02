@@ -567,9 +567,20 @@ fn when_a_replacement_spans_lines_then_its_text_is_not_scanned_for_openers() {
     //
     // so the `<<NOT_A_HEREDOC` inside the replacement is literal text, and the
     // real opener below it still owns its body.
+    // The later rows add a *first section that itself spans lines*, reported
+    // separately on the theory that the carried construct would resume in the
+    // wrong section and swallow the real opener below. perl 5.38 disagrees and
+    // so does the scanner:
+    //
+    //   $t =~ s{aaa
+    //   bbb}
+    //   {<<NOT_A_HEREDOC};
+    //   my $h = <<EOF;      # t becomes "<<NOT_A_HEREDOC", h becomes "body"
     for source in [
         "$t =~ s{a}\n{<<NOT_A_HEREDOC};\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
         "$t =~ s{a}{<<NOT_A_HEREDOC};\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "$t =~ s{aaa\nbbb}\n{<<NOT_A_HEREDOC};\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "$t =~ s{aaa\nbbb}{<<NOT_A_HEREDOC};\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
     ] {
         let scan = perl_parser_pest::heredoc::scan(source);
         assert_eq!(scan.captures().len(), 1, "only the real opener is owned: {source:?}");
@@ -586,6 +597,19 @@ fn when_a_replacement_spans_lines_then_its_text_is_not_scanned_for_openers() {
             scan.stripped()
         );
     }
+
+    // `tr` takes two sections the same way, and its first section spanning
+    // lines is the same shape without any opener-like text to blame.
+    let scan = perl_parser_pest::heredoc::scan(
+        "$t =~ tr{abc\ndef}\n{ghi\njkl};\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+    );
+    assert_eq!(scan.captures().len(), 1, "only the real opener is owned");
+    assert_eq!(scan.captures()[0].content(), "body\n");
+    assert!(
+        scan.stripped().contains("my $z = 3;"),
+        "no following source may be deleted: {:?}",
+        scan.stripped()
+    );
 }
 
 #[test]
@@ -1204,6 +1228,43 @@ fn when_a_phantom_opener_repeats_a_later_marker_then_the_real_heredoc_keeps_its_
 }
 
 #[test]
+fn when_recovery_reparses_fragments_then_a_valid_heredoc_still_owns_its_body() -> Result<(), String>
+{
+    // Unrelated malformed syntax sends the whole-source parse into
+    // `parse_with_recovery`, which re-parses statement fragments. Their Pest
+    // spans are fragment-relative, so without a per-fragment base offset no
+    // capture could be identified and `parse()` returned `Ok` with empty
+    // content for a perfectly good heredoc — an ordinary complete success
+    // carrying silently empty content, which is the exact thing #8220 forbids.
+    //
+    // The CRLF row is not decoration: the fragment base is computed by
+    // reproducing `source` byte for byte, and building it from `lines()` would
+    // drop each `\r` and skew every offset after the first line.
+    for (source, body) in [
+        ("my $x = ;\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n", "body\n"),
+        ("my $x = ;\r\nmy $h = <<EOF;\r\nbody\r\nEOF\r\nmy $z = 3;\r\n", "body\r\n"),
+    ] {
+        assert_eq!(
+            heredoc_contents(source),
+            vec![("EOF".to_string(), body.to_string())],
+            "recovery must not empty a valid heredoc: {source:?}"
+        );
+
+        let mut parser = PureRustPerlParser::new();
+        let ParseAttempt::Outcome(outcome) = parser.parse_heredoc_outcome(source) else {
+            return Err("expected a parser-domain outcome".to_string());
+        };
+        assert_eq!(
+            outcome.completeness(),
+            ParseCompleteness::Complete,
+            "the heredoc contract is intact even though the source needed recovery; got {:?}",
+            outcome.diagnostics()
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn when_normalization_rewrites_the_source_then_opener_identity_survives_it() -> Result<(), String> {
     // `normalize_source` rewrites the stripped text before Pest parses it, so a
     // capture's stripped-text offset is not directly comparable with a pair's
@@ -1580,23 +1641,24 @@ fn when_the_grammar_over_reports_inside_a_multiline_substitution_then_it_is_not_
         outcome.diagnostics()
     );
 
-    // This fixture reaches the recovery path, where Pest's spans are
-    // fragment-relative and no capture offset is comparable. Attachment must
-    // then fail closed: guessing by marker text would hand the real body to the
-    // phantom opener, and the body would look attached while being on the wrong
-    // node. The unattached-body diagnostic is what proves nothing was guessed —
-    // it disappears the moment marker-only matching is restored.
+    // This fixture reaches the recovery path, where Pest parses fragments.
+    // Their spans are fragment-relative, so `parse_with_recovery` adds each
+    // fragment's base offset to recover whole-source coordinates. Both openers
+    // spell `EOF`, so *which* node ends up with the body is the whole question:
+    // matching on marker text alone hands it to the phantom inside the
+    // replacement and leaves the real heredoc empty.
+    let projection = sexp(source);
     assert!(
-        outcome
-            .diagnostics()
-            .iter()
-            .any(|d| d.message().contains("owned a body but its opener produced no node")),
-        "an unowned body must be reported, not silently attached elsewhere; got {:?}",
-        outcome.diagnostics()
+        projection.contains(r#"(hash_ref (heredoc EOF  ""))"#),
+        "the phantom opener in the replacement must own nothing; got {projection}"
     );
     assert!(
-        heredoc_contents(source).iter().all(|(_, content)| content != "body\n"),
-        "no node may claim the body when opener identity is unavailable"
+        projection.contains(r#"(heredoc EOF  "body\n")"#),
+        "the real opener must own its body even through recovery; got {projection}"
+    );
+    assert!(
+        !projection.contains(r#"(hash_ref (heredoc EOF  "body\n"))"#),
+        "the body must never be attached to the phantom; got {projection}"
     );
     Ok(())
 }

@@ -331,6 +331,10 @@ pub struct PureRustPerlParser {
     /// Whether Pest's spans are offsets into the scanner's stripped text, so a
     /// queued capture can be identified by position rather than marker alone.
     heredoc_offsets_exact: bool,
+    /// Offset added to a pair's span to recover whole-source coordinates.
+    ///
+    /// Zero on the whole-source parse; set per fragment during recovery.
+    heredoc_span_base: usize,
     /// Heredoc openers the grammar produced during the last parse.
     ///
     /// The scanner and the grammar decide independently which `<<` is an
@@ -417,6 +421,7 @@ impl PureRustPerlParser {
             _pratt_parser: PrattParser::new(),
             heredocs: HeredocQueue::default(),
             heredoc_offsets_exact: false,
+            heredoc_span_base: 0,
             heredoc_nodes_built: 0,
         }
     }
@@ -445,13 +450,14 @@ impl PureRustPerlParser {
         self.heredocs = HeredocQueue::from_scan_translated(scan, |at| rewrites.translate(at));
         self.heredoc_nodes_built = 0;
         self.heredoc_offsets_exact = self.heredocs.offsets_are_usable();
+        self.heredoc_span_base = 0;
 
         match <PerlParser as Parser<Rule>>::parse(Rule::program, &normalized) {
             Ok(pairs) => self.build_ast(pairs),
             Err(e) => {
-                // Recovery parses individual statements, so pair spans are
-                // fragment-relative and cannot be compared with these offsets.
-                self.heredoc_offsets_exact = false;
+                // Recovery parses fragments, whose spans are fragment-relative;
+                // `parse_with_recovery` sets a per-fragment base so they can
+                // still be carried back to whole-source coordinates.
                 self.parse_with_recovery(&normalized, e)
             }
         }
@@ -503,15 +509,24 @@ impl PureRustPerlParser {
         original_error: pest::error::Error<Rule>,
     ) -> Result<AstNode, Box<dyn std::error::Error>> {
         let mut statements = Vec::new();
-        let lines: Vec<&str> = source.lines().collect();
         let mut current_block = String::new();
         let mut brace_count: i32 = 0;
         let mut in_single_quote = false;
         let mut in_double_quote = false;
+        // Offsets into `source` so each fragment's Pest spans can be carried
+        // back to whole-source coordinates. `split_inclusive` keeps each line's
+        // terminator, so `current_block` is byte-identical to the slice of
+        // `source` it came from — `lines()` would drop `\r` and silently skew
+        // every offset on CRLF input.
+        let mut cursor = 0usize;
+        let mut block_start = 0usize;
 
-        for line in lines {
+        for line in source.split_inclusive('\n') {
+            if current_block.is_empty() {
+                block_start = cursor;
+            }
             current_block.push_str(line);
-            current_block.push('\n');
+            cursor += line.len();
 
             // Count braces outside of string literals (state persists across lines)
             {
@@ -547,6 +562,13 @@ impl PureRustPerlParser {
                     } else {
                         trimmed.to_string()
                     };
+
+                    // `with_semi` starts at the trimmed block, so a pair span
+                    // plus this base is a whole-source offset again. Any `;`
+                    // appended above sits past the end and carries no opener.
+                    let leading =
+                        current_block.len().saturating_sub(current_block.trim_start().len());
+                    self.heredoc_span_base = block_start.saturating_add(leading);
 
                     if let Ok(pairs) =
                         <PerlParser as Parser<Rule>>::parse(Rule::statements, &with_semi)
@@ -1469,7 +1491,7 @@ impl PureRustPerlParser {
             Rule::heredoc => {
                 // The `heredoc` rule starts at the `<<`, which is the same
                 // coordinate the scanner recorded for its capture.
-                let opener_start = pair.as_span().start();
+                let opener_start = pair.as_span().start().saturating_add(self.heredoc_span_base);
                 let inner = pair.into_inner();
                 let mut indented = false;
                 let mut marker = Arc::from("");
