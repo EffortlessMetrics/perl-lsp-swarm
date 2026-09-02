@@ -685,46 +685,173 @@ mod tests {
         /// in place rather than over-stripped.
         fn strip_cfg_gated_blocks(source: &str) -> String {
             const ATTR: &str = "#[cfg(any(test, feature = \"test-fallbacks\"))]";
+
+            #[derive(Clone, Copy)]
+            enum Mode {
+                Code,
+                LineComment,
+                BlockComment(usize),
+                String { escaped: bool },
+                Char { escaped: bool },
+                RawString { hashes: usize },
+            }
+
+            fn gated_region_end(source: &str) -> Option<usize> {
+                let bytes = source.as_bytes();
+                let mut mode = Mode::Code;
+                let mut open = None;
+                let mut depth = 0usize;
+                let mut i = 0usize;
+                while i < bytes.len() {
+                    match mode {
+                        Mode::Code => match bytes[i] {
+                            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                                mode = Mode::LineComment;
+                                i += 2;
+                            }
+                            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                                mode = Mode::BlockComment(1);
+                                i += 2;
+                            }
+                            b'"' => {
+                                mode = Mode::String { escaped: false };
+                                i += 1;
+                            }
+                            b'\'' => {
+                                mode = Mode::Char { escaped: false };
+                                i += 1;
+                            }
+                            b'r' | b'b' if bytes.get(i + 1) == Some(&b'r') => {
+                                let raw = if bytes[i] == b'b' { i + 2 } else { i + 1 };
+                                let mut j = raw;
+                                while bytes.get(j) == Some(&b'#') {
+                                    j += 1;
+                                }
+                                if bytes.get(j) == Some(&b'"') {
+                                    mode = Mode::RawString { hashes: j - raw };
+                                    i = j + 1;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            b'r' if bytes.get(i + 1) == Some(&b'"') => {
+                                mode = Mode::RawString { hashes: 0 };
+                                i += 2;
+                            }
+                            b'{' => {
+                                open.get_or_insert(i);
+                                depth += 1;
+                                i += 1;
+                            }
+                            b'}' if open.is_some() => {
+                                depth = depth.saturating_sub(1);
+                                i += 1;
+                                if depth == 0 {
+                                    return Some(i);
+                                }
+                            }
+                            b';' if open.is_none() => return Some(0),
+                            _ => i += 1,
+                        },
+                        Mode::LineComment => {
+                            i += 1;
+                            if bytes.get(i - 1) == Some(&b'\n') {
+                                mode = Mode::Code;
+                            }
+                        }
+                        Mode::BlockComment(mut nested) => {
+                            if bytes.get(i..i + 2) == Some(b"/*") {
+                                nested += 1;
+                                mode = Mode::BlockComment(nested);
+                                i += 2;
+                            } else if bytes.get(i..i + 2) == Some(b"*/") {
+                                nested -= 1;
+                                mode = if nested == 0 {
+                                    Mode::Code
+                                } else {
+                                    Mode::BlockComment(nested)
+                                };
+                                i += 2;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        Mode::String { escaped } => {
+                            if escaped {
+                                mode = Mode::String { escaped: false };
+                                i += 1;
+                            } else if bytes[i] == b'\\' {
+                                mode = Mode::String { escaped: true };
+                                i += 1;
+                            } else if bytes[i] == b'"' {
+                                mode = Mode::Code;
+                                i += 1;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        Mode::Char { escaped } => {
+                            if escaped {
+                                mode = Mode::Char { escaped: false };
+                                i += 1;
+                            } else if bytes[i] == b'\\' {
+                                mode = Mode::Char { escaped: true };
+                                i += 1;
+                            } else if bytes[i] == b'\'' {
+                                mode = Mode::Code;
+                                i += 1;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        Mode::RawString { hashes } => {
+                            if bytes[i] == b'"'
+                                && bytes.get(i + 1..i + 1 + hashes) == Some(&b"#"[..hashes])
+                            {
+                                mode = Mode::Code;
+                                i += hashes + 1;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                    }
+                }
+                None
+            }
+
             let mut kept = String::with_capacity(source.len());
             let mut rest = source;
             while let Some(at) = rest.find(ATTR) {
                 kept.push_str(&rest[..at]);
                 let after_attr = &rest[at + ATTR.len()..];
-                let Some(open_rel) = after_attr.find('{') else {
-                    kept.push_str(after_attr);
-                    break;
-                };
-                if after_attr[..open_rel].contains(';') {
-                    // The attribute gates a braceless item (e.g. `use ...;`);
-                    // keep the text and keep scanning after this attribute.
-                    kept.push_str(ATTR);
-                    rest = after_attr;
-                    continue;
-                }
-                let mut depth = 0usize;
-                let mut block_end = None;
-                for (idx, ch) in after_attr[open_rel..].char_indices() {
-                    match ch {
-                        '{' => depth += 1,
-                        '}' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                block_end = Some(open_rel + idx + 1);
-                                break;
-                            }
-                        }
-                        _ => {}
+                rest = match gated_region_end(after_attr) {
+                    Some(0) => {
+                        kept.push_str(ATTR);
+                        after_attr
                     }
-                }
-                rest = match block_end {
                     Some(end) => &after_attr[end..],
-                    // Unbalanced remainder: treat all of it as gated.
                     None => "",
                 };
             }
             kept.push_str(rest);
             kept
         }
+
+        let adversarial = r#"
+#[cfg(any(test, feature = "test-fallbacks"))]
+fn gated() {
+    let fake = "unmatched { in a string";
+    /* outer { /* nested } */ still gated */
+}
+fn production() {
+    on_references(params, request_id);
+}
+"#;
+        let stripped = strip_cfg_gated_blocks(adversarial);
+        assert!(
+            stripped.contains("fn production()") && stripped.contains("on_references"),
+            "lexical cfg stripping must preserve production after braces in strings/comments: {stripped}"
+        );
 
         // Any reference to a test-only fallback provider in production
         // dispatch text is a violation, whatever the parameters are built
