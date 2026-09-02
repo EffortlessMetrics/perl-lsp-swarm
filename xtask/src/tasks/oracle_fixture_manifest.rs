@@ -49,6 +49,21 @@ const CLASS_FACT_FAMILIES: &[(&str, &[&str])] = &[
     ("CompileEffect", &["compile_effects", "dynamic_boundaries"]),
 ];
 
+/// The single active owner issue for each comparison class, per the
+/// "Entry conditions" table in issue #4767.
+///
+/// Pinning these makes the owner field mean something: a well-formed but wrong
+/// issue number is caught offline, without making validation depend on live
+/// GitHub state.
+const CLASS_OWNERS: &[(&str, &str)] = &[
+    ("PackageSubTable", "#13645"),
+    ("ImportExport", "#13624"),
+    ("IsaComposition", "#13626"),
+    ("ConstantPrototype", "#13629"),
+    ("FrameworkGeneratedMember", "#4766"),
+    ("CompileEffect", "#13632"),
+];
+
 const ALLOWED_CLASS_COVERAGE: &[&str] = &["declared", "pending_fixture"];
 
 const REQUIRED_ENVIRONMENT_DENIALS: &[&str] = &["PERL5LIB", "PERL5OPT", "local::lib"];
@@ -391,6 +406,14 @@ fn validate_class_contracts(manifest: &OracleFixtureManifest, violations: &mut V
 
         validate_contract_version(&doc, &contract.contract_version, violations);
         validate_owner_issue(&doc, "owner", &contract.owner, violations);
+        if let Some((_, expected)) = CLASS_OWNERS.iter().find(|(name, _)| *name == class)
+            && contract.owner != *expected
+        {
+            violations.push(format!(
+                "{doc}: owner is {:?}; the authoritative owner for this class is {expected:?}",
+                contract.owner
+            ));
+        }
         validate_allowed(&doc, "coverage", &contract.coverage, ALLOWED_CLASS_COVERAGE, violations);
 
         match class_fact_families(class) {
@@ -525,7 +548,10 @@ fn validate_declared_module_topology(
                 .push(format!("{doc}: module_files repeats entry {:?}", module_file.as_str()));
         }
         validate_relative_existing_path(root, doc, "module_files", module_file, violations);
+        require_regular_file(root, doc, "module_files", module_file, violations);
     }
+    require_regular_file(root, doc, "source", &fixture.source, violations);
+    require_declared_module_graph(root, doc, fixture, violations);
 
     for (field, value) in std::iter::once(("source", &fixture.source))
         .chain(fixture.module_files.iter().map(|file| ("module_files", file)))
@@ -544,6 +570,76 @@ fn validate_declared_module_topology(
                 "{doc}: {field} {value:?} is not contained by any declared module_root"
             ));
         }
+    }
+}
+
+/// `module_files` is only a promise unless something can tell when a required
+/// entry is missing. Read the fixture source, resolve each `use`/`require` of a
+/// package-style module against the fixture's own declared roots, and require
+/// every one that actually resolves to a file to be declared.
+///
+/// Core and CPAN modules (`strict`, `Exporter`, ...) do not resolve inside a
+/// fixture root, so they are not required here — the check names exactly the
+/// files that make this fixture a multi-file graph.
+fn require_declared_module_graph(
+    root: &Path,
+    doc: &str,
+    fixture: &OracleFixture,
+    violations: &mut Vec<String>,
+) {
+    let Ok(source) = fs::read_to_string(root.join(&fixture.source)) else {
+        return; // Missing/unreadable source is already reported by the path checks.
+    };
+    let declared = fixture.module_files.iter().map(String::as_str).collect::<BTreeSet<_>>();
+
+    for module in used_module_names(&source) {
+        let relative = format!("{}.pm", module.replace("::", "/"));
+        for module_root in &fixture.module_roots {
+            let candidate = format!("{}/{relative}", module_root.trim_end_matches('/'));
+            if root.join(&candidate).is_file() && !declared.contains(candidate.as_str()) {
+                violations.push(format!(
+                    "{doc}: source loads module {module:?}, which resolves to {candidate:?} inside a declared module_root, but that file is not listed in module_files"
+                ));
+            }
+        }
+    }
+}
+
+/// Package-style `use`/`require` targets only. Pragmas and version/feature forms
+/// are lowercase or numeric and never name a fixture module file.
+fn used_module_names(source: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for line in source.lines() {
+        let line = line.trim_start();
+        let rest = line
+            .strip_prefix("use ")
+            .or_else(|| line.strip_prefix("require "))
+            .map(str::trim_start);
+        let Some(rest) = rest else { continue };
+
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+            .collect();
+        if name.contains("::") && name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            names.insert(name);
+        }
+    }
+    names
+}
+
+/// A declared load file must be a readable file. An existing directory satisfies
+/// a bare existence check but nothing can load it.
+fn require_regular_file(
+    root: &Path,
+    doc: &str,
+    field: &str,
+    value: &str,
+    violations: &mut Vec<String>,
+) {
+    let path = root.join(value);
+    if path.exists() && !path.is_file() {
+        violations.push(format!("{doc}: {field} {value:?} is not a regular file"));
     }
 }
 
@@ -1049,6 +1145,107 @@ mod tests {
         )?;
 
         assert_violation(tempdir.path(), "module_files points to missing path fixtures/Absent.pm")
+    }
+
+    /// Devin Review's negative control: drop the `imports_exports` producer from
+    /// `module_files` while leaving the file on disk. Before the module-graph
+    /// check this passed, because nothing could tell a required entry was absent.
+    #[test]
+    fn rejects_dropping_a_required_module_file_from_the_repository_manifest() -> TestResult {
+        let root = project_root()?;
+        let text = fs::read_to_string(root.join(MANIFEST_PATH))?;
+        let stripped = text.replace(
+            "\"crates/perl-corpus/fixtures/parser_accuracy/Accuracy/ImportsExports.pm\"\n      ",
+            "",
+        );
+        assert_ne!(stripped, text, "manifest no longer declares the producer module");
+
+        let tempdir = mirror_repository_manifest(&root, &stripped)?;
+
+        assert_violation(tempdir.path(), "source loads module \"Accuracy::ImportsExports\"")
+    }
+
+    /// An existing directory satisfies a bare existence check but nothing can
+    /// load it, so it must not pass as a declared load file.
+    #[test]
+    fn rejects_directory_declared_as_a_module_file() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        fs::create_dir_all(tempdir.path().join("fixtures/NotAFile.pm"))?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(r#""module_files": []"#, r#""module_files": ["fixtures/NotAFile.pm"]"#),
+        )?;
+
+        assert_violation(tempdir.path(), "is not a regular file")
+    }
+
+    /// A well-formed but wrong issue number must not pass as an owner.
+    #[test]
+    fn rejects_well_formed_but_incorrect_class_owner() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(&manifest_path, text.replace(r##""owner": "#13626""##, r##""owner": "#1""##))?;
+
+        assert_violation(tempdir.path(), r##"the authoritative owner for this class is "#13626""##)
+    }
+
+    #[test]
+    fn class_owner_table_covers_exactly_the_required_comparison_classes() {
+        let owned = CLASS_OWNERS.iter().map(|(class, _)| *class).collect::<BTreeSet<&str>>();
+        let required = REQUIRED_COMPARISON_CLASSES.iter().copied().collect::<BTreeSet<&str>>();
+
+        assert_eq!(owned, required, "class owner table and comparison-class list disagree");
+    }
+
+    /// Only package-style module loads count; pragmas and feature/version forms
+    /// never name a fixture module file.
+    #[test]
+    fn used_module_names_selects_only_package_style_loads() {
+        let names = used_module_names(
+            "use strict;\nuse warnings;\nuse v5.36;\nuse Accuracy::ImportsExports;\n  require Deep::Nested::Thing;\nuse feature 'signatures';\n",
+        );
+
+        assert!(names.contains("Accuracy::ImportsExports"));
+        assert!(names.contains("Deep::Nested::Thing"));
+        assert_eq!(names.len(), 2, "unexpected extra module names: {names:?}");
+    }
+
+    /// Copy the repository's real schema, spec, fixture assets, and a (possibly
+    /// mutated) manifest into a tempdir so a repository-scale mutation can be
+    /// validated without touching the working tree.
+    fn mirror_repository_manifest(
+        real_root: &Path,
+        manifest_text: &str,
+    ) -> TestResult<tempfile::TempDir> {
+        let tempdir = tempfile::tempdir()?;
+        for relative in [SCHEMA_PATH, ORACLE_SPEC, MANIFEST_PATH] {
+            let destination = tempdir.path().join(relative);
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(real_root.join(relative), &destination)?;
+        }
+        let fixtures = "crates/perl-corpus/fixtures/parser_accuracy";
+        copy_tree(&real_root.join(fixtures), &tempdir.path().join(fixtures))?;
+        fs::write(tempdir.path().join(MANIFEST_PATH), manifest_text)?;
+        Ok(tempdir)
+    }
+
+    fn copy_tree(from: &Path, to: &Path) -> TestResult {
+        fs::create_dir_all(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            let target = to.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_tree(&entry.path(), &target)?;
+            } else {
+                fs::copy(entry.path(), &target)?;
+            }
+        }
+        Ok(())
     }
 
     /// The schema declares `additionalProperties: false`, but the Rust structs
