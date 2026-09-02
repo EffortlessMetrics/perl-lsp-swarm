@@ -108,11 +108,10 @@ impl LineIndex {
     #[must_use]
     pub fn position_to_byte_utf16(&self, text: &str, line: usize, column: usize) -> Option<usize> {
         let line_start = *self.line_starts.get(line)?;
-        // Determine where this line's content ends (exclusive).  LSP treats
-        // CRLF as one line terminator, so neither terminator byte is an
-        // interior addressable character.  The one-past-content position is
-        // still valid as a range end, while the next line's first byte must
-        // not resolve through this line (#9837).
+        // Determine where this line's content ends (exclusive). Keep the
+        // first CRLF terminator byte in the line slice so the established
+        // UTF-16 boundary column remains addressable; the next line's first
+        // byte must not resolve through this line (#9837).
         let line_end = self.line_starts.get(line + 1).map_or(self.text_len, |next_start| {
             // Keep the complete line terminator's first byte in the line
             // slice. This preserves the established UTF-16 column at the
