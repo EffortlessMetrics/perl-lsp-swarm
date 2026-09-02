@@ -113,6 +113,26 @@ fn collect(node: &Node, map: &mut ImportMap) {
 /// describes the symbol rather than the module. Modelling the rename is out of
 /// scope here, but dropping the body would drop `bar` — the name actually
 /// installed — while keeping `foo`, which is not.
+/// Whether the `{` at `open` begins Sub::Exporter's per-symbol option hash.
+///
+/// `foo => { -as => 'bar' }` describes the symbol being imported; the option
+/// names are documented and dash-prefixed, and the parser splits `-as` into
+/// `-` and `as`. Requiring one of those names, rather than any dashed key,
+/// keeps an ordinary module configuration hash that happens to open with a
+/// dashed key — `use M 'foo', { -config => 'value' }` — on the skipped side.
+///
+/// Perl cannot separate these two shapes on syntax alone: `foo => {...}` and
+/// `foo, {...}` are the same list, and which reading applies is the imported
+/// module's business. The option vocabulary is the only evidence available
+/// here, so this errs toward skipping and keeps the retained case narrow.
+fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
+    args.get(open + 1).map(|token| token.trim()) == Some("-")
+        && args
+            .get(open + 2)
+            .map(|token| token.trim())
+            .is_some_and(|name| matches!(name, "as" | "prefix" | "suffix"))
+}
+
 fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
     let mut kept = Vec::new();
     let mut skip_depth = 0usize;
@@ -126,7 +146,7 @@ fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
             }
             continue;
         }
-        if trimmed == "{" && args.get(index + 1).map(|next| next.trim()) != Some("-") {
+        if trimmed == "{" && !opens_per_symbol_options(args, index) {
             skip_depth = 1;
             continue;
         }
@@ -247,6 +267,22 @@ mod tests {
 
         let symbols = must_some(map.get("Module"));
         assert!(symbols.contains("bar"), "the installed name must survive; got: {symbols:?}");
+    }
+
+    /// A dashed first key alone does not mark a hash as per-symbol options; an
+    /// ordinary module configuration may open with one. Only the documented
+    /// option names retain the body.
+    #[test]
+    fn a_configuration_hash_opening_with_a_dashed_key_is_still_skipped() {
+        let code = "use Module 'foo', { -config => 'value' };\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Module"));
+        assert!(symbols.contains("foo"), "the requested name survives; got: {symbols:?}");
+        assert!(!symbols.contains("config"), "a config key is not imported; got: {symbols:?}");
+        assert!(!symbols.contains("value"), "a config value is not imported; got: {symbols:?}");
     }
 
     #[test]

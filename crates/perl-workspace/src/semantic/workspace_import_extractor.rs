@@ -497,6 +497,26 @@ fn classify_use(module: &str, args: &[String], file_id: FileId, node: &Node) -> 
 /// Modelling the rename is out of scope, but dropping the body would hide the
 /// installed name (`bar`) while keeping the name that is not installed (`foo`),
 /// which is worse than the imprecision it replaces.
+/// Whether the `{` at `open` begins Sub::Exporter's per-symbol option hash.
+///
+/// `foo => { -as => 'bar' }` describes the symbol being imported; the option
+/// names are documented and dash-prefixed, and the parser splits `-as` into
+/// `-` and `as`. Requiring one of those names, rather than any dashed key,
+/// keeps an ordinary module configuration hash that happens to open with a
+/// dashed key — `use M 'foo', { -config => 'value' }` — on the skipped side.
+///
+/// Perl cannot separate these two shapes on syntax alone: `foo => {...}` and
+/// `foo, {...}` are the same list, and which reading applies is the imported
+/// module's business. The option vocabulary is the only evidence available
+/// here, so this errs toward skipping and keeps the retained case narrow.
+fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
+    args.get(open + 1).map(|token| token.trim()) == Some("-")
+        && args
+            .get(open + 2)
+            .map(|token| token.trim())
+            .is_some_and(|name| matches!(name, "as" | "prefix" | "suffix"))
+}
+
 fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
     let mut kept = Vec::new();
     let mut skip_depth = 0usize;
@@ -510,7 +530,7 @@ fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
             }
             continue;
         }
-        if trimmed == "{" && args.get(index + 1).map(|next| next.trim()) != Some("-") {
+        if trimmed == "{" && !opens_per_symbol_options(args, index) {
             skip_depth = 1;
             continue;
         }
@@ -1065,6 +1085,23 @@ mod tests {
             ),
             other => return Err(format!("expected an explicit list, got {other:?}").into()),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_configuration_hash_opening_with_a_dashed_key_is_still_skipped()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The converse of the per-symbol case. A dashed first key alone does not
+        // make a hash per-symbol options — an ordinary module configuration may
+        // open with one — so only the documented option names retain the body.
+        // `-config` is not one, so `config` and `value` stay out of the imports.
+        let specs = parse_and_extract("use Module 'foo', { -config => 'value' };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Module")
+            .ok_or("expected an ImportSpec for Module")?;
+
+        assert_eq!(spec.symbols, ImportSymbols::Explicit(vec!["foo".to_string()]));
         Ok(())
     }
 

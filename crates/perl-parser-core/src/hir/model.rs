@@ -2509,6 +2509,26 @@ fn import_spec(
 /// describes the symbol rather than the module. Modelling the rename is out of
 /// scope here, but dropping the body would hide the installed name while
 /// keeping the one that is not installed.
+/// Whether the `{` at `open` begins Sub::Exporter's per-symbol option hash.
+///
+/// `foo => { -as => 'bar' }` describes the symbol being imported; the option
+/// names are documented and dash-prefixed, and the parser splits `-as` into
+/// `-` and `as`. Requiring one of those names, rather than any dashed key,
+/// keeps an ordinary module configuration hash that happens to open with a
+/// dashed key — `use M 'foo', { -config => 'value' }` — on the skipped side.
+///
+/// Perl cannot separate these two shapes on syntax alone: `foo => {...}` and
+/// `foo, {...}` are the same list, and which reading applies is the imported
+/// module's business. The option vocabulary is the only evidence available
+/// here, so this errs toward skipping and keeps the retained case narrow.
+fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
+    args.get(open + 1).map(|token| token.trim()) == Some("-")
+        && args
+            .get(open + 2)
+            .map(|token| token.trim())
+            .is_some_and(|name| matches!(name, "as" | "prefix" | "suffix"))
+}
+
 fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
     let mut kept = Vec::new();
     let mut skip_depth = 0usize;
@@ -2522,7 +2542,7 @@ fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
             }
             continue;
         }
-        if trimmed == "{" && args.get(index + 1).map(|next| next.trim()) != Some("-") {
+        if trimmed == "{" && !opens_per_symbol_options(args, index) {
             skip_depth = 1;
             continue;
         }
