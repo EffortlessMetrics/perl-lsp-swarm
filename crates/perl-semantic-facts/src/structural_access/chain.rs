@@ -87,7 +87,9 @@ impl StructuralAccessChain {
     ///    ran the subject's constructor, so this is where that check lands.
     /// 7. A hop cannot claim a successful selection through an operator the
     ///    predecessor's known shape cannot carry — a hash operator on a known
-    ///    array reference, or the reverse. `ShapeMismatch` says that honestly.
+    ///    array reference, the reverse, or any subscript on a plain scalar or
+    ///    code reference. `ShapeMismatch` says that honestly, and a symbolic
+    ///    dereference says so with its own boundary.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -147,25 +149,27 @@ impl StructuralAccessChain {
             }
 
             // Law 7: an operator cannot successfully select through a shape
-            // that cannot carry it. Only the two unambiguous reference shapes
-            // constrain the next hop: an `Object` may be a blessed hash or a
-            // blessed array, and `Unknown`/`Scalar` assert nothing, so neither
-            // is constrained here. The honest record for a genuine mismatch is
-            // `ShapeMismatch`, which this leaves available.
-            if let StructuralHopOutcome::Selected { shape, .. } = previous.outcome() {
-                let carries_next = match shape {
-                    ValueShape::HashRef => Some(true),
-                    ValueShape::ArrayRef => Some(false),
-                    _ => None,
-                };
-                if let Some(expects_keyed) = carries_next
-                    && next.operator().is_keyed() != expects_keyed
-                    && next.outcome().is_selecting()
-                {
-                    return Err(StructuralAccessContractError::ContradictoryStatus(
-                        "an operator cannot select through a shape that cannot carry it",
-                    ));
-                }
+            // that cannot carry it.
+            //
+            // A hash reference carries only keyed operators and an array
+            // reference only indexed ones. A plain scalar and a code reference
+            // carry neither: neither is a subscriptable reference, so any
+            // apparent selection through one is a symbolic dereference, which
+            // has its own typed boundary and must be recorded as one.
+            //
+            // `Object`, `PackageName` and `Unknown` constrain nothing. An
+            // object is a blessed reference that may be a blessed hash or a
+            // blessed array; the other two assert too little to contradict
+            // anything. Constraining them would reject honest records.
+            //
+            // `ShapeMismatch` remains available to record a genuine mismatch.
+            if let StructuralHopOutcome::Selected { shape, .. } = previous.outcome()
+                && next.outcome().is_selecting()
+                && !shape_carries(shape, next.operator().is_keyed())
+            {
+                return Err(StructuralAccessContractError::ContradictoryStatus(
+                    "an operator cannot select through a shape that cannot carry it",
+                ));
             }
         }
 
@@ -191,5 +195,20 @@ impl StructuralAccessChain {
             accumulator = accumulator.field("hop", &hop.fingerprint());
         }
         accumulator.finish()
+    }
+}
+
+/// Whether a known value shape can carry the next hop's operator class.
+///
+/// Shapes that assert too little to contradict anything — `Object` (a blessed
+/// reference may be a blessed hash or a blessed array), `PackageName`, and
+/// `Unknown` — carry everything, because rejecting them would refuse honest
+/// records rather than impossible ones.
+fn shape_carries(shape: &ValueShape, next_is_keyed: bool) -> bool {
+    match shape {
+        ValueShape::HashRef => next_is_keyed,
+        ValueShape::ArrayRef => !next_is_keyed,
+        ValueShape::Scalar | ValueShape::CodeRef => false,
+        ValueShape::Object { .. } | ValueShape::PackageName { .. } | ValueShape::Unknown => true,
     }
 }

@@ -1268,3 +1268,162 @@ fn an_operator_cannot_select_through_a_shape_that_cannot_carry_it() -> Result<()
     StructuralAccessChain::new(subject()?, vec![head, mismatch])?;
     Ok(())
 }
+
+#[test]
+fn every_outcome_kind_reaches_the_hop_fingerprint() -> Result<(), Box<dyn Error>> {
+    // Tag distinctness alone does not prove the fingerprint separates these:
+    // an implementation that dropped the `outcome-kind` discriminant would
+    // still pass a tag comparison. These five outcomes are legal under one
+    // identical set of companion fields, so any difference in their digests
+    // can only come from the outcome itself.
+    let build = |outcome| {
+        StructuralAccessHop::new(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            spelling("->{k}", 0, 5)?,
+            outcome,
+            StructuralHopCertainty::Possible,
+            StructuralAggregateCompleteness::Open,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::Low),
+            SemanticReasonCode::ExactSource,
+            StructuralAccessBudget::new(10, 9)?,
+            Vec::new(),
+        )
+    };
+    let fingerprints = [
+        build(StructuralHopOutcome::Selected { shape: ValueShape::Scalar, value_fact: None })?,
+        build(StructuralHopOutcome::UnknownMember)?,
+        build(StructuralHopOutcome::ShapeMismatch { observed: ValueShape::ArrayRef })?,
+        build(StructuralHopOutcome::StaleGeneration)?,
+        build(StructuralHopOutcome::Boundary(dynamic_boundary(
+            BoundaryKind::DynamicValue,
+            SemanticReasonCode::DynamicValue,
+        )))?,
+    ]
+    .iter()
+    .map(StructuralAccessHop::fingerprint)
+    .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(fingerprints.len(), 5, "each outcome kind must reach the digest");
+    Ok(())
+}
+
+#[test]
+fn workspace_root_presence_reaches_the_chain_fingerprint() -> Result<(), Box<dyn Error>> {
+    // An absent root and a real root already differ by their field value.
+    let with_root = StructuralAccessChain::new(
+        StructuralAccessSubject::new(
+            DOCUMENT,
+            SourceGeneration::known("g"),
+            Some("root".to_string()),
+            None,
+        )?,
+        vec![selecting_hop(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "{k}",
+            ValueShape::Scalar,
+        )?],
+    )?;
+    let without_root = StructuralAccessChain::new(
+        StructuralAccessSubject::new(DOCUMENT, SourceGeneration::known("g"), None, None)?,
+        vec![selecting_hop(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "{k}",
+            ValueShape::Scalar,
+        )?],
+    )?;
+    assert_ne!(with_root.fingerprint(), without_root.fingerprint());
+
+    // The presence discriminant earns its place only on the unvalidated
+    // transport path. A blank root cannot be constructed, but it can be
+    // deserialised, and `fingerprint()` does not validate — so without the
+    // discriminant a blank root would digest identically to an absent one.
+    let mut value = serde_json::to_value(&without_root)?;
+    value["subject"]["workspace_root"] = serde_json::json!("");
+    let blank_root: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(blank_root.validate().is_err(), "a blank root is still invalid");
+    assert_ne!(
+        blank_root.fingerprint(),
+        without_root.fingerprint(),
+        "a blank root must not digest as an absent one"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_scalar_or_code_reference_cannot_be_subscripted_into_a_selection() -> Result<(), Box<dyn Error>>
+{
+    // A plain scalar and a code reference are not subscriptable references.
+    // Any apparent selection through one is a symbolic dereference, which has
+    // its own boundary and must be recorded as one.
+    for shape in [ValueShape::Scalar, ValueShape::CodeRef] {
+        let head = selecting_hop(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("b".to_string()),
+            "->{b}",
+            shape.clone(),
+        )?;
+        let follower = selecting_hop(
+            1,
+            StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("c".to_string()),
+            "{c}",
+            ValueShape::Scalar,
+        )?;
+        let error = contract_error(StructuralAccessChain::new(subject()?, vec![head, follower]))?;
+        assert!(matches!(error, StructuralAccessContractError::ContradictoryStatus(_)));
+    }
+    Ok(())
+}
+
+#[test]
+fn an_object_or_unknown_shape_constrains_nothing() -> Result<(), Box<dyn Error>> {
+    // Negative control for the law above: a blessed reference may be a blessed
+    // hash or a blessed array, and `Unknown` asserts nothing. Both must still
+    // admit either operator, or the law would reject honest records.
+    for shape in [
+        ValueShape::Object { package: "Foo".to_string(), confidence: Confidence::High },
+        ValueShape::Unknown,
+    ] {
+        for (operator, selector, text) in [
+            (
+                StructuralAccessOperator::HashSlot,
+                StructuralAccessSelector::StaticKey("c".to_string()),
+                "{c}",
+            ),
+            (StructuralAccessOperator::ArrayIndex, StructuralAccessSelector::StaticIndex(0), "[0]"),
+        ] {
+            let head = selecting_hop(
+                0,
+                base_variable(),
+                StructuralAccessOperator::HashRefSlot,
+                StructuralAccessSelector::StaticKey("b".to_string()),
+                "->{b}",
+                shape.clone(),
+            )?;
+            let follower = selecting_hop(
+                1,
+                StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+                operator,
+                selector,
+                text,
+                ValueShape::Scalar,
+            )?;
+            StructuralAccessChain::new(subject()?, vec![head, follower])?;
+        }
+    }
+    Ok(())
+}
