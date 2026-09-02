@@ -280,12 +280,11 @@ impl ModuleRequest {
     /// Perl looks a quoted operand up as a filename in `@INC` without translating
     /// `::` to `/`, so this never yields [`Self::BarewordModule`].
     ///
-    /// `text` is the **decoded** operand, not the raw source token: pass
-    /// `Foo/Bar.pm`, not `'Foo/Bar.pm'`. An undecoded token is rejected rather
-    /// than accepted as a filename containing quote bytes, so a caller bridging
-    /// HIR require targets cannot silently search for the quoted spelling.
-    /// Bareword operands need no such guard — a quote is the legacy package
-    /// separator there, and a wrapped token already fails segment validation.
+    /// `text` is the **decoded** operand — the value Perl looks up. Quote
+    /// characters in it are filename bytes and are preserved, because Perl
+    /// permits them in a filename and the string alone cannot say whether it is
+    /// a decoded value or a still-quoted token. A caller holding the raw token
+    /// states so by calling [`Self::quoted_require_token`] instead.
     ///
     /// # Errors
     ///
@@ -293,6 +292,21 @@ impl ModuleRequest {
     /// valid literal relative file request.
     pub fn quoted_require(text: &str) -> Result<Self, ModuleRequestError> {
         Ok(Self::LiteralRelativeFile(ModuleFilePath::parse(text)?))
+    }
+
+    /// Classify a *raw* quoted `require` token, delimiters included.
+    ///
+    /// Strips exactly one matching outer pair of `'` or `"` and classifies the
+    /// operand inside. This is the constructor for a caller bridging a
+    /// `perl_parser_core::hir` require target, whose value is stored verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModuleRequestError::InvalidFilePath`] when the token carries no
+    /// matching delimiter pair, or when the decoded operand is not a valid
+    /// literal relative file request.
+    pub fn quoted_require_token(token: &str) -> Result<Self, ModuleRequestError> {
+        Ok(Self::LiteralRelativeFile(ModuleFilePath::from_quoted_token(token)?))
     }
 
     /// Record a partially static operand and why it is not exact.
