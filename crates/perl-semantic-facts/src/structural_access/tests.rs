@@ -922,8 +922,54 @@ fn a_non_canonical_sigil_cannot_name_a_variable() -> Result<(), Box<dyn Error>> 
         contract_error(build(rejected))?;
     }
     // Negative control: every sigil Perl actually has must still build.
-    for accepted in ["$", "@", "%", "&", "*"] {
-        build(accepted)?;
+    // Every sigil Perl actually has must still build, each paired with an
+    // operator it is legitimately used with: `%` and `@` take a plain
+    // subscript of their own container, while `$`, `&` and `*` dereference
+    // through an arrow. Pairing them any other way would be rejected by the
+    // container laws rather than by this one.
+    for (accepted, operator, selector, text) in [
+        (
+            "%",
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "{k}",
+        ),
+        (
+            "@",
+            StructuralAccessOperator::ArrayIndex,
+            StructuralAccessSelector::StaticIndex(0),
+            "[0]",
+        ),
+        (
+            "$",
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "->{k}",
+        ),
+        (
+            "&",
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "->{k}",
+        ),
+        (
+            "*",
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "->{k}",
+        ),
+    ] {
+        selecting_hop(
+            0,
+            StructuralAccessAggregate::Variable {
+                sigil: accepted.to_string(),
+                name: "config".to_string(),
+            },
+            operator,
+            selector,
+            text,
+            ValueShape::Scalar,
+        )?;
     }
     Ok(())
 }
@@ -2195,10 +2241,15 @@ fn a_plain_subscript_must_name_its_own_container() -> Result<(), Box<dyn Error>>
 #[test]
 fn an_arrow_subscript_does_not_fix_the_aggregate_sigil() -> Result<(), Box<dyn Error>> {
     // Negative control, and the boundary of the law above. `->{}` and `->[]`
-    // dereference whatever the base holds, so the operator fixes no sigil:
-    // `$config->{k}` is the ordinary case, and constraining the arrow forms
-    // would reject it. Every canonical sigil stays admissible here.
-    for sigil in ["$", "@", "%", "&", "*"] {
+    // dereference whatever the base holds, so the operator does not fix the
+    // sigil the way a plain subscript does.
+    //
+    // `@` and `%` are excluded because Perl rejects an array or hash used as a
+    // reference; that is law 11 and its own test. The three that remain all
+    // dereference legitimately, verified against the interpreter:
+    // `$r->{k}` ordinarily, `&foo->{k}` through the call's result, and
+    // `*STDOUT->{IO}` as a glob slot.
+    for sigil in ["$", "&", "*"] {
         for (operator, selector, text) in [
             (
                 StructuralAccessOperator::HashRefSlot,
@@ -2244,6 +2295,96 @@ fn a_wrong_container_sigil_cannot_survive_the_transport_boundary() -> Result<(),
     assert!(
         decoded.validate().is_err(),
         "a plain subscript naming a scalar of the same name must not survive transport"
+    );
+    chain.validate()?;
+    Ok(())
+}
+
+#[test]
+fn an_arrow_cannot_dereference_an_array_or_hash_container() -> Result<(), Box<dyn Error>> {
+    // `@a->[0]` is "Can't use an array as a reference" and `%h->{k}` is
+    // "Can't use a hash as a reference" — verified against the interpreter.
+    // No member is reachable through either, so a hop claiming one is
+    // impossible.
+    let build = |sigil: &str, outcome, completeness| {
+        StructuralAccessHop::new(
+            0,
+            StructuralAccessAggregate::Variable {
+                sigil: sigil.to_string(),
+                name: "config".to_string(),
+            },
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            spelling("->{k}", 0, 5)?,
+            outcome,
+            StructuralHopCertainty::Definite,
+            completeness,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticReasonCode::ExactSource,
+            StructuralAccessBudget::new(10, 9)?,
+            Vec::new(),
+        )
+    };
+    for sigil in ["@", "%"] {
+        for (outcome, completeness) in [
+            (
+                StructuralHopOutcome::Selected { shape: ValueShape::Scalar, value_fact: None },
+                StructuralAggregateCompleteness::Closed,
+            ),
+            (StructuralHopOutcome::AbsentMember, StructuralAggregateCompleteness::Closed),
+            (StructuralHopOutcome::UnknownMember, StructuralAggregateCompleteness::Open),
+        ] {
+            contract_error(build(sigil, outcome, completeness))?;
+        }
+        // Honest records for the same source: the access really did fail, and
+        // saying so is exactly what these outcomes are for. Refusing them too
+        // would leave no way to record what happened.
+        build(
+            sigil,
+            StructuralHopOutcome::ShapeMismatch { observed: ValueShape::Unknown },
+            StructuralAggregateCompleteness::Closed,
+        )?;
+        build(
+            sigil,
+            StructuralHopOutcome::Boundary(dynamic_boundary(
+                BoundaryKind::Unsupported,
+                SemanticReasonCode::UnsupportedEffect,
+            )),
+            StructuralAggregateCompleteness::Closed,
+        )?;
+    }
+    // Control: the three sigils an arrow can dereference still select.
+    for sigil in ["$", "&", "*"] {
+        build(
+            sigil,
+            StructuralHopOutcome::Selected { shape: ValueShape::Scalar, value_fact: None },
+            StructuralAggregateCompleteness::Closed,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn an_arrow_through_an_array_container_cannot_survive_the_transport_boundary()
+-> Result<(), Box<dyn Error>> {
+    let honest = selecting_hop(
+        0,
+        base_variable(),
+        StructuralAccessOperator::HashRefSlot,
+        StructuralAccessSelector::StaticKey("groups".to_string()),
+        "->{groups}",
+        ValueShape::Scalar,
+    )?;
+    let chain = StructuralAccessChain::new(subject()?, vec![honest])?;
+    let mut value = serde_json::to_value(&chain)?;
+    value["hops"][0]["aggregate"]["Variable"]["sigil"] = serde_json::json!("@");
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "an arrow dereference of an array container must not survive transport"
     );
     chain.validate()?;
     Ok(())

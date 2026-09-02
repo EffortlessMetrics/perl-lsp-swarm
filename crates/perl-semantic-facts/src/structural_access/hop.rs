@@ -221,6 +221,9 @@ impl StructuralAccessHop {
     ///    [`validate_shape_identity`].
     /// 7. Limitations are sorted and duplicate-free, as the constructor
     ///    leaves them.
+    /// 9. An arrow subscript cannot reach a member through a named `@` or `%`
+    ///    variable: Perl rejects an array or hash used as a reference. `$`,
+    ///    `&` and `*` all dereference legitimately.
     /// 8. A boundary that refuses promotion cannot carry a promoted value
     ///    fact. Only the promotion is refused: a shape claim with no
     ///    `value_fact` stays legal, since refusing to evaluate a dynamic key
@@ -275,6 +278,37 @@ impl StructuralAccessHop {
             {
                 return Err(StructuralAccessContractError::ContradictoryStatus(
                     "a plain subscript addresses the variable's own container sigil",
+                ));
+            }
+
+            // Law 11: an arrow subscript dereferences what the base yields, and
+            // an array or hash container is not a reference. Perl says so
+            // outright — `@a->[0]` is "Can't use an array as a reference" and
+            // `%h->{k}` is "Can't use a hash as a reference" — so no member can
+            // be reached through either.
+            //
+            // Only `@` and `%` are excluded, and only those. Verified against
+            // the interpreter rather than generalised from "non-scalar":
+            //
+            //   $r->{k}                       ok, the ordinary case
+            //   &foo->{k}, foo returning a ref  ok, the arrow derefs the call's
+            //                                   result rather than the sub
+            //   *STDOUT->{IO}                 ok, a glob slot
+            //
+            // Unlike the plain-subscript law above, this one is gated on the
+            // outcome. That law is about *identity* — naming `$config` when the
+            // access reads `%config` is the wrong variable whatever happened
+            // next. This one is about *reachability*: the access genuinely
+            // fails, so `ShapeMismatch` and a typed boundary remain the honest
+            // ways to record it, exactly as for the adjacent-shape law.
+            if matches!(
+                self.operator,
+                StructuralAccessOperator::HashRefSlot | StructuralAccessOperator::ArrayRefIndex
+            ) && self.outcome.claims_member_answer()
+                && matches!(sigil.as_str(), "@" | "%")
+            {
+                return Err(StructuralAccessContractError::ContradictoryStatus(
+                    "an array or hash container is not a reference an arrow can dereference",
                 ));
             }
         }
