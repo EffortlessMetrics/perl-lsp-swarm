@@ -38,10 +38,11 @@
 //!   to the innermost callable through the HIR scope graph, and referenced
 //!   by [`CallableFactRef::HirItem`] identity.
 //! - HIR body expressions the per-body PIR lowering does not model
-//!   ([`HirExpr::Opaque`], subscripts, heredocs, readlines, globs) are
-//!   counted as declared `missing` evidence in the `Place`/`Effect` facets,
-//!   so a body containing unmodeled expressions can never report those
-//!   facets `Complete`.
+//!   ([`HirExpr::Opaque`], subscripts, heredocs, readlines, globs, and the
+//!   regex families — regex literals, matches, substitutions and
+//!   transliterations) are counted as declared `missing` evidence in the
+//!   `Place`/`Effect` facets, so a body containing unmodeled expressions can
+//!   never report those facets `Complete`.
 //! - Phase blocks (`BEGIN`/`CHECK`/`UNITCHECK`/...) own neither a
 //!   `SubDecl`/`MethodDecl` item nor an [`HirBody`] in this substrate, so
 //!   they are not admitted callables; every admitted callable is a runtime
@@ -438,7 +439,17 @@ fn count_unmodeled(body: &HirBody) -> u32 {
             | HirExpr::Subscript(_)
             | HirExpr::Heredoc { .. }
             | HirExpr::Readline { .. }
-            | HirExpr::Glob { .. } => count = count.saturating_add(1),
+            | HirExpr::Glob { .. }
+            // Regex families (#7136). Canonical body HIR models these as typed
+            // forms, but per-body PIR lowering still records all four as
+            // unsupported (canonical PIR-A regex operations are #7137), so they
+            // remain unmodeled for this law. Counting them is also what keeps
+            // the previous behavior honest: before they were typed, `qr//`
+            // lowered to `Opaque` and was already counted here.
+            | HirExpr::Regex(_)
+            | HirExpr::Match(_)
+            | HirExpr::Substitution(_)
+            | HirExpr::Transliteration(_) => count = count.saturating_add(1),
             _ => {}
         }
     }
