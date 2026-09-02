@@ -838,7 +838,7 @@ fn check_inner(
         .iter()
         .filter(|f| {
             let norm = f.replace('\\', "/");
-            deleted.contains(*f)
+            deleted.contains(&norm)
                 && norm.starts_with(&format!("{UNRELEASED_DIR}/"))
                 && norm.ends_with(".yaml")
         })
