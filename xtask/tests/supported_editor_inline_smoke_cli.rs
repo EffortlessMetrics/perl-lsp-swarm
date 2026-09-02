@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::{Map, Value};
 use tempfile::TempDir;
@@ -68,13 +68,13 @@ fn supported_editor_inline_smoke_cli_writes_route_bundle() -> Result<()> {
     assert_route_surface(
         routes,
         "lsp4ij_upstream_integration",
-        "xtask/src/tasks/inline_completion_smoke.rs",
-        "fn run_static_client",
+        "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+        "fn initialize_static_advertises_inline_completion_when_dynamic_registration_false",
     )?;
     assert_route_surface(
         routes,
         "lsp4ij_upstream_integration",
-        "xtask/src/tasks/inline_completion_smoke.rs",
+        "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
         "client/registerCapability",
     )?;
     assert_plane(routes, "lsp4ij_upstream_integration", "launch_identity", "registered")?;
