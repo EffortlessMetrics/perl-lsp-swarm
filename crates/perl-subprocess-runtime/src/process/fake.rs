@@ -292,6 +292,7 @@ struct FakeHandle {
     run: ScriptedRun,
     cancellable: bool,
     script_rejected: bool,
+    child_started: bool,
     streamed_stdin: bool,
     stdin_closed: bool,
     stdin_written: Arc<Mutex<Vec<(RunId, Vec<u8>)>>>,
@@ -320,6 +321,7 @@ impl FakeHandle {
             run,
             cancellable,
             script_rejected: false,
+            child_started: false,
             streamed_stdin,
             stdin_closed: false,
             stdin_written,
@@ -446,7 +448,12 @@ impl ProcessHandle for FakeHandle {
         // contradicted — the same divergence the mid-stream guard exists to
         // prevent, reached one call later.
         match self.ledger.admit(kind) {
-            Ok(event) => Some(event),
+            Ok(event) => {
+                if matches!(event.kind(), ProcessEventKind::Started) {
+                    self.child_started = true;
+                }
+                Some(event)
+            }
             Err(_) => {
                 self.script_rejected = true;
                 self.pending.clear();
@@ -493,7 +500,24 @@ impl ProcessHandle for FakeHandle {
             return CancellationAcknowledgement::NotCancellable;
         }
         self.run.control.cancellation_requested = Some(reason);
-        self.run.control.started_before_cancellation = self.ledger.admitted_count() > 0;
+        // Whether a `Started` event was actually admitted, not how many polls
+        // happened. A poll count is not proof that the child started: a script
+        // whose first event is not `Started` would claim one, and cancelling
+        // before the first poll would deny one the script does describe.
+        self.run.control.started_before_cancellation = self.child_started;
+        if !self.child_started {
+            // A run cancelled before it started did not go on to exit, and
+            // nothing exists to clean up or terminate. Every piece of the
+            // scripted child evidence has to be reconciled together: leaving
+            // the settlement alone elects `NotProven`, and leaving the cleanup
+            // alone leaves a completed cleanup beside a child that never ran,
+            // which result assembly refuses.
+            self.run.settlement = ObservedSettlement::NotStarted;
+            self.run.cleanup = CleanupDisposition::NotRequired;
+            self.run.tree = TreeDisposition::NotRequired;
+            self.run.stdout = StreamEvidence::empty(StreamChannel::Stdout);
+            self.run.stderr = StreamEvidence::empty(StreamChannel::Stderr);
+        }
         self.pending.clear();
         self.pending.push_back(ProcessEventKind::TerminationPhase(
             TerminationPhase::CancellationRequested(reason),

@@ -389,6 +389,14 @@ impl TerminalDisposition {
         matches!(self, Self::CompletedExit { .. })
     }
 
+    /// Whether this cause establishes that the child settled on its own terms.
+    ///
+    /// Only an exit or a signal is the child's own account of how it ended.
+    /// Every other cause describes the control plane or the supervisor.
+    pub fn establishes_child_settlement(&self) -> bool {
+        matches!(self, Self::CompletedExit { .. } | Self::Signaled { .. })
+    }
+
     /// Whether this cause asserts that no child process ever ran.
     ///
     /// These are positive claims that the start did not happen, not statements
@@ -592,6 +600,13 @@ pub enum ResultInconsistency {
     /// failure above a completed exit, so this pairing would let a run whose
     /// cleanup failed report an ordinary success.
     CompletedExitWithFailedCleanup,
+    /// A child that demonstrably ran carried no-child cleanup evidence.
+    ///
+    /// [`CleanupDisposition::NotRequired`] means cleanup was unnecessary
+    /// *because nothing was started*. Pairing it with an exit or a signal
+    /// asserts both that the child ran and that it never did. The inverse of
+    /// [`Self::PreStartOutcomeCarriesChildEvidence`].
+    SettledChildCarriesNoChildCleanup,
     /// A no-child-started outcome carried evidence only a child could produce.
     ///
     /// `SpawnRejected`, `SpawnFailed`, `CancelledBeforeStart`,
@@ -625,6 +640,9 @@ impl std::fmt::Display for ResultInconsistency {
             }
             Self::CompletedExitWithFailedCleanup => {
                 f.write_str("a completed exit cannot be paired with a failed cleanup")
+            }
+            Self::SettledChildCarriesNoChildCleanup => {
+                f.write_str("a child that ran cannot carry cleanup evidence saying none started")
             }
             Self::PreStartOutcomeCarriesChildEvidence => {
                 f.write_str("an outcome in which no child started cannot carry child evidence")
@@ -799,6 +817,14 @@ impl ProcessResult {
         // group. `NotRequired`/`Unknown` are the coherent pair here, and
         // `NotObserved` cleanup is allowed because a refused start genuinely
         // observed nothing.
+        // The inverse of the pre-start rule below: `NotRequired` cleanup means
+        // nothing was started, so a disposition that proves the child ran
+        // cannot carry it. `TreeDisposition::NotRequired` is different and
+        // stays legal — a child that exited on its own needs no termination.
+        if disposition.establishes_child_settlement() && cleanup == CleanupDisposition::NotRequired
+        {
+            return Err(ResultInconsistency::SettledChildCarriesNoChildCleanup);
+        }
         if disposition.asserts_no_child_started() {
             let produced_output = stdout.observed_bytes() > 0 || stderr.observed_bytes() > 0;
             let cleanup_claims_a_child =
@@ -939,10 +965,7 @@ impl ProcessResult {
     /// unproven outcome, a refusal before start, or a run the supervisor cut
     /// short cannot.
     fn child_settlement_established(&self) -> bool {
-        matches!(
-            self.disposition,
-            TerminalDisposition::CompletedExit { .. } | TerminalDisposition::Signaled { .. }
-        )
+        self.disposition.establishes_child_settlement()
     }
 
     /// Whether this outcome asserts that no child process ever ran.

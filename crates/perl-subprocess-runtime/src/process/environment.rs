@@ -37,6 +37,16 @@ impl std::fmt::Display for EnvVarName {
 ///
 /// Admitting one of these is a decision, never a default: the plan must
 /// acknowledge it explicitly and a hermetic probe may not admit one at all.
+///
+/// # This list is not, and cannot be, exhaustive
+///
+/// Every language runtime adds its own loader variables, so a name absent here
+/// is unrecognised rather than proven safe. The list is a floor that catches
+/// the known vectors, not the boundary itself — the boundary is
+/// [`AmbientInheritance`], which decides whether unnamed variables reach the
+/// child at all. A plan that wants a guarantee uses `DenyAll` or
+/// `AllowListedOnly` and names what it needs; only `InheritExceptDenied` is
+/// exposed to what this list happens to omit.
 pub const CODE_LOADING_VARIABLES: &[&str] = &[
     "PERL5LIB",
     "PERL5OPT",
@@ -49,8 +59,11 @@ pub const CODE_LOADING_VARIABLES: &[&str] = &[
     "DYLD_INSERT_LIBRARIES",
     "DYLD_LIBRARY_PATH",
     "PYTHONPATH",
+    "PYTHONSTARTUP",
     "RUBYOPT",
+    "RUBYLIB",
     "NODE_OPTIONS",
+    "NODE_PATH",
 ];
 
 /// Whether a set holds a name, ignoring ASCII case.

@@ -473,3 +473,51 @@ and cannot be added without breaking a stated invariant of the crate.
 `EventLedger::observed_bytes` was also added this round — the accessor deferred
 last round, riding along with a push that had to happen anyway, so a backend
 can perform the totals join without recomputing from events.
+
+### Tenth external round (Devin, `3ba4a5b`)
+
+Three findings repaired, one answered with evidence.
+
+| Severity | Finding | Disposition | Mutation replay |
+|---|---|---|---|
+| correctness | a completed exit or signal could carry `CleanupDisposition::NotRequired`, whose contract says nothing started | **Fixed** — `SettledChildCarriesNoChildCleanup` | KILLED |
+| correctness | the fake inferred "the child started" from the poll count | **Fixed** — a `Started` event actually admitted | KILLED, after the first control failed to discriminate |
+| security | `CODE_LOADING_VARIABLES` omitted `PYTHONSTARTUP`, `RUBYLIB`, `NODE_PATH` | **Fixed** — added, with the list's nature documented | KILLED |
+| analysis | which public-API gates apply | **Answered with evidence** — see the PR thread |
+
+The first is the **inverse of a rule I wrote two rounds earlier** and should have
+written at the same time. Round 11 established that a disposition asserting no
+child started cannot carry child evidence; the mirror — that a disposition
+proving the child *ran* cannot carry evidence saying none started — was left
+open. Adding a rule in one direction is a reason to check the other.
+
+The second exposed the cost of an incomplete reconciliation. Setting
+`started_before_cancellation` from real start state left the scripted
+settlement saying `Exited`, so round 12's contradiction check elected
+`NotProven` for an ordinary pre-start cancellation; reconciling the settlement
+alone then left a *completed cleanup* beside a child that never ran, which
+round 11's check refused. All of the child evidence — settlement, cleanup,
+tree, and both streams — has to move together. Two of my own earlier controls
+caught the intermediate states, which is the argument for keeping them.
+
+**A control that did not discriminate.** The first version of
+`cancelling_before_the_child_starts_is_a_pre_start_cancellation` cancelled
+before any poll, where `admitted_count() > 0` and the real start state are both
+false — so reverting to the poll count changed nothing and the mutation
+*survived*. The control now scripts a run whose first event is a chunk rather
+than `Started`, making the two measures diverge, and the mutation is killed. A
+control that passes against the defect it names is worth no more than no
+control, and only the replay distinguishes them.
+
+#### On the loader-variable list
+
+`RUBYOPT` was listed without `RUBYLIB`, `PYTHONPATH` without `PYTHONSTARTUP`,
+`NODE_OPTIONS` without `NODE_PATH` — each omission the direct analogue of a
+name already present, so this was an inconsistency in the list's own logic
+rather than an unbounded request. Added.
+
+The list can never be complete, and that is now stated at the constant: a name
+absent from it is *unrecognised*, not proven safe. The list is a floor over the
+known vectors; the actual boundary is `AmbientInheritance`, and a plan wanting
+a guarantee uses `DenyAll` or `AllowListedOnly` rather than relying on this
+list to have anticipated every runtime.

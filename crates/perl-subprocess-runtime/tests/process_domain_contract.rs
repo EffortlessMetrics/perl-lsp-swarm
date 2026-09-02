@@ -3595,3 +3595,133 @@ fn a_rejected_chunk_settles_the_stream_it_rejected() -> TestResult {
     );
     Ok(())
 }
+
+// ──────────────── controls added after the tenth bot review round ────────────
+
+#[test]
+fn a_child_that_ran_cannot_carry_no_child_cleanup() -> TestResult {
+    // The wrong implementation this kills: enforcing only the pre-start
+    // direction. `CleanupDisposition::NotRequired` means cleanup was
+    // unnecessary *because nothing was started*, so pairing it with an exit or
+    // a signal asserts both that the child ran and that it never did.
+    for disposition in [
+        TerminalDisposition::CompletedExit { code: 0 },
+        TerminalDisposition::Signaled { signal: 9 },
+    ] {
+        let contradictory = result_with(
+            StreamEvidence::empty(StreamChannel::Stdout),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::NotRequired,
+            TreeDisposition::NotRequired,
+        );
+        assert!(
+            contradictory.is_err(),
+            "{disposition:?} carried cleanup evidence saying no child started"
+        );
+
+        // `TreeDisposition::NotRequired` is a different claim and stays legal:
+        // a child that exited on its own needed no termination.
+        result_with(
+            StreamEvidence::empty(StreamChannel::Stdout),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::Completed,
+            TreeDisposition::NotRequired,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn cancelling_before_the_child_starts_is_a_pre_start_cancellation() -> TestResult {
+    // The wrong implementation this kills: inferring start from the poll
+    // count. A poll count is not proof that a `Started` event was admitted, so
+    // cancelling before the first poll denied a start the script describes and
+    // left an `Exited` settlement beside it — contradictory evidence that the
+    // election then, correctly, refused to call a cancellation at all.
+    let supervisor = FakeSupervisor::new();
+    supervisor.script(ScriptedOutcome::Run(Box::new(ScriptedRun::exiting(0))));
+    let mut handle = supervisor
+        .start(valid_interactive_session().validate()?)
+        .map_err(|_| "the fake refused to start a valid plan")?;
+
+    assert_eq!(handle.cancel(CancellationReason::Shutdown), CancellationAcknowledgement::Accepted);
+    while handle.next_event().is_some() {}
+    let result = handle.wait();
+    assert_eq!(
+        result.disposition(),
+        &TerminalDisposition::CancelledBeforeStart(CancellationReason::Shutdown),
+        "a cancellation before the first poll was not a pre-start cancellation"
+    );
+
+    // A poll is not a start. This run emits a chunk *before* its `Started`
+    // event, so after one poll the ledger has admitted an event while no child
+    // has started — the two measures diverge, and only the real start state
+    // gives the honest answer.
+    let supervisor = FakeSupervisor::new();
+    let mut early_chunk = ScriptedRun::exiting(0);
+    early_chunk.events = vec![
+        ProcessEventKind::StdoutBytes(perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 0,
+            offset: 0,
+            retained: false,
+        }),
+        ProcessEventKind::Started,
+    ];
+    supervisor.script(ScriptedOutcome::Run(Box::new(early_chunk)));
+    let mut handle = supervisor
+        .start(valid_interactive_session().validate()?)
+        .map_err(|_| "the fake refused to start a valid plan")?;
+    let first = handle.next_event().ok_or("the run emitted no events")?;
+    assert!(matches!(first.kind(), ProcessEventKind::StdoutBytes(_)));
+    assert_eq!(handle.cancel(CancellationReason::Shutdown), CancellationAcknowledgement::Accepted);
+    while handle.next_event().is_some() {}
+    let result = handle.wait();
+    assert_eq!(
+        result.disposition(),
+        &TerminalDisposition::CancelledBeforeStart(CancellationReason::Shutdown),
+        "an admitted non-start event was mistaken for proof the child had started"
+    );
+
+    // Cancelling after the `Started` event is a running cancellation, and the
+    // scripted settlement is left alone.
+    let supervisor = FakeSupervisor::new();
+    supervisor.script(ScriptedOutcome::Run(Box::new(ScriptedRun::exiting(0))));
+    let mut handle = supervisor
+        .start(valid_interactive_session().validate()?)
+        .map_err(|_| "the fake refused to start a valid plan")?;
+    let first = handle.next_event().ok_or("the run emitted no events")?;
+    assert!(matches!(first.kind(), ProcessEventKind::Started));
+    assert_eq!(handle.cancel(CancellationReason::Shutdown), CancellationAcknowledgement::Accepted);
+    while handle.next_event().is_some() {}
+    let result = handle.wait();
+    assert_eq!(
+        result.disposition(),
+        &TerminalDisposition::CancelledRunning(CancellationReason::Shutdown),
+        "a cancellation after the start event was not a running cancellation"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_loader_gate_covers_each_runtimes_library_and_startup_vectors() -> TestResult {
+    // The wrong implementation this kills: a list that names one vector per
+    // runtime while omitting its direct analogue — `RUBYOPT` without
+    // `RUBYLIB`, `PYTHONPATH` without `PYTHONSTARTUP`, `NODE_OPTIONS` without
+    // `NODE_PATH`. Each omitted name is the same class of injection as the one
+    // beside it.
+    for name in ["PYTHONSTARTUP", "RUBYLIB", "NODE_PATH"] {
+        assert!(
+            perl_subprocess_runtime::process::is_code_loading_variable(&EnvVarName::new(name)),
+            "{name} is not recognised as a code-loading vector"
+        );
+    }
+    // The list is a floor, not the boundary: an unnamed variable is
+    // unrecognised rather than proven safe, which is why a plan wanting a
+    // guarantee denies ambient inheritance instead of relying on this list.
+    assert!(!perl_subprocess_runtime::process::is_code_loading_variable(&EnvVarName::new(
+        "SOME_FUTURE_RUNTIME_LIB"
+    )));
+    Ok(())
+}
