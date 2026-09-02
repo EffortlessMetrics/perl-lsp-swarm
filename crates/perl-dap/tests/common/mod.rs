@@ -1356,7 +1356,14 @@ struct ProbeFailure {
 /// resolver retries once on a transient-class failure before caching a
 /// negative result ([`resolved_debuggee_perl_or_reason`]).
 fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
-    probe_debuggee_perl_with_options(binary, DEBUGGEE_PROBE_BUDGET, false, None, CleanupFault::None)
+    probe_debuggee_perl_with_options(
+        binary,
+        DEBUGGEE_PROBE_BUDGET,
+        false,
+        None,
+        CleanupFault::None,
+        None,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1405,8 +1412,15 @@ pub(crate) fn probe_debuggee_perl_for_test(
     budget: Duration,
     simulate_wait_error: bool,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, simulate_wait_error, None, CleanupFault::None)
-        .map_err(|failure| failure.reason)
+    probe_debuggee_perl_with_options(
+        binary,
+        budget,
+        simulate_wait_error,
+        None,
+        CleanupFault::None,
+        None,
+    )
+    .map_err(|failure| failure.reason)
 }
 
 #[cfg(test)]
@@ -1415,6 +1429,7 @@ pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid(
     budget: Duration,
     simulate_wait_error: bool,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
 ) -> Result<DebuggeePerl, String> {
     probe_debuggee_perl_with_options(
         binary,
@@ -1422,6 +1437,7 @@ pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid(
         simulate_wait_error,
         Some(descendant_pid_file),
         CleanupFault::None,
+        Some(descendant_binary),
     )
     .map_err(|failure| failure.reason)
 }
@@ -1431,6 +1447,7 @@ pub(crate) fn probe_debuggee_perl_for_test_with_termination_failure(
     binary: &Path,
     budget: Duration,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
 ) -> Result<DebuggeePerl, String> {
     probe_debuggee_perl_with_options(
         binary,
@@ -1438,6 +1455,7 @@ pub(crate) fn probe_debuggee_perl_for_test_with_termination_failure(
         false,
         Some(descendant_pid_file),
         CleanupFault::TerminationOperations,
+        Some(descendant_binary),
     )
     .map_err(|failure| failure.reason)
 }
@@ -1447,8 +1465,15 @@ pub(crate) fn probe_debuggee_perl_for_test_with_workspace_cleanup_failure(
     binary: &Path,
     budget: Duration,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, false, None, CleanupFault::WorkspaceRemoval)
-        .map_err(|failure| failure.reason)
+    probe_debuggee_perl_with_options(
+        binary,
+        budget,
+        false,
+        None,
+        CleanupFault::WorkspaceRemoval,
+        None,
+    )
+    .map_err(|failure| failure.reason)
 }
 
 #[cfg(test)]
@@ -1456,6 +1481,7 @@ pub(crate) fn probe_debuggee_perl_for_test_with_thread_spawn_failure(
     binary: &Path,
     budget: Duration,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
     stage: ProbeThreadSpawnFailure,
 ) -> Result<DebuggeePerl, String> {
     probe_debuggee_perl_with_options(
@@ -1464,6 +1490,7 @@ pub(crate) fn probe_debuggee_perl_for_test_with_thread_spawn_failure(
         false,
         Some(descendant_pid_file),
         CleanupFault::ThreadSpawn(stage),
+        Some(descendant_binary),
     )
     .map_err(|failure| failure.reason)
 }
@@ -1507,6 +1534,7 @@ pub(crate) fn probe_debuggee_perl_for_test_with_job_assignment_failure(
     binary: &Path,
     budget: Duration,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
 ) -> Result<DebuggeePerl, String> {
     probe_debuggee_perl_with_options(
         binary,
@@ -1514,6 +1542,7 @@ pub(crate) fn probe_debuggee_perl_for_test_with_job_assignment_failure(
         false,
         Some(descendant_pid_file),
         CleanupFault::JobAssignment,
+        Some(descendant_binary),
     )
     .map_err(|failure| failure.reason)
 }
@@ -1657,6 +1686,7 @@ fn probe_debuggee_perl_with_options(
     mut simulate_wait_error: bool,
     descendant_pid_file: Option<&Path>,
     cleanup_fault: CleanupFault,
+    descendant_binary: Option<&Path>,
 ) -> Result<DebuggeePerl, ProbeFailure> {
     let fail = |reason: String| ProbeFailure { reason, transient: false };
     // The workspace is explicitly closed after the probe body so recursive
@@ -1692,6 +1722,9 @@ fn probe_debuggee_perl_with_options(
                 "PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE",
                 format!("{}.ready", descendant_pid_file.display()),
             );
+            if let Some(descendant_binary) = descendant_binary {
+                command.env("PERL_LSP_DAP_TEST_DESCENDANT_BINARY", descendant_binary);
+            }
         }
         // A dedicated process group lets cleanup terminate descendants on Unix;
         // Windows uses a Job Object and taskkill's process-tree fallback. These

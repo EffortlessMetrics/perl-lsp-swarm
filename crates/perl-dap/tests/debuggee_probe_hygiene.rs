@@ -108,6 +108,23 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
         "fn main() { println!(\"15\"); }\n",
     )?;
     let no_banner = compile_probe_control(controls.path(), "probe_no_banner", "fn main() {}\n")?;
+    let descendant = compile_probe_control(
+        controls.path(),
+        "probe_descendant",
+        r#"
+use std::{env, fs, thread, time::Duration};
+
+fn main() {
+    let Some(ready_file) = env::args_os().nth(1) else {
+        return;
+    };
+    if fs::write(ready_file, "ready").is_err() {
+        return;
+    }
+    thread::sleep(Duration::from_secs(60));
+}
+"#,
+    )?;
     let timeout = compile_probe_control(
         controls.path(),
         "probe_timeout",
@@ -126,19 +143,19 @@ fn main() {
         let _ = fs::write(ready_file, "ready");
     }
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
-        #[cfg(unix)]
-        let descendant = Command::new("sh")
-            .args(["-c", "trap '' TERM; while :; do sleep 1; done"])
-            .spawn();
-        #[cfg(windows)]
-        let descendant = {
-            Command::new("ping").args(["127.0.0.1", "-n", "61"]).spawn()
+        let descendant_binary = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_BINARY");
+        let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") else {
+            thread::sleep(Duration::from_secs(60));
+            return;
         };
-        let Ok(descendant) = descendant else { return };
-        if let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") {
-            let _ = fs::write(ready_file, "ready");
+        if let Some(descendant_binary) = descendant_binary {
+            let descendant = Command::new(descendant_binary).arg(ready_file).spawn();
+            let Ok(descendant) = descendant else {
+                thread::sleep(Duration::from_secs(60));
+                return;
+            };
+            let _ = fs::write(pid_file, descendant.id().to_string());
         }
-        let _ = fs::write(pid_file, descendant.id().to_string());
     }
     thread::sleep(Duration::from_secs(60));
 }
@@ -157,22 +174,23 @@ fn main() {
         let _ = fs::write(ready_file, "ready");
     }
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
-        #[cfg(unix)]
-        let descendant = Command::new("sh")
-            .args([
-                "-c",
-                "printf ready > \"$PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE\"; trap '' TERM; while :; do sleep 1; done",
-            ])
-            .spawn();
-        #[cfg(windows)]
-        let descendant = {
-            Command::new("ping").args(["127.0.0.1", "-n", "61"]).spawn()
+        let descendant_binary = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_BINARY");
+        let Some(descendant_binary) = descendant_binary else { return };
+        let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") else {
+            return;
         };
+        let descendant = Command::new(descendant_binary).arg(ready_file).spawn();
         let Ok(descendant) = descendant else { return };
-        if let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") {
-            let _ = fs::write(ready_file, "ready");
-        }
         let _ = fs::write(pid_file, descendant.id().to_string());
+        let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") else {
+            return;
+        };
+        for _ in 0..500 {
+            if fs::metadata(&ready_file).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         println!("15");
         return;
     }
@@ -228,12 +246,14 @@ fn main() {
         let pid_file = controls.path().join(format!("{label}.pid"));
         let binary = hanging.clone();
         let pid_file_for_probe = pid_file.clone();
+        let descendant_for_probe = descendant.clone();
         let probe = std::thread::spawn(move || {
             probe_debuggee_perl_for_test_with_descendant_pid(
                 &binary,
                 budget,
                 simulate_wait_error,
                 &pid_file_for_probe,
+                &descendant_for_probe,
             )
         });
         let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(5))?;
@@ -270,12 +290,14 @@ fn main() {
         let probe = std::thread::spawn({
             let binary = success_with_descendant.clone();
             let pid_file = pid_file.clone();
+            let descendant = descendant.clone();
             move || {
                 common::probe_debuggee_perl_for_test_with_descendant_pid(
                     &binary,
                     Duration::from_secs(2),
                     false,
                     &pid_file,
+                    &descendant,
                 )
             }
         });
@@ -312,11 +334,13 @@ fn main() {
     let termination_pid_file = controls.path().join("termination-failure.pid");
     let termination_pid_for_probe = termination_pid_file.clone();
     let termination_binary = hanging.clone();
+    let termination_descendant_binary = descendant.clone();
     let termination_probe = std::thread::spawn(move || {
         common::probe_debuggee_perl_for_test_with_termination_failure(
             &termination_binary,
             Duration::from_millis(100),
             &termination_pid_for_probe,
+            &termination_descendant_binary,
         )
     });
     let termination_descendant_pid =
@@ -412,11 +436,13 @@ fn main() {
         let before = current_process_probe_artifacts()?;
         let descendant_pid_file = controls.path().join("assignment-failure.pid");
         let assignment_binary = hanging.clone();
+        let assignment_descendant_binary = descendant.clone();
         let probe = std::thread::spawn(move || {
             common::probe_debuggee_perl_for_test_with_job_assignment_failure(
                 &assignment_binary,
                 Duration::from_secs(2),
                 &descendant_pid_file,
+                &assignment_descendant_binary,
             )
         });
         let child_pid = wait_for_probe_pid(Duration::from_secs(5))?;
@@ -456,11 +482,13 @@ fn main() {
         let descendant_pid_file = controls.path().join(format!("{label}.pid"));
         let failure_binary = hanging.clone();
         let failure_pid_file = descendant_pid_file.clone();
+        let descendant_for_probe = descendant.clone();
         let probe = std::thread::spawn(move || {
             probe_debuggee_perl_for_test_with_thread_spawn_failure(
                 &failure_binary,
                 Duration::from_secs(2),
                 &failure_pid_file,
+                &descendant_for_probe,
                 stage,
             )
         });
