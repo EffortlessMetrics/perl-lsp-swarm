@@ -182,9 +182,18 @@ fn ripr_evidence_does_not_reacquire_a_private_merge_base_interpretation() -> std
     let source = fs::read_to_string(xtask_root().join("src/tasks/ripr_evidence.rs"))?;
     // Scan production code only. The fixtures in `mod tests` legitimately drive
     // real shallow repositories to prove the migrated seam.
-    let production = source
-        .split_once("\n#[cfg(test)]\nmod tests {")
-        .map_or(source.as_str(), |(before, _)| before);
+    //
+    // Fail on a missed marker rather than silently treating the whole file as
+    // production: the test module contains the very strings asserted below, so
+    // a silent fallback would report a confusing regression in production code
+    // that is really just a moved boundary.
+    let split = source.split_once("\n#[cfg(test)]\nmod tests {");
+    assert!(
+        split.is_some(),
+        "the `mod tests` boundary marker no longer matches ripr_evidence.rs; update this literal \
+         before trusting the assertions below (#10304)"
+    );
+    let production = split.map_or("", |(before, _)| before);
 
     assert!(
         !production.contains("\"merge-base\""),
@@ -200,6 +209,37 @@ fn ripr_evidence_does_not_reacquire_a_private_merge_base_interpretation() -> std
         "ripr_evidence.rs must not run a private shallow probe; shallow interpretation belongs to \
          xtask::git_ancestry (#10304)"
     );
+    Ok(())
+}
+
+/// Membership alone would let a behavioral edit make a label wrong without
+/// failing anything: a `RangeOnly` file could quietly acquire an
+/// `--is-ancestor` decision and keep its reassuring row. Bind the two
+/// dispositions that carry a risk claim to the observable evidence for it.
+#[test]
+fn dispositions_match_observed_is_ancestor_use() -> std::io::Result<()> {
+    for row in INVENTORY {
+        let source = fs::read_to_string(xtask_root().join(row.path))?;
+        let uses_is_ancestor = source.contains("\"--is-ancestor\"");
+
+        match row.disposition {
+            Disposition::IsAncestorPendingMigration => assert!(
+                uses_is_ancestor,
+                "{} is recorded as pending `--is-ancestor` migration but no longer calls it; \
+                 re-classify or remove the row (#10304)",
+                row.path
+            ),
+            Disposition::RangeOnly => assert!(
+                !uses_is_ancestor,
+                "{} is recorded as range-only but now calls `merge-base --is-ancestor`, which \
+                 maps exit 1 to a history verdict; re-classify it as pending migration (#10304)",
+                row.path
+            ),
+            // The authority owns the interpretation, and allowlist/test rows
+            // make no ancestry decision either way.
+            Disposition::Authority | Disposition::TestOrAllowlistOnly => {}
+        }
+    }
     Ok(())
 }
 

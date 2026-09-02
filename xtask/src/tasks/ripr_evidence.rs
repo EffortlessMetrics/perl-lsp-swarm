@@ -3365,22 +3365,27 @@ fn ancestry_failure_guidance(base: &str, head: &str, receipt: &AncestryReceipt) 
         receipt.reason
     );
     match receipt.disposition {
+        // The fetch remedies below deliberately carry no refspec operand. RIPR's
+        // base is normally a remote-tracking name such as `origin/main`, and
+        // `git fetch origin origin/main` fails with `couldn't find remote ref
+        // origin/main` because the operand is resolved in the remote namespace.
+        // Fetching the remote's configured refspec is both valid and sufficient.
         AncestryDisposition::NotProvenShallow => message.push_str(&format!(
             " A shallow checkout cannot prove whether `{base}` and `{head}` share history. \
              Deepen the clone before running diff-scoped RIPR locally, e.g. \
-             `git fetch --unshallow` or `git fetch --deepen=200 origin {base}`. \
+             `git fetch --unshallow` or `git fetch --deepen=200 origin`. \
              CI is unaffected: the RIPR workflow checks out with fetch-depth: 0."
         )),
-        AncestryDisposition::NotProvenPartialClone => message.push_str(&format!(
+        AncestryDisposition::NotProvenPartialClone => message.push_str(
             " A partial/promisor checkout can omit the objects this range needs. \
-             Materialize the required commit graph, e.g. \
-             `git fetch --refetch origin {base}`, before running diff-scoped RIPR locally. \
-             CI is unaffected: the RIPR workflow checks out with fetch-depth: 0."
-        )),
+             Materialize the required commit graph, e.g. `git fetch --refetch origin`, \
+             before running diff-scoped RIPR locally. \
+             CI is unaffected: the RIPR workflow checks out with fetch-depth: 0.",
+        ),
         AncestryDisposition::NotProvenMissingObject => message.push_str(&format!(
             " The requested revision could not be resolved locally, which does not \
-             establish that `{base}` and `{head}` are unrelated. Confirm the revision \
-             spelling and fetch the exact objects, e.g. `git fetch origin {base}`."
+             establish that `{base}` and `{head}` are unrelated. Confirm the spelling of \
+             `{base}` and fetch the missing objects, e.g. `git fetch origin`."
         )),
         AncestryDisposition::Unrelated => message.push_str(&format!(
             " Both commit objects are present in a complete local graph and share no \
@@ -7241,6 +7246,15 @@ esac
         let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
 
         assert!(message.contains("not_proven_partial_clone"), "typed disposition: {message}");
+        // Assert the arm's own remedy, not just the header-emitted label: the
+        // label comes from the shared prefix, so without this a no-op or
+        // swapped arm body would still pass.
+        assert!(message.contains("git fetch --refetch origin`"), "partial remedy: {message}");
+        assert!(
+            message.contains("Materialize the required commit graph"),
+            "partial cause: {message}"
+        );
+        assert!(!message.contains("--unshallow"), "must not blame shallow: {message}");
         assert!(
             !message.contains("share no common history"),
             "partial clone must never assert absent history: {message}"
@@ -7257,12 +7271,40 @@ esac
         let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
 
         assert!(message.contains("not_proven_missing_object"), "typed disposition: {message}");
-        assert!(message.contains("git fetch origin origin/main"), "fetch remedy: {message}");
+        assert!(message.contains("git fetch origin`"), "fetch remedy: {message}");
         assert!(
             !message.contains("share no common history"),
             "missing object must never assert absent history: {message}"
         );
         assert!(!message.contains("shallow"), "must not blame shallow: {message}");
+    }
+
+    /// Every fetch remedy must be a command the operator can actually run.
+    ///
+    /// RIPR's default base is the remote-tracking name `origin/main`, and
+    /// `git fetch origin origin/main` fails with `couldn't find remote ref
+    /// origin/main` because the operand resolves in the remote namespace. No
+    /// disposition may interpolate the base after a remote name.
+    #[test]
+    fn guidance_never_emits_a_remote_prefixed_fetch_refspec() {
+        for disposition in [
+            AncestryDisposition::Ancestor,
+            AncestryDisposition::Diverged,
+            AncestryDisposition::Unrelated,
+            AncestryDisposition::NotProvenShallow,
+            AncestryDisposition::NotProvenPartialClone,
+            AncestryDisposition::NotProvenMissingObject,
+            AncestryDisposition::InvalidInput,
+            AncestryDisposition::InstrumentFailure,
+        ] {
+            let receipt = ancestry_receipt(disposition, "reason");
+            let message = ancestry_failure_guidance(DEFAULT_BASE, DEFAULT_HEAD, &receipt);
+
+            assert!(
+                !message.contains(&format!("origin {DEFAULT_BASE}")),
+                "remedy must not resolve `{DEFAULT_BASE}` in the remote namespace: {message}"
+            );
+        }
     }
 
     /// `unrelated` is the one disposition permitted to state absent history,
@@ -7302,14 +7344,26 @@ esac
     /// Invalid input and instrument failure stay distinct from every history claim.
     #[test]
     fn invalid_and_instrument_guidance_make_no_history_claim() {
-        for (disposition, expected) in [
-            (AncestryDisposition::InvalidInput, "invalid_input"),
-            (AncestryDisposition::InstrumentFailure, "instrument_failure"),
+        // Each row pins the arm's own remedy as well as the label. The label is
+        // emitted by the shared header, so asserting it alone cannot tell a
+        // correct arm from an empty or swapped one.
+        for (disposition, expected, remedy) in [
+            (
+                AncestryDisposition::InvalidInput,
+                "invalid_input",
+                "Check the base and head revision values",
+            ),
+            (
+                AncestryDisposition::InstrumentFailure,
+                "instrument_failure",
+                "Git could not be inspected",
+            ),
         ] {
             let receipt = ancestry_receipt(disposition, "no domain result was reached");
             let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
 
             assert!(message.contains(expected), "typed disposition: {message}");
+            assert!(message.contains(remedy), "{expected} remedy: {message}");
             assert!(
                 !message.contains("share no common history"),
                 "{expected} must never assert absent history: {message}"
