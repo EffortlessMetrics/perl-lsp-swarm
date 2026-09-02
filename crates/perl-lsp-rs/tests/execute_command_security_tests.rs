@@ -15,6 +15,7 @@ use std::error::Error;
 use std::fs;
 #[cfg(unix)]
 use std::path::Path;
+use std::process::{Command, Output};
 use tempfile::TempDir;
 
 /// Test that run_test_sub is protected against code injection via file_path.
@@ -261,8 +262,20 @@ fn test_empty_workspace_roots_enforces_cwd_boundary() -> Result<(), Box<dyn Erro
 fn test_command_exists_does_not_execute_path_hijacked_which() -> Result<(), Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt;
 
+    if child_mode("test_command_exists_does_not_execute_path_hijacked_which") {
+        assert!(
+            perl_lsp::execute_command::command_exists("perlcritic"),
+            "the PATH fixture must make perlcritic discoverable"
+        );
+        let marker = child_env("SECURITY_MARKER")?;
+        assert!(!Path::new(&marker).exists(), "PATH probe executed a hijacked which");
+        println!("{CHILD_PROOF_MARKER}=test_command_exists_does_not_execute_path_hijacked_which");
+        return Ok(());
+    }
+
     let temp_dir = TempDir::new()?;
     let which_path = temp_dir.path().join("which");
+    let perlcritic_path = temp_dir.path().join("perlcritic");
     let marker_path = temp_dir.path().join("which-executed.marker");
 
     fs::write(
@@ -275,33 +288,38 @@ exit 0
             marker_path.display()
         ),
     )?;
+    fs::write(&perlcritic_path, "#!/bin/sh\nexit 0\n")?;
     fs::set_permissions(&which_path, fs::Permissions::from_mode(0o755))?;
+    fs::set_permissions(&perlcritic_path, fs::Permissions::from_mode(0o755))?;
 
     let original_path = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = vec![temp_dir.path().to_path_buf()];
     path_entries.extend(std::env::split_paths(&original_path));
     let joined_path = std::env::join_paths(path_entries)?;
 
-    // SAFETY: test-only PATH mutation; restored before returning.
-    unsafe {
-        std::env::set_var("PATH", &joined_path);
-    }
-    let _ = perl_lsp::execute_command::command_exists("perlcritic");
-    // SAFETY: restore process environment for test isolation.
-    unsafe {
-        std::env::set_var("PATH", original_path);
-    }
+    let output = run_child(
+        "test_command_exists_does_not_execute_path_hijacked_which",
+        &[("PATH", joined_path.as_os_str())],
+        &[("SECURITY_MARKER", marker_path.as_os_str())],
+    )?;
+    assert!(output.status.success(), "child failed: {}", output_text(&output));
+    assert_child_ran_once(&output, "test_command_exists_does_not_execute_path_hijacked_which")?;
 
-    assert!(
-        !Path::new(&marker_path).exists(),
-        "security regression: command_exists executed a PATH-hijacked 'which' probe"
-    );
     Ok(())
 }
 #[cfg(unix)]
 #[test]
 fn test_command_exists_does_not_execute_candidate_binary() -> Result<(), Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt;
+
+    if child_mode("test_command_exists_does_not_execute_candidate_binary") {
+        let exists = perl_lsp::execute_command::command_exists("fake-security-probe");
+        let marker = child_env("SECURITY_MARKER")?;
+        assert!(exists, "candidate should be discoverable in PATH");
+        assert!(!Path::new(&marker).exists(), "command_exists executed the candidate");
+        println!("{CHILD_PROOF_MARKER}=test_command_exists_does_not_execute_candidate_binary");
+        return Ok(());
+    }
 
     let temp_dir = TempDir::new()?;
     let script_path = temp_dir.path().join("fake-security-probe");
@@ -318,21 +336,13 @@ fn test_command_exists_does_not_execute_candidate_binary() -> Result<(), Box<dyn
     path_entries.extend(std::env::split_paths(&original_path));
     let joined_path = std::env::join_paths(path_entries)?;
 
-    // SAFETY: test-only PATH mutation; restored before returning.
-    unsafe {
-        std::env::set_var("PATH", &joined_path);
-    }
-    let exists = perl_lsp::execute_command::command_exists("fake-security-probe");
-    // SAFETY: restore process environment for test isolation.
-    unsafe {
-        std::env::set_var("PATH", original_path);
-    }
-
-    assert!(exists, "command_exists should report that the candidate is discoverable in PATH");
-    assert!(
-        !Path::new(&marker_path).exists(),
-        "security regression: command_exists executed the candidate binary instead of probing PATH"
-    );
+    let output = run_child(
+        "test_command_exists_does_not_execute_candidate_binary",
+        &[("PATH", joined_path.as_os_str())],
+        &[("SECURITY_MARKER", marker_path.as_os_str())],
+    )?;
+    assert!(output.status.success(), "child failed: {}", output_text(&output));
+    assert_child_ran_once(&output, "test_command_exists_does_not_execute_candidate_binary")?;
     Ok(())
 }
 
@@ -456,12 +466,52 @@ fn test_command_injection_pipe() -> Result<(), Box<dyn Error>> {
 // These tests require a real Perl installation; they are skipped when no Perl
 // binary can be resolved.
 
-/// Serializes tests that mutate process-global env vars.
-///
-/// `std::env::set_var` / `remove_var` are process-global and unsafe in Rust
-/// 2024. This mutex ensures that concurrent test threads do not race over the
-/// same env vars when running with `RUST_TEST_THREADS > 1`.
-static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const CHILD_MODE: &str = "PERL_LSP_SECURITY_CHILD";
+const CHILD_PROOF_MARKER: &str = "PERL_LSP_SECURITY_CHILD_RAN";
+
+fn child_mode(name: &str) -> bool {
+    std::env::var_os(CHILD_MODE).is_some_and(|value| value.to_string_lossy() == name)
+}
+
+fn child_env(name: &str) -> Result<std::ffi::OsString, Box<dyn Error>> {
+    std::env::var_os(name).ok_or_else(|| format!("missing child environment key {name}").into())
+}
+
+fn run_child(
+    selector: &str,
+    env: &[(&str, &std::ffi::OsStr)],
+    extra_env: &[(&str, &std::ffi::OsStr)],
+) -> Result<Output, Box<dyn Error>> {
+    let mut command = Command::new(std::env::current_exe()?);
+    command.args(["--exact", selector, "--nocapture"]);
+    command.env(CHILD_MODE, selector);
+    for (key, value) in env.iter().chain(extra_env.iter()) {
+        command.env(key, value);
+    }
+    Ok(command.output()?)
+}
+
+fn output_text(output: &Output) -> String {
+    format!(
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+fn assert_child_ran_once(output: &Output, selector: &str) -> Result<(), Box<dyn Error>> {
+    let expected = format!("{CHILD_PROOF_MARKER}={selector}");
+    let count =
+        String::from_utf8_lossy(&output.stdout).lines().filter(|line| *line == expected).count();
+    if count != 1 {
+        return Err(format!(
+            "expected exactly one child proof marker {expected:?}, found {count}: {}",
+            output_text(output)
+        )
+        .into());
+    }
+    Ok(())
+}
 
 /// Helper: resolve the system Perl binary via the toolchain resolver.
 fn find_perl() -> Option<std::path::PathBuf> {
@@ -483,12 +533,26 @@ fn config_with_perl5lib(use_perl5lib: bool) -> Option<WorkspaceConfig> {
 /// Regression guard for the #8493-class incident: ambient PERL5LIB must not
 /// reach the subprocess when the workspace config opts out.
 #[test]
-#[allow(unsafe_code)] // set_var / remove_var are unsafe in Rust 2024
 fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Error>> {
-    let config = match config_with_perl5lib(false) {
-        Some(c) => c,
-        None => return Ok(()), // no Perl — skip
-    };
+    if child_mode("run_file_strips_perl5lib_when_use_perl5lib_false") {
+        let script = child_env("SECURITY_SCRIPT")?;
+        let config = config_with_perl5lib(false).ok_or("no Perl binary available")?;
+        let root =
+            std::path::PathBuf::from(&script).parent().ok_or("script has no parent")?.to_path_buf();
+        let provider =
+            ExecuteCommandProvider::with_workspace_roots(vec![root]).with_workspace_config(config);
+        let result = provider.execute_command(
+            "perl.runFile",
+            vec![Value::String(script.to_string_lossy().into_owned())],
+        )?;
+        let output = result["output"].as_str().ok_or("missing output")?;
+        assert!(output.contains("UNSET"), "child inherited PERL5LIB: {output:?}");
+        println!("{CHILD_PROOF_MARKER}=run_file_strips_perl5lib_when_use_perl5lib_false");
+        return Ok(());
+    }
+    if config_with_perl5lib(false).is_none() {
+        return Ok(()); // no Perl — skip
+    }
 
     let temp_dir = TempDir::new()?;
     // Script prints the PERL5LIB env var or "UNSET" if absent.
@@ -496,79 +560,91 @@ fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Erro
     std::fs::write(&script, "print $ENV{PERL5LIB} // 'UNSET';\n")?;
 
     let poison_dir = TempDir::new()?;
-    let poison_path = poison_dir.path().to_string_lossy().into_owned();
+    let poison_path = poison_dir.path().to_path_buf();
 
-    let provider =
-        ExecuteCommandProvider::with_workspace_roots(vec![temp_dir.path().to_path_buf()])
-            .with_workspace_config(config);
-
-    // Serialize env-var mutation across concurrent tests.
-    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-    // SAFETY: test-only; ENV_MUTEX serializes these mutations.
-    unsafe { std::env::set_var("PERL5LIB", &poison_path) };
-    let result = provider
-        .execute_command("perl.runFile", vec![Value::String(script.to_string_lossy().to_string())]);
-    unsafe { std::env::remove_var("PERL5LIB") };
-    drop(_guard);
-
-    let result = result?;
-    let output = result["output"].as_str().unwrap_or("");
-    assert!(
-        !output.contains(&poison_path),
-        "PERL5LIB poison path ({poison_path}) must NOT appear in subprocess output \
-         when use_perl5lib=false; got: {output:?}",
-    );
-    assert!(
-        output.contains("UNSET"),
-        "subprocess should see PERL5LIB as UNSET when use_perl5lib=false; got: {output:?}",
-    );
+    let before = std::env::var_os("PERL5LIB");
+    let output = run_child(
+        "run_file_strips_perl5lib_when_use_perl5lib_false",
+        &[("PERL5LIB", poison_path.as_os_str())],
+        &[("SECURITY_SCRIPT", script.as_os_str())],
+    )?;
+    assert!(output.status.success(), "child failed: {}", output_text(&output));
+    assert_child_ran_once(&output, "run_file_strips_perl5lib_when_use_perl5lib_false")?;
+    assert_eq!(std::env::var_os("PERL5LIB"), before, "parent environment changed");
     Ok(())
 }
 
 /// `run_file` with `use_perl5lib=true` must pass PERL5LIB through to the subprocess.
 #[test]
-#[allow(unsafe_code)]
 fn run_file_passes_perl5lib_when_use_perl5lib_true() -> Result<(), Box<dyn Error>> {
-    let config = match config_with_perl5lib(true) {
-        Some(c) => c,
-        None => return Ok(()),
-    };
+    if child_mode("run_file_passes_perl5lib_when_use_perl5lib_true") {
+        let script = child_env("SECURITY_SCRIPT")?;
+        let config = config_with_perl5lib(true).ok_or("no Perl binary available")?;
+        let root =
+            std::path::PathBuf::from(&script).parent().ok_or("script has no parent")?.to_path_buf();
+        let provider =
+            ExecuteCommandProvider::with_workspace_roots(vec![root]).with_workspace_config(config);
+        let result = provider.execute_command(
+            "perl.runFile",
+            vec![Value::String(script.to_string_lossy().into_owned())],
+        )?;
+        let output = result["output"].as_str().ok_or("missing output")?;
+        let marker = child_env("SECURITY_MARKER")?;
+        assert!(
+            output.contains(marker.to_string_lossy().as_ref()),
+            "PERL5LIB was not passed: {output:?}"
+        );
+        println!("{CHILD_PROOF_MARKER}=run_file_passes_perl5lib_when_use_perl5lib_true");
+        return Ok(());
+    }
+    if config_with_perl5lib(true).is_none() {
+        return Ok(());
+    }
 
     let temp_dir = TempDir::new()?;
     let script = temp_dir.path().join("check_env.pl");
     std::fs::write(&script, "print $ENV{PERL5LIB} // 'UNSET';\n")?;
 
     let marker_dir = TempDir::new()?;
-    let marker_path = marker_dir.path().to_string_lossy().into_owned();
+    let marker_path = marker_dir.path().to_path_buf();
 
-    let provider =
-        ExecuteCommandProvider::with_workspace_roots(vec![temp_dir.path().to_path_buf()])
-            .with_workspace_config(config);
-
-    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-    unsafe { std::env::set_var("PERL5LIB", &marker_path) };
-    let result = provider
-        .execute_command("perl.runFile", vec![Value::String(script.to_string_lossy().to_string())]);
-    unsafe { std::env::remove_var("PERL5LIB") };
-    drop(_guard);
-
-    let result = result?;
-    let output = result["output"].as_str().unwrap_or("");
-    assert!(
-        output.contains(&marker_path),
-        "PERL5LIB must be passed through when use_perl5lib=true; got: {output:?}",
-    );
+    let before = std::env::var_os("PERL5LIB");
+    let output = run_child(
+        "run_file_passes_perl5lib_when_use_perl5lib_true",
+        &[("PERL5LIB", marker_path.as_os_str())],
+        &[("SECURITY_SCRIPT", script.as_os_str()), ("SECURITY_MARKER", marker_path.as_os_str())],
+    )?;
+    assert!(output.status.success(), "child failed: {}", output_text(&output));
+    assert_child_ran_once(&output, "run_file_passes_perl5lib_when_use_perl5lib_true")?;
+    assert_eq!(std::env::var_os("PERL5LIB"), before, "parent environment changed");
     Ok(())
 }
 
 /// `run_test_sub` with `use_perl5lib=false` must strip PERL5LIB from the subprocess.
 #[test]
-#[allow(unsafe_code)]
 fn run_test_sub_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Error>> {
-    let config = match config_with_perl5lib(false) {
-        Some(c) => c,
-        None => return Ok(()),
-    };
+    if child_mode("run_test_sub_strips_perl5lib_when_use_perl5lib_false") {
+        let script = child_env("SECURITY_SCRIPT")?;
+        let config = config_with_perl5lib(false).ok_or("no Perl binary available")?;
+        let root =
+            std::path::PathBuf::from(&script).parent().ok_or("script has no parent")?.to_path_buf();
+        let provider =
+            ExecuteCommandProvider::with_workspace_roots(vec![root]).with_workspace_config(config);
+        let result = provider.execute_command(
+            "perl.runTestSub",
+            vec![
+                Value::String(script.to_string_lossy().into_owned()),
+                Value::String("check_env".to_string()),
+            ],
+        )?;
+        let output = result["output"].as_str().ok_or("missing output")?;
+        assert!(output.contains("UNSET"), "child inherited PERL5LIB: {output:?}");
+        println!("{CHILD_PROOF_MARKER}=run_test_sub_strips_perl5lib_when_use_perl5lib_false");
+        return Ok(());
+    }
+    if config_with_perl5lib(false).is_none() {
+        return Ok(());
+    }
 
     let temp_dir = TempDir::new()?;
     // A Perl file with a sub that prints the env var.
@@ -576,29 +652,16 @@ fn run_test_sub_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn 
     std::fs::write(&script, "sub check_env { print $ENV{PERL5LIB} // 'UNSET'; }\n")?;
 
     let poison_dir = TempDir::new()?;
-    let poison_path = poison_dir.path().to_string_lossy().into_owned();
+    let poison_path = poison_dir.path().to_path_buf();
 
-    let provider =
-        ExecuteCommandProvider::with_workspace_roots(vec![temp_dir.path().to_path_buf()])
-            .with_workspace_config(config);
-
-    let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-    unsafe { std::env::set_var("PERL5LIB", &poison_path) };
-    let result = provider.execute_command(
-        "perl.runTestSub",
-        vec![
-            Value::String(script.to_string_lossy().to_string()),
-            Value::String("check_env".to_string()),
-        ],
-    );
-    unsafe { std::env::remove_var("PERL5LIB") };
-    drop(_guard);
-
-    let result = result?;
-    let output = result["output"].as_str().unwrap_or("");
-    assert!(
-        !output.contains(&poison_path),
-        "PERL5LIB poison path must NOT appear when use_perl5lib=false; got: {output:?}",
-    );
+    let before = std::env::var_os("PERL5LIB");
+    let output = run_child(
+        "run_test_sub_strips_perl5lib_when_use_perl5lib_false",
+        &[("PERL5LIB", poison_path.as_os_str())],
+        &[("SECURITY_SCRIPT", script.as_os_str())],
+    )?;
+    assert!(output.status.success(), "child failed: {}", output_text(&output));
+    assert_child_ran_once(&output, "run_test_sub_strips_perl5lib_when_use_perl5lib_false")?;
+    assert_eq!(std::env::var_os("PERL5LIB"), before, "parent environment changed");
     Ok(())
 }
