@@ -18,7 +18,7 @@ fn supported_editor_inline_smoke_cli_writes_route_bundle() -> Result<()> {
     let bundle: Value = serde_json::from_str(&std::fs::read_to_string(&receipt)?)?;
     assert_eq!(
         bundle.get("schema_version").and_then(Value::as_str),
-        Some("supported-editor-inline-smoke.v1")
+        Some("supported-editor-inline-smoke.v2")
     );
     assert_eq!(bundle.get("provider").and_then(Value::as_str), Some("inline_completion"));
     assert_eq!(
