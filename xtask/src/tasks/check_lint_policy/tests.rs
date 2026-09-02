@@ -1,6 +1,7 @@
 mod config;
 mod debt;
 mod disposition;
+mod lock_partition;
 mod summary;
 
 use super::model::{

@@ -21,12 +21,25 @@ status = "tracked"
 class = "silent-failure"
 reason = "Must-use values cannot be discarded with let-underscore."
 
+# The two let_underscore_lock identities partition one invariant across two
+# tools; they do not overlap. Measured on the selected 1.95.0 toolchain
+# (#14444): rustc fires on `std::sync` mutex and read/write guards and is silent
+# on `parking_lot`; Clippy fires on `parking_lot` guards and is silent on the
+# standard-library guards it uplifted to rustc. Removing either row therefore
+# uncovers real lock types rather than duplicating the other row's coverage.
+[[lint]]
+name = "rust::let_underscore_lock"
+level = "deny"
+status = "active"
+class = "silent-failure"
+reason = "Standard-library lock acquisitions must be held by named guards with visible scope; stated explicitly so the contract does not depend on the rustc default level."
+
 [[lint]]
 name = "clippy::let_underscore_lock"
 level = "deny"
-status = "tracked"
+status = "active"
 class = "silent-failure"
-reason = "Locks must be held by named guards with visible scope."
+reason = "Non-std lock acquisitions (parking_lot mutex and read/write guards) must be held by named guards with visible scope; rustc does not cover these types."
 
 [[lint]]
 name = "clippy::unused_result_ok"
