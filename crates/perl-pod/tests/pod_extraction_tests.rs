@@ -204,6 +204,12 @@ fn synopsis_field_never_exceeds_source_after_link_display_text() {
         "SYNOPSIS should preserve the display text: {synopsis:?}"
     );
     assert!(
+        synopsis.len() <= source.len(),
+        "SYNOPSIS ({} bytes) must not exceed source ({} bytes) — the fuzz target invariant: {synopsis:?}",
+        synopsis.len(),
+        source.len()
+    );
+    assert!(
         synopsis.chars().count() <= source.chars().count(),
         "SYNOPSIS ({} chars) must not exceed source ({} chars): {synopsis:?}",
         synopsis.chars().count(),
