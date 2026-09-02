@@ -598,8 +598,13 @@ fn check_stream(
             }
         }
         TruncationState::RetentionTruncated { limit_bytes } => {
-            // Retention stopped at the limit, so no more than that was kept.
-            if evidence.retained().len() as u64 > limit_bytes {
+            // Retention stopped *at* the limit, so exactly that much was kept:
+            // keeping less contradicts the stop point as surely as keeping
+            // more does. And retention can only have been truncated if there
+            // was more to keep than the limit allowed.
+            if evidence.retained().len() as u64 != limit_bytes
+                || evidence.observed_bytes() <= limit_bytes
+            {
                 return Err(ResultInconsistency::TruncationLimitContradicted { channel: expected });
             }
         }

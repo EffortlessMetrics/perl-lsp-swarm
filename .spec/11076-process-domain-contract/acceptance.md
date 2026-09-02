@@ -199,6 +199,21 @@ result constructor — plus Cargo itself for the dependency claim. A scan that
 can be evaded by an alias or a macro is worth having and is not worth
 mistaking for a proof.
 
+### Fourth external round (Devin, `fcb0bfc`)
+
+Two findings, both real, both about the same failure mode this packet exists to
+prevent: an event stream and a result that disagree.
+
+| Finding | Repair | Mutation replay |
+|---|---|---|
+| `RetentionTruncated` was bounded on one side only, so evidence could retain *fewer* bytes than the stop point it named, or claim truncation with nothing beyond the limit to truncate | retention must equal its stop point exactly, and observation must exceed it — otherwise nothing was truncated | KILLED |
+| refusing a scripted terminal event returned `None` without settling the run, so the next call emitted the *elected* terminal event — announcing a success while `wait` reported a supervisor failure | the rejection settles the stream on the same supervisor failure `wait` reports | KILLED |
+
+The second is worth recording precisely: the guard added in the previous round
+was correct about *what* to refuse and wrong about *how*. Leaving the stream
+open reintroduced, one call later, exactly the divergence the guard existed to
+prevent. Refusing a thing without settling it is not refusing it.
+
 ## Terminal precedence
 
 Fixed and total, highest first:

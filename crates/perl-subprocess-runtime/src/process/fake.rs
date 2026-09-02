@@ -382,9 +382,15 @@ impl ProcessHandle for FakeHandle {
                 // scripted one — anywhere in the list, including last — could
                 // announce an outcome that disagrees with what `wait` returns,
                 // so the script is refused rather than replayed.
+                //
+                // The run settles here, with the same supervisor failure
+                // `wait` will report. Returning `None` without settling would
+                // leave the stream open, and the next call would emit the
+                // *elected* terminal event — reintroducing exactly the
+                // divergence this branch exists to prevent.
                 self.script_rejected = true;
                 self.pending.clear();
-                return None;
+                ProcessEventKind::Terminal(TerminalDisposition::SupervisorFailed)
             }
             Some(kind) => kind,
             None => ProcessEventKind::Terminal(self.elected()),

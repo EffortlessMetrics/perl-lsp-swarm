@@ -2673,3 +2673,103 @@ fn the_domain_uses_no_unwrap_spelling_in_production() -> TestResult {
     }
     Ok(())
 }
+
+// ──────────────── controls added after the fourth bot review round ───────────
+
+#[test]
+fn retention_truncation_must_match_its_stop_point_exactly() -> TestResult {
+    // The wrong implementation this kills: bounding retention from one side
+    // only. Retaining *fewer* bytes than the limit contradicts "retention
+    // stopped at this limit" just as surely as retaining more does, and
+    // truncation cannot have happened at all unless more was observed than the
+    // limit allowed.
+    let retained_less_than_its_limit = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            10_000,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            vec![b'x'; 4],
+            TruncationState::RetentionTruncated { limit_bytes: 64 },
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(retained_less_than_its_limit.is_err(), "retaining under the stop point was admitted");
+
+    let nothing_was_actually_truncated = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            64,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            vec![b'x'; 64],
+            TruncationState::RetentionTruncated { limit_bytes: 64 },
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(
+        nothing_was_actually_truncated.is_err(),
+        "evidence claimed truncation with nothing beyond the limit to truncate"
+    );
+
+    // The coherent shape is admitted.
+    let coherent = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            10_000,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            vec![b'x'; 64],
+            TruncationState::RetentionTruncated { limit_bytes: 64 },
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    )?;
+    assert!(!coherent.claims_complete_output());
+    Ok(())
+}
+
+#[test]
+fn a_rejected_script_settles_the_event_stream_it_rejected() -> TestResult {
+    // The wrong implementation this kills: refusing a scripted terminal event
+    // by returning `None` without settling the run. The stream stays open, and
+    // the next call emits the *elected* terminal event — announcing a success
+    // while `wait` reports a supervisor failure. That is the exact divergence
+    // the rejection exists to prevent, reintroduced one call later.
+    let supervisor = FakeSupervisor::new();
+    let mut divergent = ScriptedRun::exiting(0);
+    divergent.events =
+        vec![ProcessEventKind::Started, ProcessEventKind::Terminal(TerminalDisposition::TimedOut)];
+    supervisor.script_run(divergent);
+    let mut handle = match supervisor.start(valid_linux_one_shot().validate()?) {
+        Ok(handle) => handle,
+        Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
+    };
+
+    let mut kinds = Vec::new();
+    while let Some(event) = handle.next_event() {
+        kinds.push(event.kind().clone());
+    }
+    // The stream ends on the same supervisor failure the result reports.
+    assert!(
+        matches!(
+            kinds.last(),
+            Some(ProcessEventKind::Terminal(TerminalDisposition::SupervisorFailed))
+        ),
+        "the rejected script did not settle its own stream: {kinds:?}"
+    );
+    assert!(
+        !kinds.iter().any(|kind| matches!(
+            kind,
+            ProcessEventKind::Terminal(TerminalDisposition::CompletedExit { .. })
+        )),
+        "a success terminal event was emitted after the script was rejected"
+    );
+    assert_eq!(*handle.wait().disposition(), TerminalDisposition::SupervisorFailed);
+    Ok(())
+}
