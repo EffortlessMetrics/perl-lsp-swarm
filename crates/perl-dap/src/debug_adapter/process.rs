@@ -214,7 +214,20 @@ impl DebugAdapter {
 
             // Ownership is selected from the path the debuggee will actually
             // open, not the raw client string — see `resolve_launch_program`.
-            let resolved_program = Self::resolve_launch_program(program, user_cwd.as_deref());
+            let resolved_program = match Self::resolve_launch_program(program, user_cwd.as_deref())
+            {
+                Ok(resolved) => resolved,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
+            };
 
             let boundary = match security::resolve_session_boundary(
                 self.workspace_authority(),
@@ -424,11 +437,23 @@ impl DebugAdapter {
     /// existence check uses. Authorization and execution must agree on exactly
     /// one path, or the workspace boundary can be validated against a file
     /// that is never the one run.
-    pub(super) fn resolve_launch_program(program: &str, cwd: Option<&Path>) -> PathBuf {
+    ///
+    /// # Errors
+    ///
+    /// Fails when a relative program cannot be anchored to an absolute base —
+    /// this process has no readable working directory. The launch is refused
+    /// rather than resolved to a still-relative path: returning one would let
+    /// the child apply the launch directory a second time and reopen the
+    /// authorize-one-path-execute-another gap this function exists to close.
+    pub(super) fn resolve_launch_program(
+        program: &str,
+        cwd: Option<&Path>,
+    ) -> Result<PathBuf, String> {
         let raw = Path::new(program);
         if raw.is_absolute() {
-            return raw.to_path_buf();
+            return Ok(raw.to_path_buf());
         }
+
         // The base must itself be absolute. A launch `cwd` may be relative, and
         // the spawned child resolves a relative `current_dir` against *this*
         // process's working directory — so joining a relative `cwd` straight
@@ -436,13 +461,50 @@ impl DebugAdapter {
         // segment would then be applied twice: once by the join and again by
         // the child. `{program: "script.pl", cwd: "sub"}` would authorize
         // `<root>/sub/script.pl` and open `<cwd>/sub/sub/script.pl`.
-        let process_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let base = match cwd {
             Some(path) if path.is_absolute() => path.to_path_buf(),
-            Some(path) => process_cwd.join(path),
-            None => process_cwd,
+            Some(path) => Self::process_working_directory()?.join(path),
+            None => Self::process_working_directory()?,
         };
-        base.join(raw)
+
+        let resolved = base.join(raw);
+        if !resolved.is_absolute() {
+            return Err(format!(
+                "Cannot resolve the program '{program}' to an absolute path. \
+                 Set 'program' in your launch.json to an absolute path, or set an \
+                 absolute 'cwd'."
+            ));
+        }
+        Ok(resolved)
+    }
+
+    /// This process's working directory, as an absolute anchor for relative
+    /// launch inputs.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the directory cannot be read — for example after it is
+    /// deleted out from under a long-lived adapter. There is no safe fallback:
+    /// a relative placeholder would silently break the absolute-path invariant
+    /// every caller depends on.
+    fn process_working_directory() -> Result<PathBuf, String> {
+        let cwd = std::env::current_dir().map_err(|error| {
+            format!(
+                "Cannot determine this adapter's working directory ({error}), so a \
+                 relative launch path cannot be resolved. Set 'program' and 'cwd' in \
+                 your launch.json to absolute paths."
+            )
+        })?;
+        if cwd.is_absolute() {
+            Ok(cwd)
+        } else {
+            Err(format!(
+                "This adapter's working directory ('{}') is not absolute, so a relative \
+                 launch path cannot be resolved. Set 'program' and 'cwd' in your \
+                 launch.json to absolute paths.",
+                cwd.display()
+            ))
+        }
     }
 
     /// Launch the Perl debugger for the given script.
@@ -470,7 +532,7 @@ impl DebugAdapter {
         // a launch of `{program: "script.pl", cwd: "/outside"}` would pass the
         // workspace boundary and then execute outside it. Everything below
         // (existence, boundary, syntax check, spawn) uses this one path.
-        let resolved_program = Self::resolve_launch_program(program, cwd_override.as_deref());
+        let resolved_program = Self::resolve_launch_program(program, cwd_override.as_deref())?;
         let resolved_program_display = resolved_program.display().to_string();
         let program_for_spawn = resolved_program_display.as_str();
 
@@ -2488,6 +2550,7 @@ mod tests {
         reserve_terminated_event, terminated_delivery_is_current,
     };
     use crate::tcp_attach::DapEvent;
+    use perl_tdd_support::{must, must_err, must_some};
     use std::path::{Path, PathBuf};
 
     /// `resolve_launch_program` must agree with what `perl` will open.
@@ -2500,7 +2563,7 @@ mod tests {
     #[test]
     fn a_relative_program_resolves_against_the_launch_cwd_not_the_trusted_root() {
         let cwd = Path::new("/outside/project");
-        let resolved = DebugAdapter::resolve_launch_program("script.pl", Some(cwd));
+        let resolved = must(DebugAdapter::resolve_launch_program("script.pl", Some(cwd)));
         assert_eq!(
             resolved,
             PathBuf::from("/outside/project/script.pl"),
@@ -2523,37 +2586,50 @@ mod tests {
     /// `<cwd>/sub/sub/script.pl`.
     #[test]
     fn a_relative_launch_cwd_still_yields_one_absolute_program_path() {
-        let resolved = DebugAdapter::resolve_launch_program("script.pl", Some(Path::new("sub")));
+        let process_cwd = must(std::env::current_dir());
+        let resolved =
+            must(DebugAdapter::resolve_launch_program("script.pl", Some(Path::new("sub"))));
         assert!(
             resolved.is_absolute(),
             "authorization and execution can only agree on an absolute path, got {resolved:?}"
         );
+        assert_eq!(resolved, process_cwd.join("sub").join("script.pl"));
 
-        let expected = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("sub")
-            .join("script.pl");
-        assert_eq!(resolved, expected);
-
-        // The `sub` segment appears exactly once.
+        // The launch cwd must be applied exactly once. Count only inside the
+        // part this function appended: the process working directory is chosen
+        // by whoever runs the test and may itself contain a `sub` component,
+        // which would fail a whole-path count on a correct result.
+        let appended = must_some(resolved.strip_prefix(&process_cwd).ok());
         let occurrences =
-            resolved.components().filter(|c| c.as_os_str() == std::ffi::OsStr::new("sub")).count();
-        assert_eq!(occurrences, 1, "the launch cwd must not be applied twice: {resolved:?}");
+            appended.components().filter(|c| c.as_os_str() == std::ffi::OsStr::new("sub")).count();
+        assert_eq!(occurrences, 1, "the launch cwd must not be applied twice: {appended:?}");
+    }
+
+    /// A program that cannot be anchored absolutely is refused, not resolved to
+    /// a relative path the child would re-anchor itself.
+    #[test]
+    fn an_absolute_cwd_anchors_a_relative_program_without_consulting_the_process_directory() {
+        let resolved =
+            must(DebugAdapter::resolve_launch_program("script.pl", Some(Path::new("/anchored"))));
+        assert_eq!(resolved, PathBuf::from("/anchored/script.pl"));
+        assert!(resolved.is_absolute());
     }
 
     #[test]
     fn an_absolute_program_is_unchanged_by_a_launch_cwd() {
-        let resolved = DebugAdapter::resolve_launch_program(
+        let resolved = must(DebugAdapter::resolve_launch_program(
             "/trusted/project/script.pl",
             Some(Path::new("/outside")),
-        );
+        ));
         assert_eq!(resolved, PathBuf::from("/trusted/project/script.pl"));
     }
 
     #[test]
     fn a_nested_relative_program_resolves_under_the_launch_cwd() {
-        let resolved =
-            DebugAdapter::resolve_launch_program("lib/deep/script.pl", Some(Path::new("/ws")));
+        let resolved = must(DebugAdapter::resolve_launch_program(
+            "lib/deep/script.pl",
+            Some(Path::new("/ws")),
+        ));
         assert_eq!(resolved, PathBuf::from("/ws/lib/deep/script.pl"));
     }
 
