@@ -431,6 +431,16 @@ impl<'a> Parser<'a> {
                 args.push(s.parse_assignment_or_declaration()?);
 
                 if matches!(s.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
+                    // A fat comma auto-quotes the bareword on its left, exactly
+                    // as it does inside `parse_args`. Without this the
+                    // parenthesised and parenthesis-free spellings of the same
+                    // call disagree about whether the operand is a name or a
+                    // call of a same-named sub.
+                    if s.peek_kind() == Some(TokenKind::FatArrow)
+                        && let Some(arg) = args.last_mut()
+                    {
+                        Self::auto_quote_bareword_before_fat_comma(arg);
+                    }
                     s.tokens.next()?;
                 } else if Self::is_statement_terminator(s.peek_kind())
                     || s.is_statement_modifier_keyword()
@@ -821,6 +831,11 @@ impl<'a> Parser<'a> {
 
                 // Collect remaining arguments (no comma required after filehandle)
                 while s.peek_kind() != Some(TokenKind::RightParen) && !s.tokens.is_eof() {
+                    if s.peek_kind() == Some(TokenKind::FatArrow)
+                        && let Some(arg) = args.last_mut()
+                    {
+                        Self::auto_quote_bareword_before_fat_comma(arg);
+                    }
                     if matches!(s.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
                         s.tokens.next()?;
                     }
@@ -837,7 +852,10 @@ impl<'a> Parser<'a> {
                 let mut args = Vec::new();
 
                 while s.peek_kind() != Some(TokenKind::RightParen) && !s.tokens.is_eof() {
-                    let arg = s.parse_assignment_or_declaration()?;
+                    let mut arg = s.parse_assignment_or_declaration()?;
+                    if s.peek_kind() == Some(TokenKind::FatArrow) {
+                        Self::auto_quote_bareword_before_fat_comma(&mut arg);
+                    }
                     args.push(arg);
                     match s.peek_kind() {
                         Some(TokenKind::Comma) | Some(TokenKind::FatArrow) => {
@@ -866,17 +884,9 @@ impl<'a> Parser<'a> {
                 // otherwise parse as a normal assignment expression.
                 let mut arg = s.parse_assignment_or_declaration()?;
 
-                // Check for fat arrow after the argument
-                // If we see =>, the argument should be auto-quoted if it's a bare identifier
+                // A fat comma auto-quotes a bare identifier on its left.
                 if s.peek_kind() == Some(TokenKind::FatArrow) {
-                    // Auto-quote bare identifiers before =>
-                    if let NodeKind::Identifier { ref name } = arg.kind {
-                        // Convert identifier to string (auto-quoting)
-                        arg = Node::new(
-                            NodeKind::String { value: name.clone(), interpolated: false },
-                            arg.location,
-                        );
-                    }
+                    Self::auto_quote_bareword_before_fat_comma(&mut arg);
                     args.push(arg);
                     s.tokens.next()?; // consume =>
                     if s.peek_kind() == Some(TokenKind::FatArrow) {
