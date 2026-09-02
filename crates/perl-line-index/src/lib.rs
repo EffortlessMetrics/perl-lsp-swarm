@@ -108,15 +108,21 @@ impl LineIndex {
     #[must_use]
     pub fn position_to_byte_utf16(&self, text: &str, line: usize, column: usize) -> Option<usize> {
         let line_start = *self.line_starts.get(line)?;
-        // Determine where this line's content ends (exclusive).  The '\n'
-        // terminator belongs to this line and stays addressable (it is the
-        // one-past-content position), but the first byte of the *next* line
-        // must not resolve through this line (#9837).  This mirrors the
-        // boundary rule of `position_to_byte` and `position_to_byte_checked`.
-        let line_end = self
-            .line_starts
-            .get(line + 1)
-            .map_or(self.text_len, |next_start| next_start.saturating_sub(1));
+        // Determine where this line's content ends (exclusive).  LSP treats
+        // CRLF as one line terminator, so neither terminator byte is an
+        // interior addressable character.  The one-past-content position is
+        // still valid as a range end, while the next line's first byte must
+        // not resolve through this line (#9837).
+        let line_end = self.line_starts.get(line + 1).map_or(self.text_len, |next_start| {
+            let terminator_len = if *next_start >= 2
+                && text.as_bytes().get(*next_start - 2..*next_start) == Some(b"\r\n")
+            {
+                2
+            } else {
+                1
+            };
+            next_start.saturating_sub(terminator_len)
+        });
         let line_text = text.get(line_start..line_end)?;
 
         // Walk the line, accumulating UTF-16 units until we reach `column`.

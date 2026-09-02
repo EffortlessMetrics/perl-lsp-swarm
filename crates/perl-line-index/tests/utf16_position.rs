@@ -153,9 +153,8 @@ fn test_utf16_first_line_unaffected_by_second_line() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-/// CRLF line endings retain the existing byte-column convention: both bytes
-/// of the terminator are addressable, while the first byte of the next line
-/// is not reachable through this line (#9837).
+/// CRLF is one line terminator: its interior bytes are not addressable, while
+/// the first byte of the next line is not reachable through the prior line.
 #[test]
 fn test_utf16_crlf_line_accepts_newline_and_range_end_positions()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -164,7 +163,7 @@ fn test_utf16_crlf_line_accepts_newline_and_range_end_positions()
 
     assert_eq!(idx.position_to_byte_utf16(text, 0, 0), Some(0));
     assert_eq!(idx.position_to_byte_utf16(text, 0, 2), Some(2));
-    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3));
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), None);
     // #9837: column 4 is the start of line 1 — out of range for line 0.  The
     // pre-fix implementation returned Some(4), silently resolving to the next
     // line while the byte-column siblings reject the same position.
@@ -212,10 +211,10 @@ fn test_utf16_crlf_one_past_next_line_start_is_rejected() -> Result<(), Box<dyn 
     assert_eq!(idx.position_to_byte_checked(0, 4), None);
     // Pre-fix this returned Some(4).
     assert_eq!(idx.position_to_byte_utf16(text, 0, 4), None);
-    // The CR and LF remain addressable on the current line, while the next
-    // line's first byte is not.
+    // CRLF is one terminator and neither byte is an interior addressable
+    // character; the one-past-content column remains the valid range end.
     assert_eq!(idx.position_to_byte_utf16(text, 0, 2), Some(2));
-    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3));
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), None);
     Ok(())
 }
 
