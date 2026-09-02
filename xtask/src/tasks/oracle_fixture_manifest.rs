@@ -629,15 +629,14 @@ fn require_declared_module_graph(
             }
         };
 
-        let Some(modules) = used_module_names(&text) else {
+        let Some(loaded) = used_module_paths(&text) else {
             violations.push(format!(
                 "{doc}: {field} {asset:?} could not be parsed as Perl, so its module graph cannot be established"
             ));
             continue;
         };
 
-        for module in modules {
-            let relative = format!("{}.pm", module.replace("::", "/"));
+        for relative in loaded {
             // Perl searches @INC in order and stops at the first match, so only
             // the first resolvable copy is part of the load graph. Requiring
             // shadowed copies in later roots would fail a valid manifest.
@@ -649,60 +648,97 @@ fn require_declared_module_graph(
                 && !declared.contains(candidate.as_str())
             {
                 violations.push(format!(
-                    "{doc}: {field} {asset:?} loads module {module:?}, which resolves to {candidate:?} inside a declared module_root, but that file is not listed in module_files"
+                    "{doc}: {field} {asset:?} loads {relative:?}, which resolves to {candidate:?} inside a declared module_root, but that file is not listed in module_files"
                 ));
             }
         }
     }
 }
 
-/// Modules loaded by this source, via the repository's own Perl parser.
+/// Relative `.pm` paths this source statically loads, via the repository's own
+/// Perl parser.
 ///
 /// A hand-rolled line scanner cannot tell executable code from POD, heredoc
 /// bodies, or `__END__`/`__DATA__` text, and would invent dependencies from
 /// documentation. This repository already owns a Perl parser; using it is both
 /// correct and avoids maintaining a second, worse reader of the same language.
 ///
+/// No name-shape heuristic is applied. Whether a target is a pragma, a core
+/// module, or a fixture module is decided by whether it resolves to a file under
+/// the fixture's own declared roots — the resolution step is the real filter, so
+/// guessing from capitalisation would only add a way to be wrong.
+///
 /// Returns `None` when the source does not parse, so the caller can report that
 /// rather than silently treating an unparseable fixture as dependency-free.
-fn used_module_names(source: &str) -> Option<BTreeSet<String>> {
+fn used_module_paths(source: &str) -> Option<BTreeSet<String>> {
     let ast = perl_parser::Parser::new(source).parse().ok()?;
-    let mut names = BTreeSet::new();
-    collect_loaded_modules(&ast, &mut names);
-    Some(names)
+    let mut paths = BTreeSet::new();
+    collect_loaded_paths(&ast, &mut paths);
+    Some(paths)
 }
 
-/// `use`/`no` carry the module name directly; `require Foo::Bar` is parsed as a
-/// function call whose name is the bareword module.
-fn collect_loaded_modules(node: &perl_parser::Node, names: &mut BTreeSet<String>) {
+/// `use`/`no` both load the named module before importing or unimporting it.
+/// `require` is parsed as a call and takes either a bareword module or a quoted
+/// relative path (`require "Accuracy/Helper.pm"`).
+fn collect_loaded_paths(node: &perl_parser::Node, paths: &mut BTreeSet<String>) {
     match &node.kind {
-        perl_parser::NodeKind::Use { module, .. } => {
-            if is_module_name(module) {
-                names.insert(module.clone());
+        perl_parser::NodeKind::Use { module, .. } | perl_parser::NodeKind::No { module, .. } => {
+            if let Some(path) = module_relative_path(module) {
+                paths.insert(path);
             }
         }
         perl_parser::NodeKind::FunctionCall { name, args } if name == "require" => {
             for arg in args {
-                if let perl_parser::NodeKind::Identifier { name, .. } = &arg.kind
-                    && is_module_name(name)
-                {
-                    names.insert(name.clone());
+                match &arg.kind {
+                    perl_parser::NodeKind::Identifier { name, .. } => {
+                        if let Some(path) = module_relative_path(name) {
+                            paths.insert(path);
+                        }
+                    }
+                    // `require "Accuracy/Helper.pm"` names the path directly.
+                    perl_parser::NodeKind::String { value, .. } => {
+                        if let Some(path) = literal_module_path(value) {
+                            paths.insert(path);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
         _ => {}
     }
     for child in node.children() {
-        collect_loaded_modules(child, names);
+        collect_loaded_paths(child, paths);
     }
 }
 
-/// Pragmas are lowercase and version forms are numeric; a loadable module file
-/// is named by an uppercase-initial bareword. Core and CPAN modules are excluded
-/// later by simply not resolving inside a declared fixture root.
-fn is_module_name(name: &str) -> bool {
-    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+/// A quoted `require` target, when it is a literal path rather than a computed
+/// one. The parser keeps the surrounding quotes in the value and marks ordinary
+/// double-quoted strings as interpolated, so the real test is whether any
+/// interpolation sigil is present: `require "$class.pm"` is a runtime load and
+/// is out of scope, `require "Accuracy/Helper.pm"` is static.
+fn literal_module_path(value: &str) -> Option<String> {
+    let unquoted = value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .or_else(|| value.strip_prefix('\'').and_then(|rest| rest.strip_suffix('\'')))
+        .unwrap_or(value);
+    let is_literal_pm = unquoted.ends_with(".pm")
+        && !unquoted.contains('$')
+        && !unquoted.contains('@')
+        && !unquoted.is_empty();
+    is_literal_pm.then(|| unquoted.to_string())
+}
+
+/// `Foo::Bar` names the file `Foo/Bar.pm`. Version and feature forms
+/// (`use v5.36`, `use 5.010`) are not module loads and name no file.
+fn module_relative_path(module: &str) -> Option<String> {
+    let is_bareword = !module.is_empty()
+        && module.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+        && !module.starts_with(|c: char| c.is_ascii_digit())
+        && module != "v"
+        && !(module.starts_with('v') && module[1..].chars().all(|c| c.is_ascii_digit()));
+    is_bareword.then(|| format!("{}.pm", module.replace("::", "/")))
 }
 
 /// A declared load file must be a readable file. An existing directory satisfies
@@ -1239,7 +1275,7 @@ mod tests {
 
         let tempdir = mirror_repository_manifest(&root, &stripped)?;
 
-        assert_violation(tempdir.path(), r#"loads module "Accuracy::ImportsExports""#)
+        assert_violation(tempdir.path(), r#"loads "Accuracy/ImportsExports.pm""#)
     }
 
     /// A symlink written inside a declared root but pointing at a repo-internal
@@ -1304,16 +1340,41 @@ mod tests {
     /// Only package-style module loads count; pragmas and feature/version forms
     /// never name a fixture module file.
     #[test]
-    fn used_module_names_selects_only_loadable_modules() -> TestResult {
-        let names = used_module_names(
-            "use strict;\nuse warnings;\nuse v5.36;\nuse Accuracy::ImportsExports;\nuse Helper;\nuse feature 'signatures';\n1;\n",
+    fn used_module_paths_covers_every_static_load_form() -> TestResult {
+        let paths = used_module_paths(
+            "use v5.36;\nuse Accuracy::ImportsExports;\nuse Helper;\nno Deprecated::Thing;\nrequire Bareword::Mod;\nrequire \"Quoted/Path.pm\";\n1;\n",
         )
         .ok_or_else(|| color_eyre::eyre::eyre!("fixture source should parse"))?;
 
-        assert!(names.contains("Accuracy::ImportsExports"), "{names:?}");
-        assert!(names.contains("Helper"), "single-segment module missing: {names:?}");
-        assert!(!names.contains("strict"), "pragma admitted: {names:?}");
-        assert!(!names.contains("feature"), "pragma admitted: {names:?}");
+        assert!(paths.contains("Accuracy/ImportsExports.pm"), "{paths:?}");
+        assert!(paths.contains("Helper.pm"), "single-segment load missing: {paths:?}");
+        assert!(paths.contains("Deprecated/Thing.pm"), "`no Module` load missing: {paths:?}");
+        assert!(paths.contains("Bareword/Mod.pm"), "bareword require missing: {paths:?}");
+        assert!(paths.contains("Quoted/Path.pm"), "quoted require missing: {paths:?}");
+        // A version form names no file.
+        assert!(
+            !paths.iter().any(|path| path.starts_with('v')),
+            "version form admitted: {paths:?}"
+        );
+        Ok(())
+    }
+
+    /// Pragmas are not filtered by name shape — they simply do not resolve to a
+    /// file under a fixture root, which is the only filter that can be right.
+    #[test]
+    fn pragmas_are_excluded_by_resolution_not_by_name_shape() -> TestResult {
+        let paths = used_module_paths("use strict;\nuse warnings;\n1;\n")
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture source should parse"))?;
+
+        assert!(paths.contains("strict.pm"), "{paths:?}");
+
+        // The checked-in fixture roots contain no strict.pm, so nothing is required.
+        let tempdir = valid_manifest_workspace()?;
+        let (_, violations) = evaluate(tempdir.path())?;
+        assert!(
+            !violations.iter().any(|violation| violation.contains("strict.pm")),
+            "pragma demanded a file: {violations:#?}"
+        );
         Ok(())
     }
 
@@ -1321,12 +1382,12 @@ mod tests {
     /// scanner cannot tell the difference; the real parser can.
     #[test]
     fn non_code_text_does_not_create_module_dependencies() -> TestResult {
-        let names = used_module_names(
+        let paths = used_module_paths(
             "package Demo;\nmy $doc = <<'TEXT';\nuse Heredoc::Module;\nTEXT\n\n=pod\n\nuse Pod::Module;\n\n=cut\n\n1;\n__END__\nuse Trailing::Module;\n",
         )
         .ok_or_else(|| color_eyre::eyre::eyre!("fixture source should parse"))?;
 
-        assert!(names.is_empty(), "non-code text produced dependencies: {names:?}");
+        assert!(paths.is_empty(), "non-code text produced dependencies: {paths:?}");
         Ok(())
     }
 
@@ -1398,7 +1459,7 @@ mod tests {
         let text = fs::read_to_string(&manifest_path)?;
 
         // Single-segment dependency undeclared.
-        assert_violation(tempdir.path(), r#"loads module "Helper""#)?;
+        assert_violation(tempdir.path(), r#"loads "Helper.pm""#)?;
 
         // Declaring it surfaces the transitive one.
         fs::write(
@@ -1406,7 +1467,7 @@ mod tests {
             text.replace(r#""module_files": []"#, r#""module_files": ["fixtures/Helper.pm"]"#),
         )?;
 
-        assert_violation(tempdir.path(), r#"loads module "Deeper""#)
+        assert_violation(tempdir.path(), r#"loads "Deeper.pm""#)
     }
 
     /// Existence and file type are not readability. A file whose bytes are not
