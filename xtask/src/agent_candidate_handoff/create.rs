@@ -309,8 +309,36 @@ impl StagedEnvelope {
         if let Err(error) = fs::write(self.directory.join(RECEIPT_FILE_NAME), receipt_json) {
             return Err(failed(error, "write the validated receipt"));
         }
-        // The reservation is an empty directory at exactly this path, so the
-        // rename replaces our own claim rather than someone else's envelope.
+        // Publication is one rename, but the reservation has to be handed over
+        // differently on each platform, because the platforms disagree about
+        // what renaming onto an existing directory means.
+        //
+        // On Unix, `rename` onto an *empty* directory succeeds and replaces it.
+        // That is what made the original check-then-rename clobberable, and it
+        // is also what makes the reservation work here: the only thing at this
+        // path is the empty directory this process created, so the rename
+        // replaces our own claim rather than someone else's envelope.
+        //
+        // Windows refuses it outright — `MoveFileEx` replaces an existing
+        // *file*, never an existing directory — so holding the reservation
+        // through the rename would fail every publication. The same asymmetry
+        // means Windows never had the original defect: a destination that
+        // appeared after the check made the rename fail rather than clobber it.
+        // So the reservation is released immediately before the rename there,
+        // and the narrow window that opens is fail-safe rather than
+        // fail-dangerous: if another process claims the path in between, the
+        // rename fails and nothing is overwritten.
+        #[cfg(windows)]
+        if let Some(claim) = self.claim.as_mut() {
+            if let Err(error) = fs::remove_dir(destination) {
+                return Err(failed(error, "release the destination reservation"));
+            }
+            // The reservation no longer exists, so `Drop` must not try to
+            // remove whatever occupies the path next — including, if the rename
+            // below fails, a directory that is not ours.
+            claim.published = true;
+        }
+
         if let Err(error) = fs::rename(&self.directory, destination) {
             return Err(failed(error, "publish the envelope"));
         }
