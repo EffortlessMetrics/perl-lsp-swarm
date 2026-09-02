@@ -270,13 +270,17 @@ fn refusal_result(
         Vec::new(),
     ) {
         Ok(result) => result,
-        // A refused start produced no handle, so no events were emitted.
+        // A refused start produced no handle, so no events were emitted and
+        // no bytes were read: empty streams are the truthful shape here, not
+        // a default.
         Err(_) => ProcessResult::supervisor_failure(
             plan_id,
             fingerprint,
             run_id,
             fake_backend(),
             WorkMetadata::default(),
+            StreamEvidence::empty(StreamChannel::Stdout),
+            StreamEvidence::empty(StreamChannel::Stderr),
         ),
     }
 }
@@ -372,12 +376,25 @@ impl FakeHandle {
     /// emit events. Defaulting the count to zero would contradict what the
     /// consumer just received.
     fn failure_result(&self) -> ProcessResult {
+        // The ledger's per-channel totals are facts the consumer already
+        // holds. Reporting zero here would contradict chunk events already
+        // delivered; reporting a fingerprint would claim an identity this
+        // fake never computed, since a scripted chunk carries a count and no
+        // bytes. So the count is published and the identity is withheld.
         ProcessResult::supervisor_failure(
             self.plan_id.clone(),
             self.fingerprint,
             self.run_id.clone(),
             fake_backend(),
             self.work_metadata(),
+            StreamEvidence::observed_but_unidentified(
+                StreamChannel::Stdout,
+                self.ledger.observed_bytes(StreamChannel::Stdout),
+            ),
+            StreamEvidence::observed_but_unidentified(
+                StreamChannel::Stderr,
+                self.ledger.observed_bytes(StreamChannel::Stderr),
+            ),
         )
     }
 

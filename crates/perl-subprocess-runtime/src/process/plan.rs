@@ -223,6 +223,20 @@ pub enum PublicProjection {
     /// Only redacted identities, counts, and dispositions.
     RedactedIdentitiesOnly,
     /// Retained output bytes may also be published.
+    ///
+    /// # What choosing this does and does not establish
+    ///
+    /// This is the owner's assertion about content the domain never sees. A
+    /// plan is validated before anything runs, so nothing here can know what a
+    /// child will write — output may carry a token it read from a file, an
+    /// absolute path, or a message quoting its own environment.
+    ///
+    /// Validation therefore refuses only what it can actually see: publishing
+    /// retained output while the *plan itself* holds private values, which
+    /// would republish the caller's own secrets. Passing that check means the
+    /// plan's inputs are clean, **not** that the output will be. Whoever
+    /// publishes the projection owns reviewing or redacting what the child
+    /// actually produced.
     IncludeRetainedOutput,
 }
 

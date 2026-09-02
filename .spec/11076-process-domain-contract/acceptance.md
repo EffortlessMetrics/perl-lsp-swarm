@@ -654,3 +654,63 @@ What is true, and is now stated at `canonical_bytes` and tested by
   plan, so nobody reads the row as promising otherwise.
 
 That is a narrower claim than the row implied, which is the point.
+
+### Fourteenth external round (Devin, `6b1c7fa`) — and the first deferral
+
+Three findings: two repaired, one deferred to #14556 on a stated test.
+
+| Finding | Disposition | Mutation replay |
+|---|---|---|
+| the supervisor-failure fallback replaced observed stream evidence with empty streams | **Fixed** — the observed count is kept and the content identity withheld | KILLED |
+| `validate_retention` proves less than its presence implies | **Claim narrowed** — documented at the variant and the validator | — |
+| the fake does not cross-validate scripted events against scripted control state | **Deferred** — #14556 | — |
+
+**The first is the same defect as round 14, one path over.** Round 14 stopped a
+pre-start cancellation from erasing emitted output; the supervisor-failure
+fallback erased it the same way, because `supervisor_failure` hard-coded empty
+streams. A consumer holding a chunk event was told zero bytes were observed.
+
+Fixing it exposed a genuine gap in the evidence model rather than a slip.
+`StreamEvidence` required a `ContentFingerprint`, so there was no way to say
+*"I read N bytes and cannot identify them"* — which is exactly what a
+supervisor that failed mid-stream knows, and what this fake knows, since a
+scripted chunk carries a count and no bytes. Reporting zero was a false
+negative; reporting a fingerprint of nothing would have been a false positive.
+
+Applying round 10's test — *does the contract fail to express something
+ordinary?* — the answer was yes, so the type changed:
+`observed_fingerprint` is now `Option<ContentFingerprint>`, `None` meaning the
+count is known and the identity is not. `StreamEvidence::observed_but_unidentified`
+builds that shape, and `supervisor_failure` takes stream evidence as a
+parameter instead of assuming emptiness.
+
+### On the retention check
+
+`validate_retention` refuses `IncludeRetainedOutput` when the plan carries
+private values. That is all it can do — validation runs before any child
+exists, so nothing there can know what a child will write. But the check's
+presence reads as though publishing retained output had been cleared, when it
+has only been cleared of *the caller's own* secrets.
+
+No new refusal: the domain cannot inspect output it never sees, and inventing a
+rule about output content would be policy it does not own. Instead the variant
+now says plainly that choosing it is an owner assertion about unseen content,
+that passing validation means the plan's inputs are clean and not that the
+output will be, and that whoever publishes the projection owns reviewing it.
+
+### The deferral, and the test used
+
+This is the first finding sent to a follow-up rather than fixed here, so the
+test is recorded rather than left to look like fatigue.
+
+The domain rules this PR enforces are statements about what a *result* or an
+*event stream* may claim. The deferred finding is a **test double validating
+its own input against a second field of that same input**: `elect` is driven by
+`ControlState`, not by the event list, so a script that disagrees with itself
+is a malformed fixture rather than a domain state a real backend reaches. It is
+also open-ended in a way the domain rules are not — it needs a per-event
+mapping to control flags that #11076 does not specify.
+
+Two findings this round *did* meet the bar and were fixed: one finished a rule
+left half-done, the other corrected a claim. That is the line, and it was set
+before this round's findings arrived, not after seeing them.

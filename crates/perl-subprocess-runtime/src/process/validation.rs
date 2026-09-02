@@ -680,6 +680,13 @@ fn validate_platform(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     Ok(())
 }
 
+/// Refuse a public projection that would republish the plan's own secrets.
+///
+/// This is deliberately the *only* thing checked here. A validator runs before
+/// any child exists, so it cannot know what the child will write; it can only
+/// see what the plan already holds. Treating a pass as proof that publishing
+/// retained output is safe would read far more into this check than it does —
+/// see [`PublicProjection::IncludeRetainedOutput`].
 fn validate_retention(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     if plan.retention().public_projection == PublicProjection::IncludeRetainedOutput
         && plan.carries_private_inputs()

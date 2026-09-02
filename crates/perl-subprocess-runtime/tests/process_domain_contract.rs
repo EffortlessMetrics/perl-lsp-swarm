@@ -1028,7 +1028,7 @@ fn truncated_or_limited_output_never_claims_to_be_complete() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             1024,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             b"retained".to_vec(),
             // Both bounds were reached: reading stopped at 1024 and only 8 of
             // those bytes were kept. Naming just one of them would assert the
@@ -1051,7 +1051,7 @@ fn truncated_or_limited_output_never_claims_to_be_complete() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             8,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"whatever"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"whatever")),
             b"whatever".to_vec(),
             TruncationState::observation_truncated(8),
         ),
@@ -2201,7 +2201,7 @@ fn a_result_cannot_carry_swapped_or_incoherent_stream_evidence() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             10_000,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             b"retained".to_vec(),
             TruncationState::complete(),
         ),
@@ -2301,7 +2301,7 @@ fn only_a_settled_child_can_establish_complete_output() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             7,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"partial"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"partial")),
             b"partial".to_vec(),
             TruncationState::observation_truncated(7),
         ),
@@ -2369,7 +2369,7 @@ fn truncation_evidence_must_agree_with_the_limit_that_stopped_it() -> TestResult
         StreamEvidence::new(
             StreamChannel::Stdout,
             10,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"x"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"x")),
             b"x".to_vec(),
             TruncationState::observation_truncated(1024),
         ),
@@ -2384,7 +2384,7 @@ fn truncation_evidence_must_agree_with_the_limit_that_stopped_it() -> TestResult
         StreamEvidence::new(
             StreamChannel::Stdout,
             10_000,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             vec![b'x'; 64],
             TruncationState::retention_truncated(8),
         ),
@@ -2743,7 +2743,7 @@ fn retention_truncation_must_match_its_stop_point_exactly() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             10_000,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             vec![b'x'; 4],
             TruncationState::retention_truncated(64),
         ),
@@ -2758,7 +2758,7 @@ fn retention_truncation_must_match_its_stop_point_exactly() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             64,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             vec![b'x'; 64],
             TruncationState::retention_truncated(64),
         ),
@@ -2777,7 +2777,7 @@ fn retention_truncation_must_match_its_stop_point_exactly() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             10_000,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             vec![b'x'; 64],
             TruncationState::retention_truncated(64),
         ),
@@ -2880,7 +2880,7 @@ fn observation_truncation_must_match_its_stop_point_exactly() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             10_000,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             b"kept".to_vec(),
             TruncationState::observation_and_retention_truncated(1024, 4),
         ),
@@ -2899,7 +2899,7 @@ fn observation_truncation_must_match_its_stop_point_exactly() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             1024,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             b"kept".to_vec(),
             TruncationState::observation_and_retention_truncated(1024, 4),
         ),
@@ -2958,7 +2958,7 @@ fn a_channel_that_reaches_both_bounds_can_say_so() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             1024,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             vec![b'x'; 64],
             TruncationState::observation_and_retention_truncated(1024, 64),
         ),
@@ -2983,7 +2983,7 @@ fn a_channel_that_reaches_both_bounds_can_say_so() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             1024,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             vec![b'x'; 64],
             TruncationState::observation_truncated(1024),
         ),
@@ -3003,7 +3003,7 @@ fn a_channel_that_reaches_both_bounds_can_say_so() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             1024,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
             vec![b'x'; 64],
             TruncationState::retention_truncated(64),
         ),
@@ -3033,7 +3033,7 @@ fn observation_truncated_evidence_still_proves_its_content_identity() -> TestRes
         StreamEvidence::new(
             StreamChannel::Stdout,
             4,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"something else"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"something else")),
             b"kept".to_vec(),
             TruncationState::observation_truncated(4),
         ),
@@ -3052,7 +3052,7 @@ fn observation_truncated_evidence_still_proves_its_content_identity() -> TestRes
         StreamEvidence::new(
             StreamChannel::Stdout,
             4,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"kept"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"kept")),
             b"kept".to_vec(),
             TruncationState::observation_truncated(4),
         ),
@@ -3235,7 +3235,7 @@ fn a_script_describing_an_impossible_run_never_announces_success() -> TestResult
         ScriptedRun::exiting(0).with_stdout_evidence(StreamEvidence::new(
             StreamChannel::Stdout,
             10,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"x"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"x")),
             b"mismatched".to_vec(),
             TruncationState::complete(),
         )),
@@ -3621,6 +3621,20 @@ fn a_rejected_chunk_settles_the_stream_it_rejected() -> TestResult {
         &TerminalDisposition::SupervisorFailed,
         "a discontinuous chunk did not settle as a supervisor failure"
     );
+    // The four bytes admitted before the rejection are a fact the consumer
+    // already holds. Reporting zero would be a positive claim that nothing was
+    // read, contradicting the chunk event already delivered.
+    assert_eq!(
+        result.stdout().observed_bytes(),
+        4,
+        "the fallback erased bytes the consumer had already been handed"
+    );
+    // But the identity of those bytes was never computed — a scripted chunk
+    // carries a count and no content — so none is claimed. `None` is not the
+    // same as a fingerprint of nothing.
+    assert_eq!(result.stdout().observed_fingerprint(), None);
+    assert!(!result.claims_complete_output());
+    assert!(result.limitations().contains(&Limitation::OutputIncomplete));
     Ok(())
 }
 
@@ -3925,7 +3939,7 @@ fn an_output_limit_outcome_must_name_the_bound_that_stopped_it() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stdout,
             4,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"kept"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"kept")),
             b"kept".to_vec(),
             TruncationState::observation_truncated(4),
         ),
@@ -3939,7 +3953,7 @@ fn an_output_limit_outcome_must_name_the_bound_that_stopped_it() -> TestResult {
         StreamEvidence::new(
             StreamChannel::Stderr,
             4,
-            perl_subprocess_runtime::process::ContentFingerprint::of(b"kept"),
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"kept")),
             b"kept".to_vec(),
             TruncationState::observation_truncated(4),
         ),

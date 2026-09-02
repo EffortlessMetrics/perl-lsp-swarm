@@ -125,7 +125,7 @@ pub enum DecodedViewLimitation {
 pub struct StreamEvidence {
     channel: StreamChannel,
     observed_bytes: u64,
-    observed_fingerprint: ContentFingerprint,
+    observed_fingerprint: Option<ContentFingerprint>,
     retained: Vec<u8>,
     truncation: TruncationState,
     decoded_view: DecodedViewLimitation,
@@ -136,7 +136,7 @@ impl StreamEvidence {
     pub fn new(
         channel: StreamChannel,
         observed_bytes: u64,
-        observed_fingerprint: ContentFingerprint,
+        observed_fingerprint: Option<ContentFingerprint>,
         retained: Vec<u8>,
         truncation: TruncationState,
     ) -> Self {
@@ -154,7 +154,7 @@ impl StreamEvidence {
     pub fn complete(channel: StreamChannel, bytes: Vec<u8>) -> Self {
         let fingerprint = ContentFingerprint::of(&bytes);
         let observed = bytes.len() as u64;
-        Self::new(channel, observed, fingerprint, bytes, TruncationState::complete())
+        Self::new(channel, observed, Some(fingerprint), bytes, TruncationState::complete())
     }
 
     /// An empty channel.
@@ -172,9 +172,28 @@ impl StreamEvidence {
         self.observed_bytes
     }
 
-    /// The identity of the observed content.
-    pub fn observed_fingerprint(&self) -> ContentFingerprint {
+    /// The identity of the observed content, when the supervisor established it.
+    ///
+    /// `None` means the count is known and the identity is not — the ordinary
+    /// state after a supervisor fails mid-stream, having read bytes it can no
+    /// longer identify. It is deliberately distinct from a fingerprint of
+    /// nothing, which would assert an identity the supervisor never computed.
+    pub fn observed_fingerprint(&self) -> Option<ContentFingerprint> {
         self.observed_fingerprint
+    }
+
+    /// Evidence that a channel was read without its content being identified.
+    ///
+    /// The honest shape for a supervisor that failed after reading: the byte
+    /// count the ledger admitted is a fact, the content is not retained, and
+    /// no identity is claimed for it.
+    pub fn observed_but_unidentified(channel: StreamChannel, observed_bytes: u64) -> Self {
+        let truncation = if observed_bytes == 0 {
+            TruncationState::complete()
+        } else {
+            TruncationState::retention_truncated(0)
+        };
+        Self::new(channel, observed_bytes, None, Vec::new(), truncation)
     }
 
     /// The bytes actually retained.
@@ -759,7 +778,8 @@ fn check_stream(
     // Observation stopping early does not weaken that: the bytes it did see
     // were all kept, so their identity must match.
     if truncation.retention_limit().is_none()
-        && evidence.observed_fingerprint() != ContentFingerprint::of(evidence.retained())
+        && let Some(fingerprint) = evidence.observed_fingerprint()
+        && fingerprint != ContentFingerprint::of(evidence.retained())
     {
         return Err(ResultInconsistency::CompleteEvidenceFingerprintMismatch { channel: expected });
     }
@@ -881,6 +901,15 @@ impl ProcessResult {
 
     /// Assemble a supervisor-failure result that cannot itself be inconsistent.
     ///
+    /// The stream evidence is a parameter rather than empty, because a
+    /// supervisor can fail *after* reading. Hard-coding empty streams would
+    /// report zero observed bytes to a consumer that had already been handed
+    /// chunk events saying otherwise — a positive claim that nothing was seen,
+    /// which is not the same as declining to claim. Callers that observed
+    /// nothing pass [`StreamEvidence::empty`]; callers that read bytes they
+    /// can no longer identify pass
+    /// [`StreamEvidence::observed_but_unidentified`].
+    ///
     /// A backend needs a result it can always produce when assembling the real
     /// one fails; empty evidence with no cleanup requirement is coherent by
     /// construction.
@@ -890,6 +919,8 @@ impl ProcessResult {
         run_id: RunId,
         backend: BackendIdentity,
         work: WorkMetadata,
+        stdout: StreamEvidence,
+        stderr: StreamEvidence,
     ) -> Self {
         // A supervisor that failed proves nothing about cleanup, and a failure
         // can happen after the child started. Claiming cleanup was
@@ -906,8 +937,8 @@ impl ProcessResult {
             plan_fingerprint,
             run_id,
             disposition,
-            stdout: StreamEvidence::empty(StreamChannel::Stdout),
-            stderr: StreamEvidence::empty(StreamChannel::Stderr),
+            stdout,
+            stderr,
             cleanup,
             tree,
             backend,
