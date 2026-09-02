@@ -42,6 +42,14 @@ const SHELL_PROGRAMS: &[&str] = &[
 const INLINE_COMMAND_FLAGS: &[&str] =
     &["-c", "-command", "/c", "/C", "-Command", "-EncodedCommand", "--command"];
 
+/// The authorization-evidence scheme version this build can read.
+///
+/// The reference itself stays opaque — the execution-authorization programme
+/// owns what it means — but its scheme version is checked, because evidence
+/// from an unknown scheme cannot be assumed to mean what this one means.
+pub const SUPPORTED_AUTHORIZATION_SCHEME: super::identity::SchemaVersion =
+    super::identity::SchemaVersion::new(1);
+
 /// Prefixes of inline-command flags that carry the command in the same token
 /// (`--command=...`), which an exact-match list alone would miss.
 const INLINE_COMMAND_PREFIXES: &[&str] = &["--command=", "-Command:", "--command:"];
@@ -121,6 +129,11 @@ pub enum PlanRejection {
     StreamedStdinRejected,
     /// A required subject identity is missing.
     MissingSubjectIdentity,
+    /// A supplied opaque identity is blank, so it identifies nothing.
+    BlankOpaqueIdentity {
+        /// Which identity is blank.
+        field: &'static str,
+    },
     /// A supplied subject identity is stale or of unknown freshness.
     StaleSubjectIdentity {
         /// The reference that is not current.
@@ -128,6 +141,13 @@ pub enum PlanRejection {
     },
     /// Authorization evidence was required and none was supplied.
     MissingAuthorizationEvidence,
+    /// The authorization evidence uses a scheme version this build cannot read.
+    UnsupportedAuthorizationScheme {
+        /// The scheme version the evidence declared.
+        declared: u32,
+        /// The scheme version this build reads.
+        supported: u32,
+    },
     /// The supplied authorization evidence is not current.
     StaleAuthorizationEvidence,
     /// The supplied authorization does not establish authority to execute.
@@ -206,12 +226,19 @@ impl fmt::Display for PlanRejection {
                 f.write_str("profile forbids a caller-streamed stdin channel")
             }
             Self::MissingSubjectIdentity => f.write_str("required subject identity is missing"),
+            Self::BlankOpaqueIdentity { field } => {
+                write!(f, "{field} is blank, so it identifies nothing")
+            }
             Self::StaleSubjectIdentity { reference } => {
                 write!(f, "subject reference {reference} is not current")
             }
             Self::MissingAuthorizationEvidence => {
                 f.write_str("authorization evidence is missing or of unestablished freshness")
             }
+            Self::UnsupportedAuthorizationScheme { declared, supported } => write!(
+                f,
+                "authorization evidence declares scheme v{declared}; this build reads v{supported}"
+            ),
             Self::StaleAuthorizationEvidence => {
                 f.write_str("authorization evidence is not current")
             }
@@ -368,6 +395,26 @@ fn validate_cwd(plan: &ProcessPlan) -> Result<(), PlanRejection> {
 
 fn validate_environment(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     let environment = plan.environment();
+    if environment.projection_id().trim().is_empty() {
+        return Err(PlanRejection::BlankOpaqueIdentity { field: "environment projection id" });
+    }
+    // A NUL anywhere in the environment makes every operating-system backend
+    // refuse the spawn. Catching it here keeps the refusal in the validator,
+    // where it carries a typed reason, rather than at the syscall.
+    let names_with_nul = environment
+        .allowed()
+        .iter()
+        .chain(environment.denied())
+        .chain(environment.removed())
+        .chain(environment.addition_names())
+        .any(|name| name.as_str().contains('\0'));
+    let values_with_nul = environment
+        .addition_names()
+        .filter_map(|name| environment.addition_value(name))
+        .any(|value| value.expose().contains('\0'));
+    if names_with_nul || values_with_nul {
+        return Err(PlanRejection::NulByteInInvocation);
+    }
     if let Some(variable) = environment.contradictions().first() {
         return Err(PlanRejection::ContradictoryEnvironmentRules {
             variable: variable.to_string(),
@@ -442,6 +489,9 @@ fn validate_subject(plan: &ProcessPlan) -> Result<(), PlanRejection> {
         return Err(PlanRejection::MissingSubjectIdentity);
     }
     for reference in plan.subject().references() {
+        if reference.reference().trim().is_empty() {
+            return Err(PlanRejection::BlankOpaqueIdentity { field: "subject reference" });
+        }
         if reference.freshness() != EvidenceFreshness::Current {
             return Err(PlanRejection::StaleSubjectIdentity {
                 reference: reference.reference().to_string(),
@@ -455,6 +505,15 @@ fn validate_authorization(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     let Some(authorization) = plan.authorization() else {
         return Err(PlanRejection::MissingAuthorizationEvidence);
     };
+    // The reference is opaque, but the scheme it belongs to is not: evidence
+    // written against a scheme this build cannot read may mean something else
+    // entirely, so it is refused rather than trusted.
+    if authorization.scheme_version() != SUPPORTED_AUTHORIZATION_SCHEME {
+        return Err(PlanRejection::UnsupportedAuthorizationScheme {
+            declared: authorization.scheme_version().get(),
+            supported: SUPPORTED_AUTHORIZATION_SCHEME.get(),
+        });
+    }
     match authorization.freshness() {
         EvidenceFreshness::Current => {}
         EvidenceFreshness::Stale => return Err(PlanRejection::StaleAuthorizationEvidence),

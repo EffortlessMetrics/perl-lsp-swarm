@@ -18,7 +18,7 @@ crates/perl-subprocess-runtime/src/process/
   port.rs         ProcessSupervisor, ProcessHandle, drop contract
   fake.rs         FakeSupervisor, ScriptedRun
   legacy.rs       containment record for the pre-domain seam
-crates/perl-subprocess-runtime/tests/process_domain_contract.rs   69 tests
+crates/perl-subprocess-runtime/tests/process_domain_contract.rs   76 tests
 ```
 
 ## Schema version and digest
@@ -88,6 +88,16 @@ this packet adds are tracked non-Rust files, and the `non_rust_inventory_check`
 merge gate requires the committed snapshot to match. They classify as
 `documentation` under the existing `non-rust-root-governance-docs` entry, so
 the unclassified count is unchanged at 2239 — no new policy debt.
+
+## Base integration
+
+`origin/main` moved to `384f8052` while this claim was in flight, and #14536
+regenerated `docs/policy/NON_RUST_INVENTORY.md` — the same generated file this
+packet touches — producing a real content conflict. Resolved by merging the
+base branch in and regenerating the snapshot with `cargo xtask non-rust
+inventory --write` rather than hand-editing it. Both sides survive: main's
+vscode rows and this packet's `.spec/` rows are present, and the unclassified
+count is unchanged at 2239.
 
 ## Verification run
 

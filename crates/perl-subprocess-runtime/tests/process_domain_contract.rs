@@ -1805,6 +1805,7 @@ fn a_streamed_stdin_plan_can_actually_be_driven_through_the_port() -> TestResult
         Ok(handle) => handle,
         Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
     };
+    let run_id = handle.run_id().clone();
     assert_eq!(handle.write_stdin(b"print 1;\n"), StdinWriteOutcome::Accepted { bytes: 9 });
     assert_eq!(handle.write_stdin(b"exit\n"), StdinWriteOutcome::Accepted { bytes: 5 });
     assert_eq!(handle.close_stdin(), StdinWriteOutcome::Accepted { bytes: 0 });
@@ -1812,7 +1813,7 @@ fn a_streamed_stdin_plan_can_actually_be_driven_through_the_port() -> TestResult
     assert_eq!(handle.close_stdin(), StdinWriteOutcome::AlreadyClosed);
     assert_eq!(handle.write_stdin(b"more"), StdinWriteOutcome::AlreadyClosed);
     let _ = handle.wait();
-    assert_eq!(supervisor.stdin_written(), b"print 1;\nexit\n");
+    assert_eq!(supervisor.stdin_written_for(&run_id), b"print 1;\nexit\n");
     Ok(())
 }
 
@@ -1832,7 +1833,7 @@ fn a_plan_without_a_streamed_channel_refuses_stdin_rather_than_dropping_it() -> 
     assert_eq!(handle.close_stdin(), StdinWriteOutcome::NotStreamed);
     assert!(!StdinWriteOutcome::NotStreamed.is_accepted());
     let _ = handle.wait();
-    assert!(supervisor.stdin_written().is_empty());
+    assert!(supervisor.stdin_writes().is_empty());
     Ok(())
 }
 
@@ -2246,5 +2247,249 @@ fn allowing_and_removing_one_variable_is_a_contradiction() -> TestResult {
         rejection_of(plan)?,
         PlanRejection::ContradictoryEnvironmentRules { variable: "PATH".to_string() }
     );
+    Ok(())
+}
+
+// ──────────────── controls added after the second bot review round ────────────
+
+#[test]
+fn only_a_settled_child_can_establish_complete_output() -> TestResult {
+    // The wrong implementation this kills: deriving completeness from the
+    // truncation markers alone, so a supervisor failure or an unproven outcome
+    // with empty streams claims to be the complete output of a child whose
+    // fate was never established.
+    for disposition in [
+        TerminalDisposition::SupervisorFailed,
+        TerminalDisposition::NotProven,
+        TerminalDisposition::TimedOut,
+        TerminalDisposition::OutputLimitExceeded,
+        TerminalDisposition::UnsupportedBackend,
+    ] {
+        let result = result_with(
+            StreamEvidence::complete(StreamChannel::Stdout, b"partial".to_vec()),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::Completed,
+            TreeDisposition::GroupTerminated,
+        )?;
+        assert!(
+            !result.claims_complete_output(),
+            "{disposition:?} claimed complete output without an established child settlement"
+        );
+        // The predicate and the published limitation must never disagree.
+        assert!(
+            result.limitations().contains(&Limitation::OutputIncomplete),
+            "{disposition:?} withheld the OutputIncomplete limitation"
+        );
+    }
+
+    // A child that settled on its own terms, with untruncated streams, can.
+    for disposition in [
+        TerminalDisposition::CompletedExit { code: 3 },
+        TerminalDisposition::Signaled { signal: 9 },
+    ] {
+        let result = result_with(
+            StreamEvidence::complete(StreamChannel::Stdout, b"all of it".to_vec()),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::Completed,
+            TreeDisposition::GroupTerminated,
+        )?;
+        assert!(
+            result.claims_complete_output(),
+            "{disposition:?} could not establish completeness"
+        );
+        assert!(!result.limitations().contains(&Limitation::OutputIncomplete));
+    }
+    Ok(())
+}
+
+#[test]
+fn truncation_evidence_must_agree_with_the_limit_that_stopped_it() -> TestResult {
+    // The wrong implementation this kills: validating only the `Complete`
+    // variant, so evidence can claim it stopped at a limit while contradicting
+    // that limit in the very same value.
+    let observed_less_than_its_limit = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            10,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"x"),
+            b"x".to_vec(),
+            TruncationState::ObservationTruncated { limit_bytes: 1024 },
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(observed_less_than_its_limit.is_err());
+
+    let retained_more_than_its_limit = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            10_000,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            vec![b'x'; 64],
+            TruncationState::RetentionTruncated { limit_bytes: 8 },
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(retained_more_than_its_limit.is_err());
+    Ok(())
+}
+
+#[test]
+fn an_unknown_authorization_scheme_is_refused() -> TestResult {
+    // The reference stays opaque, but the scheme it belongs to is not:
+    // evidence written against a scheme this build cannot read may mean
+    // something else entirely.
+    let plan = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        resolved_perl(),
+        allow_listed_environment(),
+    )
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(AuthorizationEvidence::new(
+        SchemaVersion::new(7),
+        "authz:from-a-future-scheme",
+        EvidenceFreshness::Current,
+        AuthorizationStrength::ExplicitUserAction,
+    ))
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(matches!(
+        rejection_of(plan)?,
+        PlanRejection::UnsupportedAuthorizationScheme { declared: 7, supported: 1 }
+    ));
+    Ok(())
+}
+
+#[test]
+fn blank_opaque_identities_are_refused() -> TestResult {
+    // An identity that names nothing cannot be checked against anything.
+    let blank_root = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        resolved_perl(),
+        allow_listed_environment(),
+    )
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(SubjectIdentity {
+        root: Some(SubjectReference::new("   ", EvidenceFreshness::Current)),
+        ..SubjectIdentity::default()
+    })
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(matches!(rejection_of(blank_root)?, PlanRejection::BlankOpaqueIdentity { .. }));
+
+    let blank_projection = ProcessPlan::builder(
+        PlanId::new("plan-2"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        resolved_perl(),
+        EnvironmentProjection::new("  ", AmbientInheritance::AllowListedOnly),
+    )
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(matches!(rejection_of(blank_projection)?, PlanRejection::BlankOpaqueIdentity { .. }));
+    Ok(())
+}
+
+#[test]
+fn nul_bytes_in_the_environment_are_refused_before_spawn() -> TestResult {
+    // A NUL anywhere in the environment makes every OS backend refuse the
+    // spawn. The refusal belongs in the validator, where it carries a typed
+    // reason, not at the syscall.
+    let bad_name = EnvironmentProjection::new("env:1", AmbientInheritance::AllowListedOnly)
+        .allow(EnvVarName::new("PA\0TH"));
+    let bad_value = EnvironmentProjection::new("env:2", AmbientInheritance::AllowListedOnly)
+        .add(EnvVarName::new("TOKEN"), SecretValue::new("a\0b"));
+    for projection in [bad_name, bad_value] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            resolved_perl(),
+            projection,
+        )
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert_eq!(rejection_of(plan)?, PlanRejection::NulByteInInvocation);
+    }
+    Ok(())
+}
+
+#[test]
+fn stdin_is_attributed_to_the_run_that_received_it() -> TestResult {
+    // The wrong implementation this kills: merging every handle's stdin into
+    // one buffer, so a test driving two runs cannot tell which received what.
+    let supervisor = FakeSupervisor::new();
+    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0));
+
+    let mut first = match supervisor.start(valid_interactive_session().validate()?) {
+        Ok(handle) => handle,
+        Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
+    };
+    let mut second = match supervisor.start(valid_interactive_session().validate()?) {
+        Ok(handle) => handle,
+        Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
+    };
+    let first_run = first.run_id().clone();
+    let second_run = second.run_id().clone();
+    assert_ne!(first_run, second_run);
+
+    assert!(first.write_stdin(b"first").is_accepted());
+    assert!(second.write_stdin(b"second").is_accepted());
+
+    assert_eq!(supervisor.stdin_written_for(&first_run), b"first");
+    assert_eq!(supervisor.stdin_written_for(&second_run), b"second");
+    let _ = first.wait();
+    let _ = second.wait();
+    Ok(())
+}
+
+#[test]
+fn a_malformed_script_settles_as_a_supervisor_failure() -> TestResult {
+    // The wrong implementation this kills: turning a ledger rejection into an
+    // ordinary end of stream, so a script with a terminal event in the middle
+    // silently swallows the events after it and still looks like a clean run.
+    let supervisor = FakeSupervisor::new();
+    let mut malformed = ScriptedRun::exiting(0);
+    malformed.events = vec![
+        ProcessEventKind::Started,
+        ProcessEventKind::Terminal(TerminalDisposition::CompletedExit { code: 0 }),
+        ProcessEventKind::Started,
+    ];
+    supervisor.script_run(malformed);
+    let handle = match supervisor.start(valid_linux_one_shot().validate()?) {
+        Ok(handle) => handle,
+        Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
+    };
+    let result = handle.wait();
+    assert_eq!(*result.disposition(), TerminalDisposition::SupervisorFailed);
+    assert!(!result.is_ordinary_success());
     Ok(())
 }

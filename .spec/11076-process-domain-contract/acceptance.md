@@ -115,6 +115,42 @@ surviving, and the fault was in the *fixture*, not the control —
 scan never ran. A control whose fixture cannot reach the code under test proves
 nothing, and the replay is what exposed it.
 
+### Second external round (Devin, `1e53643`)
+
+Eleven findings. Nine repaired; two refuted with reasoning.
+
+| Severity | Finding | Disposition |
+|---|---|---|
+| security | NUL bytes in environment names and values bypassed validation, so a plan passed authorization and then forced every OS backend to refuse the spawn | **Fixed** — refused in the validator with a typed reason |
+| security | `validate_authorization` ignored `scheme_version`, so evidence from any unknown scheme was accepted | **Fixed** — `SUPPORTED_AUTHORIZATION_SCHEME` is checked; the reference stays opaque, its scheme does not |
+| security | "callers can self-authorize execution" | **Refuted** — see below |
+| correctness | `claims_complete_output` accepted supervisor failures and unproven outcomes, and `OutputIncomplete` did not track the predicate | **Fixed** — only a child that settled on its own terms can establish completeness, and the limitation is derived from the same rule |
+| correctness | `check_stream` validated only the `Complete` variant, so truncated evidence could contradict the very limit it said stopped it | **Fixed** — per-variant invariants |
+| correctness | blank root references and blank environment projection identifiers validated | **Fixed** — `BlankOpaqueIdentity` |
+| correctness | `StreamChunkEvidence.channel` duplicated the `StdoutBytes`/`StderrBytes` variant and could disagree with it | **Fixed** — the field is removed, making the mismatch unrepresentable rather than merely rejected |
+| analysis | the fake merged every run's stdin into one buffer | **Fixed** — `stdin_written_for(run_id)` and `stdin_writes()` |
+| analysis | a malformed script's swallowed events read as a clean end of stream | **Fixed** — settles as `SupervisorFailed` |
+| analysis | `Limitation::LinuxOneShotProfileOnly` was never attached by anything | **Fixed** — removed; a variant nothing derives is a false promise, and #11085 can add it when receipts carry the profile |
+| info | `allocate_run_id` saturates into duplicate ids | **Refuted** — see below |
+
+#### Refutations
+
+**"Callers can self-authorize execution."** True as stated, and deliberate. #11076
+requires an *opaque, versioned authorization evidence reference* and forbids
+this domain from inventing execution-authorization policy, which #1753 owns:
+"Use an opaque/versioned authorization evidence reference until that contract
+is current." The domain records the decision it was handed and refuses stale,
+unknown-freshness, unproven, blank, and now unknown-scheme evidence; it cannot
+verify the decision without importing the authority that makes it, which is
+precisely the widening the packet prohibits. `AuthorizationStrength` is a
+closed enum rather than caller text for the same reason. The residual risk is
+recorded in the claim boundary, not hidden.
+
+**"Run allocation saturates into duplicates."** Reachable only after 2^64
+start attempts against one `FakeSupervisor` instance in one test process. At
+one allocation per nanosecond that is roughly 584 years. Adding code for it
+would be scaffolding, not safety.
+
 ## Terminal precedence
 
 Fixed and total, highest first:

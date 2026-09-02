@@ -120,7 +120,7 @@ pub struct FakeSupervisor {
     outcomes: Mutex<VecDeque<ScriptedOutcome>>,
     recorded_plans: Mutex<Vec<ValidatedProcessPlan>>,
     drop_dispositions: Arc<Mutex<Vec<HandleDropDisposition>>>,
-    stdin_written: Arc<Mutex<Vec<u8>>>,
+    stdin_written: Arc<Mutex<Vec<(RunId, Vec<u8>)>>>,
     next_run: Mutex<u64>,
 }
 
@@ -154,11 +154,20 @@ impl FakeSupervisor {
         lock(&self.drop_dispositions).clone()
     }
 
-    /// Every byte accepted through a caller-driven stdin channel, in order.
+    /// Every byte accepted through one run's stdin channel, in order.
     ///
-    /// A consumer test asserts against this rather than against a promise
-    /// that the bytes went somewhere.
-    pub fn stdin_written(&self) -> Vec<u8> {
+    /// Attributed per run: a test driving two runs must be able to tell which
+    /// of them received what, and a single merged buffer cannot say.
+    pub fn stdin_written_for(&self, run_id: &RunId) -> Vec<u8> {
+        lock(&self.stdin_written)
+            .iter()
+            .filter(|(run, _)| run == run_id)
+            .flat_map(|(_, bytes)| bytes.iter().copied())
+            .collect()
+    }
+
+    /// Every byte accepted across every run, in order, paired with its run.
+    pub fn stdin_writes(&self) -> Vec<(RunId, Vec<u8>)> {
         lock(&self.stdin_written).clone()
     }
 
@@ -245,9 +254,10 @@ struct FakeHandle {
     pending: VecDeque<ProcessEventKind>,
     run: ScriptedRun,
     cancellable: bool,
+    script_rejected: bool,
     streamed_stdin: bool,
     stdin_closed: bool,
-    stdin_written: Arc<Mutex<Vec<u8>>>,
+    stdin_written: Arc<Mutex<Vec<(RunId, Vec<u8>)>>>,
     settled: bool,
     drop_dispositions: Arc<Mutex<Vec<HandleDropDisposition>>>,
 }
@@ -261,7 +271,7 @@ impl FakeHandle {
         cancellable: bool,
         streamed_stdin: bool,
         drop_dispositions: Arc<Mutex<Vec<HandleDropDisposition>>>,
-        stdin_written: Arc<Mutex<Vec<u8>>>,
+        stdin_written: Arc<Mutex<Vec<(RunId, Vec<u8>)>>>,
     ) -> Self {
         let pending = run.events.iter().cloned().collect();
         Self {
@@ -272,6 +282,7 @@ impl FakeHandle {
             pending,
             run,
             cancellable,
+            script_rejected: false,
             streamed_stdin,
             stdin_closed: false,
             stdin_written,
@@ -291,6 +302,14 @@ impl FakeHandle {
     /// failed cleanup — settles as a supervisor failure rather than becoming a
     /// result that asserts something untrue.
     fn build_result(&self) -> ProcessResult {
+        if self.script_rejected {
+            return ProcessResult::supervisor_failure(
+                self.plan_id.clone(),
+                self.fingerprint,
+                self.run_id.clone(),
+                fake_backend(),
+            );
+        }
         ProcessResult::new(
             self.plan_id.clone(),
             self.fingerprint,
@@ -325,15 +344,31 @@ impl ProcessHandle for FakeHandle {
 
     fn next_event(&mut self) -> Option<ProcessEvent> {
         if self.ledger.is_settled() {
+            // Events still queued behind a terminal one mean the script placed
+            // that terminal event mid-stream. Returning `None` here is how
+            // those events get swallowed, so record the malformed script
+            // rather than letting it read as a clean end of stream.
+            if !self.pending.is_empty() {
+                self.script_rejected = true;
+                self.pending.clear();
+            }
             return None;
         }
         let kind = match self.pending.pop_front() {
             Some(kind) => kind,
             None => ProcessEventKind::Terminal(self.elected()),
         };
-        // The ledger refuses post-terminal events; a rejection here means the
-        // script was malformed, and the stream simply ends.
-        self.ledger.admit(kind).ok()
+        // The ledger refuses post-terminal events. A rejection means the
+        // script itself was malformed — a terminal event placed mid-stream —
+        // and that must not read as an ordinary end of stream, or an invalid
+        // test setup silently hides the events it swallowed.
+        match self.ledger.admit(kind) {
+            Ok(event) => Some(event),
+            Err(_) => {
+                self.script_rejected = true;
+                None
+            }
+        }
     }
 
     fn write_stdin(&mut self, bytes: &[u8]) -> StdinWriteOutcome {
@@ -346,7 +381,7 @@ impl ProcessHandle for FakeHandle {
         if self.stdin_closed {
             return StdinWriteOutcome::AlreadyClosed;
         }
-        lock(&self.stdin_written).extend_from_slice(bytes);
+        lock(&self.stdin_written).push((self.run_id.clone(), bytes.to_vec()));
         StdinWriteOutcome::Accepted { bytes: bytes.len() }
     }
 

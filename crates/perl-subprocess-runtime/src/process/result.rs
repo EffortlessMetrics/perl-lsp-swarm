@@ -425,8 +425,6 @@ pub enum Limitation {
     /// Present on every result: types, timeouts, and process ownership do not
     /// constrain what admitted code can reach.
     NoIsolationClaimed,
-    /// Evidence is bounded to a one-shot Linux profile.
-    LinuxOneShotProfileOnly,
 }
 
 /// Bounded work metadata about a run.
@@ -468,6 +466,15 @@ pub enum ResultInconsistency {
         /// The channel whose evidence is inconsistent.
         channel: StreamChannel,
     },
+    /// Evidence contradicts the limit it says stopped it.
+    ///
+    /// Observation truncated at a limit cannot have observed fewer bytes than
+    /// that limit, and retention truncated at a limit cannot have retained
+    /// more than it.
+    TruncationLimitContradicted {
+        /// The channel whose evidence is inconsistent.
+        channel: StreamChannel,
+    },
     /// A completed child exit was paired with a failed cleanup.
     ///
     /// The terminal precedence in [`TerminalDisposition::elect`] puts cleanup
@@ -491,6 +498,9 @@ impl std::fmt::Display for ResultInconsistency {
             Self::RetainedExceedsObserved { channel } => {
                 write!(f, "{channel:?} evidence retains more bytes than it observed")
             }
+            Self::TruncationLimitContradicted { channel } => {
+                write!(f, "{channel:?} evidence contradicts the limit it says stopped it")
+            }
             Self::CompletedExitWithFailedCleanup => {
                 f.write_str("a completed exit cannot be paired with a failed cleanup")
             }
@@ -513,14 +523,30 @@ fn check_stream(
     if evidence.retained().len() as u64 > evidence.observed_bytes() {
         return Err(ResultInconsistency::RetainedExceedsObserved { channel: expected });
     }
-    if evidence.truncation().is_complete() {
-        if evidence.observed_bytes() != evidence.retained().len() as u64 {
-            return Err(ResultInconsistency::CompleteEvidenceCountMismatch { channel: expected });
+    match evidence.truncation() {
+        TruncationState::Complete => {
+            if evidence.observed_bytes() != evidence.retained().len() as u64 {
+                return Err(ResultInconsistency::CompleteEvidenceCountMismatch {
+                    channel: expected,
+                });
+            }
+            if evidence.observed_fingerprint() != ContentFingerprint::of(evidence.retained()) {
+                return Err(ResultInconsistency::CompleteEvidenceFingerprintMismatch {
+                    channel: expected,
+                });
+            }
         }
-        if evidence.observed_fingerprint() != ContentFingerprint::of(evidence.retained()) {
-            return Err(ResultInconsistency::CompleteEvidenceFingerprintMismatch {
-                channel: expected,
-            });
+        TruncationState::ObservationTruncated { limit_bytes } => {
+            // Observation stopped at the limit, so at least that much was seen.
+            if evidence.observed_bytes() < limit_bytes {
+                return Err(ResultInconsistency::TruncationLimitContradicted { channel: expected });
+            }
+        }
+        TruncationState::RetentionTruncated { limit_bytes } => {
+            // Retention stopped at the limit, so no more than that was kept.
+            if evidence.retained().len() as u64 > limit_bytes {
+                return Err(ResultInconsistency::TruncationLimitContradicted { channel: expected });
+            }
         }
     }
     Ok(())
@@ -579,7 +605,17 @@ impl ProcessResult {
         if tree == TreeDisposition::ImmediateChildOnly || tree == TreeDisposition::Unknown {
             limitations.push(Limitation::DescendantsUnaccounted);
         }
-        if !stdout.truncation().is_complete() || !stderr.truncation().is_complete() {
+        let child_settled = matches!(
+            disposition,
+            TerminalDisposition::CompletedExit { .. } | TerminalDisposition::Signaled { .. }
+        );
+        if !stdout.truncation().is_complete()
+            || !stderr.truncation().is_complete()
+            || !child_settled
+        {
+            // Kept in step with `claims_complete_output` deliberately: a
+            // result whose predicate says the output is partial must say so
+            // in its limitations too.
             limitations.push(Limitation::OutputIncomplete);
         }
         if stdout.decoded_view() == DecodedViewLimitation::LossyUtf8
@@ -698,6 +734,19 @@ impl ProcessResult {
         &self.limitations
     }
 
+    /// Whether the child's own settlement was established.
+    ///
+    /// Only a run whose child settled on its own terms can say anything about
+    /// the whole of what that child produced. A supervisor failure, an
+    /// unproven outcome, a refusal before start, or a run the supervisor cut
+    /// short cannot.
+    fn child_settlement_established(&self) -> bool {
+        matches!(
+            self.disposition,
+            TerminalDisposition::CompletedExit { .. } | TerminalDisposition::Signaled { .. }
+        )
+    }
+
     /// Whether the run was an ordinary zero exit.
     pub fn is_ordinary_success(&self) -> bool {
         self.disposition.is_ordinary_success()
@@ -710,7 +759,7 @@ impl ProcessResult {
     pub fn claims_complete_output(&self) -> bool {
         self.stdout.truncation().is_complete()
             && self.stderr.truncation().is_complete()
-            && self.disposition != TerminalDisposition::OutputLimitExceeded
+            && self.child_settlement_established()
     }
 
     /// Whether this result can support a process-tree cleanup claim.

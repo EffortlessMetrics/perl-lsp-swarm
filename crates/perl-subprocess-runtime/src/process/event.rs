@@ -19,9 +19,11 @@ impl EventSequence {
 /// The payload is a length and an offset, not the bytes: events are a control
 /// stream, and the content identity lives in the result's stream evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The channel is *not* a field here: [`ProcessEventKind::StdoutBytes`] and
+/// [`ProcessEventKind::StderrBytes`] already name it, and a second copy could
+/// disagree with the variant carrying it — letting a consumer attribute output
+/// to the wrong stream despite valid sequencing.
 pub struct StreamChunkEvidence {
-    /// The channel the bytes arrived on.
-    pub channel: StreamChannel,
     /// How many bytes arrived.
     pub byte_count: u64,
     /// How many bytes had already been observed on this channel.
