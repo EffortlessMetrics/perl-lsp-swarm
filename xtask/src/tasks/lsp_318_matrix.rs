@@ -288,7 +288,7 @@ const ROWS: &[MatrixRow] = &[
     MatrixRow {
         feature: "Notebook document-filter `relative pattern`",
         since_or_flag: "LSP 3.18",
-        client_gate: "n/a; no notebook document sync is advertised",
+        client_gate: "n/a; preview profile may advertise notebookDocumentSync, but its notebookSelector uses plain language cells without relative patterns",
         server_shape: "notebook-filter `pattern` objects with `baseUri` (not emitted)",
         method_or_shape: "notebook document selectors (none registered)",
         status: "negative-gated+documented",
