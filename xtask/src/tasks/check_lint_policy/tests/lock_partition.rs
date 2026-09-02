@@ -28,9 +28,17 @@ const CLIPPY_LOCK_LINT: &str = "clippy::let_underscore_lock";
 const STD_DISCARD_BINDINGS: [&str; 2] = ["dropped_std_mutex", "dropped_std_rwlock"];
 /// Discarded borrowed `parking_lot` guards. Only the Clippy row sees these.
 const PARKING_LOT_DISCARD_BINDINGS: [&str; 2] = ["dropped_pl_mutex", "dropped_pl_rwlock"];
-/// Discarded owned `parking_lot` guards (`lock_arc`/`write_arc`). Measured as
-/// covered by *neither* row — see `arc_guard_discards_are_covered_by_neither_row`.
-const ARC_DISCARD_BINDINGS: [&str; 2] = ["dropped_arc_mutex", "dropped_arc_rwlock"];
+/// Discards that both rows are measured to miss (#14579): owned `parking_lot`
+/// guards from `lock_arc`/`write_arc`, an explicit `drop(m.lock())` of either
+/// family, and a mapped guard. Asserted by
+/// `discards_outside_the_governed_forms_are_covered_by_neither_row`.
+const UNCOVERED_DISCARD_BINDINGS: [&str; 5] = [
+    "dropped_arc_mutex",
+    "dropped_arc_rwlock",
+    "dropped_via_std_drop",
+    "dropped_via_pl_drop",
+    "dropped_mapped_pl",
+];
 /// Compliant acquisitions of every flavor, held by named guards.
 const HELD_BINDING_MARKER: &str = "held_";
 
@@ -95,13 +103,13 @@ fn workspace_parking_lot_version(root: &Path) -> Result<String> {
     Ok(version.to_owned())
 }
 
-/// Four discards and four compliant acquisitions in one compilation.
+/// Every discard form and its compliant counterpart in one compilation.
 ///
 /// The compliant halves are the negative control: they use the same lock types
 /// and the same call sites as the discards and differ only in whether the guard
 /// is bound. A lint that fired on them, or one that fired on nothing at all,
 /// would not discriminate, and the assertions below would catch either.
-const FIXTURE_SOURCE: &str = r#"use parking_lot::{Mutex as PlMutex, RwLock as PlRwLock};
+const FIXTURE_SOURCE: &str = r#"use parking_lot::{Mutex as PlMutex, MutexGuard as PlMutexGuard, RwLock as PlRwLock};
 use std::sync::{Arc, Mutex, RwLock};
 
 pub fn discards_std_guards(dropped_std_mutex: &Mutex<u32>, dropped_std_rwlock: &RwLock<u32>) {
@@ -117,6 +125,16 @@ pub fn discards_parking_lot_guards(dropped_pl_mutex: &PlMutex<u32>, dropped_pl_r
 pub fn discards_arc_guards(dropped_arc_mutex: &Arc<PlMutex<u32>>, dropped_arc_rwlock: &Arc<PlRwLock<u32>>) {
     let _ = dropped_arc_mutex.lock_arc();
     let _ = dropped_arc_rwlock.write_arc();
+}
+
+pub fn discards_by_explicit_drop(dropped_via_std_drop: &Mutex<u32>, dropped_via_pl_drop: &PlMutex<u32>) {
+    drop(dropped_via_std_drop.lock());
+    drop(dropped_via_pl_drop.lock());
+}
+
+pub fn discards_mapped_guard(dropped_mapped_pl: &PlMutex<(u32, u32)>) {
+    let guard = dropped_mapped_pl.lock();
+    let _ = PlMutexGuard::map(guard, |value| &mut value.0);
 }
 
 pub fn holds_arc_guards(held_arc_mutex: &Arc<PlMutex<u32>>, held_arc_rwlock: &Arc<PlRwLock<u32>>) -> u32 {
@@ -160,7 +178,7 @@ fn rustc_row_covers_standard_library_guards_and_not_parking_lot() -> Result<()> 
     assert_every_finding_is(&findings, RUST_LOCK_LINT)?;
     assert_covers(&findings, &STD_DISCARD_BINDINGS)?;
     assert_silent_on(&findings, &PARKING_LOT_DISCARD_BINDINGS)?;
-    assert_silent_on(&findings, &ARC_DISCARD_BINDINGS)?;
+    assert_silent_on(&findings, &UNCOVERED_DISCARD_BINDINGS)?;
     assert_silent_on_held_guards(&findings)?;
     Ok(())
 }
@@ -176,32 +194,41 @@ fn clippy_row_covers_parking_lot_guards_and_not_standard_library() -> Result<()>
     assert_every_finding_is(&findings, CLIPPY_LOCK_LINT)?;
     assert_covers(&findings, &PARKING_LOT_DISCARD_BINDINGS)?;
     assert_silent_on(&findings, &STD_DISCARD_BINDINGS)?;
-    assert_silent_on(&findings, &ARC_DISCARD_BINDINGS)?;
+    assert_silent_on(&findings, &UNCOVERED_DISCARD_BINDINGS)?;
     assert_silent_on_held_guards(&findings)?;
     Ok(())
 }
 
 #[test]
-fn arc_guard_discards_are_covered_by_neither_row() -> Result<()> {
-    // A measured gap, recorded so the policy stays honest rather than implying
-    // that the Clippy row covers all of `parking_lot`. `lock_arc`/`write_arc`
-    // return owned guards (`ArcMutexGuard`, `ArcRwLockWriteGuard`); on the
-    // pinned toolchain neither lint recognises them, so discarding one is
-    // silently accepted. The family is production-reachable — `perl-workspace`'s
-    // `workspace_index` holds an `ArcMutexGuard` from `lock_arc()`.
+fn discards_outside_the_governed_forms_are_covered_by_neither_row() -> Result<()> {
+    // The measured edge of the union, recorded so the policy states a boundary
+    // rather than implying the two rows cover every discard. On the pinned
+    // toolchain both lints recognise exactly one shape: `let _ = <expr>` whose
+    // type is a known borrowed guard. Three discards with identical meaning
+    // fall outside it and are silently accepted:
+    //
+    //   let _ = m.lock_arc();              owned guard, unknown type
+    //   drop(m.lock());                    same discard, different syntax
+    //   let _ = MutexGuard::map(g, ...);   mapped guard, unknown type
+    //
+    // Two of those matter concretely. The owned-guard family is
+    // production-reachable — `perl-workspace`'s `workspace_index` holds an
+    // `ArcMutexGuard` from `lock_arc()`. And `drop(m.lock())` is the rewrite a
+    // contributor reaches for when the lint blocks them, which #14444 already
+    // names as a dishonest repair; the governed rows cannot currently stop it.
     //
     // This is deliberately a change detector. If a future toolchain starts
-    // covering owned guards, this test fails and the failure means the ledger
-    // reason, `docs/CLIPPY_POLICY.md`, and the residual issue all need updating
-    // to claim the wider coverage — not that anything regressed.
+    // covering any of these, the test fails and the failure means the ledger
+    // reason, `docs/CLIPPY_POLICY.md`, and #14579 all need updating to claim
+    // the wider coverage — not that anything regressed.
     let findings =
         measure_fixture(&["--force-warn", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT])?;
 
-    for binding in ARC_DISCARD_BINDINGS {
+    for binding in UNCOVERED_DISCARD_BINDINGS {
         if let Some(finding) = findings.iter().find(|finding| finding.source_line.contains(binding))
         {
             bail!(
-                "{} now covers the owned guard `{binding}`; the recorded arc-guard gap has closed — widen the ledger reason, the Clippy policy doc, and the residual issue to match",
+                "{} now covers `{binding}`; a recorded coverage gap has closed — widen the ledger reason, the Clippy policy doc, and #14579 to match",
                 finding.lint
             );
         }

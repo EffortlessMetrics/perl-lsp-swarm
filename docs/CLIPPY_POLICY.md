@@ -35,9 +35,26 @@ One invariant sometimes needs a row in both `[workspace.lints.rust]` and `[works
 
 Deleting either row uncovers real lock types rather than removing a duplicate, so both are pinned in the checker's required dispositions and cannot be demoted without an explicit policy change. Their coverage boundary is measured against the selected toolchain — not asserted from the ledger — by the lock-partition tests in `xtask/src/tasks/check_lint_policy/tests/lock_partition.rs`.
 
-Split-tool coverage does not imply *complete* coverage, and the union has one measured hole: neither lint recognises `parking_lot`'s owned guards from `lock_arc`, `read_arc`, or `write_arc`, so `let _ = shared.lock_arc();` compiles silently. The workspace enables the `arc_lock` feature and `perl-workspace`'s `workspace_index` holds an `ArcMutexGuard`, so the family is production-reachable; the gap is owned by #14579. The lock-partition tests assert the hole as it stands, so if a future toolchain closes it the test fails and this table gets widened rather than quietly going stale.
+Split-tool coverage does not imply *complete* coverage. Both rows match exactly one shape — `let _ = <expr>` whose type is a known borrowed guard — and these discards mean the same thing but are silently accepted:
+
+```rust
+let _ = shared.lock_arc();                  // owned guard, unknown type
+drop(mutex.lock());                         // same discard, different syntax
+let _ = MutexGuard::map(guard, |v| &mut v.0); // mapped guard, unknown type
+```
+
+Two of these matter concretely. The owned-guard family is production-reachable — the workspace enables `arc_lock` and `perl-workspace`'s `workspace_index` holds an `ArcMutexGuard`. And `drop(mutex.lock())` is the rewrite a contributor reaches for when the lint blocks them, which is exactly the dishonest repair the invariant exists to prevent. The gap is owned by #14579. The lock-partition tests assert the boundary as it stands, so if a future toolchain closes any of it the test fails and this section gets widened rather than quietly going stale.
 
 A row whose lint is already deny-by-default upstream is still stated explicitly. The default is the toolchain's current choice, not this repository's contract, and an upstream level change would otherwise remove the invariant silently.
+
+### What the ledger does and does not enforce
+
+`cargo xtask check-lint-policy` compares the workspace-root `Cargo.toml` against the ledger. That is the whole of its reach, and the required-disposition pins inherit the same boundary: they guarantee a governed row cannot be deleted, downgraded, or demoted **in those two files**. Two things sit outside it and are not caught by any current repository check:
+
+- a crate-level `#![allow(...)]` for a governed lint — the strict Clippy gates run `-D warnings`, which respects an `allow` rather than piercing it (only `--force-warn`, used for measurement sweeps, does that);
+- a member crate replacing `[lints] workspace = true` with its own table that omits a governed row.
+
+This is a property of the mechanism, not of any one lint, and closing it means a separate check over member manifests and source attributes. Read a pin as "the workspace policy cannot silently lose this row," not as "no crate can opt out."
 
 ## Workspace posture
 

@@ -421,8 +421,9 @@ await_holding_refcell_ref = "deny"
 # This row covers non-std guards only — borrowed `parking_lot` mutex and
 # read/write guards. Standard-library guards are owned by the
 # `rust::let_underscore_lock` row below; the two identities partition the
-# surface and do not overlap. Neither lint sees `parking_lot`'s owned arc
-# guards (`lock_arc`/`read_arc`/`write_arc`); that measured gap is #14579.
+# surface and do not overlap. Both rows match only `let _ = <borrowed guard>`;
+# owned arc guards, `drop(m.lock())`, and mapped guards are outside what either
+# lint sees. That measured gap is #14579.
 let_underscore_lock = "deny"
 # mutex_atomic: prefer proper Mutex over atomic-loaded Mutex guards (#2899).
 mutex_atomic = "warn"
