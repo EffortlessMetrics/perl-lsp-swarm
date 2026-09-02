@@ -27,8 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fresh session boundary is derived per launch, so a narrowing `workspaceRoot`
   cannot outlive its own session. Callers that passed `workspace_root: None`
   should pass `workspace_authority: WorkspaceAuthority::unconfigured()` for
-  identical behavior. Launch behavior for an adapter started without the new
-  CLI flags is unchanged.
+  identical behavior. For an adapter started without the new CLI flags, launch
+  outcomes are unchanged for an absolute `program` and a single session; two
+  cases change deliberately, both fixes: a relative `program` is now resolved
+  against the directory `perl` is actually given (so `$0` becomes absolute and a
+  pre-existing double-join is gone), and a second session no longer inherits the
+  previous launch's `workspaceRoot`. A launch-supplied `workspaceRoot` must also
+  now resolve to a directory that exists, instead of silently making every
+  later source check in that session fail.
 
 - **Breaking (`perl-lsp-rs-core`): `performance::IncrementalParser` removed.**
   The type performed no parsing: it silently swapped reversed endpoints,
@@ -73,8 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and neither the debugged program's own directory nor its `cwd` can establish
   one. `--allow-unbounded-workspace` makes single-file debugging outside a
   workspace an explicit operator choice. Passing both, or a root that is not an
-  existing directory, fails startup. Starting with neither flag behaves exactly
-  as before and now logs one warning naming the remedy (#14587; parent #8145).
+  existing directory, fails startup. Starting with neither flag behaves as
+  before and now logs one warning naming the remedy. The bundled VS Code
+  extension does not yet pass `--workspace-root`, so editor-launched sessions
+  remain unbounded until it does; the boundary also confines the `program` and
+  session source paths only, not the interpreter or launch environment (#14601)
+  and not `setBreakpoints` (#14593). (#14587; parent #8145.)
 
 - **Test2 framework awareness (reader/integration, not a Test2 runtime).**
   `perl-lsp` now reads Test2 source and Test2 runner output and drives the

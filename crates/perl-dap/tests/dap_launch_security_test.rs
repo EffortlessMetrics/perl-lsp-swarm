@@ -216,7 +216,8 @@ fn test_launch_workspace_root_field_cannot_widen_server_root()
     )?);
     initialize_adapter(&mut adapter);
 
-    // Client attempts to widen the boundary by supplying the parent of both dirs
+    // Client attempts to widen the boundary by naming a directory outside the
+    // configured root.
     let broad_root = outside_dir.path().to_str().unwrap_or("/");
     let args = json!({
         "program": must_some(outside_script.to_str()),
@@ -233,9 +234,16 @@ fn test_launch_workspace_root_field_cannot_widen_server_root()
                 "A client-supplied workspaceRoot must not widen the server-configured root"
             );
             let msg = message.unwrap_or_default();
+            // Assert on the *widening* branch specifically. The script here also
+            // sits outside the trusted root, so deleting the widening gate
+            // entirely still produces a refusal — from `ProgramOutsideTrustedRoots`,
+            // whose message also says "outside your workspace". Matching that
+            // shared wording cannot tell the two branches apart, so the test
+            // would have passed with the gate removed. "cannot widen" appears
+            // only in `LaunchRootWidensAuthority`.
             assert!(
-                msg.contains("outside your workspace") || msg.contains("outside workspace"),
-                "Expected workspace-boundary rejection, got: {msg}"
+                msg.contains("cannot widen"),
+                "Expected the launch root to be refused for widening specifically, got: {msg}"
             );
         }
         other => return Err(format!("Expected Response, got: {other:?}").into()),
@@ -251,23 +259,24 @@ fn test_launch_workspace_root_field_cannot_widen_server_root()
 // startup authority and the per-session boundary derived from it.
 // ---------------------------------------------------------------------------
 
-/// Assert a launch was not rejected for workspace-boundary reasons.
+/// Assert a launch actually started a session.
 ///
-/// The launch may still fail for unrelated environment reasons (no `perl` on
-/// PATH, for instance); only a boundary rejection falsifies these tests.
-fn assert_workspace_accepted(response: &DapMessage, what: &str) {
+/// Every caller launches a real script under a real directory, exactly like
+/// `test_launch_allows_valid_path`, so "accepted" must mean the launch
+/// succeeded.
+///
+/// An earlier version of this helper only checked that a *failure* message did
+/// not mention the boundary. That was vacuous for the regressions these tests
+/// exist to catch: any unrelated failure — no `perl` on `PATH`, a failed syntax
+/// check, a failed spawn, or a refusal whose wording simply differs — satisfied
+/// it. Run against the committed binary with `perl` unreachable, the
+/// session-isolation tests reported `ok` while proving nothing. Asserting
+/// `success` is what gives them content.
+fn assert_launch_succeeded(response: &DapMessage, what: &str) {
     let DapMessage::Response { success, message, .. } = response else {
         unreachable!("handle_request always answers a request with a Response ({what})")
     };
-    if !*success {
-        let msg = message.clone().unwrap_or_default();
-        assert!(
-            !msg.contains("outside your workspace")
-                && !msg.contains("outside workspace")
-                && !msg.contains("cannot widen"),
-            "{what} must not be rejected by the workspace boundary, got: {msg}"
-        );
-    }
+    assert!(*success, "{what} must launch, got: {message:?}");
 }
 
 /// A narrowing `workspaceRoot` must confine only the launch that sent it.
@@ -302,7 +311,7 @@ fn a_narrowing_launch_root_does_not_confine_the_next_session()
             "args": []
         })),
     );
-    assert_workspace_accepted(&first, "a script inside the narrowed root");
+    assert_launch_succeeded(&first, "a script inside the narrowed root");
 
     // The trusted authority is unchanged by that narrowing.
     assert_eq!(
@@ -321,7 +330,7 @@ fn a_narrowing_launch_root_does_not_confine_the_next_session()
             "args": []
         })),
     );
-    assert_workspace_accepted(
+    assert_launch_succeeded(
         &second,
         "a script under the trusted root after an earlier narrowed session",
     );
@@ -356,7 +365,7 @@ fn an_unbounded_adapter_does_not_inherit_a_previous_launch_root()
             "args": []
         })),
     );
-    assert_workspace_accepted(&first, "a script inside its own launch-supplied root");
+    assert_launch_succeeded(&first, "a script inside its own launch-supplied root");
 
     // Session 2 is in a completely different directory and supplies no root.
     // The stale boundary from session 1 must not reject it.
@@ -368,7 +377,7 @@ fn an_unbounded_adapter_does_not_inherit_a_previous_launch_root()
             "args": []
         })),
     );
-    assert_workspace_accepted(&second, "a later session with no launch-supplied root");
+    assert_launch_succeeded(&second, "a later session with no launch-supplied root");
     Ok(())
 }
 
@@ -538,7 +547,53 @@ fn a_relative_program_inside_the_trusted_root_is_admitted() -> Result<(), Box<dy
             "args": []
         })),
     );
-    assert_workspace_accepted(&response, "a relative program inside the trusted root");
+    assert_launch_succeeded(&response, "a relative program inside the trusted root");
+    Ok(())
+}
+
+/// Under multiple roots, a relative program must be owned by the root it is
+/// actually in.
+///
+/// This pins that `handle_launch` resolves the program *before* ownership
+/// selection, which no other test does: the out-of-root test above needs both
+/// `handle_launch` and `launch_debugger` reverted before it fails, so dropping
+/// resolution from `handle_launch` alone is invisible to it.
+///
+/// The consequence is real rather than theoretical. `validate_workspace_path`
+/// joins a relative candidate with the root it is checked against, so an
+/// unresolved `"script.pl"` is "contained" in *every* trusted root at once.
+/// `owning_root` then breaks the tie by depth, and two sibling roots are equally
+/// deep — so the session boundary would be decided by registration order, and a
+/// legitimate launch under the second root would be confined to the first and
+/// refused.
+#[test]
+fn a_relative_program_is_owned_by_the_root_it_actually_lives_in()
+-> Result<(), Box<dyn std::error::Error>> {
+    let parent = tempfile::tempdir()?;
+    let alpha = parent.path().join("alpha");
+    let beta = parent.path().join("beta");
+    fs::create_dir_all(&alpha)?;
+    fs::create_dir_all(&beta)?;
+
+    // Only beta holds the script; alpha is registered first.
+    fs::write(beta.join("script.pl"), "print 'beta';")?;
+
+    let mut adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+        &[alpha.clone(), beta.clone()],
+        false,
+    )?);
+    initialize_adapter(&mut adapter);
+
+    let response = adapter.handle_request(
+        2,
+        "launch",
+        Some(json!({
+            "program": "script.pl",
+            "cwd": must_some(beta.to_str()),
+            "args": []
+        })),
+    );
+    assert_launch_succeeded(&response, "a relative program under the second of two trusted roots");
     Ok(())
 }
 
