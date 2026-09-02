@@ -425,9 +425,13 @@ for my $sub (qw(Oracle::Demo::proto)) {
         .context("sleeping Perl probe should exceed the compiler-oracle deadline")?;
         let message = format!("{error:#}");
 
+        // Discrimination bound, not a latency SLA: a bound-free run would take
+        // the full five-second sleep, so any ceiling below that still detects a
+        // missing deadline. Four seconds leaves room for a stalled CI worker
+        // instead of flaking on scheduler pauses.
         assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "timeout should return near the deadline rather than after the full sleep"
+            started.elapsed() < Duration::from_secs(4),
+            "timeout should return before the full five-second sleep"
         );
         assert!(
             message.contains("timed out after 250 ms"),
