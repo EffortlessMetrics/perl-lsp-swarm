@@ -172,13 +172,14 @@ impl ModuleFilePath {
     /// carries no Perl quoting syntax. This constructor therefore fails closed
     /// on anything it cannot decode faithfully:
     ///
-    /// - a single-quoted token containing `\\` (where `\\\\` and `\\'` are escapes);
+    /// - a single-quoted token containing a `\\\\` or `\\'` escape sequence;
     /// - a double-quoted token containing `\\`, `$`, or `@` (escapes and
     ///   interpolation).
     ///
-    /// The `\'` rule is deliberately conservative: a lone backslash in single
-    /// quotes is often literal, but distinguishing that is the lexer's job, and
-    /// guessing would hand back a filename Perl never looks up.
+    /// Single quotes escape only those two sequences, so a lone backslash there
+    /// is literal and `'Foo\\Bar.pm'` decodes to `Foo\\Bar.pm` by stripping alone —
+    /// verified against `perl`, which prints `Foo\\Bar.pm` for `'Foo\\Bar.pm'` and
+    /// `a\\b` for `'a\\\\b'`.
     ///
     /// An interpolated operand is not a literal filename at all. Its producer
     /// holds the AST and should classify it with
@@ -204,8 +205,11 @@ impl ModuleFilePath {
         }
 
         let inner = &token[delimiter.len_utf8()..token.len() - delimiter.len_utf8()];
-        let needs_decoding =
-            if delimiter == '\'' { inner.contains('\\') } else { inner.contains(['\\', '$', '@']) };
+        let needs_decoding = if delimiter == '\'' {
+            single_quoted_needs_decoding(inner)
+        } else {
+            inner.contains(['\\', '$', '@'])
+        };
         if needs_decoding {
             return Err(ModuleFilePathError::UndecodableToken);
         }
@@ -244,6 +248,18 @@ impl TryFrom<&str> for ModuleFilePath {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::parse(value)
     }
+}
+
+/// Whether a single-quoted token's body carries an escape Perl would decode.
+///
+/// Single quotes recognize only `\\` and `\'`; every other backslash is literal.
+/// A byte scan is exact here because both delimiters are ASCII and a UTF-8
+/// continuation byte can never be mistaken for one.
+fn single_quoted_needs_decoding(inner: &str) -> bool {
+    inner
+        .as_bytes()
+        .windows(2)
+        .any(|pair| pair[0] == b'\\' && (pair[1] == b'\\' || pair[1] == b'\''))
 }
 
 /// Detect drive-qualified syntax such as `C:`, `C:foo`, or `C:\foo`.
@@ -371,6 +387,22 @@ mod tests {
                 "`{token}` needs decoding this crate does not perform"
             );
         }
+    }
+
+    #[test]
+    fn a_literal_backslash_in_single_quotes_decodes_by_stripping() -> Result<(), ModuleFilePathError>
+    {
+        // Perl leaves a lone backslash literal inside single quotes, so these are
+        // valid relative filenames rather than tokens needing a decode.
+        for (token, decoded) in [
+            ("'Foo\\Bar.pm'", "Foo\\Bar.pm"),
+            ("'a\\b'", "a\\b"),
+            ("'lib\\Foo\\Bar.pm'", "lib\\Foo\\Bar.pm"),
+        ] {
+            let path = ModuleFilePath::from_quoted_token(token)?;
+            assert_eq!(path.literal(), decoded, "`{token}` needs no decoding");
+        }
+        Ok(())
     }
 
     #[test]

@@ -311,11 +311,13 @@ impl ModuleRequest {
 
     /// Record a partially static operand and why it is not exact.
     ///
-    /// "Partially static" means at least one static fragment was actually
-    /// recovered. An empty `static_fragments` is not a partial request — it is a
-    /// fully dynamic one — so this normalizes to [`Self::Dynamic`] rather than
-    /// producing a variant whose name overstates the evidence behind it. No
-    /// evidence is lost: both variants retain the source form and span.
+    /// "Partially static" means at least one non-empty static fragment was
+    /// actually recovered. A `static_fragments` that is empty — or that holds
+    /// only empty strings, which is evidence-shaped but carries no known text —
+    /// is not a partial request but a fully dynamic one, so this normalizes to
+    /// [`Self::Dynamic`] rather than producing a variant whose name overstates
+    /// what is behind it. No evidence is lost: both variants retain the source
+    /// form and span.
     #[must_use]
     pub fn partially_static(
         source_form: impl Into<String>,
@@ -323,7 +325,7 @@ impl ModuleRequest {
         span: Option<ModuleTokenSpan>,
         boundary: RequestBoundary,
     ) -> Self {
-        if static_fragments.is_empty() {
+        if static_fragments.iter().all(String::is_empty) {
             return Self::dynamic(source_form, span, boundary);
         }
 
@@ -514,6 +516,35 @@ mod tests {
             _ => None,
         };
         assert_eq!(retained_span, Some(span), "the span survives the normalization");
+    }
+
+    #[test]
+    fn empty_string_fragments_are_not_evidence() {
+        // A vector of empty strings is evidence-shaped but carries no known text,
+        // so it must not sustain the `PartiallyStatic` claim either.
+        for fragments in [vec![String::new()], vec![String::new(), String::new()]] {
+            let request = ModuleRequest::partially_static(
+                "$class",
+                fragments.clone(),
+                None,
+                RequestBoundary::VariableInterpolation,
+            );
+            assert_eq!(
+                request.kind(),
+                ModuleRequestKind::Dynamic,
+                "{fragments:?} recovers no text, so the operand is dynamic"
+            );
+        }
+
+        // One genuinely recovered fragment still yields a partial request, even
+        // alongside empty ones.
+        let request = ModuleRequest::partially_static(
+            "\"Foo::$leaf\"",
+            vec![String::new(), "Foo::".to_string()],
+            None,
+            RequestBoundary::VariableInterpolation,
+        );
+        assert_eq!(request.kind(), ModuleRequestKind::PartiallyStatic);
     }
 
     #[test]
