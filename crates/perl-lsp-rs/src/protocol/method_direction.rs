@@ -1022,6 +1022,23 @@ mod tests {
         source
     }
 
+    fn retained_post_module_suffix<'a>(
+        line: &'a str,
+        start: usize,
+        source_lexical_state: &mut LexicalState,
+    ) -> &'a str {
+        let raw_suffix = line.get(start..).unwrap_or_default();
+        let suffix = skip_declaration_trivia(line, start)
+            .and_then(|suffix_start| line.get(suffix_start..))
+            .map(strip_line_comment)
+            // An unterminated block comment is valid when it continues on the
+            // next source line. Retain its opener so the final comment pass
+            // can discard the entire comment instead of leaking its body.
+            .unwrap_or(raw_suffix);
+        let _ = test_cfg_attribute_start(suffix, source_lexical_state);
+        suffix
+    }
+
     fn test_cfg_attribute_start(source: &str, state: &mut LexicalState) -> Option<usize> {
         let bytes = source.as_bytes();
         let mut index = 0;
@@ -1109,13 +1126,11 @@ mod tests {
             if !inline_declaration.trim().is_empty() {
                 if let Some(declaration) = test_module_declaration(inline_declaration) {
                     if matches!(declaration.kind, TestModuleKind::External) {
-                        let suffix = skip_declaration_trivia(
+                        let suffix = retained_post_module_suffix(
                             inline_declaration,
                             declaration.terminator_offset + 1,
-                        )
-                        .and_then(|start| inline_declaration.get(start..))
-                        .map(strip_line_comment)
-                        .unwrap_or_default();
+                            &mut source_lexical_state,
+                        );
                         let kept = format!("{}{}", prefix, suffix.trim_end());
                         if !kept.trim().is_empty() {
                             result.push_str(kept.trim_end());
@@ -1131,10 +1146,11 @@ mod tests {
                         declaration.terminator_offset,
                     );
                     if let Some(close) = close {
-                        let suffix = skip_declaration_trivia(inline_declaration, close + 1)
-                            .and_then(|start| inline_declaration.get(start..))
-                            .map(strip_line_comment)
-                            .unwrap_or_default();
+                        let suffix = retained_post_module_suffix(
+                            inline_declaration,
+                            close + 1,
+                            &mut source_lexical_state,
+                        );
                         let kept = format!("{}{}", prefix, suffix.trim_end());
                         if !kept.trim().is_empty() {
                             result.push_str(kept.trim_end());
@@ -1163,10 +1179,11 @@ mod tests {
                     if let Some((closing_line_index, close)) = module_close {
                         let closing_line =
                             lines.get(closing_line_index).copied().unwrap_or_default();
-                        let suffix = skip_declaration_trivia(closing_line, close + 1)
-                            .and_then(|start| closing_line.get(start..))
-                            .map(strip_line_comment)
-                            .unwrap_or_default();
+                        let suffix = retained_post_module_suffix(
+                            closing_line,
+                            close + 1,
+                            &mut source_lexical_state,
+                        );
                         let kept = format!("{}{}", prefix, suffix.trim_end());
                         if !kept.trim().is_empty() {
                             result.push_str(kept.trim_end());
@@ -1213,10 +1230,11 @@ mod tests {
                 let declaration_line = lines[declaration_end];
                 let prefix_len = declaration_text.len() - declaration_line.len();
                 let offset = declaration.terminator_offset.saturating_sub(prefix_len);
-                let suffix = skip_declaration_trivia(declaration_line, offset + 1)
-                    .and_then(|suffix_start| declaration_line.get(suffix_start..))
-                    .map(strip_line_comment)
-                    .unwrap_or_default();
+                let suffix = retained_post_module_suffix(
+                    declaration_line,
+                    offset + 1,
+                    &mut source_lexical_state,
+                );
                 if !suffix.trim().is_empty() {
                     result.push_str(suffix.trim_end());
                     result.push('\n');
@@ -1263,10 +1281,8 @@ mod tests {
             if let Some(close) = module_close {
                 let closing_line =
                     lines.get(line_index.saturating_sub(1)).copied().unwrap_or_default();
-                let suffix = skip_declaration_trivia(closing_line, close + 1)
-                    .and_then(|suffix_start| closing_line.get(suffix_start..))
-                    .map(strip_line_comment)
-                    .unwrap_or_default();
+                let suffix =
+                    retained_post_module_suffix(closing_line, close + 1, &mut source_lexical_state);
                 if !suffix.trim().is_empty() {
                     result.push_str(suffix.trim_end());
                     result.push('\n');
@@ -1506,6 +1522,31 @@ fn production() { client.send_request("production/after-multiline"); }
         assert!(stripped.contains("raw-only"));
         assert!(!stripped.contains("test-only/multiline-body"));
         assert!(stripped.contains("production/after-multiline"));
+    }
+
+    #[test]
+    fn strip_test_modules_tracks_preserved_suffix_lexical_state() {
+        let source = r####"
+#[cfg(test)] mod before_comment {} /* trailing comment begins
+client.send_request("comment-only/suffix");
+*/
+fn after_comment() { client.send_request("production/after-comment"); }
+#[cfg(test)] mod before_raw {} const RAW: &str = r###"
+#[cfg(test)] mod fake_raw { client.send_request("raw-only/suffix"); }
+"###;
+#[cfg(test)] mod later_real {
+    fn send() { client.send_request("test-only/later-real"); }
+}
+fn after_raw() { client.send_request("production/after-raw"); }
+"####;
+
+        let stripped = strip_test_modules(source);
+
+        assert!(!stripped.contains("comment-only/suffix"));
+        assert!(stripped.contains("production/after-comment"));
+        assert!(stripped.contains("raw-only/suffix"));
+        assert!(!stripped.contains("test-only/later-real"));
+        assert!(stripped.contains("production/after-raw"));
     }
 
     fn quoted_literals(line: &str) -> Vec<&str> {
