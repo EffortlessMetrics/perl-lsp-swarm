@@ -629,49 +629,80 @@ fn require_declared_module_graph(
             }
         };
 
-        for module in used_module_names(&text) {
+        let Some(modules) = used_module_names(&text) else {
+            violations.push(format!(
+                "{doc}: {field} {asset:?} could not be parsed as Perl, so its module graph cannot be established"
+            ));
+            continue;
+        };
+
+        for module in modules {
             let relative = format!("{}.pm", module.replace("::", "/"));
-            for module_root in &fixture.module_roots {
+            // Perl searches @INC in order and stops at the first match, so only
+            // the first resolvable copy is part of the load graph. Requiring
+            // shadowed copies in later roots would fail a valid manifest.
+            let resolved = fixture.module_roots.iter().find_map(|module_root| {
                 let candidate = format!("{}/{relative}", module_root.trim_end_matches('/'));
-                if root.join(&candidate).is_file() && !declared.contains(candidate.as_str()) {
-                    violations.push(format!(
-                        "{doc}: {field} {asset:?} loads module {module:?}, which resolves to {candidate:?} inside a declared module_root, but that file is not listed in module_files"
-                    ));
-                }
+                root.join(&candidate).is_file().then_some(candidate)
+            });
+            if let Some(candidate) = resolved
+                && !declared.contains(candidate.as_str())
+            {
+                violations.push(format!(
+                    "{doc}: {field} {asset:?} loads module {module:?}, which resolves to {candidate:?} inside a declared module_root, but that file is not listed in module_files"
+                ));
             }
         }
     }
 }
 
-/// Package-style `use`/`require` targets only.
+/// Modules loaded by this source, via the repository's own Perl parser.
 ///
-/// Single-segment names (`use Helper;`) count as well as `::`-qualified ones —
-/// a fixture module need not be nested. Pragmas (`strict`, `feature`) are
-/// lowercase and version forms (`use v5.36`) are numeric, so requiring an
-/// uppercase initial excludes them; core and CPAN modules are excluded later by
-/// simply not resolving to a file inside a declared fixture root.
-fn used_module_names(source: &str) -> BTreeSet<String> {
+/// A hand-rolled line scanner cannot tell executable code from POD, heredoc
+/// bodies, or `__END__`/`__DATA__` text, and would invent dependencies from
+/// documentation. This repository already owns a Perl parser; using it is both
+/// correct and avoids maintaining a second, worse reader of the same language.
+///
+/// Returns `None` when the source does not parse, so the caller can report that
+/// rather than silently treating an unparseable fixture as dependency-free.
+fn used_module_names(source: &str) -> Option<BTreeSet<String>> {
+    let ast = perl_parser::Parser::new(source).parse().ok()?;
     let mut names = BTreeSet::new();
-    for line in source.lines() {
-        let line = line.trim_start();
-        let rest = line
-            .strip_prefix("use ")
-            .or_else(|| line.strip_prefix("require "))
-            .map(str::trim_start);
-        let Some(rest) = rest else { continue };
+    collect_loaded_modules(&ast, &mut names);
+    Some(names)
+}
 
-        let name: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
-            .collect();
-        if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-            && !name.ends_with(':')
-            && !name.contains(":::")
-        {
-            names.insert(name);
+/// `use`/`no` carry the module name directly; `require Foo::Bar` is parsed as a
+/// function call whose name is the bareword module.
+fn collect_loaded_modules(node: &perl_parser::Node, names: &mut BTreeSet<String>) {
+    match &node.kind {
+        perl_parser::NodeKind::Use { module, .. } => {
+            if is_module_name(module) {
+                names.insert(module.clone());
+            }
         }
+        perl_parser::NodeKind::FunctionCall { name, args } if name == "require" => {
+            for arg in args {
+                if let perl_parser::NodeKind::Identifier { name, .. } = &arg.kind
+                    && is_module_name(name)
+                {
+                    names.insert(name.clone());
+                }
+            }
+        }
+        _ => {}
     }
-    names
+    for child in node.children() {
+        collect_loaded_modules(child, names);
+    }
+}
+
+/// Pragmas are lowercase and version forms are numeric; a loadable module file
+/// is named by an uppercase-initial bareword. Core and CPAN modules are excluded
+/// later by simply not resolving inside a declared fixture root.
+fn is_module_name(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
 }
 
 /// A declared load file must be a readable file. An existing directory satisfies
@@ -1273,14 +1304,64 @@ mod tests {
     /// Only package-style module loads count; pragmas and feature/version forms
     /// never name a fixture module file.
     #[test]
-    fn used_module_names_selects_only_package_style_loads() {
+    fn used_module_names_selects_only_loadable_modules() -> TestResult {
         let names = used_module_names(
-            "use strict;\nuse warnings;\nuse v5.36;\nuse Accuracy::ImportsExports;\n  require Deep::Nested::Thing;\nuse feature 'signatures';\n",
-        );
+            "use strict;\nuse warnings;\nuse v5.36;\nuse Accuracy::ImportsExports;\nuse Helper;\nuse feature 'signatures';\n1;\n",
+        )
+        .ok_or_else(|| color_eyre::eyre::eyre!("fixture source should parse"))?;
 
-        assert!(names.contains("Accuracy::ImportsExports"));
-        assert!(names.contains("Deep::Nested::Thing"));
-        assert_eq!(names.len(), 2, "unexpected extra module names: {names:?}");
+        assert!(names.contains("Accuracy::ImportsExports"), "{names:?}");
+        assert!(names.contains("Helper"), "single-segment module missing: {names:?}");
+        assert!(!names.contains("strict"), "pragma admitted: {names:?}");
+        assert!(!names.contains("feature"), "pragma admitted: {names:?}");
+        Ok(())
+    }
+
+    /// POD, `__END__` text, and heredoc bodies are not executable code. A line
+    /// scanner cannot tell the difference; the real parser can.
+    #[test]
+    fn non_code_text_does_not_create_module_dependencies() -> TestResult {
+        let names = used_module_names(
+            "package Demo;\nmy $doc = <<'TEXT';\nuse Heredoc::Module;\nTEXT\n\n=pod\n\nuse Pod::Module;\n\n=cut\n\n1;\n__END__\nuse Trailing::Module;\n",
+        )
+        .ok_or_else(|| color_eyre::eyre::eyre!("fixture source should parse"))?;
+
+        assert!(names.is_empty(), "non-code text produced dependencies: {names:?}");
+        Ok(())
+    }
+
+    /// Perl stops at the first `@INC` match, so a copy shadowed by an earlier
+    /// root is never loaded and must not be required.
+    #[test]
+    fn shadowed_module_copies_are_not_required() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        fs::create_dir_all(tempdir.path().join("second"))?;
+        fs::write(
+            tempdir.path().join("fixtures/package_basic.pl"),
+            "package Demo;\nuse Helper;\n1;\n",
+        )?;
+        fs::write(tempdir.path().join("fixtures/Helper.pm"), "package Helper;\n1;\n")?;
+        fs::write(tempdir.path().join("second/Helper.pm"), "package Helper;\n1;\n")?;
+
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                r#""module_roots": ["fixtures"]"#,
+                r#""module_roots": ["fixtures", "second"]"#,
+            )
+            .replace(r#""module_files": []"#, r#""module_files": ["fixtures/Helper.pm"]"#),
+        )?;
+
+        // Only the first-resolving copy is declared; the shadowed one is not.
+        let (_, violations) = evaluate(tempdir.path())?;
+
+        assert!(
+            !violations.iter().any(|violation| violation.contains("second/Helper.pm")),
+            "shadowed copy was required: {violations:#?}"
+        );
+        Ok(())
     }
 
     /// Repository convention (see `xtask/src/publication_drift`): Windows keeps
