@@ -55,7 +55,17 @@ jobs:
       - name: Run checksum negative controls
         run: bash scripts/tests/test-installer-checksum-required.sh
 
-      - name: Run archive-safety controls
+      # Without these the archive-safety run reports the bsdtar and BusyBox
+      # profiles NOT PROVEN and only GNU tar is covered. BusyBox tar is the
+      # profile whose listing divergence admitted links and absolute-path
+      # members (#11508), and bsdtar is the macOS tar family.
+      - name: Install additional tar profiles
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libarchive-tools busybox-static
+
+      - name: Run archive-safety controls across tar profiles
         run: bash scripts/tests/test-installer-archive-safety.sh
 
       - name: Run product-unit promotion controls

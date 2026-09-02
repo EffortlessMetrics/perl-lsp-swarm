@@ -46,6 +46,27 @@ reject_unexpected_executables = true
 allowed_executable_basenames_posix = ["perllsp", "perl-dap"]
 allowed_executable_basenames_windows = ["perllsp.exe", "perl-dap.exe"]
 
+# POSIX-only. The sections above are shared with the PowerShell/zip adapter;
+# these rules describe tar mechanics that have no zip counterpart, so they stay
+# out of the shared contract (#11508).
+[posix_inspection]
+# PAX ('x'/'g') and GNU long name/link ('L'/'K') records can rewrite the path
+# of the entry that follows them, so they fail closed rather than being
+# interpreted or skipped.
+reject_extended_headers = true
+# Entry name, type, and mode come from the ustar/GNU header fields, not from
+# `tar -t` / `tar -tv` output. Listing renderings are implementation-specific:
+# BusyBox tar prints a hardlink with a regular-file type char and strips
+# leading `/` and `../` from names, so a listing-derived classification admits
+# links and absolute-path members that GNU and bsdtar reject (#11508).
+entry_classification = "ustar_header_fields"
+verify_header_checksum = true
+reject_nonportable_header_name_bytes = true
+# Proven tar profiles for the extract step. Inspection does not depend on the
+# profile; absent profiles are reported NOT_PROVEN rather than assumed covered.
+proven_extractor_profiles = ["gnu", "libarchive", "busybox"]
+bind_extractor_profile_in_receipt = true
+
 [layout]
 posix_kind = "nested_package_dir"
 windows_kind = "flat_or_nested_package_dir"

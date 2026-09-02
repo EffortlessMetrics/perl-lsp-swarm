@@ -113,6 +113,74 @@ def hardlink_entry(archive: tarfile.TarFile) -> None:
     archive.addfile(info)
 
 
+def hardlink_topology_member(archive: tarfile.TarFile) -> None:
+    """A hardlink wearing an accepted topology name (#11508).
+
+    ``hardlink_entry`` names its link ``hard``, so the unexpected-member rule
+    rejects it before the link rule is ever consulted. This case supplies
+    ``SHA256SUMS.txt`` itself as a hardlink, so only a real type check can
+    reject it. BusyBox ``tar -tv`` renders a hardlink with a regular-file type
+    char, which is why entry type must come from the header, not the listing.
+    """
+    _add_dir(archive, PACKAGE)
+    _add_reg(archive, f"{PACKAGE}/perllsp", POSIX_FILES["perllsp"], 0o755)
+    _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
+    for name in ("README.md", "LICENSE-APACHE", "LICENSE-MIT"):
+        _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
+    info = tarfile.TarInfo(f"{PACKAGE}/SHA256SUMS.txt")
+    info.type = tarfile.LNKTYPE
+    info.linkname = f"{PACKAGE}/perllsp"
+    info.mode = 0o644
+    archive.addfile(info)
+
+
+def absolute_topology_member(archive: tarfile.TarFile) -> None:
+    """The server binary delivered at an absolute archive path (#11508).
+
+    ``absolute_path`` adds an escape member alongside a complete valid
+    topology, so it is rejected as outside the package directory. Here the
+    absolute member *is* the topology's ``perllsp``: BusyBox ``tar -t`` strips
+    the leading ``/`` before printing, so a listing-derived name reads as the
+    canonical member and stages substituted content.
+    """
+    _add_dir(archive, PACKAGE)
+    _add_reg(archive, f"/{PACKAGE}/perllsp", b"smuggled-server\n", 0o755)
+    _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
+    for name in ("README.md", "LICENSE-APACHE", "LICENSE-MIT", "SHA256SUMS.txt"):
+        _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
+
+
+def newline_in_member_name(archive: tarfile.TarFile) -> None:
+    """A stored name carrying a raw newline (#11508).
+
+    A line-oriented listing splits this member across two lines, desynchronizing
+    any pairing of `tar -t` names with `tar -tv` type chars. Reading the header
+    name field makes it a single nonportable name instead.
+    """
+    valid_posix(archive)
+    _add_reg(archive, f"{PACKAGE}/ev\nil", b"split\n")
+
+
+def extended_pax_header(archive: tarfile.TarFile) -> None:
+    """A PAX extended header record ahead of a topology member (#11508).
+
+    ``x`` and ``g`` records can rewrite the path of the entry that follows
+    them, so the header walk must fail closed on them rather than skip them.
+    """
+    _add_dir(archive, PACKAGE)
+    info = tarfile.TarInfo(f"{PACKAGE}/perllsp")
+    info.size = len(POSIX_FILES["perllsp"])
+    info.mode = 0o755
+    info.type = tarfile.REGTYPE
+    # An oversized uid cannot be represented in the base header, so tarfile
+    # emits a preceding `x` record for it.
+    info.uid = 0o77777777777
+    archive.addfile(info, io.BytesIO(POSIX_FILES["perllsp"]))
+    _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
+    for name in ("README.md", "LICENSE-APACHE", "LICENSE-MIT", "SHA256SUMS.txt"):
+        _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
+
+
 def fifo_entry(archive: tarfile.TarFile) -> None:
     valid_posix(archive)
     info = tarfile.TarInfo(f"{PACKAGE}/pipe")
@@ -179,6 +247,25 @@ def oversized_entry(archive: tarfile.TarFile) -> None:
 def truncated_garbage(dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(b"not-an-archive\n")
+
+
+def corrupt_header_checksum(dest: Path) -> None:
+    """A well-formed gzip stream whose second tar header no longer checksums.
+
+    Decompression succeeds, so this reaches the header walk rather than the
+    gzip guard, and only the header checksum can reject it (#11508).
+    """
+    import gzip as _gzip
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as archive:
+        valid_posix(archive)
+    blocks = bytearray(raw.getvalue())
+    # Flip a byte inside the second header's name field, leaving its recorded
+    # checksum stale.
+    blocks[512] ^= 0x20
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_gzip.compress(bytes(blocks)))
 
 
 def _zip_write(dest: Path, entries: list[tuple[str, bytes, bool]]) -> None:
@@ -282,6 +369,10 @@ TAR_CASES: dict[str, Callable[[tarfile.TarFile], None]] = {
     "empty_component": empty_component,
     "symlink_entry": symlink_entry,
     "hardlink_entry": hardlink_entry,
+    "hardlink_topology_member": hardlink_topology_member,
+    "absolute_topology_member": absolute_topology_member,
+    "newline_in_member_name": newline_in_member_name,
+    "extended_pax_header": extended_pax_header,
     "fifo_entry": fifo_entry,
     "duplicate_path": duplicate_path,
     "case_collision": case_collision,
@@ -315,6 +406,9 @@ def main() -> int:
     dest = Path(args.out)
     if args.case == "truncated_garbage":
         truncated_garbage(dest)
+        return 0
+    if args.case == "corrupt_header_checksum":
+        corrupt_header_checksum(dest)
         return 0
     if args.case in TAR_CASES:
         _posix_tar(TAR_CASES[args.case], dest)

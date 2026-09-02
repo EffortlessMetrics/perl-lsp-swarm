@@ -604,14 +604,100 @@ normalize_archive_member_path() {
 }
 
 archive_member_is_executable_mode() {
-    local listing="$1"
-    local mode
-    mode="$(printf '%s' "$listing" | cut -c2-10)"
-    # owner/group/other execute bits are columns 3, 6, and 9 of the 9-char mode.
+    local mode="$1"
     case "$mode" in
-        ??x*|?????x*|????????x) return 0 ;;
+        ''|*[!0-7]*) return 1 ;;
     esac
+    if [ $((8#$mode & 8#111)) -ne 0 ]; then
+        return 0
+    fi
     return 1
+}
+
+# Identify the host tar implementation so staged evidence names the profile it
+# was produced under. Inspection no longer depends on this: entry identity and
+# type come from the archive headers, not from a tar rendering. Extraction of
+# already-accepted canonical names still runs through tar, so the profile stays
+# on the receipt as host evidence (#11508).
+archive_extractor_profile() {
+    local banner
+    banner="$(tar --version 2>/dev/null | head -n 1)" || banner=""
+    case "$banner" in
+        *"GNU tar"*) printf 'gnu\n' ;;
+        *bsdtar*|*libarchive*) printf 'libarchive\n' ;;
+        *BusyBox*|*busybox*) printf 'busybox\n' ;;
+        *) printf 'unknown\n' ;;
+    esac
+}
+
+# Decode one 512-byte ustar/GNU header block at byte offset $2 of $1.
+#
+# Prints "<typeflag>\t<octal mode>\t<size>\t<name>" for a header block, or the
+# sentinel END (end-of-archive block), BAD (short read, malformed field, or
+# header checksum mismatch), or UNSAFE (a name that is empty or carries bytes
+# outside printable ASCII).
+#
+# This is deliberately not `tar -tf` / `tar -tv`. Those are human renderings
+# whose semantics differ per implementation: BusyBox tar reports a hardlink
+# with a regular-file type char and strips leading `/` and `../` from the name
+# it prints, so a link or an absolute-path member reads as an ordinary
+# canonical file (#11508). `od -An -v -tu1 -j -N` and awk's `%c` behave
+# identically across GNU, BusyBox, and macOS, so reading the header field is
+# implementation-independent where parsing a listing is not.
+read_tar_header() {
+    od -An -v -tu1 -j "$2" -N 512 "$1" 2>/dev/null | awk '
+function fld(s, l,   i, r, c) {
+    r = ""
+    for (i = s; i < s + l; i++) {
+        c = b[i + 1]
+        if (c == 0) break
+        r = r sprintf("%c", c)
+    }
+    return r
+}
+function octval(s,   i, v, c) {
+    gsub(/^[ \t]+|[ \t]+$/, "", s)
+    if (s == "") return -1
+    v = 0
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c < "0" || c > "7") return -1
+        v = v * 8 + (c - "0")
+    }
+    return v
+}
+function printable(s,   i, c) {
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c < " " || c > "~") return 0
+    }
+    return 1
+}
+{ for (i = 1; i <= NF; i++) b[++n] = $i }
+END {
+    if (n != 512) { print "BAD"; exit }
+    for (i = 1; i <= 512; i++) if (b[i] != 0) { nonzero = 1; break }
+    if (!nonzero) { print "END"; exit }
+    # The stored checksum is computed with its own field read as spaces.
+    sum = 0
+    for (i = 1; i <= 512; i++) sum += (i >= 149 && i <= 156) ? 32 : b[i]
+    stored = octval(fld(148, 8))
+    if (stored < 0 || stored != sum) { print "BAD"; exit }
+    mode = octval(fld(100, 8))
+    size = octval(fld(124, 12))
+    if (mode < 0 || size < 0) { print "BAD"; exit }
+    name = fld(0, 100)
+    # Only POSIX ustar ("ustar\0" + "00") carries a path prefix at 345. GNU
+    # format ("ustar  \0") reuses that area for other metadata.
+    if (fld(257, 5) == "ustar" && b[263] == 0) {
+        prefix = fld(345, 155)
+        if (prefix != "") name = prefix "/" name
+    }
+    if (name == "" || !printable(name)) { print "UNSAFE"; exit }
+    t = b[157]
+    typ = (t == 0) ? "0" : ((t >= 33 && t <= 126) ? sprintf("%c", t) : "?")
+    printf "%s\t%o\t%d\t%s\n", typ, mode, size, name
+}'
 }
 
 inspect_standalone_tar_gz() {
@@ -619,9 +705,9 @@ inspect_standalone_tar_gz() {
     local package="$2"
     local max_compressed max_uncompressed max_entries
     local compressed gzip_uncompressed
-    local name_count i name listing type_char normalized basename_member
+    local entry_count entries name mode size type_char normalized basename_member
     local seen_exact seen_folded folded
-    local name_file verbose_file name_err verbose_err list_dir
+    local list_dir header offset data_blocks
     local bound_file gzip_err max_plus bound_status bound_bytes
 
     max_compressed="$(archive_safety_limit compressed "$ARCHIVE_SAFETY_MAX_COMPRESSED_BYTES")"
@@ -642,10 +728,6 @@ inspect_standalone_tar_gz() {
     fi
 
     list_dir="${STAGING_ROOT:-${TMPDIR:-/tmp}}"
-    name_file="${list_dir}/.archive-names"
-    verbose_file="${list_dir}/.archive-verbose"
-    name_err="${list_dir}/.archive-names.err"
-    verbose_err="${list_dir}/.archive-verbose.err"
     bound_file="${list_dir}/.bounded-tar"
     gzip_err="${list_dir}/.bounded-tar.err"
     max_plus=$((max_uncompressed + 1))
@@ -663,32 +745,75 @@ inspect_standalone_tar_gz() {
     if [ "$bound_status" -ne 0 ] && [ "$bound_status" -ne 141 ]; then
         fail_archive_staging "malformed release archive: gzip decompress failed$(archive_command_diagnostic "$gzip_err" "$archive")"
     fi
-    if ! tar -tf "$bound_file" > "$name_file" 2>"$name_err"; then
-        fail_archive_staging "malformed release archive: tar listing failed$(archive_command_diagnostic "$name_err" "$archive")"
-    fi
-    if ! tar -tvf "$bound_file" > "$verbose_file" 2>"$verbose_err"; then
-        fail_archive_staging "malformed release archive: tar verbose listing failed$(archive_command_diagnostic "$verbose_err" "$archive")"
-    fi
+    # Walk the archive headers directly and collect every entry before any
+    # membership rule runs. Each step consumes exactly one header block plus
+    # that member's data blocks, so the traversal cannot be steered by a tar
+    # rendering, and the whole-archive entry ceiling is decided before a single
+    # odd member can preempt it with its own diagnostic.
+    entries=""
+    entry_count=0
+    offset=0
+    while :; do
+        header="$(read_tar_header "$bound_file" "$offset")"
+        case "$header" in
+            END)
+                break
+                ;;
+            BAD)
+                fail_archive_staging "malformed release archive: unreadable tar header at offset $offset"
+                ;;
+            UNSAFE)
+                fail_archive_staging "unsafe archive member path: nonportable bytes in the header at offset $offset"
+                ;;
+        esac
+
+        entry_count=$((entry_count + 1))
+        entries="${entries}${header}"$'\n'
+
+        IFS=$'\t' read -r type_char mode size name <<EOF
+$header
+EOF
+        # Regular files, the contiguous variant, and the PAX/GNU extended
+        # records all carry data blocks. Links, directories, and specials do
+        # not. Extended records are walked over rather than skipped over, so
+        # the entry that follows one is still seen and classified.
+        case "$type_char" in
+            0|7|x|g|L|K) data_blocks=$(( (size + 511) / 512 )) ;;
+            *) data_blocks=0 ;;
+        esac
+        offset=$(( offset + 512 + data_blocks * 512 ))
+
+        # A header ceiling independent of the policy ceiling: stop walking a
+        # hostile archive rather than reading it to the end to report on it.
+        if [ "$entry_count" -gt "$max_entries" ]; then
+            break
+        fi
+    done
+
     rm -f "$bound_file" "$gzip_err"
 
-    name_count="$(sed '/^$/d' "$name_file" | wc -l | tr -d '[:space:]')"
-    if [ "$name_count" != "$(sed '/^$/d' "$verbose_file" | wc -l | tr -d '[:space:]')" ]; then
-        fail_archive_staging "malformed release archive: tar listing counts disagree"
-    fi
-    if [ "$name_count" -gt "$max_entries" ]; then
-        fail_archive_staging "archive entry count $name_count exceeds policy ceiling $max_entries"
+    if [ "$entry_count" -gt "$max_entries" ]; then
+        fail_archive_staging "archive entry count $entry_count exceeds policy ceiling $max_entries"
     fi
 
     seen_exact=$'\n'
     seen_folded=$'\n'
     ACCEPTED_MEMBERS=""
 
-    i=0
-    while IFS= read -r name; do
-        i=$((i + 1))
+    while IFS=$'\t' read -r type_char mode size name; do
         [ -n "$name" ] || continue
-        listing="$(sed -n "${i}p" "$verbose_file")"
-        type_char="$(printf '%s' "$listing" | cut -c1)"
+
+        # An extended record's name is a placeholder ("././@PaxHeader"), not a
+        # member path, so it is refused on its type before path rules run.
+        # 'x'/'g' are PAX extended headers and 'L'/'K' are GNU long name/link
+        # records; all four can rewrite the following entry's path, so they
+        # fail closed rather than being interpreted.
+        case "$type_char" in
+            x|g|L|K)
+                fail_archive_staging "extended archive headers are not accepted: $type_char record"
+                ;;
+        esac
+
         normalized="$(normalize_archive_member_path "$name")" || fail_archive_staging "unsafe archive member path: $name"
         case "$seen_exact" in
             *$'\n'"$normalized"$'\n'*) fail_archive_staging "duplicate archive member: $normalized" ;;
@@ -700,17 +825,20 @@ inspect_standalone_tar_gz() {
         esac
         seen_folded="${seen_folded}${folded}"$'\n'
 
+        # POSIX ustar typeflags. '0' and '\0' are regular files, '7' is the
+        # contiguous-file variant, '5' is a directory, '1'/'2' are hard and
+        # symbolic links, and '3'-'6' are devices, FIFOs, and sockets.
         case "$type_char" in
-            d)
+            5)
                 if [ "$normalized" != "$package" ]; then
                     fail_archive_staging "unexpected directory member: $normalized"
                 fi
                 continue
                 ;;
-            l|h)
+            1|2)
                 fail_archive_staging "archive links are not accepted: $normalized"
                 ;;
-            -)
+            0|7)
                 ;;
             *)
                 fail_archive_staging "special archive entry type is not accepted: $normalized"
@@ -723,7 +851,7 @@ inspect_standalone_tar_gz() {
         esac
 
         basename_member="${normalized##*/}"
-        if archive_member_is_executable_mode "$listing"; then
+        if archive_member_is_executable_mode "$mode"; then
             case "$basename_member" in
                 perllsp|perl-dap) ;;
                 *) fail_archive_staging "unexpected executable member: $normalized" ;;
@@ -743,12 +871,14 @@ inspect_standalone_tar_gz() {
                 ;;
         esac
 
-        # Per-entry size is not read from `tar -tv`: BSD/macOS columns put
-        # nlink or uid in the first numeric field. gzip -l and a capped
-        # gzip -dc bound expansion before listing; named extract is capped
-        # with head -c against the remaining uncompressed budget.
+        # The header's declared size is not trusted as the resource bound: a
+        # false header would understate it. gzip -l and the capped gzip -dc
+        # above bound expansion before the walk, and the named extract is
+        # capped with head -c against the remaining uncompressed budget.
         ACCEPTED_MEMBERS="${ACCEPTED_MEMBERS}${normalized}"$'\n'
-    done < "$name_file"
+    done <<EOF
+${entries}
+EOF
 
     required_missing=""
     for file_ok in perllsp perl-dap README.md LICENSE-APACHE LICENSE-MIT SHA256SUMS.txt; do
@@ -760,17 +890,19 @@ inspect_standalone_tar_gz() {
     if [ -n "$required_missing" ]; then
         fail_archive_staging "missing required member: $required_missing"
     fi
-
-    rm -f "$name_file" "$verbose_file" "$name_err" "$verbose_err"
 }
 
 emit_archive_safety_receipt() {
     local archive="$1" package="$2" sha_tool="$3"
     local archive_hash member_line member basename_member member_hash
-    local receipt
+    local receipt extractor
 
     archive_hash="$(calculate_sha256 "$sha_tool" "$archive")" || fail_archive_staging "unable to digest verified archive"
-    receipt="archive_safety_receipt policy=${ARCHIVE_SAFETY_POLICY_ID} layout=posix_nested_v1 archive_sha256=${archive_hash} members="
+    # The extractor profile is host evidence, not an input to admission:
+    # inspection classified these members from the archive headers, so the
+    # receipt records which tar staged them rather than which tar was trusted.
+    extractor="$(archive_extractor_profile)"
+    receipt="archive_safety_receipt policy=${ARCHIVE_SAFETY_POLICY_ID} layout=posix_nested_v1 extractor=${extractor} archive_sha256=${archive_hash} members="
     member_line=""
     for member in perllsp perl-dap README.md LICENSE-APACHE LICENSE-MIT SHA256SUMS.txt; do
         member_hash="$(calculate_sha256 "$sha_tool" "${STAGING_ROOT}/${package}/${member}")" || fail_archive_staging "unable to digest staged member $member"
@@ -1406,6 +1538,9 @@ main() {
 
     need_cmd curl
     need_cmd tar
+    # Archive inspection classifies entries from the ustar headers rather than
+    # from a tar listing, so `od` is as required as `tar` (#11508).
+    need_cmd od
 
     resolve_version
     TMPDIR="$(mktemp -d)"
