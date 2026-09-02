@@ -786,12 +786,15 @@ high_confidence_sample_count = 1
 cadences = ["pr", "merge_gate", "nightly", "release"]
 
 [[metric]]
+# Not a bounded ratio: `total_reparsed_bytes` accumulates across every edit in an
+# incremental expectation while the denominator is only the final source length, so a
+# multi-edit expectation whose edits each fall back to a full reparse legitimately exceeds
+# 1.0. Declared scalar so authored policy does not encode a bound the emitter cannot honour.
 name = "incremental_reparse_byte_ratio_p95"
 family = "incremental"
-kind = "ratio"
+kind = "scalar"
 direction = "down"
 min = 0.0
-max = 1.0
 zero_budget = false
 min_sample_count = 1
 high_confidence_sample_count = 5

@@ -1035,15 +1035,18 @@ pub fn run(
     let output_path = output.unwrap_or_else(|| root.join(DEFAULT_OUTPUT));
 
     let (manifest, artifact) = build_status_artifact(&root, &manifest_path, cadence)?;
-    let canonical_manifest = manifest_path == root.join(DEFAULT_MANIFEST);
+
+    // Every path below either publishes the artifact or reports on it, so the contract is
+    // enforced here rather than inside one branch: `--json` and `--export-status-receipts`
+    // must not be able to write a scorecard that `--check` would have rejected.
+    validate_artifact_contract(&artifact)?;
+    if is_canonical_manifest(&root, &manifest_path) {
+        // Only a canonical-manifest run is expected to score every plane, so the registry's
+        // completeness half is enforced here rather than on every artifact.
+        registry::MetricRegistry::load()?.validate_completeness(&artifact.metrics)?;
+    }
 
     if check {
-        validate_artifact_contract(&artifact)?;
-        if canonical_manifest {
-            // Only a canonical-manifest run is expected to score every plane, so the
-            // registry's completeness half is enforced here rather than on every artifact.
-            registry::MetricRegistry::load()?.validate_completeness(&artifact.metrics)?;
-        }
         println!(
             "parser accuracy artifact check passed: {} fixtures across {} families",
             artifact.denominator.fixture_count, artifact.denominator.fixture_family_count
@@ -1066,6 +1069,21 @@ pub fn run(
     }
 
     Ok(())
+}
+
+/// Whether `manifest_path` names the canonical fixture manifest.
+///
+/// Compared after normalization so an equivalent relative, `..`-bearing, or symlinked
+/// spelling of the same manifest still counts as canonical and cannot silently skip the
+/// registry's completeness half. Normalization is best-effort: if either path cannot be
+/// canonicalized the raw comparison stands, which fails closed toward "not canonical" and
+/// therefore never invents completeness evidence for a manifest that was not scored.
+fn is_canonical_manifest(root: &Path, manifest_path: &Path) -> bool {
+    let default_path = root.join(DEFAULT_MANIFEST);
+    match (manifest_path.canonicalize(), default_path.canonicalize()) {
+        (Ok(selected), Ok(default)) => selected == default,
+        _ => manifest_path == default_path,
+    }
 }
 
 pub fn refresh_default_artifact_for_status(root: &Path) -> Result<()> {
@@ -9958,6 +9976,47 @@ sub dynamic_boundary_case {
             artifact.metrics.len(),
             registry.len(),
             "the canonical run and the registry must agree on the metric denominator"
+        );
+        Ok(())
+    }
+
+    /// A row introduced after `apply` must fail conformance.
+    ///
+    /// This guards a hazard that actually occurred while building this feature.
+    /// `sync_allocation_metric_rows` and `sync_runtime_metric_rows` run *after*
+    /// `build_artifact` returns and append or replace rows carrying `measured_value`'s
+    /// placeholder `Direction::Neutral` / `Confidence::High`. With only the first `apply`
+    /// call in place, the canonical run failed with "metric 'peak_rss_mb' reported direction
+    /// Neutral but the registry declares Down" — which is why `build_status_artifact`
+    /// reapplies the registry after those steps.
+    ///
+    /// Without this test the direction and confidence checks would look unfalsifiable: in a
+    /// correctly ordered pipeline `apply` always precedes validation, so nothing else proves
+    /// they still bite when a future post-`apply` step forgets to reapply.
+    #[test]
+    fn a_row_added_after_apply_fails_conformance() -> Result<()> {
+        let root = project_root()?;
+        let manifest_path = root.join(DEFAULT_MANIFEST);
+        let (_manifest, artifact) = build_status_artifact(&root, &manifest_path, Cadence::Pr)?;
+        let registry = registry::MetricRegistry::load()?;
+        registry.validate_conformance(&artifact.metrics)?;
+
+        // Replace a registered row exactly the way a post-`apply` sync step would: rebuilt
+        // through `measured_value`, so it carries the placeholder direction and confidence.
+        let mut mutated = artifact.metrics.clone();
+        let index = mutated
+            .iter()
+            .position(|row| row.name() == "peak_rss_mb")
+            .expect("peak_rss_mb is emitted by the canonical run");
+        mutated[index] = measured_value("peak_rss_mb", 12.0, 1, Cadence::Pr);
+
+        let err = registry
+            .validate_conformance(&mutated)
+            .expect_err("a placeholder row reintroduced after apply must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("peak_rss_mb") && message.contains("direction"),
+            "expected a direction disagreement, got: {message}"
         );
         Ok(())
     }

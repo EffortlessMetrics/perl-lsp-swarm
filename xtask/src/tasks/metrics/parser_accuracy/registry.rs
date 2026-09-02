@@ -16,6 +16,22 @@
 //! * [`MetricRegistry::validate_conformance`] then fails the artifact build closed when a
 //!   row and its registry entry disagree.
 //!
+//! # Scope of the `direction` field
+//!
+//! This registry owns the `direction` published in the scorecard artifact. It is **not**
+//! the authority the ratchet uses: `super::ratchet` independently infers higher/lower-is-
+//! better from a metric-name suffix convention (`_count`, `_nodes`, `_unreadable`) plus a
+//! per-baseline `lower_is_better` override list, and reads nothing from here. The two agree
+//! for every metric currently in `.ci/metrics/baselines/parser_accuracy.json`, but they
+//! disagree for a number of metrics not yet baselined — notably the `*_ms_p95` durations,
+//! `peak_rss_mb`, `allocated_bytes`, and the `symbols_emitted_in_*` rows, which this
+//! registry calls `down` while the suffix heuristic would call them `up`.
+//!
+//! So adding one of those to a ratchet baseline requires setting `lower_is_better` there as
+//! well; this registry will not do it for you. Reconciling the two onto one authority is
+//! tracked on parent #8189 and deliberately out of scope here, so that this change moves no
+//! existing gate.
+//!
 //! Controlling issue: #14553 (parent #8189).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,6 +43,31 @@ use super::{Cadence, Confidence, Direction, MetricRow};
 
 /// Repository-relative path of the authored registry, for diagnostics and tests.
 pub(super) const REGISTRY_PATH: &str = ".ci/policies/parser-accuracy-metrics.toml";
+
+/// Evidence planes a metric may be assigned to.
+///
+/// A closed vocabulary so a typo or an invented plane fails the registry's own validation
+/// rather than becoming a silently accepted ownership label. Emitted rows carry no family
+/// field, so this is the only place the label can be checked.
+const KNOWN_FAMILIES: &[&str] = &[
+    "ast",
+    "cache_reuse",
+    "confidence",
+    "cost",
+    "denominator",
+    "determinism",
+    "gold_drift",
+    "incremental",
+    "line",
+    "provider",
+    "recovery",
+    "runtime",
+    "safety",
+    "scale",
+    "span",
+    "symbol",
+    "unsupported",
+];
 
 /// The authored registry, embedded so the compiled validator and the reviewed artifact
 /// cannot drift apart.
@@ -100,6 +141,19 @@ impl MetricPolicy {
         }
     }
 
+    /// Whether `value` has the shape the declared kind implies.
+    ///
+    /// A tally of occurrences or a size in bytes is a whole number; a fractional one means
+    /// the emitter computed an average or a rate and reported it under a counting metric.
+    /// Ratios are constrained by their declared range instead, and durations and scalars are
+    /// legitimately fractional.
+    fn accepts_shape(&self, value: f64) -> bool {
+        match self.kind {
+            MetricKind::Count | MetricKind::Bytes => value.fract() == 0.0,
+            MetricKind::Ratio | MetricKind::DurationMs | MetricKind::Scalar => true,
+        }
+    }
+
     /// Human-readable rendering of the declared range, for failure messages.
     fn range_label(&self) -> String {
         match self.max {
@@ -150,8 +204,13 @@ impl MetricRegistry {
             if policy.name.trim().is_empty() {
                 bail!("{REGISTRY_PATH} declares a metric with an empty name");
             }
-            if policy.family.trim().is_empty() {
-                bail!("{REGISTRY_PATH} metric '{}' declares an empty family", policy.name);
+            if !KNOWN_FAMILIES.contains(&policy.family.as_str()) {
+                bail!(
+                    "{REGISTRY_PATH} metric '{}' declares unknown family '{}'; expected one of {}",
+                    policy.name,
+                    policy.family,
+                    KNOWN_FAMILIES.join(", ")
+                );
             }
             if policy.cadences.is_empty() {
                 bail!("{REGISTRY_PATH} metric '{}' declares no eligible cadences", policy.name);
@@ -271,6 +330,13 @@ impl MetricRegistry {
                     policy.range_label()
                 );
             }
+            if !policy.accepts_shape(*value) {
+                bail!(
+                    "parser accuracy metric '{metric}' is declared {:?} but reported the \
+                     fractional value {value}",
+                    policy.kind
+                );
+            }
             if policy.zero_budget && *value != 0.0 {
                 bail!(
                     "parser accuracy metric '{metric}' carries a zero budget but reported {value}"
@@ -283,12 +349,15 @@ impl MetricRegistry {
                     policy.min_sample_count
                 );
             }
-            if *confidence == Confidence::High
-                && *sample_count < policy.high_confidence_sample_count
-            {
+            let permitted = policy.permitted_confidence(*sample_count);
+            if *confidence != permitted {
+                // Checked in both directions. An over-claim publishes a stronger result than
+                // the samples support; an under-claim is a quieter disagreement that still
+                // means the row and the registry were derived from different rules.
                 bail!(
-                    "parser accuracy metric '{metric}' claims high confidence from \
-                     {sample_count} sample(s); {} are required",
+                    "parser accuracy metric '{metric}' reports {confidence:?} confidence from \
+                     {sample_count} sample(s), but the registry permits {permitted:?} \
+                     (high requires {})",
                     policy.high_confidence_sample_count
                 );
             }
@@ -487,7 +556,21 @@ cadences = ["pr"]
         // so the hardcoded `Confidence::High` on this row is now a violation.
         let rows = vec![measured("sample_rate", 0.5, 3)];
         let err = registry.validate_conformance(&rows).expect_err("over-claim must fail");
-        assert!(err.to_string().contains("claims high confidence from 3 sample(s)"), "{err}");
+        assert!(err.to_string().contains("reports High confidence from 3 sample(s)"), "{err}");
+    }
+
+    #[test]
+    fn under_claimed_confidence_is_rejected() {
+        // The opposite direction. An under-claim is not "safe": it still means the row was
+        // derived from a different rule than the registry's, which is the drift this check
+        // exists to catch.
+        let registry = ratio_registry();
+        let mut row = measured("sample_rate", 0.5, 9);
+        if let MetricRow::Measured { confidence, .. } = &mut row {
+            *confidence = Confidence::Low;
+        }
+        let err = registry.validate_conformance(&[row]).expect_err("under-claim must fail");
+        assert!(err.to_string().contains("reports Low confidence from 9 sample(s)"), "{err}");
     }
 
     #[test]
@@ -593,6 +676,93 @@ cadences = ["pr"]
         )
         .expect_err("incoherent thresholds must fail");
         assert!(err.to_string().contains("below min_sample_count"), "{err}");
+    }
+
+    #[test]
+    fn fractional_count_value_is_rejected() {
+        // A count is a tally. A fractional one means the emitter reported an average or a
+        // rate under a counting metric, which the declared range alone cannot catch.
+        let registry = one_metric_registry(
+            r#"name = "widget_count"
+family = "line"
+kind = "count"
+direction = "down"
+min = 0.0
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr"]
+"#,
+        )
+        .expect("fixture registry is coherent");
+
+        let mut row = measured("widget_count", 2.5, 9);
+        if let MetricRow::Measured { direction, .. } = &mut row {
+            *direction = Direction::Down;
+        }
+        let err = registry.validate_conformance(&[row]).expect_err("fractional count must fail");
+        assert!(err.to_string().contains("reported the fractional value 2.5"), "{err}");
+    }
+
+    #[test]
+    fn whole_count_value_is_accepted() {
+        let registry = one_metric_registry(
+            r#"name = "widget_count"
+family = "line"
+kind = "count"
+direction = "down"
+min = 0.0
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr"]
+"#,
+        )
+        .expect("fixture registry is coherent");
+
+        let mut row = measured("widget_count", 3.0, 9);
+        if let MetricRow::Measured { direction, .. } = &mut row {
+            *direction = Direction::Down;
+        }
+        registry.validate_conformance(&[row]).expect("a whole count is well shaped");
+    }
+
+    #[test]
+    fn fractional_duration_is_accepted() {
+        // Durations are legitimately fractional; the shape rule must not over-reach.
+        let registry = one_metric_registry(
+            r#"name = "widget_ms_p95"
+family = "cost"
+kind = "duration_ms"
+direction = "down"
+min = 0.0
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr"]
+"#,
+        )
+        .expect("fixture registry is coherent");
+
+        let mut row = measured("widget_ms_p95", 0.0155, 9);
+        if let MetricRow::Measured { direction, .. } = &mut row {
+            *direction = Direction::Down;
+        }
+        registry.validate_conformance(&[row]).expect("a fractional duration is well shaped");
+    }
+
+    #[test]
+    fn unknown_family_is_rejected() {
+        let err = one_metric_registry(
+            r#"name = "orphan"
+family = "not_a_plane"
+kind = "count"
+direction = "down"
+min = 0.0
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr"]
+"#,
+        )
+        .expect_err("unknown family must fail");
+        assert!(err.to_string().contains("declares unknown family 'not_a_plane'"), "{err}");
     }
 
     #[test]
