@@ -54,8 +54,13 @@ pub const CODE_LOADING_VARIABLES: &[&str] = &[
 ];
 
 /// Whether a variable name is a known code-loading vector.
+///
+/// Compared case-insensitively. Environment variable names are case-sensitive
+/// on Unix but not on Windows, and the safe direction of that ambiguity is to
+/// treat `Perl5Lib` as the loader variable it resembles rather than to let a
+/// spelling walk past the acknowledgement gate.
 pub fn is_code_loading_variable(name: &EnvVarName) -> bool {
-    CODE_LOADING_VARIABLES.contains(&name.as_str())
+    CODE_LOADING_VARIABLES.iter().any(|known| known.eq_ignore_ascii_case(name.as_str()))
 }
 
 /// How the child treats the supervisor's ambient environment.
@@ -231,7 +236,7 @@ impl EnvironmentProjection {
                 CODE_LOADING_VARIABLES
                     .iter()
                     .map(|name| EnvVarName::new(*name))
-                    .filter(|name| !self.denied.contains(name)),
+                    .filter(|name| !self.denied.contains(name) && !self.removed.contains(name)),
             );
         }
         admitted.sort();

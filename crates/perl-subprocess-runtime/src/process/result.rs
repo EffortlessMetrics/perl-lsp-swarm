@@ -438,6 +438,94 @@ pub struct WorkMetadata {
     pub events_emitted: u64,
 }
 
+/// Why a set of result components could not describe one coherent run.
+///
+/// Assembling a result is where evidence becomes a claim, so the combinations
+/// that would make the claim false are refused here rather than documented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultInconsistency {
+    /// Stream evidence was supplied for the wrong channel.
+    StreamChannelMismatch {
+        /// The channel the slot requires.
+        expected: StreamChannel,
+        /// The channel the evidence carries.
+        found: StreamChannel,
+    },
+    /// Evidence claims completeness but retains a different number of bytes
+    /// than it observed.
+    CompleteEvidenceCountMismatch {
+        /// The channel whose evidence is inconsistent.
+        channel: StreamChannel,
+    },
+    /// Evidence claims completeness but its fingerprint is not the fingerprint
+    /// of the bytes it retained.
+    CompleteEvidenceFingerprintMismatch {
+        /// The channel whose evidence is inconsistent.
+        channel: StreamChannel,
+    },
+    /// More bytes were retained than were ever observed.
+    RetainedExceedsObserved {
+        /// The channel whose evidence is inconsistent.
+        channel: StreamChannel,
+    },
+    /// A completed child exit was paired with a failed cleanup.
+    ///
+    /// The terminal precedence in [`TerminalDisposition::elect`] puts cleanup
+    /// failure above a completed exit, so this pairing would let a run whose
+    /// cleanup failed report an ordinary success.
+    CompletedExitWithFailedCleanup,
+}
+
+impl std::fmt::Display for ResultInconsistency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StreamChannelMismatch { expected, found } => {
+                write!(f, "expected {expected:?} evidence but found {found:?}")
+            }
+            Self::CompleteEvidenceCountMismatch { channel } => {
+                write!(f, "{channel:?} evidence claims completeness with a mismatched byte count")
+            }
+            Self::CompleteEvidenceFingerprintMismatch { channel } => {
+                write!(f, "{channel:?} evidence claims completeness with a mismatched fingerprint")
+            }
+            Self::RetainedExceedsObserved { channel } => {
+                write!(f, "{channel:?} evidence retains more bytes than it observed")
+            }
+            Self::CompletedExitWithFailedCleanup => {
+                f.write_str("a completed exit cannot be paired with a failed cleanup")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ResultInconsistency {}
+
+fn check_stream(
+    evidence: &StreamEvidence,
+    expected: StreamChannel,
+) -> Result<(), ResultInconsistency> {
+    if evidence.channel() != expected {
+        return Err(ResultInconsistency::StreamChannelMismatch {
+            expected,
+            found: evidence.channel(),
+        });
+    }
+    if evidence.retained().len() as u64 > evidence.observed_bytes() {
+        return Err(ResultInconsistency::RetainedExceedsObserved { channel: expected });
+    }
+    if evidence.truncation().is_complete() {
+        if evidence.observed_bytes() != evidence.retained().len() as u64 {
+            return Err(ResultInconsistency::CompleteEvidenceCountMismatch { channel: expected });
+        }
+        if evidence.observed_fingerprint() != ContentFingerprint::of(evidence.retained()) {
+            return Err(ResultInconsistency::CompleteEvidenceFingerprintMismatch {
+                channel: expected,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The terminal truth about one start attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessResult {
@@ -473,7 +561,12 @@ impl ProcessResult {
         backend: BackendIdentity,
         work: WorkMetadata,
         mut limitations: Vec<Limitation>,
-    ) -> Self {
+    ) -> Result<Self, ResultInconsistency> {
+        check_stream(&stdout, StreamChannel::Stdout)?;
+        check_stream(&stderr, StreamChannel::Stderr)?;
+        if disposition.is_completed_exit() && cleanup == CleanupDisposition::Failed {
+            return Err(ResultInconsistency::CompletedExitWithFailedCleanup);
+        }
         limitations.push(Limitation::NoIsolationClaimed);
         if backend.evidence_class() == EvidenceClass::Fake {
             limitations.push(Limitation::FakeEvidenceOnly);
@@ -496,7 +589,7 @@ impl ProcessResult {
         }
         limitations.sort();
         limitations.dedup();
-        Self {
+        Ok(Self {
             schema_version: super::PROCESS_DOMAIN_SCHEMA_VERSION,
             plan_id,
             plan_fingerprint,
@@ -508,6 +601,39 @@ impl ProcessResult {
             tree,
             backend,
             work,
+            limitations,
+        })
+    }
+
+    /// Assemble a supervisor-failure result that cannot itself be inconsistent.
+    ///
+    /// A backend needs a result it can always produce when assembling the real
+    /// one fails; empty evidence with no cleanup requirement is coherent by
+    /// construction.
+    pub fn supervisor_failure(
+        plan_id: PlanId,
+        plan_fingerprint: PlanFingerprint,
+        run_id: RunId,
+        backend: BackendIdentity,
+    ) -> Self {
+        let mut limitations = vec![Limitation::NoIsolationClaimed];
+        if backend.evidence_class() == EvidenceClass::Fake {
+            limitations.push(Limitation::FakeEvidenceOnly);
+        }
+        limitations.sort();
+        limitations.dedup();
+        Self {
+            schema_version: super::PROCESS_DOMAIN_SCHEMA_VERSION,
+            plan_id,
+            plan_fingerprint,
+            run_id,
+            disposition: TerminalDisposition::SupervisorFailed,
+            stdout: StreamEvidence::empty(StreamChannel::Stdout),
+            stderr: StreamEvidence::empty(StreamChannel::Stderr),
+            cleanup: CleanupDisposition::NotRequired,
+            tree: TreeDisposition::NotRequired,
+            backend,
+            work: WorkMetadata::default(),
             limitations,
         }
     }

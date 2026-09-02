@@ -88,6 +88,33 @@ dependency before any test could run in the other. Both were re-run correctly
 and both controls killed their mutation. A mutation that "survives" without
 the test binary having been built is not evidence of anything.
 
+### External bot review lens (Devin)
+
+Nine findings, all verified against the code and all repaired. The first was a
+genuine panic in production code, introduced by the previous repair commit.
+
+| Severity | Finding | Repair | Control | Mutation replay |
+|---|---|---|---|---|
+| critical | `arg[..prefix.len()]` panics when the byte index lands inside a multi-byte character, so an accented argument terminates the caller — in a crate that forbids production panics | `arg.get(..)` | `a_multibyte_argument_cannot_crash_the_validator` | KILLED |
+| security | a plan labelling `/bin/sh` as "perl" kept unrestricted shell execution, because the rule keyed on the caller-supplied logical name | the resolved path's file name is checked too | `a_shell_renamed_by_its_plan_is_still_a_shell` | KILLED |
+| security | authorization evidence with an empty reference validated, so a plan could claim authority naming no decision a backend can verify | blank references refused | `authorization_must_identify_a_decision` | — |
+| security | `is_code_loading_variable` compared case-sensitively, so `Perl5Lib` evaded the acknowledgement gate | case-insensitive, the fail-safe direction | `a_mixed_case_loader_variable_does_not_evade_the_gate` | KILLED |
+| correctness | durations encoded as milliseconds, so two plans with different sub-millisecond timing shared one identity — breaking the injectivity the canonical encoding exists for | seconds and nanoseconds encoded separately | `submillisecond_policy_differences_change_the_plan_identity` | KILLED |
+| correctness | `PrivatePath::fingerprint` hashed `to_string_lossy`, which is not injective for non-UTF-8 Unix paths, so two different executables shared a public identity | platform-native bytes with a platform tag | `distinct_non_utf8_paths_keep_distinct_identities` | KILLED |
+| correctness | a *removed* loader variable still counted as admitted, so a plan that eliminated the risk was still forced to acknowledge it | removed names excluded | `a_removed_loader_variable_is_not_admitted` | — |
+| correctness | `ProcessResult::new` accepted swapped channels and evidence claiming a completeness it lacked | `ProcessResult::new` is fallible and validates stream coherence | `a_result_cannot_carry_swapped_or_incoherent_stream_evidence` | KILLED |
+| correctness | `CompletedExit { code: 0 }` could be paired with `CleanupDisposition::Failed`, so `is_ordinary_success` returned true for a run whose cleanup failed — bypassing the precedence rule by constructing the result directly | that pairing is refused | `a_completed_exit_cannot_be_paired_with_a_failed_cleanup` | KILLED |
+
+The locked canonical fingerprint moved to `1ec851f73284fbebad7abfd4c5662ac8`
+because the duration and path encodings legitimately changed. That is the
+locked-fingerprint control working: the encoding cannot change quietly.
+
+A second methodological note: the panic control first reported its mutation as
+surviving, and the fault was in the *fixture*, not the control —
+`is_shell_invocation` short-circuits on a non-shell executable, so the argument
+scan never ran. A control whose fixture cannot reach the code under test proves
+nothing, and the replay is what exposed it.
+
 ## Terminal precedence
 
 Fixed and total, highest first:

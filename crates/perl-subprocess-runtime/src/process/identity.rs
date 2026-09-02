@@ -57,8 +57,13 @@ impl PrivatePath {
     }
 
     /// The public stand-in for this path.
+    ///
+    /// Fingerprints the platform-native representation, not a lossy string.
+    /// On Unix a path is arbitrary bytes, so `to_string_lossy` maps distinct
+    /// paths onto the same replacement-character string and would hand two
+    /// different executables one identity.
     pub fn fingerprint(&self) -> PathFingerprint {
-        PathFingerprint::of_str(&self.0.to_string_lossy())
+        PathFingerprint::of_native(self.0.as_os_str())
     }
 
     /// Whether the path is absolute.

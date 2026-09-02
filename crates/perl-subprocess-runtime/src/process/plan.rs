@@ -11,6 +11,16 @@ use super::identity::{
     fingerprint_of_bytes,
 };
 
+/// Encode a duration without losing precision.
+///
+/// Seconds and nanoseconds are encoded separately. Truncating to milliseconds
+/// would give two plans with different timing behavior the same identity,
+/// which breaks the injectivity the canonical encoding is for.
+fn encode_duration(encoder: &mut CanonicalEncoder, duration: Duration) {
+    encoder.unsigned(duration.as_secs());
+    encoder.unsigned(u64::from(duration.subsec_nanos()));
+}
+
 /// The largest capture budget a plan may declare (1 GiB).
 ///
 /// Beyond this a "bounded" claim is not credible on a developer machine.
@@ -133,7 +143,7 @@ impl DeadlinePolicy {
             }
             Self::Wall(duration) => {
                 encoder.variant(1);
-                encoder.unsigned(duration.as_millis().min(u128::from(u64::MAX)) as u64);
+                encode_duration(encoder, *duration);
             }
         }
     }
@@ -161,7 +171,7 @@ impl CancellationPolicy {
             }
             Self::Cooperative { grace } => {
                 encoder.variant(1);
-                encoder.unsigned(grace.as_millis().min(u128::from(u64::MAX)) as u64);
+                encode_duration(encoder, *grace);
             }
         }
     }
@@ -200,7 +210,7 @@ impl TerminationPolicy {
             }
             Self::ProcessTree { graceful, then_forced } => {
                 encoder.variant(1);
-                encoder.unsigned(graceful.as_millis().min(u128::from(u64::MAX)) as u64);
+                encode_duration(encoder, *graceful);
                 encoder.flag(*then_forced);
             }
         }

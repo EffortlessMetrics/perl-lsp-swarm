@@ -215,9 +215,34 @@ impl fmt::Display for ContentFingerprint {
 pub struct PathFingerprint(Fingerprint);
 
 impl PathFingerprint {
-    /// Fingerprint a path's raw string form.
-    pub(crate) fn of_str(path: &str) -> Self {
-        Self(Fingerprint::of(path.as_bytes()))
+    /// Fingerprint a path's platform-native representation.
+    ///
+    /// A platform tag is included so that a Unix byte path and a Windows wide
+    /// path cannot collide across the encodings.
+    pub(crate) fn of_native(path: &std::ffi::OsStr) -> Self {
+        let mut bytes: Vec<u8> = Vec::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            bytes.push(b'u');
+            bytes.extend_from_slice(path.as_bytes());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            bytes.push(b'w');
+            for unit in path.encode_wide() {
+                bytes.extend_from_slice(&unit.to_be_bytes());
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            // No native byte view is available; a lossy string is the only
+            // representation, and its limitation is recorded here.
+            bytes.push(b'o');
+            bytes.extend_from_slice(path.to_string_lossy().as_bytes());
+        }
+        Self(Fingerprint::of(&bytes))
     }
 
     /// The underlying fingerprint.

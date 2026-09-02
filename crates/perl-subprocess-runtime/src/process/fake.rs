@@ -218,9 +218,9 @@ fn refusal_result(
     disposition: TerminalDisposition,
 ) -> ProcessResult {
     ProcessResult::new(
-        plan_id,
+        plan_id.clone(),
         fingerprint,
-        run_id,
+        run_id.clone(),
         disposition,
         StreamEvidence::empty(StreamChannel::Stdout),
         StreamEvidence::empty(StreamChannel::Stderr),
@@ -230,6 +230,9 @@ fn refusal_result(
         WorkMetadata::default(),
         Vec::new(),
     )
+    .unwrap_or_else(|_| {
+        ProcessResult::supervisor_failure(plan_id, fingerprint, run_id, fake_backend())
+    })
 }
 
 /// A handle over a scripted run.
@@ -281,6 +284,12 @@ impl FakeHandle {
         TerminalDisposition::elect(self.run.control, self.run.settlement)
     }
 
+    /// Assemble the scripted result.
+    ///
+    /// A script that describes an incoherent run — swapped channels, evidence
+    /// that claims completeness it does not have, a completed exit alongside a
+    /// failed cleanup — settles as a supervisor failure rather than becoming a
+    /// result that asserts something untrue.
     fn build_result(&self) -> ProcessResult {
         ProcessResult::new(
             self.plan_id.clone(),
@@ -298,6 +307,14 @@ impl FakeHandle {
             },
             Vec::new(),
         )
+        .unwrap_or_else(|_| {
+            ProcessResult::supervisor_failure(
+                self.plan_id.clone(),
+                self.fingerprint,
+                self.run_id.clone(),
+                fake_backend(),
+            )
+        })
     }
 }
 

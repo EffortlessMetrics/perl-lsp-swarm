@@ -301,8 +301,21 @@ fn validate_invocation(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     if logical_name.contains('\0') || plan.argv().iter().any(|arg| arg.contains('\0')) {
         return Err(PlanRejection::NulByteInInvocation);
     }
-    if is_shell_invocation(logical_name, plan.argv()) {
-        return Err(PlanRejection::ShellInvocationRejected { shell: logical_name.to_string() });
+    // Check the resolved path as well as the label. A plan that calls
+    // `/bin/sh` "perl" is still handing a shell an inline command, and the
+    // label is caller-supplied text that must not become authority.
+    let resolved_file_name = match executable.resolution() {
+        ExecutableResolution::Resolved { path, .. } => path
+            .expose()
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        ExecutableResolution::Unresolved => String::new(),
+    };
+    for candidate in [logical_name, resolved_file_name.as_str()] {
+        if is_shell_invocation(candidate, plan.argv()) {
+            return Err(PlanRejection::ShellInvocationRejected { shell: candidate.to_string() });
+        }
     }
     match executable.resolution() {
         ExecutableResolution::Unresolved => Err(PlanRejection::UnresolvedExecutableIdentity),
@@ -326,7 +339,10 @@ fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
         && argv.iter().any(|arg| {
             INLINE_COMMAND_FLAGS.iter().any(|flag| flag.eq_ignore_ascii_case(arg))
                 || INLINE_COMMAND_PREFIXES.iter().any(|prefix| {
-                    arg.len() >= prefix.len() && arg[..prefix.len()].eq_ignore_ascii_case(prefix)
+                    // `get` rather than a slice: a byte index that lands inside
+                    // a multi-byte character panics, and an argument is
+                    // arbitrary caller text.
+                    arg.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
                 })
         })
 }
@@ -443,6 +459,10 @@ fn validate_authorization(plan: &ProcessPlan) -> Result<(), PlanRejection> {
         EvidenceFreshness::Current => {}
         EvidenceFreshness::Stale => return Err(PlanRejection::StaleAuthorizationEvidence),
         EvidenceFreshness::Unknown => return Err(PlanRejection::MissingAuthorizationEvidence),
+    }
+    if authorization.reference().trim().is_empty() {
+        // Authority that names no decision cannot be verified by any backend.
+        return Err(PlanRejection::InsufficientAuthorizationEvidence);
     }
     if authorization.strength() == AuthorizationStrength::NotProven {
         return Err(PlanRejection::InsufficientAuthorizationEvidence);

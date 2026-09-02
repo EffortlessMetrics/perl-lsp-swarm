@@ -71,9 +71,9 @@ pub use port::{
 };
 pub use result::{
     BackendIdentity, CancellationReason, CleanupDisposition, ControlState, DecodedViewLimitation,
-    EvidenceClass, Limitation, ObservedSettlement, ProcessResult, SpawnFailureDetail,
-    StreamChannel, StreamEvidence, TerminalDisposition, TreeDisposition, TruncationState,
-    WorkMetadata,
+    EvidenceClass, Limitation, ObservedSettlement, ProcessResult, ResultInconsistency,
+    SpawnFailureDetail, StreamChannel, StreamEvidence, TerminalDisposition, TreeDisposition,
+    TruncationState, WorkMetadata,
 };
 pub use validation::{BudgetChannel, PlanRejection, ValidatedProcessPlan};
 
