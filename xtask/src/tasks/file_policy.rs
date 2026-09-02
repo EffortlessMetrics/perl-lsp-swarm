@@ -2313,9 +2313,12 @@ fn check_allowlist_entries(
         }
 
         // --- Broad glob without reason ---
+        // Emptiness is judged the same way schema validation judges it: a
+        // blank or whitespace-only justification is an absent one, or a broad
+        // glob could satisfy enforcement with `broad_glob_reason = ""`.
         if let Some(ref glob_str) = entry.glob
             && is_policy_broad_glob(glob_str)
-            && entry.broad_glob_reason.is_none()
+            && entry.broad_glob_reason.as_deref().is_none_or(|reason| reason.trim().is_empty())
         {
             violations.push(PolicyViolation {
                 kind: "broad-glob-no-reason".to_string(),
@@ -3792,21 +3795,41 @@ review_after = "2026-06-01"
         // used to consult different predicates, so an entry could be refused by
         // one and waved through by the other.
         for glob in ["docs/**/README.md", "fixtures/pkt/**/*.json", "docs/**", "**/*.md"] {
-            let entry = make_entry("tree", Some(glob), None, "documentation");
-            assert!(entry.broad_glob_reason.is_none());
+            // A blank justification is treated as absent on both sides;
+            // otherwise `broad_glob_reason = ""` would satisfy enforcement
+            // while schema validation still refused the entry.
+            for reason in [None, Some(String::new()), Some("   \n".to_string())] {
+                let mut entry = make_entry("tree", Some(glob), None, "documentation");
+                entry.broad_glob_reason = reason.clone();
 
-            let strict = check_allowlist_entries(
-                std::slice::from_ref(&entry),
+                let strict = check_allowlist_entries(
+                    std::slice::from_ref(&entry),
+                    CheckFilePolicyMode::BlockingStrict,
+                    &[],
+                );
+                assert!(
+                    violation_kinds(&strict).contains(&"broad-glob-no-reason"),
+                    "blocking-strict must refuse {glob} with justification {reason:?}"
+                );
+            }
+
+            assert!(
+                is_policy_broad_glob(glob),
+                "schema validation must agree that {glob} is broad"
+            );
+
+            // Positive control: a real justification satisfies enforcement, so
+            // the rule cannot be passing by refusing everything.
+            let mut justified = make_entry("tree", Some(glob), None, "documentation");
+            justified.broad_glob_reason = Some("Bounded by one owned tree.".to_string());
+            let accepted = check_allowlist_entries(
+                std::slice::from_ref(&justified),
                 CheckFilePolicyMode::BlockingStrict,
                 &[],
             );
             assert!(
-                violation_kinds(&strict).contains(&"broad-glob-no-reason"),
-                "blocking-strict must refuse {glob} without a justification"
-            );
-            assert!(
-                is_policy_broad_glob(glob),
-                "schema validation must agree that {glob} is broad"
+                !violation_kinds(&accepted).contains(&"broad-glob-no-reason"),
+                "a justified {glob} must not be refused"
             );
         }
     }
