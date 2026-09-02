@@ -3854,7 +3854,17 @@ review_after = "2026-08-13"
         let debt = temp.path().join("debt.toml");
         fs::write(
             &debt,
-            "[[debt]]\nid = \\"debt-a\\"\npath = \\"legacy/a.py\\"\nreason = \\"classification pending\\"\n\n[[debt]]\nid = \\"debt-b\\"\npath = \\"legacy/b.py\\"\nreason = \\"classification pending\\"\n",
+            r#"
+[[debt]]
+id = "debt-a"
+path = "legacy/a.py"
+reason = "classification pending"
+
+[[debt]]
+id = "debt-b"
+path = "legacy/b.py"
+reason = "classification pending"
+"#
         )?;
         let mut errors = Vec::new();
         let count = validate_policy_table(&debt, "debt", false, &mut errors);
