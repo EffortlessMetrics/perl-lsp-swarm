@@ -1671,6 +1671,11 @@ pub(crate) fn last_probe_pid_for_test() -> Option<u32> {
 }
 
 #[cfg(test)]
+pub(crate) fn clear_last_probe_pid_for_test() {
+    LAST_PROBE_PID.store(0, Ordering::Release);
+}
+
+#[cfg(test)]
 fn defer_probe_child_for_test(child: Child) {
     let children = DEFERRED_PROBE_CHILDREN.get_or_init(|| Mutex::new(Vec::new()));
     let mut children = match children.lock() {

@@ -441,6 +441,7 @@ fn main() {
         let descendant_pid_file = controls.path().join("assignment-failure.pid");
         let assignment_binary = hanging.clone();
         let assignment_descendant_binary = descendant.clone();
+        common::clear_last_probe_pid_for_test();
         let probe = std::thread::spawn(move || {
             common::probe_debuggee_perl_for_test_with_job_assignment_failure(
                 &assignment_binary,
