@@ -76,7 +76,13 @@ class ObservationTest(unittest.TestCase):
         self.server.write_bytes(b"server-bytes")
         self.dap.write_bytes(b"dap-bytes")
         self.archive = self.root / "product-unit.zip"
-        result = MODULE.main(
+        self.package("linux")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def package(self, platform: str = "linux") -> None:
+        result = self.run_row(
             [
                 "package",
                 "--source-sha",
@@ -84,7 +90,7 @@ class ObservationTest(unittest.TestCase):
                 "--source-version",
                 VERSION,
                 "--platform",
-                "linux",
+                platform,
                 "--architecture",
                 "x64",
                 "--server",
@@ -96,9 +102,6 @@ class ObservationTest(unittest.TestCase):
             ]
         )
         self.assertEqual(result, 0)
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
 
     def run_row(self, argv: list[str]) -> int:
         return MODULE.main(argv)
@@ -244,6 +247,57 @@ class ObservationTest(unittest.TestCase):
         )
         self.assertTrue(
             any("instrument" in finding for finding in row["findings"])
+        )
+
+    def windows_receipt(self, behavioral: dict[str, object]) -> dict[str, object]:
+        receipt = smoke_receipt(
+            self.server,
+            platform="win32",
+            vscode_version="stable",
+            stages={"behavioral_smoke": behavioral},
+        )
+        receipt["overall"] = (
+            "pass" if behavioral.get("status") == "pass" else "failed"
+        )
+        return receipt
+
+    def test_windows_behavioral_guard_is_unsupported_not_product_defect(self) -> None:
+        self.package("windows")
+        row = self.build_row(
+            receipt=self.windows_receipt(
+                {"status": "failed", "reason": "published_extension_smoke_failed"}
+            ),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+            smoke_outcome="failure",
+        )
+        # The candidate-bound journey cannot execute on Windows by product
+        # policy; its failure is the guard boundary, never a product defect.
+        self.assertEqual(
+            row["cells"]["packaged_provider_edit_journey"],
+            "unsupported_or_withdrawn",
+        )
+        self.assertNotEqual(row["status"], "blocked")
+        self.assertTrue(
+            any("policy-restricted" in finding for finding in row["findings"])
+        )
+
+    def test_windows_behavioral_pass_contradicts_policy(self) -> None:
+        self.package("windows")
+        row = self.build_row(
+            receipt=self.windows_receipt({"status": "pass"}),
+            row_id="windows-current",
+            platform="windows",
+            vscode_version="stable",
+        )
+        # A candidate-bound behavioral pass on Windows means the product
+        # policy moved; the row must be reclassified, not trusted.
+        self.assertEqual(
+            row["cells"]["packaged_provider_edit_journey"], "instrument_defect"
+        )
+        self.assertTrue(
+            any("policy drifted" in finding for finding in row["findings"])
         )
 
     def test_arbitrary_archive_bytes_cannot_pass(self) -> None:
@@ -421,7 +475,7 @@ class FanInTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp.name)
         self.topology = self.root / "release-topology.json"
-        self.topology.write_text("{}\n", encoding="utf-8")
+        write_json(self.topology, {"release": VERSION, "frozen_product_sha": SHA})
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -436,6 +490,7 @@ class FanInTest(unittest.TestCase):
         status: str | None = None,
         subject_override: dict[str, object] | None = None,
         nested_layout: bool = False,
+        findings: list[str] | None = None,
     ) -> None:
         spec = MODULE.ROW_SPECS.get(
             row_id,
@@ -491,6 +546,7 @@ class FanInTest(unittest.TestCase):
                 "overall": "pass",
             },
             "cells": cell_map,
+            "findings": findings or [],
             "zero_budget_counts": {
                 key: (
                     1
@@ -709,6 +765,51 @@ class FanInTest(unittest.TestCase):
             any(
                 "invalid verdict" in item
                 for item in packet["instrument_defects"]
+            )
+        )
+
+    def test_topology_from_another_release_fails_closed(self) -> None:
+        for row_id in MODULE.REQUIRED_ROWS:
+            self.row(row_id)
+        write_json(
+            self.topology, {"release": "9.9.9", "frozen_product_sha": SHA}
+        )
+        _, packet = self.fan_in()
+        self.assertEqual(packet["freeze_recommendation"], "not_proven")
+        self.assertIsNone(packet["release_topology_digest"])
+        self.assertTrue(
+            any(
+                "release" in item and "9.9.9" in item
+                for item in packet["instrument_defects"]
+            )
+        )
+
+    def test_topology_from_another_source_sha_fails_closed(self) -> None:
+        for row_id in MODULE.REQUIRED_ROWS:
+            self.row(row_id)
+        write_json(
+            self.topology, {"release": VERSION, "frozen_product_sha": OTHER_SHA}
+        )
+        _, packet = self.fan_in()
+        self.assertEqual(packet["freeze_recommendation"], "not_proven")
+        self.assertIsNone(packet["release_topology_digest"])
+
+    def test_row_findings_survive_fan_in(self) -> None:
+        self.row("linux-minimum")
+        self.row("linux-current")
+        self.row(
+            "windows-current",
+            verdict="unsupported_or_withdrawn",
+            findings=[
+                "current-source smoke instrument reported a failure; affected "
+                "cells are instrument evidence, not product evidence"
+            ],
+        )
+        _, packet = self.fan_in()
+        self.assertTrue(
+            any(
+                "instrument reported a failure" in item
+                for item in packet["row_findings"]["windows-current"]
             )
         )
 

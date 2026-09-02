@@ -98,7 +98,10 @@ jobs:
           value = package.get('engines', {}).get('vscode')
           if not isinstance(value, str):
               raise SystemExit('VS Code engine range missing')
-          match = re.search(r'(\d+\.\d+\.\d+)', value)
+          # Fail closed unless the engine range is exactly a caret-pinned
+          # version; a compound or reordered range must never be silently
+          # reduced to its first version substring.
+          match = re.fullmatch(r'\^(\d+\.\d+\.\d+)', value)
           if not match:
               raise SystemExit(f'cannot derive minimum VS Code version from {value!r}')
           print(match.group(1))

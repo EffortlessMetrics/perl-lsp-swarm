@@ -42,24 +42,35 @@ VERDICTS = {
 # The canonical row table: each required row id is bound to exactly one
 # platform, architecture, host role, and host-version selector kind. A row
 # that keeps its id but drifts on any of these axes is not that row.
+#
+# `behavioral` records the product's candidate-bound platform policy: the
+# packaged first-hour behavioral journey is candidate-bound and therefore
+# Linux-only (assertCandidateBoundPlatform in runPublishedSmoke.ts). On a
+# policy-restricted row the journey can never run, so its cell is honestly
+# unsupported_or_withdrawn; an observed pass there would contradict the
+# policy and is an instrument defect (policy drift), and a failure cannot be
+# a product defect because the journey never executed.
 ROW_SPECS: Mapping[str, Mapping[str, str]] = {
     "linux-minimum": {
         "platform": "linux",
         "architecture": "x64",
         "host_role": "minimum_supported",
         "host_selector": "concrete",
+        "behavioral": "observed",
     },
     "linux-current": {
         "platform": "linux",
         "architecture": "x64",
         "host_role": "current_stable",
         "host_selector": "stable",
+        "behavioral": "observed",
     },
     "windows-current": {
         "platform": "windows",
         "architecture": "x64",
         "host_role": "current_stable",
         "host_selector": "stable",
+        "behavioral": "policy_linux_only",
     },
 }
 REQUIRED_ROWS = tuple(ROW_SPECS)
@@ -618,6 +629,26 @@ def build_row(args: argparse.Namespace) -> int:
         if isinstance(behavioral_stage, dict)
         else None
     )
+
+    # Candidate-bound behavioral journeys are Linux-only by product policy
+    # (assertCandidateBoundPlatform). On a policy-restricted row the journey
+    # can never execute: a pass would contradict the policy (instrument
+    # defect), and a failure is the guard boundary, never product evidence.
+    if receipt is not None and row_spec(args.row_id)["behavioral"] != "observed":
+        findings.append(
+            "candidate-bound behavioral journey is policy-restricted to Linux; "
+            "this row's packaged_provider_edit_journey is unsupported_or_withdrawn"
+        )
+        if behavioral_status == "pass":
+            findings.append(
+                "candidate-bound behavioral stage passed on a policy-restricted "
+                "platform; the product policy drifted and this row must be "
+                "reclassified"
+            )
+            cells["packaged_provider_edit_journey"] = "instrument_defect"
+        else:
+            cells["packaged_provider_edit_journey"] = "unsupported_or_withdrawn"
+
     cleanup_failure = receipt.get("cleanup_failure") if receipt else "not_observed"
     if receipt is not None and cleanup_failure is None and behavioral_status == "pass":
         cells["process_cleanup"] = "pass"
@@ -920,9 +951,34 @@ def fan_in(args: argparse.Namespace) -> int:
     topology_digest = None
     try:
         exact_regular_file(topology_path, "release topology projection")
+        topology = read_json(topology_path)
+        if not isinstance(topology, dict):
+            raise ObservationError("release topology projection is not an object")
+        if topology.get("release") != args.source_version:
+            raise ObservationError(
+                "release topology projection is for release "
+                f"{topology.get('release')!r}, not {args.source_version!r}"
+            )
+        if topology.get("frozen_product_sha") != source_sha:
+            raise ObservationError(
+                "release topology projection is bound to a different source SHA"
+            )
         topology_digest = sha256(topology_path)
     except ObservationError as error:
         malformed.append(str(error))
+
+    # Row-level findings (including smoke instrument failures) must remain
+    # visible after fan-in; they are not verdicts, but they are evidence.
+    row_findings: dict[str, list[str]] = {}
+    for row_id in REQUIRED_ROWS:
+        row = observed.get(row_id)
+        if row_id not in validated_cells or not isinstance(row, dict):
+            continue
+        row_finding_list = row.get("findings")
+        if isinstance(row_finding_list, list):
+            row_findings[row_id] = sorted(
+                {str(item) for item in row_finding_list}
+            )
 
     if product_blockers:
         recommendation = "blocked"
@@ -980,6 +1036,7 @@ def fan_in(args: argparse.Namespace) -> int:
             "other_retained_targets": "not_proven",
         },
         "journey_cells": cells,
+        "row_findings": row_findings,
         "zero_budget_counts": aggregate_counts,
         "product_blockers": sorted(product_blockers),
         "instrument_defects": sorted(set(instrument_defects + malformed)),
