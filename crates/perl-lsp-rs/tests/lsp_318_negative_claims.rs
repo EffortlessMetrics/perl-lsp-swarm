@@ -741,8 +741,8 @@ fn document_filter_relative_pattern_is_never_emitted() -> TestResult {
 }
 
 /// #8897: notebook document-filter `RelativePattern` (LSP 3.18) is not
-/// implemented. The server advertises no notebook document sync and must never
-/// emit notebook selectors carrying relative patterns.
+/// implemented. The preview profile may advertise notebook document sync, but
+/// it must never emit notebook selectors carrying relative patterns.
 #[test]
 fn notebook_document_filter_relative_pattern_is_never_emitted() -> TestResult {
     let mut harness = LspHarness::new_with_feature_profile(FeatureProfile::All);
