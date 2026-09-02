@@ -328,6 +328,9 @@ pub struct PureRustPerlParser {
     _pratt_parser: PrattParser,
     /// Bodies owned by the heredoc pre-pass, awaiting attachment (#8220).
     heredocs: HeredocQueue,
+    /// Whether Pest's spans are offsets into the scanner's stripped text, so a
+    /// queued capture can be identified by position rather than marker alone.
+    heredoc_offsets_exact: bool,
     /// Heredoc openers the grammar produced during the last parse.
     ///
     /// The scanner and the grammar decide independently which `<<` is an
@@ -342,6 +345,7 @@ impl PureRustPerlParser {
         Self {
             _pratt_parser: PrattParser::new(),
             heredocs: HeredocQueue::default(),
+            heredoc_offsets_exact: false,
             heredoc_nodes_built: 0,
         }
     }
@@ -364,11 +368,17 @@ impl PureRustPerlParser {
         let normalized = Self::normalize_source(scan.stripped());
         self.heredocs = HeredocQueue::from_scan(scan);
         self.heredoc_nodes_built = 0;
+        // The scanner's opener offsets are into the *stripped* text. They are
+        // usable to identify an opener only while the text Pest actually parses
+        // shares that coordinate system: normalization rewrites spans, and the
+        // recovery path parses fragments whose spans are fragment-relative.
+        self.heredoc_offsets_exact = normalized == scan.stripped();
 
         match <PerlParser as Parser<Rule>>::parse(Rule::program, &normalized) {
             Ok(pairs) => self.build_ast(pairs),
             Err(e) => {
                 // Attempt partial parsing by trying to parse individual statements
+                self.heredoc_offsets_exact = false;
                 self.parse_with_recovery(&normalized, e)
             }
         }
@@ -1383,6 +1393,9 @@ impl PureRustPerlParser {
                 Ok(Some(AstNode::String(Arc::from(pair.as_str()))))
             }
             Rule::heredoc => {
+                // The `heredoc` rule starts at the `<<`, which is the same
+                // coordinate the scanner recorded for its capture.
+                let opener_start = pair.as_span().start();
                 let inner = pair.into_inner();
                 let mut indented = false;
                 let mut marker = Arc::from("");
@@ -1425,14 +1438,21 @@ impl PureRustPerlParser {
                 }
 
                 // The body was removed from the parsed text by the heredoc
-                // pre-pass (#8220) and is attached here. It is taken only when
-                // the queued capture's marker matches this opener, so a
-                // scanner/grammar disagreement leaves content empty rather than
-                // attaching another heredoc's body. An empty content therefore
-                // means an empty body, an unowned opener, or a direct
-                // `build_node` call by a bridge consumer.
+                // pre-pass (#8220) and is attached here. The queued capture's
+                // marker must match, and where Pest's spans are still stripped
+                // -text offsets its position must match too — otherwise a
+                // grammar opener the scanner did not own can claim a later
+                // capture that repeats its marker, leaving the real heredoc
+                // empty. Where the coordinates do not survive (normalization
+                // rewrote the text, or recovery parsed fragments) the marker
+                // alone decides, and `parse_heredoc_outcome` still reports the
+                // disagreement rather than passing it off as clean. An empty
+                // content therefore means an empty body, an unowned opener, or
+                // a direct `build_node` call by a bridge consumer.
                 self.heredoc_nodes_built = self.heredoc_nodes_built.saturating_add(1);
-                let content = self.heredocs.take(&marker).map_or_else(|| Arc::from(""), Arc::from);
+                let at = self.heredoc_offsets_exact.then_some(opener_start);
+                let content =
+                    self.heredocs.take(&marker, at).map_or_else(|| Arc::from(""), Arc::from);
                 Ok(Some(AstNode::Heredoc { marker, indented, quoted, content }))
             }
             Rule::list => {

@@ -884,7 +884,7 @@ fn scanner_and_grammar_agree_on_openers() {
     //
     // Each row is one line of Perl with no body, so the grammar's count is its
     // unclouded opinion about that `<<` alone.
-    let rows: [&str; 35] = [
+    let rows: [&str; 41] = [
         // Term position — the grammar admits `heredoc` as an unconditional
         // `primary`, so any bareword counts, not just builtins.
         "my $x = <<EOF;\n",
@@ -933,6 +933,14 @@ fn scanner_and_grammar_agree_on_openers() {
         // Not code at all.
         "my $x = /<<EOF/;\n",
         "my $x = 1; # <<EOF\n",
+        // A newline inside an expression is ordinary whitespace to both, so the
+        // term/operator split has to survive the line break in both directions.
+        "my $y = 1\n <<2;\n",
+        "my $y = $x\n <<2;\n",
+        "my $y = f()\n <<2;\n",
+        "my $y = /a/i\n <<2;\n",
+        "my $x =\n <<EOF;\n",
+        "my $x = $u //\n <<EOF;\n",
     ];
     for source in rows {
         assert_eq!(
@@ -1025,6 +1033,103 @@ fn when_a_postfix_increment_precedes_the_shift_then_no_body_is_owned() {
         assert!(scan.captures().is_empty(), "postfix op then shift owns no body: {source:?}");
         assert_eq!(scan.stripped(), source, "no source may be removed: {source:?}");
     }
+}
+
+#[test]
+fn when_a_shift_operand_ends_the_previous_line_then_no_body_is_owned() {
+    // perl treats the newline inside an expression as ordinary whitespace, so
+    // the operand and its `<<` may sit on different lines and it is still a
+    // shift. Verified with perl 5.38:
+    //
+    //   my $x = 1
+    //    <<2;
+    //   my $y = 3;      # prints x=4 y=3 — a shift, and `my $y` survives
+    //
+    // Scanning each physical line from a clean term position made a
+    // line-leading `<<` always look like an opener, so it took the rest of the
+    // file as a body and deleted it. That is the source-deleting direction.
+    for source in [
+        "my $x = 1\n <<2;\nmy $y = 3;\n",
+        "my $x = $v\n <<2;\nmy $y = 3;\n",
+        "my $x = f()\n <<2;\nmy $y = 3;\n",
+        "my $x = ($a)\n <<2;\nmy $y = 3;\n",
+        // A bareword marker is no different: `1 << EOF` is a shift by a
+        // bareword, which perl evaluates as 0 (x=1), not a heredoc.
+        "my $x = 1\n <<EOF;\nmy $y = 3;\n",
+        // Blank and comment-only lines are insignificant between the operand
+        // and the shift, exactly as they are inside a declaration.
+        "my $x = 1\n\n <<2;\nmy $y = 3;\n",
+        "my $x = 1\n# a comment\n <<2;\nmy $y = 3;\n",
+        // A comment may also trail the operand's own line.
+        "my $x = 1 # a comment\n <<2;\nmy $y = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "cross-line shift owns no body: {source:?}");
+        assert_eq!(scan.stripped(), source, "no source may be removed: {source:?}");
+    }
+
+    // The opposite direction, which is what stops the carry from being a
+    // blanket "a line-leading `<<` is never an opener": after an operator, an
+    // opening bracket, or a statement end, the next line really does start in
+    // term position and the heredoc must still be owned.
+    for (source, body) in [
+        ("my $x =\n<<EOF;\nhi\nEOF\nmy $y = 3;\n", "hi\n"),
+        ("my $x = 1;\n<<EOF;\nhi\nEOF\n", "hi\n"),
+        ("my $x = $u //\n<<EOF;\nhi\nEOF\n", "hi\n"),
+        ("foo(1,\n<<EOF);\nhi\nEOF\n", "hi\n"),
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(scan.captures().len(), 1, "opener must still be owned: {source:?}");
+        assert_eq!(scan.captures()[0].content(), body, "body must be owned: {source:?}");
+        assert!(scan.captures()[0].defect().is_none(), "no defect expected: {source:?}");
+    }
+}
+
+#[test]
+fn when_a_phantom_opener_repeats_a_later_marker_then_the_real_heredoc_keeps_its_body()
+-> Result<(), String> {
+    // `$^W` completes a term, so `$^W <<EOF` is a shift and the scanner owns
+    // nothing there. The grammar disagrees and reports an opener — a known,
+    // deliberate disagreement this suite already pins elsewhere.
+    //
+    // The queue used to identify a capture by marker alone, so that phantom
+    // opener took the *next* queued body because the markers matched, and the
+    // real heredoc below it was left empty. Empty content then meant "another
+    // node stole this body", which is exactly the reading this contract exists
+    // to make impossible.
+    let source = "my $a = $^W <<EOF;\nmy $b = <<EOF;\nbody\nEOF\nmy $z = 3;\n";
+
+    let scan = perl_parser_pest::heredoc::scan(source);
+    assert_eq!(scan.captures().len(), 1, "only the real opener is owned");
+    assert_eq!(scan.captures()[0].content(), "body\n");
+    assert!(
+        grammar_openers(source) > scan.captures().len(),
+        "fixture must actually make the grammar over-report"
+    );
+
+    // Both markers read `EOF`, so *which* node holds the body is the whole
+    // question — asserting only that some node holds it passes either way.
+    // Nodes come in source order, so the phantom is first and must be empty.
+    let contents = heredoc_contents(source);
+    assert_eq!(
+        contents,
+        vec![("EOF".to_string(), String::new()), ("EOF".to_string(), "body\n".to_string()),],
+        "the body belongs to the second, real opener; the phantom owns nothing"
+    );
+
+    // The disagreement is still reported: fixing the attachment must not make
+    // the over-report look clean.
+    let mut parser = PureRustPerlParser::new();
+    let ParseAttempt::Outcome(outcome) = parser.parse_heredoc_outcome(source) else {
+        return Err("expected a parser-domain outcome".to_string());
+    };
+    assert_ne!(outcome.completeness(), ParseCompleteness::Complete);
+    assert!(
+        outcome.diagnostics().iter().any(|d| d.message().contains("scanner owned")),
+        "the disagreement must still be named; got {:?}",
+        outcome.diagnostics()
+    );
+    Ok(())
 }
 
 #[test]

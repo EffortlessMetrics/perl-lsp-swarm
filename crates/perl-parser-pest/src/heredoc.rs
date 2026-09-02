@@ -167,6 +167,13 @@ pub struct HeredocCapture {
     body: SourceRange,
     defect: Option<HeredocDefect>,
     terminated: bool,
+    /// Offset of this opener's `<<` inside [`HeredocScan::stripped`].
+    ///
+    /// The grammar parses the stripped text, so this is the coordinate a
+    /// grammar opener can be compared against. Matching on it is what stops an
+    /// opener the scanner did not own from claiming a later capture that
+    /// happens to share its marker.
+    stripped_opener: usize,
 }
 
 impl HeredocCapture {
@@ -337,10 +344,17 @@ impl<'a> Scanner<'a> {
         // Set when the previous code line ended with `package` or `sub`, so a
         // quote-like spelling opening this line is that declaration's name.
         let mut follows_declaration = false;
+        // Whether the previous code line ended with a completed term, making a
+        // line-leading `<<` a left shift.
+        let mut follows_completed_term = false;
         while index < lines.len() {
             let line = lines[index];
             let text = &self.source[line.start..line.end];
             let content = &self.source[line.start..line.content_end];
+            // Offset of this line inside the stripped text, taken before it is
+            // appended. Bodies are removed only *after* their opener's line, so
+            // an opener's stripped offset is fixed the moment its line lands.
+            let stripped_line_start = self.stripped.len();
             self.stripped.push_str(text);
             index += 1;
 
@@ -384,14 +398,18 @@ impl<'a> Scanner<'a> {
                 &mut openers,
                 open_construct,
                 follows_declaration,
+                follows_completed_term,
             );
             open_construct = scanned.carried;
             // Blank and comment-only lines between a declaration keyword and
             // its name are insignificant to Perl, so they must neither set the
-            // context nor clear it. Only a line carrying code updates it.
+            // context nor clear it. Only a line carrying code updates it. The
+            // same holds for an expression continued across them: perl reads
+            // `1\n\n <<2` as the shift `1 << 2`.
             let trimmed = content.trim_start();
             if !trimmed.is_empty() && !trimmed.starts_with('#') {
                 follows_declaration = scanned.ends_with_declaration_keyword;
+                follows_completed_term = scanned.ends_with_completed_term;
             }
             if openers.is_empty() {
                 continue;
@@ -403,20 +421,31 @@ impl<'a> Scanner<'a> {
             }
 
             for (position, opener) in openers.into_iter().enumerate() {
+                let (LineOpener::Owned(ref pending) | LineOpener::Unowned(ref pending)) = opener;
+                let stripped_opener =
+                    stripped_line_start + pending.opener.start().saturating_sub(line.start);
                 // Openers past the depth budget own no body, but they are still
                 // recorded so the queue stays aligned with the openers the
                 // grammar will produce and their empty content is explained.
                 if over_depth && position >= MAX_HEREDOC_DEPTH {
                     let (LineOpener::Owned(opener) | LineOpener::Unowned(opener)) = opener;
-                    self.record_unowned_with(opener, HeredocDefect::DepthOverBudget);
+                    self.record_unowned_with(
+                        opener,
+                        HeredocDefect::DepthOverBudget,
+                        stripped_opener,
+                    );
                     continue;
                 }
                 match opener {
                     LineOpener::Owned(opener) => {
-                        index = self.consume_body(&lines, index, opener);
+                        index = self.consume_body(&lines, index, opener, stripped_opener);
                     }
                     LineOpener::Unowned(opener) => {
-                        self.record_unowned_with(opener, HeredocDefect::SeparatedBareMarker);
+                        self.record_unowned_with(
+                            opener,
+                            HeredocDefect::SeparatedBareMarker,
+                            stripped_opener,
+                        );
                     }
                 }
             }
@@ -431,6 +460,7 @@ impl<'a> Scanner<'a> {
         lines: &[PhysicalLine],
         index: usize,
         opener: PendingOpener,
+        stripped_opener: usize,
     ) -> usize {
         let body_start = lines.get(index).map_or(self.source.len(), |line| line.start);
         let mut cursor = index;
@@ -551,6 +581,7 @@ impl<'a> Scanner<'a> {
             body: body_range,
             defect,
             terminated: terminator.is_some(),
+            stripped_opener,
         });
 
         resume
@@ -560,7 +591,12 @@ impl<'a> Scanner<'a> {
     ///
     /// It is still a capture, so the queue stays aligned with the openers the
     /// grammar produces; its empty content is explained by the diagnostic.
-    fn record_unowned_with(&mut self, opener: PendingOpener, defect: HeredocDefect) {
+    fn record_unowned_with(
+        &mut self,
+        opener: PendingOpener,
+        defect: HeredocDefect,
+        stripped_opener: usize,
+    ) {
         if defect == HeredocDefect::SeparatedBareMarker {
             self.record_defect(
                 opener.opener,
@@ -582,6 +618,7 @@ impl<'a> Scanner<'a> {
             body: opener.opener,
             defect: Some(defect),
             terminated: false,
+            stripped_opener,
         });
     }
 
@@ -854,6 +891,23 @@ struct LineScan {
     /// Computed from the walk rather than the raw text, so the word cannot come
     /// from a comment or the inside of a string.
     ends_with_declaration_keyword: bool,
+    /// Whether this line's code ends with a completed term, so a `<<` opening
+    /// the next line is a left shift rather than a heredoc. Asked of
+    /// [`is_term_position`] at the end of the code, so it cannot drift from the
+    /// rule the same-line path uses.
+    ends_with_completed_term: bool,
+}
+
+impl LineScan {
+    /// A line that left a quoted run open. The next line resumes inside it, so
+    /// neither trailing-context flag is meaningful until it closes.
+    const fn open(construct: OpenConstruct) -> Self {
+        Self {
+            carried: Some(construct),
+            ends_with_declaration_keyword: false,
+            ends_with_completed_term: false,
+        }
+    }
 }
 
 fn scan_line_openers(
@@ -862,6 +916,7 @@ fn scan_line_openers(
     out: &mut Vec<LineOpener>,
     carried: Option<OpenConstruct>,
     follows_declaration: bool,
+    follows_completed_term: bool,
 ) -> LineScan {
     let bytes = line.as_bytes();
     let mut index = 0;
@@ -875,7 +930,7 @@ fn scan_line_openers(
         let takes_modifiers = construct.takes_modifiers;
         let (next, still_open) = continue_construct(bytes, construct);
         if let Some(open) = still_open {
-            return LineScan { carried: Some(open), ends_with_declaration_keyword: false };
+            return LineScan::open(open);
         }
         index = next;
         // The same-line paths advance over trailing modifiers before marking the
@@ -893,12 +948,24 @@ fn scan_line_openers(
         let byte = bytes[index];
         match byte {
             b'#' if !is_length_sigil(bytes, index) => {
-                return LineScan { carried: None, ends_with_declaration_keyword: false };
+                // Code may precede the comment, so the trailing-term judgment is
+                // taken at the `#`, not at the end of the raw line.
+                return LineScan {
+                    carried: None,
+                    ends_with_declaration_keyword: false,
+                    ends_with_completed_term: !is_term_position(
+                        line,
+                        bytes,
+                        index,
+                        last_term_end,
+                        follows_completed_term,
+                    ),
+                };
             }
             b'\'' | b'"' | b'`' => {
                 let (next, open) = skip_quoted(bytes, index, byte);
                 if let Some(open) = open {
-                    return LineScan { carried: Some(open), ends_with_declaration_keyword: false };
+                    return LineScan::open(open);
                 }
                 index = next;
                 last_term_end = index;
@@ -914,7 +981,8 @@ fn scan_line_openers(
                 // Only the empty pattern completes a term. Defined-or is an
                 // operator, so `$x // <<EOF` opens a heredoc — marking it as a
                 // completed term made the scanner miss that body.
-                let empty_pattern = is_term_position(line, bytes, index, last_term_end);
+                let empty_pattern =
+                    is_term_position(line, bytes, index, last_term_end, follows_completed_term);
                 index += 2;
                 if empty_pattern {
                     while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
@@ -923,13 +991,10 @@ fn scan_line_openers(
                     last_term_end = index;
                 }
             }
-            b'/' if is_term_position(line, bytes, index, last_term_end) => {
+            b'/' if is_term_position(line, bytes, index, last_term_end, follows_completed_term) => {
                 let (next, open) = skip_delimited(bytes, index, b'/');
                 if let Some(open) = open {
-                    return LineScan {
-                        carried: Some(OpenConstruct { takes_modifiers: true, ..open }),
-                        ends_with_declaration_keyword: false,
-                    };
+                    return LineScan::open(OpenConstruct { takes_modifiers: true, ..open });
                 }
                 index = next;
                 while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
@@ -938,7 +1003,14 @@ fn scan_line_openers(
                 last_term_end = index;
             }
             b'<' if bytes.get(index + 1) == Some(&b'<') => {
-                match parse_opener(line, bytes, index, line_start, last_term_end) {
+                match parse_opener(
+                    line,
+                    bytes,
+                    index,
+                    line_start,
+                    last_term_end,
+                    follows_completed_term,
+                ) {
                     Some((opener, next)) => {
                         out.push(opener);
                         index = next;
@@ -948,7 +1020,7 @@ fn scan_line_openers(
             }
             _ => match skip_quote_like(line, bytes, index, follows_declaration) {
                 Some((_next, Some(open))) => {
-                    return LineScan { carried: Some(open), ends_with_declaration_keyword: false };
+                    return LineScan::open(open);
                 }
                 Some((next, None)) => {
                     index = next;
@@ -960,7 +1032,25 @@ fn scan_line_openers(
     }
     // The whole line was code — a comment or an open construct returns above —
     // so its trailing word is a trailing code word.
-    LineScan { carried: None, ends_with_declaration_keyword: ends_with_declaration_keyword(line) }
+    LineScan {
+        carried: None,
+        ends_with_declaration_keyword: ends_with_declaration_keyword(line),
+        // `line` carries its terminator, which is not horizontal whitespace and
+        // would otherwise read as "nothing completed a term here".
+        ends_with_completed_term: !is_term_position(
+            line,
+            bytes,
+            line_content_end(bytes),
+            last_term_end,
+            follows_completed_term,
+        ),
+    }
+}
+
+/// Offset of `bytes` without its trailing `\n` or `\r\n`.
+fn line_content_end(bytes: &[u8]) -> usize {
+    let end = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    end.strip_suffix(b"\r").unwrap_or(end).len()
 }
 
 /// Whether `line` ends with a bare `package` or `sub` keyword.
@@ -1280,8 +1370,9 @@ fn parse_opener(
     index: usize,
     line_start: usize,
     last_term_end: usize,
+    follows_completed_term: bool,
 ) -> Option<(LineOpener, usize)> {
-    if !is_term_position(line, bytes, index, last_term_end) {
+    if !is_term_position(line, bytes, index, last_term_end, follows_completed_term) {
         return None;
     }
     let mut cursor = index + 2;
@@ -1354,7 +1445,18 @@ fn read_quoted_marker(
 /// Mirrors the production lexer's `ExpectOperator` split: after a value —
 /// an identifier that is not a list operator, a number, a closing bracket, a
 /// variable, or a string — `<<` is a left shift.
-fn is_term_position(line: &str, bytes: &[u8], index: usize, last_term_end: usize) -> bool {
+///
+/// `follows_completed_term` reports the same judgment for the end of the
+/// previous code line. Perl treats the newline inside an expression as
+/// ordinary whitespace, so `1\n <<2` is the shift `1 << 2`; without the carry
+/// a line-leading `<<` always looked like a term and swallowed what followed.
+fn is_term_position(
+    line: &str,
+    bytes: &[u8],
+    index: usize,
+    last_term_end: usize,
+    follows_completed_term: bool,
+) -> bool {
     let mut cursor = index;
     while cursor > 0 && matches!(bytes[cursor - 1], b' ' | b'\t') {
         cursor -= 1;
@@ -1364,7 +1466,8 @@ fn is_term_position(line: &str, bytes: &[u8], index: usize, last_term_end: usize
         return false;
     }
     let Some(previous) = cursor.checked_sub(1).and_then(|at| bytes.get(at)) else {
-        return true;
+        // Nothing precedes it on this line, so the previous line decides.
+        return !follows_completed_term;
     };
     match *previous {
         b')' | b']' | b'}' | b'\'' | b'"' | b'`' => false,
@@ -1536,7 +1639,7 @@ fn completeness_for(diagnostics: &[ParseDiagnostic]) -> ParseCompleteness {
 /// disagreement leaves content empty instead of attaching the wrong body.
 #[derive(Debug, Default)]
 pub(crate) struct HeredocQueue {
-    pending: VecDeque<(String, String)>,
+    pending: VecDeque<(usize, String, String)>,
 }
 
 impl HeredocQueue {
@@ -1545,15 +1648,33 @@ impl HeredocQueue {
             pending: scan
                 .captures()
                 .iter()
-                .map(|capture| (capture.marker().to_string(), capture.content().to_string()))
+                .map(|capture| {
+                    (
+                        capture.stripped_opener,
+                        capture.marker().to_string(),
+                        capture.content().to_string(),
+                    )
+                })
                 .collect(),
         }
     }
 
-    /// Take the body for `marker` when it is the next queued capture.
-    pub(crate) fn take(&mut self, marker: &str) -> Option<String> {
-        if self.pending.front().is_some_and(|(queued, _)| queued == marker) {
-            return self.pending.pop_front().map(|(_, content)| content);
+    /// Take the body for the opener spelled `marker`, when it is the next
+    /// queued capture.
+    ///
+    /// `at` is the opener's offset in the stripped text when the caller's spans
+    /// are still in that coordinate system; it must then match too. The marker
+    /// alone is not enough there: when the grammar reports an opener the
+    /// scanner did not own — a known, reported disagreement — and a later real
+    /// heredoc repeats its marker, matching on the marker alone let the phantom
+    /// opener take the real body and leave the real heredoc empty. `None` means
+    /// the caller cannot supply a comparable offset, so the marker decides.
+    pub(crate) fn take(&mut self, marker: &str, at: Option<usize>) -> Option<String> {
+        let matches = self.pending.front().is_some_and(|(offset, queued, _)| {
+            queued == marker && at.is_none_or(|at| *offset == at)
+        });
+        if matches {
+            return self.pending.pop_front().map(|(_, _, content)| content);
         }
         None
     }
