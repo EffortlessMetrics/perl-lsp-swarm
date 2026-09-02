@@ -359,6 +359,10 @@ impl ProcessPlan {
     }
 }
 
+/// Refuse a plan written against a schema version this build does not implement.
+///
+/// First of the twelve rules, because a plan from another version may not mean
+/// what the rules below assume it means.
 fn validate_schema(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     if plan.schema_version() != PROCESS_DOMAIN_SCHEMA_VERSION {
         return Err(PlanRejection::UnsupportedSchemaVersion {
@@ -369,6 +373,10 @@ fn validate_schema(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     Ok(())
 }
 
+/// Refuse a plan with no correlation or operation identity.
+///
+/// Both are how a run is attributable afterwards; a blank one makes the
+/// resulting evidence unattachable to anything.
 fn validate_identities(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     if plan.plan_id().is_blank() {
         return Err(PlanRejection::MissingPlanIdentity);
@@ -379,6 +387,11 @@ fn validate_identities(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     Ok(())
 }
 
+/// Refuse an executable identity or argv that no backend could spawn, or that
+/// would hand a shell a command string.
+///
+/// The shell gate is checked against the caller's label *and* the resolved
+/// path, and covers both channels a command can arrive on — argv and stdin.
 fn validate_invocation(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     let executable = plan.executable();
     let logical_name = executable.logical_name();
@@ -661,6 +674,11 @@ fn takes_a_separate_value(arg: &str) -> bool {
     }
 }
 
+/// Refuse a working directory that is ambient where the profile requires
+/// exactness, unspawnable, or relative.
+///
+/// A relative cwd resolves against whatever the supervisor happens to be in,
+/// which is the ambient dependency an exact plan exists to remove.
 fn validate_cwd(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     match plan.cwd() {
         CwdPolicy::InheritAmbient => {
@@ -682,6 +700,12 @@ fn validate_cwd(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     }
 }
 
+/// Refuse an environment projection that no backend could apply, that
+/// contradicts itself, or that admits a code-loading vector unacknowledged.
+///
+/// Contradiction is refused rather than resolved: two rules that disagree
+/// about one variable have no precedence between them, so two backends could
+/// project different child environments from the same validated plan.
 fn validate_environment(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     let environment = plan.environment();
     if environment.projection_id().trim().is_empty() {
@@ -742,6 +766,10 @@ fn validate_environment(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     Ok(())
 }
 
+/// Refuse a capture budget that cannot describe a real capture.
+///
+/// Observing nothing, exceeding the domain's cap, or retaining more than is
+/// observed are each impossible rather than merely unusual.
 fn validate_budgets(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     for (channel, budget) in [
         (BudgetChannel::Stdout, plan.stdout_budget()),
@@ -762,6 +790,11 @@ fn validate_budgets(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     Ok(())
 }
 
+/// Refuse a deadline, cancellation, or termination policy the profile cannot
+/// honour.
+///
+/// A zero deadline and a missing one differ: the first expires before the
+/// child exists, the second never expires at all.
 fn validate_lifecycle(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     match plan.deadline() {
         DeadlinePolicy::None if plan.profile().requires_deadline() => {
@@ -789,6 +822,11 @@ fn validate_lifecycle(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     Ok(())
 }
 
+/// Refuse a subject identity that a profile requires and the plan omits, or a
+/// reference whose freshness this build cannot vouch for.
+///
+/// Stale evidence is refused rather than aged: the domain has no way to decide
+/// how stale is too stale, so it declines to guess.
 fn validate_subject(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     if plan.profile().requires_root_identity() && plan.subject().root.is_none() {
         return Err(PlanRejection::MissingSubjectIdentity);
@@ -806,6 +844,12 @@ fn validate_subject(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     Ok(())
 }
 
+/// Refuse absent, blank, stale, unproven, or unknown-scheme execution
+/// authorization.
+///
+/// The reference stays opaque — #1753 owns what it means — but its scheme
+/// version does not: evidence from a scheme this build cannot read cannot be
+/// assumed to mean what this one means.
 fn validate_authorization(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     let Some(authorization) = plan.authorization() else {
         return Err(PlanRejection::MissingAuthorizationEvidence);
@@ -839,6 +883,11 @@ fn validate_authorization(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     Ok(())
 }
 
+/// Refuse a plan whose profile requires a platform its claim boundary does not
+/// declare.
+///
+/// The boundary is the plan's own statement about where it may run; a profile
+/// that outruns it would make a claim the plan never made.
 fn validate_platform(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     use super::identity::PlatformRequirement;
     let required_linux = plan.profile() == ExecutionProfile::LinuxOneShot;

@@ -193,6 +193,10 @@ impl FakeSupervisor {
         lock(&self.stdin_written).clone()
     }
 
+    /// Hand out the next run identity.
+    ///
+    /// Sequential and per-supervisor, so a test can name a run without the
+    /// nondeterminism a real identity source would introduce.
     fn allocate_run_id(&self) -> RunId {
         let mut next = lock(&self.next_run);
         let id = *next;
@@ -201,6 +205,10 @@ impl FakeSupervisor {
     }
 }
 
+/// The backend identity every result from this supervisor carries.
+///
+/// `EvidenceClass::Fake` is not decoration: it is what stops a scripted result
+/// from ever reading as evidence about a real process.
 fn fake_backend() -> BackendIdentity {
     BackendIdentity::new(FAKE_BACKEND_NAME, EvidenceClass::Fake)
 }
@@ -250,6 +258,10 @@ impl ProcessSupervisor for FakeSupervisor {
     }
 }
 
+/// Assemble the result for a start this supervisor refused.
+///
+/// Falls back to `ProcessResult::supervisor_failure` if the refusal itself
+/// cannot be expressed coherently, so a refusal never becomes a panic.
 fn refusal_result(
     plan_id: PlanId,
     fingerprint: PlanFingerprint,
@@ -343,6 +355,10 @@ impl FakeHandle {
         }
     }
 
+    /// The terminal cause the run's control state and settlement elect.
+    ///
+    /// Read through `TerminalDisposition::elect` rather than stored, so the
+    /// fake cannot script a cause the precedence rule would not produce.
     fn elected(&self) -> TerminalDisposition {
         TerminalDisposition::elect(self.run.control, self.run.settlement)
     }

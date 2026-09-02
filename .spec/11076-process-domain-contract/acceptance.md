@@ -898,3 +898,48 @@ run representable in the *result* without any policy that could produce one:
 `on_limit` was documented as governing the observation bound only. Fixing the
 result shape and leaving the policy behind is half a rule, so the policy now
 covers both bounds and the event names which one fired.
+
+### Advisory checks: two dispositions
+
+**`Semantic close containment (advisory)` — a real hit, not the filed
+false positive.** Rule `CP00-REMAINING-SAME-ISSUE` fired because the PR's
+**Remaining work** section named `#11076` at line 7 — inside the sentence
+explaining that the deferred fake cross-validation "is not something #11076
+specifies". The instrument reads a reference to the closed issue in that
+section as remaining work assigned to it, and that reading is fair: in a
+Remaining-work list, naming the issue the PR closes is ambiguous to a human
+reader too. Reworded to say the same thing without the token. This is a
+different rule from the English-word matching filed as #14551 and does not
+change that issue's finding.
+
+**CodeRabbit `Docstring Coverage` (75.75% vs 80.00%) — partially acted on, and
+the residual is stated rather than chased.** The measurement counts every
+function in the touched files. Measured locally at 226/420 = 53.8%, the
+distribution is:
+
+| File | Documented |
+|---|---|
+| `tests/process_domain_contract.rs` | 3/132 |
+| `src/process/validation.rs` | 11/23 → 21/23 |
+| `src/process/fake.rs` | 18/32 → 22/32 |
+| `src/process/identity.rs` | 33/50 |
+| every other module | 81%–100% |
+
+What was a real gap is fixed: the twelve `validate_*` rules are the validator's
+whole rule list and are now each documented with what they refuse and why, as
+are four non-obvious `fake.rs` helpers.
+
+What is not being changed, deliberately:
+
+- **the test file.** Each control carries its rationale as an internal
+  `// The wrong implementation this kills:` comment, which is the convention
+  this file establishes and the more useful place for it. Converting 129
+  comments to `///` would move the same words to satisfy a counter;
+- **`fmt`, `encode`, `discriminant`, and the port trait impls.** Their
+  contracts are documented once on the trait or the type. Repeating them per
+  impl is the duplication that `limitation_derivation_has_exactly_one_implementation`
+  exists to prevent, in prose form.
+
+The threshold is therefore not met and is not claimed to be. `#![warn(missing_docs)]`
+— which governs the crate's *public* surface, the part consumers read — passes
+with no warnings, and that is the coverage claim this PR makes.
