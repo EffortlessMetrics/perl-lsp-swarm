@@ -212,8 +212,10 @@ fn build_node(value: SourceValue<'_>, depth: usize, cursor: &mut BudgetCursor) -
     if cursor.visited >= cursor.budget.max_total_nodes {
         cursor.record_truncation(TruncationReason::NodeBudgetExhausted);
         return SnapshotNode {
-            name: value.name.to_string(),
-            kind_label: value.kind_label.to_string(),
+            // No node budget remains, so do not retain metadata that has not
+            // been charged to the byte budget.
+            name: String::new(),
+            kind_label: String::new(),
             rendered: None,
             children: Vec::new(),
             outcome: NodeOutcome::Truncated(TruncationReason::NodeBudgetExhausted),
@@ -416,6 +418,18 @@ mod tests {
             NodeOutcome::Truncated(TruncationReason::NodeBudgetExhausted)
         );
         assert!(snapshot.total_nodes_visited <= budget.max_total_nodes);
+    }
+
+    #[test]
+    fn exhausted_node_budget_does_not_retain_unaccounted_metadata() {
+        let root = scalar("secret-name", "secret-value");
+        let budget = SnapshotBudget { max_total_nodes: 0, ..SnapshotBudget::defaults() };
+        let snapshot = capture_snapshot(root, budget);
+
+        assert_eq!(snapshot.truncation, Some(TruncationReason::NodeBudgetExhausted));
+        assert_eq!(snapshot.root.name, "");
+        assert_eq!(snapshot.root.kind_label, "");
+        assert_eq!(snapshot.total_retained_bytes, 0);
     }
 
     #[test]
