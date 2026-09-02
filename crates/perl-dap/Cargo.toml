@@ -390,7 +390,7 @@ path = "tests/debugger_output_origin.rs"
 [[test]]
 name = "backend_error_class"
 path = "tests/backend_error_class.rs"
-# #8758: exhaustive ErrorClass matrix for BackendError and its responder origins
+# #8758: a peer-reported failure is a reported outcome, never an adapter bug
 
 [[test]]
 name = "wave_h_security_edge_cases"

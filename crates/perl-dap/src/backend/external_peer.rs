@@ -41,10 +41,9 @@ use event_buffer::{PeerEventBuffer, PushOutcome};
 
 use super::capabilities::{ControlMode, DebugBackendCapabilities};
 use super::{
-    AttachBackendParams, AttachResult, BackendError, BackendResponseOrigin, BackendResult,
-    ContinueResult, DebugBackend, EvaluateContext, EvaluateParams, EvaluateResult,
-    InitializeBackendParams, LaunchBackendParams, LaunchResult, SetBackendBreakpointsParams,
-    SetFunctionBreakpointsParams, StackTraceParams,
+    AttachBackendParams, AttachResult, BackendError, BackendResult, ContinueResult, DebugBackend,
+    EvaluateContext, EvaluateParams, EvaluateResult, InitializeBackendParams, LaunchBackendParams,
+    LaunchResult, SetBackendBreakpointsParams, SetFunctionBreakpointsParams, StackTraceParams,
 };
 use crate::model::{
     DebugEvent, DebugPosition, DebugScope, DebugSource, DebugStackFrame, DebugVariable, FrameId,
@@ -441,7 +440,7 @@ impl ExternalDebuggerPeerBackend {
                 // request. Check it before interpreting success or failure: a
                 // crossed command is the peer breaking correlation, not an
                 // outcome of the request, and must not be reported as a
-                // `RequestFailed` carrying the command we asked for (#8758).
+                // `PeerReported` carrying the command we asked for (#8758).
                 if resp.command != command {
                     return Err(BackendError::Protocol(format!(
                         "peer answered request seq {seq} (`{command}`) with a response echoing \
@@ -457,8 +456,7 @@ impl ExternalDebuggerPeerBackend {
                     // or report a failure — an ordinary debuggee outcome
                     // included. It is neither a protocol violation nor an
                     // adapter bug (#8758).
-                    Err(BackendError::RequestFailed {
-                        origin: BackendResponseOrigin::ExternalPeerResponse,
+                    Err(BackendError::PeerReported {
                         command: command.to_string(),
                         message: resp.message.unwrap_or_else(|| format!("{command} failed")),
                     })

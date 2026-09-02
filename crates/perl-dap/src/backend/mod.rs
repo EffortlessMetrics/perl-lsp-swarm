@@ -34,91 +34,6 @@ use crate::model::{
     DebugVariable, FrameId, ResolvedBreakpoint, ThreadId, VariablesRef,
 };
 
-/// Which responder answered a backend request unsuccessfully (#8758).
-///
-/// The boundary that observed the reply supplies this value literally. It is
-/// never inferred from `Display`, `Debug`, or message text — the same rule
-/// [`crate::parse_origin::DebuggerOutputOrigin`] establishes for parse inputs
-/// (#8746).
-///
-/// This enum is exhaustive and has no [`Default`]. A new responder must choose
-/// its category explicitly instead of inheriting one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BackendResponseOrigin {
-    /// The in-process native adapter answered `success: false`.
-    ///
-    /// Reachable only through [`native_perldb::NativePerlDbBackend`], which the
-    /// shipped server does not use yet: `server/lifecycle.rs` drives
-    /// [`crate::debug_adapter::DebugAdapter`] directly. This arm is groundwork
-    /// for the DF1/DF3 dispatch migration, not a live product path today.
-    NativeAdapterResponse,
-    /// A negotiated external debugger peer answered `success: false`.
-    ///
-    /// Live on the `--external-peer` path.
-    ExternalPeerResponse,
-}
-
-impl BackendResponseOrigin {
-    /// Stable machine token for this origin.
-    ///
-    /// The token is part of the public contract: receipt and log layers may
-    /// record it without depending on `Debug` formatting.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::NativeAdapterResponse => "native_adapter_response",
-            Self::ExternalPeerResponse => "external_peer_response",
-        }
-    }
-
-    /// Category for an unsuccessful reply once the caller has named the responder.
-    ///
-    /// The two responders reach structurally different populations, so they do
-    /// not share a category:
-    ///
-    /// - `NativeAdapterResponse` reaches only the eleven commands
-    ///   [`native_perldb::NativePerlDbBackend`] delegates. `evaluate`,
-    ///   `stack_trace`, `scopes`, and `variables` return
-    ///   [`BackendError::Unsupported`] there, so no ordinary debuggee outcome is
-    ///   reachable. The reachable sites are invalid client arguments, DAP
-    ///   request-ordering mistakes, an unsupported mode, and transport failure —
-    ///   predominantly things a client or user corrects, which is what
-    ///   [`perl_parser_core::ErrorCategory::UserError`] denotes and what the
-    ///   sibling [`BackendError::Unsupported`] arm already uses.
-    /// - `ExternalPeerResponse` reaches `evaluate`, `stack_trace`, `scopes`, and
-    ///   `variables` against a live external Perl process, so an ordinary
-    ///   debuggee failure — a `die`, an undefined subroutine, a runtime error —
-    ///   is reachable. Calling that invalid client input would be false: the
-    ///   editor's request was well formed and the debuggee failed. It is not a
-    ///   protocol violation either, because a well-formed `success: false` is
-    ///   the peer using the protocol as designed. The honest category is
-    ///   [`perl_parser_core::ErrorCategory::Advisory`], matching
-    ///   [`crate::parse_origin::DebuggerOutputOrigin::BestEffortDebuggeeOutput`],
-    ///   which maps heterogeneous debuggee-side output the same way (#8746).
-    ///
-    /// Neither is [`perl_parser_core::ErrorCategory::Bug`]: nothing reachable
-    /// here is *this adapter* violating an internal invariant. A malformed reply
-    /// that breaks the response contract already has its own home —
-    /// `delegate` routes an unexpected [`crate::debug_adapter::DapMessage`]
-    /// variant to [`BackendError::Protocol`] without passing through here.
-    ///
-    /// Known residual (#8758): seven native sites are transport failures
-    /// ("Cannot start Perl debugger", "Failed to start TCP reader", "Cannot
-    /// attach to Perl debugger at {host}:{port}") that would be
-    /// [`perl_parser_core::ErrorCategory::Infra`]. The `success: false`
-    /// projection does not distinguish them at this boundary; fixing that needs
-    /// the handlers to supply their own cause.
-    ///
-    /// The match is exhaustive with no wildcard, so a third responder is a
-    /// compile error here rather than a silent inherit.
-    pub(crate) const fn reported_failure_category(self) -> perl_parser_core::ErrorCategory {
-        match self {
-            Self::NativeAdapterResponse => perl_parser_core::ErrorCategory::UserError,
-            Self::ExternalPeerResponse => perl_parser_core::ErrorCategory::Advisory,
-        }
-    }
-}
-
 /// Errors a backend can surface.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum BackendError {
@@ -131,26 +46,46 @@ pub enum BackendError {
     /// A bounded backend resource envelope was exhausted.
     #[error("debug backend resource limit exceeded: {0}")]
     ResourceLimit(String),
-    /// The responder answered this request with `success: false` (#8758).
+    /// The peer/engine reported an error for a request.
     ///
-    /// This is a *reported outcome*, not evidence that the adapter violated an
-    /// internal invariant. The reply carries a human-readable reason whose
-    /// origin the `success: false` + message projection does not preserve, so
-    /// this boundary records the responder, the command, and the reason without
-    /// asserting fault. [`BackendResponseOrigin`] documents what each responder
-    /// can reach and therefore which category it carries.
+    /// Retained for the in-process native backend, whose reachable
+    /// `success: false` sites are adapter-side faults. The external-peer path
+    /// uses [`BackendError::PeerReported`] instead (#8758).
+    #[error("debug backend reported an error: {0}")]
+    Engine(String),
+    /// A negotiated external debugger peer answered `success: false` (#8758).
     ///
-    /// `Display` is unchanged from the `Engine` variant this replaces:
+    /// This records a *reported outcome*, not evidence that the adapter
+    /// violated an internal invariant. On this path a well-formed
+    /// `success: false` is the peer using the protocol as designed, and an
+    /// ordinary debuggee failure — a `die`, an undefined subroutine, a runtime
+    /// error — is reachable through `evaluate`, `stackTrace`, `scopes`, and
+    /// `variables`. Calling that an adapter bug is what this variant exists to
+    /// stop.
+    ///
+    /// **What this variant deliberately does not claim.** The bucket is
+    /// heterogeneous: it also holds peer-side refusals such as `no active
+    /// suspension` or `unknown frame id`, which are closer to a client or
+    /// session-state error than to a debuggee outcome. [`PeerResponse`] carries
+    /// only `success`, `command`, `message`, and `request_seq` — no cause or
+    /// code field — so the responder's cause is genuinely absent at this
+    /// boundary and is *not* recovered by reading `message`, which would make
+    /// classification depend on peer-authored free text. Separating those
+    /// populations needs a cause on the peer wire (#14582); until then this
+    /// boundary asserts only the distinction the evidence supports, which is
+    /// adapter fault versus reported outcome.
+    ///
+    /// `Display` is unchanged from [`BackendError::Engine`]:
     /// [`peer_bridge::DapPeerBridge`] renders it straight onto the DAP wire, so
-    /// the editor-visible text must not drift. `origin` and `command` are
-    /// structured fields for receipts and logs only.
+    /// the editor-visible text must not drift. `command` is a structured field
+    /// for receipts and logs only.
+    ///
+    /// [`PeerResponse`]: crate::peer_protocol::PeerResponse
     #[error("debug backend reported an error: {message}")]
-    RequestFailed {
-        /// Which responder reported the failure.
-        origin: BackendResponseOrigin,
-        /// The command that was answered.
+    PeerReported {
+        /// The command the peer answered.
         command: String,
-        /// The reason the responder reported.
+        /// The reason the peer reported.
         message: String,
     },
     /// The operation is not supported by this backend/negotiated capabilities.
@@ -178,9 +113,16 @@ impl perl_parser_core::ErrorClass for BackendError {
             Self::Timeout(_) => perl_parser_core::ErrorCategory::Transient,
             // The backend deliberately terminated work at a declared bound.
             Self::ResourceLimit(_) => perl_parser_core::ErrorCategory::ResourceLimit,
-            // The responder answered `success: false`. Classification follows the
-            // caller-supplied responder, never the reason text (#8758).
-            Self::RequestFailed { origin, .. } => origin.reported_failure_category(),
+            // The peer reported an error — surfaces an unexpected engine-side
+            // failure. Note: this reports what the engine said (which can
+            // include a debuggee die), but the error itself is an adapter-
+            // operational outcome, not a debuggee-termination signal (#4979).
+            Self::Engine(_) => perl_parser_core::ErrorCategory::Bug,
+            // A peer answered `success: false`. This is what the peer reported,
+            // not a failed invariant of ours, so it is never `Bug`. The peer
+            // wire carries no cause, so no finer category is claimed and the
+            // reason text is never inspected to invent one (#8758, #14582).
+            Self::PeerReported { .. } => perl_parser_core::ErrorCategory::Advisory,
             // The requested operation isn't supported — usage/configuration.
             Self::Unsupported(_) => perl_parser_core::ErrorCategory::UserError,
             // Serialization/deserialization — the other side violated format.

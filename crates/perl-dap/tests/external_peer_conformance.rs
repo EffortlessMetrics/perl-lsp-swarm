@@ -996,13 +996,13 @@ fn overload_racing_peer_eof_yields_one_ordered_terminal_transition() {
 /// ordinary debuggee failure reported through the negotiated protocol.
 ///
 /// This exercises the reachable layer — `ExternalDebuggerPeerBackend::evaluate`
-/// → `request()` → [`BackendError::RequestFailed`] — rather than constructing
+/// → `request()` → [`BackendError::PeerReported`] — rather than constructing
 /// the error directly, so it would have caught the original defect where every
 /// such reply classified as `ErrorCategory::Bug` and was routed for adapter-bug
 /// repair.
 #[test]
 fn peer_reported_debuggee_failure_is_not_an_adapter_bug() {
-    use perl_dap::backend::{BackendError, BackendResponseOrigin};
+    use perl_dap::backend::BackendError;
     use perl_parser_core::{ErrorCategory, ErrorClass};
 
     const DIE: &str = "Undefined subroutine &main::foo called at t/x.pl line 3.";
@@ -1031,12 +1031,11 @@ fn peer_reported_debuggee_failure_is_not_an_adapter_bug() {
     }));
 
     match &err {
-        BackendError::RequestFailed { origin, command, message } => {
-            assert_eq!(*origin, BackendResponseOrigin::ExternalPeerResponse);
+        BackendError::PeerReported { command, message } => {
             assert_eq!(command, command::EVALUATE);
             assert_eq!(message, DIE);
         }
-        other => panic!("expected RequestFailed from a peer success:false, got {other:?}"),
+        other => panic!("expected PeerReported from a peer success:false, got {other:?}"),
     }
 
     assert_ne!(
@@ -1058,7 +1057,7 @@ fn peer_reported_debuggee_failure_is_not_an_adapter_bug() {
 ///
 /// A peer that answers an `evaluate` sequence with a response echoing
 /// `stackTrace` has broken correlation. That is a protocol violation, not an
-/// outcome of the evaluate — and it must not be recorded as a `RequestFailed`
+/// outcome of the evaluate — and it must not be recorded as a `PeerReported`
 /// carrying the command we asked for, which would assert an identity the peer
 /// never confirmed and classify a correlation failure as an ordinary advisory
 /// debuggee outcome (#8758 review).
