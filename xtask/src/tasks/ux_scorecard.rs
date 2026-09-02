@@ -16,6 +16,7 @@ const DEFAULT_INPUT: &str =
 const DEFAULT_OUTPUT: &str = "target/receipts/metrics/editor_ux_scorecard.json";
 const DEFAULT_STATUS_MD: &str = "docs/project/status/editor_ux.md";
 const FIXTURE_MATRIX: &str = "crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json";
+#[cfg(test)]
 const BASELINE_PATH: &str = ".ci/metrics/baselines/editor_ux.json";
 
 #[derive(Debug, Clone, Copy)]
@@ -91,12 +92,11 @@ fn run_at(
     let scenario_ids: Vec<String> =
         raw_measurements.iter().map(|m| m.scenario_id.clone()).collect();
 
-    let declared_scenario_count = load_declared_scenario_count(&root);
+    let declared_scenario_count = load_declared_scenario_count(root);
 
     // Validate the required baseline before creating any output. A malformed
     // ratchet input must not leave a partially updated scorecard behind.
-    let baseline =
-        if ratchet_check { Some(load_baseline(&root)?) } else { load_baseline_opt(&root) };
+    let baseline = if ratchet_check { Some(load_baseline(root)?) } else { load_baseline_opt(root) };
 
     let mut rows = BTreeMap::new();
     rows.insert(
@@ -141,7 +141,7 @@ fn run_at(
         rows,
         latency_by_request_class: latencies,
         provenance: json!({
-            "input": path_relative_to_root(&root, &input_path),
+            "input": path_relative_to_root(root, &input_path),
             "generator": "cargo xtask ux-scorecard --format json",
             "ratchet_policy": "regression_only",
             "declared_scenario_count": declared_scenario_count
@@ -169,7 +169,7 @@ fn run_at(
     // fail while the old scorecard and status remain intact.
     let scorecard_payload = serde_json::to_string_pretty(&artifact)? + "\n";
     let status_payload = render_status_markdown(&artifact, baseline.as_ref());
-    let receipt_payload = prepare_receipt_payload(&root, &artifact)?;
+    let receipt_payload = prepare_receipt_payload(root, &artifact)?;
 
     write_atomic(&output_path, scorecard_payload.as_bytes())?;
     write_atomic(&status_path, status_payload.as_bytes())?;
