@@ -5,7 +5,14 @@
 //! test running concurrently in the same binary. Isolating it here means it
 //! cannot destabilize the negative controls in `activation.rs`, and a future
 //! test there that resolves a relative path cannot flake against it.
+//!
+//! `#[serial]` is the repository's #1269 contract for a parallel-unsafe test.
+//! Its own binary already means nothing races it today, so the annotation is
+//! belt-and-braces — but the ratchet asks for the annotation rather than a row
+//! in `ci/serial_test_identities.json`, and that registry is a debt ledger
+//! being drained, not a place to add to.
 
+use serial_test::serial;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use xtask::activation;
@@ -20,6 +27,7 @@ fn repo_root() -> PathBuf {
 }
 
 #[test]
+#[serial]
 fn generation_is_deterministic_across_runs_and_process_cwd() -> TestResult {
     let root = repo_root();
     let first = activation::generate(&root).map_err(|error| error.to_string())?;

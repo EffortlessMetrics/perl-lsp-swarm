@@ -84,6 +84,10 @@ winapi = { version = "0.3.9", features = ["fileapi", "handleapi", "jobapi2", "mi
 assert_cmd = "2.2.2"
 filetime = "0.2.29"
 perl-tdd-support = { workspace = true }
+# The activation CWD-independence proof mutates process-global state, so the
+# #1269 parallel-unsafe test ratchet requires it to be serialized rather than
+# adjudicated into ci/serial_test_identities.json.
+serial_test = "4.0.1"
 
 [features]
 # Legacy Pest-based (v2) tasks -- v2-parity corpus, v2-only diagnostics.

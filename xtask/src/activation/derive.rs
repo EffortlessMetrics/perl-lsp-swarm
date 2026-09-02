@@ -102,14 +102,14 @@ fn derive_features(root: &Path) -> Result<(RuleOutput, RuleOutput), ActivationEr
                 feature,
                 ActivationClass::Product,
                 "features-product",
-            ));
+            )?);
         } else if maturity == "preview" {
             preview_rows.push(feature_row(
                 id,
                 feature,
                 ActivationClass::Preview,
                 "features-preview",
-            ));
+            )?);
         }
     }
     product_rows.sort_by(|left, right| left.surface_id.cmp(&right.surface_id));
@@ -148,7 +148,7 @@ fn feature_row(
     feature: &toml::Value,
     class: ActivationClass,
     rule: &str,
-) -> ActivationRow {
+) -> Result<ActivationRow, ActivationError> {
     let implementation_owner =
         feature.get("implementation_owner").and_then(toml::Value::as_str).unwrap_or("missing");
     let capability_gate =
@@ -184,22 +184,28 @@ fn feature_row(
         )),
     };
 
-    let proof_references = feature
-        .get("evidence")
-        .and_then(toml::Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| {
-                    let class = entry.get("class")?.as_str()?.to_string();
-                    let id = entry.get("id")?.as_str()?.to_string();
-                    Some(ProofReference { class, id })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // A malformed evidence entry must not be filtered away: dropping it would
+    // quietly shrink a product row's proof references while generation still
+    // reported success. An absent `evidence` array is a different thing — the
+    // authority simply records none — and stays an empty list.
+    let mut proof_references = Vec::new();
+    if let Some(entries) = feature.get("evidence").and_then(toml::Value::as_array) {
+        for entry in entries {
+            let class = entry.get("class").and_then(toml::Value::as_str).filter(|v| !v.is_empty());
+            let evidence_id =
+                entry.get("id").and_then(toml::Value::as_str).filter(|v| !v.is_empty());
+            let (Some(class), Some(evidence_id)) = (class, evidence_id) else {
+                return Err(ActivationError::new(format!(
+                    "{FEATURES_TOML}: feature `{id}` has an evidence entry without a \
+                     non-empty string `class` and `id`"
+                )));
+            };
+            proof_references
+                .push(ProofReference { class: class.to_string(), id: evidence_id.to_string() });
+        }
+    }
 
-    ActivationRow {
+    Ok(ActivationRow {
         surface_id: format!("feature:{id}"),
         class,
         class_authority: ClassAuthority {
@@ -220,7 +226,7 @@ fn feature_row(
         promotion: not_evaluated(),
         retirement: None,
         notes: unowned_note,
-    }
+    })
 }
 
 /// `crates/<name>/...` -> `Some("crates/<name>")`; anything else (including
@@ -268,8 +274,15 @@ fn derive_gates(root: &Path) -> Result<RuleOutput, ActivationError> {
             .to_string();
         {
             let tier = gate.get("tier").and_then(serde_yaml_ng::Value::as_str).unwrap_or("");
+            // `required` is optional in gate-policy.yaml, and the gate runner
+            // reads an absent value as TRUE (`#[serde(default = "default_true")]`
+            // on `GateDefinition::required`, xtask/src/tasks/gates.rs:149).
+            // Defaulting to false here would record a required gate as optional
+            // — the inventory would understate enforcement, which is the exact
+            // dishonesty it exists to prevent. Consume the authority's own
+            // default rather than inventing a different one.
             let required =
-                gate.get("required").and_then(serde_yaml_ng::Value::as_bool).unwrap_or(false);
+                gate.get("required").and_then(serde_yaml_ng::Value::as_bool).unwrap_or(true);
             let description =
                 gate.get("description").and_then(serde_yaml_ng::Value::as_str).unwrap_or("");
             rows.push(ActivationRow {
@@ -324,12 +337,22 @@ fn derive_gates(root: &Path) -> Result<RuleOutput, ActivationError> {
 
 fn sorted_crate_manifests(root: &Path) -> Result<Vec<(String, toml::Value)>, ActivationError> {
     let crates_dir = root.join("crates");
-    let mut names: Vec<String> = fs::read_dir(&crates_dir)
+    // A discarded directory-entry error would silently shrink the input set:
+    // generation would succeed against a partial view of `crates/`. Surface it.
+    let mut names: Vec<String> = Vec::new();
+    for entry in fs::read_dir(&crates_dir)
         .map_err(|error| ActivationError::new(format!("crates: cannot list: {error}")))?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().join("Cargo.toml").is_file())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect();
+    {
+        let entry = entry
+            .map_err(|error| ActivationError::new(format!("crates: cannot read entry: {error}")))?;
+        if !entry.path().join("Cargo.toml").is_file() {
+            continue;
+        }
+        let name = entry.file_name().into_string().map_err(|name| {
+            ActivationError::new(format!("crates: non-UTF-8 directory name {name:?}"))
+        })?;
+        names.push(name);
+    }
     names.sort();
 
     let mut manifests = Vec::with_capacity(names.len());
@@ -514,14 +537,24 @@ fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
 
 fn derive_fuzz(root: &Path) -> Result<RuleOutput, ActivationError> {
     let targets_dir = root.join(FUZZ_TARGETS_DIR);
-    let mut stems: Vec<String> = fs::read_dir(&targets_dir)
-        .map_err(|error| ActivationError::new(format!("{FUZZ_TARGETS_DIR}: cannot list: {error}")))?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("rs"))
-        .filter_map(|entry| {
-            entry.path().file_stem().and_then(|stem| stem.to_str()).map(str::to_string)
-        })
-        .collect();
+    // Same reasoning as `sorted_crate_manifests`: a dropped entry error would
+    // hide a fuzz target rather than report that the directory could not be read.
+    let mut stems: Vec<String> = Vec::new();
+    for entry in fs::read_dir(&targets_dir).map_err(|error| {
+        ActivationError::new(format!("{FUZZ_TARGETS_DIR}: cannot list: {error}"))
+    })? {
+        let entry = entry.map_err(|error| {
+            ActivationError::new(format!("{FUZZ_TARGETS_DIR}: cannot read entry: {error}"))
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let stem = path.file_stem().and_then(|stem| stem.to_str()).ok_or_else(|| {
+            ActivationError::new(format!("{FUZZ_TARGETS_DIR}: non-UTF-8 target file name"))
+        })?;
+        stems.push(stem.to_string());
+    }
     stems.sort();
 
     let fuzz_manifest_text = read_text(root, FUZZ_CARGO_TOML)?;
@@ -698,6 +731,54 @@ mod tests {
         };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("has no boolean `advertised`"), "{message}");
+    }
+
+    #[test]
+    fn gate_without_required_inherits_the_runner_default_of_true() {
+        // gate-policy.yaml makes `required` optional and the gate runner reads
+        // an absent value as true. Recording false here would understate
+        // enforcement for any future gate that omits the field.
+        let root = scratch_root("gate-required-default");
+        assert!(write(&root, GATE_POLICY_YAML, "gates:\n  - name: implicit\n    tier: pr_fast\n"));
+        let detail = derive_gates(&root).map(|output| {
+            output.rows.first().and_then(|row| row.registration.detail.clone()).unwrap_or_default()
+        });
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(detail, Ok("tier = \"pr_fast\"; required = true".to_string()));
+    }
+
+    #[test]
+    fn malformed_evidence_entry_fails_instead_of_shrinking_proof() {
+        let root = scratch_root("feature-bad-evidence");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"proven\"\nadvertised = true\n\
+             implementation_owner = \"crates/demo/src/lib.rs\"\n\
+             evidence = [{ class = \"integration_test\" }]\n"
+        ));
+        let message = match derive_features(&root) {
+            Ok(_) => "unexpectedly derived".to_string(),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("evidence entry without a non-empty string"), "{message}");
+    }
+
+    #[test]
+    fn well_formed_evidence_still_derives_proof_references() {
+        let root = scratch_root("feature-good-evidence");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"proven\"\nadvertised = true\n\
+             implementation_owner = \"crates/demo/src/lib.rs\"\n\
+             evidence = [{ class = \"integration_test\", id = \"crates/demo/tests/a.rs\" }]\n"
+        ));
+        let count = derive_features(&root)
+            .map(|(product, _)| product.rows.first().map(|row| row.proof_references.len()));
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(count, Ok(Some(1)));
     }
 
     #[test]

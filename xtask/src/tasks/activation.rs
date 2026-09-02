@@ -46,12 +46,10 @@ pub fn run(command: ActivationSubcommand) -> Result<()> {
             );
         }
         ActivationSubcommand::List => {
-            let bytes = std::fs::read(root.join(activation::INVENTORY_PATH))
-                .map_err(|error| eyre!("{}: cannot read: {error}", activation::INVENTORY_PATH))?;
-            let value: serde_json::Value = serde_json::from_slice(&bytes)
-                .map_err(|error| eyre!("{}: invalid JSON: {error}", activation::INVENTORY_PATH))?;
-            let inventory = activation::validate_inventory_value(&root, &value)
-                .map_err(|error| eyre!("{error}"))?;
+            // Full validation, not just the artifact's own shape: rendering a
+            // clean listing while the override ledger is invalid would present
+            // rows the ledger cannot justify as if they were settled.
+            let inventory = activation::validate(&root).map_err(|error| eyre!("{error}"))?;
             print!("{}", activation::render_list(&inventory));
         }
     }
