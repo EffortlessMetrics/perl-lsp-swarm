@@ -4,6 +4,8 @@
   "track": "public-beta",
   "prepared_swarm_sha": "1111111111111111111111111111111111111111",
   "release_base_sha": "2222222222222222222222222222222222222222",
+  "publication_repository": "EffortlessMetrics/perl-lsp",
+  "planned_at": "2026-09-02",
   "default_action": "take_swarm",
   "inputs": [
     {
@@ -109,7 +111,7 @@
       "evidence": [
         {
           "kind": "repository_source",
-          "reference": "docs/release/0.18.0/release_notes.json",
+          "reference": "docs/release/0.18.0/prepared_topology.json",
           "digest": null
         }
       ]
@@ -160,31 +162,34 @@
   "live_controls": {
     "branch_rules": {
       "result": "proven",
+      "max_observation_age_days": 14,
       "evidence": [
         {
           "kind": "live_receipt",
           "reference": "docs/release/0.18.0/live/branch_rules_receipt.json",
-          "digest": "sha256:fdaa88fafa3e4248b05a2ffbee89ad792d496a2899ae05caba69bb1a8daec75b"
+          "digest": "sha256:57af52318177ac5553cbc431557cc7fb7e410adbf401d3ae109e63208058d635"
         }
       ]
     },
     "environments": {
       "result": "proven",
+      "max_observation_age_days": 14,
       "evidence": [
         {
           "kind": "live_receipt",
           "reference": "docs/release/0.18.0/live/environments_receipt.json",
-          "digest": "sha256:c2f140cadf75b16b27945d8c0b69bd0a3353a0ae46b2850090919440d3f58317"
+          "digest": "sha256:b049fa2d68a0f18e6284d5f78ecbe85e6d4aa47d4e09cfda19dc838b4687bc46"
         }
       ]
     },
     "quality_exceptions": {
       "result": "proven",
+      "max_observation_age_days": 14,
       "evidence": [
         {
           "kind": "live_receipt",
           "reference": "docs/release/0.18.0/live/quality_exceptions_receipt.json",
-          "digest": "sha256:8dadd0ec534888fbcc24a7ce7ec523c5deedfe63798e67324a84fabaf71d67bb"
+          "digest": "sha256:735608a4a4aefbfab6685927b68155a804e0b67ac57cbd4c566bbf10a753d32e"
         },
         {
           "kind": "review_ruling",

@@ -11,6 +11,8 @@
     "track",
     "prepared_swarm_sha",
     "release_base_sha",
+    "publication_repository",
+    "planned_at",
     "default_action",
     "inputs",
     "paths",
@@ -102,6 +104,16 @@
       "items": {
         "$ref": "#/$defs/blocker"
       }
+    },
+    "publication_repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "description": "The publication repository this projection targets. Live-control receipts must name the same repository, so an observation of another repository cannot prove this release's controls."
+    },
+    "planned_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "UTC date this plan is evaluated against (YYYY-MM-DD). Live-control freshness is judged against this, never against wall-clock now, so two runs over identical inputs reach identical verdicts."
     }
   },
   "$defs": {
@@ -229,7 +241,78 @@
           "minLength": 1,
           "description": "The condition under which this row stops being current."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "drop_swarm_only"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected_public_digest": {
+                "type": "null"
+              },
+              "source_digest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "preserve_release"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected_public_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "release_base_digest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "enum": [
+                  "translate",
+                  "regenerate"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected_public_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "source_digest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        }
+      ]
     },
     "invariant": {
       "type": "object",
@@ -275,6 +358,7 @@
       "additionalProperties": false,
       "required": [
         "result",
+        "max_observation_age_days",
         "evidence"
       ],
       "properties": {
@@ -291,6 +375,12 @@
           "items": {
             "$ref": "#/$defs/evidence"
           }
+        },
+        "max_observation_age_days": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 365,
+          "description": "How old a live observation may be, relative to planned_at, and still prove this control."
         }
       }
     },

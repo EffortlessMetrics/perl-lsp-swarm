@@ -10,6 +10,10 @@ const SCHEMA: &str = include_str!("../../../../schemas/publication_sync_manifest
 const CLEAN: &str = include_str!("../../../../fixtures/publication_sync/clean_manifest.json");
 const RECONCILIATION_FIXTURE: &[u8] =
     include_bytes!("../../../../fixtures/publication_sync/reconciliation_receipt.json");
+const LIVE_RECEIPT_SCHEMA: &str =
+    include_str!("../../../../schemas/publication_live_control_receipt.v1.schema.json");
+const LIVE_RECEIPT_FIXTURE: &[u8] =
+    include_bytes!("../../../../fixtures/publication_sync/live_control_receipt.json");
 const RECONCILIATION_PATH: &str = "docs/swarm/source-syncs/0.18.0-reconciliation-receipt.json";
 
 // ---------------------------------------------------------------------------
@@ -23,12 +27,77 @@ fn fixture_input_bytes(path: &str) -> Option<Vec<u8>> {
     if path == RECONCILIATION_PATH {
         return Some(RECONCILIATION_FIXTURE.to_vec());
     }
-    // Release inputs, live-control receipts, and the one document authority the
-    // fixture cites all resolve through the same deterministic generator.
+    // Live-control receipts are typed documents, not synthesized filler: the
+    // planner parses them, so the fixture must serve a real one per control.
+    if let Some(control) = path
+        .strip_prefix("docs/release/0.18.0/live/")
+        .and_then(|name| name.strip_suffix("_receipt.json"))
+    {
+        return Some(live_receipt_bytes(control, |_| {}));
+    }
     if path.starts_with("docs/release/0.18.0/") || path == "docs/swarm/sync-protocol.md" {
         return Some(format!("publication-sync fixture input: {path}\n").into_bytes());
     }
     None
+}
+
+/// A valid live-control receipt for `control`, after applying `mutate`. Tests
+/// mutate one identity/result/freshness field at a time from this baseline.
+fn live_receipt_bytes(control: &str, mutate: impl FnOnce(&mut Value)) -> Vec<u8> {
+    let mut receipt = json!({
+        "schema_version": "publication_live_control_receipt.v1",
+        "control": control,
+        "repository": "EffortlessMetrics/perl-lsp",
+        "release": "0.18.0",
+        "result": "proven",
+        "observed_at": "2026-08-30",
+        "observation_method": format!("gh api repos/EffortlessMetrics/perl-lsp {control} readout"),
+        "observation_authority": "release/ci publication observer",
+        "observed_state": {
+            "summary": format!("{control} observed for the 0.18.0 public-beta transaction")
+        }
+    });
+    mutate(&mut receipt);
+    let mut rendered = serde_json::to_string_pretty(&receipt).unwrap_or_default();
+    rendered.push('\n');
+    rendered.into_bytes()
+}
+
+/// Re-point `branch_rules` at a mutated receipt and re-declare its digest, so
+/// the byte-identity layer still passes and only the semantic layer is on trial.
+fn plan_with_mutated_receipt(mutate: impl FnOnce(&mut Value)) -> Result<Receipt> {
+    let bytes = live_receipt_bytes("branch_rules", mutate);
+    let digest = sha256_digest(&bytes);
+    MUTATED.with(|cell| *cell.borrow_mut() = Some(bytes));
+
+    let mut document = clean_value()?;
+    document["live_controls"]["branch_rules"]["evidence"][0]["reference"] = json!(MUTATED_PATH);
+    document["live_controls"]["branch_rules"]["evidence"][0]["digest"] = json!(digest);
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let manifest_digest = canonical_digest(&document)?;
+    let outcome = evaluate_with_surface(
+        &manifest,
+        &manifest_digest,
+        Path::new("."),
+        mutating_loader,
+        &test_product_surface(),
+    );
+    MUTATED.with(|cell| *cell.borrow_mut() = None);
+    outcome
+}
+
+const MUTATED_PATH: &str = "docs/release/0.18.0/live/mutated_receipt.json";
+
+thread_local! {
+    static MUTATED: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn mutating_loader(_repo_root: &Path, path: &str) -> Result<Vec<u8>, LoadFailure> {
+    if path == MUTATED_PATH {
+        return MUTATED.with(|cell| cell.borrow().clone()).ok_or(LoadFailure::Missing);
+    }
+    fixture_input_bytes(path).ok_or(LoadFailure::Missing)
 }
 
 fn test_loader(_repo_root: &Path, path: &str) -> Result<Vec<u8>, LoadFailure> {
@@ -95,10 +164,10 @@ fn assert_verdict(receipt: &Receipt, expected: Verdict) -> Result<()> {
 #[test]
 fn clean_manifest_plans_pass() -> Result<()> {
     let receipt = plan_value(&clean_value()?)?;
-    assert_verdict(&receipt, Verdict::Pass)?;
     if !receipt.findings.is_empty() {
         bail!("clean manifest produced findings: {:?}", receipt.findings);
     }
+    assert_verdict(&receipt, Verdict::Pass)?;
     if receipt.rows.len() != 4 {
         bail!("clean manifest projected {} rows", receipt.rows.len());
     }
@@ -538,7 +607,8 @@ fn a_source_only_live_control_claim_is_not_proven() -> Result<()> {
 #[test]
 fn a_blocked_live_control_blocks_the_plan() -> Result<()> {
     let mut document = clean_value()?;
-    document["live_controls"]["environments"] = json!({ "result": "blocked", "evidence": [] });
+    document["live_controls"]["environments"] =
+        json!({ "result": "blocked", "max_observation_age_days": 14, "evidence": [] });
 
     let receipt = plan_value(&document)?;
     assert_verdict(&receipt, Verdict::Blocked)?;
@@ -1257,6 +1327,217 @@ fn the_receipt_exports_every_cited_issue_reference() -> Result<()> {
     }
     if receipt.cited_issue_references.iter().any(|r| r.contains('/')) {
         bail!("a repository-path authority leaked into the issue list");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Live-control receipts: typed, scoped, passing and fresh
+//
+// Every case below starts from a valid receipt and mutates exactly one field,
+// keeping the declared digest correct. The byte-identity layer therefore always
+// passes and only the semantic layer is on trial — which is the point: a digest
+// proves the file did not change, never that it observed anything.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_valid_live_receipt_baseline_proves_its_control() -> Result<()> {
+    // The positive control. Without it every mutation below could "pass" by
+    // failing for an unrelated reason.
+    let receipt = plan_with_mutated_receipt(|_| {})?;
+    if !receipt.findings.is_empty() {
+        bail!("the unmutated receipt produced findings: {:?}", receipt.findings);
+    }
+    assert_verdict(&receipt, Verdict::Pass)
+}
+
+#[test]
+fn a_receipt_that_is_not_a_live_control_observation_is_not_proven() -> Result<()> {
+    // The original hole: arbitrary repository bytes, correctly hashed.
+    let bytes = b"just some file that happens to live in the repository\n".to_vec();
+    let digest = sha256_digest(&bytes);
+    let mut document = clean_value()?;
+    document["live_controls"]["branch_rules"]["evidence"][0]["reference"] =
+        json!("docs/release/0.18.0/prepared_topology.json");
+    document["live_controls"]["branch_rules"]["evidence"][0]["digest"] = json!(digest);
+
+    // Hash the real fixture bytes so the digest layer genuinely passes.
+    let actual = fixture_input_bytes("docs/release/0.18.0/prepared_topology.json")
+        .ok_or_else(|| eyre!("fixture missing"))?;
+    document["live_controls"]["branch_rules"]["evidence"][0]["digest"] =
+        json!(sha256_digest(&actual));
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_unreadable")
+}
+
+#[test]
+fn a_receipt_for_another_control_cannot_prove_this_one() -> Result<()> {
+    let receipt = plan_with_mutated_receipt(|r| r["control"] = json!("environments"))?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_control_mismatch")
+}
+
+#[test]
+fn a_receipt_for_another_repository_cannot_prove_this_release() -> Result<()> {
+    let receipt = plan_with_mutated_receipt(|r| {
+        r["repository"] = json!("EffortlessMetrics/some-other-repo")
+    })?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_repository_mismatch")
+}
+
+#[test]
+fn a_receipt_for_another_release_cannot_prove_this_one() -> Result<()> {
+    let receipt = plan_with_mutated_receipt(|r| r["release"] = json!("0.17.0"))?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_release_mismatch")
+}
+
+#[test]
+fn a_non_passing_observation_cannot_prove_a_control() -> Result<()> {
+    let blocked = plan_with_mutated_receipt(|r| r["result"] = json!("blocked"))?;
+    assert_verdict(&blocked, Verdict::Blocked)?;
+    assert_finding(&blocked, "live_receipt_observation_blocked")?;
+
+    let unproven = plan_with_mutated_receipt(|r| r["result"] = json!("not_proven"))?;
+    assert_verdict(&unproven, Verdict::NotProven)?;
+    assert_finding(&unproven, "live_receipt_observation_not_proven")
+}
+
+#[test]
+fn a_stale_observation_cannot_prove_a_control() -> Result<()> {
+    // planned_at is 2026-09-02 and the horizon is 14 days, so 2026-08-01 is
+    // 32 days old.
+    let receipt = plan_with_mutated_receipt(|r| r["observed_at"] = json!("2026-08-01"))?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_stale")
+}
+
+#[test]
+fn an_observation_from_after_the_plan_cannot_prove_a_control() -> Result<()> {
+    let receipt = plan_with_mutated_receipt(|r| r["observed_at"] = json!("2026-09-30"))?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_observed_after_plan")
+}
+
+#[test]
+fn an_observation_exactly_on_the_horizon_still_proves_its_control() -> Result<()> {
+    // Boundary control: 14 days before planned_at is inside a 14-day horizon.
+    // Without this, an off-by-one in the comparison would go unnoticed.
+    let receipt = plan_with_mutated_receipt(|r| r["observed_at"] = json!("2026-08-19"))?;
+    if receipt.findings.iter().any(|f| f.code.starts_with("live_receipt")) {
+        bail!("an observation exactly on the horizon was rejected: {:?}", receipt.findings);
+    }
+    assert_verdict(&receipt, Verdict::Pass)
+}
+
+#[test]
+fn a_receipt_from_another_schema_version_cannot_prove_a_control() -> Result<()> {
+    let receipt = plan_with_mutated_receipt(|r| {
+        r["schema_version"] = json!("publication_live_control_receipt.v2");
+    })?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_schema_version_unknown")
+}
+
+#[test]
+fn a_receipt_recording_no_observed_state_is_not_proven() -> Result<()> {
+    let receipt = plan_with_mutated_receipt(|r| r["observed_state"] = json!({}))?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_observation_empty")
+}
+
+#[test]
+fn a_receipt_carrying_unknown_fields_is_not_proven() -> Result<()> {
+    let receipt = plan_with_mutated_receipt(|r| r["extra_authority"] = json!("trust me"))?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_unreadable")
+}
+
+#[test]
+fn live_receipt_evidence_cannot_be_used_for_an_invariant() -> Result<()> {
+    // An invariant has no control identity to bind an observation to, so the
+    // role is out of scope there rather than silently accepted.
+    let mut document = clean_value()?;
+    document["invariants"][0]["evidence"] = json!([
+        { "kind": "live_receipt", "reference": "docs/release/0.18.0/live/branch_rules_receipt.json",
+          "digest": "sha256:57af52318177ac5553cbc431557cc7fb7e410adbf401d3ae109e63208058d635" }
+    ]);
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "evidence_live_receipt_out_of_scope")
+}
+
+#[test]
+fn invariant_evidence_must_apply_to_its_own_declared_sources() -> Result<()> {
+    // A document that exists but belongs to an input this invariant never
+    // declared settled nothing here.
+    let mut document = clean_value()?;
+    document["invariants"][0]["evidence"][0]["reference"] =
+        json!("docs/release/0.18.0/public_claims.json");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "invariant_evidence_inapplicable")
+}
+
+#[test]
+fn an_expired_product_classification_is_not_proven_rather_than_ignored() -> Result<()> {
+    // `file_policy` stops honouring an entry once it expires. Dropping it here
+    // would quietly *weaken* a protective check, and honouring it forever would
+    // assert authority nobody re-checked. Neither is honest, so fail closed.
+    let surface = ProductSurface::from_expiring_entries_for_test(vec![(
+        "clients/lite-xl/compose.lua",
+        "production",
+        Some("2026-01-01"),
+    )]);
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[1];
+    row["path"] = json!("clients/lite-xl/compose.lua");
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let receipt = evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "row_product_classification_expired")
+}
+
+#[test]
+fn an_unexpired_classification_still_blocks() -> Result<()> {
+    // Opposite direction: expiry handling must not turn every classification
+    // into "unknown".
+    let surface = ProductSurface::from_expiring_entries_for_test(vec![(
+        "clients/lite-xl/compose.lua",
+        "production",
+        Some("2027-01-01"),
+    )]);
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["path"] = json!("clients/lite-xl/compose.lua");
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let receipt = evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+
+    assert_verdict(&receipt, Verdict::Blocked)?;
+    assert_finding(&receipt, "row_product_bearing_exclusion")
+}
+
+#[test]
+fn the_live_control_receipt_fixture_conforms_to_its_schema() -> Result<()> {
+    let schema: Value = serde_json::from_str(LIVE_RECEIPT_SCHEMA)?;
+    let document: Value = serde_json::from_slice(LIVE_RECEIPT_FIXTURE)?;
+    let validator =
+        jsonschema::validator_for(&schema).map_err(|error| eyre!("compiling schema: {error}"))?;
+    let errors: Vec<String> = validator
+        .iter_errors(&document)
+        .map(|error| format!("{}: {error}", error.instance_path()))
+        .collect();
+    if !errors.is_empty() {
+        bail!("the live-control receipt fixture violates its schema: {errors:?}");
     }
     Ok(())
 }

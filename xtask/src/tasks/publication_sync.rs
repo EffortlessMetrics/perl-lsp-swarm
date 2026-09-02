@@ -29,6 +29,27 @@ const RECEIPT_SCHEMA_VERSION: u32 = 1;
 /// receipt from another version cannot silently authorize a projection.
 const RECONCILIATION_RECEIPT_SCHEMA_VERSION: u32 = 2;
 
+/// The live-control receipt contract this planner consumes. A `live_receipt`
+/// must be one of these: byte identity proves the file did not change, never
+/// that it observed anything.
+const LIVE_CONTROL_RECEIPT_SCHEMA_VERSION: &str = "publication_live_control_receipt.v1";
+
+/// The typed live-control observation. Unknown fields fail closed so an
+/// unrelated document cannot masquerade as an observation.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveControlReceipt {
+    schema_version: String,
+    control: String,
+    repository: String,
+    release: String,
+    result: LiveResult,
+    observed_at: String,
+    observation_method: String,
+    observation_authority: String,
+    observed_state: serde_json::Map<String, Value>,
+}
+
 /// Release inputs every manifest must bind. A missing id is not provable and a
 /// foreign id fails closed at the schema boundary.
 const REQUIRED_INPUT_IDS: [InputId; 6] = [
@@ -64,6 +85,8 @@ pub struct Manifest {
     track: Track,
     prepared_swarm_sha: String,
     release_base_sha: String,
+    publication_repository: String,
+    planned_at: String,
     default_action: DefaultAction,
     inputs: Vec<ManifestInput>,
     paths: Vec<PathRow>,
@@ -259,6 +282,9 @@ struct LiveControls {
 #[serde(deny_unknown_fields)]
 struct LiveControl {
     result: LiveResult,
+    /// How old an observation may be, relative to the manifest's `planned_at`,
+    /// and still prove this control.
+    max_observation_age_days: i64,
     evidence: Vec<Evidence>,
 }
 
@@ -632,10 +658,18 @@ impl ProductSurface {
     /// evolving underneath them.
     #[cfg(test)]
     fn from_entries_for_test(rows: Vec<(&str, &str)>) -> Self {
+        Self::from_expiring_entries_for_test(
+            rows.into_iter().map(|(path, class)| (path, class, None)).collect(),
+        )
+    }
+
+    /// As above, with an explicit `expires` date per row.
+    #[cfg(test)]
+    fn from_expiring_entries_for_test(rows: Vec<(&str, &str, Option<&str>)>) -> Self {
         Self {
             entries: rows
                 .into_iter()
-                .map(|(path, classification)| AllowEntry {
+                .map(|(path, classification, expires)| AllowEntry {
                     id: path.to_string(),
                     glob: None,
                     path: Some(path.to_string()),
@@ -648,7 +682,7 @@ impl ProductSurface {
                     covered_by: Vec::new(),
                     created: String::new(),
                     review_after: String::new(),
-                    expires: None,
+                    expires: expires.map(str::to_string),
                     broad_glob_reason: None,
                     retired: false,
                 })
@@ -670,12 +704,36 @@ impl ProductSurface {
     ///    structurally excludes Rust-family files. `Cargo.toml` and
     ///    `Cargo.lock` define the product's crates and pinned dependencies, so
     ///    displacing them from publication changes what is built.
-    fn bears_product_or_test(&self, path: &str) -> bool {
+    fn classify(&self, path: &str, evaluated_at: Option<chrono::NaiveDate>) -> SurfaceVerdict {
         if is_product_or_test_path(path) || is_rust_build_manifest(path) {
-            return true;
+            return SurfaceVerdict::ProductOrTest;
         }
-        self.entries.iter().any(|entry| file_policy::entry_matches_path(entry, path))
+        let mut expired = false;
+        for entry in self.entries.iter().filter(|e| file_policy::entry_matches_path(e, path)) {
+            match (entry.expires.as_deref().and_then(parse_date), evaluated_at) {
+                // `file_policy` stops honouring an entry once it expires. Here
+                // that cannot simply drop the row: an expired classification is
+                // not evidence the file stopped being product, it is evidence
+                // nobody has re-checked. Fail closed on the uncertainty instead
+                // of silently protecting or silently allowing.
+                (Some(expires), Some(evaluated)) if expires < evaluated => expired = true,
+                _ => return SurfaceVerdict::ProductOrTest,
+            }
+        }
+        if expired {
+            return SurfaceVerdict::ClassificationExpired;
+        }
+        SurfaceVerdict::NotClassified
     }
+}
+
+/// What the product surface can say about one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceVerdict {
+    ProductOrTest,
+    /// Every matching classification has expired, so the answer is unknown.
+    ClassificationExpired,
+    NotClassified,
 }
 
 /// Rust-family build and toolchain manifests at any depth.
@@ -1282,9 +1340,19 @@ fn validate_rows(
         validate_row_authority(row, &declared_inputs, repo_root, loader, state);
 
         let displaces = row.action.displaces_swarm_content() || row.class == Class::ReleaseLineage;
-        let product_bearing = product_surface.bears_product_or_test(&row.path);
+        let surface = product_surface.classify(&row.path, parse_date(&manifest.planned_at));
+        let product_bearing = surface == SurfaceVerdict::ProductOrTest;
 
-        if displaces && product_bearing {
+        if displaces && surface == SurfaceVerdict::ClassificationExpired {
+            state.not_proven(
+                "row_product_classification_expired",
+                format!(
+                    "row {} displaces content whose product classification has expired, so the exclusion cannot be checked against current authority",
+                    row.path
+                ),
+                "release/ci",
+            );
+        } else if displaces && product_bearing {
             state.block(
                 "row_product_bearing_exclusion",
                 format!(
@@ -1546,12 +1614,15 @@ fn validate_invariants(
                 // an invented citation cannot carry a required invariant.
                 for evidence in &invariant.evidence {
                     validate_evidence_reference(
+                        manifest,
                         &format!("invariant {}", invariant.id.as_str()),
+                        None,
                         evidence,
                         repo_root,
                         loader,
                         state,
                     );
+                    validate_invariant_evidence_applies(manifest, invariant, evidence, state);
                 }
             }
             Verdict::Blocked => state.block(
@@ -1611,7 +1682,7 @@ fn validate_live_controls(
                 // hash every referenced receipt so a nonexistent or altered
                 // observation cannot prove a live control.
                 for evidence in live {
-                    validate_live_receipt(name, evidence, repo_root, loader, state);
+                    validate_live_receipt(manifest, name, evidence, repo_root, loader, state);
                 }
             }
             LiveResult::Blocked => state.block(
@@ -1632,7 +1703,9 @@ fn validate_live_controls(
         for evidence in &control.evidence {
             if evidence.kind != EvidenceKind::LiveReceipt {
                 validate_evidence_reference(
+                    manifest,
                     &format!("live control {name}"),
+                    Some(name),
                     evidence,
                     repo_root,
                     loader,
@@ -1653,13 +1726,48 @@ fn validate_live_controls(
     }
 }
 
+/// Evidence must be *about* the invariant it is filed under. A document that
+/// exists but belongs to an input this invariant never declared did not settle
+/// anything here, so citing it is not proof, only a resolvable path.
+fn validate_invariant_evidence_applies(
+    manifest: &Manifest,
+    invariant: &Invariant,
+    evidence: &Evidence,
+    state: &mut PlanState,
+) {
+    if evidence.kind != EvidenceKind::RepositorySource {
+        return;
+    }
+    let declared: BTreeSet<&str> = manifest
+        .inputs
+        .iter()
+        .filter(|input| invariant.sources.contains(&input.id))
+        .map(|input| input.path.as_str())
+        .collect();
+    if declared.contains(evidence.reference.trim()) {
+        return;
+    }
+    state.not_proven(
+        "invariant_evidence_inapplicable",
+        format!(
+            "invariant {} cites repository source {:?}, which is not one of its declared sources {:?}",
+            invariant.id.as_str(),
+            evidence.reference,
+            declared
+        ),
+        "release/ci",
+    );
+}
+
 /// Resolve one evidence reference according to its role.
 ///
 /// `live_receipt` goes through the digest-bound path. `repository_source` must
 /// name a document that exists under the repository root. `review_ruling` must
 /// be an issue reference. Anything that resolves to nothing is not evidence.
 fn validate_evidence_reference(
+    manifest: &Manifest,
     subject: &str,
+    control: Option<&str>,
     evidence: &Evidence,
     repo_root: &Path,
     loader: InputLoader,
@@ -1667,7 +1775,19 @@ fn validate_evidence_reference(
 ) {
     match evidence.kind {
         EvidenceKind::LiveReceipt => {
-            validate_live_receipt(subject, evidence, repo_root, loader, state);
+            // Outside a live control there is no control identity to bind the
+            // observation to, so the role is not usable as invariant evidence.
+            let Some(control) = control else {
+                state.not_proven(
+                    "evidence_live_receipt_out_of_scope",
+                    format!(
+                        "{subject} cites live-receipt evidence, which can only prove a live control"
+                    ),
+                    "release/ci",
+                );
+                return;
+            };
+            validate_live_receipt(manifest, control, evidence, repo_root, loader, state);
         }
         EvidenceKind::RepositorySource => {
             if !valid_repository_path(&evidence.reference) {
@@ -1707,20 +1827,29 @@ fn validate_evidence_reference(
     }
 }
 
-/// Resolve one `live_receipt` reference and prove it is the exact observation
-/// the manifest declares.
+/// Resolve one `live_receipt` reference and prove it is a live observation of
+/// this control, for this release and repository, that passed, and that is
+/// fresh enough.
+///
+/// The digest is kept as the byte-identity layer underneath: it proves the
+/// file did not change since the manifest was written. Everything below proves
+/// the file means what the manifest claims it means. A digest alone would let
+/// any repository file, correctly hashed, mark a control proven.
 fn validate_live_receipt(
+    manifest: &Manifest,
     control: &str,
     evidence: &Evidence,
     repo_root: &Path,
     loader: InputLoader,
     state: &mut PlanState,
 ) {
+    let subject = format!("live control {control}");
+
     let Some(declared) = evidence.digest.as_deref() else {
         state.not_proven(
             "live_receipt_undigested",
             format!(
-                "live control {control} cites live receipt {} without a digest, so the observation cannot be bound",
+                "{subject} cites live receipt {} without a digest, so the observation cannot be bound",
                 evidence.reference
             ),
             "release/ci",
@@ -1730,10 +1859,7 @@ fn validate_live_receipt(
     if !is_sha256_digest(declared) {
         state.not_proven(
             "live_receipt_digest_malformed",
-            format!(
-                "live control {control} cites live receipt {} with a malformed digest",
-                evidence.reference
-            ),
+            format!("{subject} cites live receipt {} with a malformed digest", evidence.reference),
             "release/ci",
         );
         return;
@@ -1742,7 +1868,7 @@ fn validate_live_receipt(
         state.not_proven(
             "live_receipt_path_invalid",
             format!(
-                "live control {control} cites live receipt {:?}, which is not a repository-relative POSIX path",
+                "{subject} cites live receipt {:?}, which is not a repository-relative POSIX path",
                 evidence.reference
             ),
             "release/ci",
@@ -1750,28 +1876,169 @@ fn validate_live_receipt(
         return;
     }
 
-    match loader(repo_root, &evidence.reference) {
-        Ok(bytes) => {
-            let observed = sha256_digest(&bytes);
-            if observed != declared {
-                state.not_proven(
-                    "live_receipt_digest_mismatch",
-                    format!(
-                        "live control {control} cites live receipt {} which hashes to {observed} but is declared as {declared}",
-                        evidence.reference
-                    ),
-                    "release/ci",
-                );
-            }
+    let raw = match loader(repo_root, &evidence.reference) {
+        Ok(bytes) => bytes,
+        Err(failure) => {
+            report_load_failure(
+                state,
+                "live_receipt",
+                &format!("{subject}'s receipt"),
+                &evidence.reference,
+                &failure,
+            );
+            return;
         }
-        Err(failure) => report_load_failure(
-            state,
-            "live_receipt",
-            &format!("live control {control}'s receipt"),
-            &evidence.reference,
-            &failure,
+    };
+
+    let observed = sha256_digest(&raw);
+    if observed != declared {
+        state.not_proven(
+            "live_receipt_digest_mismatch",
+            format!(
+                "{subject} cites live receipt {} which hashes to {observed} but is declared as {declared}",
+                evidence.reference
+            ),
+            "release/ci",
+        );
+        return;
+    }
+
+    let receipt: LiveControlReceipt = match serde_json::from_slice(&raw) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            state.not_proven(
+                "live_receipt_unreadable",
+                format!(
+                    "{subject} cites {}, which is not a {LIVE_CONTROL_RECEIPT_SCHEMA_VERSION}: {error}",
+                    evidence.reference
+                ),
+                "release/ci",
+            );
+            return;
+        }
+    };
+
+    if receipt.schema_version != LIVE_CONTROL_RECEIPT_SCHEMA_VERSION {
+        state.not_proven(
+            "live_receipt_schema_version_unknown",
+            format!(
+                "{subject} cites a receipt declaring schema_version {} but this planner consumes {LIVE_CONTROL_RECEIPT_SCHEMA_VERSION}",
+                receipt.schema_version
+            ),
+            "release/ci",
+        );
+        return;
+    }
+
+    // Subject binding: an observation of another control, repository or release
+    // is not evidence about this one, however well-formed it is.
+    if receipt.control != control {
+        state.not_proven(
+            "live_receipt_control_mismatch",
+            format!("{subject} cites a receipt that observed control {}", receipt.control),
+            "release/ci",
+        );
+    }
+    if receipt.repository != manifest.publication_repository {
+        state.not_proven(
+            "live_receipt_repository_mismatch",
+            format!(
+                "{subject} cites a receipt for repository {} but this manifest publishes to {}",
+                receipt.repository, manifest.publication_repository
+            ),
+            "release/ci",
+        );
+    }
+    if receipt.release != manifest.release {
+        state.not_proven(
+            "live_receipt_release_mismatch",
+            format!(
+                "{subject} cites a receipt for release {} but this manifest projects {}",
+                receipt.release, manifest.release
+            ),
+            "release/ci",
+        );
+    }
+
+    match receipt.result {
+        LiveResult::Proven => {}
+        LiveResult::Blocked => state.block(
+            "live_receipt_observation_blocked",
+            format!("{subject}'s observation recorded a blocked control"),
+            "release/ci",
+        ),
+        LiveResult::NotProven => state.not_proven(
+            "live_receipt_observation_not_proven",
+            format!("{subject}'s observation did not establish the control"),
+            "release/ci",
         ),
     }
+
+    if receipt.observation_method.trim().is_empty()
+        || receipt.observation_authority.trim().is_empty()
+        || receipt.observed_state.is_empty()
+    {
+        state.not_proven(
+            "live_receipt_observation_empty",
+            format!("{subject}'s receipt records no method, authority, or observed state"),
+            "release/ci",
+        );
+    }
+
+    validate_observation_freshness(manifest, control, &receipt, state);
+}
+
+/// Freshness against the manifest's declared `planned_at`, never against
+/// wall-clock now: a plan must reach the same verdict whenever it is re-run.
+fn validate_observation_freshness(
+    manifest: &Manifest,
+    control: &str,
+    receipt: &LiveControlReceipt,
+    state: &mut PlanState,
+) {
+    let max_age = match control {
+        "branch_rules" => manifest.live_controls.branch_rules.max_observation_age_days,
+        "environments" => manifest.live_controls.environments.max_observation_age_days,
+        _ => manifest.live_controls.quality_exceptions.max_observation_age_days,
+    };
+
+    let (Some(planned), Some(observed)) =
+        (parse_date(&manifest.planned_at), parse_date(&receipt.observed_at))
+    else {
+        state.not_proven(
+            "live_receipt_date_malformed",
+            format!(
+                "live control {control} cannot be aged: planned_at {:?} / observed_at {:?}",
+                manifest.planned_at, receipt.observed_at
+            ),
+            "release/ci",
+        );
+        return;
+    };
+
+    let age = (planned - observed).num_days();
+    if age < 0 {
+        state.not_proven(
+            "live_receipt_observed_after_plan",
+            format!(
+                "live control {control} cites an observation dated {}, after this plan's {}",
+                receipt.observed_at, manifest.planned_at
+            ),
+            "release/ci",
+        );
+    } else if age > max_age {
+        state.not_proven(
+            "live_receipt_stale",
+            format!(
+                "live control {control} cites an observation {age} day(s) old, beyond the declared {max_age}-day horizon"
+            ),
+            "release/ci",
+        );
+    }
+}
+
+fn parse_date(value: &str) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
 }
 
 fn validate_declared_blockers(manifest: &Manifest, state: &mut PlanState) {
