@@ -11,8 +11,12 @@ use thiserror::Error;
 /// Ranges are byte offsets into the UTF-8 encoding of that single argument, not
 /// into any composed source text. They are half-open: `start..end`.
 ///
-/// A switch that carries no value spans the switch letter itself, so every
-/// decoded item has a location a diagnostic can point at.
+/// Where a value exists the span locates exactly that value, even when the value
+/// is empty — a bare `-F` carries an empty pattern, and its span is the
+/// zero-width position where the pattern would have been. A switch that carries
+/// no value at all spans the switch letter instead, so every decoded item still
+/// has a location. To point a diagnostic at the switch rather than its value,
+/// use the item's `switch_span`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ArgvSpan {
     /// Index of the argument in the `argv` slice that was decoded.
@@ -174,8 +178,9 @@ pub enum ContextFactKind {
 pub struct ContextFact {
     /// What the switch established.
     pub kind: ContextFactKind,
-    /// The switch's value, or the switch letter when it carries no value. For
-    /// `-I lib` this is a different argument from [`ContextFact::switch_span`].
+    /// The switch's value, or the switch letter when the switch carries no value
+    /// at all. For `-I lib` this is a different argument from
+    /// [`ContextFact::switch_span`].
     pub span: ArgvSpan,
     /// Where the switch letter itself is.
     pub switch_span: ArgvSpan,
@@ -193,8 +198,6 @@ pub enum NeutralSwitch {
     Debugger,
     /// `-f`: suppress `sitecustomize.pl`.
     NoSiteCustomize,
-    /// `-h`: print usage.
-    Usage,
     /// `-i`: edit files in place, with an optional backup extension.
     InPlaceEdit,
     /// `-s`: strip `-switch` arguments from `@ARGV` into package variables.
@@ -210,9 +213,9 @@ pub enum NeutralSwitch {
     DumpCore,
     /// `-U`: allow unsafe operations.
     AllowUnsafe,
-    /// `-v`: print the version banner.
-    Version,
-    /// `-V`: print the configuration summary, or query one variable.
+    /// `-V`: print the configuration summary, or query one variable. Unlike
+    /// `-v`, this does not stop switch processing: `perl -Vfoo` still reports
+    /// `Unrecognized switch: -oo`.
     Configuration,
     /// `-w`: enable many warnings.
     Warnings,
@@ -220,10 +223,6 @@ pub enum NeutralSwitch {
     AllWarnings,
     /// `-X`: disable all warnings.
     NoWarnings,
-    /// `--version`: the long spelling Perl accepts before switch scanning.
-    LongVersion,
-    /// `--help`: the long spelling Perl accepts before switch scanning.
-    LongHelp,
 }
 
 /// One recognized neutral switch and its optional attached value.
@@ -238,6 +237,28 @@ pub struct NeutralSwitchUse {
     /// Where the switch letter itself is. For a long switch this is the whole
     /// argument.
     pub switch_span: ArgvSpan,
+}
+
+/// A switch that makes Perl print and exit *during* switch processing.
+///
+/// Perl acts on these immediately, so nothing after them is interpreted:
+/// `perl -v -Z` prints the version banner and exits successfully even though
+/// `-Z` is not a switch Perl recognizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminatingActionKind {
+    /// `-v` or `--version`: print the version banner.
+    Version,
+    /// `-h` or `--help`: print usage.
+    Usage,
+}
+
+/// One terminating action and where it was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminatingAction {
+    /// What Perl does before exiting.
+    pub kind: TerminatingActionKind,
+    /// The switch letter, or the whole argument for a long spelling.
+    pub span: ArgvSpan,
 }
 
 /// Why a recognized switch is not modelled.
@@ -309,6 +330,8 @@ pub enum ProgramSource {
     /// No fragment and no operand. Perl still reads standard input, but nothing
     /// in `argv` said so, and that difference is worth keeping.
     Unspecified,
+    /// A terminating switch ran first, so Perl never looked for a program.
+    NotReached,
 }
 
 /// One argument passed through to the program in `@ARGV`.
@@ -339,6 +362,12 @@ pub struct PerlInvocation {
     pub unsupported_switches: Vec<UnsupportedSwitch>,
     /// Values whose Perl-side meaning is easy to misjudge.
     pub ambiguities: Vec<Ambiguity>,
+    /// The switch that made Perl print and exit, when one was written. Decoding
+    /// stops there, because Perl stops there.
+    pub terminating_action: Option<TerminatingAction>,
+    /// Arguments Perl never interpreted, because a terminating switch preceded
+    /// them. They are neither switches nor program arguments.
+    pub uninterpreted_arguments: Vec<ProgramArgument>,
     /// The `--` terminator's location, when one was written.
     pub terminator: Option<ArgvSpan>,
     /// Where the program text comes from.
@@ -401,6 +430,16 @@ pub enum InvocationDecodeError {
         /// The switch letter, `M` or `m`.
         switch: char,
         /// Where the argument is.
+        span: ArgvSpan,
+    },
+    /// `-C` was given a value that is neither a decimal count nor a string of
+    /// Perl's Unicode option letters. Perl reports
+    /// `Unknown Unicode option letter '<c>'.`
+    #[error("`-C` does not accept the option letter `{character}` in argument {}", span.argument_index)]
+    UnknownUnicodeOption {
+        /// The first character Perl would reject.
+        character: char,
+        /// Where that character is.
         span: ArgvSpan,
     },
 }
