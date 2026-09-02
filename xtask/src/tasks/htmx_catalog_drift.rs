@@ -241,41 +241,19 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
 
     let mut names = Vec::new();
     let mut in_body = false;
-    let mut fence: Option<(char, usize)> = None;
+    let mut fences = FenceScanner::new();
 
     for line in document.lines().skip(heading_line + 1) {
         let trimmed = line.trim_start();
 
         // A fenced example can contain pipe-table-shaped lines. Reading those
         // as data would invent names, and a fenced separator row would make the
-        // following sample lines look like unreadable data.
-        //
-        // Track the opening marker rather than toggling a flag: a `~~~` inside a
-        // ``` fence would otherwise read as the close, so the example's own
-        // lines would be parsed and the real closing fence would re-open,
-        // silently swallowing every genuine row after it.
-        if let Some(delimiter) = fence_delimiter(trimmed) {
-            match fence {
-                None => {
-                    fence = Some((delimiter.marker, delimiter.length));
-                    in_body = false;
-                }
-                Some((open_marker, open_length)) => {
-                    // An info-string line such as ```` ```rust ```` is content
-                    // inside an open fence, not its close. Treating it as the
-                    // close would parse the sample and let the real closer
-                    // re-open the fence over genuine rows.
-                    if delimiter.can_close
-                        && delimiter.marker == open_marker
-                        && delimiter.length >= open_length
-                    {
-                        fence = None;
-                    }
-                }
+        // following sample lines look like unreadable data. Opening a fence also
+        // ends any table in progress: the example's rows are not its rows.
+        if !fences.admits(trimmed) {
+            if fences.is_open() {
+                in_body = false;
             }
-            continue;
-        }
-        if fence.is_some() {
             continue;
         }
         // A deeper heading is a subsection, so this section continues; only a
@@ -332,7 +310,7 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
         }
     }
 
-    if fence.is_some() {
+    if fences.is_open() {
         bail!(
             "the {} section ({}) has a code fence that is never closed; everything after it was \
              skipped as sample text, so a later upstream entry could vanish into a clean report",
@@ -370,9 +348,22 @@ fn is_separator_row(line: &str) -> bool {
 /// right one.
 fn locate_section(document: &str, section: &SectionSpec) -> Result<(usize, usize)> {
     let mut located: Option<(usize, usize)> = None;
+    let mut fences = FenceScanner::new();
 
     for (index, line) in document.lines().enumerate() {
         let trimmed = line.trim();
+        // A fenced example that displays a heading is sample text, not a
+        // section. Matching it would start the scan inside the fence with no
+        // fence open, so the example's own rows would be read as authoritative
+        // and the fence's real closer would be misread as an opener. With names
+        // already collected the vacuity guard cannot fire, so a document whose
+        // real section is gone reports the sample's names instead — the silent
+        // wrong read this task exists to prevent. It also makes an ordinary
+        // documentation example collide with the real heading and fail as
+        // ambiguous, which refuses a document that is perfectly readable.
+        if !fences.admits(trimmed) {
+            continue;
+        }
         if !trimmed.ends_with(section.anchor) {
             continue;
         }
@@ -418,6 +409,59 @@ fn heading_depth(trimmed_line: &str) -> usize {
         None => hashes,
         Some(character) if character.is_whitespace() => hashes,
         Some(_) => 0,
+    }
+}
+
+/// Fenced-code state for one pass over the document.
+///
+/// Both the section locator and the row scan have to agree on exactly where a
+/// fence begins and ends. Tracking that separately in each is how two of this
+/// task's earlier silent defects arose, so the rule lives here once.
+struct FenceScanner {
+    /// Marker character and run length of the open fence, if one is open.
+    ///
+    /// The opening marker is retained rather than a bare flag: a `~~~` inside a
+    /// ``` fence would otherwise read as the close, so the example's own lines
+    /// would be parsed and the real closing fence would re-open, silently
+    /// swallowing every genuine row after it.
+    open: Option<(char, usize)>,
+}
+
+impl FenceScanner {
+    fn new() -> Self {
+        Self { open: None }
+    }
+
+    /// Advance over one trimmed line; is it document content?
+    ///
+    /// False for a fence delimiter and for everything inside a fence, so a
+    /// caller can treat the remainder as ordinary document text.
+    fn admits(&mut self, trimmed_line: &str) -> bool {
+        if let Some(delimiter) = fence_delimiter(trimmed_line) {
+            match self.open {
+                None => self.open = Some((delimiter.marker, delimiter.length)),
+                Some((open_marker, open_length)) => {
+                    // An info-string line such as ```` ```rust ```` is content
+                    // inside an open fence, not its close. Treating it as the
+                    // close would parse the sample and let the real closer
+                    // re-open the fence over genuine rows.
+                    if delimiter.can_close
+                        && delimiter.marker == open_marker
+                        && delimiter.length >= open_length
+                    {
+                        self.open = None;
+                    }
+                }
+            }
+            return false;
+        }
+
+        self.open.is_none()
+    }
+
+    /// Is a fence still open?
+    fn is_open(&self) -> bool {
+        self.open.is_some()
     }
 }
 
@@ -801,6 +845,88 @@ mod tests {
 ";
 
         assert!(section_names(fenced, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
+    }
+
+    #[test]
+    fn a_heading_inside_a_fence_does_not_become_the_section() {
+        // The silent case. A fenced example that displays the section heading is
+        // sample text. Locating it starts the scan inside the fence with no
+        // fence open, so the sample's rows read as authoritative and the real
+        // closer reads as an opener; a later well-formed fence then restores the
+        // parity the unclosed-fence guard relies on, so nothing fails and the
+        // sample's names are reported as the document's own. The real section is
+        // absent here, so the only honest answer is to refuse.
+        let fenced_only = "\
+# Reference
+
+```text
+## Core Attribute Reference {#attributes}
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-phantom`](@/attributes/hx-phantom.md) | only an example |
+```
+
+## Something Else {#other}
+
+```rust
+let example = 1;
+```
+";
+
+        let error = section_names(fenced_only, &CORE_ATTRIBUTES)
+            .expect_err("a heading shown inside a fence must not be read as the section");
+        assert!(
+            error.to_string().contains("has no core attributes section"),
+            "the refusal must name the missing section, not a downstream symptom: {error}"
+        );
+    }
+
+    #[test]
+    fn a_fenced_heading_does_not_make_the_real_section_ambiguous() {
+        // The false-failure half. Upstream documenting its own heading shape in
+        // an example must not collide with the real heading: refusing a document
+        // this task can in fact read is its own defect.
+        let both = "\
+# Reference
+
+```text
+## Core Attribute Reference {#attributes}
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-phantom`](@/attributes/hx-phantom.md) | only an example |
+```
+
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+";
+
+        assert!(section_names(both, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
+    }
+
+    #[test]
+    fn an_anchored_line_in_ordinary_prose_is_still_not_a_heading() {
+        // Fence awareness must not smuggle in a second way to accept a
+        // non-heading: a line merely ending in the anchor is prose, and reading
+        // it as the section would start the scan at the wrong place.
+        let prose = "\
+# Reference
+
+See the core attribute reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-phantom`](@/attributes/hx-phantom.md) | not under a heading |
+";
+
+        let error = section_names(prose, &CORE_ATTRIBUTES)
+            .expect_err("prose ending in the anchor is not a heading");
+        assert!(
+            error.to_string().contains("has no core attributes section"),
+            "the refusal must name the missing section: {error}"
+        );
     }
 
     #[test]
