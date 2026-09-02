@@ -54,6 +54,7 @@ pub fn decode<S: AsRef<str>>(
     };
 
     let mut index = 0usize;
+    let mut terminal_action = false;
 
     if lead == ArgvLead::Interpreter {
         let first = argv.first().ok_or(InvocationDecodeError::MissingInterpreter)?;
@@ -73,6 +74,7 @@ pub fn decode<S: AsRef<str>>(
         if argument.starts_with("--") {
             decode_long_switch(argument, index, &mut invocation)?;
             index += 1;
+            terminal_action = true;
             break;
         }
         let neutral_before = invocation.neutral_switches.len();
@@ -81,8 +83,14 @@ pub fn decode<S: AsRef<str>>(
             .iter()
             .any(|switch| matches!(switch.switch, NeutralSwitch::Usage | NeutralSwitch::Version))
         {
+            terminal_action = true;
             break;
         }
+    }
+
+    if terminal_action {
+        invocation.program = ProgramSource::Unspecified;
+        return Ok(invocation);
     }
 
     invocation.program = if invocation.source_fragments.is_empty() {
@@ -358,7 +366,7 @@ fn decode_cluster<S: AsRef<str>>(
             }
             // Debugger accepts an optional `:MODULE` suffix as one value.
             'd' => {
-                let (value, value_span) = if cluster.remaining().starts_with(':') {
+                let (value, value_span) = if !cluster.remaining().is_empty() {
                     cluster.rest()
                 } else {
                     ("", letter_span)

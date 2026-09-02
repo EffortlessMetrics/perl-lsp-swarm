@@ -564,9 +564,11 @@ fn informational_switches_terminate_further_argv_decoding() {
     let invocation = perl(&["--help", "-Z"]);
     assert_eq!(neutral(&invocation), vec![NeutralSwitch::LongHelp]);
     assert!(invocation.program_arguments.is_empty());
+    assert!(matches!(invocation.program, ProgramSource::Unspecified));
 
     let invocation = perl(&["-hv", "-Z"]);
     assert!(neutral(&invocation).contains(&NeutralSwitch::Usage));
+    assert!(matches!(invocation.program, ProgramSource::Unspecified));
 }
 
 #[test]
@@ -574,6 +576,8 @@ fn debugger_and_configuration_switch_values_follow_perl_boundaries() {
     let invocation = perl(&["-d:Foo", "script.pl"]);
     assert_eq!(neutral(&invocation), vec![NeutralSwitch::Debugger]);
     assert_eq!(invocation.neutral_switches[0].value.as_deref(), Some(":Foo"));
+    let invocation = perl(&["-dt", "script.pl"]);
+    assert_eq!(invocation.neutral_switches[0].value.as_deref(), Some("t"));
 
     assert!(matches!(
         perl_error(&["-VZ"]),
