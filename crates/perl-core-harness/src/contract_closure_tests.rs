@@ -603,6 +603,29 @@ fn an_unimplemented_schema_keyword_is_rejected_rather_than_skipped() -> Result<(
     // keywords, or every proof above would pass vacuously on an error.
     schema_check::validate(&json!({"type": "integer", "minimum": 1}), &json!(2))
         .map_err(|error| eyre!("an implemented keyword must still validate: {error}"))?;
+
+    // `anyOf` and `allOf` are exercised directly rather than through the drift
+    // fixture. Both appear in that schema, but its status conditional pins the
+    // same two fields harder in either arm, so a fixture mutation can never
+    // isolate the union — asserting otherwise would claim a control this suite
+    // does not actually have.
+    let union = json!({"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]});
+    schema_check::validate(&union, &json!("value"))
+        .map_err(|error| eyre!("anyOf must accept a matching branch: {error}"))?;
+    schema_check::validate(&union, &json!(null))
+        .map_err(|error| eyre!("anyOf must accept its null branch: {error}"))?;
+    assert!(
+        schema_check::validate(&union, &json!("")).is_err(),
+        "anyOf must reject an instance matching no branch"
+    );
+
+    let conjunction = json!({"allOf": [{"type": "integer"}, {"minimum": 10}]});
+    schema_check::validate(&conjunction, &json!(11))
+        .map_err(|error| eyre!("allOf must accept an instance meeting every branch: {error}"))?;
+    assert!(
+        schema_check::validate(&conjunction, &json!(9)).is_err(),
+        "allOf must reject an instance failing one branch"
+    );
     Ok(())
 }
 
@@ -623,15 +646,27 @@ fn the_drift_status_conditional_is_enforced() -> Result<()> {
         "this proof assumes the pinned drift fixture is a not_proven receipt"
     );
 
-    // Each mutation contradicts the `not_proven` arm while leaving every
-    // unconditional constraint satisfied, so only the conditional can reject it.
+    // Each mutation violates one keyword the validator previously ignored,
+    // while leaving the rest of the receipt well-formed. The named keyword is
+    // the only thing that can reject it, so each case pins one repair.
     let contradictions = [
-        ("/added_target_ids", json!(["component_base"])),
-        ("/removed_target_ids", json!(["component_base"])),
-        ("/changed_target_ids", json!(["component_base"])),
-        ("/not_proven_reason", json!("")),
+        // `then` + `const null`: the fingerprint a not_proven receipt may not
+        // carry. This is review's own worked example.
+        ("/observed_matrix_fingerprint", json!("a".repeat(64)), "conditional const"),
+        // `then` + `maxItems: 0`: drift IDs a not_proven receipt cannot claim.
+        ("/added_target_ids", json!(["component_base"]), "conditional maxItems"),
+        ("/removed_target_ids", json!(["component_base"]), "conditional maxItems"),
+        ("/changed_target_ids", json!(["component_base"]), "conditional maxItems"),
+        // `then` + `minLength: 1`: a not_proven receipt must say why.
+        ("/not_proven_reason", json!(""), "conditional minLength"),
+        // Also the conditional, not the property-level `anyOf`: under
+        // `not_proven` the `then` arm pins the fingerprint to null, so it
+        // rejects any string before the `sha256`-or-null union is consulted.
+        ("/observed_matrix_fingerprint", json!("not-a-digest"), "conditional const"),
+        // `minProperties: 1`: the observed topology cannot be empty.
+        ("/observed_topology_sources", json!({}), "minProperties"),
     ];
-    for (pointer, replacement) in contradictions {
+    for (pointer, replacement, keyword) in contradictions {
         let mut mutated = envelope.payload.clone();
         let cursor = mutated
             .pointer_mut(pointer)
@@ -639,7 +674,7 @@ fn the_drift_status_conditional_is_enforced() -> Result<()> {
         *cursor = replacement;
         assert!(
             schema_check::validate(&envelope.schema, &mutated).is_err(),
-            "the drift schema must reject a not_proven receipt contradicted at {pointer}"
+            "the drift schema must reject {pointer} through {keyword}"
         );
     }
     Ok(())
