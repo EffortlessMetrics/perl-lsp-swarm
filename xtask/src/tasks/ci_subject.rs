@@ -282,6 +282,11 @@ fn input_from_event(
             let base_repository =
                 json_string(event, &["pull_request", "base", "repo", "full_name"])?;
             ensure_repository(expected_repository, &base_repository)?;
+            if event_name == "pull_request" {
+                let head_repository =
+                    json_string(event, &["pull_request", "head", "repo", "full_name"])?;
+                ensure_repository(expected_repository, &head_repository)?;
+            }
             Ok(SubjectInput {
                 repository: expected_repository.to_string(),
                 event_kind: CiEventKind::PullRequest,
@@ -934,6 +939,10 @@ mod tests {
         let fork_input = input_from_event("pull_request_target", repository, None, &fork)?;
         ensure!(fork_input.base_sha == base);
         ensure!(fork_input.head_sha == head);
+        ensure!(
+            input_from_event("pull_request", repository, None, &fork).is_err(),
+            "ordinary pull_request must retain same-repository head binding"
+        );
 
         let push = json!({
             "repository": {"full_name": repository},

@@ -389,11 +389,12 @@ where
                     Ok(())
                 }
                 Err(replacement_error) => {
-                    rename(&backup, destination).map_err(|restore_error| {
-                        eyre!(
-                            "receipt replacement failed ({replacement_error}); restoring prior receipt failed ({restore_error})"
-                        )
-                    })?;
+                    if let Err(restore_error) = rename(&backup, destination) {
+                        return Err(eyre!(
+                            "receipt replacement failed ({replacement_error}); restoring prior receipt failed ({restore_error}); prior receipt preserved at {}",
+                            backup.display()
+                        ));
+                    }
                     Err(eyre!("receipt replacement failed: {replacement_error}"))
                 }
             }
@@ -535,6 +536,33 @@ mod tests {
         ensure!(result.is_err());
         ensure!(fs::read(&destination)? == b"prior receipt");
         ensure!(!backup.exists());
+        ensure!(temporary.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_receipt_restore_failure_retains_backup_path() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("receipt.json");
+        let temporary = temp.path().join(".receipt.json.tmp");
+        let backup = temp.path().join(format!(".receipt.json.bak-{}", std::process::id()));
+        fs::write(&destination, b"prior receipt")?;
+        fs::write(&temporary, b"new receipt")?;
+
+        let mut calls = 0;
+        let result = replace_receipt_file_with(&temporary, &destination, |from, to| {
+            calls += 1;
+            if calls == 1 || calls == 3 || calls == 4 {
+                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked"));
+            }
+            fs::rename(from, to)
+        });
+
+        let error =
+            result.expect_err("replacement must fail when restoration is blocked").to_string();
+        ensure!(error.contains("prior receipt preserved at"));
+        ensure!(fs::read(&backup)? == b"prior receipt");
+        ensure!(!destination.exists());
         ensure!(temporary.exists());
         Ok(())
     }

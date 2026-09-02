@@ -868,6 +868,14 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
         .get(key("exact-tree"))
         .and_then(serde_yaml_ng::Value::as_mapping)
         .ok_or_else(|| eyre!("preapproved v4 workflow must define exact-tree job"))?;
+    if job.get(key("name")).and_then(serde_yaml_ng::Value::as_str)
+        != Some("Non-Rust policy exact-tree")
+    {
+        bail!("preapproved v4 exact-tree job must use the canonical name");
+    }
+    if job.get(key("timeout-minutes")).and_then(serde_yaml_ng::Value::as_i64) != Some(10) {
+        bail!("preapproved v4 exact-tree job must use the canonical timeout");
+    }
     let allowed_job_keys = ["name", "runs-on", "timeout-minutes", "env", "steps"];
     if job.keys().any(|key| key.as_str().is_none_or(|name| !allowed_job_keys.contains(&name))) {
         bail!("preapproved v4 exact-tree job contains an unapproved control field");
@@ -952,7 +960,7 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
         .as_mapping()
         .and_then(|map| map.get(key("uses")))
         .and_then(serde_yaml_ng::Value::as_str)
-        .is_some_and(|uses| uses.starts_with("actions/checkout@"))
+        .is_some_and(|uses| uses == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
         && checkout
             .as_mapping()
             .and_then(|map| map.get(key("with")))
@@ -1004,7 +1012,9 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
         .as_mapping()
         .and_then(|map| map.get(key("uses")))
         .and_then(serde_yaml_ng::Value::as_str)
-        .is_some_and(|uses| uses.starts_with("actions/upload-artifact@"))
+        .is_some_and(|uses| {
+            uses == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+        })
         || upload
             .as_mapping()
             .and_then(|map| map.get(key("if")))
@@ -1034,14 +1044,12 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
             .and_then(|map| map.get(key("uses")))
             .and_then(serde_yaml_ng::Value::as_str)
         {
-            let allowed = uses.starts_with("actions/checkout@")
-                || uses.starts_with("actions/upload-artifact@");
-            if !allowed {
-                bail!("v4 adds an unapproved action: {uses}");
-            }
-            let reference = uses.split_once('@').map(|(_, value)| value.trim()).unwrap_or_default();
-            if reference.len() != 40 || !reference.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                bail!("v4 action must use a full commit SHA: {uses}");
+            let approved = [
+                "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            ];
+            if !approved.contains(&uses) {
+                bail!("v4 action is not the approved immutable action: {uses}");
             }
         }
         if let Some(run) = step_run(step)
@@ -4339,7 +4347,7 @@ jobs:
       EVALUATOR_SHA: ${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}
     steps:
       - name: Checkout trusted evaluator
-        uses: actions/checkout@0123456789012345678901234567890123456789
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ env.EVALUATOR_SHA }}
           persist-credentials: false
@@ -4353,7 +4361,7 @@ jobs:
         run: 'cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json'
       - name: Upload exact-tree receipt
         if: always()
-        uses: actions/upload-artifact@0123456789012345678901234567890123456789
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       - name: Propagate subject or policy failure
         if: "always() && (steps.materialize.outcome == 'failure' || steps.evaluate.outcome == 'failure')"
         run: exit 1
@@ -4374,6 +4382,25 @@ jobs:
             "candidate-controlled subject identity must be rejected"
         );
         for (label, tampered) in [
+            (
+                "wrong job name",
+                workflow.replace("name: Non-Rust policy exact-tree", "name: lookalike"),
+            ),
+            ("wrong timeout", workflow.replace("timeout-minutes: 10", "timeout-minutes: 11")),
+            (
+                "wrong checkout action",
+                workflow.replace(
+                    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                    "actions/checkout@0123456789012345678901234567890123456789",
+                ),
+            ),
+            (
+                "wrong upload action",
+                workflow.replace(
+                    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                    "actions/upload-artifact@0123456789012345678901234567890123456789",
+                ),
+            ),
             (
                 "disabled trigger",
                 workflow.replace("branches: [main, master]", "branches: [release-only]"),
