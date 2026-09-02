@@ -134,11 +134,11 @@ impl FilesystemIdentity {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            return Self { device: metadata.dev(), inode: metadata.ino() };
+            Self { device: metadata.dev(), inode: metadata.ino() }
         }
         #[cfg(windows)]
         {
-            return Self { created: metadata.created().ok(), modified: metadata.modified().ok() };
+            Self { created: metadata.created().ok(), modified: metadata.modified().ok() }
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -285,7 +285,7 @@ fn detect_trusted_root_alias(
 ) -> Option<PathBuf> {
     seen_canonical
         .iter()
-        .find(|(_, existing)| existing == &canonical)
+        .find(|(_, existing)| existing == canonical)
         .map(|(input, _)| input.clone())
 }
 
