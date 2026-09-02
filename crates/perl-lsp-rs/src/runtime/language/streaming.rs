@@ -136,6 +136,7 @@ impl LspServer {
             context: context.clone(),
             max_output_tokens: ai_max_output_tokens,
             timeout_ms: ai_timeout_ms,
+            trigger: trigger_kind.backend_trigger(),
         };
 
         let session_id = session.session_id.clone();

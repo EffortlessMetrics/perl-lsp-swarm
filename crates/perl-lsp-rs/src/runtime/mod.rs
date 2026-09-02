@@ -761,10 +761,20 @@ impl LspServer {
         provider_config.api_key_header = ai_config.api_key_header.clone();
         provider_config.api_key_prefix = ai_config.api_key_prefix.clone();
         provider_config.local_model_mode = ai_config.local_model_mode;
+        // Live concurrency ceiling. The provider builds its gate from this, so
+        // the gate's lifetime is this backend generation's (#8300).
+        provider_config.max_inflight = ai_config.max_inflight;
 
+        // The token bucket is the requests-per-second control. Its burst is a
+        // refill allowance, NOT a concurrency ceiling: a token is consumed at
+        // dispatch and never returned, so burst alone cannot bound how many
+        // requests are simultaneously active. `maxInflight` is enforced by the
+        // provider's InflightGate above. The allowance is left at its
+        // historical value so this change does not alter rate-limit behavior.
+        let rate_limit_burst = ai_config.max_inflight.max(1);
         let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
             ai_config.rate_limit_rps,
-            ai_config.max_inflight,
+            rate_limit_burst,
         ));
 
         let provider =
