@@ -233,10 +233,11 @@ the server falls back to deterministic pattern-based completions when
   `rateLimitRps` is reported as `RateLimited` ("too frequent"); exceeding
   `maxInflight` is reported as `Saturated` ("nowhere to run"). Both are
   handled silently and fall back to deterministic completions.
-- Typing-triggered requests never queue: if `maxInflight` is already reached
-  they fall back immediately rather than wait behind a remote call, because a
-  suggestion that arrives after the cursor has moved is not useful. Explicitly
-  invoked completions wait briefly for a slot, bounded by their own deadline.
+- Requests never queue for a slot. If `maxInflight` is already reached the
+  request falls back immediately rather than waiting behind a remote call.
+  Waiting would hold one of the language server's four shared read slots — the
+  same pool that serves hover and go-to-definition — so a busy AI backend would
+  slow down unrelated editor features.
 - After the trusted activation adapter lands, streaming may lower perceived
   latency. Generic `streaming.enabled` settings are currently rejected.
 
