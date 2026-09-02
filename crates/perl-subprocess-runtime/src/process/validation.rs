@@ -70,6 +70,26 @@ const OPTIONS_TAKING_A_SEPARATE_VALUE: &[&str] = &["-o", "+o", "--rcfile", "--in
 /// shell itself, so the scan continues past it.
 const MULTI_CALL_PROGRAMS: &[&str] = &["busybox", "toybox"];
 
+/// Shells whose argv follows PowerShell's parameter grammar, not POSIX option
+/// syntax.
+///
+/// These get their own scan. Reading them as POSIX is wrong in both
+/// directions, so the dialect is a correctness boundary rather than a tidiness
+/// one — see [`powershell_hands_an_inline_command`].
+const POWERSHELL_PROGRAMS: &[&str] = &["powershell", "pwsh"];
+
+/// PowerShell parameters that hand the interpreter a command string.
+///
+/// Written in full and matched by abbreviation, because PowerShell binds a
+/// parameter from any leading portion of its name.
+const POWERSHELL_COMMAND_PARAMETERS: &[&str] = &["-command", "-encodedcommand"];
+
+/// The PowerShell parameter after which the rest of the line is a script's.
+///
+/// `-File script.ps1 -Command x` passes `-Command x` to the script; it does
+/// not ask PowerShell to run a command string.
+const POWERSHELL_FILE_PARAMETER: &str = "-file";
+
 /// The authorization-evidence scheme version this build can read.
 ///
 /// The reference itself stays opaque — the execution-authorization programme
@@ -424,7 +444,7 @@ fn program_base(name: &str) -> &str {
     }
 }
 
-/// Whether a single argument hands a shell an inline command.
+/// Whether a single argument hands a POSIX-style shell an inline command.
 ///
 /// Three spellings, because a shell accepts all three:
 ///
@@ -433,6 +453,12 @@ fn program_base(name: &str) -> &str {
 /// - a **bundled short-option cluster** containing `c`. `bash -lc 'cmd'` and
 ///   `sh -ic 'cmd'` are ordinary idioms, and comparing the whole token against
 ///   `-c` misses every one of them.
+///
+/// The cluster spelling is what makes this POSIX-specific: PowerShell writes
+/// whole words after a single dash, so every one of them containing a `c`
+/// reads as a cluster here. PowerShell is scanned by
+/// [`powershell_hands_an_inline_command`] instead and never reaches this
+/// function.
 fn is_inline_command_argument(arg: &str) -> bool {
     if INLINE_COMMAND_FLAGS.iter().any(|flag| flag.eq_ignore_ascii_case(arg)) {
         return true;
@@ -458,6 +484,76 @@ fn is_inline_command_argument(arg: &str) -> bool {
     }
 }
 
+/// Whether a PowerShell invocation hands the interpreter a command string.
+///
+/// PowerShell does not speak POSIX option syntax, and scanning it as though it
+/// did is wrong in *both* directions:
+///
+/// - `-ExecutionPolicy` and `-NonInteractive` read as bundled clusters
+///   containing `c`, so ordinary `-File` invocations are refused;
+/// - `powershell -WindowStyle Hidden -Command '...'` walks straight through,
+///   because `Hidden` looks like the operand that ends option parsing and the
+///   `-Command` after it is never examined.
+///
+/// Modelling the real grammar removes both:
+///
+/// - **every** argument is examined. PowerShell has no operand position that
+///   ends parameter parsing; `-File` and `-Command` are what consume the rest
+///   of the line;
+/// - parameters bind from any leading portion of their name, so `-enc` is
+///   `-EncodedCommand` and is refused as one. `-e` is refused too: it
+///   abbreviates `-EncodedCommand` and `-ExecutionPolicy` alike, and a
+///   security gate reads an ambiguity as the dangerous branch. A caller that
+///   meant the execution policy spells it out;
+/// - the scan stops at `-File`, whose value and everything after it are the
+///   script's arguments rather than PowerShell's.
+fn powershell_hands_an_inline_command(argv: &[String]) -> bool {
+    for arg in argv {
+        // `-Command:value` and `--command=value` carry the value in the same
+        // token; what binds the parameter is the name before the separator.
+        let name = match arg.split_once([':', '=']) {
+            Some((name, _)) => name,
+            None => arg.as_str(),
+        };
+        // Tested first: `-File` ends PowerShell's own parameters, so a
+        // `-Command` after it belongs to the script.
+        if is_powershell_abbreviation_of(name, POWERSHELL_FILE_PARAMETER) {
+            return false;
+        }
+        if POWERSHELL_COMMAND_PARAMETERS
+            .iter()
+            .any(|parameter| is_powershell_abbreviation_of(name, parameter))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `arg` is a dash-led abbreviation PowerShell would bind to
+/// `parameter`.
+///
+/// `parameter` is spelled with its leading dash, so both sides are compared
+/// without it. An empty abbreviation (`-`) binds nothing.
+///
+/// Both `-Command` and `--command` are accepted: PowerShell Core takes the
+/// double-dash spelling of its parameters on non-Windows platforms, and `pwsh`
+/// is the shell most likely to be reached by that name.
+fn is_powershell_abbreviation_of(arg: &str, parameter: &str) -> bool {
+    let Some(letters) = arg.strip_prefix("--").or_else(|| arg.strip_prefix('-')) else {
+        return false;
+    };
+    if letters.is_empty() {
+        return false;
+    }
+    // `get` rather than a slice: an argument is arbitrary text, and a byte
+    // index landing inside a multi-byte character would panic.
+    parameter
+        .get(1..)
+        .and_then(|full| full.get(..letters.len()))
+        .is_some_and(|head| head.eq_ignore_ascii_case(letters))
+}
+
 /// Whether the invocation hands a shell an inline command string.
 ///
 /// Only the argument positions where a shell is still parsing *its own*
@@ -480,6 +576,11 @@ fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
     let base = program_base(logical_name);
     if !SHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(base)) {
         return false;
+    }
+    // A different grammar, not a different flag list: the POSIX scan below
+    // both over- and under-refuses PowerShell argv.
+    if POWERSHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(base)) {
+        return powershell_hands_an_inline_command(argv);
     }
     let mut index = 0;
     // A multi-call binary names its applet in the first operand slot.
@@ -512,6 +613,11 @@ fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
 ///
 /// Covers the exact spellings and short-option clusters ending in `o`, since
 /// `bash -eo pipefail` puts the value after the cluster just as `-o` does.
+///
+/// `O` counts alongside `o`: `bash -O extglob` matches the exact list without
+/// regard to case, and a cluster ending in the same letter has to agree with
+/// it or `bash -eO extglob -c 'cmd'` would skip one argument too few and never
+/// examine the `-c`.
 fn takes_a_separate_value(arg: &str) -> bool {
     if OPTIONS_TAKING_A_SEPARATE_VALUE.iter().any(|option| option.eq_ignore_ascii_case(arg)) {
         return true;
@@ -520,7 +626,7 @@ fn takes_a_separate_value(arg: &str) -> bool {
         Some(letters)
             if !letters.is_empty() && letters.chars().all(|c| c.is_ascii_alphabetic()) =>
         {
-            letters.ends_with('o')
+            letters.ends_with(['o', 'O'])
         }
         _ => false,
     }

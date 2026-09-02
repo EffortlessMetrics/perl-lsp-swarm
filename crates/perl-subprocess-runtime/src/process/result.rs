@@ -392,6 +392,17 @@ impl TerminalDisposition {
                     )
             );
             if contradicted {
+                // The cancellation cause is not established, but a cleanup
+                // failure is a separate observation that the contradiction
+                // does not touch — and the precedence order already ranks it
+                // above an unproven outcome. Falling straight to `NotProven`
+                // would discard a known failure in favour of uncertainty,
+                // producing exactly the pairing `ProcessResult::new` refuses.
+                // The election does not fall further than this: the child's
+                // own settlement is half of what is being contradicted.
+                if control.cleanup_failed {
+                    return Self::CleanupFailed;
+                }
                 return Self::NotProven;
             }
             return if control.started_before_cancellation {
@@ -413,6 +424,40 @@ impl TerminalDisposition {
     /// Whether the child ran to completion under its own control.
     pub fn is_completed_exit(&self) -> bool {
         matches!(self, Self::CompletedExit { .. })
+    }
+
+    /// Whether [`Self::elect`] ranks this cause *below* a cleanup failure.
+    ///
+    /// A cause below that rank cannot be the elected outcome of a run whose
+    /// cleanup demonstrably failed: `CleanupFailed` would have won. Pairing
+    /// one with [`CleanupDisposition::Failed`] therefore publishes a weaker
+    /// claim than the evidence supports — an ordinary success, a signal, or an
+    /// unproven outcome standing in for a known failure.
+    ///
+    /// Written as an exhaustive `match` rather than a `matches!`, so a new
+    /// terminal cause has to be placed in the precedence order rather than
+    /// silently defaulting to "above cleanup failure".
+    fn ranks_below_cleanup_failure(&self) -> bool {
+        match self {
+            // Ranks 6, 7, and 8: the child's own settlement, and the absence
+            // of any established outcome.
+            Self::Signaled { .. } | Self::CompletedExit { .. } | Self::NotProven => true,
+            // Ranks 1 to 4: control-plane causes that describe *why* the run
+            // ended. Each legitimately accompanies a failed cleanup, which the
+            // result still records in its own field.
+            Self::SupervisorFailed
+            | Self::OutputLimitExceeded
+            | Self::TimedOut
+            | Self::CancelledRunning(_)
+            | Self::CancelledBeforeStart(_) => false,
+            // Rank 5 itself, and the pre-start causes, which are governed by
+            // `asserts_no_child_started` instead.
+            Self::CleanupFailed
+            | Self::SpawnRejected(_)
+            | Self::SpawnFailed { .. }
+            | Self::UnsupportedBackend
+            | Self::StaleOrUnauthorized(_) => false,
+        }
     }
 
     /// Whether this cause establishes that the child settled on its own terms.
@@ -559,6 +604,17 @@ pub enum Limitation {
     /// Present on every result: types, timeouts, and process ownership do not
     /// constrain what admitted code can reach.
     NoIsolationClaimed,
+    /// Stream evidence the backend supplied could not describe one coherent
+    /// run and was dropped.
+    ///
+    /// Only [`ProcessResult::supervisor_failure`] can produce this: it is
+    /// infallible by construction, so incoherent evidence is replaced rather
+    /// than refused. The replacement is empty, and empty evidence is a
+    /// positive claim that nothing was seen — which for a backend that
+    /// reported *something*, however malformed, is not true. This limitation
+    /// is what keeps the two apart, so a supervisor defect does not read as a
+    /// child that produced no output.
+    StreamEvidenceDiscarded,
 }
 
 /// Bounded work metadata about a run.
@@ -713,8 +769,16 @@ fn derive_limitations(
     tree: TreeDisposition,
     streams: Option<(&StreamEvidence, &StreamEvidence)>,
     backend: &BackendIdentity,
+    discarded_stream_evidence: bool,
 ) {
     limitations.push(Limitation::NoIsolationClaimed);
+    // A parameter rather than something inferred from the streams: once the
+    // substitution has happened the empty evidence is indistinguishable from
+    // evidence that was empty to begin with, which is the whole point of
+    // recording it. Only the caller that performed the repair knows.
+    if discarded_stream_evidence {
+        limitations.push(Limitation::StreamEvidenceDiscarded);
+    }
     if backend.evidence_class() == EvidenceClass::Fake {
         limitations.push(Limitation::FakeEvidenceOnly);
     }
@@ -857,17 +921,22 @@ impl ProcessResult {
     ) -> Result<Self, ResultInconsistency> {
         check_stream(&stdout, StreamChannel::Stdout)?;
         check_stream(&stderr, StreamChannel::Stderr)?;
-        if disposition.is_completed_exit() && cleanup == CleanupDisposition::Failed {
-            return Err(ResultInconsistency::CompletedExitWithFailedCleanup);
+        // One rule for every cause the precedence order ranks below a cleanup
+        // failure, rather than one clause per cause: stating it for the exit
+        // and the signal but not for `NotProven` let a *known* failure be
+        // published as an outcome nothing established, which is strictly less
+        // than the evidence supports.
+        if cleanup == CleanupDisposition::Failed && disposition.ranks_below_cleanup_failure() {
+            // The exit keeps its own named variant: it is the case where the
+            // weaker claim would read as an ordinary success.
+            return Err(if disposition.is_completed_exit() {
+                ResultInconsistency::CompletedExitWithFailedCleanup
+            } else {
+                ResultInconsistency::CleanupContradictsDisposition
+            });
         }
-        // A signal is elected only when no cleanup failure was recorded, and a
-        // `CleanupFailed` cause exists only because cleanup failed. Both
-        // directions follow from the precedence rule, so both are enforced.
-        if matches!(disposition, TerminalDisposition::Signaled { .. })
-            && cleanup == CleanupDisposition::Failed
-        {
-            return Err(ResultInconsistency::CleanupContradictsDisposition);
-        }
+        // The other direction: a `CleanupFailed` cause exists only because
+        // cleanup failed.
         if disposition == TerminalDisposition::CleanupFailed
             && cleanup != CleanupDisposition::Failed
         {
@@ -921,6 +990,9 @@ impl ProcessResult {
             tree,
             Some((&stdout, &stderr)),
             &backend,
+            // This constructor refuses incoherent evidence rather than
+            // repairing it, so it never has a repair to record.
+            false,
         );
         Ok(Self {
             schema_version: super::PROCESS_DOMAIN_SCHEMA_VERSION,
@@ -973,14 +1045,25 @@ impl ProcessResult {
         // evidence nothing checked. Incoherent evidence is dropped rather than
         // propagated: a fallback that republished a swapped channel or an
         // impossible count would be worse than one that says less.
+        let mut discarded_evidence = false;
         let stdout = match check_stream(&stdout, StreamChannel::Stdout) {
             Ok(()) => stdout,
-            Err(_) => StreamEvidence::empty(StreamChannel::Stdout),
+            Err(_) => {
+                discarded_evidence = true;
+                StreamEvidence::empty(StreamChannel::Stdout)
+            }
         };
         let stderr = match check_stream(&stderr, StreamChannel::Stderr) {
             Ok(()) => stderr,
-            Err(_) => StreamEvidence::empty(StreamChannel::Stderr),
+            Err(_) => {
+                discarded_evidence = true;
+                StreamEvidence::empty(StreamChannel::Stderr)
+            }
         };
+        // Dropping the evidence silently would leave a supervisor defect
+        // wearing the shape of a child that produced nothing: the result would
+        // report zero observed bytes as an observation rather than as the
+        // repair it is. The substitution is therefore recorded, not just made.
         let mut limitations = Vec::new();
         // Derived from the evidence actually stored, so the limitations cannot
         // describe streams this result does not carry.
@@ -991,6 +1074,7 @@ impl ProcessResult {
             tree,
             Some((&stdout, &stderr)),
             &backend,
+            discarded_evidence,
         );
         Self {
             schema_version: super::PROCESS_DOMAIN_SCHEMA_VERSION,

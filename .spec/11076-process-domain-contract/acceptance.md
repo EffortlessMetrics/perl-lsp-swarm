@@ -805,3 +805,63 @@ regenerated it. Resolved the same way, by merging the base in and regenerating
 with `cargo xtask non-rust inventory --write` rather than hand-resolving. Both
 sides survive: main's DAP reload rows and this packet's three `.spec/` rows are
 present, and the unclassified count is unchanged at 2239.
+
+### Fifteenth review round (`07a1382`) — one finding, three defects behind it
+
+Devin flagged that `powershell.exe -ExecutionPolicy Bypass -File script.ps1`
+fails validation: `is_inline_command_argument` reads `-ExecutionPolicy` as a
+bundled short-option cluster containing `c`. The finding is correct, and
+probing the surface around it found that the over-rejection was the visible
+half of a larger defect — the scan models POSIX option syntax and PowerShell
+does not use it. Reproduced standalone under `rustc` before changing anything:
+
+```text
+powershell -WindowStyle Hidden -Command 'Remove-Item -Recurse /'  refused = false
+powershell -NoLogo -Version 5.1 -Command evil                     refused = false
+powershell -ExecutionPolicy Bypass -File C:\ok.ps1                refused = true
+powershell -NoProfile -e ZQB2AGkAbAA=                             refused = false
+```
+
+Three of those four are wrong, and two are **bypasses** rather than
+over-rejections: PowerShell has no operand position that ends parameter
+parsing, so `Hidden` stopped the scan and the `-Command` after it was never
+examined. `-e` and `-enc` are how an encoded command is spelled in practice,
+and the cluster rule missed both.
+
+| Severity | Finding | Disposition | Mutation replay |
+|---|---|---|---|
+| security | `powershell -WindowStyle Hidden -Command '...'` walked through: a value-taking parameter looked like the operand that ends option parsing | **Fixed** — PowerShell gets its own scan, which examines every argument | KILLED |
+| security | `-e` / `-enc` bind `-EncodedCommand` by abbreviation and were not recognised | **Fixed** — parameters match by leading portion of the name; `-e` is refused as the dangerous branch of its ambiguity | KILLED |
+| correctness | `-ExecutionPolicy`, `-NonInteractive` read as clusters containing `c`, refusing ordinary `-File` invocations *(the reported finding)* | **Fixed** — the cluster rule is now POSIX-only | KILLED |
+| correctness | `NotProven` could be published beside a failed cleanup, despite cleanup failure outranking uncertainty in the precedence order | **Fixed** — one rule for every cause ranked below cleanup failure, plus the election that produced the pairing | KILLED |
+| claim | `supervisor_failure` replaced incoherent stream evidence with empty evidence and said nothing, so a backend defect read as a child that produced no output | **Fixed** — `Limitation::StreamEvidenceDiscarded` records the repair | KILLED |
+| correctness | `takes_a_separate_value` matched `-O` in the exact list but not a cluster ending in `O`, so `bash -eO extglob -c 'cmd'` skipped one argument too few | **Fixed** — the cluster tail folds case like the list above it | KILLED |
+
+**The dialect split is the shape of this fix, not a flag addition.** Adding
+`-ExecutionPolicy` to an exception list would have removed the reported symptom
+and left both bypasses in place. What was wrong is that one grammar was being
+applied to two languages; the repair is to stop doing that, and the control
+asserts both directions — the POSIX cluster rule still refuses `bash -lc`, and
+`pwsh -File ... -Command an-argument` still validates because after `-File` the
+rest of the line is the script's.
+
+**Two of my own controls rejected the first version of this fix**, which is the
+packet's standing pattern doing its job:
+
+- `pwsh --command=...` stopped being refused. PowerShell Core accepts the
+  double-dash spelling on non-Windows, and my abbreviation matcher stripped
+  only one dash. Fixed by accepting both spellings and both same-token
+  separators (`:` and `=`).
+- `limitation_derivation_has_exactly_one_implementation` — the meta-control
+  added five rounds ago — caught the new limitation being pushed directly in
+  `supervisor_failure` instead of in `derive_limitations`. It is a parameter
+  now, which is also the better design: once the substitution has happened, the
+  empty evidence is indistinguishable from evidence that was empty to begin
+  with, so only the caller that performed the repair can know.
+
+**On the third finding's disposition.** It was raised as analysis rather than a
+defect, and it meets the test this packet set in advance for that: a claim
+honesty problem, not new open-ended territory. Empty evidence is a positive
+statement that nothing was seen; a fallback that substitutes it for malformed
+input is asserting something it did not observe. That is fixed here rather than
+deferred.
