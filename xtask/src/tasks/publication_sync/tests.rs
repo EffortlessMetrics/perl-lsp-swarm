@@ -2561,3 +2561,67 @@ fn resolve_checkout_reports_ignored_and_unquoted_paths() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn a_release_only_file_can_be_preserved_without_a_source() -> Result<()> {
+    // `preserve_release` keeps what the release repository already has, and the
+    // contract lets such a row carry no `source_digest`: the schema constrains
+    // only `expected_public_digest` and `release_base_digest` for this action.
+    // That shape means the path is release-only, so its absence from S is the
+    // declared state rather than a defect, and requiring existence here would
+    // make a legitimate lineage addition unplannable.
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[2];
+    row["action"] = json!("preserve_release");
+    row["path"] = json!("not/in/this/checkout.md");
+    row["source_digest"] = Value::Null;
+
+    // The contract really does admit this shape — otherwise the planner would
+    // be right to refuse and this test would be asserting against the schema.
+    let schema: Value = serde_json::from_str(SCHEMA)?;
+    let validator = jsonschema::validator_for(&schema)?;
+    if !validator.is_valid(&document) {
+        bail!("the published schema rejects a release-only preserve_release row");
+    }
+
+    let receipt = plan_value(&document)?;
+    if receipt.findings.iter().any(|finding| finding.code == "row_source_absent") {
+        bail!("a release-only preserved file was required to exist in S: {:?}", receipt.findings);
+    }
+    assert_verdict(&receipt, Verdict::Pass)
+}
+
+#[test]
+fn a_release_only_claim_over_content_that_exists_in_s_is_blocked() -> Result<()> {
+    // The complement, and the reason the exemption above is not a loophole.
+    // Without this, any row could declare `preserve_release` with a null
+    // source and skip the existence requirement entirely. A row claiming to be
+    // release-only while the path is present in S understates what publication
+    // displaces.
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[2];
+    row["action"] = json!("preserve_release");
+    row["path"] = json!("crates/perl-parser/src/lexer.rs");
+    row["source_digest"] = Value::Null;
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::Blocked)?;
+    assert_finding(&receipt, "row_release_only_source_present")
+}
+
+#[test]
+fn a_preserving_row_that_declares_a_source_must_still_resolve_it() -> Result<()> {
+    // The exemption is keyed on the manifest's own declaration, not on the
+    // action alone. A `preserve_release` row that *does* declare a
+    // `source_digest` asserts the path is in S, so absence is still a defect.
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[2];
+    row["action"] = json!("preserve_release");
+    row["path"] = json!("not/in/this/checkout.md");
+    row["source_digest"] =
+        json!("sha256:1111111111111111111111111111111111111111111111111111111111111111");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "row_source_absent")
+}

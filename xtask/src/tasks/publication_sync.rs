@@ -1799,12 +1799,44 @@ fn validate_rows(
         // The crate-root probe stays inside the displacing branch below,
         // because it exists to protect product content from displacement.
         // Translating product code is explicitly allowed.
+        // One exception, and the manifest declares it rather than the planner
+        // inferring it. `preserve_release` keeps what the release repository
+        // already has, and the contract lets such a row carry no
+        // `source_digest` at all — the schema constrains only
+        // `expected_public_digest` and `release_base_digest` for this action.
+        // That shape means "this path is release-only", so its absence from `S`
+        // is the declared state rather than a defect.
+        //
+        // The complement below is what stops the exemption becoming the way
+        // around the rule: a row claiming no source while the path *is* in `S`
+        // understates what publication displaces.
+        let release_only = row.action == Action::PreserveRelease && row.source_digest.is_none();
+
         let mut source_resolved = true;
         match loader(repo_root, &row.path) {
+            Ok(_) if release_only => {
+                state.block(
+                    "row_release_only_source_present",
+                    format!(
+                        "row {} declares no source_digest, so it claims to be release-only, but the path is present at prepared_swarm_sha {}; declare the source it displaces",
+                        row.path, manifest.prepared_swarm_sha
+                    ),
+                    "release/ci",
+                );
+            }
             Ok(_) => {}
             Err(LoadFailure::Unreadable(ref reason)) if reason == NOT_A_REGULAR_FILE => {
                 source_resolved = false;
-                if displaces {
+                if release_only {
+                    state.block(
+                        "row_release_only_source_present",
+                        format!(
+                            "row {} declares no source_digest, so it claims to be release-only, but a directory is present at that path in prepared_swarm_sha {}",
+                            row.path, manifest.prepared_swarm_sha
+                        ),
+                        "release/ci",
+                    );
+                } else if displaces {
                     state.block(
                         "row_displaces_directory",
                         format!(
@@ -1829,6 +1861,12 @@ fn validate_rows(
             // Absent from this checkout. Row digests are declarative and the
             // planner resolves neither `S` nor `R` as trees, so nothing here can
             // establish what the row names. Refuse rather than assume.
+            // A release-only row declared its own absence, so this is the state
+            // the manifest describes rather than a fact the planner failed to
+            // establish.
+            Err(LoadFailure::Missing) if release_only => {
+                source_resolved = false;
+            }
             Err(LoadFailure::Missing) => {
                 source_resolved = false;
                 state.not_proven(
