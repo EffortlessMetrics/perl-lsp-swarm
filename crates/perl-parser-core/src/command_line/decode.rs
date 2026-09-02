@@ -90,6 +90,13 @@ pub fn decode<S: AsRef<str>>(
 
     if terminal_action {
         invocation.program = ProgramSource::Unspecified;
+        for (offset, argument) in argv.iter().skip(index).enumerate() {
+            let argument = argument.as_ref();
+            invocation.program_arguments.push(ProgramArgument {
+                text: argument.to_owned(),
+                span: whole_argument_span(index + offset, argument),
+            });
+        }
         return Ok(invocation);
     }
 
@@ -470,10 +477,10 @@ fn take_record_separator_digits(
     letter_span: ArgvSpan,
 ) -> (Option<RecordSeparatorDigits>, ArgvSpan) {
     let remaining = cluster.remaining();
-    let hexadecimal = remaining
-        .strip_prefix('x')
-        .or_else(|| remaining.strip_prefix('X'))
-        .is_some_and(|after| after.starts_with(|character: char| character.is_ascii_hexdigit()));
+    let hexadecimal =
+        remaining.strip_prefix('x').or_else(|| remaining.strip_prefix('X')).is_some_and(|after| {
+            !after.is_empty() && after.chars().all(|character| character.is_ascii_hexdigit())
+        });
 
     if hexadecimal {
         let _marker = cluster.next_letter();

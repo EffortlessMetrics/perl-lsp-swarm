@@ -563,7 +563,7 @@ fn long_switches_are_limited_to_the_two_perl_accepts() {
 fn informational_switches_terminate_further_argv_decoding() {
     let invocation = perl(&["--help", "-Z"]);
     assert_eq!(neutral(&invocation), vec![NeutralSwitch::LongHelp]);
-    assert!(invocation.program_arguments.is_empty());
+    assert_eq!(program_arguments(&invocation), vec!["-Z"]);
     assert!(matches!(invocation.program, ProgramSource::Unspecified));
 
     let invocation = perl(&["-hv", "-Z"]);
@@ -601,6 +601,19 @@ fn record_separator_and_line_ending_octal_values_are_limited_to_three_digits() {
         perl_error(&["-l7777e", "print"]),
         InvocationDecodeError::UnrecognizedSwitch { switch: '7', .. }
     ));
+}
+
+#[test]
+fn malformed_hex_record_separator_tail_is_consumed_by_x_switch() {
+    let invocation = perl(&["-0x41n", "script.pl"]);
+    assert_eq!(invocation.unsupported_switches.len(), 1);
+    assert_eq!(invocation.unsupported_switches[0].spelling, "x41n");
+    assert!(
+        invocation
+            .context_facts
+            .iter()
+            .any(|fact| { matches!(fact.kind, ContextFactKind::RecordSeparator { digits: None }) })
+    );
 }
 
 #[test]
