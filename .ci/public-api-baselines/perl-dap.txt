@@ -3180,7 +3180,7 @@ pub fn perl_dap::security::workspace_authority::UnboundedGrant::eq(&self, other:
 pub fn perl_dap::security::workspace_authority::UnboundedGrant::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::security::workspace_authority::WorkspaceAuthority
 pub perl_dap::security::workspace_authority::WorkspaceAuthority::Unbounded::grant: perl_dap::security::workspace_authority::UnboundedGrant
-pub perl_dap::security::workspace_authority::WorkspaceAuthority::WorkspaceBound::roots: alloc::vec::Vec<std::path::PathBuf>
+pub perl_dap::security::workspace_authority::WorkspaceAuthority::WorkspaceBound::roots: perl_dap::security::workspace_authority::TrustedRoots
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthority::from_startup(roots: &[std::path::PathBuf], allow_unbounded: bool) -> core::result::Result<Self, perl_dap::security::workspace_authority::WorkspaceAuthorityError>
 pub const fn perl_dap::security::workspace_authority::WorkspaceAuthority::is_bounded(&self) -> bool
 pub const fn perl_dap::security::workspace_authority::WorkspaceAuthority::mode_identity(&self) -> &'static str
@@ -3199,11 +3199,21 @@ pub perl_dap::security::workspace_authority::WorkspaceAuthorityError::LaunchRoot
 pub perl_dap::security::workspace_authority::WorkspaceAuthorityError::ProgramOutsideTrustedRoots
 pub perl_dap::security::workspace_authority::WorkspaceAuthorityError::ProgramOutsideTrustedRoots::program: alloc::string::String
 pub perl_dap::security::workspace_authority::WorkspaceAuthorityError::ProgramOutsideTrustedRoots::roots: alloc::string::String
+pub perl_dap::security::workspace_authority::WorkspaceAuthorityError::UnusableLaunchRoot
+pub perl_dap::security::workspace_authority::WorkspaceAuthorityError::UnusableLaunchRoot::detail: alloc::string::String
+pub perl_dap::security::workspace_authority::WorkspaceAuthorityError::UnusableLaunchRoot::launch_root: alloc::string::String
 pub perl_dap::security::workspace_authority::WorkspaceAuthorityError::UnusableTrustedRoot(alloc::string::String)
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthorityError::clone(&self) -> perl_dap::security::workspace_authority::WorkspaceAuthorityError
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthorityError::eq(&self, other: &perl_dap::security::workspace_authority::WorkspaceAuthorityError) -> bool
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthorityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthorityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::workspace_authority::TrustedRoots(_)
+pub fn perl_dap::security::workspace_authority::TrustedRoots::as_slice(&self) -> &[std::path::PathBuf]
+pub fn perl_dap::security::workspace_authority::TrustedRoots::is_empty(&self) -> bool
+pub fn perl_dap::security::workspace_authority::TrustedRoots::len(&self) -> usize
+pub fn perl_dap::security::workspace_authority::TrustedRoots::clone(&self) -> perl_dap::security::workspace_authority::TrustedRoots
+pub fn perl_dap::security::workspace_authority::TrustedRoots::eq(&self, other: &perl_dap::security::workspace_authority::TrustedRoots) -> bool
+pub fn perl_dap::security::workspace_authority::TrustedRoots::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::workspace_authority::resolve_session_boundary(authority: &perl_dap::security::workspace_authority::WorkspaceAuthority, program: &std::path::Path, launch_root: core::option::Option<&std::path::Path>) -> core::result::Result<perl_dap::security::workspace_authority::SessionBoundary, perl_dap::security::workspace_authority::WorkspaceAuthorityError>
 pub enum perl_dap::security::SecurityError
 pub perl_dap::security::SecurityError::ExcessiveTimeout(u32)
@@ -3232,7 +3242,7 @@ pub fn perl_dap::security::workspace_authority::UnboundedGrant::eq(&self, other:
 pub fn perl_dap::security::workspace_authority::UnboundedGrant::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::security::WorkspaceAuthority
 pub perl_dap::security::WorkspaceAuthority::Unbounded::grant: perl_dap::security::workspace_authority::UnboundedGrant
-pub perl_dap::security::WorkspaceAuthority::WorkspaceBound::roots: alloc::vec::Vec<std::path::PathBuf>
+pub perl_dap::security::WorkspaceAuthority::WorkspaceBound::roots: perl_dap::security::workspace_authority::TrustedRoots
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthority::from_startup(roots: &[std::path::PathBuf], allow_unbounded: bool) -> core::result::Result<Self, perl_dap::security::workspace_authority::WorkspaceAuthorityError>
 pub const fn perl_dap::security::workspace_authority::WorkspaceAuthority::is_bounded(&self) -> bool
 pub const fn perl_dap::security::workspace_authority::WorkspaceAuthority::mode_identity(&self) -> &'static str
@@ -3251,11 +3261,21 @@ pub perl_dap::security::WorkspaceAuthorityError::LaunchRootWidensAuthority::laun
 pub perl_dap::security::WorkspaceAuthorityError::ProgramOutsideTrustedRoots
 pub perl_dap::security::WorkspaceAuthorityError::ProgramOutsideTrustedRoots::program: alloc::string::String
 pub perl_dap::security::WorkspaceAuthorityError::ProgramOutsideTrustedRoots::roots: alloc::string::String
+pub perl_dap::security::WorkspaceAuthorityError::UnusableLaunchRoot
+pub perl_dap::security::WorkspaceAuthorityError::UnusableLaunchRoot::detail: alloc::string::String
+pub perl_dap::security::WorkspaceAuthorityError::UnusableLaunchRoot::launch_root: alloc::string::String
 pub perl_dap::security::WorkspaceAuthorityError::UnusableTrustedRoot(alloc::string::String)
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthorityError::clone(&self) -> perl_dap::security::workspace_authority::WorkspaceAuthorityError
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthorityError::eq(&self, other: &perl_dap::security::workspace_authority::WorkspaceAuthorityError) -> bool
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthorityError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthorityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::security::TrustedRoots(_)
+pub fn perl_dap::security::workspace_authority::TrustedRoots::as_slice(&self) -> &[std::path::PathBuf]
+pub fn perl_dap::security::workspace_authority::TrustedRoots::is_empty(&self) -> bool
+pub fn perl_dap::security::workspace_authority::TrustedRoots::len(&self) -> usize
+pub fn perl_dap::security::workspace_authority::TrustedRoots::clone(&self) -> perl_dap::security::workspace_authority::TrustedRoots
+pub fn perl_dap::security::workspace_authority::TrustedRoots::eq(&self, other: &perl_dap::security::workspace_authority::TrustedRoots) -> bool
+pub fn perl_dap::security::workspace_authority::TrustedRoots::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_dap::security::DEFAULT_TIMEOUT_MS: u32
 pub const perl_dap::security::MAX_TIMEOUT_MS: u32
 pub fn perl_dap::security::resolve_session_boundary(authority: &perl_dap::security::workspace_authority::WorkspaceAuthority, program: &std::path::Path, launch_root: core::option::Option<&std::path::Path>) -> core::result::Result<perl_dap::security::workspace_authority::SessionBoundary, perl_dap::security::workspace_authority::WorkspaceAuthorityError>

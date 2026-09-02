@@ -289,6 +289,32 @@ struct Args {
     allow_unbounded_workspace: bool,
 }
 
+/// Build the server configuration the shipped binary runs under.
+///
+/// Extracted from `main` so the wiring itself is provable. The defect this
+/// crate's `--workspace-root` work exists to fix was precisely that
+/// `DapConfig`'s workspace field was hardcoded and no flag reached it: a test
+/// that only checks `clap` parsing and `WorkspaceAuthority::from_startup`
+/// passes just as happily when `main` drops the authority on the floor. Asserting
+/// on the returned config is what closes that gap.
+///
+/// The shipped binary always runs the native adapter. External implementations
+/// may be compared in repository-only conformance tooling, but no alternate DAP
+/// server is reachable from this CLI or crate runtime.
+///
+/// # Errors
+///
+/// Propagates [`WorkspaceAuthority::from_startup`]'s refusal of a contradictory
+/// or unusable workspace configuration, so a bad configuration fails startup
+/// rather than serving requests under an authority the operator did not ask for.
+fn build_config(args: &Args) -> anyhow::Result<DapConfig> {
+    // Establish the trust boundary before the server exists.
+    let workspace_authority =
+        WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace)?;
+
+    Ok(DapConfig { log_level: args.log_level.clone(), mode: DapMode::Native, workspace_authority })
+}
+
 /// Record the launch authority this process is running under.
 ///
 /// The unconfigured case is a warning, not an info line: it is the state
@@ -296,11 +322,11 @@ struct Args {
 /// a log that does not say so.
 fn log_workspace_authority(authority: &WorkspaceAuthority) {
     match authority {
-        WorkspaceAuthority::WorkspaceBound { roots, .. } => {
+        WorkspaceAuthority::WorkspaceBound { .. } => {
             tracing::info!(
                 target = "perl_dap.security",
                 mode = authority.mode_identity(),
-                roots = roots.len(),
+                roots = authority.trusted_roots().len(),
                 "Debug launches are confined to the configured workspace roots"
             );
         }
@@ -392,18 +418,8 @@ fn main() -> anyhow::Result<()> {
 
     log_server_startup("perl-dap", env!("CARGO_PKG_VERSION"), args.transport.mode(), None, None);
 
-    // Establish the trust boundary before the server exists. A startup failure
-    // here is preferable to serving requests under an authority the operator
-    // did not actually ask for.
-    let workspace_authority =
-        WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace)?;
-    log_workspace_authority(&workspace_authority);
-
-    // The shipped binary always runs the native adapter. External
-    // implementations may be compared in repository-only conformance tooling,
-    // but no alternate DAP server is reachable from this CLI or crate runtime.
-    let config =
-        DapConfig { log_level: args.log_level, mode: DapMode::Native, workspace_authority };
+    let config = build_config(&args)?;
+    log_workspace_authority(&config.workspace_authority);
 
     let mut server = DapServer::new(config)?;
 
@@ -416,7 +432,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, DEFAULT_DAP_PORT, UnboundedGrant, WorkspaceAuthority, editor_socket_retired,
+        Args, DEFAULT_DAP_PORT, UnboundedGrant, build_config, editor_socket_retired,
         native_editor_socket_retired, resolve_socket_port, windows_shell_quote,
     };
     use clap::{CommandFactory, Parser};
@@ -559,6 +575,12 @@ mod tests {
     /// Before this flag existed, `DapConfig.workspace_root` was hardcoded to
     /// `None` in `main`, so the bounded launch path was unreachable in the
     /// product and every real session ran unbounded.
+    ///
+    /// This asserts on the `DapConfig` the binary actually hands to
+    /// `DapServer::new`, not on `WorkspaceAuthority::from_startup` in isolation:
+    /// parsing the flag correctly and building the authority correctly prove
+    /// nothing if `main` then discards it, which is the exact shape of the
+    /// defect being fixed.
     #[test]
     fn workspace_root_flag_establishes_bounded_authority() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -578,9 +600,12 @@ mod tests {
         ]);
         assert_eq!(args.workspace_root.len(), 2, "the flag must be repeatable for multi-root");
 
-        let authority = WorkspaceAuthority::from_startup(&args.workspace_root, false)?;
-        assert!(authority.is_bounded());
-        assert_eq!(authority.trusted_roots().len(), 2);
+        let config = build_config(&args)?;
+        assert!(
+            config.workspace_authority.is_bounded(),
+            "--workspace-root must reach the config the server is built from"
+        );
+        assert_eq!(config.workspace_authority.trusted_roots().len(), 2);
         Ok(())
     }
 
@@ -592,10 +617,12 @@ mod tests {
         assert!(args.workspace_root.is_empty());
         assert!(!args.allow_unbounded_workspace);
 
-        let authority =
-            WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace)?;
-        assert_eq!(authority.unbounded_grant(), Some(UnboundedGrant::UnconfiguredDefault));
-        assert!(!authority.is_bounded());
+        let config = build_config(&args)?;
+        assert_eq!(
+            config.workspace_authority.unbounded_grant(),
+            Some(UnboundedGrant::UnconfiguredDefault)
+        );
+        assert!(!config.workspace_authority.is_bounded());
         Ok(())
     }
 
@@ -605,10 +632,12 @@ mod tests {
         let args = Args::parse_from(["perl-dap", "--stdio", "--allow-unbounded-workspace"]);
         assert!(args.allow_unbounded_workspace);
 
-        let authority =
-            WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace)?;
-        assert_eq!(authority.unbounded_grant(), Some(UnboundedGrant::OperatorFlag));
-        assert!(!authority.is_bounded());
+        let config = build_config(&args)?;
+        assert_eq!(
+            config.workspace_authority.unbounded_grant(),
+            Some(UnboundedGrant::OperatorFlag)
+        );
+        assert!(!config.workspace_authority.is_bounded());
         Ok(())
     }
 
@@ -627,9 +656,7 @@ mod tests {
             root.to_str().ok_or("non-utf8 fixture path")?,
             "--allow-unbounded-workspace",
         ]);
-        let result =
-            WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace);
-        assert!(result.is_err(), "both flags together must fail startup, got {result:?}");
+        assert!(build_config(&args).is_err(), "both flags together must fail startup");
         Ok(())
     }
 
@@ -646,8 +673,7 @@ mod tests {
             "--workspace-root",
             missing.to_str().ok_or("non-utf8 fixture path")?,
         ]);
-        let result = WorkspaceAuthority::from_startup(&args.workspace_root, false);
-        assert!(result.is_err(), "a missing root must fail startup, got {result:?}");
+        assert!(build_config(&args).is_err(), "a missing root must fail startup");
         Ok(())
     }
 }

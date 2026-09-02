@@ -440,11 +440,12 @@ impl DebugAdapter {
     ///
     /// # Errors
     ///
-    /// Fails when a relative program cannot be anchored to an absolute base —
-    /// this process has no readable working directory. The launch is refused
-    /// rather than resolved to a still-relative path: returning one would let
-    /// the child apply the launch directory a second time and reopen the
-    /// authorize-one-path-execute-another gap this function exists to close.
+    /// Fails when the program is empty or whitespace-only, and when a relative
+    /// program cannot be anchored to an absolute base — this process has no
+    /// readable working directory. The launch is refused rather than resolved to
+    /// a still-relative path: returning one would let the child apply the launch
+    /// directory a second time and reopen the authorize-one-path-execute-another
+    /// gap this function exists to close.
     pub(super) fn resolve_launch_program(
         program: &str,
         cwd: Option<&Path>,
@@ -455,7 +456,22 @@ impl DebugAdapter {
         // makes an absolute path look relative, silently anchoring it under
         // the working directory. Owning the trim keeps every caller agreeing
         // on one path, which is the whole point of this function.
-        let raw = Path::new(program.trim());
+        let trimmed = program.trim();
+
+        // Emptiness belongs to the function that owns the trim. `Path::new("")`
+        // is not absolute and `base.join("")` returns `base` unchanged, so an
+        // empty program would otherwise resolve to a *directory* — and
+        // `handle_launch` would derive this session's boundary from it before
+        // `launch_debugger`'s own empty check refuses the launch.
+        if trimmed.is_empty() {
+            return Err(
+                "No Perl script was specified. Set the 'program' field in your launch.json \
+                 to the path of the script you want to debug."
+                    .to_string(),
+            );
+        }
+
+        let raw = Path::new(trimmed);
         if raw.is_absolute() {
             return Ok(raw.to_path_buf());
         }
@@ -2629,6 +2645,27 @@ mod tests {
         let resolved = must(DebugAdapter::resolve_launch_program("  /trusted/script.pl  ", None));
         assert_eq!(resolved, PathBuf::from("/trusted/script.pl"));
         assert!(resolved.is_absolute());
+    }
+
+    /// An empty program is refused rather than resolved to a directory.
+    ///
+    /// `Path::new("")` is not absolute and `base.join("")` returns `base`
+    /// unchanged, so an empty program used to resolve to the launch `cwd`
+    /// itself — and `handle_launch` derived this session's boundary from that
+    /// directory before `launch_debugger`'s own empty check refused the launch.
+    /// The refusal is fail-closed either way; the point is that the authorized
+    /// subject was a directory the client never named and nothing would execute.
+    #[test]
+    fn an_empty_program_is_refused_before_it_can_resolve_to_a_directory() {
+        for program in ["", "   ", "\t\n"] {
+            let outcome =
+                DebugAdapter::resolve_launch_program(program, Some(Path::new("/outside")));
+            let error = must_err(outcome);
+            assert!(
+                error.contains("No Perl script was specified"),
+                "an empty program must be refused by name, got: {error}"
+            );
+        }
     }
 
     #[test]

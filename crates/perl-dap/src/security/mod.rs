@@ -16,7 +16,7 @@
 pub mod workspace_authority;
 
 pub use workspace_authority::{
-    SessionBoundary, UnboundedGrant, WorkspaceAuthority, WorkspaceAuthorityError,
+    SessionBoundary, TrustedRoots, UnboundedGrant, WorkspaceAuthority, WorkspaceAuthorityError,
     resolve_session_boundary,
 };
 

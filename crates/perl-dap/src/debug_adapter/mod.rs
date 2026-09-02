@@ -431,6 +431,20 @@ impl DebugAdapter {
                 .map_err(|e| format!("Path validation failed: {e}"));
         }
 
+        // Fail closed rather than falling through. `from_startup` cannot build a
+        // bounded authority with no roots, and `TrustedRoots`' private field now
+        // stops anyone else from producing one — but the consequence of being
+        // wrong here is the wrong direction. A bounded adapter reaching the
+        // *unbounded* fallback below would admit absolute out-of-workspace paths
+        // with only a warning, so the invariant is enforced rather than assumed.
+        if self.workspace_authority.is_bounded() {
+            return Err(
+                "Path validation failed: this adapter is workspace-bound but has no usable \
+                 workspace root, so no path can be admitted."
+                    .to_string(),
+            );
+        }
+
         // No boundary known.  Defense-in-depth: reject paths
         // that contain parent-directory traversal components.  Absolute
         // paths outside the current working directory are allowed with an
@@ -1961,6 +1975,17 @@ print "result: $final\n";
                     msg.contains("Path validation failed"),
                     "should report path validation failure, got: {msg}"
                 );
+                // Pin the *bounded* branch. `..` is also refused by the
+                // shape-only fallback taken when no authority is configured,
+                // and that refusal also begins "Path validation failed" — so
+                // the substring above cannot tell the branches apart and this
+                // test would stay green if the adapter lost its authority.
+                // Only the fallback names the missing boundary.
+                assert!(
+                    !msg.contains("without a workspace boundary"),
+                    "must be refused by the configured root, not the unbounded \
+                     fallback, got: {msg}"
+                );
             }
             _ => return Err("Expected response".into()),
         }
@@ -2041,6 +2066,17 @@ print "result: $final\n";
                     msg.contains("Path validation failed"),
                     "should report path validation failure, got: {msg}"
                 );
+                // Pin the *bounded* branch. `..` is also refused by the
+                // shape-only fallback taken when no authority is configured,
+                // and that refusal also begins "Path validation failed" — so
+                // the substring above cannot tell the branches apart and this
+                // test would stay green if the adapter lost its authority.
+                // Only the fallback names the missing boundary.
+                assert!(
+                    !msg.contains("without a workspace boundary"),
+                    "must be refused by the configured root, not the unbounded \
+                     fallback, got: {msg}"
+                );
             }
             _ => return Err("Expected response".into()),
         }
@@ -2072,6 +2108,17 @@ print "result: $final\n";
                 assert!(
                     msg.contains("Path validation failed"),
                     "should report path validation failure, got: {msg}"
+                );
+                // Pin the *bounded* branch. `..` is also refused by the
+                // shape-only fallback taken when no authority is configured,
+                // and that refusal also begins "Path validation failed" — so
+                // the substring above cannot tell the branches apart and this
+                // test would stay green if the adapter lost its authority.
+                // Only the fallback names the missing boundary.
+                assert!(
+                    !msg.contains("without a workspace boundary"),
+                    "must be refused by the configured root, not the unbounded \
+                     fallback, got: {msg}"
                 );
             }
             _ => return Err("Expected response".into()),
@@ -2105,9 +2152,53 @@ print "result: $final\n";
                     msg.contains("Path validation failed"),
                     "should report path validation failure, got: {msg}"
                 );
+                // Pin the *bounded* branch. `..` is also refused by the
+                // shape-only fallback taken when no authority is configured,
+                // and that refusal also begins "Path validation failed" — so
+                // the substring above cannot tell the branches apart and this
+                // test would stay green if the adapter lost its authority.
+                // Only the fallback names the missing boundary.
+                assert!(
+                    !msg.contains("without a workspace boundary"),
+                    "must be refused by the configured root, not the unbounded \
+                     fallback, got: {msg}"
+                );
             }
             _ => return Err("Expected response".into()),
         }
+        Ok(())
+    }
+
+    /// A bounded adapter with no usable root refuses rather than falling back.
+    ///
+    /// `from_startup` cannot build this state and `TrustedRoots`' private field
+    /// stops anyone else from building it, so this is a defense-in-depth check
+    /// on a state that should be unreachable. It is worth pinning because the
+    /// failure mode is the *wrong direction*: `validate_source_path` selects its
+    /// root set with `split_last`, and an empty set used to fall through to the
+    /// shape-only fallback — which admits an absolute out-of-workspace path with
+    /// only a warning. A workspace-bound adapter reaching the *unbounded* branch
+    /// is the one outcome the boundary must never produce.
+    #[test]
+    fn a_bounded_adapter_with_no_usable_root_refuses_every_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let outside = tempfile::tempdir()?;
+        let target = outside.path().join("outside.pl");
+        std::fs::write(&target, "print 'outside';")?;
+
+        let adapter = DebugAdapter::with_workspace_authority(
+            WorkspaceAuthority::bound_from_canonical_for_test(Vec::new()),
+        );
+
+        let result = adapter.validate_source_path(target.to_str().ok_or("non-utf8 fixture")?);
+        let error = result.err().ok_or(
+            "a bounded adapter with no root must refuse an absolute out-of-workspace path, \
+             not admit it through the unbounded fallback",
+        )?;
+        assert!(
+            error.contains("workspace-bound") && error.contains("no usable workspace root"),
+            "the refusal must name why nothing can be admitted, got: {error}"
+        );
         Ok(())
     }
 

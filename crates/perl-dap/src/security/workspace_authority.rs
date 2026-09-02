@@ -18,6 +18,27 @@
 //! — `workspaceRoot`, `cwd`, or the program's own parent directory — can create
 //! or widen it.
 //!
+//! # What this boundary does not cover
+//!
+//! It confines the launch **`program`**, and the source paths a session
+//! validates. It does not confine the other channels a launch can use to bring
+//! in code, and describing it as if it did would overstate it:
+//!
+//! - the **interpreter**. `perlPath`/`perl` is taken from launch data and gated
+//!   only on its base name, so a bounded launch can still execute an
+//!   out-of-workspace binary named `perl` — which then chooses what the
+//!   authorized script even means. Confining it to the workspace roots is not
+//!   the fix (`/usr/bin/perl` is the normal case); it needs its own trust rule.
+//! - the **environment**. Launch-supplied `env` entries reach the child
+//!   unconditionally, so `PERL5LIB`/`PERL5OPT` can load code from outside the
+//!   roots, at `perl -c` time.
+//! - `setBreakpoints`, whose handler does not consult this boundary at all
+//!   (#14593).
+//!
+//! Interpreter and environment confinement are #14601; both are pre-existing and
+//! both are behavior changes for bounded adapters, so they are tracked rather
+//! than folded in here.
+//!
 //! Controlling issue: #14587 (parent #8145).
 
 use std::path::{Path, PathBuf};
@@ -52,6 +73,53 @@ impl UnboundedGrant {
     }
 }
 
+/// The canonical trusted roots of a workspace-bound authority.
+///
+/// The inner field is private, and that is load-bearing rather than stylistic.
+/// [`WorkspaceAuthority::owning_root`]'s determinism rests on the set being
+/// canonical, deduplicated, and non-empty, and only
+/// [`WorkspaceAuthority::from_startup`] establishes that.
+///
+/// `#[non_exhaustive]` alone does **not** hold that invariant. It blocks
+/// external *construction* of a variant and forces `..` in patterns; it does
+/// not block external *mutation* of a public field, so
+///
+/// ```ignore
+/// // from a downstream crate, with a `pub roots: Vec<PathBuf>` field:
+/// if let WorkspaceAuthority::WorkspaceBound { roots, .. } = &mut authority {
+///     roots.clear();
+/// }
+/// ```
+///
+/// compiles and yields a bounded authority with no roots — reporting
+/// `is_bounded() == true` while confining nothing. A private field is what
+/// actually prevents it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedRoots(Vec<PathBuf>);
+
+impl TrustedRoots {
+    /// The canonical, deduplicated roots. Never empty.
+    #[must_use]
+    pub fn as_slice(&self) -> &[PathBuf] {
+        &self.0
+    }
+
+    /// How many roots are configured.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the root set is empty.
+    ///
+    /// Always `false` for a value [`WorkspaceAuthority::from_startup`] built;
+    /// the accessor exists so callers need not assert the invariant themselves.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// The adapter's launch authority, established once at startup.
 ///
 /// There are exactly two modes. A launch never constructs or replaces one.
@@ -60,23 +128,22 @@ pub enum WorkspaceAuthority {
     /// Launches are confined to one of these canonical trusted roots.
     ///
     /// Roots are canonicalized and deduplicated at construction, so no two
-    /// entries denote the same directory.
-    ///
-    /// Sealed against external construction: `owning_root`'s determinism rests
-    /// on the roots being canonical, deduplicated, and non-empty, and only
-    /// [`WorkspaceAuthority::from_startup`] establishes that. A caller able to
-    /// write this variant directly could hand the adapter an empty root set —
-    /// silently disabling confinement while still reporting `is_bounded()`.
+    /// entries denote the same directory. The payload's field is private, so a
+    /// bounded authority can only come from
+    /// [`WorkspaceAuthority::from_startup`] — see [`TrustedRoots`] for why
+    /// `#[non_exhaustive]` is not sufficient on its own.
     #[non_exhaustive]
     WorkspaceBound {
         /// Canonical, deduplicated trusted roots. Never empty.
-        roots: Vec<PathBuf>,
+        roots: TrustedRoots,
     },
     /// Launches are not confined to any root.
     ///
-    /// Sealed for the same reason: unbounded access must come from
+    /// Sealed against external construction so unbounded access comes from
     /// [`WorkspaceAuthority::from_startup`]'s explicit inputs, never from a
-    /// caller synthesising a grant.
+    /// caller synthesising a grant. Mutating `grant` cannot widen anything —
+    /// the authority is already unbounded — so the sealing here only needs to
+    /// stop construction, which `#[non_exhaustive]` does.
     #[non_exhaustive]
     Unbounded {
         /// How the unbounded state came about.
@@ -108,6 +175,22 @@ pub enum WorkspaceAuthorityError {
         program: String,
         /// Display form of the configured trusted roots.
         roots: String,
+    },
+
+    /// A launch-supplied `workspaceRoot` does not resolve to a real directory.
+    ///
+    /// Only reachable on an unbounded adapter, where there is no trusted root to
+    /// resolve a relative value against.
+    #[error(
+        "The launch 'workspaceRoot' ('{launch_root}') does not resolve to an existing \
+         directory, so it cannot confine this session. Set 'workspaceRoot' in your \
+         launch.json to an absolute path that exists. Details: {detail}"
+    )]
+    UnusableLaunchRoot {
+        /// The rejected launch-supplied root, as the client sent it.
+        launch_root: String,
+        /// The underlying resolution failure.
+        detail: String,
     },
 
     /// A launch-supplied `workspaceRoot` fell outside every trusted root.
@@ -196,7 +279,18 @@ impl WorkspaceAuthority {
             }
         }
 
-        Ok(Self::WorkspaceBound { roots: canonical })
+        Ok(Self::WorkspaceBound { roots: TrustedRoots(canonical) })
+    }
+
+    /// Build a bounded authority from already-canonical roots, for tests only.
+    ///
+    /// This is the sole way to reach a degenerate root set, and it exists so the
+    /// fail-closed handling of one can be proven. Production code must use
+    /// [`WorkspaceAuthority::from_startup`], which cannot produce an empty set.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn bound_from_canonical_for_test(roots: Vec<PathBuf>) -> Self {
+        Self::WorkspaceBound { roots: TrustedRoots(roots) }
     }
 
     /// The legacy state: no authority was configured.
@@ -209,7 +303,7 @@ impl WorkspaceAuthority {
     #[must_use]
     pub fn trusted_roots(&self) -> &[PathBuf] {
         match self {
-            Self::WorkspaceBound { roots } => roots,
+            Self::WorkspaceBound { roots } => roots.as_slice(),
             Self::Unbounded { .. } => &[],
         }
     }
@@ -249,8 +343,24 @@ impl WorkspaceAuthority {
     /// Because roots are canonical and deduplicated, two distinct roots can
     /// never be equally deep and both contain the same path, so the answer is
     /// unique.
+    ///
+    /// # Panics (debug builds)
+    ///
+    /// `path` **must be absolute**, and the uniqueness argument above holds only
+    /// then. `validate_path` joins a relative candidate with the root it is
+    /// checked against, so a relative `path` is contained in *every* root: ties
+    /// become real and `max_by_key` silently returns the last maximum, making
+    /// the answer depend on registration order. Callers resolve the program to
+    /// an absolute path first; the assertion pins that so a future caller cannot
+    /// reintroduce the ambiguity unnoticed.
     #[must_use]
     pub fn owning_root(&self, path: &Path) -> Option<&Path> {
+        debug_assert!(
+            path.is_absolute(),
+            "owning_root requires an absolute path; a relative one matches every root \
+             and makes the selection order-dependent (got {})",
+            path.display()
+        );
         self.trusted_roots()
             .iter()
             .filter(|root| validate_path(path, root).is_ok())
@@ -275,7 +385,9 @@ impl WorkspaceAuthority {
 ///
 /// Under [`WorkspaceAuthority::Unbounded`] a launch-supplied `launch_root` still
 /// confines this one session — narrowing from "no boundary" is always safe —
-/// and is still discarded when the session ends.
+/// and is still discarded when the session ends. It must canonicalize, so the
+/// boundary is an absolute directory that exists rather than a client string
+/// whose meaning depends on the adapter's own working directory.
 ///
 /// `program`'s own parent directory and the launch `cwd` are deliberately not
 /// consulted: a boundary derived from the thing it is meant to confine would be
@@ -285,18 +397,33 @@ impl WorkspaceAuthority {
 ///
 /// Returns [`WorkspaceAuthorityError::LaunchRootWidensAuthority`] or
 /// [`WorkspaceAuthorityError::ProgramOutsideTrustedRoots`] when the launch
-/// cannot be confined.
+/// cannot be confined, and [`WorkspaceAuthorityError::UnusableLaunchRoot`] when
+/// an unbounded adapter's launch root does not resolve to an existing directory.
 pub fn resolve_session_boundary(
     authority: &WorkspaceAuthority,
     program: &Path,
     launch_root: Option<&Path>,
 ) -> Result<SessionBoundary, WorkspaceAuthorityError> {
     match authority {
-        WorkspaceAuthority::Unbounded { .. } => Ok(launch_root
-            .map_or(SessionBoundary::Unbounded, |root| {
-                SessionBoundary::Bounded(root.to_path_buf())
-            })),
+        WorkspaceAuthority::Unbounded { .. } => match launch_root {
+            None => Ok(SessionBoundary::Unbounded),
+            // Narrowing from "no boundary" is safe, but only to a boundary that
+            // means the same thing everywhere. Taking the client's string
+            // verbatim does not: a relative root is re-anchored later against
+            // *this process's* working directory — for an editor-spawned
+            // adapter, wherever the extension host happened to be — and a
+            // non-existent root silently refuses every source path in the
+            // session. The bounded branch below yields `validate_path`'s
+            // canonical result; this one must be just as concrete.
+            Some(root) => root.canonicalize().map(SessionBoundary::Bounded).map_err(|error| {
+                WorkspaceAuthorityError::UnusableLaunchRoot {
+                    launch_root: root.display().to_string(),
+                    detail: error.to_string(),
+                }
+            }),
+        },
         WorkspaceAuthority::WorkspaceBound { roots } => {
+            let roots = roots.as_slice();
             if let Some(requested) = launch_root {
                 // The launch root is checked against the trust set, not against
                 // the program's owner, so a client cannot pick a root by
@@ -611,7 +738,83 @@ mod tests {
             &script,
             Some(&root),
         ));
-        assert_eq!(boundary, SessionBoundary::Bounded(root));
+        assert_eq!(boundary, SessionBoundary::Bounded(must(root.canonicalize())));
+    }
+
+    /// An unbounded adapter's launch root becomes a concrete directory.
+    ///
+    /// The bounded branch yields `validate_path`'s canonical result. This branch
+    /// used to store the client's string verbatim, so a relative `workspaceRoot`
+    /// stayed relative and was re-anchored later against *this process's*
+    /// working directory — for an editor-spawned adapter, wherever the extension
+    /// host happened to be. A boundary whose meaning depends on that is not a
+    /// boundary.
+    #[test]
+    fn an_unbounded_launch_root_is_canonicalized_not_stored_verbatim() {
+        let temp = must(tempfile::tempdir());
+        let root = dir(temp.path(), "ws");
+        let script = file(&root, "a.pl");
+
+        // Spell the same directory as `<root>/sub/..`. A `.` component will not
+        // do: `Path`'s `PartialEq` compares `components()`, which silently drops
+        // `CurDir`, so `<root>/.` and `<root>` compare *equal* and the assertion
+        // below would hold even against a verbatim store. `ParentDir` is not
+        // normalized away, so this spelling is only equal after canonicalizing.
+        let nested = dir(&root, "sub");
+        let noncanonical = nested.join("..");
+        let boundary = must(resolve_session_boundary(
+            &WorkspaceAuthority::unconfigured(),
+            &script,
+            Some(&noncanonical),
+        ));
+        let SessionBoundary::Bounded(resolved) = boundary else {
+            unreachable!("a launch root must confine the session")
+        };
+        assert!(resolved.is_absolute(), "the session boundary must be absolute, got {resolved:?}");
+        assert_eq!(resolved, must(root.canonicalize()));
+    }
+
+    /// A launch root that does not resolve refuses the launch.
+    ///
+    /// Storing it verbatim made every source check in the session fail against a
+    /// directory that does not exist — a client-triggered, session-wide brick
+    /// with no message naming the cause. Refusing up front says what to fix.
+    #[test]
+    fn an_unbounded_launch_root_that_does_not_resolve_is_refused() {
+        let temp = must(tempfile::tempdir());
+        let root = dir(temp.path(), "ws");
+        let script = file(&root, "a.pl");
+        let missing = temp.path().join("absent");
+
+        let error = must_err(resolve_session_boundary(
+            &WorkspaceAuthority::unconfigured(),
+            &script,
+            Some(&missing),
+        ));
+        assert!(
+            matches!(error, WorkspaceAuthorityError::UnusableLaunchRoot { .. }),
+            "expected an unusable-launch-root refusal, got {error:?}"
+        );
+    }
+
+    /// A relative launch root is refused rather than silently re-anchored.
+    #[test]
+    fn an_unbounded_relative_launch_root_does_not_anchor_to_the_process_directory() {
+        let temp = must(tempfile::tempdir());
+        let root = dir(temp.path(), "ws");
+        let script = file(&root, "a.pl");
+
+        let boundary = resolve_session_boundary(
+            &WorkspaceAuthority::unconfigured(),
+            &script,
+            Some(Path::new("definitely-not-a-real-relative-root")),
+        );
+        match boundary {
+            Err(WorkspaceAuthorityError::UnusableLaunchRoot { .. }) => {}
+            other => {
+                unreachable!("a relative, non-existent launch root must be refused: {other:?}")
+            }
+        }
     }
 
     // --- negative controls: nothing in launch data creates authority ---
