@@ -1120,7 +1120,7 @@ fn unresolved_evidence_roles_may_not_carry_a_digest() -> Result<()> {
 
     let receipt = plan_value(&document)?;
     assert_verdict(&receipt, Verdict::NotProven)?;
-    assert_finding(&receipt, "live_control_evidence_digest_unexpected")
+    assert_finding(&receipt, "evidence_digest_unexpected")
 }
 
 // ---------------------------------------------------------------------------
@@ -1617,6 +1617,112 @@ fn a_displacing_row_on_a_plain_file_is_not_a_directory_finding() -> Result<()> {
     let receipt = plan_on_disk(&document, root.path())?;
     if receipt.findings.iter().any(|f| f.code == "row_displaces_directory") {
         bail!("an ordinary file row was reported as a directory: {:?}", receipt.findings);
+    }
+    Ok(())
+}
+
+#[test]
+fn shipped_tooling_cannot_be_displaced_even_when_classified_tooling() -> Result<()> {
+    // `install.sh` is classified `tooling`, not `production`, yet its own
+    // ledger reason calls it the user-facing installer. Filtering on
+    // production/test alone left both public installers droppable.
+    let surface = ProductSurface::from_ledger_rows_for_test(vec![
+        ("install.sh", "tooling", "release"),
+        ("install.ps1", "tooling", "release"),
+    ]);
+    for path in ["install.sh", "install.ps1"] {
+        if is_product_or_test_path(path) || is_rust_build_manifest(path) {
+            bail!("{path} is already caught as a string; pick a sharper case");
+        }
+        let mut document = clean_value()?;
+        rows_mut(&mut document)?[1]["path"] = json!(path);
+        let manifest: Manifest = serde_json::from_value(document.clone())?;
+        let digest = canonical_digest(&document)?;
+        let receipt =
+            evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+
+        assert_verdict(&receipt, Verdict::Blocked)?;
+        assert_finding(&receipt, "row_product_bearing_exclusion")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn documentation_on_a_shipped_surface_stays_displaceable() -> Result<()> {
+    // Opposite direction: release notes and contracts are exactly what
+    // publication legitimately translates, so the widened rule must not
+    // swallow documentation and config.
+    let surface = ProductSurface::from_ledger_rows_for_test(vec![
+        ("docs/release-notes.md", "documentation", "release"),
+        ("schemas/some_contract.v1.schema.json", "config", "release"),
+    ]);
+    for path in ["docs/release-notes.md", "schemas/some_contract.v1.schema.json"] {
+        let mut document = clean_value()?;
+        rows_mut(&mut document)?[1]["path"] = json!(path);
+        let manifest: Manifest = serde_json::from_value(document.clone())?;
+        let digest = canonical_digest(&document)?;
+        let receipt =
+            evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+
+        if receipt.findings.iter().any(|f| f.code == "row_product_bearing_exclusion") {
+            bail!("{path} was treated as shipped product: {:?}", receipt.findings);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn invariant_evidence_may_not_carry_an_unearned_digest() -> Result<()> {
+    // The rule belongs to the evidence role, so it must hold under an invariant
+    // exactly as it does under a live control.
+    for kind_index in [0usize, 2usize] {
+        let mut document = clean_value()?;
+        document["invariants"][kind_index]["evidence"][0]["digest"] =
+            json!("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+
+        let receipt = plan_value(&document)?;
+        assert_verdict(&receipt, Verdict::NotProven)?;
+        assert_finding(&receipt, "evidence_digest_unexpected")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn the_receipt_cannot_be_written_over_a_planning_input() -> Result<()> {
+    // Writing the receipt happens after validation, so an aliasing destination
+    // would destroy the very inputs the verdict was computed from.
+    let document = clean_value()?;
+    let (root, manifest_path, _) = materialize_repo(&document)?;
+
+    let over_manifest = plan(PlanConfig {
+        manifest: manifest_path.clone(),
+        repo_root: root.path().to_path_buf(),
+        receipt: manifest_path.clone(),
+    });
+    if over_manifest.is_ok() {
+        bail!("the receipt was allowed to overwrite the manifest");
+    }
+
+    // A declared release input, reached through a non-canonical path.
+    let evidence = root.path().join("docs/release/0.18.0/../0.18.0/public_claims.json");
+    let over_evidence = plan(PlanConfig {
+        manifest: manifest_path.clone(),
+        repo_root: root.path().to_path_buf(),
+        receipt: evidence,
+    });
+    if over_evidence.is_ok() {
+        bail!("the receipt was allowed to overwrite a declared release input");
+    }
+
+    // The manifest is still intact and a normal destination still works.
+    let receipt_path = root.path().join("receipts/plan.json");
+    plan(PlanConfig {
+        manifest: manifest_path,
+        repo_root: root.path().to_path_buf(),
+        receipt: receipt_path.clone(),
+    })?;
+    if !receipt_path.exists() {
+        bail!("a non-aliasing receipt destination was refused");
     }
     Ok(())
 }

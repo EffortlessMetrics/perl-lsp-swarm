@@ -634,9 +634,7 @@ impl ProductSurface {
                     .allow
                     .into_iter()
                     .filter(|entry| !entry.retired)
-                    .filter(|entry| {
-                        entry.classification == "production" || entry.classification == "test"
-                    })
+                    .filter(entry_is_protected)
                     .collect(),
                 available: true,
             },
@@ -661,6 +659,19 @@ impl ProductSurface {
         Self::from_expiring_entries_for_test(
             rows.into_iter().map(|(path, class)| (path, class, None)).collect(),
         )
+    }
+
+    /// As above, with an explicit ledger `surface` per row.
+    #[cfg(test)]
+    fn from_ledger_rows_for_test(rows: Vec<(&str, &str, &str)>) -> Self {
+        let mut surface = Self::from_expiring_entries_for_test(
+            rows.iter().map(|(path, class, _)| (*path, *class, None)).collect(),
+        );
+        for (entry, (_, _, ledger_surface)) in surface.entries.iter_mut().zip(rows) {
+            entry.surface = ledger_surface.to_string();
+        }
+        surface.entries.retain(entry_is_protected);
+        surface
     }
 
     /// As above, with an explicit `expires` date per row.
@@ -746,6 +757,27 @@ enum SurfaceVerdict {
     NotClassified,
 }
 
+/// Surfaces whose files reach users. A publication projection may not displace
+/// what the repository ships, whatever the ledger calls its classification.
+const SHIPPED_SURFACES: [&str; 4] = ["release", "editor", "lsp", "dap"];
+
+/// True when the ledger's own metadata says this entry is product, test, or
+/// shipped tooling.
+///
+/// Classification alone is not enough: `install.sh` is classified `tooling`,
+/// yet its own ledger reason calls it the "user-facing one-line installer".
+/// Filtering on `production`/`test` would leave both public installers
+/// droppable. Documentation and configuration on a shipped surface stay out —
+/// release notes and contracts are exactly what publication legitimately
+/// translates.
+fn entry_is_protected(entry: &AllowEntry) -> bool {
+    if entry.classification == "production" || entry.classification == "test" {
+        return true;
+    }
+    SHIPPED_SURFACES.contains(&entry.surface.as_str())
+        && matches!(entry.classification.as_str(), "tooling" | "generated")
+}
+
 /// Rust-family build and toolchain manifests at any depth.
 fn is_rust_build_manifest(path: &str) -> bool {
     matches!(
@@ -768,6 +800,8 @@ const MANIFEST_SCHEMA: &str =
 pub fn plan(config: PlanConfig) -> Result<()> {
     let raw = fs::read(&config.manifest)
         .with_context(|| format!("reading manifest {}", config.manifest.display()))?;
+
+    ensure_receipt_does_not_alias_inputs(&config, &raw)?;
 
     let receipt = match build_receipt(&raw, &config.repo_root) {
         Ok(receipt) => receipt,
@@ -796,6 +830,69 @@ pub fn plan(config: PlanConfig) -> Result<()> {
             display_findings(&receipt, &config.receipt)
         ),
     }
+}
+
+/// Refuse a receipt destination that is one of the files the plan reads.
+///
+/// The receipt is written after validation, so an aliasing destination would
+/// overwrite the very manifest or evidence the verdict was computed from,
+/// destroying the inputs needed to reproduce it. Comparison is on canonical
+/// parent + file name, so a relative path, a symlinked directory, or a
+/// destination that does not exist yet all resolve to the same identity.
+fn ensure_receipt_does_not_alias_inputs(config: &PlanConfig, raw: &[u8]) -> Result<()> {
+    let Some(destination) = canonical_target(&config.receipt) else {
+        return Ok(());
+    };
+
+    let mut consumed: Vec<PathBuf> = vec![config.manifest.clone()];
+    consumed.push(config.repo_root.join("policy/non-rust-allowlist.toml"));
+    if let Ok(manifest) = serde_json::from_slice::<Manifest>(raw) {
+        for input in &manifest.inputs {
+            consumed.push(config.repo_root.join(&input.path));
+        }
+        for row in &manifest.paths {
+            if valid_repository_path(&row.authority_ref) && row.authority_ref.contains('/') {
+                consumed.push(config.repo_root.join(&row.authority_ref));
+            }
+        }
+        let controls = [
+            &manifest.live_controls.branch_rules,
+            &manifest.live_controls.environments,
+            &manifest.live_controls.quality_exceptions,
+        ];
+        let evidence = manifest
+            .invariants
+            .iter()
+            .flat_map(|invariant| invariant.evidence.iter())
+            .chain(controls.into_iter().flat_map(|control| control.evidence.iter()));
+        for entry in evidence {
+            if valid_repository_path(&entry.reference) {
+                consumed.push(config.repo_root.join(&entry.reference));
+            }
+        }
+    }
+
+    for input in consumed {
+        if canonical_target(&input).is_some_and(|resolved| resolved == destination) {
+            bail!(
+                "publication-sync: refusing to write the receipt over {}, which this plan reads",
+                input.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Canonical identity of a path that may not exist yet: the canonical parent
+/// plus the file name.
+fn canonical_target(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?;
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
+    let parent = match parent {
+        Some(parent) => parent.canonicalize().ok()?,
+        None => std::env::current_dir().ok()?,
+    };
+    Some(parent.join(name))
 }
 
 /// A manifest that never reached evaluation, with whatever identity could still
@@ -1747,17 +1844,24 @@ fn validate_live_controls(
                     state,
                 );
             }
-            if evidence.kind != EvidenceKind::LiveReceipt && evidence.digest.is_some() {
-                state.not_proven(
-                    "live_control_evidence_digest_unexpected",
-                    format!(
-                        "live control {name} attaches a digest to {} evidence, which the planner does not resolve",
-                        evidence.kind.as_str()
-                    ),
-                    "release/ci",
-                );
-            }
         }
+    }
+}
+
+/// Only a resolved observation is hashed, so a digest on a document or a ruling
+/// would read as verification that never happened. The rule belongs to the
+/// evidence role, so it applies wherever the role appears — under a live
+/// control or under an invariant.
+fn reject_unearned_digest(subject: &str, evidence: &Evidence, state: &mut PlanState) {
+    if evidence.digest.is_some() {
+        state.not_proven(
+            "evidence_digest_unexpected",
+            format!(
+                "{subject} attaches a digest to {} evidence, which the planner does not hash",
+                evidence.kind.as_str()
+            ),
+            "release/ci",
+        );
     }
 }
 
@@ -1825,6 +1929,7 @@ fn validate_evidence_reference(
             validate_live_receipt(manifest, control, evidence, repo_root, loader, state);
         }
         EvidenceKind::RepositorySource => {
+            reject_unearned_digest(subject, evidence, state);
             if !valid_repository_path(&evidence.reference) {
                 state.not_proven(
                     "evidence_path_invalid",
@@ -1847,6 +1952,7 @@ fn validate_evidence_reference(
             }
         }
         EvidenceKind::ReviewRuling => {
+            reject_unearned_digest(subject, evidence, state);
             let reference = evidence.reference.trim();
             if !is_issue_reference(reference) {
                 state.not_proven(
