@@ -294,7 +294,7 @@ fn broad_exclusions_are_rejected_before_scanning() {
 
 #[cfg(unix)]
 #[test]
-fn symlinked_file_and_directory_are_rejected_without_escape_or_cycles() {
+fn in_root_symlinks_are_scanned_once_and_escape_or_cycles_are_safe() {
     use std::os::unix::fs::symlink;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -302,6 +302,12 @@ fn symlinked_file_and_directory_are_rejected_without_escape_or_cycles() {
     write(&outside, "escaped.md", &format!("{CALLER_LINE}\n")).expect("write outside file");
     symlink(outside.path().join("escaped.md"), dir.path().join("linked.md"))
         .expect("link outside file");
+    write(
+        &dir,
+        "policy/kwalitee-namespace-inventory.toml",
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n",
+    )
+    .expect("write escape ledger");
     let output = inventory(dir.path()).arg("--check").output().expect("run inventory");
     assert!(!output.status.success(), "escaping file links must fail closed");
     assert!(
@@ -313,11 +319,31 @@ fn symlinked_file_and_directory_are_rejected_without_escape_or_cycles() {
     let dir = tempfile::tempdir().expect("cycle tree");
     fs::create_dir(dir.path().join("nested")).expect("nested directory");
     symlink(dir.path(), dir.path().join("nested/cycle")).expect("link cycle");
+    write(
+        &dir,
+        "policy/kwalitee-namespace-inventory.toml",
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n",
+    )
+    .expect("write cycle ledger");
     let output = inventory(dir.path()).arg("--check").output().expect("run cycle inventory");
-    assert!(!output.status.success(), "directory cycles must fail closed");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("symlinked inventory path"),
-        "cycle failure must identify the unsupported link: {}",
+        output.status.success(),
+        "directory cycles must terminate safely: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let dir = tempfile::tempdir().expect("in-root link tree");
+    write(&dir, "real/caller.sh", &format!("{CALLER_LINE}\n")).expect("write target");
+    symlink(dir.path().join("real"), dir.path().join("alias")).expect("link in root");
+    let ledger = format!(
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n{}",
+        entry("real/caller.sh", "release_readiness", "independent_readiness_rails", &[CALLER_LINE]),
+    );
+    write(&dir, "policy/kwalitee-namespace-inventory.toml", &ledger).expect("write ledger");
+    let output = inventory(dir.path()).arg("--check").output().expect("run linked inventory");
+    assert!(
+        output.status.success(),
+        "an in-root link should be attributed to its canonical target once: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -325,10 +351,8 @@ fn symlinked_file_and_directory_are_rejected_without_escape_or_cycles() {
 #[test]
 fn check_and_scaffold_are_mutually_exclusive() {
     let dir = classified_tree().expect("fixture tree");
-    let output = inventory(dir.path())
-        .args(["--check", "--scaffold"])
-        .output()
-        .expect("run inventory");
+    let output =
+        inventory(dir.path()).args(["--check", "--scaffold"]).output().expect("run inventory");
     assert!(!output.status.success(), "check and scaffold must conflict");
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("cannot be used with"),
