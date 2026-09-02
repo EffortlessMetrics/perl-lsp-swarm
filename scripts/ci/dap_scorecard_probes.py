@@ -235,7 +235,7 @@ print \"marker=$marker\\n\";
     with tempfile.TemporaryDirectory(prefix="dap-scorecard-") as temp_dir:
         script = Path(temp_dir) / "scorecard_session.pl"
         script.write_text(script_text, encoding="utf-8")
-        with DapProcess(binary, timeout_seconds, invocations, trusted_root) as dap:
+        with DapProcess(binary, timeout_seconds, invocations, script.parent) as dap:
             dap.initialize()
             dap.request("launch", _launch_arguments(script, stop_on_entry=False))
             breakpoints = dap.request(

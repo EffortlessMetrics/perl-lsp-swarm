@@ -68,7 +68,7 @@ def build_scorecard(
                 fixtures[name].resolve(),
                 timeout_seconds,
                 invocations,
-                trusted_root,
+                fixtures[name].resolve().parent,
             )
             launch_details.append({"name": name, "elapsed_ms": elapsed, "error": None})
         except ScorecardError as exc:
