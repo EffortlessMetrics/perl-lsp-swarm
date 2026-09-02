@@ -3750,7 +3750,9 @@ fn an_abandoned_reservation_is_reported_as_one() -> Result<()> {
         .context("an occupied destination must refuse")?;
     assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
     assert!(
-        detail.contains("empty") && detail.contains("Remove it to retry"),
+        detail.contains("empty")
+            && detail.contains("Confirm no export is running")
+            && detail.contains("then remove it to retry"),
         "an empty destination must be named as a reservation, not as an envelope: {detail}"
     );
 
@@ -3763,7 +3765,7 @@ fn an_abandoned_reservation_is_reported_as_one() -> Result<()> {
         .err()
         .context("a non-empty destination must also refuse")?;
     assert!(
-        detail.contains("immutable") && !detail.contains("Remove it to retry"),
+        detail.contains("immutable") && !detail.contains("then remove it to retry"),
         "a non-empty destination is not an abandoned reservation: {detail}"
     );
     Ok(())

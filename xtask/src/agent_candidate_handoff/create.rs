@@ -1498,7 +1498,9 @@ fn stage_envelope(
             let detail = if abandoned {
                 format!(
                     "`{}` already exists and is empty; it is either a live export's \
-                     reservation or one left by an interrupted run. Remove it to retry.",
+                     reservation or one left by an interrupted run, and the two cannot be \
+                     told apart from here. Confirm no export is running against this \
+                     destination, then remove it to retry.",
                     out.display()
                 )
             } else {
