@@ -204,7 +204,19 @@ fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
 
     #[cfg(windows)]
     {
-        windows_command_candidates(command, path).iter().any(|candidate| candidate.is_file())
+        // Mirror std's *selection* before judging launchability: std's
+        // `program_exists` is `GetFileAttributesW`-based and admits
+        // directories and broken links, so std stops at the first
+        // attribute-resolving candidate and the real launch then fails if
+        // that subject is not a file. Selecting the same first candidate via
+        // `symlink_metadata` (which likewise does not follow links) keeps the
+        // probe from reporting a later PATH entry the launch would never
+        // reach; the probe is true only when the selected subject is a
+        // regular file, so directory and broken-link selections fail closed.
+        windows_command_candidates(command, path)
+            .into_iter()
+            .find(|candidate| std::fs::symlink_metadata(candidate).is_ok())
+            .is_some_and(|candidate| candidate.is_file())
     }
     #[cfg(not(windows))]
     {
@@ -232,11 +244,12 @@ fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
 /// Deliberate scope limits versus the full launch route: std additionally
 /// searches the application, system, and Windows directories after the child
 /// PATH; this probe covers the PATH leg only, because every caller probes for
-/// tools expected on PATH. The existence check uses `is_file` rather than
-/// std's `GetFileAttributesW`-based `program_exists` (which also admits
-/// directories): a directory candidate makes the real launch fail, so failing
-/// closed here matches the eventual launch outcome. The spawn result remains
-/// authoritative for races and lifecycle failure.
+/// tools expected on PATH. Selection mirrors std's `GetFileAttributesW`-based
+/// `program_exists` (first attribute-resolving candidate wins, directories and
+/// broken links included); the caller in `command_exists_in_path` then fails
+/// closed unless that selected subject is a regular file, matching the
+/// eventual launch outcome. The spawn result remains authoritative for races
+/// and lifecycle failure.
 ///
 /// Compiled on every platform so the candidate rules are unit-tested off
 /// Windows; the production caller exists only under `cfg(windows)`.

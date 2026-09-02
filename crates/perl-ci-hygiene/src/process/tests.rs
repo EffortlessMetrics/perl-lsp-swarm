@@ -348,8 +348,11 @@ fn command_exists_in_path_skips_missing_path_entry() -> TestResult {
     Ok(())
 }
 
+#[cfg(not(windows))]
 #[test]
 fn command_exists_in_path_continues_past_directory_candidate() -> TestResult {
+    // Unix parity: execve on a directory candidate fails EACCES/EISDIR and
+    // the execvp-style search continues to the next PATH entry.
     let directory_candidate = TempDir::new("directory-before-file")?;
     let regular_file_candidate = TempDir::new("file-after-directory")?;
     let command = "ci-hygiene-probe";
@@ -362,6 +365,27 @@ fn command_exists_in_path_continues_past_directory_candidate() -> TestResult {
     assert!(command_exists_in_path(command, Some(path.as_os_str())));
     fs::remove_file(regular_file)?;
     assert!(!command_exists_in_path(command, Some(path.as_os_str())));
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn command_exists_in_path_fails_closed_when_std_selects_earlier_directory() -> TestResult {
+    // Windows parity: std's `program_exists` (GetFileAttributesW) admits the
+    // earlier directory candidate and stops there, so the real launch fails —
+    // the probe must NOT report the later regular file the launch would never
+    // reach.
+    let directory_candidate = TempDir::new("directory-before-file")?;
+    let regular_file_candidate = TempDir::new("file-after-directory")?;
+    let command = "ci-hygiene-probe";
+    fs::create_dir(directory_candidate.path().join(format!("{command}.exe")))?;
+    fs::write(regular_file_candidate.path().join(format!("{command}.exe")), b"")?;
+    let path = joined_path(&[directory_candidate.path(), regular_file_candidate.path()])?;
+
+    assert!(
+        !command_exists_in_path(command, Some(path.as_os_str())),
+        "an earlier directory candidate must hide the later tool, matching std's selection"
+    );
     Ok(())
 }
 
@@ -521,10 +545,14 @@ mod windows_launch_parity {
     use std::ffi::OsStr;
     use std::process::Command;
 
-    /// Probe selection mirrored against the seam the same way
-    /// `command_exists_in_path` uses it: first existing candidate.
+    /// The candidate std's `resolve_exe` would select, mirrored the same way
+    /// `command_exists_in_path` selects it: the first candidate whose
+    /// attributes resolve (GetFileAttributesW semantics — directories and
+    /// broken links count, matching `symlink_metadata`).
     fn probe_selection(command: &str, path: &OsStr) -> Option<PathBuf> {
-        windows_command_candidates(command, path).into_iter().find(|c| c.is_file())
+        windows_command_candidates(command, path)
+            .into_iter()
+            .find(|c| fs::symlink_metadata(c).is_ok())
     }
 
     fn write_batch(dir: &Path, name: &str) -> TestResult<PathBuf> {
@@ -615,9 +643,72 @@ mod windows_launch_parity {
         fs::create_dir(temp.path().join("probe-parity-dir.exe"))?;
         let path = joined_path(&[temp.path()])?;
 
-        assert_eq!(probe_selection("probe-parity-dir", path.as_os_str()), None);
+        // std's resolver selects the directory (GetFileAttributesW admits it);
+        // the probe reports not-launchable, and the real launch fails.
+        assert!(!command_exists_in_path("probe-parity-dir", Some(path.as_os_str())));
         let launch = Command::new("probe-parity-dir").env("PATH", path.as_os_str()).output();
         assert!(launch.is_err(), "a directory named <name>.exe must not be launched");
+        Ok(())
+    }
+
+    #[test]
+    fn earlier_directory_candidate_hides_later_tool_for_probe_and_launch() -> TestResult {
+        let earlier = TempDir::new("launch-parity-hide-earlier")?;
+        let later = TempDir::new("launch-parity-hide-later")?;
+        fs::create_dir(earlier.path().join("probe-parity-hide.exe"))?;
+        fs::copy(env::current_exe()?, later.path().join("probe-parity-hide.exe"))?;
+        let path = joined_path(&[earlier.path(), later.path()])?;
+
+        // std selects the earlier directory and CreateProcessW fails; the
+        // probe must not claim the later, real tool is launchable.
+        assert!(!command_exists_in_path("probe-parity-hide", Some(path.as_os_str())));
+        let launch = Command::new("probe-parity-hide").env("PATH", path.as_os_str()).output();
+        assert!(
+            launch.is_err(),
+            "an earlier directory candidate must hide a later tool at launch, and the probe agrees"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn extension_casing_is_case_insensitive_for_probe_and_launch() -> TestResult {
+        let temp = TempDir::new("launch-parity-case")?;
+        // On-disk subject carries an uppercase extension; the bare-name probe
+        // appends lowercase `.exe`, and the Windows filesystem resolves it.
+        fs::copy(env::current_exe()?, temp.path().join("probe-parity-case.EXE"))?;
+        let path = joined_path(&[temp.path()])?;
+
+        assert!(command_exists_in_path("probe-parity-case", Some(path.as_os_str())));
+        let output = Command::new("probe-parity-case")
+            .env("PATH", path.as_os_str())
+            .arg("--list")
+            .output()?;
+        assert!(output.status.success(), "case-insensitive launch failed: {output:?}");
+
+        // An explicitly mixed-case extension is searched verbatim and found.
+        assert!(command_exists_in_path("probe-parity-case.eXe", Some(path.as_os_str())));
+        Ok(())
+    }
+
+    #[test]
+    fn broken_link_candidate_fails_closed_for_probe_and_launch() -> TestResult {
+        let temp = TempDir::new("launch-parity-broken-link")?;
+        let link = temp.path().join("probe-parity-link.exe");
+        if let Err(error) =
+            std::os::windows::fs::symlink_file(temp.path().join("missing-target.exe"), &link)
+        {
+            // Symlink creation needs a privilege the runner may not hold;
+            // without a real broken link this case cannot prove anything.
+            eprintln!("skipping broken-link parity: symlink_file denied: {error}");
+            return Ok(());
+        }
+        let path = joined_path(&[temp.path()])?;
+
+        // std's resolver selects the broken link (GetFileAttributesW does not
+        // follow it); CreateProcessW then fails, and the probe fails closed.
+        assert!(!command_exists_in_path("probe-parity-link", Some(path.as_os_str())));
+        let launch = Command::new("probe-parity-link").env("PATH", path.as_os_str()).output();
+        assert!(launch.is_err(), "a broken link named <name>.exe must not be launched");
         Ok(())
     }
 
