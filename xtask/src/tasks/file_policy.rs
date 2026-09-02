@@ -2374,7 +2374,7 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
 
     // Decide exit code based on mode.
     if config.mode != CheckFilePolicyMode::Advisory && !violations.is_empty() {
-        std::process::exit(1);
+        bail!("file policy check found {} violation(s)", violations.len());
     }
 
     Ok(())
@@ -3730,7 +3730,7 @@ review_after = "2026-06-01"
         let allowlist = temp.path().join("allow.toml");
         std::fs::write(
             &allowlist,
-            "[[allow]]\nid = \"readme\"\npath = \"README.md\"\nkind = \"documentation\"\nlanguage = \"markdown\"\nowner = \"team\"\nreason = \"\"\"\n<<<<<<< HEAD\n\"\"\"\nsurface = \"docs\"\nclassification = \"documentation\"\ncovered_by = [\"fixture\"]\nreview_after = \"2099-01-01\"\n",
+            "[[allow]]\nid = \"readme\"\npath = \"README.md\"\nkind = \"documentation\"\nlanguage = \"markdown\"\nowner = \"team\"\nreason = \"\"\"\n<<<<<<< HEAD\n\"\"\"\nsurface = \"docs\"\nclassification = \"documentation\"\ncovered_by = [\"fixture\"]\ncreated = \"2026-01-01\"\nreview_after = \"2099-01-01\"\n",
         )?;
 
         let result = check_file_policy(
@@ -3742,7 +3742,11 @@ review_after = "2026-06-01"
                 root_override: Some(temp.path().to_path_buf()),
             },
         );
-        assert!(result.is_err(), "blocking policy accepted raw conflict marker");
+        let error = result.expect_err("blocking policy accepted raw conflict marker");
+        assert!(
+            error.to_string().contains("violation"),
+            "blocking policy did not report a violation: {error:?}"
+        );
         Ok(())
     }
 
