@@ -212,9 +212,13 @@ impl DebugAdapter {
             let launch_root_arg =
                 args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
 
+            // Ownership is selected from the path the debuggee will actually
+            // open, not the raw client string — see `resolve_launch_program`.
+            let resolved_program = Self::resolve_launch_program(program, user_cwd.as_deref());
+
             let boundary = match security::resolve_session_boundary(
                 self.workspace_authority(),
-                Path::new(program),
+                &resolved_program,
                 launch_root_arg.as_deref(),
             ) {
                 Ok(boundary) => boundary,
@@ -230,6 +234,13 @@ impl DebugAdapter {
                 }
             };
 
+            // Install the derived boundary transactionally. `launch_debugger`
+            // reads it, but a replacement launch that fails during metadata,
+            // syntax, interpreter, or spawn setup deliberately leaves the prior
+            // debuggee running — and that still-live session must keep its own
+            // boundary rather than inherit the failed replacement's (#14592
+            // review).
+            let previous_boundary = self.session_boundary();
             self.set_session_boundary(&boundary);
 
             let perl_args = args
@@ -296,6 +307,10 @@ impl DebugAdapter {
                     }
                 }
                 Err(e) => {
+                    // The prior session, if any, is still running: give it its
+                    // boundary back rather than leaving it under the failed
+                    // replacement's.
+                    self.restore_session_boundary(previous_boundary);
                     let perl_info = detect_perl_info();
                     DapMessage::Response {
                         seq,
@@ -400,6 +415,27 @@ impl DebugAdapter {
         }
     }
 
+    /// Resolve a launch `program` to the absolute path the debuggee will open.
+    ///
+    /// An absolute `program` is already unambiguous. A relative one is opened
+    /// by `perl` relative to the working directory the launch supplies, so it
+    /// resolves against `cwd` when given and against this process's working
+    /// directory otherwise — which is also the directory the pre-spawn
+    /// existence check uses. Authorization and execution must agree on exactly
+    /// one path, or the workspace boundary can be validated against a file
+    /// that is never the one run.
+    pub(super) fn resolve_launch_program(program: &str, cwd: Option<&Path>) -> PathBuf {
+        let raw = Path::new(program);
+        if raw.is_absolute() {
+            return raw.to_path_buf();
+        }
+        let base = cwd.map_or_else(
+            || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            Path::to_path_buf,
+        );
+        base.join(raw)
+    }
+
     /// Launch the Perl debugger for the given script.
     ///
     /// Validates the program path and interpreter, runs a pre-launch `perl -c`
@@ -415,6 +451,20 @@ impl DebugAdapter {
         cwd_override: Option<PathBuf>,
         debuggee_timeout_secs: u64,
     ) -> Result<i32, String> {
+        // Resolve the program to the exact path the debuggee will open, once,
+        // before anything authorizes or inspects it (#14592 review).
+        //
+        // A relative `program` is opened by the spawned `perl` relative to the
+        // working directory it is given, which the client controls through
+        // `cwd`. Authorizing the raw relative string would validate
+        // `<trusted-root>/script.pl` while `perl` opened `<cwd>/script.pl` —
+        // a launch of `{program: "script.pl", cwd: "/outside"}` would pass the
+        // workspace boundary and then execute outside it. Everything below
+        // (existence, boundary, syntax check, spawn) uses this one path.
+        let resolved_program = Self::resolve_launch_program(program, cwd_override.as_deref());
+        let resolved_program_display = resolved_program.display().to_string();
+        let program_for_spawn = resolved_program_display.as_str();
+
         // Security: Validate program path before any process spawning
         // This prevents command injection via flag arguments (e.g., "-e malicious_code")
         // and ensures we're launching a real Perl script file.
@@ -450,7 +500,7 @@ impl DebugAdapter {
         // - exists() returns true for directories
         // - exists() returns true for symlinks to non-files
         // - is_file() specifically checks for regular files
-        let path = Path::new(program);
+        let path = resolved_program.as_path();
         match std::fs::metadata(path) {
             Ok(metadata) => {
                 if !metadata.is_file() {
@@ -496,7 +546,12 @@ impl DebugAdapter {
         // debugger.  This catches syntax errors early and surfaces a clear,
         // actionable message to the user instead of a generic "Cannot start
         // Perl debugger" failure after `perl -d` exits immediately.
-        Self::check_syntax(perl_interpreter, program, &env_overrides, cwd_override.clone())?;
+        Self::check_syntax(
+            perl_interpreter,
+            program_for_spawn,
+            &env_overrides,
+            cwd_override.clone(),
+        )?;
 
         // Use PerlOracleEnv to deny ambient PERL5LIB/PERL5OPT so the debug
         // session env is controlled entirely by launch.json `env` (#8688).
@@ -506,9 +561,9 @@ impl DebugAdapter {
         let prog_cwd = if let Some(user_cwd) = cwd_override {
             user_cwd
         } else {
-            Path::new(program)
+            resolved_program
                 .parent()
-                .map(|p| p.to_path_buf())
+                .map(Path::to_path_buf)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         };
         let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
@@ -525,7 +580,7 @@ impl DebugAdapter {
         // Use -- to separate flags from script name, preventing argument injection
         // if program starts with -
         cmd.arg("--");
-        cmd.arg(program);
+        cmd.arg(program_for_spawn);
         cmd.args(&args);
 
         // Set up pipes
@@ -2424,6 +2479,46 @@ mod tests {
         reserve_terminated_event, terminated_delivery_is_current,
     };
     use crate::tcp_attach::DapEvent;
+    use std::path::{Path, PathBuf};
+
+    /// `resolve_launch_program` must agree with what `perl` will open.
+    ///
+    /// This is the whole point of the helper: the pre-fix code authorized
+    /// `Path::new(program)`, and the shared validator joins a *relative* path
+    /// with the root it is checked against — so `"script.pl"` validated as
+    /// `<trusted-root>/script.pl` while the spawned `perl`, running under the
+    /// client's `cwd`, opened `<cwd>/script.pl`.
+    #[test]
+    fn a_relative_program_resolves_against_the_launch_cwd_not_the_trusted_root() {
+        let cwd = Path::new("/outside/project");
+        let resolved = DebugAdapter::resolve_launch_program("script.pl", Some(cwd));
+        assert_eq!(
+            resolved,
+            PathBuf::from("/outside/project/script.pl"),
+            "a relative program must resolve against the directory perl is given"
+        );
+        assert!(
+            !resolved.starts_with("/trusted"),
+            "resolution must never silently land inside a trusted root it was not given"
+        );
+    }
+
+    #[test]
+    fn an_absolute_program_is_unchanged_by_a_launch_cwd() {
+        let resolved = DebugAdapter::resolve_launch_program(
+            "/trusted/project/script.pl",
+            Some(Path::new("/outside")),
+        );
+        assert_eq!(resolved, PathBuf::from("/trusted/project/script.pl"));
+    }
+
+    #[test]
+    fn a_nested_relative_program_resolves_under_the_launch_cwd() {
+        let resolved =
+            DebugAdapter::resolve_launch_program("lib/deep/script.pl", Some(Path::new("/ws")));
+        assert_eq!(resolved, PathBuf::from("/ws/lib/deep/script.pl"));
+    }
+
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};

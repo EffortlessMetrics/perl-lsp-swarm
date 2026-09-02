@@ -461,3 +461,83 @@ fn a_launch_root_from_another_root_cannot_launch_an_outside_program()
     }
     Ok(())
 }
+
+/// A relative `program` must be authorized against the file that actually runs.
+///
+/// Codex review of #14592: a bounded adapter given
+/// `{program: "script.pl", cwd: "/outside"}` used to validate
+/// `<trusted-root>/script.pl` — because the shared validator joins a relative
+/// path with the root it is checked against — while `perl` was spawned with
+/// `cwd = /outside` and opened `/outside/script.pl`. The boundary was checked
+/// against a file that was never executed.
+#[test]
+fn a_relative_program_cannot_execute_outside_the_trusted_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempfile::tempdir()?;
+    let outside = tempfile::tempdir()?;
+
+    // Same basename in both places. Only the trusted-root copy is legitimate.
+    fs::write(workspace.path().join("script.pl"), "print 'trusted';")?;
+    fs::write(outside.path().join("script.pl"), "print 'attacker';")?;
+
+    let mut adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+        &[workspace.path().to_path_buf()],
+        false,
+    )?);
+    initialize_adapter(&mut adapter);
+
+    let response = adapter.handle_request(
+        2,
+        "launch",
+        Some(json!({
+            "program": "script.pl",
+            "cwd": must_some(outside.path().to_str()),
+            "args": []
+        })),
+    );
+
+    match response {
+        DapMessage::Response { success, message, .. } => {
+            assert!(
+                !success,
+                "a relative program resolving outside the trusted root must be refused"
+            );
+            let msg = message.unwrap_or_default();
+            assert!(
+                msg.contains("outside your workspace") || msg.contains("outside workspace"),
+                "Expected workspace-boundary rejection, got: {msg}"
+            );
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// The same shape inside the trusted root must still launch.
+///
+/// Negative control for the test above: resolving the program against `cwd`
+/// must not turn every relative launch into a refusal.
+#[test]
+fn a_relative_program_inside_the_trusted_root_is_admitted() -> Result<(), Box<dyn std::error::Error>>
+{
+    let workspace = tempfile::tempdir()?;
+    fs::write(workspace.path().join("script.pl"), "print 'trusted';")?;
+
+    let mut adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+        &[workspace.path().to_path_buf()],
+        false,
+    )?);
+    initialize_adapter(&mut adapter);
+
+    let response = adapter.handle_request(
+        2,
+        "launch",
+        Some(json!({
+            "program": "script.pl",
+            "cwd": must_some(workspace.path().to_str()),
+            "args": []
+        })),
+    );
+    assert_workspace_accepted(&response, "a relative program inside the trusted root");
+    Ok(())
+}

@@ -323,6 +323,16 @@ impl DebugAdapter {
             boundary.root().map(Path::to_path_buf);
     }
 
+    /// Put back the boundary a failed replacement launch displaced.
+    ///
+    /// `handle_launch` installs the new boundary before `launch_debugger` can
+    /// prove the replacement viable, because the launch itself is authorized
+    /// against it. When that setup fails the previous debuggee keeps running,
+    /// so its boundary has to come back with it.
+    pub(super) fn restore_session_boundary(&self, previous: Option<PathBuf>) {
+        *lock_or_recover(&self.session_boundary, "debug_adapter.session_boundary") = previous;
+    }
+
     /// The boundary derived by the most recent launch, if any.
     ///
     /// This is the raw stored value. It stays set after the session it belongs
