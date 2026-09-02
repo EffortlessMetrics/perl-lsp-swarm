@@ -435,12 +435,31 @@ impl ExternalDebuggerPeerBackend {
 
         match rx.recv_timeout(self.timeout) {
             Ok(resp) => {
+                // Responses are correlated by `request_seq` alone, so the echoed
+                // command is the only evidence that this reply answers *this*
+                // request. Check it before interpreting success or failure: a
+                // crossed command is the peer breaking correlation, not an
+                // outcome of the request, and must not be reported as a
+                // `PeerReported` carrying the command we asked for (#8758).
+                if resp.command != command {
+                    return Err(BackendError::Protocol(format!(
+                        "peer answered request seq {seq} (`{command}`) with a response echoing \
+                         `{}`",
+                        resp.command
+                    )));
+                }
                 if resp.success {
                     Ok(resp)
                 } else {
-                    Err(BackendError::Engine(
-                        resp.message.unwrap_or_else(|| format!("{command} failed")),
-                    ))
+                    // A well-formed `success: false` on the request we actually
+                    // sent is the peer using the protocol as designed to decline
+                    // or report a failure — an ordinary debuggee outcome
+                    // included. It is neither a protocol violation nor an
+                    // adapter bug (#8758).
+                    Err(BackendError::PeerReported {
+                        command: command.to_string(),
+                        message: resp.message.unwrap_or_else(|| format!("{command} failed")),
+                    })
                 }
             }
             Err(RecvTimeoutError::Timeout) => {

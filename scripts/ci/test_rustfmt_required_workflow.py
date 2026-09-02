@@ -22,6 +22,15 @@ yaml_structure = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = yaml_structure
 SPEC.loader.exec_module(yaml_structure)
 
+PRODUCER_PATH = ROOT / "scripts" / "ci" / "hosted_formatter_producers.py"
+PRODUCER_SPEC = importlib.util.spec_from_file_location(
+    "hosted_formatter_producers", PRODUCER_PATH
+)
+assert PRODUCER_SPEC and PRODUCER_SPEC.loader
+producers = importlib.util.module_from_spec(PRODUCER_SPEC)
+sys.modules[PRODUCER_SPEC.name] = producers
+PRODUCER_SPEC.loader.exec_module(producers)
+
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 RUST_SMALL_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "em-ci-routed-rust.yml"
 POLICY_PATH = ROOT / ".ci" / "policies" / "required-checks.toml"
@@ -45,8 +54,11 @@ FMT_COMMAND = "cargo fmt --all -- --check"
 CONTRACT_TEST_FILES = (
     "scripts/ci/test_rustfmt_check.py",
     "scripts/ci/test_rustfmt_required_workflow.py",
+    "scripts/ci/test_hosted_formatter_producers.py",
 )
 CARGO_FMT_RE = re.compile(r"cargo\s+fmt\b")
+job_bodies = producers.job_bodies
+active_code_lines = producers.active_code_lines
 
 
 def load_triggers(source: str) -> dict[str, dict[str, Any]]:
@@ -268,16 +280,22 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
     if entry.get("job") != JOB_ID:
         raise AssertionError("formatter policy must name the owning job")
     # Policy schema v2 separates merge-policy role from live GitHub enforcement.
-    # "advisory" is a `policy_role`; the enforcement source must stay unclaimed
-    # until a reviewed settings change actually protects the context.
+    # Dedicated `Rust formatting` stays advisory; live merge blocking is the
+    # required Perl LSP Rust Small Result path (#9127/#12320). #9959 retires
+    # duplicate meta-shard fmt without promoting this context.
     if (
         entry.get("required") is not False
         or entry.get("policy_role") != "advisory"
         or entry.get("enforcement") != "neither"
     ):
-        raise AssertionError("formatter policy must remain advisory before post-merge promotion")
-    if "post-merge promotion target" not in str(entry.get("reason", "")).lower():
-        raise AssertionError("formatter policy must retain the post-merge promotion target")
+        raise AssertionError("formatter policy must remain advisory; live blocking stays on Rust Small")
+    reason = str(entry.get("reason", "")).lower()
+    if "advisory receipt-producing dedicated formatter" not in reason:
+        raise AssertionError("formatter policy must name the dedicated context as advisory")
+    if "perl lsp rust small result" not in reason:
+        raise AssertionError("formatter policy must declare Rust Small as the live blocker")
+    if "9959" not in reason:
+        raise AssertionError("formatter policy must record meta-shard fmt retirement")
 
 
 class RustfmtRequiredWorkflowTests(unittest.TestCase):
@@ -640,45 +658,6 @@ class GovernedContextSourceMutationTests(unittest.TestCase):
 
 def load_rust_small_workflow_text() -> str:
     return RUST_SMALL_WORKFLOW_PATH.read_text(encoding="utf-8")
-
-
-def job_bodies(workflow_text: str) -> dict[str, str]:
-    """Return indent-2 GitHub Actions job bodies keyed by job id."""
-    bodies: dict[str, list[str]] = {}
-    current: str | None = None
-    in_jobs = False
-    for line in workflow_text.splitlines():
-        if line == "jobs:":
-            in_jobs = True
-            current = None
-            continue
-        if in_jobs and line and not line.startswith((" ", "\t")):
-            in_jobs = False
-            current = None
-            continue
-        if not in_jobs:
-            continue
-        if (
-            line.startswith("  ")
-            and not line.startswith("   ")
-            and line.rstrip().endswith(":")
-            and not line.lstrip().startswith("-")
-        ):
-            current = line.strip()[:-1]
-            bodies[current] = [line]
-        elif current is not None:
-            bodies[current].append(line)
-    return {job_id: "\n".join(lines) for job_id, lines in bodies.items()}
-
-
-def active_code_lines(text: str) -> list[str]:
-    lines: list[str] = []
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        lines.append(raw)
-    return lines
 
 
 def validate_rust_small_fmt_contract(workflow_text: str) -> None:
