@@ -169,9 +169,21 @@ impl<'a> TokenStream<'a> {
     /// payload-free geometry-only tokens (empty text over a non-empty span —
     /// e.g. budget-degraded `UnknownRest`, or `HeredocBody` emitted for
     /// folding consumers) have their covered bytes reconstructed from
-    /// `source`, so the typed token — and the `lexer_budget_exhausted` stop
-    /// cause downstream — survives conversion in pre-lexed (incremental)
-    /// pipelines too (#14158, class sweep).
+    /// `source`, so the typed token kind survives conversion in pre-lexed
+    /// (incremental) pipelines too (#14158, class sweep).
+    ///
+    /// Only the kind survives. Reconstruction produces a payload-bearing
+    /// token — real text over its span — so `is_geometry_only()` returns
+    /// `false` and the bit-keyed `ParseStopCause::LexerBudgetExhausted`
+    /// recording in the parser (`expect`/`consume_token`) does not fire for
+    /// it. Provenance and the `lexer_budget_exhausted` stop cause do not
+    /// survive this seam: a caller feeding pre-lexed tokens through it must
+    /// carry the budget-exhaustion cause itself (the geometry-only bit on
+    /// the producer side remains the correct downstream recording signal).
+    ///
+    /// Live and source-aware paths therefore yield different representations
+    /// for the same source: the live path keeps the honest payload-free
+    /// geometry-only token, this seam materializes the payload.
     pub fn lexer_tokens_to_parser_tokens_from_source(
         tokens: Vec<LexerToken>,
         source: &str,
@@ -525,9 +537,13 @@ impl<'a> TokenStream<'a> {
         // non-empty span fails `token_from_lexer_parts` validation and its
         // fallback chain silently synthesizes `Eof`, erasing the typed token —
         // and with it the `lexer_budget_exhausted` stop cause downstream.
-        // Reconstruct the covered bytes from the source this stream already
-        // owns; restoring the real bytes is strictly more faithful than any
-        // synthetic fallback. With no source available (""), geometry-only
+        // Reconstruct the covered bytes from the caller-provided source;
+        // restoring the real bytes is strictly more faithful than any
+        // synthetic fallback. Note the tradeoff: reconstruction yields a
+        // payload-bearing token (`is_geometry_only() == false`), so the
+        // bit-keyed `LexerBudgetExhausted` recording downstream does not
+        // fire for it — callers of the source-aware seam carry the stop
+        // cause themselves. With no source available (""), geometry-only
         // tokens keep their payload-free representation: `token_from_lexer_parts`
         // constructs `UnknownRest` via `unknown_rest_at` without text.
         let text = if token.text.is_empty()

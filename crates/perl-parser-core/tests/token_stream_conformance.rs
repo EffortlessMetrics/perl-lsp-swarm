@@ -261,9 +261,13 @@ fn producer_driven_heredoc_body_survives_conversion_with_source() {
 
 #[test]
 fn geometry_only_unknown_rest_survives_conversion_with_source() {
-    // Budget-degraded `UnknownRest` (#14158): the typed token — and the
-    // `lexer_budget_exhausted` stop cause downstream — must survive
-    // source-aware conversion instead of collapsing to a silent `Eof`.
+    // Budget-degraded `UnknownRest` (#14158): the typed token kind must
+    // survive source-aware conversion instead of collapsing to a silent
+    // `Eof`. The `lexer_budget_exhausted` stop cause does NOT survive:
+    // reconstruction yields a payload-bearing token (`is_geometry_only()`
+    // is false), so the bit-keyed `LexerBudgetExhausted` recording in the
+    // parser never fires for it — callers feeding pre-lexed tokens through
+    // this seam carry the budget-exhaustion cause themselves.
     let source = "my $x = 1;\nunterminated regex trailing";
     // Span 11..38 covers the remaining source after the budget cut.
     assert_eq!(&source[11..38], "unterminated regex trailing");
