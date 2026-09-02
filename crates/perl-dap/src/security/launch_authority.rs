@@ -8,10 +8,10 @@
 //! | explicit_unbounded { user_owned_acknowledgement }
 //! ```
 //!
-//! No implicit or `None` mode remains for the native lifecycle: a
-//! [`DapServer`](crate::server::DapServer) that starts without either trusted
-//! roots or an explicit unbounded acknowledgement fails closed before a
-//! debuggee process can spawn.
+//! No implicit or `None` mode remains for the native launch lifecycle: a
+//! [`DapServer`](crate::server::DapServer) without either trusted roots or an
+//! explicit unbounded acknowledgement refuses every debuggee launch before a
+//! process can spawn.
 //!
 //! Authority inputs are user/machine-owned adapter startup configuration. They
 //! are structurally separate from DAP launch arguments and opened-project data:

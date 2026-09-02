@@ -10,7 +10,8 @@ use crate::server::mode::DapMode;
 /// `launch_authority` carries the user/machine-owned startup inputs (#8656)
 /// from which the adapter resolves exactly one explicit launch-authority mode.
 /// A configuration that names neither trusted roots nor an explicit unbounded
-/// acknowledgement fails closed at [`DapServer::new`](crate::server::DapServer::new).
+/// acknowledgement fails closed at launch admission, before a debuggee process
+/// can spawn.
 pub struct DapConfig {
     /// Logging level for DAP operations.
     pub log_level: String,
