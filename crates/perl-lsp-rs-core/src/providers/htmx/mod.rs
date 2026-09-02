@@ -4,8 +4,8 @@ mod catalog;
 mod markup;
 
 pub use catalog::{
-    HTMX_ATTRIBUTES, HTMX_HEADERS, HtmxAttributeFamily, HtmxAttributeSpec, HtmxHeaderDirection,
-    HtmxHeaderSpec,
+    HTMX_ATTRIBUTES, HTMX_CATALOG_PROVENANCE, HTMX_HEADERS, HtmxAttributeFamily, HtmxAttributeSpec,
+    HtmxCatalogProvenance, HtmxHeaderDirection, HtmxHeaderSpec,
 };
 pub use markup::{HtmxAttributeNameContext, MAX_MARKUP_SCAN_BYTES, htmx_attribute_name_context};
 
@@ -114,10 +114,94 @@ fn is_htmx_header_prefix(prefix: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        HTMX_ATTRIBUTES, HTMX_HEADERS, HtmxAttributeFamily, HtmxHeaderDirection,
-        complete_attribute_names, complete_header_names,
+        HTMX_ATTRIBUTES, HTMX_CATALOG_PROVENANCE, HTMX_HEADERS, HtmxAttributeFamily,
+        HtmxHeaderDirection, complete_attribute_names, complete_header_names,
     };
     use crate::providers::file_completion::FileCompletionContext;
+
+    #[test]
+    fn provenance_pins_an_immutable_reviewed_revision() {
+        let provenance = HTMX_CATALOG_PROVENANCE;
+
+        // A recorded review is only reproducible if the URL cannot change under
+        // it. `blob/main` or `blob/master` would silently re-point at whatever
+        // upstream looks like later, which is exactly the drift this provenance
+        // exists to make visible.
+        let tag = format!("/blob/v{}/", provenance.htmx_version);
+        assert!(
+            provenance.reference_url.contains(&tag),
+            "reference URL {} must be pinned to released tag v{}",
+            provenance.reference_url,
+            provenance.htmx_version
+        );
+        assert!(
+            !provenance.reference_url.contains("/blob/main/")
+                && !provenance.reference_url.contains("/blob/master/"),
+            "reference URL must not point at a moving branch"
+        );
+    }
+
+    #[test]
+    fn provenance_contract_agrees_with_the_reviewed_version() {
+        let provenance = HTMX_CATALOG_PROVENANCE;
+        let expected = format!("{}.{}.", provenance.contract_major, provenance.contract_minor);
+
+        assert!(
+            provenance.htmx_version.starts_with(&expected),
+            "recorded version {} does not describe contract {}.{}",
+            provenance.htmx_version,
+            provenance.contract_major,
+            provenance.contract_minor
+        );
+        assert_eq!(provenance.reviewed_on.len(), "YYYY-MM-DD".len());
+        assert!(
+            provenance.reviewed_on.split('-').all(|part| part.chars().all(|c| c.is_ascii_digit())),
+            "review date {} is not ISO-8601",
+            provenance.reviewed_on
+        );
+    }
+
+    #[test]
+    fn provenance_names_the_dynamic_family_on_both_sides_of_the_transcription() {
+        let provenance = HTMX_CATALOG_PROVENANCE;
+
+        // The upstream spelling must not itself be a catalog entry, and the
+        // catalog spelling must be the one entry carrying the dynamic family.
+        // Getting this backwards would make a drift report reconcile the wrong
+        // pair and hide a real rename.
+        assert!(
+            !HTMX_ATTRIBUTES
+                .iter()
+                .any(|attribute| attribute.name == provenance.upstream_event_handler_name)
+        );
+        assert!(HTMX_ATTRIBUTES.iter().any(|attribute| {
+            attribute.name == provenance.catalog_event_handler_name
+                && attribute.family == HtmxAttributeFamily::EventHandler
+        }));
+    }
+
+    #[test]
+    fn extension_owned_vocabularies_are_absent_from_the_core_catalog() {
+        // htmx 1.x shipped WebSocket and SSE support as core attributes; htmx 2
+        // moved both to extensions, along with their non-`hx-` companions.
+        // Claiming any of them here would advertise support this server does not
+        // have, so their absence is part of the catalog contract.
+        for excluded in [
+            "hx-ws",
+            "hx-sse",
+            "ws-connect",
+            "ws-send",
+            "sse-connect",
+            "sse-swap",
+            "sse-close",
+            "hx-on",
+        ] {
+            assert!(
+                !HTMX_ATTRIBUTES.iter().any(|attribute| attribute.name == excluded),
+                "{excluded} is extension-owned or deprecated and must not be a core candidate"
+            );
+        }
+    }
 
     #[test]
     fn canonical_header_catalog_is_exact_and_directional() {
