@@ -813,6 +813,65 @@ class FanInTest(unittest.TestCase):
             )
         )
 
+    def test_artifact_identity_pass_requires_exact_hashes(self) -> None:
+        self.row("linux-minimum")
+        self.row("linux-current")
+        self.row("windows-current")
+        # Null out the server identity on a row that still claims pass.
+        row_path = self.root / "rows" / "windows-current.json"
+        value = json.loads(row_path.read_text(encoding="utf-8"))
+        value["artifacts"]["perllsp"]["sha256"] = None
+        write_json(row_path, value)
+        result, packet = self.fan_in(require_ready=True)
+        self.assertEqual(result, 1)
+        self.assertIn("windows-current", packet["missing_rows"])
+        self.assertEqual(packet["platforms"]["windows"], "not_proven")
+        self.assertTrue(
+            any(
+                "null" in item and "identities" in item
+                for item in packet["instrument_defects"]
+            )
+        )
+
+    def test_boolean_or_negative_zero_budget_counts_are_malformed(self) -> None:
+        for bad_value in (True, -1):
+            with self.subTest(bad_value=bad_value):
+                rows = self.root / "rows"
+                if rows.exists():
+                    for stale in rows.rglob("*.json"):
+                        stale.unlink()
+                self.row("linux-minimum")
+                self.row("linux-current")
+                self.row("windows-current")
+                row_path = rows / "windows-current.json"
+                value = json.loads(row_path.read_text(encoding="utf-8"))
+                value["zero_budget_counts"]["false_exact"] = bad_value
+                write_json(row_path, value)
+                result, packet = self.fan_in()
+                self.assertEqual(result, 0)
+                self.assertIn("windows-current", packet["missing_rows"])
+                self.assertTrue(
+                    any(
+                        "zero-budget count false_exact is malformed" in item
+                        for item in packet["instrument_defects"]
+                    )
+                )
+
+    def test_invalid_utf8_row_is_malformed_not_fatal(self) -> None:
+        self.row("linux-minimum")
+        self.row("linux-current")
+        corrupt = self.root / "rows" / "windows-current.json"
+        corrupt.write_bytes(b'\xff\xfe{"schema_version":')
+        result, packet = self.fan_in()
+        self.assertEqual(result, 0)
+        self.assertIn("windows-current", packet["missing_rows"])
+        self.assertTrue(
+            any(
+                "cannot read JSON" in item
+                for item in packet["instrument_defects"]
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

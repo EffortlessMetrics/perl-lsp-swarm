@@ -120,7 +120,7 @@ class ObservationError(RuntimeError):
 def read_json(path: pathlib.Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ObservationError(f"cannot read JSON {path}: {error}") from error
 
 
@@ -827,7 +827,9 @@ def validate_row(
         malformed.append(f"row {row_id} zero-budget denominator is malformed")
         return None
     for key, value in counts.items():
-        if value is not None and not isinstance(value, int):
+        # bool is an int subclass; True/False and negative counts are
+        # malformed evidence, not totals.
+        if value is not None and (type(value) is not int or value < 0):
             malformed.append(f"row {row_id} zero-budget count {key} is malformed")
             return None
 
@@ -852,6 +854,28 @@ def validate_row(
             )
             return None
         normalized[name] = str(verdict)
+
+    # A claimed artifact_identity pass must be backed by exact identities:
+    # null digests are admissible only on non-passing evidence.
+    if normalized.get("artifact_identity") == "pass":
+        identity_digests = {
+            key: artifacts[key].get("sha256")
+            for key in ("perllsp", "perl_dap", "product_unit_archive")
+        }
+        vsix = artifacts.get("vsix")
+        identity_digests["vsix"] = (
+            vsix.get("sha256") if isinstance(vsix, dict) else None
+        )
+        identity_digests["mechanism_receipt"] = mechanism.get("sha256")
+        missing = [
+            name for name, digest in identity_digests.items() if digest is None
+        ]
+        if missing:
+            malformed.append(
+                f"row {row_id} claims artifact_identity pass with null "
+                f"identities: {sorted(missing)}"
+            )
+            return None
 
     # Never trust the child's declared status: derive it from validated cells
     # and flag any disagreement as an instrument defect.
