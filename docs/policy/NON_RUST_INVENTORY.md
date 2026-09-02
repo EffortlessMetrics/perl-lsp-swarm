@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12588 |
-| Rust-family files | 3907 |
-| Non-Rust files | 8681 |
-| Allowlisted | 6442 |
+| Total tracked files | 12591 |
+| Rust-family files | 3908 |
+| Non-Rust files | 8683 |
+| Allowlisted | 6444 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 499 |
-| documentation | 2838 |
+| config | 500 |
+| documentation | 2839 |
 | generated | 2 |
 | production | 354 |
 | test | 2069 |
@@ -2362,6 +2362,7 @@
 | `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14554-Changed-014500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2730,6 +2731,7 @@
 | `.ci/policies/agent-context-policy.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/policies/intent-diff-rules.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/policies/label-contradictions.toml` | config | `non-rust-ci-config` | release/ci |
+| `.ci/policies/parser-accuracy-metrics.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/policies/required-checks.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/policies/tokmd-cockpit.toml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/policy-checks-inventory.json` | config | `non-rust-ci-config` | release/ci |
