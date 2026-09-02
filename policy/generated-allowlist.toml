@@ -54,6 +54,18 @@ created = "2026-08-24"
 review_after = "2026-11-22"
 
 [[allow]]
+id = "generated-activation-inventory"
+path = "policy/activation-inventory.v1.json"
+kind = "policy_artifact"
+generated_by = "cargo xtask activation generate --write"
+regenerate = "cargo xtask activation generate --write"
+owner = "architecture/activation"
+reason = "The committed activation inventory (#9204) is deterministically derived from features.toml, .ci/gate-policy.yaml, crates/*/Cargo.toml, fuzz/fuzz_targets/*.rs, and the narrow policy/activation-overrides.toml ledger."
+covered_by = ["cargo xtask check-generated", "cargo xtask activation generate", "cargo xtask activation validate"]
+created = "2026-09-02"
+review_after = "2026-12-01"
+
+[[allow]]
 id = "generated-repository-topology"
 path = "docs/architecture/repository-topology.md"
 kind = "status_page"

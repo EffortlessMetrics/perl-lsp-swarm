@@ -1,0 +1,188 @@
+//! Schema and structural validation for the committed activation inventory
+//! artifact and its hand-maintained override ledger (#9204).
+
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
+
+use serde_json::Value;
+
+use super::derive;
+use super::model::{
+    ActivationClass, ActivationError, ActivationInventory, ActivationRow, INVENTORY_PATH,
+    SCHEMA_PATH,
+};
+use super::overrides;
+
+/// Load, schema-validate, and structurally check the committed inventory,
+/// then structurally check the override ledger against a fresh derivation.
+pub fn validate(root: &Path) -> Result<ActivationInventory, ActivationError> {
+    let bytes = fs::read(root.join(INVENTORY_PATH))
+        .map_err(|error| ActivationError::new(format!("{INVENTORY_PATH}: cannot read: {error}")))?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        ActivationError::new(format!("{INVENTORY_PATH}: invalid JSON: {error}"))
+    })?;
+    let inventory = validate_inventory_value(root, &value)?;
+
+    let derived = derive::derived_class_index(root)?;
+    let overrides_file = overrides::load(root)?;
+    let violations = overrides::validate(root, &overrides_file, &derived);
+    ActivationError::from_violations(violations)?;
+
+    Ok(inventory)
+}
+
+/// Validate an in-memory JSON document against schema plus row-level
+/// consistency rules. Does not validate the override ledger; use
+/// [`validate`] for the full committed-state check.
+pub fn validate_inventory_value(
+    root: &Path,
+    value: &Value,
+) -> Result<ActivationInventory, ActivationError> {
+    let schema_text = fs::read_to_string(root.join(SCHEMA_PATH))
+        .map_err(|error| ActivationError::new(format!("{SCHEMA_PATH}: cannot read: {error}")))?;
+    let schema: Value = serde_json::from_str(&schema_text)
+        .map_err(|error| ActivationError::new(format!("{SCHEMA_PATH}: invalid JSON: {error}")))?;
+
+    let mut violations = Vec::new();
+    violations.extend(schema_violations(&schema, value)?);
+    check_raw_rows(value, &mut violations);
+
+    // Always attempt typed decode so structural checks below can run even
+    // when the row above has schema or raw-check defects (e.g. an empty
+    // string, or unsorted rows) that decode itself tolerates. Only a
+    // genuine decode failure (e.g. an enum string with no matching variant)
+    // short-circuits, and even then every violation collected so far is
+    // still reported together with the decode failure.
+    let inventory: ActivationInventory = match serde_json::from_value(value.clone()) {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            violations.push(format!("{INVENTORY_PATH}: typed decode failed: {error}"));
+            return Err(ActivationError::many(&violations));
+        }
+    };
+
+    validate_rows(root, &inventory, &mut violations);
+    ActivationError::from_violations(violations)?;
+
+    Ok(inventory)
+}
+
+fn schema_violations(schema: &Value, value: &Value) -> Result<Vec<String>, ActivationError> {
+    let validator = jsonschema::validator_for(schema)
+        .map_err(|error| ActivationError::new(format!("{SCHEMA_PATH}: invalid schema: {error}")))?;
+    Ok(validator.iter_errors(value).map(|error| format!("schema: {error}")).collect())
+}
+
+/// Checks that must run on the raw JSON before typed decode, because an
+/// unknown `class` string would otherwise make `serde` decode fail hard
+/// before we can report the specific rule violated.
+fn check_raw_rows(value: &Value, violations: &mut Vec<String>) {
+    let Some(rows) = value.get("rows").and_then(Value::as_array) else {
+        violations.push("rows: missing or not an array".to_string());
+        return;
+    };
+    let mut seen = BTreeSet::new();
+    let mut previous: Option<&str> = None;
+    for row in rows {
+        let surface_id = row.get("surface_id").and_then(Value::as_str).unwrap_or("<missing>");
+        if !seen.insert(surface_id) {
+            violations.push(format!("duplicate surface id `{surface_id}`"));
+        }
+        let class = row.get("class").and_then(Value::as_str).unwrap_or("<missing>");
+        if ActivationClass::from_str(class).is_none() {
+            violations.push(format!("row `{surface_id}`: unknown activation class `{class}`"));
+        }
+        if let Some(previous_id) = previous
+            && previous_id > surface_id
+        {
+            violations.push(format!(
+                "rows are not sorted by surface id (`{previous_id}` before `{surface_id}`)"
+            ));
+        }
+        previous = Some(surface_id);
+    }
+}
+
+fn validate_rows(root: &Path, inventory: &ActivationInventory, violations: &mut Vec<String>) {
+    for row in &inventory.rows {
+        check_authority_path(
+            root,
+            &row.surface_id,
+            "class_authority.authority",
+            &row.class_authority.authority,
+            violations,
+        );
+        check_authority_path(
+            root,
+            &row.surface_id,
+            "semantic_authority",
+            &row.semantic_authority,
+            violations,
+        );
+        check_authority_path(
+            root,
+            &row.surface_id,
+            "publication.authority",
+            &row.publication.authority,
+            violations,
+        );
+        if let Some(authority) = &row.registration.authority {
+            check_authority_path(
+                root,
+                &row.surface_id,
+                "registration.authority",
+                authority,
+                violations,
+            );
+        }
+        if let Some(authority) = &row.maturity_authority {
+            check_authority_path(
+                root,
+                &row.surface_id,
+                "maturity_authority",
+                authority,
+                violations,
+            );
+        }
+        validate_class_rules(row, violations);
+    }
+}
+
+fn validate_class_rules(row: &ActivationRow, violations: &mut Vec<String>) {
+    if row.class == ActivationClass::Product {
+        if row.semantic_authority.trim().is_empty() {
+            violations.push(format!(
+                "row `{}`: product row requires a semantic authority",
+                row.surface_id
+            ));
+        }
+        if row.consumers.is_empty() {
+            violations.push(format!(
+                "row `{}`: product row requires at least one consumer",
+                row.surface_id
+            ));
+        }
+    }
+    if row.class == ActivationClass::CompatibilityShim && row.retirement.is_none() {
+        violations.push(format!(
+            "row `{}`: compatibility shim requires a retirement owner and boundary",
+            row.surface_id
+        ));
+    }
+}
+
+fn check_authority_path(
+    root: &Path,
+    surface_id: &str,
+    label: &str,
+    value: &str,
+    violations: &mut Vec<String>,
+) {
+    let path_part = value.split('#').next().unwrap_or(value);
+    if path_part.is_empty() || !root.join(path_part).exists() {
+        violations.push(format!(
+            "row `{surface_id}`: missing authority path `{path_part}` referenced by {label} (`{value}`)"
+        ));
+    }
+}
