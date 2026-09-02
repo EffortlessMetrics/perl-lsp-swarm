@@ -198,16 +198,26 @@ fn walk(
     Ok(())
 }
 
-/// A surface is excluded when the declared pattern matches any single path
-/// component (`*` wildcards within one component) or, for patterns containing
-/// `/`, the relative path prefix.
-fn surface_excluded(component: &str, rel: &str, excluded: &[&str]) -> bool {
+/// A surface is excluded when the declared pattern matches a repository-root
+/// subtree (`/**`) or a direct child of the repository root (component
+/// patterns such as `.wt-*`).  Component patterns are deliberately not
+/// applied at arbitrary depth: a tracked directory named `node_modules` or
+/// `.wt-*` below `crates/` is repository content, not a claim worktree/cache.
+fn surface_excluded(_component: &str, rel: &str, excluded: &[&str]) -> bool {
     excluded.iter().any(|pattern| {
         if pattern.contains('/') {
             let prefix = pattern.trim_end_matches('*').trim_end_matches('/');
             rel == prefix || rel.starts_with(&format!("{prefix}/"))
         } else {
-            glob_component(pattern, component)
+            // Bare component exclusions are root-relative. Match the first
+            // relative component so descendants of an excluded root are
+            // skipped, while a same-named directory below `crates/` remains
+            // visible repository content.
+            let root_component = match rel.split('/').next() {
+                Some(component) => component,
+                None => rel,
+            };
+            glob_component(pattern, root_component)
         }
     })
 }
@@ -655,11 +665,12 @@ mod tests {
     }
 
     #[test]
-    fn surface_exclusion_matches_components_and_prefixes() {
+    fn surface_exclusion_matches_root_components_and_prefixes_only() {
         let excluded = ["target/**", ".wt-*", "generated/**"];
         assert!(surface_excluded("target", "target", &excluded));
         assert!(!surface_excluded("target", "crates/x/target", &excluded));
         assert!(surface_excluded(".wt-1234", ".wt-1234/sub/file", &excluded));
+        assert!(!surface_excluded(".wt-1234", "crates/x/.wt-1234/sub/file", &excluded));
         assert!(surface_excluded("generated", "generated/out.json", &excluded));
         assert!(!surface_excluded("src", "src/lib.rs", &excluded));
         assert!(!surface_excluded("target_holder", "target_holder/f", &excluded));

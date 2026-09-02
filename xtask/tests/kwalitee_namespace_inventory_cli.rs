@@ -325,6 +325,23 @@ fn generated_and_ignored_surfaces_cannot_hide_callers() {
         "failure must name the nested target fixture: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    // Bare cache/worktree exclusions are repository-root scoped. A tracked
+    // directory with the same name below a package remains content.
+    let dir = classified_tree().expect("fixture tree");
+    write(
+        &dir,
+        "crates/example/tests/fixtures/nested/.wt-cache/hidden.rs",
+        "const COMMAND: &str = \"perl-kwalitee report\";\n",
+    )
+    .expect("write nested worktree-like fixture");
+    let output = inventory(dir.path()).arg("--check").output().expect("run inventory");
+    assert!(!output.status.success(), "nested worktree-like content must remain visible");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("nested/.wt-cache/hidden.rs"),
+        "failure must name nested worktree-like content: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
