@@ -688,8 +688,12 @@ mod tests {
 
         let name_start = skip_declaration_trivia(after_mod, 0)?;
         let rest = &after_mod[name_start..];
-        let name_end = rest
-            .find(|character: char| character.is_whitespace() || matches!(character, '{' | ';'));
+        let name_end = rest.char_indices().find_map(|(offset, character)| {
+            (character.is_whitespace()
+                || matches!(character, '{' | ';')
+                || rest[offset..].starts_with("/*"))
+            .then_some(offset)
+        });
         let Some(name_end) = name_end else { return None };
         if name_end == 0 {
             return None;
@@ -1413,6 +1417,8 @@ pub(in /* fake ) delimiter */ crate::protocol) mod scoped_comment {
 #[cfg(test)]
 pub(crate) mod commented /* comment containing { and } */ ;
 #[cfg(test)]
+mod adjacent/* comment containing a fake send: client.send_request("test-only/adjacent-comment"); */{ fn send() { client.send_request("test-only/adjacent-body"); } }
+#[cfg(test)]
 pub(crate) mod same_line; fn after_external() { send("production/after_external"); }
 #[cfg(test)]
 mod compact { fn send() { client.send_request("test-only/compact"); } } fn after_compact() {
@@ -1465,6 +1471,8 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         assert!(!stripped.contains("test-only/name-comment"));
         assert!(!stripped.contains("test-only/block-comment"));
         assert!(!stripped.contains("test-only/scoped-comment"));
+        assert!(!stripped.contains("test-only/adjacent-comment"));
+        assert!(!stripped.contains("test-only/adjacent-body"));
         assert!(!stripped.contains("test-only/compact"));
         assert!(!stripped.contains("pub(crate) mod commented"));
         assert!(!stripped.contains("pub(crate) mod lexical_forms"));
