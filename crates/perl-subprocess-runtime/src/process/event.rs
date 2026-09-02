@@ -1,6 +1,7 @@
 //! The ordered event stream a run emits, and the ledger that orders it.
 
 use super::identity::RunId;
+use super::plan::CaptureBound;
 use super::result::{CancellationReason, StreamChannel, TerminalDisposition};
 
 /// A run-scoped monotonic sequence number.
@@ -37,6 +38,12 @@ pub struct StreamChunkEvidence {
 pub struct LimitEvidence {
     /// The channel whose budget was reached.
     pub channel: StreamChannel,
+    /// Which of the channel's two bounds was reached.
+    ///
+    /// Not derivable from `limit_bytes`: `CaptureBudget::bounded` sets both
+    /// numbers to the same value, so the count alone leaves a consumer unable
+    /// to tell whether reading stopped or only retention did.
+    pub bound: CaptureBound,
     /// The limit that was reached.
     pub limit_bytes: u64,
     /// Whether the run continues after the limit.

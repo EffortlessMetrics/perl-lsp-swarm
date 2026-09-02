@@ -407,7 +407,9 @@ fn validate_invocation(plan: &ProcessPlan) -> Result<(), PlanRejection> {
         ExecutableResolution::Unresolved => String::new(),
     };
     for candidate in [logical_name, resolved_file_name.as_str()] {
-        if is_shell_invocation(candidate, plan.argv()) {
+        if is_shell_invocation(candidate, plan.argv())
+            || hands_a_shell_a_script_on_stdin(candidate, plan.stdin())
+        {
             return Err(PlanRejection::ShellInvocationRejected { shell: candidate.to_string() });
         }
     }
@@ -481,6 +483,33 @@ fn is_inline_command_argument(arg: &str) -> bool {
             letters.contains(['c', 'C'])
         }
         _ => false,
+    }
+}
+
+/// Whether the plan feeds a shell a script over standard input.
+///
+/// A shell reads commands from stdin whenever it is given no script operand —
+/// `sh -s` names it explicitly, but a bare `sh` does the same thing. So
+/// `sh` with [`StdinPolicy::Bytes`] is an inline command in every sense that
+/// matters, spelled through a different channel, and
+/// [`StdinPolicy::Streamed`] is the interactive form of the same thing: the
+/// caller drives an open command channel for the run's lifetime.
+///
+/// This closes a gap the argv scan documented and left open. Saying that
+/// stdin's shape "is `StdinPolicy`'s business, not argv's" identified the
+/// right owner and then left nobody enforcing it, which meant the gate refused
+/// `sh -c 'cmd'` while admitting the same command as bytes on stdin.
+///
+/// [`StdinPolicy::Closed`] is the coherent pairing: a shell with no script
+/// operand, no inline flag, and no input has nothing to execute.
+fn hands_a_shell_a_script_on_stdin(logical_name: &str, stdin: &StdinPolicy) -> bool {
+    let base = program_base(logical_name);
+    if !SHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(base)) {
+        return false;
+    }
+    match stdin {
+        StdinPolicy::Bytes(_) | StdinPolicy::Streamed => true,
+        StdinPolicy::Closed => false,
     }
 }
 

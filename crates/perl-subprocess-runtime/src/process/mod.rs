@@ -61,9 +61,9 @@ pub use identity::{
 };
 pub use legacy::{LEGACY_CONTAINMENT, LegacyContainment, LegacyUnsupportedCapability};
 pub use plan::{
-    CancellationPolicy, CaptureBudget, ClaimBoundary, DeadlinePolicy, MAX_CAPTURE_BUDGET_BYTES,
-    OutputLimitAction, ProcessPlan, ProcessPlanBuilder, PublicProjection, RetentionPolicy,
-    StdinPolicy, TerminationPolicy,
+    CancellationPolicy, CaptureBound, CaptureBudget, ClaimBoundary, DeadlinePolicy,
+    MAX_CAPTURE_BUDGET_BYTES, OutputLimitAction, ProcessPlan, ProcessPlanBuilder, PublicProjection,
+    RetentionPolicy, StdinPolicy, TerminationPolicy,
 };
 pub use port::{
     CancellationAcknowledgement, HandleDropDisposition, ProcessHandle, ProcessSupervisor,

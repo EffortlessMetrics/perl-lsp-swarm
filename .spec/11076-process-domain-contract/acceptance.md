@@ -865,3 +865,36 @@ honesty problem, not new open-ended territory. Empty evidence is a positive
 statement that nothing was seen; a fallback that substitutes it for malformed
 input is asserting something it did not observe. That is fixed here rather than
 deferred.
+
+### Sixteenth review round (`400df58`) — the gate's other channel
+
+| Severity | Finding | Disposition | Mutation replay |
+|---|---|---|---|
+| 🟥 security | a shell with `StdinPolicy::Bytes` passed validation with no inline flag. A shell given no script operand reads its commands from stdin, so the gate refused `sh -c 'cmd'` and admitted the same command as bytes | **Fixed** — a shell paired with `Bytes` or `Streamed` stdin is refused as the shell invocation it is | KILLED ×2 |
+| correctness | `CancelledRunning` and `OutputLimitExceeded` were admissible beside `NotRequired` cleanup, which means "nothing started, so nothing needed cleaning up" | **Fixed** — the rule keys on "a child must have started", not on "the child gave its own account" | KILLED |
+| correctness | `LimitEvidence` could not say which of the two bounds it reached, and `on_limit` was documented for the observation bound alone while the result rule accepted a retention-only truncation | **Fixed** — `CaptureBound` names the bound; `on_limit` governs whichever is reached | KILLED ×2 |
+| clarity | the reconciliation baseline read ambiguously between `e175dc3` and `384f8052` | **Already fixed** in `7fbb2d0`; the comment predates it | — |
+
+**The stdin finding is the packet's own documented gap, unclosed.** The argv
+scan's doc comment named it — "one inline form this cannot see is `sh -s`…
+that is stdin's shape, not argv's, and it is `StdinPolicy` that describes what
+a run feeds a child" — which identified the right owner and then left nobody
+enforcing it. Writing down where a rule belongs is not the same as putting it
+there, and a security gate is the worst place to confuse the two. It is also
+worse than `-s` suggests: a *bare* `sh` with stdin bytes runs them, no flag
+required.
+
+**Two of these are the same shape as the round before**, which is now the
+packet's most-repeated defect: a rule stated for one member of a set and not
+its neighbours. `establishes_child_settlement` answers "did the child give its
+own account", and it was standing in for "must a child have started" — true of
+an exit and a signal, and equally true of a cancelled *running* child and an
+output-limit termination. Both predicates now exist, both are exhaustive
+matches, and the doc on each says why the other is not a substitute.
+
+**The bound finding closes a gap this PR opened one round earlier.** Widening
+the `OutputLimitExceeded` rule to `is_complete()` made a retention-terminated
+run representable in the *result* without any policy that could produce one:
+`on_limit` was documented as governing the observation bound only. Fixing the
+result shape and leaving the policy behind is half a rule, so the policy now
+covers both bounds and the event names which one fired.

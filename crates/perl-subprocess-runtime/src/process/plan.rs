@@ -65,7 +65,23 @@ impl StdinPolicy {
     }
 }
 
-/// What happens when a stream reaches its observation limit.
+/// Which of a channel's two capture bounds a limit refers to.
+///
+/// [`CaptureBudget`] carries two independent numbers, and a limit event that
+/// named only a byte count could not say which of them it had reached — the
+/// two are equal under [`CaptureBudget::bounded`], so the count does not
+/// distinguish them either. A consumer that cannot tell an observation bound
+/// from a retention bound cannot tell "there may be more output" from "there
+/// was more output and it was not kept".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CaptureBound {
+    /// The supervisor stopped reading. Output beyond it was never seen.
+    Observation,
+    /// The supervisor stopped keeping what it read. It kept reading.
+    Retention,
+}
+
+/// What happens when a stream reaches a capture bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OutputLimitAction {
     /// Keep the run alive, stop retaining, and record the truncation.
@@ -93,7 +109,26 @@ pub struct CaptureBudget {
     pub observe_limit_bytes: u64,
     /// The most bytes the supervisor will retain for the result.
     pub retain_limit_bytes: u64,
-    /// What to do once the observation limit is reached.
+    /// What to do once *either* bound is reached.
+    ///
+    /// One action for both bounds, applied to whichever is reached first. A
+    /// caller setting [`OutputLimitAction::TerminateRun`] is saying "stop if
+    /// this channel reaches a budget", and a budget that retains less than it
+    /// observes is a budget the run can reach by retention alone.
+    ///
+    /// Documenting this as governing only the observation bound left the
+    /// retention bound with no policy at all, while
+    /// [`ProcessResult::new`](super::ProcessResult::new) accepted a
+    /// retention-only truncation as evidence for an output-limit outcome — a
+    /// result shape no stated policy could produce. Naming the bound in
+    /// [`LimitEvidence`](super::LimitEvidence) and giving both bounds the same
+    /// action closes that from both ends.
+    ///
+    /// The two actions differ in what they stop.
+    /// [`OutputLimitAction::TruncateAndContinue`] at the retention bound stops
+    /// retention and keeps reading, so the observed count stays truthful; at
+    /// the observation bound it stops reading, and output past it was never
+    /// seen by anyone.
     pub on_limit: OutputLimitAction,
 }
 
