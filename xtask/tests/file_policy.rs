@@ -23,8 +23,42 @@ fn project_root() -> Result<PathBuf> {
 
 static INVENTORY_OUTPUT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-fn inventory_output_lock() -> Result<MutexGuard<'static, ()>> {
-    INVENTORY_OUTPUT_LOCK.lock().map_err(|_| eyre!("inventory output lock poisoned"))
+fn lock_or_recover<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
+    match lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn inventory_output_lock() -> MutexGuard<'static, ()> {
+    lock_or_recover(&INVENTORY_OUTPUT_LOCK)
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::lock_or_recover;
+    use std::sync::Mutex;
+
+    #[test]
+    fn poisoned_inventory_lock_is_recovered() {
+        let lock = Mutex::new(());
+        let join_result = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _guard = match lock.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    panic!("fixture failure must poison the lock for this regression");
+                })
+                .join()
+        });
+
+        assert!(join_result.is_err(), "the fixture must terminate by unwinding");
+        assert!(lock.is_poisoned());
+        let _guard = lock_or_recover(&lock);
+        assert!(lock.is_poisoned(), "recovery preserves the poison marker for later diagnostics");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +88,7 @@ fn non_rust_inventory_inventory_help_describes_fail_closed_snapshot_check() -> R
 /// End-to-end test: runs on the actual repo and exits 0.
 #[test]
 fn non_rust_inventory_command_exits_zero() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
         .current_dir(project_root()?)
@@ -66,7 +100,7 @@ fn non_rust_inventory_command_exits_zero() -> Result<()> {
 /// Read-only end-to-end check against the tracked-file inventory scan.
 #[test]
 fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory", "--check"])
         .current_dir(project_root()?)
@@ -81,7 +115,7 @@ fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
 /// output goes to `target/policy/` only.
 #[test]
 fn non_rust_inventory_creates_output_files() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
         .current_dir(project_root()?)
@@ -106,7 +140,7 @@ fn non_rust_inventory_creates_output_files() -> Result<()> {
 /// Verify that the JSON output is valid and contains expected fields.
 #[test]
 fn non_rust_inventory_json_is_valid() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
         .current_dir(project_root()?)
@@ -135,7 +169,7 @@ fn non_rust_inventory_json_is_valid() -> Result<()> {
 /// Verify that the markdown output starts with the expected header.
 #[test]
 fn non_rust_inventory_markdown_has_header() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     Command::cargo_bin("xtask")?
         .args(["non-rust", "inventory"])
         .current_dir(project_root()?)
@@ -171,7 +205,7 @@ fn non_rust_inventory_markdown_has_header() -> Result<()> {
 /// the "left" (committed) with the "right" (generated) in the panic output.
 #[test]
 fn non_rust_inventory_docs_are_current() -> Result<()> {
-    let _guard = inventory_output_lock()?;
+    let _guard = inventory_output_lock();
     let root = project_root()?;
 
     // Generate fresh output to target/ — no tracked file is touched.
