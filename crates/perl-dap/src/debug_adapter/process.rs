@@ -1122,6 +1122,7 @@ impl DebugAdapter {
                                         if exception_match || warning_match {
                                             stop_reason = "exception".to_string();
                                             s.state = DebugState::Stopped;
+                                            s.pending_auto_continued_stop = false;
                                         } else if breakpoint_outcome.matched {
                                             logpoint_messages = breakpoint_outcome.log_messages;
 
@@ -1205,6 +1206,7 @@ impl DebugAdapter {
                                             if breakpoint_outcome.should_stop {
                                                 stop_reason = "breakpoint".to_string();
                                                 s.state = DebugState::Stopped;
+                                                s.pending_auto_continued_stop = false;
                                             } else {
                                                 if let Some(stdin) = s.process.stdin.as_mut() {
                                                     let _ = stdin.write_all(b"c\n");
