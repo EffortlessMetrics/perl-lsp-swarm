@@ -54,8 +54,14 @@ def _validate_binary(binary: Any) -> None:
         "binary.sha256 must be a lowercase SHA-256 digest",
     )
     command = binary.get("command")
-    require(isinstance(command, list) and len(command) == 2, "binary.command must have two entries")
+    require(
+        isinstance(command, list) and len(command) in {2, 4},
+        "binary.command must have two entries, or four with --trusted-root",
+    )
     require(command[1] == "--stdio", "binary.command must use --stdio")
+    if len(command) == 4:
+        require(command[2] == "--trusted-root", "binary.command must use --trusted-root")
+        require(str(command[3]).strip() != "", "trusted-root must not be empty")
     require(
         Path(str(command[0])).name in {"perl-dap", "perl-dap.exe"},
         "binary.command must launch perl-dap",

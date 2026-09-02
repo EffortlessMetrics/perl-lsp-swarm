@@ -89,6 +89,24 @@ class SublimeDapReceiptContractTests(unittest.TestCase):
         validator.validate(runtime_receipt())
         validator.validate(host_receipt())
 
+    def test_validator_accepts_host_owned_trusted_root_command(self) -> None:
+        validator = load_validator()
+        payload = host_receipt()
+        payload["binary"]["command"] = [
+            "/tmp/perl-dap",
+            "--stdio",
+            "--trusted-root",
+            "/tmp/workspace",
+        ]
+        validator.validate(payload)
+
+    def test_validator_rejects_malformed_trusted_root_command(self) -> None:
+        validator = load_validator()
+        payload = host_receipt()
+        payload["binary"]["command"] = ["/tmp/perl-dap", "--stdio", "--trusted-root"]
+        with self.assertRaisesRegex(ValueError, "two entries, or four"):
+            validator.validate(payload)
+
     def test_validator_rejects_stage_identity_and_false_green_drift(self) -> None:
         validator = load_validator()
 
