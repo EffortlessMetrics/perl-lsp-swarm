@@ -6,13 +6,33 @@
 //! `-setup` hash, and pin a dynamic export boundary — never a partial export
 //! list — for every configuration that cannot be enumerated statically.
 
+mod cpan_test_helpers;
+
+use cpan_test_helpers::assert_clean_parse;
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     ExportDeclaration, ExportDeclarationKind, FrameworkAdapterRegistry, HirFile, HirKind,
     StashConfidence, StashDynamicBoundaryKind, StashProvenance, lower_ast,
 };
 
+/// Lower a fixture whose Perl is well formed.
+///
+/// Every contract here reads facts out of the lowered HIR, and lowering runs on
+/// whatever tree the parser produced — including one it repaired. A fixture
+/// that silently began parsing through recovery would let a contract keep
+/// passing against a tree the parser invented rather than the one the source
+/// describes, which is the same silent weakening these contracts exist to
+/// catch in the lowering. Asserting the parse is clean keeps that a test
+/// failure.
 fn lower(source: &str) -> HirFile {
+    assert_clean_parse(source);
+    lower_recovered(source)
+}
+
+/// Lower a fixture that is deliberately malformed, without the clean-parse
+/// assertion `lower` makes. Only a contract whose subject *is* the recovered
+/// tree may use this.
+fn lower_recovered(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
     lower_ast(&output.ast)
@@ -806,7 +826,12 @@ fn a_setup_whose_brackets_do_not_close_publishes_no_exports() {
     // `[ ... }` balance and hand the reader a body spanning a delimiter that
     // was never closed. An unreadable setup is a boundary, never a partial
     // export list.
-    let file = lower(
+    //
+    // The source is deliberately malformed, so it lowers without `lower`'s
+    // clean-parse assertion. Today the parser reports no error node for it;
+    // pinning that here would tie this contract to a parser behaviour it is
+    // not about, and would break it the day that gap is repaired.
+    let file = lower_recovered(
         "package My::Utils;\n\
          use Sub::Exporter -setup => { exports => [qw(foo bar) };\n",
     );
