@@ -1,4 +1,4 @@
-# contract-version: 2
+# contract-version: 6
 name: Non-Rust policy
 
 on:
@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 10
     env:
       BASE_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
-      SUBJECT_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.sha }}
+      SUBJECT_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.event_name == 'push' && github.sha || '' }}
       EVALUATOR_SHA: ${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
       PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}
@@ -45,7 +45,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "$SUBJECT_SHA"
+          if [ -n "$PR_HEAD_SHA" ]; then
+            git fetch --no-tags origin "+refs/pull/$PR_NUMBER/head:refs/remotes/origin/non-rust-policy-pr-head"
+            test "$(git rev-parse refs/remotes/origin/non-rust-policy-pr-head^{commit})" = "$PR_HEAD_SHA"
+            merge_tree="$(git merge-tree --write-tree "$BASE_SHA" "$PR_HEAD_SHA")"
+            test "$(git rev-parse "$merge_tree^{tree}")" = "$merge_tree"
+            SUBJECT_SHA="$(
+              GIT_AUTHOR_NAME=non-rust-policy \
+              GIT_AUTHOR_EMAIL=non-rust-policy@localhost \
+              GIT_AUTHOR_DATE=2000-01-01T00:00:00Z \
+              GIT_COMMITTER_NAME=non-rust-policy \
+              GIT_COMMITTER_EMAIL=non-rust-policy@localhost \
+              GIT_COMMITTER_DATE=2000-01-01T00:00:00Z \
+              git commit-tree "$merge_tree" -p "$BASE_SHA" -p "$PR_HEAD_SHA" \
+                -m "non-rust policy exact subject"
+            )"
+          else
+            git fetch --no-tags origin "$SUBJECT_SHA"
+          fi
           git update-ref refs/heads/non-rust-policy-subject "$SUBJECT_SHA"
           test "$(git rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA"
           test "$(git rev-parse "$SUBJECT_SHA^{commit}")" = "$SUBJECT_SHA"
@@ -53,7 +70,11 @@ jobs:
           if [ -n "$PR_HEAD_SHA" ]; then
             git merge-base --is-ancestor "$PR_HEAD_SHA" "$SUBJECT_SHA"
             test "$(git rev-parse "$SUBJECT_SHA^1")" = "$BASE_SHA"
+            test "$(git rev-parse "$SUBJECT_SHA^2")" = "$PR_HEAD_SHA"
+            test "$(git rev-parse "$SUBJECT_SHA^{tree}")" = "$merge_tree"
           fi
+          echo "subject_sha=$SUBJECT_SHA" >> "$GITHUB_OUTPUT"
+          echo "SUBJECT_SHA=$SUBJECT_SHA" >> "$GITHUB_ENV"
 
       - name: Write identity failure receipt
         if: always() && steps.bind.outcome == 'failure'
@@ -97,6 +118,7 @@ jobs:
           PY
 
       - name: Verify trusted workflow contract
+        id: verify-trusted-workflow-contract
         shell: bash
         run: |
           set -euo pipefail
@@ -107,7 +129,78 @@ jobs:
           grep -q 'actions/upload-artifact@' "$workflow"
           grep -q 'if: always()' "$workflow"
           grep -q 'persist-credentials: false' "$workflow"
-          ! grep -Eq 'cargo run.*(pull_request|head\.sha|github\.event\.pull_request\.head)' "$workflow"
+          # Inspect executable run bodies only.  Event metadata is expected in
+          # trusted environment declarations, while direct interpolation in a
+          # command would allow candidate-controlled code or refs to reach the
+          # evaluator.  Keeping the pattern in a variable also prevents this
+          # guard from matching its own run text.
+          python3 - "$workflow" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          run_bodies = []
+          index = 0
+          while index < len(lines):
+              line = lines[index]
+              match = re.match(r"^(?P<indent>\s*)run:\s?(?P<value>.*)$", line)
+              if not match:
+                  index += 1
+                  continue
+              key_indent = len(match.group("indent"))
+              step_name = ""
+              for prior in reversed(lines[:index]):
+                  prior_indent = len(prior) - len(prior.lstrip(" "))
+                  if prior_indent < key_indent and prior.lstrip().startswith("- name:"):
+                      step_name = prior.split(":", 1)[1].strip()
+                      break
+              value = match.group("value").strip()
+              if value.startswith(("|", ">")):
+                  header = value[1:]
+                  explicit_indent = next(
+                      (int(char) for char in header if char.isdigit()), None
+                  )
+                  content_indent = None
+                  if explicit_indent is not None:
+                      content_indent = key_indent + explicit_indent
+                  body_lines = []
+                  cursor = index + 1
+                  while cursor < len(lines):
+                      candidate = lines[cursor]
+                      candidate_indent = len(candidate) - len(candidate.lstrip(" "))
+                      if candidate.strip() and candidate_indent <= key_indent:
+                          break
+                      if content_indent is None and candidate.strip() and candidate_indent > key_indent:
+                          content_indent = candidate_indent
+                      body_lines.append(candidate)
+                      cursor += 1
+                  content_indent = content_indent or (key_indent + 1)
+                  normalized = [
+                      item[content_indent:] if len(item) >= content_indent else ""
+                      for item in body_lines
+                  ]
+                  if value.startswith(">"):
+                      body = " ".join(item.strip() for item in normalized)
+                  else:
+                      body = "\n".join(normalized)
+                  run_bodies.append((step_name, body))
+                  index = cursor
+                  continue
+              run_bodies.append((step_name, value))
+              index += 1
+
+          forbidden = re.compile(
+              r"(?:\$\{\{\s*)?github\.event\.pull_request\.(?:head(?:\.sha)?|merge_commit_sha)"
+          )
+          offenders = [
+              (name, body)
+              for name, body in run_bodies
+              if name != "Verify trusted workflow contract" and forbidden.search(body)
+          ]
+          if offenders:
+              raise SystemExit("trusted run body interpolates pull-request event data")
+          PY
       - name: Run trusted exact-tree evaluator
         if: steps.bind.outcome == 'success'
         run: cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json
@@ -116,7 +209,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: non-rust-policy-${{ env.SUBJECT_SHA }}
+          name: non-rust-policy-${{ steps.bind.outputs.subject_sha || env.SUBJECT_SHA }}
           path: target/policy/
           if-no-files-found: warn
           retention-days: 14
