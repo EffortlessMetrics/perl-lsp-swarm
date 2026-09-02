@@ -14,8 +14,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::create::{
-    MAX_PROOF_BYTES, ProofSubject, SELF_CHECK_PENDING, SELF_CHECK_VALIDATED, build_inventory,
-    collect_gitlinks, compute_identity_digest, declared_proof_subject, read_commit_identity,
+    MAX_PROOF_BYTES, MAX_TOTAL_PROOF_BYTES, ProofSubject, SELF_CHECK_PENDING, SELF_CHECK_VALIDATED,
+    build_inventory, collect_gitlinks, compute_identity_digest, declared_proof_subject,
+    read_commit_identity,
 };
 use super::git::{is_full_object_id, run_git, run_git_with_stdin};
 use super::hygiene::{
@@ -945,6 +946,30 @@ fn verify_proofs(envelope: &Path, manifest: &Manifest) -> Result<(), (HandoffOut
     let mismatch = |detail: String| (HandoffOutcome::ProofSubjectMismatch, detail);
     let corrupt = |detail: String| (HandoffOutcome::DigestMismatch, detail);
     let malformed = |detail: String| (HandoffOutcome::InvalidManifest, detail);
+    // The producer bounds the artifacts in aggregate as well as individually,
+    // so the validator has to apply the same arithmetic. Checking only the
+    // per-artifact ceiling accepted a declared set of `MAX_DECLARED_PROOFS`
+    // artifacts at `MAX_PROOF_BYTES` each — orders of magnitude above the
+    // aggregate ceiling — which is an envelope `create` could not have
+    // produced. Peak memory here is one artifact at a time, so this is a
+    // contract-consistency rule rather than a memory bound: the two sides must
+    // agree on what a well-formed envelope is.
+    //
+    // It runs as a pre-pass because it is a property of the manifest alone. A
+    // declared set that cannot be well-formed is refused without opening a
+    // single artifact, and before any per-artifact verdict can describe the
+    // envelope as merely corrupt.
+    let declared_total = manifest
+        .proof_references
+        .iter()
+        .fold(0_u64, |total, proof| total.saturating_add(proof.bytes));
+    if declared_total > MAX_TOTAL_PROOF_BYTES {
+        return Err(malformed(
+            "the declared proof artifacts total more than the format's aggregate ceiling"
+                .to_string(),
+        ));
+    }
+
     for proof in &manifest.proof_references {
         if proof.candidate_subject != manifest.candidate.commit {
             return Err(mismatch(format!(

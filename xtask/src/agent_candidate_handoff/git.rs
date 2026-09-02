@@ -12,7 +12,7 @@
 //! with the child killed and reaped when either is breached.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -149,6 +149,36 @@ pub fn run_git_with_stdin(
     run_bounded(repository, arguments, Some(stdin_bytes))
 }
 
+/// Resolve a caller-supplied repository path to the form Git will match.
+///
+/// `safe.directory` is compared literally against the discovered repository
+/// path, so a relative path never matches and the ownership exception silently
+/// does nothing. Symlinks have to be resolved for the same reason: Git reports
+/// the resolved path, and an unresolved alias would not equal it.
+///
+/// A path that cannot be resolved — it does not exist, or is not readable — is
+/// handed back unchanged so the Git invocation itself produces the diagnostic,
+/// rather than this helper inventing one for a repository the caller may have
+/// mistyped.
+fn resolve_repository_path(repository: &Path) -> PathBuf {
+    let Ok(resolved) = std::fs::canonicalize(repository) else {
+        return repository.to_path_buf();
+    };
+    // `canonicalize` returns a verbatim (`\\?\C:\...`) path on Windows, and Git
+    // matches the ordinary spelling, so the prefix has to come back off.
+    #[cfg(windows)]
+    {
+        let text = resolved.to_string_lossy();
+        if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{stripped}"));
+        }
+        if let Some(stripped) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    resolved
+}
+
 /// Spawn Git and collect its streams under a deadline and an output cap.
 ///
 /// Both streams are drained concurrently on their own threads. Draining
@@ -169,10 +199,19 @@ fn run_bounded(
     // shape, and one of the environments this format exists to serve. Naming
     // the one directory the caller already asked us to inspect restores that
     // without reopening host configuration to anything else.
-    command.arg("-c").arg(format!("safe.directory={}", repository.display()));
+    //
+    // The name has to be the *resolved absolute* path. Git matches
+    // `safe.directory` against the repository path it discovered, and matches
+    // it literally: `--repository .` — which is the default — yielded
+    // `safe.directory=.` and was silently never matched, so the exception this
+    // comment describes did not apply in exactly the different-owner checkout
+    // it exists for. Making the path merely absolute is not enough either; a
+    // trailing `/.` fails the same way.
+    let resolved = resolve_repository_path(repository);
+    command.arg("-c").arg(format!("safe.directory={}", resolved.display()));
     command
         .args(arguments)
-        .current_dir(repository)
+        .current_dir(&resolved)
         // Validation must never block on, or acquire, a credential. Every
         // command here is local plumbing, so a prompt would only ever be a
         // sign that something unexpected reached the network.

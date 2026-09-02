@@ -3194,6 +3194,70 @@ fn a_staging_directory_claiming_validation_is_refused() -> Result<()> {
     Ok(())
 }
 
+/// The aggregate proof ceiling is the format's, so the validator applies it too.
+///
+/// The producer refuses a set of artifacts totalling more than
+/// `MAX_TOTAL_PROOF_BYTES`. Checking only the per-artifact ceiling here left
+/// the validator accepting a declared set of `MAX_DECLARED_PROOFS` artifacts at
+/// `MAX_PROOF_BYTES` each — an envelope `create` could not have produced. The
+/// point is not the validator's own memory, which is one artifact at a time,
+/// but that both sides must agree on what a well-formed envelope is: a
+/// validator that accepts what the producer refuses is describing a different
+/// format.
+///
+/// Declared sizes are enough to exercise the rule, so this costs no bytes on
+/// disk: the arithmetic is refused before any artifact is read.
+#[test]
+fn the_validator_applies_the_aggregate_proof_ceiling() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    // Each artifact has to exist, or `envelope_closure` refuses before the
+    // ceiling is ever consulted and the control would pass without testing it.
+    let proof_dir = destination.envelope().join(PROOF_DIR_NAME);
+    fs::create_dir_all(&proof_dir)?;
+
+    // Eight artifacts, each individually legal at exactly the per-artifact
+    // ceiling, totalling 256 MiB against a 128 MiB aggregate.
+    let mut references = Vec::new();
+    for index in 0..8 {
+        let id = format!("report-{index}.json");
+        fs::write(proof_dir.join(&id), b"{}")?;
+        references.push(serde_json::json!({
+            "id": id,
+            "path": format!("{PROOF_DIR_NAME}/{id}"),
+            "bytes": super::create::MAX_PROOF_BYTES,
+            "sha256": "0".repeat(64),
+            "candidate_subject": manifest.candidate.commit.clone(),
+        }));
+    }
+    let mut raw = raw_manifest(&destination.envelope())?;
+    raw["proof_references"] = serde_json::Value::Array(references);
+    rewrite_manifest_raw(&destination.envelope(), &raw)?;
+
+    let report = check_handoff(&destination.envelope());
+    assert_eq!(
+        report.outcome,
+        HandoffOutcome::InvalidManifest,
+        "individually legal artifacts can still exceed the aggregate ceiling"
+    );
+    let binding = report
+        .dimensions
+        .iter()
+        .find(|dimension| dimension.id == "proof_binding")
+        .context("proof_binding dimension")?;
+    assert_eq!(binding.verdict, DimensionVerdict::Invalid);
+    assert!(
+        binding.detail.contains("total"),
+        "the refusal must name the aggregate rule: {}",
+        binding.detail
+    );
+    Ok(())
+}
+
 /// The validator enforces the producer's proof ceiling, not a larger one.
 ///
 /// A looser bound here would mean an envelope this validator calls valid could
@@ -3520,6 +3584,87 @@ fn an_unreadable_envelope_file_is_an_instrument_failure() -> Result<()> {
     fs::remove_file(second.envelope().join(MANIFEST_FILE_NAME))?;
     assert_eq!(check_handoff(&second.envelope()).outcome, HandoffOutcome::InvalidManifest);
     Ok(())
+}
+
+/// The ownership exception has to name the path Git will actually match.
+///
+/// `safe.directory` is compared literally against the repository path Git
+/// discovered, and `--repository` defaults to `.`, so passing the caller's path
+/// through verbatim produced `safe.directory=.` — which never matches. The
+/// exception silently did nothing in precisely the case it exists for: a
+/// checkout the running user does not own, which is the ordinary container, CI,
+/// and devcontainer shape. Making the path merely absolute is not enough; Git
+/// rejects a trailing `/.` the same way.
+///
+/// Creating the precondition needs `chown`, so the control skips where it
+/// cannot drop ownership rather than passing without having tested anything.
+///
+/// `#[serial]` because a relative repository path is only meaningful against a
+/// known working directory, and the process working directory is global: this
+/// control moves it, so it must not run beside anything else that reads or
+/// moves it.
+#[cfg(unix)]
+#[test]
+#[serial]
+fn the_ownership_exception_names_a_path_git_matches() -> Result<()> {
+    use std::os::unix::fs::chown;
+
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    // 65534 is `nobody` on every distribution this runs on. Failing here means
+    // the process lacks the privilege to create the precondition.
+    if chown(fixture.path(), Some(65534), Some(65534)).is_err() {
+        return Ok(());
+    }
+    let restored = scopeguard_chown(fixture.path());
+
+    // The fixture is only meaningful if Git actually refuses this repository
+    // without an exception. If the ownership check does not fire — the process
+    // owns it anyway, or Git is configured to skip it — the control proves
+    // nothing and says so instead of passing.
+    let refused = std::process::Command::new("git")
+        .args(["-c", "safe.directory=", "rev-parse", "--show-toplevel"])
+        .current_dir(fixture.path())
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()?;
+    if refused.status.success() {
+        drop(restored);
+        return Ok(());
+    }
+
+    // A relative path is what the CLI default produces. This is the case that
+    // silently failed.
+    let relative = PathBuf::from(".");
+    let previous = std::env::current_dir()?;
+    std::env::set_current_dir(fixture.path())?;
+    let output = super::git::run_git(&relative, &["rev-parse", "--show-toplevel"]);
+    std::env::set_current_dir(previous)?;
+    drop(restored);
+
+    let Ok(output) = output else {
+        bail!("the ownership exception must let a relative repository path be inspected");
+    };
+    assert!(
+        output.succeeded(),
+        "a relative `--repository` must still resolve to a matchable exception: {}",
+        output.diagnostic()
+    );
+    Ok(())
+}
+
+/// Restore ownership when the control leaves, so the fixture can be removed.
+#[cfg(unix)]
+fn scopeguard_chown(path: &Path) -> impl Drop + use<> {
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::os::unix::fs::chown(&self.0, Some(0), Some(0));
+        }
+    }
+    Restore(path.to_path_buf())
 }
 
 /// A human projection reports producer claims; it must not let one rewrite it.
