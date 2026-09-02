@@ -768,11 +768,8 @@ fn notebook_document_filter_relative_pattern_is_never_emitted() -> TestResult {
         .and_then(Value::as_array)
         .ok_or_else(|| format!("notebookDocumentSync missing static notebookSelector: {caps}"))?;
     assert!(!selectors.is_empty(), "notebook producer returned no static selectors");
-    let rendered_selectors = serde_json::to_string(selectors)?;
-    assert!(
-        !rendered_selectors.contains("pattern"),
-        "notebook static selectors must never contain RelativePattern cells: {rendered_selectors}"
-    );
+    assert_no_key(&Value::Array(selectors.clone()), "pattern")?;
+    assert_no_key(&Value::Array(selectors.clone()), "baseUri")?;
     let rendered_sync = serde_json::to_string(notebook_sync)?;
     assert!(
         !rendered_sync.contains("baseUri"),
