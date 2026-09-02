@@ -569,8 +569,29 @@ fn validate_declared_module_topology(
             violations.push(format!(
                 "{doc}: {field} {value:?} is not contained by any declared module_root"
             ));
+            continue;
+        }
+        // The lexical test above only proves the declared *path* sits under a
+        // root. A symlink written below a root can still resolve to a file
+        // elsewhere in the repository, which `validate_relative_existing_path`
+        // accepts because the target is repo-internal. Compare resolved paths too.
+        if !resolves_within_a_module_root(root, fixture, value) {
+            violations.push(format!(
+                "{doc}: {field} {value:?} resolves outside every declared module_root"
+            ));
         }
     }
+}
+
+/// Containment after symlink resolution. A path whose declared form is inside a
+/// root but whose target is not must not pass.
+fn resolves_within_a_module_root(root: &Path, fixture: &OracleFixture, value: &str) -> bool {
+    let Ok(asset) = root.join(value).canonicalize() else {
+        return true; // Missing paths are reported by the existence check.
+    };
+    fixture.module_roots.iter().any(|module_root| {
+        root.join(module_root).canonicalize().is_ok_and(|resolved| asset.starts_with(&resolved))
+    })
 }
 
 /// `module_files` is only a promise unless something can tell when a required
@@ -1163,6 +1184,29 @@ mod tests {
         let tempdir = mirror_repository_manifest(&root, &stripped)?;
 
         assert_violation(tempdir.path(), "source loads module \"Accuracy::ImportsExports\"")
+    }
+
+    /// A symlink written inside a declared root but pointing at a repo-internal
+    /// file outside it passes both the lexical containment test and the repo-root
+    /// escape check. Only comparing resolved paths catches it.
+    #[cfg(unix)]
+    #[test]
+    fn rejects_module_file_symlinked_outside_its_declared_root() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        fs::create_dir_all(tempdir.path().join("outside"))?;
+        fs::write(tempdir.path().join("outside/Helper.pm"), "package Helper; 1;\n")?;
+        std::os::unix::fs::symlink(
+            tempdir.path().join("outside/Helper.pm"),
+            tempdir.path().join("fixtures/Helper.pm"),
+        )?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(r#""module_files": []"#, r#""module_files": ["fixtures/Helper.pm"]"#),
+        )?;
+
+        assert_violation(tempdir.path(), "resolves outside every declared module_root")
     }
 
     /// An existing directory satisfies a bare existence check but nothing can
