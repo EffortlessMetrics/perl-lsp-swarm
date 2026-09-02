@@ -1427,3 +1427,121 @@ fn an_object_or_unknown_shape_constrains_nothing() -> Result<(), Box<dyn Error>>
     }
     Ok(())
 }
+
+#[test]
+fn a_recorded_shape_mismatch_must_be_a_real_one() -> Result<(), Box<dyn Error>> {
+    let head = |shape: ValueShape| {
+        selecting_hop(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("b".to_string()),
+            "->{b}",
+            shape,
+        )
+    };
+    let mismatch = |operator, selector, text: &str, observed: ValueShape| {
+        StructuralAccessHop::new(
+            1,
+            StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+            operator,
+            selector,
+            spelling(text, 10, 13)?,
+            StructuralHopOutcome::ShapeMismatch { observed },
+            StructuralHopCertainty::Definite,
+            StructuralAggregateCompleteness::Closed,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticReasonCode::ExactSource,
+            StructuralAccessBudget::new(99, 98)?,
+            Vec::new(),
+        )
+    };
+
+    // Honest: a hash reference, array-indexed, observing the hash reference.
+    StructuralAccessChain::new(
+        subject()?,
+        vec![
+            head(ValueShape::HashRef)?,
+            mismatch(
+                StructuralAccessOperator::ArrayIndex,
+                StructuralAccessSelector::StaticIndex(0),
+                "[0]",
+                ValueShape::HashRef,
+            )?,
+        ],
+    )?;
+
+    // A mismatch claimed for an operator the shape does carry did not happen.
+    let error = contract_error(StructuralAccessChain::new(
+        subject()?,
+        vec![
+            head(ValueShape::HashRef)?,
+            mismatch(
+                StructuralAccessOperator::HashSlot,
+                StructuralAccessSelector::StaticKey("c".to_string()),
+                "{c}",
+                ValueShape::HashRef,
+            )?,
+        ],
+    ))?;
+    assert!(matches!(error, StructuralAccessContractError::ContradictoryStatus(_)));
+
+    // A mismatch observing a shape the predecessor did not select describes a
+    // different aggregate.
+    let error = contract_error(StructuralAccessChain::new(
+        subject()?,
+        vec![
+            head(ValueShape::HashRef)?,
+            mismatch(
+                StructuralAccessOperator::ArrayIndex,
+                StructuralAccessSelector::StaticIndex(0),
+                "[0]",
+                ValueShape::ArrayRef,
+            )?,
+        ],
+    ))?;
+    assert!(matches!(error, StructuralAccessContractError::ContradictoryStatus(_)));
+    Ok(())
+}
+
+#[test]
+fn fingerprints_do_not_follow_rust_debug_names() -> Result<(), Box<dyn Error>> {
+    // Borrowed vocabulary is folded through explicit tags, not `Debug`, so a
+    // variant rename cannot silently change a persisted digest under an
+    // unchanged schema version. Pinning one digest catches an accidental
+    // return to `format!("{:?}")`, which would spell these differently.
+    let hop = StructuralAccessHop::new(
+        0,
+        base_variable(),
+        StructuralAccessOperator::HashRefSlot,
+        StructuralAccessSelector::DynamicKey(BoundaryLink::new(
+            None,
+            BoundaryKind::SymbolicReference,
+            BoundaryDisposition::Refuse,
+            SemanticReasonCode::UnsupportedEffect,
+        )),
+        spelling("->{$k}", 0, 6)?,
+        StructuralHopOutcome::Selected {
+            shape: ValueShape::Object { package: "Foo".to_string(), confidence: Confidence::High },
+            value_fact: None,
+        },
+        StructuralHopCertainty::Possible,
+        StructuralAggregateCompleteness::Open,
+        StructuralAggregateDisposition::Stable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(crate::Provenance::DynamicBoundary),
+        SemanticConfidence::Known(Confidence::Low),
+        SemanticReasonCode::DynamicValue,
+        StructuralAccessBudget::new(10, 9)?,
+        Vec::new(),
+    )?;
+    assert_eq!(
+        hop.fingerprint(),
+        "ad0f13dad1270b7f4ba3f7d1b9228275",
+        "schema v1 hop digests are stable; bump the schema tag to change them"
+    );
+    Ok(())
+}

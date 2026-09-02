@@ -85,6 +85,10 @@ impl StructuralAccessChain {
     ///    access in one file; a hop anchored elsewhere is not part of it.
     /// 6. The subject itself validates. A chain reconstructed by serde never
     ///    ran the subject's constructor, so this is where that check lands.
+    /// 8. A recorded [`StructuralHopOutcome::ShapeMismatch`] must describe a
+    ///    real conflict about the shape in hand: the operator must be one the
+    ///    predecessor's known shape cannot carry, and the observed shape must
+    ///    be the one the predecessor selected.
     /// 7. A hop cannot claim a successful selection through an operator the
     ///    predecessor's known shape cannot carry — a hash operator on a known
     ///    array reference, the reverse, or any subscript on a plain scalar or
@@ -163,13 +167,35 @@ impl StructuralAccessChain {
             // anything. Constraining them would reject honest records.
             //
             // `ShapeMismatch` remains available to record a genuine mismatch.
-            if let StructuralHopOutcome::Selected { shape, .. } = previous.outcome()
-                && next.outcome().is_selecting()
-                && !shape_carries(shape, next.operator().is_keyed())
-            {
-                return Err(StructuralAccessContractError::ContradictoryStatus(
-                    "an operator cannot select through a shape that cannot carry it",
-                ));
+            if let StructuralHopOutcome::Selected { shape, .. } = previous.outcome() {
+                let carries = shape_carries(shape, next.operator().is_keyed());
+                if next.outcome().is_selecting() && !carries {
+                    return Err(StructuralAccessContractError::ContradictoryStatus(
+                        "an operator cannot select through a shape that cannot carry it",
+                    ));
+                }
+
+                // Law 8: a recorded mismatch must be a real one, about the
+                // shape actually in hand. A `ShapeMismatch` whose operator the
+                // predecessor's shape does carry claims a conflict that did not
+                // happen, and one whose `observed` disagrees with what the
+                // predecessor selected describes a different aggregate. Both
+                // are only checkable when the predecessor's shape is known,
+                // which is exactly when `shape_carries` is decisive.
+                if let StructuralHopOutcome::ShapeMismatch { observed } = next.outcome()
+                    && shape_is_decisive(shape)
+                {
+                    if carries {
+                        return Err(StructuralAccessContractError::ContradictoryStatus(
+                            "a shape mismatch cannot be recorded for an operator the shape carries",
+                        ));
+                    }
+                    if observed != shape {
+                        return Err(StructuralAccessContractError::ContradictoryStatus(
+                            "a shape mismatch must observe the shape the predecessor selected",
+                        ));
+                    }
+                }
             }
         }
 
@@ -211,4 +237,16 @@ fn shape_carries(shape: &ValueShape, next_is_keyed: bool) -> bool {
         ValueShape::Scalar | ValueShape::CodeRef => false,
         ValueShape::Object { .. } | ValueShape::PackageName { .. } | ValueShape::Unknown => true,
     }
+}
+
+/// Whether a shape says enough to decide what an operator may do with it.
+///
+/// The permissive shapes in [`shape_carries`] return `true` for every operator
+/// because they assert too little, not because they carry everything — so a
+/// mismatch recorded against one of them cannot be contradicted either.
+fn shape_is_decisive(shape: &ValueShape) -> bool {
+    matches!(
+        shape,
+        ValueShape::HashRef | ValueShape::ArrayRef | ValueShape::Scalar | ValueShape::CodeRef
+    )
 }

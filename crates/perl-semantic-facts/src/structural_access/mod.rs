@@ -75,7 +75,10 @@ pub use hop::StructuralAccessHop;
 use serde::{Deserialize, Serialize};
 
 use crate::semantic_identity::SemanticIdentityFingerprint;
-use crate::{BoundaryLink, FactId, FileId, SourceAnchor, SourceGeneration, ValueShape};
+use crate::{
+    BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, FactId, FileId,
+    SemanticReasonCode, SourceAnchor, SourceGeneration, ValueShape,
+};
 
 /// Shorthand for the shared deterministic fingerprint accumulator.
 ///
@@ -492,9 +495,9 @@ fn fold_generation(
 /// refuses — and must not share a digest.
 fn fold_boundary(label: &str, boundary: &BoundaryLink, accumulator: Fingerprint) -> Fingerprint {
     let accumulator = accumulator
-        .field(label, &format!("{:?}", boundary.kind))
-        .field(label, &format!("{:?}", boundary.reason_code))
-        .field(label, &format!("{:?}", boundary.disposition));
+        .field(label, boundary_kind_tag(boundary.kind))
+        .field(label, reason_code_tag(boundary.reason_code))
+        .field(label, boundary_disposition_tag(boundary.disposition));
     match boundary.boundary_id {
         Some(fact) => {
             accumulator.discriminant(label, "boundary-id").field(label, &fact.0.to_string())
@@ -742,7 +745,7 @@ fn fold_value_shape(label: &str, shape: &ValueShape, accumulator: Fingerprint) -
         ValueShape::Object { package, confidence } => accumulator
             .discriminant(label, "object")
             .field(label, package)
-            .field(label, &format!("{confidence:?}")),
+            .field(label, confidence_tag(*confidence)),
     }
 }
 
@@ -789,5 +792,63 @@ impl StructuralAccessLimitation {
             Self::CompatibilityBridge => "compatibility-bridge",
             Self::Unsupported => "unsupported",
         }
+    }
+}
+
+// ── Stable tags for borrowed vocabulary ───────────────────────────────────
+//
+// These enums live in this crate but outside this contract, so they carry no
+// `tag()` of their own. Fingerprints must not fold their `Debug` output: a
+// variant rename would then silently change every persisted digest under an
+// unchanged `structural_access_chain.v1`. Spelling the tags out here fixes the
+// wire text independently of the Rust identifiers, and because the enums are
+// crate-local these matches are exhaustive — adding a variant is a compile
+// error that forces a deliberate choice rather than a silent digest change.
+
+/// Stable fingerprint tag for a boundary kind.
+fn boundary_kind_tag(kind: BoundaryKind) -> &'static str {
+    match kind {
+        BoundaryKind::DynamicValue => "dynamic-value",
+        BoundaryKind::DynamicRequire => "dynamic-require",
+        BoundaryKind::DynamicIncludePath => "dynamic-include-path",
+        BoundaryKind::CompileTimeExecution => "compile-time-execution",
+        BoundaryKind::SymbolicReference => "symbolic-reference",
+        BoundaryKind::Compatibility => "compatibility",
+        BoundaryKind::ExternalEnvironment => "external-environment",
+        BoundaryKind::Unsupported => "unsupported",
+    }
+}
+
+/// Stable fingerprint tag for a boundary disposition.
+fn boundary_disposition_tag(disposition: BoundaryDisposition) -> &'static str {
+    match disposition {
+        BoundaryDisposition::Degrade => "degrade",
+        BoundaryDisposition::Refuse => "refuse",
+    }
+}
+
+/// Stable fingerprint tag for a semantic reason code.
+fn reason_code_tag(reason: SemanticReasonCode) -> &'static str {
+    match reason {
+        SemanticReasonCode::ExactSource => "exact-source",
+        SemanticReasonCode::GeneratedFromSource => "generated-from-source",
+        SemanticReasonCode::DynamicValue => "dynamic-value",
+        SemanticReasonCode::CompatibilityBoundary => "compatibility-boundary",
+        SemanticReasonCode::UnsupportedEffect => "unsupported-effect",
+        SemanticReasonCode::MissingGeneration => "missing-generation",
+        SemanticReasonCode::UnknownProvenance => "unknown-provenance",
+        SemanticReasonCode::UnknownConfidence => "unknown-confidence",
+        SemanticReasonCode::UnknownLifecycle => "unknown-lifecycle",
+        SemanticReasonCode::StaleDependency => "stale-dependency",
+        SemanticReasonCode::Unknown => "unknown",
+    }
+}
+
+/// Stable fingerprint tag for a confidence level.
+fn confidence_tag(confidence: Confidence) -> &'static str {
+    match confidence {
+        Confidence::High => "high",
+        Confidence::Medium => "medium",
+        Confidence::Low => "low",
     }
 }
