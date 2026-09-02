@@ -211,10 +211,11 @@ fn test_utf16_crlf_one_past_next_line_start_is_rejected() -> Result<(), Box<dyn 
     assert_eq!(idx.position_to_byte_checked(0, 4), None);
     // Pre-fix this returned Some(4).
     assert_eq!(idx.position_to_byte_utf16(text, 0, 4), None);
-    // CRLF is one terminator and neither byte is an interior addressable
-    // character; the one-past-content column remains the valid range end.
+    // The established CRLF boundary remains addressable at column 3; the
+    // next line's start at column 4 is rejected.
     assert_eq!(idx.position_to_byte_utf16(text, 0, 2), Some(2));
-    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), None);
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3));
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 4), None);
     Ok(())
 }
 
@@ -241,3 +242,4 @@ fn test_utf16_mismatched_shorter_text_returns_none() -> Result<(), Box<dyn std::
     assert_eq!(idx.position_to_byte_utf16("short", 1, 0), None);
     Ok(())
 }
+
