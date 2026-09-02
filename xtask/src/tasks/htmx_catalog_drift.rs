@@ -10,6 +10,7 @@ use color_eyre::eyre::{Context, Result, bail};
 use perl_lsp_rs_core::providers::{
     HTMX_ATTRIBUTES, HTMX_CATALOG_PROVENANCE, HTMX_HEADERS, HtmxHeaderDirection,
 };
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
@@ -241,21 +242,22 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
 
     let mut names = Vec::new();
     let mut in_body = false;
-    let mut fences = FenceScanner::new();
+    let mut inert = InertScanner::new();
 
     for line in document.lines().skip(heading_line + 1) {
-        let trimmed = line.trim_start();
-
-        // A fenced example can contain pipe-table-shaped lines. Reading those
-        // as data would invent names, and a fenced separator row would make the
-        // following sample lines look like unreadable data. Opening a fence also
-        // ends any table in progress: the example's rows are not its rows.
-        if !fences.admits(trimmed) {
-            if fences.is_open() {
-                in_body = false;
-            }
+        // A fenced example or a commented-out table can contain pipe-table
+        // shaped lines. Reading those as data would invent names, and their
+        // separator rows would make the following sample lines look like
+        // unreadable data.
+        //
+        // Illustration and a blank line both end any table in progress. Tables
+        // are contiguous, so a later table in the same section must present its
+        // own separator before its rows count as data.
+        let Some(content) = inert.content(line.trim_start()) else {
+            in_body = false;
             continue;
-        }
+        };
+        let trimmed = content.as_ref();
         // A deeper heading is a subsection, so this section continues; only a
         // heading at the same or shallower level ends it. Breaking at any
         // heading would silently drop every row after an inserted subsection —
@@ -268,13 +270,6 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
             if heading_here <= depth {
                 break;
             }
-            in_body = false;
-            continue;
-        }
-        if trimmed.is_empty() {
-            // Tables are contiguous, so a blank line ends one. A later table in
-            // the same section must present its own separator before its rows
-            // count as data.
             in_body = false;
             continue;
         }
@@ -310,12 +305,13 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
         }
     }
 
-    if fences.is_open() {
+    if let Some(region) = inert.unterminated() {
         bail!(
-            "the {} section ({}) has a code fence that is never closed; everything after it was \
-             skipped as sample text, so a later upstream entry could vanish into a clean report",
+            "the {} section ({}) has a {} that is never closed; everything after it was skipped \
+             as illustration, so a later upstream entry could vanish into a clean report",
             section.label,
-            section.anchor
+            section.anchor,
+            region
         );
     }
 
@@ -348,10 +344,9 @@ fn is_separator_row(line: &str) -> bool {
 /// right one.
 fn locate_section(document: &str, section: &SectionSpec) -> Result<(usize, usize)> {
     let mut located: Option<(usize, usize)> = None;
-    let mut fences = FenceScanner::new();
+    let mut inert = InertScanner::new();
 
     for (index, line) in document.lines().enumerate() {
-        let trimmed = line.trim();
         // A fenced example that displays a heading is sample text, not a
         // section. Matching it would start the scan inside the fence with no
         // fence open, so the example's own rows would be read as authoritative
@@ -361,9 +356,10 @@ fn locate_section(document: &str, section: &SectionSpec) -> Result<(usize, usize
         // wrong read this task exists to prevent. It also makes an ordinary
         // documentation example collide with the real heading and fail as
         // ambiguous, which refuses a document that is perfectly readable.
-        if !fences.admits(trimmed) {
+        let Some(content) = inert.content(line.trim()) else {
             continue;
-        }
+        };
+        let trimmed = content.trim();
         if !trimmed.ends_with(section.anchor) {
             continue;
         }
@@ -412,56 +408,124 @@ fn heading_depth(trimmed_line: &str) -> usize {
     }
 }
 
-/// Fenced-code state for one pass over the document.
-///
-/// Both the section locator and the row scan have to agree on exactly where a
-/// fence begins and ends. Tracking that separately in each is how two of this
-/// task's earlier silent defects arose, so the rule lives here once.
-struct FenceScanner {
-    /// Marker character and run length of the open fence, if one is open.
+/// A region of the document whose text is illustration rather than content.
+enum InertRegion {
+    /// A fenced code block, with its opening marker and run length.
     ///
     /// The opening marker is retained rather than a bare flag: a `~~~` inside a
     /// ``` fence would otherwise read as the close, so the example's own lines
     /// would be parsed and the real closing fence would re-open, silently
     /// swallowing every genuine row after it.
-    open: Option<(char, usize)>,
+    Fence { marker: char, length: usize },
+    /// An HTML comment.
+    Comment,
 }
 
-impl FenceScanner {
+/// Inert-region state for one pass over the document.
+///
+/// The section locator and the row scan have to agree on exactly which text is
+/// illustration. Tracking that separately in each is how three of this task's
+/// earlier silent defects arose, so the rule lives here once.
+struct InertScanner {
+    inside: Option<InertRegion>,
+}
+
+impl InertScanner {
     fn new() -> Self {
-        Self { open: None }
+        Self { inside: None }
     }
 
-    /// Advance over one trimmed line; is it document content?
+    /// Advance over one trimmed line and return the document content in it.
     ///
-    /// False for a fence delimiter and for everything inside a fence, so a
-    /// caller can treat the remainder as ordinary document text.
-    fn admits(&mut self, trimmed_line: &str) -> bool {
-        if let Some(delimiter) = fence_delimiter(trimmed_line) {
-            match self.open {
-                None => self.open = Some((delimiter.marker, delimiter.length)),
-                Some((open_marker, open_length)) => {
-                    // An info-string line such as ```` ```rust ```` is content
-                    // inside an open fence, not its close. Treating it as the
-                    // close would parse the sample and let the real closer
-                    // re-open the fence over genuine rows.
-                    if delimiter.can_close
-                        && delimiter.marker == open_marker
-                        && delimiter.length >= open_length
-                    {
-                        self.open = None;
-                    }
+    /// `None` for a fence delimiter, for everything inside a fence, and for a
+    /// line whose text is entirely commented out. Otherwise the line with its
+    /// commented spans removed, which is the text the caller must read: a row
+    /// carrying a trailing comment is still a row, and skipping the whole line
+    /// would drop a name silently — the failure this task exists to prevent —
+    /// while reading the commented span would invent one.
+    fn content<'line>(&mut self, trimmed_line: &'line str) -> Option<Cow<'line, str>> {
+        match self.inside {
+            // Only the fence's own close ends it. An info-string line such as
+            // ```` ```rust ```` is content inside an open fence: treating it as
+            // the close would parse the sample and let the real closer re-open
+            // the fence over genuine rows. A comment delimiter here is sample
+            // text, so comment state is deliberately not advanced.
+            Some(InertRegion::Fence { marker, length }) => {
+                if fence_delimiter(trimmed_line).is_some_and(|delimiter| {
+                    delimiter.can_close && delimiter.marker == marker && delimiter.length >= length
+                }) {
+                    self.inside = None;
                 }
+                None
             }
-            return false;
+            // A fence marker inside a comment is commented-out text and must
+            // not open a fence; only the comment's own close ends the region.
+            Some(InertRegion::Comment) => self.visible_content(trimmed_line),
+            None => match fence_delimiter(trimmed_line) {
+                Some(delimiter) => {
+                    self.inside = Some(InertRegion::Fence {
+                        marker: delimiter.marker,
+                        length: delimiter.length,
+                    });
+                    None
+                }
+                None => self.visible_content(trimmed_line),
+            },
+        }
+    }
+
+    /// This line's text with commented spans removed, if any remains.
+    fn visible_content<'line>(&mut self, trimmed_line: &'line str) -> Option<Cow<'line, str>> {
+        let visible = self.strip_commented_spans(trimmed_line);
+        (!visible.trim().is_empty()).then_some(visible)
+    }
+
+    /// Remove this line's commented spans, advancing the comment state.
+    ///
+    /// Both delimiters are ASCII, so every byte offset `find` returns is a
+    /// character boundary and the slicing below cannot split a code point.
+    fn strip_commented_spans<'line>(&mut self, line: &'line str) -> Cow<'line, str> {
+        if !matches!(self.inside, Some(InertRegion::Comment)) && !line.contains("<!--") {
+            return Cow::Borrowed(line);
         }
 
-        self.open.is_none()
+        let mut visible = String::new();
+        let mut rest = line;
+        loop {
+            match self.inside {
+                Some(InertRegion::Comment) => match rest.find("-->") {
+                    Some(end) => {
+                        self.inside = None;
+                        rest = &rest[end + "-->".len()..];
+                    }
+                    None => return Cow::Owned(visible),
+                },
+                None => match rest.find("<!--") {
+                    Some(start) => {
+                        visible.push_str(&rest[..start]);
+                        self.inside = Some(InertRegion::Comment);
+                        rest = &rest[start + "<!--".len()..];
+                    }
+                    None => {
+                        visible.push_str(rest);
+                        return Cow::Owned(visible);
+                    }
+                },
+                Some(InertRegion::Fence { .. }) => return Cow::Owned(visible),
+            }
+        }
     }
 
-    /// Is a fence still open?
-    fn is_open(&self) -> bool {
-        self.open.is_some()
+    /// The name of the region still open at the end of the scan, if any.
+    ///
+    /// Everything after an unterminated region was skipped as illustration, so
+    /// the caller must refuse rather than report on a partial read.
+    fn unterminated(&self) -> Option<&'static str> {
+        match self.inside {
+            None => None,
+            Some(InertRegion::Fence { .. }) => Some("code fence"),
+            Some(InertRegion::Comment) => Some("HTML comment"),
+        }
     }
 }
 
@@ -878,6 +942,101 @@ let example = 1;
         assert!(
             error.to_string().contains("has no core attributes section"),
             "the refusal must name the missing section, not a downstream symptom: {error}"
+        );
+    }
+
+    #[test]
+    fn a_commented_out_table_does_not_contribute_names() {
+        // An obsolete table kept in an HTML comment beside its replacement. Its
+        // rows are not upstream any more, so reading them keeps a name alive in
+        // the comparison that upstream has removed — the catalog still carries
+        // `hx-retired`, the removal is never reported, and the run says clean.
+        let commented = "\
+## Core Attribute Reference {#attributes}
+
+<!--
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-retired`](@/attributes/hx-retired.md) | removed upstream |
+-->
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+";
+
+        assert!(section_names(commented, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
+    }
+
+    #[test]
+    fn a_row_carrying_a_trailing_comment_is_still_read() {
+        // The opposite error. Discarding a whole line because it opens a
+        // comment would drop the row's name silently, which is worse than
+        // reading the commented span. The row's own text is still content.
+        let annotated = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET | <!-- keep this row -->
+| [`hx-post`](@/attributes/hx-post.md) | issues a POST |
+";
+
+        assert!(
+            section_names(annotated, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-post"])
+        );
+    }
+
+    #[test]
+    fn a_commented_out_heading_does_not_become_the_section() {
+        // The same defect as the fenced heading, through a different syntax: a
+        // section commented out upstream must not still be selectable, or its
+        // stale rows report as current.
+        let commented = "\
+# Reference
+
+<!--
+## Core Attribute Reference {#attributes}
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-phantom`](@/attributes/hx-phantom.md) | commented out |
+-->
+
+## Something Else {#other}
+";
+
+        let error = section_names(commented, &CORE_ATTRIBUTES)
+            .expect_err("a heading inside an HTML comment must not be read as the section");
+        assert!(
+            error.to_string().contains("has no core attributes section"),
+            "the refusal must name the missing section: {error}"
+        );
+    }
+
+    #[test]
+    fn an_unclosed_comment_fails_instead_of_swallowing_the_rest() {
+        // Mirrors the unclosed-fence guard: everything after an unterminated
+        // comment was skipped, so a later table would vanish into a clean
+        // report exactly as it would behind an open fence.
+        let unclosed = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+<!-- the comment is never closed
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-post`](@/attributes/hx-post.md) | swallowed by the open comment |
+";
+
+        assert!(
+            section_names(unclosed, &CORE_ATTRIBUTES).is_err_and(|error| error
+                .to_string()
+                .contains("HTML comment that is never closed"))
         );
     }
 
