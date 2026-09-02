@@ -377,4 +377,32 @@ describe('transactional production activation (#7854)', () => {
       expect(entry.disposable.dispose).toHaveBeenCalledTimes(1);
     }
   });
+
+  test('the registered file-creation listener actually populates a created file (#14547)', async () => {
+    // The rest of this suite proves the listener was *registered* and is
+    // disposed with the attempt. That leaves the callback itself unexercised:
+    // replacing the handler body with a no-op kept every other test in the
+    // extension suite green, so nothing connected activation to the
+    // boilerplate behaviour. This drives the registered callback end to end.
+    process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
+    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-activation-'));
+
+    await activate(makeContext(extensionRoot));
+
+    const registration = (vscode.workspace.onDidCreateFiles as jest.Mock).mock.calls[0];
+    expect(registration).toBeDefined();
+    const onDidCreateFiles = registration?.[0] as (event: {
+      files: readonly { fsPath: string }[];
+    }) => Promise<void>;
+
+    await onDidCreateFiles({ files: [vscode.Uri.file('/ws/lib/Wired.pm')] });
+
+    const applyEdit = vscode.workspace.applyEdit as jest.Mock;
+    expect(applyEdit).toHaveBeenCalledTimes(1);
+    const edit = applyEdit.mock.calls[0]?.[0] as {
+      inserts: Array<{ uri: { fsPath: string }; newText: string }>;
+    };
+    expect(edit.inserts.map((insert) => insert.uri.fsPath)).toEqual(['/ws/lib/Wired.pm']);
+    expect(edit.inserts[0]?.newText).toContain('package Wired;');
+  });
 });

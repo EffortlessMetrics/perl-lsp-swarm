@@ -191,12 +191,17 @@ function installScopedConfiguration(
         }
         if (scope !== undefined) {
           // The real `ConfigurationScope` also accepts a `WorkspaceFolder` and a
-          // `TextDocument`. This fake deliberately answers only a `Uri`, because
-          // resolving the gate against the created file itself is the claim: a
-          // handler that passed `getWorkspaceFolder(uri)` instead would resolve
-          // folder overrides too, and a fake that quietly accepted it would stop
-          // discriminating between the two. Fail loudly rather than fall through
-          // to the workspace value, which would read as a passing test.
+          // `TextDocument`. This fake answers only a `Uri`, and throws instead
+          // of falling through to the workspace value — a silent fall-through
+          // would read as a passing test.
+          //
+          // Be honest about what that buys: passing `getWorkspaceFolder(uri)`
+          // would be *behaviourally* equivalent for this setting, so this pins
+          // one spelling rather than discriminating between right and wrong
+          // implementations. The spelling is worth pinning because the created
+          // URI is the scope the claim is about and needs no folder lookup, but
+          // a future refactor that legitimately reuses a resolved folder here
+          // should update this fake rather than be treated as a regression.
           if (typeof (scope as { fsPath?: unknown }).fsPath !== 'string') {
             throw new Error(
               `getConfiguration scope must be the created file Uri, got ${JSON.stringify(scope)}`,
@@ -219,8 +224,16 @@ function installScopedConfiguration(
   );
 }
 
-/** Paths the handler actually staged boilerplate for. */
-function populatedPaths(): string[] {
+/**
+ * Paths the handler *submitted* an edit for.
+ *
+ * Deliberately not named "populated": `applyEdit` reports whether the editor
+ * accepted the edit, and production discards that boolean, so nothing here —
+ * or in the extension — can tell an applied edit from a rejected one. These
+ * assertions therefore prove which files the gate let through, which is this
+ * claim's subject, and not that bytes reached disk.
+ */
+function stagedPaths(): string[] {
   const applyEdit = vscode.workspace.applyEdit as jest.Mock;
   return applyEdit.mock.calls.flatMap((call) => {
     const edit = call[0] as { inserts: Array<{ uri: { fsPath: string } }> };
@@ -232,9 +245,23 @@ function creationEvent(...paths: string[]): vscode.FileCreateEvent {
   return { files: paths.map((p) => vscode.Uri.file(p)) } as unknown as vscode.FileCreateEvent;
 }
 
+/** Restores the shared mocks' defaults: documents open empty, edits succeed. */
+function resetSharedMockImplementations(): void {
+  (vscode.workspace.openTextDocument as jest.Mock).mockImplementation(async (value: unknown) => ({
+    uri: value,
+    getText: () => '',
+  }));
+  (vscode.workspace.applyEdit as jest.Mock).mockImplementation(async () => true);
+}
+
 describe('populateCreatedFiles gates on the folder each file was created in (#14547)', () => {
   beforeEach(() => {
+    // `clearAllMocks` clears call records but NOT implementations, and this
+    // suite installs persistent ones. Without an explicit reset a later test
+    // silently inherits an earlier test's document contents — which disarms a
+    // negative assertion rather than failing it.
     jest.clearAllMocks();
+    resetSharedMockImplementations();
   });
 
   test('a folder that disables population is not populated while a sibling folder is', async () => {
@@ -246,7 +273,7 @@ describe('populateCreatedFiles gates on the folder each file was created in (#14
       creationEvent(`${ENABLED_ROOT}/lib/Kept.pm`, `${DISABLED_ROOT}/lib/Skipped.pm`),
     );
 
-    expect(populatedPaths()).toEqual([`${ENABLED_ROOT}/lib/Kept.pm`]);
+    expect(stagedPaths()).toEqual([`${ENABLED_ROOT}/lib/Kept.pm`]);
   });
 
   test('a folder that enables population is populated while the workspace default is off', async () => {
@@ -257,7 +284,7 @@ describe('populateCreatedFiles gates on the folder each file was created in (#14
       creationEvent(`${DISABLED_ROOT}/t/skipped.t`, `${ENABLED_ROOT}/t/kept.t`),
     );
 
-    expect(populatedPaths()).toEqual([`${ENABLED_ROOT}/t/kept.t`]);
+    expect(stagedPaths()).toEqual([`${ENABLED_ROOT}/t/kept.t`]);
   });
 
   test('the gate is resolved against every created URI, not just the first', async () => {
@@ -286,7 +313,7 @@ describe('populateCreatedFiles gates on the folder each file was created in (#14
 
     await populateCreatedFiles(creationEvent('/only-root/lib/Foo/Bar.pm'));
 
-    expect(populatedPaths()).toEqual(['/only-root/lib/Foo/Bar.pm']);
+    expect(stagedPaths()).toEqual(['/only-root/lib/Foo/Bar.pm']);
     const applyEdit = vscode.workspace.applyEdit as jest.Mock;
     const edit = applyEdit.mock.calls[0]?.[0] as { inserts: Array<{ newText: string }> };
     expect(edit.inserts[0]?.newText).toContain('package Foo::Bar;');
@@ -297,7 +324,7 @@ describe('populateCreatedFiles gates on the folder each file was created in (#14
 
     await populateCreatedFiles(creationEvent('/elsewhere/lib/Foo.pm'));
 
-    expect(populatedPaths()).toEqual([]);
+    expect(stagedPaths()).toEqual([]);
   });
 
   test('a sibling folder with a shared name prefix does not inherit the override', async () => {
@@ -308,27 +335,53 @@ describe('populateCreatedFiles gates on the folder each file was created in (#14
 
     await populateCreatedFiles(creationEvent(`${DISABLED_ROOT}-legacy/lib/Kept.pm`));
 
-    expect(populatedPaths()).toEqual([`${DISABLED_ROOT}-legacy/lib/Kept.pm`]);
+    expect(stagedPaths()).toEqual([`${DISABLED_ROOT}-legacy/lib/Kept.pm`]);
   });
 
-  test('an enabled folder still skips files that already have content', async () => {
+  test('a file with content is skipped without stopping the rest of the event', async () => {
+    // Two files, so the skip is proved to be per-file. With a single file a
+    // `return` here would be indistinguishable from `continue`, and this claim
+    // is precisely that the handler decides per file rather than per event.
     installScopedConfiguration(true);
     (vscode.workspace.openTextDocument as jest.Mock).mockImplementation(async (value: unknown) => ({
       uri: value,
-      getText: () => 'package Existing;\n',
+      getText: () =>
+        (value as { fsPath: string }).fsPath.includes('Existing') ? 'package X;\n' : '',
     }));
 
-    await populateCreatedFiles(creationEvent(`${ENABLED_ROOT}/lib/Existing.pm`));
+    await populateCreatedFiles(
+      creationEvent(`${ENABLED_ROOT}/lib/Existing.pm`, `${ENABLED_ROOT}/lib/Fresh.pm`),
+    );
 
-    expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
+    expect(stagedPaths()).toEqual([`${ENABLED_ROOT}/lib/Fresh.pm`]);
   });
 
-  test('an enabled folder still skips extensions that get no boilerplate', async () => {
+  test('an unsupported extension is skipped without stopping the rest of the event', async () => {
+    // Same reasoning: `.pl` gets no boilerplate, but the `.pm` after it must
+    // still be reached.
     installScopedConfiguration(true);
 
-    await populateCreatedFiles(creationEvent(`${ENABLED_ROOT}/script.pl`));
+    await populateCreatedFiles(
+      creationEvent(`${ENABLED_ROOT}/script.pl`, `${ENABLED_ROOT}/lib/After.pm`),
+    );
 
-    expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled();
-    expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
+    expect(stagedPaths()).toEqual([`${ENABLED_ROOT}/lib/After.pm`]);
+    // The unsupported file is never opened — the boilerplate check precedes I/O.
+    expect((vscode.workspace.openTextDocument as jest.Mock).mock.calls).toHaveLength(1);
+  });
+
+  test('a rejected edit is currently indistinguishable from an applied one', async () => {
+    // `applyEdit` resolves false when the editor refuses the edit, and
+    // production discards that result — so no file is populated and nothing is
+    // logged. Pinned deliberately: this suite observes edits *submitted*, and
+    // that limit should fail loudly if the production seam ever starts caring.
+    installScopedConfiguration(true);
+    (vscode.workspace.applyEdit as jest.Mock).mockImplementation(async () => false);
+
+    await expect(
+      populateCreatedFiles(creationEvent(`${ENABLED_ROOT}/lib/Rejected.pm`)),
+    ).resolves.toBeUndefined();
+
+    expect(stagedPaths()).toEqual([`${ENABLED_ROOT}/lib/Rejected.pm`]);
   });
 });
