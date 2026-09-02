@@ -51,6 +51,7 @@ struct DriftReport {
 }
 
 impl DriftReport {
+    /// Does the committed catalog already match the supplied reference?
     fn is_clean(&self) -> bool {
         self.added_attributes.is_empty()
             && self.removed_attributes.is_empty()
@@ -83,6 +84,9 @@ pub fn run(reference: &Path) -> Result<()> {
     bail!("htmx catalog drift detected against {}", reference.display())
 }
 
+/// Print which snapshot is committed and which document it is compared against.
+///
+/// The report is only meaningful next to the identity of the two sides.
 fn print_provenance(reference: &Path) {
     let provenance = HTMX_CATALOG_PROVENANCE;
     println!("committed snapshot");
@@ -95,6 +99,7 @@ fn print_provenance(reference: &Path) {
     println!("  local file   : {}", reference.display());
 }
 
+/// Print the proposed catalog change, one line per differing name or direction.
 fn print_report(report: &DriftReport) {
     println!("\nproposed catalog change");
     for name in &report.added_attributes {
@@ -121,14 +126,23 @@ fn print_report(report: &DriftReport) {
     );
 }
 
+/// The committed catalog's attribute names.
 fn catalog_attributes() -> BTreeSet<String> {
     HTMX_ATTRIBUTES.iter().map(|attribute| attribute.name.to_string()).collect()
 }
 
+/// The committed catalog's header names with the direction each is used in.
 fn catalog_headers() -> BTreeMap<String, HtmxHeaderDirection> {
     HTMX_HEADERS.iter().map(|header| (header.name.to_string(), header.direction)).collect()
 }
 
+/// Diff a reference snapshot against the committed catalog.
+///
+/// Names are compared with exact casing, so a capitalization-only upstream
+/// change surfaces as an addition and a removal rather than vanishing through
+/// normalization. Attribute metadata (deprecation, family) is deliberately not
+/// compared: it lives in upstream prose, and inferring it would reintroduce the
+/// fragile parsing this task otherwise avoids.
 fn compare_snapshot(
     reference_attributes: &BTreeSet<String>,
     reference_headers: &BTreeMap<String, HtmxHeaderDirection>,
@@ -167,6 +181,7 @@ fn compare_snapshot(
     report
 }
 
+/// Attribute names from the reference document's two attribute sections.
 fn reference_attributes(document: &str) -> Result<BTreeSet<String>> {
     let mut names = BTreeSet::new();
     for section in [&CORE_ATTRIBUTES, &ADDITIONAL_ATTRIBUTES] {
@@ -177,6 +192,7 @@ fn reference_attributes(document: &str) -> Result<BTreeSet<String>> {
     Ok(names)
 }
 
+/// Header names from the reference document, with direction from section membership.
 fn reference_headers(document: &str) -> Result<BTreeMap<String, HtmxHeaderDirection>> {
     let request: BTreeSet<String> =
         section_names(document, &REQUEST_HEADERS)?.into_iter().collect();
@@ -419,6 +435,7 @@ struct FenceDelimiter {
     can_close: bool,
 }
 
+/// Read a code-fence delimiter line, if this line is one.
 fn fence_delimiter(trimmed_line: &str) -> Option<FenceDelimiter> {
     let marker = trimmed_line.chars().next()?;
     if marker != '`' && marker != '~' {
