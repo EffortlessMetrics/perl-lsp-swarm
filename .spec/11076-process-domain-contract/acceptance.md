@@ -11,9 +11,9 @@ Every row below is proven by a named test in
 | One pure validator makes invalid or unauthorized plans unstartable through the public port | the twelve `*_is_unstartable` / `*_must_be_*` tests; `validation_is_the_only_route_to_a_startable_plan` |
 | Terminal process, supervisor, cleanup, truncation, stale, unsupported and not-proven states remain distinct | `a_control_plane_termination_never_becomes_an_ordinary_success`, `precedence_is_total_and_ordered`, `a_nonzero_exit_is_an_executed_result_not_an_instrument_failure`, `a_signal_and_an_unobserved_settlement_stay_distinct_from_success` |
 | Exact executable, argv, cwd, environment, budgets, operation, authorization, source/configuration references and claim boundary are retained | `the_supervisor_records_the_exact_plan_it_was_given`, `validation_binds_the_fingerprint_it_validated` |
-| Deterministic fake/recording supervisors support cheap, race-free consumer tests | the `FakeSupervisor` tests; the fake spawns no thread and reads no clock |
+| Deterministic fake/recording supervisors support cheap, race-free consumer tests | the `FakeSupervisor` tests; `the_fake_supervisor_reads_no_clock_and_spawns_no_thread` pins the determinism mechanism itself |
 | Canonical encoding/fingerprints are deterministic, bounded, versioned and path/secret-safe at the public boundary | `canonical_encoding_is_stable_under_construction_order`, `a_meaning_change_moves_the_fingerprint`, `environment_values_never_reach_a_public_identity`, `private_paths_and_bytes_are_redacted_in_debug_output`, `the_canonical_encoding_of_a_fixture_plan_is_locked_to_the_schema_version` |
-| Existing callers compile only through an explicitly temporary bounded adapter where unavoidable | `the_legacy_seam_is_contained_and_owned`; `process::legacy` records what the seam cannot express and that `#1975` owns removal |
+| Existing callers compile only through an explicitly temporary bounded adapter where unavoidable | `the_legacy_seam_is_contained_and_owned` for the ledger, `no_unrecorded_second_execution_seam_exists_in_the_crate` for the crate; `process::legacy` records what the seam cannot express and that `#1975` owns removal |
 | No OS process spawn or product behavior change occurs in this PR | `the_domain_never_reaches_for_an_operating_system_process_api`; no file outside the crate is touched |
 
 ## Negative controls
@@ -31,7 +31,7 @@ The issue lists twelve mutations the proof must reject.
 | 7 | a dropped handle implies successful cleanup | `a_dropped_handle_is_abandoned_work_not_proven_cleanup` |
 | 8 | free-form owner/reason strings become policy authority | `a_correlation_identifier_cannot_change_a_policy_outcome` |
 | 9 | a domain crate must import OS process APIs to use the port | `the_domain_never_reaches_for_an_operating_system_process_api` |
-| 10 | the legacy adapter remains an unrestricted second production path | `the_legacy_seam_is_contained_and_owned` |
+| 10 | the legacy adapter remains an unrestricted second production path | `no_unrecorded_second_execution_seam_exists_in_the_crate` (the ledger-only test is not sufficient on its own — see the review round below) |
 | 11 | schema-bearing meaning changes without version movement | `the_canonical_encoding_of_a_fixture_plan_is_locked_to_the_schema_version` |
 | 12 | LSP/DAP/tool-specific semantics leak into the process domain | `the_crate_takes_no_dependencies_that_could_carry_domain_semantics` |
 
@@ -50,6 +50,43 @@ observing exactly that control fail:
 | `FakeHandle::drop` always reports `SettledBeforeDrop` | `a_dropped_handle_is_abandoned_work_not_proven_cleanup` fails |
 | a public `ValidatedProcessPlan::trust_me` constructor is added | `validation_is_the_only_route_to_a_startable_plan` fails |
 | `use std::process::Command` is added to `port.rs` | `the_domain_never_reaches_for_an_operating_system_process_api` fails |
+
+## Adversarial review round (post-publication)
+
+Two independent reviewers challenged the candidate on separate lenses. Seven
+findings were confirmed and repaired; each repair carries its own control.
+
+### Correctness lens
+
+| Finding | Repair | Control |
+|---|---|---|
+| `AmbientInheritance::InheritExceptDenied` admits every ambient code-loading variable without ever tripping the acknowledgement gate, for 3 of 4 profiles — the permissive policy was the one place the gate never fired | `admitted_code_loading_variables` now counts ambient admission, not only named admission | `ambient_inheritance_cannot_smuggle_a_code_loading_variable`, `ambient_inheritance_is_startable_once_the_risk_is_faced` |
+| `StdinPolicy::Streamed` is validated and shipped as a fixture, but `ProcessHandle` had no operation to drive stdin | `write_stdin`/`close_stdin` added to the port with a closed `StdinWriteOutcome`; the fake records what it accepted | `a_streamed_stdin_plan_can_actually_be_driven_through_the_port`, `a_plan_without_a_streamed_channel_refuses_stdin_rather_than_dropping_it`, `stdin_writes_after_settlement_are_refused` |
+| `CleanupDisposition::Failed` produced `Limitation::CleanupNotObserved`, reporting a *known* failure as unknown confidence | `Limitation::CleanupFailed` added and emitted separately | `an_observed_cleanup_failure_is_not_reported_as_never_observed` |
+| `MissingAuthorizationEvidence` rendered "is missing" for evidence that was supplied but of unknown freshness | message corrected | covered by `authorization_must_be_present_current_and_sufficient` |
+| the shell rule missed long-form inline-command spellings (`--command=...`) | prefix spellings added | `a_long_form_inline_command_is_still_a_shell_invocation` |
+
+### Proof-quality lens
+
+The reviewer empirically defeated three structural controls while the defect
+they guard remained present and compiling. All three are repaired and the
+reviewer's own mutations were replayed against them.
+
+| Defeated control | How it was defeated | Repair | Mutation replay |
+|---|---|---|---|
+| `validation_is_the_only_route_to_a_startable_plan` | a bypass constructor whose signature `rustfmt` wraps across lines slipped past a line-oriented scan | scan whitespace-collapsed, comment-stripped text, and additionally count `ValidatedProcessPlan` *constructions*, which no signature spelling can avoid | KILLED |
+| `the_legacy_seam_is_contained_and_owned` | circular: it checked the containment ledger against itself, so a brand-new unfenced `pub fn` execution seam elsewhere in the crate was invisible | new `no_unrecorded_second_execution_seam_exists_in_the_crate` scans every crate source for functions producing `SubprocessOutput` and requires each to be declared | KILLED |
+| `the_crate_takes_no_dependencies_that_could_carry_domain_semantics` | `[dependencies.log]` dotted-table syntax walked straight past a `line == "[dependencies]"` check | table headers are parsed, and any dotted or `target.*` dependency table fails | KILLED |
+| acceptance claimed the fake "spawns no thread and reads no clock" with nothing asserting it | — | new `the_fake_supervisor_reads_no_clock_and_spawns_no_thread` | — |
+| `PrivateBytes` stdin content is fingerprinted into the plan identity while `SecretValue` is excluded, with the asymmetry undocumented and untested | the two privacy tiers are now named and documented on `PrivateBytes` and `StdinPolicy::Bytes`, with guidance to use `SecretValue` for low-entropy secrets | `stdin_content_identifies_a_plan_while_its_bytes_stay_out_of_the_encoding` |
+| structural scans used a non-recursive `read_dir`, so files moved into submodules in the follow-on lanes would silently stop being covered | `rust_sources_under` recurses | — |
+
+One methodological note worth recording: two mutation runs first reported
+SURVIVED and were false negatives of the harness, not weak controls — a
+malformed patch in one case, and `--locked` refusing to build a newly added
+dependency before any test could run in the other. Both were re-run correctly
+and both controls killed their mutation. A mutation that "survives" without
+the test binary having been built is not evidence of anything.
 
 ## Terminal precedence
 

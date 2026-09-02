@@ -12,16 +12,16 @@ use std::time::Duration;
 
 use perl_subprocess_runtime::process::{
     AmbientInheritance, AuthorizationEvidence, AuthorizationStrength, BudgetChannel,
-    CancellationAcknowledgement, CancellationPolicy, CancellationReason, CaptureBudget,
-    ClaimBoundary, CleanupDisposition, ControlState, CwdPolicy, DeadlinePolicy,
+    CODE_LOADING_VARIABLES, CancellationAcknowledgement, CancellationPolicy, CancellationReason,
+    CaptureBudget, ClaimBoundary, CleanupDisposition, ControlState, CwdPolicy, DeadlinePolicy,
     DecodedViewLimitation, EnvVarName, EnvironmentProjection, EventLedger, EvidenceClass,
     EvidenceFreshness, ExecutableIdentity, ExecutionProfile, FakeSupervisor, HandleDropDisposition,
     LEGACY_CONTAINMENT, Limitation, ObservedSettlement, OperationId, OutputLimitAction,
     OwnerDomain, PROCESS_DOMAIN_SCHEMA_VERSION, PlanId, PlanRejection, PlatformRequirement,
     PrivateBytes, PrivatePath, ProcessEventKind, ProcessPlan, ProcessSupervisor, PublicProjection,
     ResolutionProvenance, RetentionPolicy, SchemaVersion, ScriptedOutcome, ScriptedRun,
-    SecretValue, StdinPolicy, StreamChannel, StreamEvidence, SubjectIdentity, SubjectReference,
-    TerminalDisposition, TerminationPolicy, TreeDisposition, TruncationState,
+    SecretValue, StdinPolicy, StdinWriteOutcome, StreamChannel, StreamEvidence, SubjectIdentity,
+    SubjectReference, TerminalDisposition, TerminationPolicy, TreeDisposition, TruncationState,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -1462,20 +1462,59 @@ fn the_canonical_encoding_of_a_fixture_plan_is_locked_to_the_schema_version() ->
 
 // ────────────────────── structural containment controls ──────────────────────
 
-fn domain_sources() -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/process");
+/// Collect every Rust source under a directory, recursively.
+///
+/// Recursive on purpose: the follow-on lanes this module seeds will add
+/// submodule directories, and a flat scan would silently stop covering the
+/// files it moved without any test failing.
+fn rust_sources_under(
+    root: &std::path::Path,
+) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
     let mut sources = Vec::new();
-    for entry in std::fs::read_dir(&root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|extension| extension == "rs") {
-            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
-            let Some(name) = name else { continue };
-            sources.push((name, std::fs::read_to_string(&path)?));
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                directories.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let relative =
+                    path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+                sources.push((relative, std::fs::read_to_string(&path)?));
+            }
         }
     }
+    sources.sort();
+    Ok(sources)
+}
+
+fn domain_sources() -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/process");
+    let sources = rust_sources_under(&root)?;
     assert!(!sources.is_empty(), "no domain sources were found");
     Ok(sources)
+}
+
+fn crate_sources() -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources = rust_sources_under(&root)?;
+    assert!(!sources.is_empty(), "no crate sources were found");
+    Ok(sources)
+}
+
+/// Collapse a Rust source to single-spaced text.
+///
+/// Signature scans must survive ordinary formatting: `rustfmt` wraps a long
+/// signature across lines, and a line-oriented scan would then miss it.
+fn whitespace_collapsed(source: &str) -> String {
+    // Strip line comments first: prose that names an API must neither satisfy
+    // nor trip a scan that is supposed to be about code.
+    source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .flat_map(|line| line.split_whitespace())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[test]
@@ -1503,27 +1542,49 @@ fn the_domain_never_reaches_for_an_operating_system_process_api() -> TestResult 
 
 #[test]
 fn validation_is_the_only_route_to_a_startable_plan() -> TestResult {
-    // ValidatedProcessPlan's fields are private, so the only way to obtain one
-    // is a function that returns it. If a second such function appears, the
-    // validator has become bypassable.
+    // `ValidatedProcessPlan`'s fields are private, so Rust itself stops any
+    // other crate from forging one. Inside this crate, privacy does not help:
+    // the only guard is that exactly one function builds one. Scan on
+    // whitespace-collapsed text, because a line-oriented scan is defeated by
+    // nothing more adversarial than `rustfmt` wrapping a long signature.
     let mut producers = Vec::new();
+    let mut constructions = Vec::new();
     for (name, source) in domain_sources()? {
-        for line in source.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("//") {
-                continue;
+        let collapsed = whitespace_collapsed(&source);
+        for signature in [
+            "-> ValidatedProcessPlan",
+            "-> Result < ValidatedProcessPlan",
+            "-> Result<ValidatedProcessPlan",
+        ] {
+            let mut from = 0;
+            while let Some(found) = collapsed[from..].find(signature) {
+                producers.push(name.clone());
+                from += found + signature.len();
             }
-            if trimmed.contains("-> Result<ValidatedProcessPlan")
-                || trimmed.contains("-> ValidatedProcessPlan")
-            {
-                producers.push(format!("{name}: {trimmed}"));
+        }
+        // The struct literal is the actual bypass vector: any signature
+        // spelling still has to build the value somewhere. The type's own
+        // `struct` and `impl` blocks are declarations, not constructions.
+        let mut from = 0;
+        while let Some(found) = collapsed[from..].find("ValidatedProcessPlan {") {
+            let absolute = from + found;
+            let preceding = &collapsed[..absolute];
+            let is_declaration = preceding.ends_with("struct ") || preceding.ends_with("impl ");
+            if !is_declaration {
+                constructions.push(name.clone());
             }
+            from = absolute + "ValidatedProcessPlan {".len();
         }
     }
     assert_eq!(
         producers.len(),
         1,
-        "expected exactly one producer of ValidatedProcessPlan, found: {producers:?}"
+        "expected exactly one function returning ValidatedProcessPlan, found: {producers:?}"
+    );
+    assert_eq!(
+        constructions.len(),
+        1,
+        "expected exactly one construction of ValidatedProcessPlan, found: {constructions:?}"
     );
     Ok(())
 }
@@ -1533,21 +1594,51 @@ fn the_crate_takes_no_dependencies_that_could_carry_domain_semantics() -> TestRe
     // A zero-dependency process crate cannot accidentally acquire an LSP, DAP,
     // formatter, or test-framework type, and cannot be pulled into a
     // dependency cycle by a consumer.
+    //
+    // Every table whose name is or ends in `dependencies` counts, and
+    // `[dependencies.foo]` is a dependency declaration exactly as much as an
+    // entry under `[dependencies]` is. An earlier version of this check tested
+    // `line == "[dependencies]"`, which a dotted table walked straight past.
     let manifest =
         std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))?;
-    let mut in_dependencies = false;
+    let mut in_runtime_dependencies = false;
     for line in manifest.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_dependencies = trimmed == "[dependencies]";
+        if let Some(header) = trimmed.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+            let header = header.trim();
+            // `[dependencies.log]` and `[target.'cfg(unix)'.dependencies.log]`
+            // are dependency declarations in themselves.
+            let is_dotted_runtime_dependency =
+                header.split('.').any(|segment| segment == "dependencies")
+                    && !header.ends_with("dependencies");
+            assert!(
+                !is_dotted_runtime_dependency,
+                "unexpected runtime dependency table: [{header}]"
+            );
+            in_runtime_dependencies =
+                header.rsplit('.').next().is_some_and(|last| last == "dependencies");
             continue;
         }
-        if in_dependencies && !trimmed.is_empty() && !trimmed.starts_with('#') {
+        if in_runtime_dependencies && !trimmed.is_empty() && !trimmed.starts_with('#') {
             return Err(format!("unexpected runtime dependency: {trimmed}").into());
         }
     }
     Ok(())
 }
+
+/// The public functions that may hand a caller a raw `SubprocessOutput`.
+///
+/// This is the crate's declared pre-domain execution surface. It is a closed
+/// list on purpose: see the test below.
+const DECLARED_LEGACY_OUTPUT_PRODUCERS: &[&str] = &[
+    // The contained legacy trait method and its two implementations.
+    "run_command",
+    // Its private OS-side internals, reachable only through `run_command`.
+    "run_os_command",
+    "wait_for_child",
+    "wait_without_timeout",
+    "wait_with_timeout",
+];
 
 #[test]
 fn the_legacy_seam_is_contained_and_owned() -> TestResult {
@@ -1567,5 +1658,294 @@ fn the_legacy_seam_is_contained_and_owned() -> TestResult {
         );
     }
     assert!(!perl_subprocess_runtime::process::legacy::any_seam_open_to_new_consumers());
+    Ok(())
+}
+
+#[test]
+fn no_unrecorded_second_execution_seam_exists_in_the_crate() -> TestResult {
+    // The test above only proves the containment ledger is internally
+    // consistent. That is circular on its own: a brand-new, wide-open
+    // execution function added anywhere else in the crate would be a second
+    // production seam and the ledger would never notice.
+    //
+    // So scan the crate for the shape that actually matters — a public
+    // function handing back a `SubprocessOutput` — and require every one of
+    // them to be declared. Adding an unfenced `pub fn run_command_unfenced(..)
+    // -> Result<SubprocessOutput, ..>` fails here, which is negative control
+    // #10 applied to the crate rather than to the ledger's own contents.
+    let mut found: Vec<String> = Vec::new();
+    for (name, source) in crate_sources()? {
+        let collapsed = whitespace_collapsed(&source);
+        let mut from = 0;
+        while let Some(offset) = collapsed[from..].find("fn ") {
+            let start = from + offset + "fn ".len();
+            let rest = &collapsed[start..];
+            let Some(paren) = rest.find('(') else { break };
+            let function_name = rest[..paren].trim().to_string();
+            // Look at this function's signature only, up to its opening brace.
+            let signature_end = rest.find('{').unwrap_or(rest.len());
+            if rest[..signature_end].contains("SubprocessOutput") {
+                found.push(format!("{name}: {function_name}"));
+            }
+            from = start;
+        }
+    }
+    for entry in &found {
+        let Some(function_name) = entry.split(": ").nth(1) else { continue };
+        assert!(
+            DECLARED_LEGACY_OUTPUT_PRODUCERS.contains(&function_name),
+            "undeclared execution seam producing SubprocessOutput: {entry}; \
+             record it in process::legacy::LEGACY_CONTAINMENT and in \
+             DECLARED_LEGACY_OUTPUT_PRODUCERS, or route it through the \
+             supervised domain"
+        );
+    }
+    assert!(!found.is_empty(), "the scan found nothing, so it is not actually scanning");
+    Ok(())
+}
+
+#[test]
+fn the_fake_supervisor_reads_no_clock_and_spawns_no_thread() -> TestResult {
+    // The crate claims the fake is race-free because it has no timeline of its
+    // own. Nothing enforced that claim; a later edit could add a real clock
+    // read or a thread and no test would notice.
+    let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/process/fake.rs");
+    let source = std::fs::read_to_string(&fake)?;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        for forbidden in ["std::thread", "Instant", "SystemTime", "thread::spawn"] {
+            assert!(
+                !trimmed.contains(forbidden),
+                "the fake references {forbidden}, so it is no longer deterministic: {trimmed}"
+            );
+        }
+    }
+    Ok(())
+}
+
+// ─────────────────── controls added after adversarial review ───────────────────
+
+#[test]
+fn ambient_inheritance_cannot_smuggle_a_code_loading_variable() -> TestResult {
+    // The wrong implementation this kills: counting a code-loading variable as
+    // "admitted" only when it is named in `allowed` or `additions`. Under
+    // `InheritExceptDenied` every ambient variable is inherited without being
+    // named, so that reading makes the most permissive policy the one place
+    // the acknowledgement gate never fires.
+    let permissive = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        resolved_perl(),
+        EnvironmentProjection::new("env:1", AmbientInheritance::InheritExceptDenied),
+    )
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(
+        matches!(
+            rejection_of(permissive)?,
+            PlanRejection::UnacknowledgedCodeLoadingVariable { .. }
+        ),
+        "ambient inheritance admitted a code-loading variable without acknowledgement"
+    );
+    Ok(())
+}
+
+#[test]
+fn ambient_inheritance_is_startable_once_the_risk_is_faced() -> TestResult {
+    // Two ways to satisfy the gate, and both must work or the rule is not a
+    // gate but a ban on the policy.
+    let acknowledged = |projection: EnvironmentProjection| {
+        ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            resolved_perl(),
+            projection,
+        )
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build()
+    };
+
+    // 1. Acknowledge the injection risk explicitly.
+    let owned = EnvironmentProjection::new("env:1", AmbientInheritance::InheritExceptDenied)
+        .acknowledging_code_loading();
+    assert!(acknowledged(owned).validate().is_ok());
+
+    // 2. Or deny every code-loading vector, so none is admitted at all.
+    let mut denied = EnvironmentProjection::new("env:2", AmbientInheritance::InheritExceptDenied);
+    for name in CODE_LOADING_VARIABLES {
+        denied = denied.deny(EnvVarName::new(*name));
+    }
+    assert!(acknowledged(denied).validate().is_ok());
+    Ok(())
+}
+
+#[test]
+fn a_streamed_stdin_plan_can_actually_be_driven_through_the_port() -> TestResult {
+    // A domain that validates "the caller drives stdin" while offering no
+    // operation to drive it forces every backend to invent its own channel.
+    let supervisor = FakeSupervisor::new();
+    supervisor.script_run(ScriptedRun::exiting(0));
+    let validated = valid_interactive_session().validate()?;
+    let mut handle = match supervisor.start(validated) {
+        Ok(handle) => handle,
+        Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
+    };
+    assert_eq!(handle.write_stdin(b"print 1;\n"), StdinWriteOutcome::Accepted { bytes: 9 });
+    assert_eq!(handle.write_stdin(b"exit\n"), StdinWriteOutcome::Accepted { bytes: 5 });
+    assert_eq!(handle.close_stdin(), StdinWriteOutcome::Accepted { bytes: 0 });
+    // Closing twice is refused, never a silent success.
+    assert_eq!(handle.close_stdin(), StdinWriteOutcome::AlreadyClosed);
+    assert_eq!(handle.write_stdin(b"more"), StdinWriteOutcome::AlreadyClosed);
+    let _ = handle.wait();
+    assert_eq!(supervisor.stdin_written(), b"print 1;\nexit\n");
+    Ok(())
+}
+
+#[test]
+fn a_plan_without_a_streamed_channel_refuses_stdin_rather_than_dropping_it() -> TestResult {
+    // The wrong implementation this kills: accepting bytes for a plan whose
+    // stdin is closed and silently discarding them, so a caller believes its
+    // input reached the child.
+    let supervisor = FakeSupervisor::new();
+    supervisor.script_run(ScriptedRun::exiting(0));
+    let validated = valid_linux_one_shot().validate()?;
+    let mut handle = match supervisor.start(validated) {
+        Ok(handle) => handle,
+        Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
+    };
+    assert_eq!(handle.write_stdin(b"ignored"), StdinWriteOutcome::NotStreamed);
+    assert_eq!(handle.close_stdin(), StdinWriteOutcome::NotStreamed);
+    assert!(!StdinWriteOutcome::NotStreamed.is_accepted());
+    let _ = handle.wait();
+    assert!(supervisor.stdin_written().is_empty());
+    Ok(())
+}
+
+#[test]
+fn stdin_writes_after_settlement_are_refused() -> TestResult {
+    let supervisor = FakeSupervisor::new();
+    supervisor.script_run(ScriptedRun::exiting(0));
+    let validated = valid_interactive_session().validate()?;
+    let mut handle = match supervisor.start(validated) {
+        Ok(handle) => handle,
+        Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
+    };
+    while handle.next_event().is_some() {}
+    assert_eq!(handle.write_stdin(b"too late"), StdinWriteOutcome::RunSettled);
+    Ok(())
+}
+
+#[test]
+fn an_observed_cleanup_failure_is_not_reported_as_never_observed() -> TestResult {
+    // The wrong implementation this kills: folding "we checked and cleanup
+    // failed" into the same limitation as "we never checked". A consumer
+    // reading only the limitations would see unknown confidence for a case the
+    // supervisor knows went wrong.
+    let failed = result_with(
+        StreamEvidence::empty(StreamChannel::Stdout),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CleanupFailed,
+        CleanupDisposition::Failed,
+        TreeDisposition::GroupTerminated,
+    )?;
+    assert!(failed.limitations().contains(&Limitation::CleanupFailed));
+    assert!(!failed.limitations().contains(&Limitation::CleanupNotObserved));
+    assert!(!failed.claims_tree_cleanup());
+
+    let unobserved = result_with(
+        StreamEvidence::empty(StreamChannel::Stdout),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::TimedOut,
+        CleanupDisposition::NotObserved,
+        TreeDisposition::GroupTerminated,
+    )?;
+    assert!(unobserved.limitations().contains(&Limitation::CleanupNotObserved));
+    assert!(!unobserved.limitations().contains(&Limitation::CleanupFailed));
+    Ok(())
+}
+
+#[test]
+fn a_long_form_inline_command_is_still_a_shell_invocation() -> TestResult {
+    for argument in ["--command", "--command=perl script.pl | tee out"] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            ExecutableIdentity::resolved(
+                "pwsh",
+                PrivatePath::new(PathBuf::from("/usr/bin/pwsh")),
+                ResolutionProvenance::ConfiguredAbsolutePath,
+            ),
+            allow_listed_environment(),
+        )
+        .argv([argument])
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert!(
+            matches!(rejection_of(plan)?, PlanRejection::ShellInvocationRejected { .. }),
+            "{argument} was not refused"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn stdin_content_identifies_a_plan_while_its_bytes_stay_out_of_the_encoding() -> TestResult {
+    // `PrivateBytes` sits in the fingerprinted privacy tier alongside
+    // `PrivatePath`, not the excluded tier that `SecretValue` occupies. Pin
+    // both halves of that: the raw bytes never appear, and the content still
+    // distinguishes two plans.
+    let with_stdin = |source: &[u8]| {
+        ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("compile-check"),
+            OwnerDomain::CompileService,
+            ExecutionProfile::LinuxOneShot,
+            resolved_perl(),
+            allow_listed_environment(),
+        )
+        .argv(["-c"])
+        .stdin(StdinPolicy::Bytes(PrivateBytes::new(source.to_vec())))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build()
+    };
+
+    let marker = b"my $distinctive_identifier = 1;";
+    let plan = with_stdin(marker);
+    let bytes = plan.canonical_bytes();
+    assert!(
+        !bytes.windows(marker.len()).any(|window| window == marker),
+        "raw stdin content appeared in the canonical encoding"
+    );
+    assert!(!format!("{plan:?}").contains("distinctive_identifier"));
+    assert_ne!(
+        with_stdin(b"print 1;").semantic_fingerprint(),
+        with_stdin(b"print 2;").semantic_fingerprint(),
+        "differing stdin content must give differing plan identities"
+    );
     Ok(())
 }

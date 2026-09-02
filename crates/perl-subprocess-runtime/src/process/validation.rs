@@ -40,7 +40,11 @@ const SHELL_PROGRAMS: &[&str] = &[
 
 /// Flags that hand a shell an inline command string.
 const INLINE_COMMAND_FLAGS: &[&str] =
-    &["-c", "-command", "/c", "/C", "-Command", "-EncodedCommand"];
+    &["-c", "-command", "/c", "/C", "-Command", "-EncodedCommand", "--command"];
+
+/// Prefixes of inline-command flags that carry the command in the same token
+/// (`--command=...`), which an exact-match list alone would miss.
+const INLINE_COMMAND_PREFIXES: &[&str] = &["--command=", "-Command:", "--command:"];
 
 /// Why a plan may not be started.
 ///
@@ -205,7 +209,9 @@ impl fmt::Display for PlanRejection {
             Self::StaleSubjectIdentity { reference } => {
                 write!(f, "subject reference {reference} is not current")
             }
-            Self::MissingAuthorizationEvidence => f.write_str("authorization evidence is missing"),
+            Self::MissingAuthorizationEvidence => {
+                f.write_str("authorization evidence is missing or of unestablished freshness")
+            }
             Self::StaleAuthorizationEvidence => {
                 f.write_str("authorization evidence is not current")
             }
@@ -317,9 +323,12 @@ fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
     let base = logical_name.rsplit(['/', '\\']).next().unwrap_or(logical_name);
     let is_shell = SHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(base));
     is_shell
-        && argv
-            .iter()
-            .any(|arg| INLINE_COMMAND_FLAGS.iter().any(|flag| flag.eq_ignore_ascii_case(arg)))
+        && argv.iter().any(|arg| {
+            INLINE_COMMAND_FLAGS.iter().any(|flag| flag.eq_ignore_ascii_case(arg))
+                || INLINE_COMMAND_PREFIXES.iter().any(|prefix| {
+                    arg.len() >= prefix.len() && arg[..prefix.len()].eq_ignore_ascii_case(prefix)
+                })
+        })
 }
 
 fn validate_cwd(plan: &ProcessPlan) -> Result<(), PlanRejection> {
@@ -348,7 +357,7 @@ fn validate_environment(plan: &ProcessPlan) -> Result<(), PlanRejection> {
             variable: variable.to_string(),
         });
     }
-    let admitted_code_loading: Vec<&EnvVarName> = environment.admitted_code_loading_variables();
+    let admitted_code_loading: Vec<EnvVarName> = environment.admitted_code_loading_variables();
     if plan.profile() == ExecutionProfile::HermeticProbe
         && (environment.inheritance() != AmbientInheritance::DenyAll
             || !admitted_code_loading.is_empty())

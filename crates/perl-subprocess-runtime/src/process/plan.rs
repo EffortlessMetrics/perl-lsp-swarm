@@ -22,6 +22,11 @@ pub enum StdinPolicy {
     /// stdin is closed immediately.
     Closed,
     /// A fixed, private byte payload is written and stdin is then closed.
+    ///
+    /// The payload's *digest* participates in the plan's canonical identity
+    /// so that two plans feeding different input are distinguishable; the
+    /// bytes themselves never do. See [`PrivateBytes`] for the privacy tier
+    /// this implies and when to use a [`super::SecretValue`] instead.
     Bytes(PrivateBytes),
     /// The caller drives stdin over the run's lifetime.
     ///

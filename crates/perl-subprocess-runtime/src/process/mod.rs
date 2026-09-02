@@ -67,6 +67,7 @@ pub use plan::{
 };
 pub use port::{
     CancellationAcknowledgement, HandleDropDisposition, ProcessHandle, ProcessSupervisor,
+    StdinWriteOutcome,
 };
 pub use result::{
     BackendIdentity, CancellationReason, CleanupDisposition, ControlState, DecodedViewLimitation,

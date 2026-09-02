@@ -410,7 +410,12 @@ pub enum Limitation {
     /// Only the direct child was terminated; descendants are unaccounted for.
     DescendantsUnaccounted,
     /// Cleanup was never observed.
+    ///
+    /// Distinct from [`Self::CleanupFailed`]: this is "we do not know",
+    /// not "we checked and it did not work".
     CleanupNotObserved,
+    /// Cleanup was attempted, observed, and failed.
+    CleanupFailed,
     /// Retained output is not the whole of what the child produced.
     OutputIncomplete,
     /// A text view of the retained bytes is lossy.
@@ -473,8 +478,10 @@ impl ProcessResult {
         if backend.evidence_class() == EvidenceClass::Fake {
             limitations.push(Limitation::FakeEvidenceOnly);
         }
-        if !cleanup.is_proven() {
-            limitations.push(Limitation::CleanupNotObserved);
+        match cleanup {
+            CleanupDisposition::Failed => limitations.push(Limitation::CleanupFailed),
+            CleanupDisposition::NotObserved => limitations.push(Limitation::CleanupNotObserved),
+            CleanupDisposition::Completed | CleanupDisposition::NotRequired => {}
         }
         if tree == TreeDisposition::ImmediateChildOnly || tree == TreeDisposition::Unknown {
             limitations.push(Limitation::DescendantsUnaccounted);

@@ -13,8 +13,10 @@ use super::encoding::PlanFingerprint;
 use super::event::{EventLedger, ProcessEvent, ProcessEventKind, TerminationPhase};
 use super::identity::{PlanId, RunId};
 use super::plan::CancellationPolicy;
+use super::plan::StdinPolicy;
 use super::port::{
     CancellationAcknowledgement, HandleDropDisposition, ProcessHandle, ProcessSupervisor,
+    StdinWriteOutcome,
 };
 use super::result::{
     BackendIdentity, CancellationReason, CleanupDisposition, ControlState, EvidenceClass,
@@ -118,6 +120,7 @@ pub struct FakeSupervisor {
     outcomes: Mutex<VecDeque<ScriptedOutcome>>,
     recorded_plans: Mutex<Vec<ValidatedProcessPlan>>,
     drop_dispositions: Arc<Mutex<Vec<HandleDropDisposition>>>,
+    stdin_written: Arc<Mutex<Vec<u8>>>,
     next_run: Mutex<u64>,
 }
 
@@ -151,6 +154,14 @@ impl FakeSupervisor {
         lock(&self.drop_dispositions).clone()
     }
 
+    /// Every byte accepted through a caller-driven stdin channel, in order.
+    ///
+    /// A consumer test asserts against this rather than against a promise
+    /// that the bytes went somewhere.
+    pub fn stdin_written(&self) -> Vec<u8> {
+        lock(&self.stdin_written).clone()
+    }
+
     fn allocate_run_id(&self) -> RunId {
         let mut next = lock(&self.next_run);
         let id = *next;
@@ -172,6 +183,7 @@ impl ProcessSupervisor for FakeSupervisor {
         let plan_id = plan.plan().plan_id().clone();
         let fingerprint = plan.fingerprint();
         let cancellable = plan.plan().cancellation() != CancellationPolicy::NotCancellable;
+        let streamed_stdin = matches!(plan.plan().stdin(), StdinPolicy::Streamed);
         lock(&self.recorded_plans).push(plan);
 
         let outcome = lock(&self.outcomes).pop_front();
@@ -185,7 +197,9 @@ impl ProcessSupervisor for FakeSupervisor {
                 run_id,
                 *run,
                 cancellable,
+                streamed_stdin,
                 Arc::clone(&self.drop_dispositions),
+                Arc::clone(&self.stdin_written),
             ))),
             None => Err(Box::new(refusal_result(
                 plan_id,
@@ -228,6 +242,9 @@ struct FakeHandle {
     pending: VecDeque<ProcessEventKind>,
     run: ScriptedRun,
     cancellable: bool,
+    streamed_stdin: bool,
+    stdin_closed: bool,
+    stdin_written: Arc<Mutex<Vec<u8>>>,
     settled: bool,
     drop_dispositions: Arc<Mutex<Vec<HandleDropDisposition>>>,
 }
@@ -239,7 +256,9 @@ impl FakeHandle {
         run_id: RunId,
         run: ScriptedRun,
         cancellable: bool,
+        streamed_stdin: bool,
         drop_dispositions: Arc<Mutex<Vec<HandleDropDisposition>>>,
+        stdin_written: Arc<Mutex<Vec<u8>>>,
     ) -> Self {
         let pending = run.events.iter().cloned().collect();
         Self {
@@ -250,6 +269,9 @@ impl FakeHandle {
             pending,
             run,
             cancellable,
+            streamed_stdin,
+            stdin_closed: false,
+            stdin_written,
             settled: false,
             drop_dispositions,
         }
@@ -295,6 +317,34 @@ impl ProcessHandle for FakeHandle {
         // The ledger refuses post-terminal events; a rejection here means the
         // script was malformed, and the stream simply ends.
         self.ledger.admit(kind).ok()
+    }
+
+    fn write_stdin(&mut self, bytes: &[u8]) -> StdinWriteOutcome {
+        if self.ledger.is_settled() {
+            return StdinWriteOutcome::RunSettled;
+        }
+        if !self.streamed_stdin {
+            return StdinWriteOutcome::NotStreamed;
+        }
+        if self.stdin_closed {
+            return StdinWriteOutcome::AlreadyClosed;
+        }
+        lock(&self.stdin_written).extend_from_slice(bytes);
+        StdinWriteOutcome::Accepted { bytes: bytes.len() }
+    }
+
+    fn close_stdin(&mut self) -> StdinWriteOutcome {
+        if self.ledger.is_settled() {
+            return StdinWriteOutcome::RunSettled;
+        }
+        if !self.streamed_stdin {
+            return StdinWriteOutcome::NotStreamed;
+        }
+        if self.stdin_closed {
+            return StdinWriteOutcome::AlreadyClosed;
+        }
+        self.stdin_closed = true;
+        StdinWriteOutcome::Accepted { bytes: 0 }
     }
 
     fn cancel(&mut self, reason: CancellationReason) -> CancellationAcknowledgement {

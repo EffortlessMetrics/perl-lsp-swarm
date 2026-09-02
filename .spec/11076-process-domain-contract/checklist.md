@@ -18,7 +18,7 @@ crates/perl-subprocess-runtime/src/process/
   port.rs         ProcessSupervisor, ProcessHandle, drop contract
   fake.rs         FakeSupervisor, ScriptedRun
   legacy.rs       containment record for the pre-domain seam
-crates/perl-subprocess-runtime/tests/process_domain_contract.rs   49 tests
+crates/perl-subprocess-runtime/tests/process_domain_contract.rs   59 tests
 ```
 
 ## Schema version and digest
@@ -43,6 +43,19 @@ consumers, removal owned by `#1975`, with the ten capabilities they cannot
 express. `SubprocessRuntime`'s own rustdoc states the same. Enforcement of "no
 new private spawn" is #1975's ratchet, not this PR's.
 
+## Privacy tiers
+
+Two tiers, now explicit in the types' own documentation:
+
+- **fingerprinted** — `PrivatePath`, `PrivateBytes`: the raw value never
+  reaches a canonical encoding, `Debug` output, or a public identity, but a
+  digest does, so differing content gives differing plan identities;
+- **excluded** — `SecretValue`: contributes nothing at all, not even a digest,
+  because a digest of a low-entropy secret is a guessable secret.
+
+A password or token belongs in a `SecretValue` environment addition, never in
+stdin bytes.
+
 ## Deliberate non-normalizations
 
 - No async arrangement is imposed. `ProcessHandle` is synchronous; #11078 may
@@ -51,6 +64,9 @@ new private spawn" is #1975's ratchet, not this PR's.
   #11085's.
 - No `Instant`/`SystemTime` use anywhere in the domain, so it stays
   wasm32-compatible like the rest of the crate.
+- `PROCESS_DOMAIN_SCHEMA_VERSION` stays at 1 through the post-review repair.
+  Version movement protects *shipped* meaning; v1 has never been on `main`, so
+  there is no consumer for an amendment to be incompatible with.
 - Env var names are compared byte-exact; no case folding, which is correct on
   the Linux profile this train targets and is a known gap for a future Windows
   profile.

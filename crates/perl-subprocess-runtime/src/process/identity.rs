@@ -101,6 +101,25 @@ impl fmt::Debug for SecretValue {
 }
 
 /// Bytes fed to a child's stdin, treated as private input.
+///
+/// # Privacy tier
+///
+/// The domain has two privacy tiers, and this type is the *fingerprinted*
+/// one, alongside [`PrivatePath`]:
+///
+/// - **Fingerprinted** ([`PrivatePath`], `PrivateBytes`): the raw value never
+///   appears in a canonical encoding, `Debug` output, or a public identity,
+///   but a digest of it does, so two plans with different content have
+///   different identities. Appropriate for program input — a Perl source file
+///   piped to `perl -c` is high-entropy content whose identity is worth
+///   having.
+/// - **Excluded** ([`SecretValue`]): contributes nothing at all, not even a
+///   digest, because a digest of a low-entropy secret is a guessable secret.
+///
+/// A short, guessable value that must not be identifiable — a password, a
+/// token — belongs in a [`SecretValue`] environment addition, **not** in
+/// stdin bytes. Passing one here means its digest reaches the plan
+/// fingerprint.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PrivateBytes(Vec<u8>);
 

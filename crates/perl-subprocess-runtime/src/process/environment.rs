@@ -210,12 +210,33 @@ impl EnvironmentProjection {
     }
 
     /// Names admitted into the child that are known code-loading vectors.
-    pub fn admitted_code_loading_variables(&self) -> Vec<&EnvVarName> {
-        self.allowed
+    ///
+    /// Admission is not only what the projection names explicitly.
+    /// [`AmbientInheritance::InheritExceptDenied`] passes every ambient
+    /// variable through, so under that policy a code-loading variable is
+    /// admitted unless it is explicitly denied — even though it appears in
+    /// neither `allowed` nor `additions`. Counting only the named sets would
+    /// make the permissive policy the one place the acknowledgement gate
+    /// never fires, which is precisely backwards.
+    pub fn admitted_code_loading_variables(&self) -> Vec<EnvVarName> {
+        let mut admitted: Vec<EnvVarName> = self
+            .allowed
             .iter()
             .chain(self.additions.keys())
             .filter(|name| is_code_loading_variable(name))
-            .collect()
+            .cloned()
+            .collect();
+        if self.inheritance == AmbientInheritance::InheritExceptDenied {
+            admitted.extend(
+                CODE_LOADING_VARIABLES
+                    .iter()
+                    .map(|name| EnvVarName::new(*name))
+                    .filter(|name| !self.denied.contains(name)),
+            );
+        }
+        admitted.sort();
+        admitted.dedup();
+        admitted
     }
 
     /// Names that appear in contradictory rules.
