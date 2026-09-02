@@ -959,15 +959,24 @@ fn cursor_in_regex_capture(regex: &regex::Regex, text: &str, cursor: usize, grou
         .any(|cap| cap.get(group).is_some_and(|m| cursor >= m.start() && cursor <= m.end()))
 }
 
+/// Which `::`-separated component of a fully-qualified name the cursor is on.
+///
+/// Shared with `references.rs` so go-to-definition and find-references answer the
+/// same question with one implementation instead of two drifting copies (#1849).
 #[cfg(feature = "workspace")]
 #[derive(Debug, PartialEq, Eq)]
-enum FqnCursorComponent {
+pub(super) enum FqnCursorComponent {
+    /// The cursor is on a package component or on a `::` separator -- not on the
+    /// final component, so the match does not name the sub the caller is after.
     Prefix,
+    /// The cursor is on the final component, which names the sub.
     Final { package: String, name: String },
 }
 
+/// Resolve which component of the fully-qualified name under `cursor` the cursor
+/// is on, or `None` when the cursor is not inside a `::`-qualified match.
 #[cfg(feature = "workspace")]
-fn fqn_component_at_cursor(
+pub(super) fn fqn_component_at_cursor(
     regex: &regex::Regex,
     text: &str,
     cursor: usize,

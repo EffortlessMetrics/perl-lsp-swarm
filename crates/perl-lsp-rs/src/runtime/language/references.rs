@@ -38,6 +38,11 @@ use crate::runtime::routing::{IndexAccessMode, route_index_access};
 
 static QUALIFIED_NAME_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
+/// Half-width of the text window scanned for a fully-qualified name around the
+/// cursor. Both the cursor-component guard and the qualified-name fallback use
+/// this window, so they must agree on which match contains the cursor.
+const QUALIFIED_NAME_CURSOR_RADIUS: usize = 50;
+
 const REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS: usize = 128;
 const REFERENCE_TEXT_FALLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 
@@ -725,6 +730,48 @@ impl LspServer {
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let offset = self.pos16_to_offset(doc, line, character);
+
+                    // #1849: a cursor on a package-prefix component of a
+                    // fully-qualified name -- `Foo` or the `::` in `Foo::bar` --
+                    // does not name the sub `bar`, so it has no references to
+                    // report for it. This must run *before* any tier consumes
+                    // the symbol key: `symbol_at_cursor_with_source` below always
+                    // takes the final `::` component regardless of cursor
+                    // position, and every tier (semantic source-backed, index
+                    // `find_refs`, partial index, text fallback) is driven by
+                    // that key. Guarding only the qualified-name regex fallback
+                    // further down leaves the earlier tiers answering with the
+                    // sub's references. `navigation.rs` returns no location for
+                    // the same cursor; find-references returns no reference.
+                    #[cfg(feature = "workspace")]
+                    if let Some(qualified_name_re) = get_qualified_name_regex() {
+                        let (text_start, text_around) = self.get_text_window_around_offset(
+                            &doc.text,
+                            offset,
+                            QUALIFIED_NAME_CURSOR_RADIUS,
+                        );
+                        let cursor_in_text = offset.min(doc.text.len()).saturating_sub(text_start);
+                        if matches!(
+                            super::navigation::fqn_component_at_cursor(
+                                qualified_name_re,
+                                &text_around,
+                                cursor_in_text,
+                            ),
+                            Some(super::navigation::FqnCursorComponent::Prefix)
+                        ) {
+                            return Ok((
+                                Some(json!([])),
+                                ReferencesAnsweringTier::Empty,
+                                "none",
+                                0,
+                                0,
+                                start.elapsed().as_micros(),
+                                source_backed_attempt.clone(),
+                                fallback_receipt.clone(),
+                            ));
+                        }
+                    }
+
                     let needle = token_under_cursor(&doc.text, line as usize, character as usize)
                         .unwrap_or_default();
 
@@ -1065,9 +1112,11 @@ impl LspServer {
                                 }
 
                                 // Regex-based fallback for fully-qualified symbols like Package::sub references
-                                let radius = 50;
-                                let (text_start, text_around) =
-                                    self.get_text_window_around_offset(&doc.text, offset, radius);
+                                let (text_start, text_around) = self.get_text_window_around_offset(
+                                    &doc.text,
+                                    offset,
+                                    QUALIFIED_NAME_CURSOR_RADIUS,
+                                );
                                 let cursor_in_text =
                                     offset.min(doc.text.len()).saturating_sub(text_start);
 
@@ -1080,20 +1129,13 @@ impl LspServer {
                                         {
                                             let parts: Vec<&str> = m.as_str().split("::").collect();
                                             if parts.len() >= 2 {
-                                                // Only search for references when the cursor
-                                                // is on the final component (sub/function name).
-                                                // If the cursor is on a package-prefix component
-                                                // (e.g. `Foo` in `Foo::bar`), skip this match
-                                                // so we do not return references to the wrong
-                                                // symbol.
-                                                let cursor_rel =
-                                                    cursor_in_text.saturating_sub(m.start());
-                                                let last_sep_offset =
-                                                    m.as_str().rfind("::").map_or(0, |p| p + 2);
-                                                if cursor_rel < last_sep_offset {
-                                                    break;
-                                                }
-
+                                                // A cursor on a package-prefix component never
+                                                // reaches here: the `FqnCursorComponent::Prefix`
+                                                // guard at the top of this function already
+                                                // returned an empty result over the same text
+                                                // window (#1849). Reaching this point therefore
+                                                // means the cursor is on the final component,
+                                                // which is the sub name.
                                                 let name =
                                                     parts.last().copied().unwrap_or("").to_string();
                                                 let pkg = parts[..parts.len() - 1].join("::");
@@ -2991,6 +3033,83 @@ mod tests {
             receipt.get("latency_us").and_then(serde_json::Value::as_u64).is_some(),
             "latency_us field must be present and numeric"
         );
+        Ok(())
+    }
+
+    /// #1849: a cursor on a package-prefix component of a fully-qualified name
+    /// answers on the `empty` tier, not on a tier derived from the final
+    /// component's symbol key.
+    ///
+    /// This pins the seam the integration regression in
+    /// `tests/navigation_regression_tests.rs` observes from the outside: before
+    /// the fix the same cursor answered on `workspace_exact` (or another
+    /// symbol-key-driven tier) with the sub's references.
+    #[test]
+    fn handle_references_empty_tier_when_cursor_on_qualified_name_prefix()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let uri = "file:///test/qualified_prefix.pl";
+        //         0         1
+        //         0123456789012345678
+        // line 4: my $r = Foo::bar();
+        let text = concat!(
+            "package Foo;\n",        // 0
+            "sub bar { 1 }\n",       // 1
+            "package main;\n",       // 2
+            "\n",                    // 3
+            "my $r = Foo::bar();\n", // 4
+        );
+
+        // `character` 8 is `F` of the `Foo` prefix; 13 is `b` of the final
+        // component `bar`. The final-component case is the negative control: it
+        // must NOT report the empty tier, otherwise the prefix assertion would
+        // pass for the trivial reason that this fixture resolves nothing at all.
+        let answering_tier_at = |character: u64| -> Result<String, Box<dyn Error>> {
+            let output = Arc::new(Mutex::new(
+                Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+            ));
+            let server = LspServer::with_output(output);
+            server.test_apply_did_open(uri, text, 1)?;
+            server.test_handle_references(Some(serde_json::json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 4, "character": character},
+                "context": {"includeDeclaration": true}
+            })))?;
+
+            let explanation = server
+                .handle_execute_command(Some(serde_json::json!({
+                    "command": "perl.explainProviderDecision",
+                    "arguments": [{"provider": "references"}]
+                })))?
+                .ok_or("missing explain-provider-decision response")?;
+            Ok(explanation
+                .get("request_receipt")
+                .and_then(serde_json::Value::as_object)
+                .ok_or("missing request_receipt")?
+                .get("answering_tier")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("missing answering_tier")?
+                .to_owned())
+        };
+
+        let final_component_tier = answering_tier_at(13)?;
+        assert_ne!(
+            final_component_tier, "empty",
+            "negative control failed: cursor on the final component `bar` must be \
+             answered by a real tier, got `{final_component_tier}`"
+        );
+
+        let prefix_tier = answering_tier_at(8)?;
+        assert_eq!(
+            prefix_tier, "empty",
+            "cursor on the `Foo` prefix of `Foo::bar` must answer on the empty tier, \
+             got `{prefix_tier}` -- the prefix component does not name the sub `bar`"
+        );
+
         Ok(())
     }
 
