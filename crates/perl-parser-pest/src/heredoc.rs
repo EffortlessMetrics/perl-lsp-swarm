@@ -709,8 +709,35 @@ fn strip_body_indent(body: &str, indent: &str) -> String {
     out
 }
 
-fn split_inclusive_lines(text: &str) -> impl Iterator<Item = &str> {
-    text.split_inclusive('\n')
+/// Split `text` into lines on LF, CRLF, and bare CR, keeping the terminator.
+///
+/// Must match `physical_lines`: splitting only on LF leaves a bare-CR body as
+/// one line, so `<<~` would strip indentation from its first line only.
+fn split_inclusive_lines(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let end = match bytes[index] {
+            b'\n' => index + 1,
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => index + 2,
+            b'\r' => index + 1,
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        if let Some(line) = text.get(start..end) {
+            lines.push(line);
+        }
+        start = end;
+        index = end;
+    }
+    if let Some(rest) = text.get(start..).filter(|rest| !rest.is_empty()) {
+        lines.push(rest);
+    }
+    lines
 }
 
 // --- Opener recognition ----------------------------------------------------
@@ -744,6 +771,12 @@ struct OpenConstruct {
     open: u8,
     close: u8,
     depth: usize,
+    /// Sections still to skip after this one closes.
+    ///
+    /// `s`, `tr`, and `y` take two. Forgetting the second one would scan a
+    /// multiline replacement as code, so `<<MARKER` inside it would delete
+    /// following source.
+    sections_remaining: usize,
 }
 
 /// `__DATA__` / `__END__` end the code region for the rest of the source.
@@ -825,6 +858,14 @@ fn scan_line_openers(
             // A `/` in term position opens a bare regex; in operator position
             // it is division. The grammar makes the same split, so `/<<EOF/`
             // must not yield an opener.
+            // `//` is a single token: Perl's defined-or in operator position,
+            // an empty pattern in term position. Letting the second slash open
+            // a regex scan leaves an unterminated construct that carries to the
+            // next line and swallows a later heredoc.
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index += 2;
+                last_term_end = index;
+            }
             b'/' if is_term_position(line, bytes, index, last_term_end) => {
                 let (next, open) = skip_delimited(bytes, index, b'/');
                 if let Some(open) = open {
@@ -876,7 +917,35 @@ fn continue_construct(bytes: &[u8], construct: OpenConstruct) -> (usize, Option<
         } else if byte == construct.close {
             depth -= 1;
             if depth == 0 {
-                return (index + 1, None);
+                let next = index + 1;
+                if construct.sections_remaining == 0 {
+                    return (next, None);
+                }
+                // A two-section operator: skip its replacement before any of
+                // this line is treated as code again.
+                let opener = if balanced {
+                    let mut cursor = next;
+                    while cursor < bytes.len() && matches!(bytes[cursor], b' ' | b'\t') {
+                        cursor += 1;
+                    }
+                    match bytes.get(cursor) {
+                        Some(byte) => {
+                            index = cursor;
+                            *byte
+                        }
+                        None => {
+                            return (bytes.len(), Some(OpenConstruct { depth: 1, ..construct }));
+                        }
+                    }
+                } else {
+                    index = next.saturating_sub(1);
+                    construct.open
+                };
+                let (after, still_open) = skip_delimited(bytes, index, opener);
+                return match still_open {
+                    Some(open) => (bytes.len(), Some(open)),
+                    None => (after, None),
+                };
             }
         }
         index += 1;
@@ -901,7 +970,10 @@ fn skip_quoted(bytes: &[u8], open: usize, delimiter: u8) -> (usize, Option<OpenC
         }
     }
     // Unterminated on this line: the run continues on the next one.
-    (bytes.len(), Some(OpenConstruct { open: delimiter, close: delimiter, depth: 1 }))
+    (
+        bytes.len(),
+        Some(OpenConstruct { open: delimiter, close: delimiter, depth: 1, sections_remaining: 0 }),
+    )
 }
 
 /// Quote-like operators whose contents must not be scanned for openers.
@@ -954,7 +1026,11 @@ fn skip_quote_like(
         };
         let (next, still_open) = skip_delimited(bytes, end, opener);
         if let Some(open) = still_open {
-            return Some((bytes.len(), Some(open)));
+            let remaining = sections - section - 1;
+            return Some((
+                bytes.len(),
+                Some(OpenConstruct { sections_remaining: remaining, ..open }),
+            ));
         }
         end = next;
     }
@@ -999,7 +1075,7 @@ fn skip_delimited(bytes: &[u8], open_index: usize, open: u8) -> (usize, Option<O
         index += 1;
     }
     // Unterminated on this line: the construct continues on the next one.
-    (bytes.len(), Some(OpenConstruct { open, close, depth }))
+    (bytes.len(), Some(OpenConstruct { open, close, depth, sections_remaining: 0 }))
 }
 
 const fn is_word_byte(byte: u8) -> bool {

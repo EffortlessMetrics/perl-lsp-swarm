@@ -1014,3 +1014,90 @@ fn when_openers_exceed_the_depth_budget_then_the_excess_is_recorded_not_dropped(
         "an over-depth opener owns no body and claims no terminator"
     );
 }
+
+// --- Review round 4 ---------------------------------------------------------
+
+#[test]
+fn when_defined_or_precedes_a_heredoc_then_the_body_is_still_owned() {
+    // `//` is one token. Letting its second slash open a regex scan left an
+    // unterminated construct that carried to the next line and swallowed the
+    // heredoc below it — a false *negative* reached through a false positive.
+    for source in [
+        "my $x = $a // 7;\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "my $x = undef // 7;\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "my $x = f() // 7;\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(
+            scan.captures().len(),
+            grammar_openers(source),
+            "scanner and grammar must agree for {source:?}"
+        );
+        assert_eq!(
+            heredoc_contents(source),
+            vec![("EOF".to_string(), "body\n".to_string())],
+            "the heredoc after a `//` must own its body: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn when_a_substitution_spans_lines_then_its_replacement_is_not_scanned_as_code() {
+    // `s{...}\n{...}` has two sections. Forgetting the second across a line
+    // break scanned the replacement as code, so `<<MARKER` inside it would be
+    // taken as an opener and delete following source.
+    // The discriminating shape is a *first* section that spans lines: the
+    // carried state must remember that a replacement section still follows, or
+    // the scanner resumes inside it and reads `<<EOF` as an opener.
+    for source in [
+        "$t =~ s{aa\n bb}{<<EOF};\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "$t =~ tr{aa\n bb}{<<EOF};\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(scan.captures().len(), 1, "only the real heredoc may be owned: {source:?}");
+        assert_eq!(scan.captures()[0].content(), "body\n", "for {source:?}");
+        assert!(
+            scan.stripped().contains("{<<EOF};"),
+            "the replacement section must survive in the parsed text: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn when_the_grammar_over_reports_inside_a_multiline_substitution_then_it_is_not_complete()
+-> Result<(), String> {
+    // The grammar has no multiline `s///` state either, so it *also* reads the
+    // replacement's marker as an opener — two openers against the scanner's
+    // one. The body then attaches to the wrong node. The scanner is right and
+    // the grammar is wrong here, which is exactly the case the outcome-level
+    // disagreement check exists to surface rather than pass off as clean.
+    let source = "$t =~ s{aaa}\n{<<EOF};\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n";
+    let mut parser = PureRustPerlParser::new();
+    let ParseAttempt::Outcome(outcome) = parser.parse_heredoc_outcome(source) else {
+        return Err("expected a parser-domain outcome".to_string());
+    };
+    assert_ne!(
+        outcome.completeness(),
+        ParseCompleteness::Complete,
+        "a scanner/grammar disagreement must never report Complete"
+    );
+    assert!(
+        outcome.diagnostics().iter().any(|d| d.message().contains("scanner owned")),
+        "the disagreement must be named; got {:?}",
+        outcome.diagnostics()
+    );
+    Ok(())
+}
+
+#[test]
+fn when_an_indented_bare_cr_body_is_stripped_then_every_line_loses_its_indent() {
+    // `split_inclusive_lines` must use the same line model as `physical_lines`.
+    // Splitting only on LF left a bare-CR body as one line, so `<<~` stripped
+    // the first line's indentation and left the rest over-indented.
+    let scan = perl_parser_pest::heredoc::scan("my $x = <<~EOF;\r    a\r    b\r    EOF\r");
+    assert_eq!(
+        scan.captures()[0].content(),
+        "a\rb\r",
+        "indentation must be removed from every line, not just the first"
+    );
+}
