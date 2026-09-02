@@ -1738,10 +1738,7 @@ fn probe_debuggee_perl_with_options(
         let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
         #[cfg(test)]
         if let Some(descendant_pid_file) = descendant_pid_file {
-            fs::write(
-                probe_pid_file_for_test(descendant_pid_file),
-                child.id().to_string(),
-            )
+            fs::write(probe_pid_file_for_test(descendant_pid_file), child.id().to_string())
                 .map_err(|e| fail(format!("cannot publish probe child PID: {e}")))?;
         }
         #[cfg(windows)]
