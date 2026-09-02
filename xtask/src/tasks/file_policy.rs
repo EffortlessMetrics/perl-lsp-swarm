@@ -3849,6 +3849,20 @@ review_after = "2026-08-13"
     }
 
     #[test]
+    fn debt_entries_may_reuse_reason_across_matchers() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let debt = temp.path().join("debt.toml");
+        fs::write(
+            &debt,
+            "[[debt]]\nid = \\"debt-a\\"\npath = \\"legacy/a.py\\"\nreason = \\"classification pending\\"\n\n[[debt]]\nid = \\"debt-b\\"\npath = \\"legacy/b.py\\"\nreason = \\"classification pending\\"\n",
+        )?;
+        let mut errors = Vec::new();
+        let count = validate_policy_table(&debt, "debt", false, &mut errors);
+        assert_eq!(count, 2);
+        assert!(!errors.iter().any(|error| error.contains("mispaired provenance")), "{errors:?}");
+        Ok(())
+    }
+    #[test]
     fn validate_non_rust_policy_reports_schema_errors() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let allowlist = temp.path().join("allow.toml");
