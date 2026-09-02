@@ -555,6 +555,8 @@ class FanInTest(unittest.TestCase):
         self.assertNotEqual(
             packet["schema_version"], packet["canonical_packet_schema"]
         )
+        self.assertEqual(packet["target_release"], VERSION)
+        self.assertEqual(packet["source_version"], VERSION)
 
     def test_complete_primary_rows_cannot_hide_unproven_retained_targets(self) -> None:
         for row_id in MODULE.REQUIRED_ROWS:
