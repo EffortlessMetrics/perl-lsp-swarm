@@ -15,6 +15,13 @@ use perl_module::{
     // import module
     LoadTiming,
     ModuleImportKind,
+    // request module
+    ModuleName,
+    ModuleRequest,
+    ModuleRequestKind,
+    ModuleResolutionOutcome,
+    PackageSeparatorForm,
+    RequestBoundary,
     // rename module
     apply_module_rename_edits,
     // token module
@@ -88,6 +95,28 @@ fn test_path_module_functions() {
     assert!(is_lookup_safe_module_name("My::Module"));
     assert!(!is_lookup_safe_module_name("Foo/Bar"));
     assert!(!is_lookup_safe_module_name("../../etc/passwd"));
+}
+
+/// Verify the #8497 request/outcome vocabulary is reachable from the facade.
+#[test]
+fn test_request_module_types_are_accessible() -> Result<(), Box<dyn std::error::Error>> {
+    let bareword = ModuleRequest::bareword("My::Module")?;
+    assert_eq!(bareword.kind(), ModuleRequestKind::BarewordModule);
+    assert_eq!(bareword.module_name().map(ModuleName::canonical), Some("My::Module"));
+
+    let quoted = ModuleRequest::quoted_require("My/Module.pm")?;
+    assert_eq!(quoted.kind(), ModuleRequestKind::LiteralRelativeFile);
+    assert_eq!(quoted.module_name(), None);
+
+    let legacy = ModuleName::parse("My'Module")?;
+    assert_eq!(legacy.separator_form(), PackageSeparatorForm::Legacy);
+
+    let dynamic = ModuleRequest::dynamic("$class", None, RequestBoundary::RuntimeString);
+    assert_eq!(dynamic.boundary(), Some(RequestBoundary::RuntimeString));
+
+    assert!(ModuleResolutionOutcome::NotFound.has_complete_denominator());
+    assert!(!ModuleResolutionOutcome::TimedOut.has_complete_denominator());
+    Ok(())
 }
 
 /// Verify token_core functions work end-to-end.
