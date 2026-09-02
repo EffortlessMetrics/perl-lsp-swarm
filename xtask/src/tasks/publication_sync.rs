@@ -859,12 +859,19 @@ fn plan_with(config: PlanConfig, checkout: CheckoutResolver) -> Result<()> {
 ///
 /// The receipt is written after validation, so an aliasing destination would
 /// overwrite the very manifest or evidence the verdict was computed from,
-/// destroying the inputs needed to reproduce it. Comparison is on canonical
-/// parent + file name, so a relative path, a symlinked directory, or a
-/// destination that does not exist yet all resolve to the same identity.
+/// destroying the inputs needed to reproduce it. Comparison is on the canonical
+/// identity from `canonical_target`, so a relative path, a symlinked directory,
+/// a symlinked destination, or a destination whose directories do not exist yet
+/// all resolve to the same identity as the file they name.
 fn ensure_receipt_does_not_alias_inputs(config: &PlanConfig, raw: &[u8]) -> Result<()> {
+    // Fail closed. A destination whose identity cannot be established cannot be
+    // compared against anything, and skipping the guard there would make an
+    // unresolvable path the way around it.
     let Some(destination) = canonical_target(&config.receipt) else {
-        return Ok(());
+        bail!(
+            "publication-sync: refusing to write the receipt to {}, whose identity cannot be established",
+            config.receipt.display()
+        );
     };
 
     let mut consumed: Vec<PathBuf> = vec![config.manifest.clone()];
@@ -942,16 +949,45 @@ fn evidence_entries(manifest: &Manifest) -> impl Iterator<Item = &Evidence> {
         .chain(controls.into_iter().flat_map(|control| control.evidence.iter()))
 }
 
-/// Canonical identity of a path that may not exist yet: the canonical parent
-/// plus the file name.
+/// Canonical identity of a path that may not exist yet.
+///
+/// Two cases the obvious "canonicalize the parent, re-attach the file name"
+/// version gets wrong:
+///
+/// * **A symlinked final component.** Re-attaching the name compares the link
+///   by its own name rather than by what it points at, so a receipt destination
+///   symlinked to the manifest would not be recognised as the manifest.
+///   `canonicalize` on the whole path resolves it, so it is tried first.
+/// * **A destination whose directories do not exist yet.** `write_receipt`
+///   creates them, so `--receipt target/receipts/plan.json` in a fresh tree is
+///   the ordinary case, not an exotic one. Canonicalizing only the immediate
+///   parent fails there and previously returned `None`, which made the caller
+///   skip the alias check entirely. Instead resolve the deepest ancestor that
+///   does exist and re-attach the rest.
 fn canonical_target(path: &Path) -> Option<PathBuf> {
-    let name = path.file_name()?;
-    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
-    let parent = match parent {
-        Some(parent) => parent.canonicalize().ok()?,
-        None => std::env::current_dir().ok()?,
-    };
-    Some(parent.join(name))
+    if let Ok(resolved) = path.canonicalize() {
+        return Some(resolved);
+    }
+
+    let mut suffix: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut cursor = path;
+    loop {
+        suffix.push(cursor.file_name()?);
+        let parent = cursor.parent()?;
+        let base = if parent.as_os_str().is_empty() {
+            std::env::current_dir().ok()?
+        } else if let Ok(resolved) = parent.canonicalize() {
+            resolved
+        } else {
+            cursor = parent;
+            continue;
+        };
+        let mut target = base;
+        for component in suffix.iter().rev() {
+            target.push(component);
+        }
+        return Some(target);
+    }
 }
 
 /// A manifest that never reached evaluation, with whatever identity could still
@@ -1092,10 +1128,46 @@ fn resolve_checkout(repo_root: &Path) -> Option<CheckoutFacts> {
         return None;
     }
 
+    // Three flags, each load-bearing:
+    //
     // `--untracked-files=all` lists files rather than directories, so an
     // untracked file inside an otherwise clean directory is still named.
-    let status = git_output(repo_root, &["status", "--porcelain", "--untracked-files=all"])?;
+    //
+    // `--ignored=traditional` includes ignored files. Without it an ignored
+    // path is invisible here while `load_input` reads it happily, so an
+    // ignored release input or evidence file could be hashed and reported as
+    // evidence about `S` despite not being in the prepared tree at all.
+    // `traditional` collapses wholly-ignored directories to one entry, which
+    // keeps the output small on a repository with a large `target/`; the
+    // ancestor test in `validate_worktree_integrity` is what makes a collapsed
+    // entry still cover the paths beneath it.
+    //
+    // `-z` emits raw NUL-separated paths. Without it Git quotes and C-escapes
+    // any path containing a space, tab, quote or non-ASCII byte, so a path
+    // needing quoting would be recorded in an escaped form that matches no
+    // declared path and would silently pass the integrity check.
+    let status = git_output_lossy(
+        repo_root,
+        &["status", "--porcelain", "-z", "--untracked-files=all", "--ignored=traditional"],
+    )?;
     Some(CheckoutFacts { head, dirty: parse_status_paths(&status) })
+}
+
+/// Git output as text, tolerating a path that is not valid UTF-8.
+///
+/// Lossy decoding cannot cause a missed match. A declared repository path comes
+/// from JSON and is therefore valid UTF-8, so a non-UTF-8 worktree path can
+/// never equal one, and an ancestor of a UTF-8 path is itself UTF-8. A
+/// non-UTF-8 *descendant* of a consumed directory still keeps that directory's
+/// UTF-8 prefix intact through the substitution, so the subtree test still
+/// fires.
+fn git_output_lossy(repo_root: &Path, args: &[&str]) -> Option<String> {
+    let output =
+        std::process::Command::new("git").arg("-C").arg(repo_root).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
@@ -1107,26 +1179,30 @@ fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
-/// Repository-relative paths from `git status --porcelain` output.
+/// Repository-relative paths from `git status --porcelain -z` output.
 ///
-/// Each line is a two-character status followed by a space and the path. A
-/// rename is spelled `orig -> new`; both sides are recorded, because the
+/// Records are NUL-terminated rather than newline-terminated, and `-z` disables
+/// Git's quoting, so each path is raw. A record is two status characters, a
+/// space, then the path.
+///
+/// Rename and copy records are the one shape that needs lookahead: under `-z`
+/// Git emits the destination in the record and the origin as the *next* field,
+/// with no status prefix of its own. Both sides are recorded, because the
 /// planner cares that either location disagrees with the commit.
 fn parse_status_paths(status: &str) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
-    for line in status.lines() {
-        let Some(rest) = line.get(3..) else {
+    let mut fields = status.split('\0').filter(|field| !field.is_empty());
+    while let Some(record) = fields.next() {
+        let mut characters = record.chars();
+        let index = characters.next();
+        let worktree = characters.next();
+        let Some(path) = record.get(3..).filter(|path| !path.is_empty()) else {
             continue;
         };
-        let rest = rest.trim_matches('"');
-        match rest.split_once(" -> ") {
-            Some((origin, destination)) => {
-                paths.insert(origin.trim_matches('"').to_string());
-                paths.insert(destination.trim_matches('"').to_string());
-            }
-            None => {
-                paths.insert(rest.to_string());
-            }
+        paths.insert(path.to_string());
+        let renamed = matches!(index, Some('R' | 'C')) || matches!(worktree, Some('R' | 'C'));
+        if renamed && let Some(origin) = fields.next() {
+            paths.insert(origin.to_string());
         }
     }
     paths
@@ -1540,7 +1616,19 @@ fn validate_worktree_integrity(manifest: &Manifest, facts: &CheckoutFacts, state
     let mut stale: Vec<String> = Vec::new();
     for path in consumed_repository_paths(manifest) {
         let subtree = format!("{path}/");
-        if facts.dirty.iter().any(|entry| entry == &path || entry.starts_with(&subtree)) {
+        let disagrees = facts.dirty.iter().any(|entry| {
+            // The path itself.
+            entry == &path
+                // A descendant: a row takes its whole subtree with it.
+                || entry.starts_with(&subtree)
+                // An ancestor. `--ignored=traditional` collapses a wholly
+                // ignored directory into one entry, so `target/` stands for
+                // every consumed path beneath it. Git spells such an entry with
+                // a trailing slash, so normalise before building the prefix —
+                // `target//` would match nothing.
+                || path.starts_with(&format!("{}/", entry.trim_end_matches('/')))
+        });
+        if disagrees {
             stale.push(path);
         }
     }

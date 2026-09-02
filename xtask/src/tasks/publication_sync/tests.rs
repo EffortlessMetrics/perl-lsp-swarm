@@ -2181,23 +2181,145 @@ fn a_dirty_path_the_plan_never_reads_does_not_block() -> Result<()> {
     assert_verdict(&receipt, Verdict::Pass)
 }
 
-/// `git status --porcelain` shapes the planner has to read correctly.
+/// `git status --porcelain -z` shapes the planner has to read correctly.
+///
+/// Records are NUL-terminated and unquoted. The rename case is the one needing
+/// lookahead: `-z` puts the origin in the following field with no status of its
+/// own, so a parser written for the newline form would read it as a record and
+/// lose both paths.
 #[test]
-fn status_parsing_recovers_modified_untracked_and_renamed_paths() -> Result<()> {
-    let parsed = parse_status_paths(
-        " M docs/how-to/PUBLICATION_SYNC.md\n\
-         ?? fixtures/publication_sync/extra.json\n\
-         R  schemas/old.json -> schemas/new.json\n",
-    );
+fn status_parsing_recovers_modified_untracked_ignored_and_renamed_paths() -> Result<()> {
+    let parsed = parse_status_paths(concat!(
+        " M docs/how-to/PUBLICATION_SYNC.md\0",
+        "?? fixtures/publication_sync/extra.json\0",
+        "!! target/\0",
+        "R  schemas/new.json\0schemas/old.json\0",
+        // `-z` does not quote or escape, so a path with a tab and a space
+        // arrives raw. The newline form would deliver this as
+        // `"docs/we ird\tname.md"` with a literal backslash-t, matching no
+        // declared path.
+        "?? docs/we ird\tname.md\0",
+    ));
     for expected in [
         "docs/how-to/PUBLICATION_SYNC.md",
         "fixtures/publication_sync/extra.json",
-        "schemas/old.json",
+        "target/",
         "schemas/new.json",
+        "schemas/old.json",
+        "docs/we ird\tname.md",
     ] {
         if !parsed.contains(expected) {
-            bail!("status parsing lost {expected}: {parsed:?}");
+            bail!("status parsing lost {expected:?}: {parsed:?}");
         }
+    }
+    // The rename origin must not also have been read as a record, which would
+    // have produced a bogus path from its first three characters.
+    if parsed.len() != 6 {
+        bail!("status parsing produced unexpected entries: {parsed:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_consumed_path_inside_an_ignored_directory_is_not_proven() -> Result<()> {
+    // `--ignored=traditional` collapses a wholly ignored directory to one
+    // entry, so the integrity check has to test ancestors as well as the path
+    // itself. Without that, an ignored release input reads and hashes happily
+    // while the receipt claims it came from the prepared commit.
+    let mut document = clean_value()?;
+    inputs_mut(&mut document)?[0]["path"] = json!("target/receipts/public_claims.json");
+
+    // Assert the cheaper tests do not already catch this: the dirty entry is
+    // neither the consumed path nor a descendant of it.
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let consumed = consumed_repository_paths(&manifest);
+    if consumed.contains("target/") {
+        bail!("`target/` is itself consumed, so this control proves nothing about ancestors");
+    }
+    if consumed.iter().any(|path| path.starts_with("target/receipts/public_claims.json/")) {
+        bail!("a descendant match would already catch this case");
+    }
+
+    fn ignored_directory(_root: &Path) -> Option<CheckoutFacts> {
+        Some(checkout_dirty_at(&["target/"]))
+    }
+
+    let receipt = plan_with_checkout(&document, ignored_directory)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "consumed_path_not_at_checkout")
+}
+
+#[test]
+fn the_receipt_cannot_be_written_through_a_symlink_to_an_input() -> Result<()> {
+    // Comparing a canonical parent plus the raw file name compares a symlink by
+    // its own name rather than by what it points at, so a destination linked to
+    // a planning input would slip past the guard and be written through.
+    let document = clean_value()?;
+    let (root, manifest_path, _) = materialize_repo(&document)?;
+
+    let link = root.path().join("receipts-plan.json");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&manifest_path, &link)?;
+    #[cfg(not(unix))]
+    return Ok(());
+
+    #[cfg(unix)]
+    {
+        let through_link = plan_with(
+            PlanConfig {
+                manifest: manifest_path,
+                repo_root: root.path().to_path_buf(),
+                receipt: link,
+            },
+            fixture_checkout,
+        );
+        if through_link.is_ok() {
+            bail!("the receipt was allowed to be written through a symlink to the manifest");
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_receipt_destination_under_a_missing_directory_is_still_guarded() -> Result<()> {
+    // `write_receipt` creates the destination directory, so a receipt path
+    // whose parents do not exist yet is the ordinary case. Resolving only the
+    // immediate parent failed there and skipped the whole alias check, which
+    // made an unresolved parent the way around the guard.
+    let document = clean_value()?;
+    let (root, manifest_path, _) = materialize_repo(&document)?;
+
+    // Deep, entirely absent destination: the guard must still run and still
+    // allow this legitimate write.
+    let fresh = root.path().join("a/b/c/plan.json");
+    plan_with(
+        PlanConfig {
+            manifest: manifest_path.clone(),
+            repo_root: root.path().to_path_buf(),
+            receipt: fresh.clone(),
+        },
+        fixture_checkout,
+    )?;
+    if !fresh.is_file() {
+        bail!("the receipt was not written to a destination under missing directories");
+    }
+
+    // And the guard is genuinely live on such a path: aim it at the manifest
+    // by way of a non-existent intermediate directory.
+    let aliased = root
+        .path()
+        .join("a/b/../../")
+        .join(manifest_path.file_name().ok_or_else(|| eyre!("manifest has no file name"))?);
+    let over_manifest = plan_with(
+        PlanConfig {
+            manifest: manifest_path,
+            repo_root: root.path().to_path_buf(),
+            receipt: aliased,
+        },
+        fixture_checkout,
+    );
+    if over_manifest.is_ok() {
+        bail!("the receipt was allowed to overwrite the manifest through a traversing path");
     }
     Ok(())
 }
@@ -2240,6 +2362,12 @@ fn the_local_ledger_matcher_agrees_with_the_shared_one() -> Result<()> {
         entry(None, None),
         // An unparsable glob. Both sides must decline rather than panic.
         entry(None, Some("[unterminated")),
+        // Both fields set. The ledger shape forbids this (`glob` and `path` are
+        // mutually exclusive) and `unused_entry_count` filters it out with an
+        // xor, so neither matcher is reached with it today. Pinning it anyway
+        // keeps the precedence explicit: if one side ever stops preferring
+        // `path`, that is a divergence rather than a harmless difference.
+        entry(Some("install.sh"), Some("crates/**/*.rs")),
     ];
 
     let candidates = [
@@ -2284,6 +2412,66 @@ fn the_local_ledger_matcher_agrees_with_the_shared_one() -> Result<()> {
     }
     if agreements != entries.len() * candidates.len() {
         bail!("the differential matrix did not run in full");
+    }
+    Ok(())
+}
+
+/// The `--ignored` and `-z` flags are the kind of thing a later edit drops
+/// while every unit test keeps passing, because both only change what Git hands
+/// back. So drive the real `resolve_checkout` against a real repository.
+#[test]
+fn resolve_checkout_reports_ignored_and_unquoted_paths() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let run = |args: &[&str]| -> Result<()> {
+        let status =
+            std::process::Command::new("git").arg("-C").arg(root.path()).args(args).output()?;
+        if !status.status.success() {
+            bail!("git {args:?} failed: {}", String::from_utf8_lossy(&status.stderr));
+        }
+        Ok(())
+    };
+
+    run(&["init", "-q", "."])?;
+    run(&["config", "user.email", "proof@example.invalid"])?;
+    run(&["config", "user.name", "proof"])?;
+    fs::write(root.path().join(".gitignore"), "target/\n")?;
+    fs::create_dir_all(root.path().join("docs"))?;
+    fs::write(root.path().join("docs/kept.md"), "kept\n")?;
+    run(&["add", "-A"])?;
+    run(&["commit", "-qm", "base"])?;
+
+    // An ignored file that `load_input` would happily read and hash.
+    fs::create_dir_all(root.path().join("target/receipts"))?;
+    fs::write(root.path().join("target/receipts/live.json"), "{}\n")?;
+    // A path Git quotes and C-escapes unless `-z` is passed.
+    fs::write(root.path().join("docs/we ird\tname.md"), "x")?;
+
+    let facts = resolve_checkout(root.path()).ok_or_else(|| eyre!("checkout unresolvable"))?;
+    if !is_object_name(&facts.head) {
+        bail!("resolved head is not an object name: {}", facts.head);
+    }
+
+    // The ignored path must be covered, either named directly or by the
+    // collapsed directory entry that stands for it.
+    let ignored = "target/receipts/live.json";
+    let covered = facts.dirty.iter().any(|entry| {
+        entry == ignored || ignored.starts_with(&format!("{}/", entry.trim_end_matches('/')))
+    });
+    if !covered {
+        bail!(
+            "ignored consumed path {ignored} is invisible to the integrity check: {:?}",
+            facts.dirty
+        );
+    }
+
+    // The awkward path must arrive raw rather than quoted and escaped.
+    if !facts.dirty.contains("docs/we ird\tname.md") {
+        bail!("a path needing quoting was not reported verbatim: {:?}", facts.dirty);
+    }
+
+    // Opposite direction: a committed, unmodified file is not reported.
+    if facts.dirty.contains("docs/kept.md") {
+        bail!("a clean tracked file was reported dirty: {:?}", facts.dirty);
     }
     Ok(())
 }
