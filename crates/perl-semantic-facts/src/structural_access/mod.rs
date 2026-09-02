@@ -347,6 +347,24 @@ impl StructuralAccessAggregate {
                     "StructuralAccessAggregate::Variable.name",
                 ));
             }
+            // Perl has exactly five sigils, and this field holds the
+            // variable's own sigil as written, so nothing else can appear
+            // here. A free-form string is the hole through which a rendered
+            // label could return — an AST kind name such as `Binary` is
+            // "non-blank" and would otherwise validate, which is precisely
+            // the degradation this contract exists to eliminate. An
+            // unnameable base has typed escapes and must use one.
+            //
+            // The parser HIR crate spells this same closed set as an enum,
+            // but this crate cannot name it: the vocabulary is provider- and
+            // parser-neutral by construction, and this module's own
+            // architecture fence asserts as much by scanning these sources.
+            // Hence the literal set here rather than a shared type.
+            if !matches!(sigil.as_str(), "$" | "@" | "%" | "&" | "*") {
+                return Err(StructuralAccessContractError::ContradictoryStatus(
+                    "a variable aggregate must carry one canonical Perl sigil",
+                ));
+            }
         }
         Ok(())
     }

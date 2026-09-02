@@ -866,12 +866,34 @@ fn architecture_fence_forbids_provider_parser_and_workspace_ownership() {
 fn a_sigil_name_boundary_shift_does_not_collide() -> Result<(), Box<dyn Error>> {
     // `$` + `ab` and `$a` + `b` concatenate to the same text. Folding the two
     // components as separate labelled fields keeps them distinct.
-    let build = |sigil: &str, name: &str| {
+    //
+    // This drives `fold` directly rather than building a hop, because the
+    // canonical-sigil law now rejects `$a` at construction. That law removes
+    // this collision class for *this* field by construction — a one-character
+    // sigil from a closed set leaves no boundary to shift — but `fold` is
+    // shared machinery, so the property it provides is still worth pinning
+    // where an impossible record cannot mask it.
+    let digest = |sigil: &str, name: &str| {
+        StructuralAccessAggregate::Variable { sigil: sigil.to_string(), name: name.to_string() }
+            .fold(SemanticIdentityFingerprint::new(STRUCTURAL_ACCESS_SCHEMA_TAG))
+            .finish()
+    };
+    assert_ne!(digest("$", "ab"), digest("$a", "b"));
+    Ok(())
+}
+
+#[test]
+fn a_non_canonical_sigil_cannot_name_a_variable() -> Result<(), Box<dyn Error>> {
+    // Perl has exactly five sigils. A free-form string here would let a
+    // rendered label stand in for a typed identity — `receiver_facts.rs`
+    // degrading a nested base to the AST kind name `Binary` is the exact
+    // failure #13619 exists to remove, and `Binary` is non-blank.
+    let build = |sigil: &str| {
         selecting_hop(
             0,
             StructuralAccessAggregate::Variable {
                 sigil: sigil.to_string(),
-                name: name.to_string(),
+                name: "config".to_string(),
             },
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
@@ -879,7 +901,22 @@ fn a_sigil_name_boundary_shift_does_not_collide() -> Result<(), Box<dyn Error>> 
             ValueShape::Scalar,
         )
     };
-    assert_ne!(build("$", "ab")?.fingerprint(), build("$a", "b")?.fingerprint());
+    for rejected in ["Binary", "$a", "->", "$$", " $ "] {
+        contract_error(build(rejected))?;
+    }
+    // Negative control: every sigil Perl actually has must still build.
+    for accepted in ["$", "@", "%", "&", "*"] {
+        build(accepted)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_non_canonical_sigil_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["hops"][0]["aggregate"]["Variable"]["sigil"] = serde_json::json!("Binary");
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(decoded.validate().is_err(), "a rendered label must not reach the contract as a sigil");
     Ok(())
 }
 
