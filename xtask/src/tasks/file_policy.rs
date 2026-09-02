@@ -3174,7 +3174,7 @@ reason = "Documents the alpha subsystem with its full user contract."
 covered_by = ["manual review"]
 created = "2026-01-01"
 review_after = "2026-06-01"
-"#,
+"#
         .to_string()
     }
 
@@ -3864,7 +3864,7 @@ reason = "classification pending"
 id = "debt-b"
 path = "legacy/b.py"
 reason = "classification pending"
-"#
+"#,
         )?;
         let mut errors = Vec::new();
         let count = validate_policy_table(&debt, "debt", false, &mut errors);
