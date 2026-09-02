@@ -309,27 +309,53 @@ impl StagedEnvelope {
         if let Err(error) = fs::write(self.directory.join(RECEIPT_FILE_NAME), receipt_json) {
             return Err(failed(error, "write the validated receipt"));
         }
-        // Publication is one rename, but the reservation has to be handed over
-        // differently on each platform, because the platforms disagree about
-        // what renaming onto an existing directory means.
+        // Publish onto the reservation, and stay correct whichever way this
+        // platform renames onto an existing directory.
         //
-        // On Unix, `rename` onto an *empty* directory succeeds and replaces it.
-        // That is what made the original check-then-rename clobberable, and it
-        // is also what makes the reservation work here: the only thing at this
-        // path is the empty directory this process created, so the rename
-        // replaces our own claim rather than someone else's envelope.
+        // The two possibilities are mutually exclusive, and each makes a
+        // *different* protocol safe:
         //
-        // Windows refuses it outright — `MoveFileEx` replaces an existing
-        // *file*, never an existing directory — so holding the reservation
-        // through the rename would fail every publication. The same asymmetry
-        // means Windows never had the original defect: a destination that
-        // appeared after the check made the rename fail rather than clobber it.
-        // So the reservation is released immediately before the rename there,
-        // and the narrow window that opens is fail-safe rather than
-        // fail-dangerous: if another process claims the path in between, the
-        // rename fails and nothing is overwritten.
-        if let Err(error) = fs::rename(&self.directory, destination) {
-            return Err(failed(error, "publish the envelope"));
+        // - If the platform replaces an existing empty directory (Unix always;
+        //   Windows possibly, since Rust's `fs::rename` may use
+        //   `FileRenameInfoEx` with POSIX semantics where the filesystem
+        //   supports it), then renaming straight onto the reservation is safe:
+        //   the path was held by this process for the whole build, so what is
+        //   replaced is our own claim and there is never a window.
+        //
+        // - If the platform refuses to replace an existing directory (classic
+        //   Windows `MoveFileEx`), the first rename fails and tells us so. And
+        //   that refusal is precisely the property that makes releasing the
+        //   reservation and retrying harmless: a competitor arriving in the gap
+        //   makes the retry fail rather than clobber anything.
+        //
+        // So the refusal is not an error to work around, it is the evidence
+        // that the fallback is safe on this platform. Deciding by `cfg` instead
+        // would be resting a safety property on which semantics Windows
+        // happens to have — the thing this is written to avoid.
+        match fs::rename(&self.directory, destination) {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                // Replacement is refused here, so nothing this process does can
+                // overwrite a directory it does not own.
+                if let Err(error) = fs::remove_dir(destination) {
+                    return Err(failed(error, "release the destination reservation"));
+                }
+                // The reservation is no longer ours the moment it is removed, so
+                // `Drop` must not touch that path again — including when the
+                // retry below fails because someone else took it.
+                if let Some(claim) = self.claim.as_mut() {
+                    claim.published = true;
+                }
+                if let Err(error) = fs::rename(&self.directory, destination) {
+                    return Err(failed(error, "publish the envelope"));
+                }
+            }
+            Err(error) => return Err(failed(error, "publish the envelope")),
         }
 
         // The claim is now the published envelope, so its `Drop` must not
@@ -1434,7 +1460,18 @@ fn stage_envelope(
     // renaming is exactly the window Unix no longer has. So Windows takes no
     // reservation, and the rename itself — one operation — is what enforces
     // the `must not already exist` contract.
-    #[cfg(unix)]
+    // Claim the destination before building anything, and claim it by creating
+    // it rather than by asking whether it exists.
+    //
+    // `create_dir` is atomic and fails if the path is taken, on every platform.
+    // That is what makes it the no-clobber primitive here: the guarantee comes
+    // from the claim, not from what a later rename happens to do to an existing
+    // directory. Renaming onto an existing directory replaces it on Unix and is
+    // refused by Windows — and Rust's `fs::rename` may take either path on
+    // Windows depending on the filesystem and `FileRenameInfoEx` support — so a
+    // publication protocol that depends on which of those holds is resting a
+    // safety property on an implementation detail. `publish` is written to be
+    // correct under both.
     let claimed = match fs::create_dir(out) {
         Ok(()) => Some(ClaimedDestination { path: out.to_path_buf(), published: false }),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1444,20 +1481,6 @@ fn stage_envelope(
             ));
         }
         Err(error) => return Err(io(error, "the envelope destination")),
-    };
-
-    // Advisory only, and deliberately so. It buys a clear early error instead of
-    // one at publication time; it is not what makes publication safe, because a
-    // destination created after this check is still refused by the rename.
-    #[cfg(windows)]
-    let claimed: Option<ClaimedDestination> = {
-        if out.exists() {
-            return Err((
-                HandoffOutcome::InstrumentFailure,
-                format!("`{}` already exists; a handoff envelope is immutable", out.display()),
-            ));
-        }
-        None
     };
 
     let staging = allocate_staging(parent, &file_name)?;
