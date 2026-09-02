@@ -172,9 +172,18 @@ impl ModuleFilePath {
     /// carries no Perl quoting syntax. This constructor therefore fails closed
     /// on anything it cannot decode faithfully:
     ///
+    /// - a token whose body contains its own delimiter, escaped or not;
     /// - a single-quoted token containing a `\\\\` or `\\'` escape sequence;
     /// - a double-quoted token containing `\\`, `$`, or `@` (escapes and
     ///   interpolation).
+    ///
+    /// The first rule is about the token's extent rather than its content. An
+    /// unescaped inner delimiter means the literal ended there and the token runs
+    /// past it — `'Foo'Bar.pm'` is the literal `'Foo'` followed by a bareword,
+    /// which `perl` rejects with *Bareword found where operator expected* — so
+    /// `Foo'Bar.pm` is a spelling that never appeared in source. The opposite
+    /// delimiter is an ordinary byte and does not terminate the token, so
+    /// `'Foo"Bar.pm'` still decodes.
     ///
     /// Single quotes escape only those two sequences, so a lone backslash there
     /// is literal and `'Foo\\Bar.pm'` decodes to `Foo\\Bar.pm` by stripping alone —
@@ -221,11 +230,20 @@ impl ModuleFilePath {
         }
 
         let inner = &token[delimiter.len_utf8()..token.len() - delimiter.len_utf8()];
-        let needs_decoding = if delimiter == '\'' {
-            single_quoted_needs_decoding(inner)
-        } else {
-            inner.contains(['\\', '$', '@'])
-        };
+        // An unescaped inner delimiter means the string literal ended there and the
+        // token runs past it: `'Foo'Bar.pm'` is not one literal spelling
+        // `Foo'Bar.pm` but the literal `'Foo'` followed by a bareword, which Perl
+        // rejects outright ("Bareword found where operator expected"). Stripping the
+        // outer pair would mint a filename from source that never denoted one. An
+        // *escaped* inner delimiter is a real escape, which the per-delimiter rules
+        // below already refuse — so either way the token is not decodable by
+        // stripping alone.
+        let needs_decoding = inner.contains(delimiter)
+            || if delimiter == '\'' {
+                single_quoted_needs_decoding(inner)
+            } else {
+                inner.contains(['\\', '$', '@'])
+            };
         if needs_decoding {
             return Err(ModuleFilePathError::UndecodableToken);
         }
@@ -427,6 +445,42 @@ mod tests {
                 "`{token}` is truncated, not an exact filename"
             );
         }
+    }
+
+    /// A token whose body carries an unescaped copy of its own delimiter spans
+    /// more than one literal, so stripping the outer pair invents a filename.
+    ///
+    /// `perl -e "my \$x = 'Foo'Bar.pm';"` reports *Bareword found where operator
+    /// expected ... near "'Foo'Bar"* — the literal is `'Foo'` and `Bar` is a
+    /// bareword, so `Foo'Bar.pm` is a spelling that never appeared in source.
+    /// The escaped form `'Foo\'Bar.pm'` really does mean `Foo'Bar.pm`, but it
+    /// needs decoding, so it is refused too.
+    #[test]
+    fn a_token_spanning_more_than_one_literal_is_refused() {
+        for token in ["'Foo'Bar.pm'", "\"Foo\"Bar.pm\"", "'a'b'", "\"a\"b\""] {
+            assert_eq!(
+                ModuleFilePath::from_quoted_token(token),
+                Err(ModuleFilePathError::UndecodableToken),
+                "`{token}` is not one literal, so it has no exact filename"
+            );
+        }
+
+        // The decoded operand is a different question: a quote is an ordinary
+        // filename byte, so `parse` must keep accepting it.
+        assert_eq!(
+            ModuleFilePath::parse("Foo'Bar.pm").map(|path| path.literal().to_string()),
+            Ok("Foo'Bar.pm".to_string()),
+            "the refusal belongs to the raw-token constructor, not to validation"
+        );
+
+        // The opposite delimiter is an ordinary byte inside a token, not a
+        // terminator, so it must still decode by stripping.
+        assert_eq!(
+            ModuleFilePath::from_quoted_token("'Foo\"Bar.pm'")
+                .map(|path| path.literal().to_string()),
+            Ok("Foo\"Bar.pm".to_string()),
+            "a double quote does not terminate a single-quoted token"
+        );
     }
 
     #[test]
