@@ -213,7 +213,10 @@ impl StructuralAccessHop {
     /// 5. [`StructuralHopOutcome::BudgetExhausted`] requires the budget to be
     ///    actually exhausted. Spending the last unit is not itself a defect: a
     ///    producer that budgeted exactly enough may still answer definitely.
-    /// 6. Identity fields are non-empty and ranges are not inverted.
+    /// 6. Identity fields that name something are non-empty and ranges are
+    ///    not inverted. A static key is exempt: `$h{""}` is a real member.
+    /// 7. Limitations are sorted and duplicate-free, as the constructor
+    ///    leaves them.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -232,13 +235,11 @@ impl StructuralAccessHop {
                 end_byte: self.spelling.anchor.end_byte,
             });
         }
-        if let StructuralAccessSelector::StaticKey(key) = &self.selector
-            && key.trim().is_empty()
-        {
-            return Err(StructuralAccessContractError::EmptyIdentityField(
-                "StructuralAccessSelector::StaticKey",
-            ));
-        }
+        // A static key is deliberately *not* checked for emptiness. `$h{""}`
+        // and `$h{" "}` are legal Perl accesses naming distinct members, so an
+        // empty or blank key is a real identity here, unlike a blank aggregate
+        // name. A producer that has no key must say so with a dynamic selector
+        // or a boundary rather than an empty one.
 
         // Law 1: operator class and selector class must agree.
         if self.operator.is_keyed() != self.selector.is_keyed() {
@@ -273,12 +274,24 @@ impl StructuralAccessHop {
             }
         }
 
-        // Law 3: definite absence is only sayable about a closed aggregate.
+        // Law 3: absence and unknown-ness each require their own completeness.
+        // The two halves are mirrors: a member missing from an open aggregate
+        // is unknown rather than absent, and a member missing from a closed one
+        // is absent rather than unknown. Accepting either pairing would let a
+        // producer record uncertainty and definite absence interchangeably,
+        // which is the exact collapse this contract exists to prevent.
         if matches!(self.outcome, StructuralHopOutcome::AbsentMember)
             && matches!(self.completeness, StructuralAggregateCompleteness::Open)
         {
             return Err(StructuralAccessContractError::ContradictoryStatus(
                 "a member missing from an open aggregate is unknown, not absent",
+            ));
+        }
+        if matches!(self.outcome, StructuralHopOutcome::UnknownMember)
+            && matches!(self.completeness, StructuralAggregateCompleteness::Closed)
+        {
+            return Err(StructuralAccessContractError::ContradictoryStatus(
+                "a member missing from a closed aggregate is absent, not unknown",
             ));
         }
 
@@ -302,6 +315,17 @@ impl StructuralAccessHop {
         {
             return Err(StructuralAccessContractError::MalformedBudget(
                 "a budget-exhausted outcome requires zero remaining units",
+            ));
+        }
+
+        // Law 7: limitations must already be canonical. The constructor sorts
+        // and de-duplicates them so two producers recording the same set build
+        // equal hops; serde bypasses that, and a non-canonical vector would
+        // compare unequal and serialize differently while meaning the same
+        // thing, breaking the determinism this contract claims.
+        if self.limitations.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(StructuralAccessContractError::ContradictoryStatus(
+                "limitations must be sorted and free of duplicates",
             ));
         }
 

@@ -7,6 +7,7 @@ use super::{
     StructuralAccessContractError, StructuralAccessHop, StructuralAccessSubject,
     StructuralHopOutcome,
 };
+use crate::ValueShape;
 use crate::semantic_identity::SemanticIdentityFingerprint;
 
 /// One complete ordered structural access, e.g. `$config->{groups}{staff}[0]`.
@@ -84,6 +85,9 @@ impl StructuralAccessChain {
     ///    access in one file; a hop anchored elsewhere is not part of it.
     /// 6. The subject itself validates. A chain reconstructed by serde never
     ///    ran the subject's constructor, so this is where that check lands.
+    /// 7. A hop cannot claim a successful selection through an operator the
+    ///    predecessor's known shape cannot carry — a hash operator on a known
+    ///    array reference, or the reverse. `ShapeMismatch` says that honestly.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -140,6 +144,28 @@ impl StructuralAccessChain {
                 return Err(StructuralAccessContractError::MalformedBudget(
                     "a hop cannot begin with more remaining units than its predecessor left",
                 ));
+            }
+
+            // Law 7: an operator cannot successfully select through a shape
+            // that cannot carry it. Only the two unambiguous reference shapes
+            // constrain the next hop: an `Object` may be a blessed hash or a
+            // blessed array, and `Unknown`/`Scalar` assert nothing, so neither
+            // is constrained here. The honest record for a genuine mismatch is
+            // `ShapeMismatch`, which this leaves available.
+            if let StructuralHopOutcome::Selected { shape, .. } = previous.outcome() {
+                let carries_next = match shape {
+                    ValueShape::HashRef => Some(true),
+                    ValueShape::ArrayRef => Some(false),
+                    _ => None,
+                };
+                if let Some(expects_keyed) = carries_next
+                    && next.operator().is_keyed() != expects_keyed
+                    && next.outcome().is_selecting()
+                {
+                    return Err(StructuralAccessContractError::ContradictoryStatus(
+                        "an operator cannot select through a shape that cannot carry it",
+                    ));
+                }
             }
         }
 

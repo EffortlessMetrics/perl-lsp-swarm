@@ -485,11 +485,22 @@ fn fold_generation(
     }
 }
 
-/// Fold a boundary link's classification as two separate labelled fields.
+/// Fold every part of a boundary link as its own labelled field.
+///
+/// All four parts participate: two links that agree on kind and reason but
+/// disagree on disposition are different boundaries — one degrades and one
+/// refuses — and must not share a digest.
 fn fold_boundary(label: &str, boundary: &BoundaryLink, accumulator: Fingerprint) -> Fingerprint {
-    accumulator
+    let accumulator = accumulator
         .field(label, &format!("{:?}", boundary.kind))
         .field(label, &format!("{:?}", boundary.reason_code))
+        .field(label, &format!("{:?}", boundary.disposition));
+    match boundary.boundary_id {
+        Some(fact) => {
+            accumulator.discriminant(label, "boundary-id").field(label, &fact.0.to_string())
+        }
+        None => accumulator.discriminant(label, "no-boundary-id"),
+    }
 }
 
 /// Stable tag for an optional field's presence.

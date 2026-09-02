@@ -746,16 +746,6 @@ fn identity_fields_and_ranges_must_be_well_formed() -> Result<(), Box<dyn Error>
     assert!(matches!(error, StructuralAccessContractError::EmptyIdentityField(_)));
 
     // an empty static key is not an identity
-    let error = contract_error(selecting_hop(
-        0,
-        base_variable(),
-        StructuralAccessOperator::HashSlot,
-        StructuralAccessSelector::StaticKey(String::new()),
-        "{}",
-        ValueShape::Scalar,
-    ))?;
-    assert!(matches!(error, StructuralAccessContractError::EmptyIdentityField(_)));
-
     // a blank workspace root is not a root
     let error = contract_error(StructuralAccessSubject::new(
         DOCUMENT,
@@ -1115,5 +1105,166 @@ fn an_impossible_budget_cannot_survive_the_transport_boundary() -> Result<(), Bo
         decoded.validate().is_err(),
         "a hop that gained units must not survive the transport boundary"
     );
+    Ok(())
+}
+
+// ── Laws found by review ──────────────────────────────────────────────────
+
+#[test]
+fn empty_and_blank_hash_keys_are_real_members() -> Result<(), Box<dyn Error>> {
+    // `$h{""}` and `$h{" "}` are legal Perl and name distinct members —
+    // verified against the interpreter, not assumed. An empty key is an
+    // identity here, unlike an empty aggregate name.
+    let build = |key: &str| {
+        selecting_hop(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey(key.to_string()),
+            "{...}",
+            ValueShape::Scalar,
+        )
+    };
+    let empty = build("")?;
+    let blank = build(" ")?;
+    let named = build("x")?;
+    assert_ne!(empty.fingerprint(), blank.fingerprint());
+    assert_ne!(empty.fingerprint(), named.fingerprint());
+    Ok(())
+}
+
+#[test]
+fn a_member_missing_from_a_closed_aggregate_is_absent_not_unknown() -> Result<(), Box<dyn Error>> {
+    let build = |outcome, completeness| {
+        StructuralAccessHop::new(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("missing".to_string()),
+            spelling("->{missing}", 0, 11)?,
+            outcome,
+            StructuralHopCertainty::Possible,
+            completeness,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::Medium),
+            SemanticReasonCode::ExactSource,
+            StructuralAccessBudget::new(10, 9)?,
+            Vec::new(),
+        )
+    };
+    // Both honest pairings build.
+    build(StructuralHopOutcome::AbsentMember, StructuralAggregateCompleteness::Closed)?;
+    build(StructuralHopOutcome::UnknownMember, StructuralAggregateCompleteness::Open)?;
+    // Neither crossed pairing does.
+    let error = contract_error(build(
+        StructuralHopOutcome::UnknownMember,
+        StructuralAggregateCompleteness::Closed,
+    ))?;
+    assert!(matches!(error, StructuralAccessContractError::ContradictoryStatus(_)));
+    Ok(())
+}
+
+#[test]
+fn non_canonical_limitations_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["hops"][0]["limitations"] = serde_json::json!(["OpenAggregate", "OpenAggregate"]);
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "duplicate limitations must not survive the transport boundary"
+    );
+
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["hops"][0]["limitations"] = serde_json::json!(["OpenAggregate", "DynamicSelector"]);
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "unsorted limitations must not survive the transport boundary"
+    );
+    Ok(())
+}
+
+#[test]
+fn boundaries_differing_only_in_disposition_do_not_collide() -> Result<(), Box<dyn Error>> {
+    let build = |disposition, boundary_id| {
+        let boundary = BoundaryLink::new(
+            boundary_id,
+            BoundaryKind::DynamicValue,
+            disposition,
+            SemanticReasonCode::DynamicValue,
+        );
+        StructuralAccessHop::new(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::DynamicKey(boundary.clone()),
+            spelling("->{$k}", 0, 6)?,
+            StructuralHopOutcome::Boundary(boundary),
+            StructuralHopCertainty::Possible,
+            StructuralAggregateCompleteness::Open,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::DynamicBoundary),
+            SemanticConfidence::Known(Confidence::Low),
+            SemanticReasonCode::DynamicValue,
+            StructuralAccessBudget::new(10, 9)?,
+            vec![StructuralAccessLimitation::DynamicSelector],
+        )
+    };
+    // A boundary that degrades is not one that refuses.
+    let degrades = build(BoundaryDisposition::Degrade, Some(FactId(3)))?;
+    let refuses = build(BoundaryDisposition::Refuse, Some(FactId(3)))?;
+    assert_ne!(degrades.fingerprint(), refuses.fingerprint());
+
+    // Nor is an identified boundary the same as an anonymous one.
+    let anonymous = build(BoundaryDisposition::Degrade, None)?;
+    assert_ne!(degrades.fingerprint(), anonymous.fingerprint());
+    Ok(())
+}
+
+#[test]
+fn an_operator_cannot_select_through_a_shape_that_cannot_carry_it() -> Result<(), Box<dyn Error>> {
+    // `$a->{b}` selecting a hash reference, then indexed as an array.
+    let head = selecting_hop(
+        0,
+        base_variable(),
+        StructuralAccessOperator::HashRefSlot,
+        StructuralAccessSelector::StaticKey("b".to_string()),
+        "->{b}",
+        ValueShape::HashRef,
+    )?;
+    let indexed = selecting_hop(
+        1,
+        StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+        StructuralAccessOperator::ArrayIndex,
+        StructuralAccessSelector::StaticIndex(0),
+        "[0]",
+        ValueShape::Scalar,
+    )?;
+    let error =
+        contract_error(StructuralAccessChain::new(subject()?, vec![head.clone(), indexed]))?;
+    assert!(matches!(error, StructuralAccessContractError::ContradictoryStatus(_)));
+
+    // The honest record for the same source is a shape mismatch, and it builds.
+    let mismatch = StructuralAccessHop::new(
+        1,
+        StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+        StructuralAccessOperator::ArrayIndex,
+        StructuralAccessSelector::StaticIndex(0),
+        spelling("[0]", 10, 13)?,
+        StructuralHopOutcome::ShapeMismatch { observed: ValueShape::HashRef },
+        StructuralHopCertainty::Definite,
+        StructuralAggregateCompleteness::Closed,
+        StructuralAggregateDisposition::Stable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(crate::Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticReasonCode::ExactSource,
+        StructuralAccessBudget::new(99, 98)?,
+        Vec::new(),
+    )?;
+    StructuralAccessChain::new(subject()?, vec![head, mismatch])?;
     Ok(())
 }
