@@ -82,7 +82,7 @@ pub fn generate(root: &Path) -> Result<ActivationInventory, ActivationError> {
     derivation.sort_by(|left, right| left.rule.cmp(&right.rule));
     let rows: Vec<ActivationRow> = rows.into_values().collect();
 
-    Ok(ActivationInventory {
+    let inventory = ActivationInventory {
         schema: model::SCHEMA_PATH.to_string(),
         schema_version: model::SCHEMA_VERSION.to_string(),
         policy: model::POLICY_NAME.to_string(),
@@ -90,7 +90,19 @@ pub fn generate(root: &Path) -> Result<ActivationInventory, ActivationError> {
         controlling_issue: model::CONTROLLING_ISSUE.to_string(),
         derivation,
         rows,
-    })
+    };
+
+    // The generator must never be able to emit an artifact that
+    // `cargo xtask activation validate` would then reject. Row-level rules
+    // (authority paths that exist, product rows with a consumer, a shim with
+    // a retirement boundary) apply to override-built rows just as much as to
+    // derived ones, and only the artifact-level check sees both together.
+    let value = serde_json::to_value(&inventory).map_err(|error| {
+        ActivationError::new(format!("cannot serialize generated inventory: {error}"))
+    })?;
+    validate::validate_inventory_value(root, &value)?;
+
+    Ok(inventory)
 }
 
 /// Regenerate in memory and fail with `activation inventory is stale` if the

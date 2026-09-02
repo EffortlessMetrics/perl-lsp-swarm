@@ -33,7 +33,7 @@ consumers = []
 # compile profile to claim.
 compile_profiles = []
 publication_state = "private_workspace_member"
-publication_authority = "crates/perl-tree-sitter-compat/Cargo.toml#publish"
+publication_authority = "crates/perl-tree-sitter-compat/Cargo.toml#package.publish"
 retirement_owner = "#8890"
 retirement_boundary = "Removal tracked by controlling issue #8880 (train #8877 row PR-09); migration #8889 must land before removal #8890 executes, per policy/tree-sitter-compat-inventory.toml (migration_owner = \"#8889\", removal_owner = \"#8890\")."
 owner = "parser/tree-sitter"
@@ -44,12 +44,12 @@ review_after = "2026-12-01"
 [[override]]
 surface_id = "crate:tree-sitter-perl-c"
 class = "oracle"
-semantic_authority = "crates/tree-sitter-perl-c/Cargo.toml#description"
-consumers = ["crates/perl-parser-comparison"]
-compile_profiles = ["historical"]
+semantic_authority = "crates/tree-sitter-perl-c/Cargo.toml#package.description"
+consumers = ["crates/perl-parser-comparison", "xtask"]
+compile_profiles = ["historical", "parser-tasks"]
 publication_state = "published"
 publication_authority = "Cargo.toml#workspace.metadata.publish.allow"
 owner = "parser/tree-sitter"
-reason = "No #9204 derivation rule classifies a differential test-oracle crate. crates/tree-sitter-perl-c/Cargo.toml describes the crate as a \"Tree-sitter Perl C FFI snapshot for testing, experimentation, accuracy comparison, and baseline benchmarking\". crates/perl-parser-comparison is the only in-tree Cargo dependent, pulling it in via the optional `historical` feature (`historical = [\"dep:tree-sitter-perl-c\"]`) to compare native-parser output against the legacy C grammar. Confirmed published on crates.io (max_version 0.17.0, checked 2026-09-02)."
+reason = "No #9204 derivation rule classifies a differential test-oracle crate. crates/tree-sitter-perl-c/Cargo.toml describes the crate as a \"Tree-sitter Perl C FFI snapshot for testing, experimentation, accuracy comparison, and baseline benchmarking\". It has two in-tree Cargo dependents, both optional and both oracle uses: crates/perl-parser-comparison gates it behind `historical = [\"dep:tree-sitter-perl-c\"]` to compare native-parser output against the legacy C grammar, and xtask gates it behind `parser-tasks = [\"legacy\", \"tree-sitter-perl-c\"]`, calling `tree_sitter_perl_c::language()` in xtask/src/tasks/compare_parsers.rs. Publication is asserted from the root Cargo.toml `[workspace.metadata.publish] allow` list rather than from a live registry lookup, so the claim stays checkable from the repository alone."
 created = "2026-09-02"
 review_after = "2026-12-01"

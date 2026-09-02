@@ -145,11 +145,35 @@ fn validate_rows(root: &Path, inventory: &ActivationInventory, violations: &mut 
                 violations,
             );
         }
+        // A consumer or proof reference that names a repository path must
+        // resolve. These are the fields a downstream reader would dereference,
+        // so a stale one is a false pointer, not a cosmetic defect. Values
+        // without a `/` are package or harness names, not paths, and are left
+        // to their own authority.
+        for consumer in &row.consumers {
+            if consumer.contains('/') {
+                check_authority_path(root, &row.surface_id, "consumers", consumer, violations);
+            }
+        }
+        for proof in &row.proof_references {
+            if proof.id.contains('/') {
+                check_authority_path(
+                    root,
+                    &row.surface_id,
+                    "proof_references",
+                    &proof.id,
+                    violations,
+                );
+            }
+        }
         validate_class_rules(row, violations);
     }
 }
 
 fn validate_class_rules(row: &ActivationRow, violations: &mut Vec<String>) {
+    if row.owner.trim().is_empty() {
+        violations.push(format!("row `{}`: requires a non-blank owner", row.surface_id));
+    }
     if row.class == ActivationClass::Product {
         if row.semantic_authority.trim().is_empty() {
             violations.push(format!(

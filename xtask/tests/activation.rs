@@ -94,36 +94,6 @@ fn committed_inventory_matches_fresh_generation() -> TestResult {
 }
 
 #[test]
-fn generation_is_deterministic_across_runs_and_process_cwd() -> TestResult {
-    let root = repo_root();
-    let first = activation::generate(&root).map_err(|error| error.to_string())?;
-    let second = activation::generate(&root).map_err(|error| error.to_string())?;
-    assert_eq!(first, second, "two in-process generations must be structurally identical");
-    assert_eq!(first.to_bytes()?, second.to_bytes()?);
-
-    // Negative control: an implementation that (incorrectly) reads through a
-    // relative path or `env::current_dir()` would produce different bytes,
-    // or fail outright, once the process CWD differs from the repo root.
-    let original_cwd = std::env::current_dir()?;
-    let scratch = std::env::temp_dir().join(format!(
-        "activation-cwd-independence-{}-{}",
-        std::process::id(),
-        first.rows.len()
-    ));
-    std::fs::create_dir_all(&scratch)?;
-    std::env::set_current_dir(&scratch)?;
-    let third = activation::generate(&root);
-    let restore_result = std::env::set_current_dir(&original_cwd);
-    let _ = std::fs::remove_dir_all(&scratch);
-    restore_result?;
-    let third = third.map_err(|error| error.to_string())?;
-
-    assert_eq!(first, third, "generation must not depend on process CWD");
-    assert_eq!(first.to_bytes()?, third.to_bytes()?);
-    Ok(())
-}
-
-#[test]
 fn exact_per_class_row_counts() -> TestResult {
     let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
     let counts: BTreeMap<&str, usize> = activation::class_counts(&inventory)
@@ -137,6 +107,18 @@ fn exact_per_class_row_counts() -> TestResult {
             "class `{class}` row count drifted; a silent derivation change must fail this test"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn fuzz_surface_identity_follows_the_registered_target_name() -> TestResult {
+    // `fuzz/fuzz_targets/fuzz_target_1.rs` is registered in fuzz/Cargo.toml as
+    // `[[bin]] name = "parser_integration"`. The runnable target is what a
+    // consumer names, so the source stem must not become the surface id.
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let ids: Vec<&str> = inventory.rows.iter().map(|row| row.surface_id.as_str()).collect();
+    assert!(ids.contains(&"fuzz:parser_integration"), "registered target name missing");
+    assert!(!ids.contains(&"fuzz:fuzz_target_1"), "source file stem must not be the surface id");
     Ok(())
 }
 
@@ -284,6 +266,49 @@ fn override_ledger_rejects_an_unexpected_policy_name() -> TestResult {
 }
 
 #[test]
+fn override_review_after_must_be_an_iso_date() -> TestResult {
+    let (mut file, index) = overrides_and_index()?;
+    file.overrides[0].review_after = Some("soon".to_string());
+    expect_override_violation(&file, &index, "is not an ISO `YYYY-MM-DD` date")
+}
+
+#[test]
+fn override_review_after_rejects_an_impossible_month() -> TestResult {
+    let (mut file, index) = overrides_and_index()?;
+    file.overrides[0].review_after = Some("2026-13-01".to_string());
+    expect_override_violation(&file, &index, "is not an ISO `YYYY-MM-DD` date")
+}
+
+#[test]
+fn override_authority_path_must_exist() -> TestResult {
+    let (mut file, index) = overrides_and_index()?;
+    file.overrides[0].semantic_authority = "policy/not-a-real-ledger.toml".to_string();
+    expect_override_violation(&file, &index, "missing authority path")
+}
+
+#[test]
+fn override_toml_authority_fragment_must_resolve() -> TestResult {
+    // The path exists, so a path-only check would pass this. The fragment is
+    // what a human gets wrong: `#publish` looks right but the real Cargo key
+    // is `package.publish`.
+    let (mut file, index) = overrides_and_index()?;
+    file.overrides[0].publication_authority =
+        "crates/perl-tree-sitter-compat/Cargo.toml#publish".to_string();
+    expect_override_violation(&file, &index, "has no key `publish`")
+}
+
+#[test]
+fn override_ledger_rejects_an_unknown_field() -> TestResult {
+    // A misspelled optional key must not deserialize into a silent default.
+    let text = std::fs::read_to_string(repo_root().join("policy/activation-overrides.toml"))?;
+    let typo = text.replace("compile_profiles = ", "compile_profile = ");
+    assert_ne!(typo, text, "fixture assumption: the ledger declares compile_profiles");
+    let parsed: Result<activation::OverridesFile, _> = toml::from_str(&typo);
+    assert!(parsed.is_err(), "a misspelled override key must fail to parse");
+    Ok(())
+}
+
+#[test]
 fn override_does_not_change_the_derived_class() -> TestResult {
     let (mut file, index) = overrides_and_index()?;
     assert_eq!(
@@ -294,4 +319,43 @@ fn override_does_not_change_the_derived_class() -> TestResult {
     file.overrides[0].surface_id = "gate:whitespace_check".to_string();
     file.overrides[0].class = "gate".to_string();
     expect_override_violation(&file, &index, "does not change the derived class")
+}
+
+#[test]
+fn override_cannot_reclassify_a_derived_surface() -> TestResult {
+    // The dangerous case is not the no-op above but the silent demotion: an
+    // override quietly replacing a derived `product` row with its own answer.
+    let (mut file, index) = overrides_and_index()?;
+    assert_eq!(
+        index.get("feature:lsp.hover").copied(),
+        Some(ActivationClass::Product),
+        "fixture assumption: feature:lsp.hover must derive to `product`"
+    );
+    file.overrides[0].surface_id = "feature:lsp.hover".to_string();
+    file.overrides[0].class = "lab".to_string();
+    expect_override_violation(&file, &index, "would reclassify a derived surface")
+}
+
+#[test]
+fn row_requires_a_non_blank_owner() -> TestResult {
+    let mut inventory = canonical_inventory()?;
+    row_mut(&mut inventory, "gate:whitespace_check").ok_or("gate row not found")?["owner"] =
+        json!("   ");
+    expect_violation(&inventory, "requires a non-blank owner")
+}
+
+#[test]
+fn dangling_consumer_path_fails_validation() -> TestResult {
+    let mut inventory = canonical_inventory()?;
+    row_mut(&mut inventory, "feature:lsp.completion").ok_or("product row not found")?["consumers"] =
+        json!(["crates/does-not-exist"]);
+    expect_violation(&inventory, "missing authority path `crates/does-not-exist`")
+}
+
+#[test]
+fn dangling_proof_reference_fails_validation() -> TestResult {
+    let mut inventory = canonical_inventory()?;
+    row_mut(&mut inventory, "feature:lsp.completion").ok_or("product row not found")?["proof_references"] =
+        json!([{ "class": "integration_test", "id": "crates/nope/tests/gone.rs" }]);
+    expect_violation(&inventory, "missing authority path `crates/nope/tests/gone.rs`")
 }

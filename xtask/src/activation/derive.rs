@@ -76,8 +76,21 @@ fn derive_features(root: &Path) -> Result<(RuleOutput, RuleOutput), ActivationEr
         let id = feature.get("id").and_then(toml::Value::as_str).ok_or_else(|| {
             ActivationError::new(format!("{FEATURES_TOML}: feature row missing id"))
         })?;
-        let maturity = feature.get("maturity").and_then(toml::Value::as_str).unwrap_or("");
-        let advertised = feature.get("advertised").and_then(toml::Value::as_bool).unwrap_or(false);
+        // Defaulting these would make a feature whose `maturity` is missing or
+        // whose `advertised` is not a bool match neither branch and disappear
+        // from the inventory with no violation — a real product surface lost
+        // to a typo. The classification inputs are required, not optional.
+        let maturity = feature.get("maturity").and_then(toml::Value::as_str).ok_or_else(|| {
+            ActivationError::new(format!(
+                "{FEATURES_TOML}: feature `{id}` has no string `maturity`"
+            ))
+        })?;
+        let advertised =
+            feature.get("advertised").and_then(toml::Value::as_bool).ok_or_else(|| {
+                ActivationError::new(format!(
+                    "{FEATURES_TOML}: feature `{id}` has no boolean `advertised`"
+                ))
+            })?;
         if maturity == "proven" && advertised {
             product_rows.push(feature_row(
                 id,
@@ -222,16 +235,28 @@ fn derive_gates(root: &Path) -> Result<RuleOutput, ActivationError> {
         .and_then(serde_yaml_ng::Value::as_sequence)
         .ok_or_else(|| ActivationError::new(format!("{GATE_POLICY_YAML}: missing gates: list")))?;
 
-    let mut rows: Vec<ActivationRow> = gates
-        .iter()
-        .filter_map(|gate| {
-            let name = gate.get("name")?.as_str()?.to_string();
+    let mut rows: Vec<ActivationRow> = Vec::with_capacity(gates.len());
+    for gate in gates {
+        // A gate row without a usable name is malformed authority data, not
+        // an optional value. Skipping it would drop a real gate from the
+        // inventory while still reporting a successful generation.
+        let name = gate
+            .get("name")
+            .and_then(serde_yaml_ng::Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                ActivationError::new(format!(
+                    "{GATE_POLICY_YAML}: a gates: entry has no non-empty string name"
+                ))
+            })?
+            .to_string();
+        {
             let tier = gate.get("tier").and_then(serde_yaml_ng::Value::as_str).unwrap_or("");
             let required =
                 gate.get("required").and_then(serde_yaml_ng::Value::as_bool).unwrap_or(false);
             let description =
                 gate.get("description").and_then(serde_yaml_ng::Value::as_str).unwrap_or("");
-            Some(ActivationRow {
+            rows.push(ActivationRow {
                 surface_id: format!("gate:{name}"),
                 class: ActivationClass::Gate,
                 class_authority: ClassAuthority {
@@ -256,9 +281,9 @@ fn derive_gates(root: &Path) -> Result<RuleOutput, ActivationError> {
                 promotion: not_evaluated(),
                 retirement: None,
                 notes: if description.is_empty() { None } else { Some(description.to_string()) },
-            })
-        })
-        .collect();
+            });
+        }
+    }
     let considered = gates.len();
     rows.sort_by(|left, right| left.surface_id.cmp(&right.surface_id));
 
@@ -324,9 +349,17 @@ fn derive_benches(root: &Path) -> Result<RuleOutput, ActivationError> {
         };
         for bench in benches {
             considered += 1;
-            let Some(bench_name) = bench.get("name").and_then(toml::Value::as_str) else {
-                continue;
-            };
+            // As with gates: a [[bench]] without a usable name is malformed
+            // manifest data. Skipping it would silently omit a real target.
+            let bench_name = bench
+                .get("name")
+                .and_then(toml::Value::as_str)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| {
+                    ActivationError::new(format!(
+                        "{manifest_path}: a [[bench]] target has no non-empty string name"
+                    ))
+                })?;
             rows.push(ActivationRow {
                 surface_id: format!("bench:{name}/{bench_name}"),
                 class: ActivationClass::Benchmark,
@@ -478,25 +511,32 @@ fn derive_fuzz(root: &Path) -> Result<RuleOutput, ActivationError> {
             bin.get("path").and_then(toml::Value::as_str)
                 == Some(format!("fuzz_targets/{stem}.rs").as_str())
         });
-        let registration =
-            match bin_entry.and_then(|bin| bin.get("name")).and_then(toml::Value::as_str) {
-                Some(bin_name) => Registration {
-                    state: RegistrationState::Established,
-                    authority: Some(FUZZ_CARGO_TOML.to_string()),
-                    detail: Some(format!(
-                        "[[bin]] name = \"{bin_name}\", path = \"fuzz_targets/{stem}.rs\""
-                    )),
-                },
-                None => Registration {
-                    state: RegistrationState::NotEstablished,
-                    authority: Some(FUZZ_CARGO_TOML.to_string()),
-                    detail: Some(
-                        "no [[bin]] entry in fuzz/Cargo.toml references this file".to_string(),
-                    ),
-                },
-            };
+        let bin_name = bin_entry.and_then(|bin| bin.get("name")).and_then(toml::Value::as_str);
+        let registration = match bin_name {
+            Some(bin_name) => Registration {
+                state: RegistrationState::Established,
+                authority: Some(FUZZ_CARGO_TOML.to_string()),
+                detail: Some(format!(
+                    "[[bin]] name = \"{bin_name}\", path = \"fuzz_targets/{stem}.rs\""
+                )),
+            },
+            None => Registration {
+                state: RegistrationState::NotEstablished,
+                authority: Some(FUZZ_CARGO_TOML.to_string()),
+                detail: Some(
+                    "no [[bin]] entry in fuzz/Cargo.toml references this file".to_string(),
+                ),
+            },
+        };
+        // Surface identity follows the registered `[[bin]] name`, not the
+        // source file stem: the runnable target is what a consumer names
+        // (`cargo fuzz run <name>`), and the two differ in this repository
+        // (`fuzz_targets/fuzz_target_1.rs` is registered as
+        // `parser_integration`). An unregistered source file has no target
+        // name, so it falls back to its stem and says so in `registration`.
+        let target_name = bin_name.unwrap_or(stem.as_str());
         rows.push(ActivationRow {
-            surface_id: format!("fuzz:{stem}"),
+            surface_id: format!("fuzz:{target_name}"),
             class: ActivationClass::Lab,
             class_authority: ClassAuthority {
                 kind: ClassAuthorityKind::Derived,
@@ -546,4 +586,105 @@ pub fn derived_class_index(
         }
     }
     Ok(index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch root holding only the one authority a rule reads, so a
+    /// malformed-authority control can be written without touching the real
+    /// repository or the process working directory.
+    fn scratch_root(label: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("activation-derive-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        root
+    }
+
+    fn write(root: &Path, relative: &str, contents: &str) -> bool {
+        let path = root.join(relative);
+        let Some(parent) = path.parent() else {
+            return false;
+        };
+        fs::create_dir_all(parent).is_ok() && fs::write(&path, contents).is_ok()
+    }
+
+    #[test]
+    fn gate_without_a_name_fails_instead_of_disappearing() {
+        let root = scratch_root("gate-no-name");
+        assert!(write(
+            &root,
+            GATE_POLICY_YAML,
+            "gates:\n  - name: real_gate\n    tier: pr_fast\n  - tier: pr_fast\n"
+        ));
+        let message = match derive_gates(&root) {
+            Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("has no non-empty string name"), "{message}");
+    }
+
+    #[test]
+    fn well_formed_gates_still_derive() {
+        let root = scratch_root("gate-ok");
+        assert!(write(
+            &root,
+            GATE_POLICY_YAML,
+            "gates:\n  - name: real_gate\n    tier: pr_fast\n    required: true\n"
+        ));
+        let derived = derive_gates(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(derived, Ok(vec!["gate:real_gate".to_string()]));
+    }
+
+    #[test]
+    fn feature_without_maturity_fails_instead_of_disappearing() {
+        let root = scratch_root("feature-no-maturity");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nadvertised = true\n"
+        ));
+        let message = match derive_features(&root) {
+            Ok(_) => "unexpectedly derived".to_string(),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("has no string `maturity`"), "{message}");
+    }
+
+    #[test]
+    fn feature_without_advertised_fails_instead_of_disappearing() {
+        let root = scratch_root("feature-no-advertised");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"proven\"\n"
+        ));
+        let message = match derive_features(&root) {
+            Ok(_) => "unexpectedly derived".to_string(),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("has no boolean `advertised`"), "{message}");
+    }
+
+    #[test]
+    fn bench_target_without_a_name_fails_instead_of_disappearing() {
+        let root = scratch_root("bench-no-name");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n\n[[bench]]\npath = \"benches/x.rs\"\n"
+        ));
+        let message = match derive_benches(&root) {
+            Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("has no non-empty string name"), "{message}");
+    }
 }

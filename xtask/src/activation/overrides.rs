@@ -18,7 +18,13 @@ use super::model::{
 };
 
 /// Top-level shape of the override ledger file.
+///
+/// `deny_unknown_fields` on both this and [`OverrideRecord`] is load-bearing:
+/// without it a misspelled optional key (`consumer` for `consumers`,
+/// `review_afer` for `review_after`) would deserialize to an empty default
+/// and produce a quietly incomplete row instead of an error.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OverridesFile {
     pub schema_version: u32,
     pub policy: String,
@@ -37,6 +43,7 @@ const EXPECTED_POLICY: &str = "activation-overrides";
 
 /// One hand-maintained override row.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OverrideRecord {
     pub surface_id: String,
     pub class: String,
@@ -56,7 +63,6 @@ pub struct OverrideRecord {
     #[serde(default)]
     pub reason: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub created: Option<String>,
     #[serde(default)]
     pub review_after: Option<String>,
@@ -84,6 +90,89 @@ fn publication_state(value: &str) -> Option<PublicationState> {
         "not_applicable" => PublicationState::NotApplicable,
         _ => return None,
     })
+}
+
+/// Resolve an authority reference written by hand in the override ledger.
+///
+/// The path must exist, and when it names a TOML file with a `#fragment`,
+/// the fragment must resolve as a dotted key path in that document. Derived
+/// rows are deliberately NOT held to the dotted-path rule: their fragments
+/// are domain identifiers (a `features.toml` feature id, a gate name), not
+/// TOML keys, and they are built programmatically from the same file they
+/// were read out of. The hand-written rows are the ones a person can get
+/// wrong, so they are the ones checked.
+fn check_hand_written_authority(
+    root: &Path,
+    surface_id: &str,
+    label: &str,
+    value: &str,
+    violations: &mut Vec<String>,
+) {
+    let mut halves = value.splitn(2, '#');
+    let path = halves.next().unwrap_or_default();
+    let fragment = halves.next();
+    if path.is_empty() || !root.join(path).exists() {
+        violations.push(format!(
+            "override `{surface_id}`: missing authority path `{path}` referenced by {label}"
+        ));
+        return;
+    }
+    let (Some(fragment), true) = (fragment, path.ends_with(".toml")) else {
+        return;
+    };
+    let Ok(text) = fs::read_to_string(root.join(path)) else {
+        violations.push(format!(
+            "override `{surface_id}`: cannot read authority `{path}` referenced by {label}"
+        ));
+        return;
+    };
+    let Ok(document) = toml::from_str::<toml::Value>(&text) else {
+        violations.push(format!(
+            "override `{surface_id}`: authority `{path}` referenced by {label} is not valid TOML"
+        ));
+        return;
+    };
+    let mut cursor = &document;
+    for key in fragment.split('.') {
+        match cursor.get(key) {
+            Some(next) => cursor = next,
+            None => {
+                violations.push(format!(
+                    "override `{surface_id}`: authority `{path}` has no key `{fragment}` \
+                     referenced by {label}"
+                ));
+                return;
+            }
+        }
+    }
+}
+
+/// A well-formed `YYYY-MM-DD` calendar date.
+///
+/// This validates the *shape* of an expiry, not whether it has passed. The
+/// repository's other ledgers (`policy/non-rust-allowlist.toml`) treat a
+/// stale `review_after` as an advisory report rather than a hard failure —
+/// `cargo xtask check-file-policy` currently reports 48 stale entries without
+/// failing — so enforcing expiry here would diverge from that convention. A
+/// date that cannot be read at all is a different thing: it makes the expiry
+/// unreviewable, so it fails closed.
+fn is_iso_date(value: &str) -> bool {
+    let mut parts = value.split('-');
+    let (Some(year), Some(month), Some(day), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let digits = |field: &str, width: usize| {
+        field.len() == width && field.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    if !digits(year, 4) || !digits(month, 2) || !digits(day, 2) {
+        return false;
+    }
+    let (Ok(month), Ok(day)) = (month.parse::<u32>(), day.parse::<u32>()) else {
+        return false;
+    };
+    (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
 /// `crate:<name>` is the one surface-id kind no derivation rule in
@@ -146,13 +235,40 @@ pub fn validate(
         if record.owner.as_deref().unwrap_or("").trim().is_empty() {
             violations.push(format!("override `{}` requires an owner", record.surface_id));
         }
-        if record.review_after.as_deref().unwrap_or("").trim().is_empty() {
-            violations
-                .push(format!("override `{}` requires a review_after date", record.surface_id));
+        match record.review_after.as_deref().map(str::trim) {
+            None | Some("") => violations
+                .push(format!("override `{}` requires a review_after date", record.surface_id)),
+            Some(value) if !is_iso_date(value) => violations.push(format!(
+                "override `{}` review_after `{value}` is not an ISO `YYYY-MM-DD` date",
+                record.surface_id
+            )),
+            Some(_) => {}
+        }
+        if let Some(created) = record.created.as_deref().map(str::trim)
+            && !is_iso_date(created)
+        {
+            violations.push(format!(
+                "override `{}` created `{created}` is not an ISO `YYYY-MM-DD` date",
+                record.surface_id
+            ));
         }
         if record.reason.as_deref().unwrap_or("").trim().is_empty() {
             violations.push(format!("override `{}` requires a reason", record.surface_id));
         }
+        check_hand_written_authority(
+            root,
+            &record.surface_id,
+            "semantic_authority",
+            &record.semantic_authority,
+            &mut violations,
+        );
+        check_hand_written_authority(
+            root,
+            &record.surface_id,
+            "publication_authority",
+            &record.publication_authority,
+            &mut violations,
+        );
         if publication_state(&record.publication_state).is_none() {
             // Without this check an unparseable state would make `build_rows`
             // silently drop the row: the override would vanish from the
@@ -185,7 +301,20 @@ pub fn validate(
                     class.as_str()
                 ));
             }
-            Some(_) => {}
+            // An override may INTRODUCE a surface no rule settles; it may not
+            // overwrite a verdict a rule already reached. Allowing that would
+            // make the ledger a silent second classifier: a row could quietly
+            // demote a derived `product` surface to `lab` and the inventory
+            // would show only the override's answer.
+            Some(derived_class) => {
+                violations.push(format!(
+                    "override `{}` would reclassify a derived surface from `{}` to `{}`; \
+                     overrides may only introduce surfaces no derivation rule settles",
+                    record.surface_id,
+                    derived_class.as_str(),
+                    class.as_str()
+                ));
+            }
             None => {
                 if let Err(violation) = override_only_target(root, &record.surface_id) {
                     violations.push(violation);

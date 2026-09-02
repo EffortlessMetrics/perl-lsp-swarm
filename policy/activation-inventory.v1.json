@@ -801,7 +801,7 @@
       "proof_references": [],
       "publication": {
         "state": "private_workspace_member",
-        "authority": "crates/perl-tree-sitter-compat/Cargo.toml#publish"
+        "authority": "crates/perl-tree-sitter-compat/Cargo.toml#package.publish"
       },
       "owner": "parser/tree-sitter",
       "promotion": {
@@ -821,12 +821,14 @@
         "authority": "policy/activation-overrides.toml",
         "rule": "override"
       },
-      "semantic_authority": "crates/tree-sitter-perl-c/Cargo.toml#description",
+      "semantic_authority": "crates/tree-sitter-perl-c/Cargo.toml#package.description",
       "consumers": [
-        "crates/perl-parser-comparison"
+        "crates/perl-parser-comparison",
+        "xtask"
       ],
       "compile_profiles": [
-        "historical"
+        "historical",
+        "parser-tasks"
       ],
       "registration": {
         "state": "not_established",
@@ -841,7 +843,7 @@
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "No #9204 derivation rule classifies a differential test-oracle crate. crates/tree-sitter-perl-c/Cargo.toml describes the crate as a \"Tree-sitter Perl C FFI snapshot for testing, experimentation, accuracy comparison, and baseline benchmarking\". crates/perl-parser-comparison is the only in-tree Cargo dependent, pulling it in via the optional `historical` feature (`historical = [\"dep:tree-sitter-perl-c\"]`) to compare native-parser output against the legacy C grammar. Confirmed published on crates.io (max_version 0.17.0, checked 2026-09-02)."
+      "notes": "No #9204 derivation rule classifies a differential test-oracle crate. crates/tree-sitter-perl-c/Cargo.toml describes the crate as a \"Tree-sitter Perl C FFI snapshot for testing, experimentation, accuracy comparison, and baseline benchmarking\". It has two in-tree Cargo dependents, both optional and both oracle uses: crates/perl-parser-comparison gates it behind `historical = [\"dep:tree-sitter-perl-c\"]` to compare native-parser output against the legacy C grammar, and xtask gates it behind `parser-tasks = [\"legacy\", \"tree-sitter-perl-c\"]`, calling `tree_sitter_perl_c::language()` in xtask/src/tasks/compare_parsers.rs. Publication is asserted from the root Cargo.toml `[workspace.metadata.publish] allow` list rather than from a live registry lookup, so the claim stays checkable from the repository alone."
     },
     {
       "surface_id": "feature:lsp.code_action",
@@ -1665,36 +1667,6 @@
       }
     },
     {
-      "surface_id": "fuzz:fuzz_target_1",
-      "class": "lab",
-      "class_authority": {
-        "kind": "derived",
-        "authority": "fuzz/fuzz_targets/fuzz_target_1.rs",
-        "rule": "fuzz-targets"
-      },
-      "semantic_authority": "fuzz/fuzz_targets/fuzz_target_1.rs",
-      "consumers": [
-        "perl-parser-fuzz"
-      ],
-      "compile_profiles": [
-        "fuzz"
-      ],
-      "registration": {
-        "state": "established",
-        "authority": "fuzz/Cargo.toml",
-        "detail": "[[bin]] name = \"parser_integration\", path = \"fuzz_targets/fuzz_target_1.rs\""
-      },
-      "proof_references": [],
-      "publication": {
-        "state": "not_applicable",
-        "authority": "fuzz/Cargo.toml"
-      },
-      "owner": "perl-parser-fuzz",
-      "promotion": {
-        "state": "not_evaluated"
-      }
-    },
-    {
       "surface_id": "fuzz:heredoc_parsing",
       "class": "lab",
       "class_authority": {
@@ -1863,6 +1835,36 @@
         "state": "established",
         "authority": "fuzz/Cargo.toml",
         "detail": "[[bin]] name = \"module_surface\", path = \"fuzz_targets/module_surface.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:parser_integration",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/fuzz_target_1.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/fuzz_target_1.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"parser_integration\", path = \"fuzz_targets/fuzz_target_1.rs\""
       },
       "proof_references": [],
       "publication": {
