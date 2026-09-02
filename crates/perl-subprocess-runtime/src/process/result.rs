@@ -592,8 +592,10 @@ fn check_stream(
             }
         }
         TruncationState::ObservationTruncated { limit_bytes } => {
-            // Observation stopped at the limit, so at least that much was seen.
-            if evidence.observed_bytes() < limit_bytes {
+            // Observation stopped *at* the limit, so that is exactly how much
+            // was seen. Reading past the point you say you stopped at
+            // contradicts the stop point as surely as stopping short of it.
+            if evidence.observed_bytes() != limit_bytes {
                 return Err(ResultInconsistency::TruncationLimitContradicted { channel: expected });
             }
         }
@@ -700,6 +702,7 @@ impl ProcessResult {
         plan_fingerprint: PlanFingerprint,
         run_id: RunId,
         backend: BackendIdentity,
+        work: WorkMetadata,
     ) -> Self {
         // A supervisor that failed proves nothing about cleanup, and a failure
         // can happen after the child started. Claiming cleanup was
@@ -721,7 +724,7 @@ impl ProcessResult {
             cleanup,
             tree,
             backend,
-            work: WorkMetadata::default(),
+            work,
             limitations,
         }
     }

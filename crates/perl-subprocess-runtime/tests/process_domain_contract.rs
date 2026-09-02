@@ -1027,7 +1027,7 @@ fn truncated_or_limited_output_never_claims_to_be_complete() -> TestResult {
     let truncated = result_with(
         StreamEvidence::new(
             StreamChannel::Stdout,
-            10_000,
+            1024,
             perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
             b"retained".to_vec(),
             TruncationState::ObservationTruncated { limit_bytes: 1024 },
@@ -1039,7 +1039,7 @@ fn truncated_or_limited_output_never_claims_to_be_complete() -> TestResult {
     )?;
     assert!(!truncated.claims_complete_output());
     assert!(truncated.limitations().contains(&Limitation::OutputIncomplete));
-    assert_eq!(truncated.stdout().observed_bytes(), 10_000);
+    assert_eq!(truncated.stdout().observed_bytes(), 1024);
     assert_eq!(truncated.stdout().retained().len(), 8);
 
     let limited = result_with(
@@ -2807,6 +2807,83 @@ fn limitation_derivation_has_exactly_one_implementation() -> TestResult {
     assert!(
         offenders.is_empty(),
         "limitations are derived outside `derive_limitations`, so constructors can drift: {offenders:?}"
+    );
+    Ok(())
+}
+
+// ──────────────── controls added after the fifth bot review round ────────────
+
+#[test]
+fn observation_truncation_must_match_its_stop_point_exactly() -> TestResult {
+    // The wrong implementation this kills: bounding observation from below
+    // only, so evidence can claim it stopped at a limit it demonstrably read
+    // past. This control exists because the fix for it silently failed to
+    // apply once and was then reported as done — the earlier control only
+    // covered observing *fewer* bytes than the stop point.
+    let observed_past_its_stop_point = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            10_000,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            b"kept".to_vec(),
+            TruncationState::ObservationTruncated { limit_bytes: 1024 },
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(
+        observed_past_its_stop_point.is_err(),
+        "evidence observed far past the limit it claimed stopped it"
+    );
+
+    // The coherent shape: observation stopped exactly at the limit.
+    let coherent = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            1024,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            b"kept".to_vec(),
+            TruncationState::ObservationTruncated { limit_bytes: 1024 },
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    )?;
+    assert!(!coherent.claims_complete_output());
+    Ok(())
+}
+
+#[test]
+fn a_rejected_script_reports_the_events_it_actually_emitted() -> TestResult {
+    // The wrong implementation this kills: settling a rejected script's stream
+    // with a terminal event while the fallback result defaults its work
+    // metadata to zero events. The consumer receives events and is then told
+    // none were emitted — a regression introduced by the fix that made the
+    // rejection settle the stream at all.
+    let supervisor = FakeSupervisor::new();
+    let mut terminal_first = ScriptedRun::exiting(0);
+    terminal_first.events = vec![ProcessEventKind::Terminal(TerminalDisposition::TimedOut)];
+    supervisor.script_run(terminal_first);
+    let mut handle = match supervisor.start(valid_linux_one_shot().validate()?) {
+        Ok(handle) => handle,
+        Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
+    };
+
+    let mut emitted = 0_u64;
+    while handle.next_event().is_some() {
+        emitted += 1;
+    }
+    assert!(emitted > 0, "the rejected script emitted nothing to account for");
+
+    let result = handle.wait();
+    assert_eq!(*result.disposition(), TerminalDisposition::SupervisorFailed);
+    assert_eq!(
+        result.work().events_emitted,
+        emitted,
+        "the result under-reported the events the consumer received"
     );
     Ok(())
 }

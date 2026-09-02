@@ -240,6 +240,35 @@ this PR silently failed to apply after `rustfmt` reflowed their target text,
 and in this case the failure was then asserted as done. An edit whose effect is
 not verified is not a change.
 
+### Sixth external round (Devin, `2dd567b`) — and a second correction
+
+One new finding, plus one older finding that turned out never to have been
+fixed despite being reported as fixed.
+
+| Finding | Disposition | Mutation replay |
+|---|---|---|
+| a rejected script settles its stream with a terminal event, but the fallback result defaulted `events_emitted` to zero — the consumer receives events and is then told none were emitted | **Fixed** — `supervisor_failure` takes `WorkMetadata`, and every fake result path reports the ledger's count | KILLED |
+| `ObservationTruncated` still admitted observing *past* the limit it named | **Fixed** — exact equality, as the second-round entry above already claimed | KILLED |
+
+**Second correction.** The second-round entry above states that observation
+truncation was fixed to exact equality. It was not: that edit silently failed
+to apply — `rustfmt` had reflowed its target text — and the code still read
+`observed_bytes() < limit_bytes` four rounds later. The control written at the
+time only exercised observing *fewer* bytes than the stop point, so it passed
+against the unfixed code and the claim went unchallenged.
+
+That is the same failure as the `derive_limitations` correction recorded below
+it, with the same two causes: an unverified edit, and a control that covered
+one side of a two-sided invariant. Both are now closed, and the new control
+covers the side that was missing.
+
+The regression in the first row is worth noting for a different reason: it was
+introduced by the previous round's own repair. Making the rejection settle the
+stream was correct, and it made the previously-accurate zero event count wrong.
+A fix that changes what a component does can invalidate a neighbouring
+component's assumptions, which is why the full proof is re-run after each
+round rather than only the affected test.
+
 ## Terminal precedence
 
 Fixed and total, highest first:

@@ -270,7 +270,14 @@ fn refusal_result(
         Vec::new(),
     ) {
         Ok(result) => result,
-        Err(_) => ProcessResult::supervisor_failure(plan_id, fingerprint, run_id, fake_backend()),
+        // A refused start produced no handle, so no events were emitted.
+        Err(_) => ProcessResult::supervisor_failure(
+            plan_id,
+            fingerprint,
+            run_id,
+            fake_backend(),
+            WorkMetadata::default(),
+        ),
     }
 }
 
@@ -321,6 +328,15 @@ impl FakeHandle {
         }
     }
 
+    /// The work this run actually did, so every result path reports the same
+    /// event count the consumer received.
+    fn work_metadata(&self) -> WorkMetadata {
+        WorkMetadata {
+            wall_time: std::time::Duration::ZERO,
+            events_emitted: self.ledger.admitted_count(),
+        }
+    }
+
     fn elected(&self) -> TerminalDisposition {
         TerminalDisposition::elect(self.run.control, self.run.settlement)
     }
@@ -333,11 +349,15 @@ impl FakeHandle {
     /// result that asserts something untrue.
     fn build_result(&self) -> ProcessResult {
         if self.script_rejected {
+            // The rejection settles the stream with a terminal event, so the
+            // run did emit events. Defaulting the count to zero here would
+            // contradict what the consumer just received.
             return ProcessResult::supervisor_failure(
                 self.plan_id.clone(),
                 self.fingerprint,
                 self.run_id.clone(),
                 fake_backend(),
+                self.work_metadata(),
             );
         }
         match ProcessResult::new(
@@ -350,10 +370,7 @@ impl FakeHandle {
             self.run.cleanup,
             self.run.tree,
             fake_backend(),
-            WorkMetadata {
-                wall_time: std::time::Duration::ZERO,
-                events_emitted: self.ledger.admitted_count(),
-            },
+            self.work_metadata(),
             Vec::new(),
         ) {
             Ok(result) => result,
@@ -362,6 +379,7 @@ impl FakeHandle {
                 self.fingerprint,
                 self.run_id.clone(),
                 fake_backend(),
+                self.work_metadata(),
             ),
         }
     }
