@@ -1,9 +1,9 @@
 project: product
 component: Developer experience
 kind: Fixed
-body: An ordinary debuggee failure reported by an external debugger peer is no longer classified as an adapter bug; backend request failures now carry a typed responder origin and command.
+body: '`BackendError::Engine(String)` is replaced by `BackendError::RequestFailed { origin, command, message }`, so an ordinary debuggee failure reported by an external debugger peer is no longer classified as an adapter bug; downstream `Engine(msg)` matches become `RequestFailed { message, .. }`.'
 time: 2026-09-02T14:30:00Z
 custom:
   PR: "14566"
   Slug: dap-backend-typed-responder-outcomes
-  Breaking: "no"
+  Breaking: "yes"

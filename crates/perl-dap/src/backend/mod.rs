@@ -137,7 +137,8 @@ pub enum BackendError {
     /// internal invariant. The reply carries a human-readable reason whose
     /// origin the `success: false` + message projection does not preserve, so
     /// this boundary records the responder, the command, and the reason without
-    /// asserting fault. See [`BackendResponseOrigin::reported_failure_category`].
+    /// asserting fault. [`BackendResponseOrigin`] documents what each responder
+    /// can reach and therefore which category it carries.
     ///
     /// `Display` is unchanged from the `Engine` variant this replaces:
     /// [`peer_bridge::DapPeerBridge`] renders it straight onto the DAP wire, so
