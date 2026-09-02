@@ -847,9 +847,9 @@ local function new_completion_resolve_state(server, completion_item, round_subje
 end
 
 ---True when the original item alone carries every field the application
----paths consume (#11188 declared completeness policy): its own textEdit or
----an LSP-snippet insertText. Plain-text insertText/label items are not
----applied by any path without resolution supplying a textEdit.
+---paths consume (#11188 declared completeness policy): its own textEdit or an
+---explicitly supplied insertText. Plain-text insertText is a complete
+---application target even when resolution would only enrich metadata.
 local function completion_self_complete(item)
   if item.textEdit then return true end
   return item.insertText ~= nil
@@ -1021,7 +1021,7 @@ local function apply_selected_completion(item, rstate)
     not edit_applied
     and dv
     and item.data.insert_text
-    and item.data.insert_text ~= item.text
+    and item.data.internal_key_suffixed
   then
     dv.doc:text_input(item.data.insert_text)
     edit_applied = true
@@ -1157,6 +1157,10 @@ end
 ---@param index integer
 ---@param item table
 local function autocomplete_onselect(index, item)
+  -- Lite XL uses item.text as its fallback insertion bytes. A suffixed
+  -- internal key must therefore always be claimed here, including synchronous
+  -- refusal paths, so the private identity never reaches the document.
+  local owns_internal_key = item.data and item.data.internal_key_suffixed == true
   -- Local patch (#11108): a completion edit computed for one accepted
   -- document state is revalidated against its stored subject at the
   -- moment of user selection; stale edits are never applied optimistically
@@ -1167,7 +1171,7 @@ local function autocomplete_onselect(index, item)
       core.log_quiet(
         "[LSP] completion edit refused (%s)", disposition or "stale"
       )
-      return false
+      return owns_internal_key or false
     end
   end
 
@@ -1178,7 +1182,8 @@ local function autocomplete_onselect(index, item)
   -- once regardless of repeated callbacks.
   local rstate = item.data.resolve
   if not rstate then
-    return apply_selected_completion(item, { state = "not_needed", applied = false })
+    local applied = apply_selected_completion(item, { state = "not_needed", applied = false })
+    return applied or owns_internal_key or false
   end
   if rstate.applied then
     return true
@@ -1195,7 +1200,7 @@ local function autocomplete_onselect(index, item)
     -- A resolving item owns the selection even when its terminal refuses to
     -- mutate (for example a stale or failed label-only result). Returning
     -- false would make Lite XL insert the internal menu key as a fallback.
-    return applied or rstate.supported
+    return applied or owns_internal_key or rstate.supported
   end
   if rstate.state == "in_flight" then
     rstate.pending_apply = true
@@ -1211,7 +1216,7 @@ local function autocomplete_onselect(index, item)
     -- The operation terminated synchronously (typed queue rejection or a
     -- missing session): its guarded terminal already fell back or refused,
     -- so selection surfaces that real outcome instead of a deferral.
-    return rstate.applied
+    return rstate.applied or owns_internal_key or false
   end
   -- The asynchronous terminal performs the sole document mutation.
   return true
@@ -2509,7 +2514,10 @@ function lsp.request_completion(doc, line, col, forced)
                 resolve = new_completion_resolve_state(server, symbol, subject),
                 -- Local patch (#11189): exact plain-insert target for
                 -- suffix-carrying keys (see the select-time fallback).
-                insert_text = symbol.insertText or label
+                insert_text = symbol.insertText or label,
+                -- Explicit provenance avoids treating a unique custom
+                -- insertText as a collision suffix.
+                internal_key_suffixed = key ~= label
               },
               onselect = autocomplete_onselect
             }

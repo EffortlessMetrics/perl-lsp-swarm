@@ -691,5 +691,88 @@ do
   )
 end
 
+-- ===========================================================================
+-- Case H: every resolve terminal/refusal path must claim a suffixed row before
+-- Lite XL's fallback can insert item.text. The real plugin's fallback is
+-- modelled by plugin_select above, including in-flight, error, null, timeout,
+-- stale, closed-session, and queue-rejection outcomes.
+-- ===========================================================================
+local function resolve_caps()
+  return {
+    textDocumentSync = { openClose = true, change = 2, save = { includeText = false } },
+    positionEncoding = "utf-16",
+    completionProvider = { resolveProvider = true, triggerCharacters = {} },
+  }
+end
+
+local function collision_resolve_fixture()
+  local lsp = fresh_module_load()
+  local server = make_server("perllsp", resolve_caps())
+  register(lsp, "perllsp", server)
+  local doc = make_doc("C:/proj/col8.pl", { "fo\n" }, 1, 6)
+  local dv = setmetatable({ doc = doc }, require "core.docview")
+  activate(dv)
+  local items = open_completion(lsp, server, doc, {
+    { label = "foo", kind = 3 },
+    { label = "foo", kind = 6 },
+  })
+  return lsp, server, doc, items["foo#2"]
+end
+
+do
+  -- In-flight selection is claimed immediately; later timeout remains inert
+  -- for a label-only item and cannot leak the synthetic key.
+  local lsp, server, doc, item = collision_resolve_fixture()
+  ok(plugin_select("foo#2", item) == true,
+    "caseH: in-flight duplicate selection is claimed")
+  local pending = server.outbound[#server.outbound]
+  ok(pending and pending.timeout_callback ~= nil,
+    "caseH: in-flight duplicate exposes timeout terminal")
+  if pending and pending.timeout_callback then pending.timeout_callback(pending) end
+  ok(#doc.edits == 0, "caseH: timeout refusal cannot leak the suffix")
+end
+
+do
+  local lsp, server, doc, item = collision_resolve_fixture()
+  ok(plugin_select("foo#2", item) == true,
+    "caseH: error-terminal duplicate selection is claimed")
+  local pending = server.outbound[#server.outbound]
+  ok(pending and pending.callback ~= nil, "caseH: error terminal is queued")
+  if pending and pending.callback then
+    pending.callback(server, { error = { code = -1, message = "rejected" } })
+  end
+  ok(#doc.edits == 0, "caseH: error refusal cannot leak the suffix")
+end
+
+do
+  local lsp, server, doc, item = collision_resolve_fixture()
+  ok(plugin_select("foo#2", item) == true,
+    "caseH: null-terminal duplicate selection is claimed")
+  local pending = server.outbound[#server.outbound]
+  if pending and pending.callback then pending.callback(server, { result = nil }) end
+  ok(#doc.edits == 0, "caseH: null refusal cannot leak the suffix")
+end
+
+do
+  local lsp, server, doc, item = collision_resolve_fixture()
+  lsp.terminate_document_session(doc, server)
+  doc.lsp_open = false
+  ok(plugin_select("foo#2", item) == true,
+    "caseH: stale/closed-session duplicate selection is claimed")
+  ok(#doc.edits == 0, "caseH: stale/closed-session refusal cannot leak the suffix")
+end
+
+do
+  local lsp, server, doc, item = collision_resolve_fixture()
+  function server:push_request(method, entry)
+    entry.method = method
+    entry.kind = "request"
+    return "not_queued"
+  end
+  ok(plugin_select("foo#2", item) == true,
+    "caseH: not-queued duplicate selection is claimed")
+  ok(#doc.edits == 0, "caseH: not-queued refusal cannot leak the suffix")
+end
+
 print(string.format("%d passed, %d failed", passed, failed))
 if failed > 0 then os.exit(1) end

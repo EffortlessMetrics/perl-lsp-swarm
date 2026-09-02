@@ -2577,7 +2577,7 @@ language = "lua"
 surface = "editor"
 classification = "test"
 owner = "editor/lite-xl"
-reason = "Deterministic framework-free completion collision suite proving duplicate labels remain independently selectable without leaking synthetic identity into display or insertion text; exercises the public request_completion path, autocomplete population, real onselect behavior, textEdit and insertText fallbacks, and stale selections."
+reason = "Framework-free Lua regression for the Lite XL init.lua runtime: it exercises the public request_completion projection and autocomplete selection callback, proving duplicate labels remain independently selectable and the plugin fallback cannot insert the internal collision key."
 covered_by = [
   "lua clients/lite-xl/tests/init_completion_collision_test.lua",
   "cargo xtask check-file-policy",
