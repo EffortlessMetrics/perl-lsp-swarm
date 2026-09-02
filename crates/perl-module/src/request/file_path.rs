@@ -33,6 +33,10 @@ pub enum ModuleFilePathError {
     /// A token given to [`ModuleFilePath::from_quoted_token`] carried no
     /// matching pair of `'` or `"` delimiters to strip.
     UnquotedToken,
+    /// A token's content needs escape or interpolation decoding that this crate
+    /// does not perform, so stripping delimiters would not yield the filename
+    /// Perl actually looks up.
+    UndecodableToken,
 }
 
 impl fmt::Display for ModuleFilePathError {
@@ -51,6 +55,9 @@ impl fmt::Display for ModuleFilePathError {
             Self::Traversal => f.write_str("literal file request contains a `..` component"),
             Self::UnquotedToken => {
                 f.write_str("source token is not wrapped in a matching pair of quote delimiters")
+            }
+            Self::UndecodableToken => {
+                f.write_str("source token contains escape or interpolation syntax; decode it first")
             }
         }
     }
@@ -71,6 +78,7 @@ impl ModuleFilePathError {
             Self::DriveQualified => "module_file_path.drive_qualified",
             Self::Traversal => "module_file_path.traversal",
             Self::UnquotedToken => "module_file_path.unquoted_token",
+            Self::UndecodableToken => "module_file_path.undecodable_token",
         }
     }
 }
@@ -152,33 +160,57 @@ impl ModuleFilePath {
 
     /// Decode a raw source token and validate the operand inside it.
     ///
-    /// Strips exactly one matching outer pair of `'` or `"` delimiters, then
+    /// Strips exactly one matching outer pair of `\'` or `"` delimiters, then
     /// applies [`Self::parse`] to the remainder. Use this for a token that still
     /// carries its delimiters — a `perl_parser_core::hir` require target keeps
     /// the string node's value verbatim, and `hir::model::normalize_module_target`
     /// exists to strip exactly this.
     ///
-    /// Escape sequences inside a double-quoted token are **not** interpreted;
-    /// this only removes the delimiters. A caller that needs real interpolation
-    /// must decode first and use [`Self::parse`].
+    /// # Only when stripping *is* the whole decode
+    ///
+    /// Removing delimiters yields the runtime filename only when the content
+    /// carries no Perl quoting syntax. This constructor therefore fails closed
+    /// on anything it cannot decode faithfully:
+    ///
+    /// - a single-quoted token containing `\\` (where `\\\\` and `\\'` are escapes);
+    /// - a double-quoted token containing `\\`, `$`, or `@` (escapes and
+    ///   interpolation).
+    ///
+    /// The `\'` rule is deliberately conservative: a lone backslash in single
+    /// quotes is often literal, but distinguishing that is the lexer's job, and
+    /// guessing would hand back a filename Perl never looks up.
+    ///
+    /// An interpolated operand is not a literal filename at all. Its producer
+    /// holds the AST and should classify it with
+    /// [`ModuleRequest::partially_static`] or [`ModuleRequest::dynamic`], which
+    /// carry the recovered evidence — this constructor will not invent it.
+    ///
+    /// [`ModuleRequest::partially_static`]: super::ModuleRequest::partially_static
+    /// [`ModuleRequest::dynamic`]: super::ModuleRequest::dynamic
     ///
     /// # Errors
     ///
     /// [`ModuleFilePathError::UnquotedToken`] when `token` is not wrapped in a
-    /// matching delimiter pair, otherwise the classified error for the decoded
-    /// operand.
+    /// matching delimiter pair, [`ModuleFilePathError::UndecodableToken`] when
+    /// its content needs real decoding, otherwise the classified error for the
+    /// decoded operand.
     pub fn from_quoted_token(token: &str) -> Result<Self, ModuleFilePathError> {
         let mut chars = token.chars();
         let Some(delimiter) = chars.next().filter(|first| *first == '\'' || *first == '"') else {
             return Err(ModuleFilePathError::UnquotedToken);
         };
-        let Some(last) = chars.next_back().filter(|last| *last == delimiter) else {
+        if chars.next_back() != Some(delimiter) {
             return Err(ModuleFilePathError::UnquotedToken);
-        };
-        let _ = last;
+        }
 
-        let decoded = &token[delimiter.len_utf8()..token.len() - delimiter.len_utf8()];
-        Self::parse(decoded)
+        let inner = &token[delimiter.len_utf8()..token.len() - delimiter.len_utf8()];
+        let needs_decoding =
+            if delimiter == '\'' { inner.contains('\\') } else { inner.contains(['\\', '$', '@']) };
+        if needs_decoding {
+            return Err(ModuleFilePathError::UndecodableToken);
+        }
+
+        Self::parse(inner)
     }
 
     /// The literal request text exactly as written in source.
@@ -316,6 +348,39 @@ mod tests {
         for input in ["'Foo.pm'", "\"Foo.pm\"", "it's.pl", "a\"b.pm", "don't/stop.pm", "'", "\""] {
             let path = ModuleFilePath::parse(input)?;
             assert_eq!(path.literal(), input, "`{input}` is a decoded filename, not a token");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_token_needing_real_decoding_is_refused() {
+        // Stripping delimiters is the whole decode only when the content carries
+        // no Perl quoting syntax. Anything else would hand back a filename Perl
+        // never looks up, marked as exact.
+        for token in [
+            "'Foo\\\\Bar.pm'",  // single-quoted escape: Perl yields `Foo\Bar.pm`
+            "'Foo\\'Bar.pm'",   // escaped delimiter
+            "\"Foo\\tBar.pm\"", // double-quoted escape
+            "\"$class.pm\"",    // scalar interpolation
+            "\"@list.pm\"",     // array interpolation
+            "\"Foo${leaf}.pm\"",
+        ] {
+            assert_eq!(
+                ModuleFilePath::from_quoted_token(token),
+                Err(ModuleFilePathError::UndecodableToken),
+                "`{token}` needs decoding this crate does not perform"
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_quoted_sigil_is_not_interpolation() -> Result<(), ModuleFilePathError> {
+        // `$` and `@` are literal inside single quotes, so these decode by
+        // stripping alone and must not be refused.
+        for (token, decoded) in [("'$literal.pm'", "$literal.pm"), ("'@literal.pm'", "@literal.pm")]
+        {
+            let path = ModuleFilePath::from_quoted_token(token)?;
+            assert_eq!(path.literal(), decoded);
         }
         Ok(())
     }
