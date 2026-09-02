@@ -127,8 +127,8 @@ impl StructuralAccessHop {
     /// 4. A definite selection requires a stable aggregate: an escaped or
     ///    mutated aggregate cannot support a claim that holds on every path.
     /// 5. [`StructuralHopOutcome::BudgetExhausted`] requires the budget to be
-    ///    actually exhausted, and an exhausted budget cannot accompany a
-    ///    definite outcome.
+    ///    actually exhausted. Spending the last unit is not itself a defect: a
+    ///    producer that budgeted exactly enough may still answer definitely.
     /// 6. Identity fields are non-empty and ranges are not inverted.
     ///
     /// # Errors
@@ -206,19 +206,17 @@ impl StructuralAccessHop {
             ));
         }
 
-        // Law 5: an exhausted-budget outcome must be backed by the accounting,
-        // and an exhausted budget cannot yield a definite answer.
+        // Law 5: an exhausted-budget outcome must be backed by the accounting.
+        //
+        // The converse is deliberately not a law. Spending the last unit is not
+        // the same as being cut short: a producer that budgeted exactly enough
+        // ends at zero having answered definitely, and only the
+        // `BudgetExhausted` *outcome* says the work stopped early.
         if matches!(self.outcome, StructuralHopOutcome::BudgetExhausted)
             && !self.budget.is_exhausted()
         {
             return Err(StructuralAccessContractError::MalformedBudget(
                 "a budget-exhausted outcome requires zero remaining units",
-            ));
-        }
-        if self.budget.is_exhausted() && matches!(self.certainty, StructuralHopCertainty::Definite)
-        {
-            return Err(StructuralAccessContractError::MalformedBudget(
-                "an exhausted budget cannot support a definite outcome",
             ));
         }
 

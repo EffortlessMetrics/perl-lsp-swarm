@@ -992,3 +992,55 @@ fn a_package_name_shape_never_digests_as_an_object_shape() -> Result<(), Box<dyn
     assert_ne!(package.fingerprint(), object.fingerprint());
     Ok(())
 }
+
+#[test]
+fn spending_the_last_unit_is_not_itself_a_defect() -> Result<(), Box<dyn Error>> {
+    // A producer that budgeted exactly enough spends its last unit and still
+    // gets a definite answer. Nothing about that is dishonest.
+    StructuralAccessHop::new(
+        0,
+        base_variable(),
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessSelector::StaticKey("k".to_string()),
+        spelling("{k}", 0, 3)?,
+        StructuralHopOutcome::Selected { shape: ValueShape::Scalar, value_fact: None },
+        StructuralHopCertainty::Definite,
+        StructuralAggregateCompleteness::Closed,
+        StructuralAggregateDisposition::Stable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(crate::Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticReasonCode::ExactSource,
+        StructuralAccessBudget::new(1, 0)?,
+        Vec::new(),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_hop_anchored_in_another_document_cannot_join_the_chain() -> Result<(), Box<dyn Error>> {
+    // A chain is one access in one document; a hop anchored elsewhere is not
+    // part of it.
+    let foreign = StructuralAccessHop::new(
+        0,
+        base_variable(),
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessSelector::StaticKey("k".to_string()),
+        StructuralAccessSpelling::new("{k}", SourceAnchor::new(None, FileId(999), 0, 3))?,
+        StructuralHopOutcome::Selected { shape: ValueShape::Scalar, value_fact: None },
+        StructuralHopCertainty::Definite,
+        StructuralAggregateCompleteness::Closed,
+        StructuralAggregateDisposition::Stable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(crate::Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticReasonCode::ExactSource,
+        StructuralAccessBudget::new(10, 9)?,
+        Vec::new(),
+    )?;
+    assert!(
+        StructuralAccessChain::new(subject()?, vec![foreign]).is_err(),
+        "a hop anchored in another document must not join this chain"
+    );
+    Ok(())
+}

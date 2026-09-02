@@ -68,6 +68,8 @@ impl StructuralAccessChain {
     ///    describes an impossible access.
     /// 4. Work accounting is monotone across hops: a hop cannot begin with
     ///    more remaining units than its predecessor ended with.
+    /// 5. Every hop is anchored in the subject's own document. A chain is one
+    ///    access in one file; a hop anchored elsewhere is not part of it.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -85,6 +87,12 @@ impl StructuralAccessChain {
 
         for (position, hop) in self.hops.iter().enumerate() {
             hop.validate()?;
+
+            if hop.spelling.anchor.file_id != self.subject.document {
+                return Err(StructuralAccessContractError::MalformedChain(
+                    "every hop must be anchored in the chain subject's own document",
+                ));
+            }
 
             let Ok(expected) = u32::try_from(position) else {
                 return Err(StructuralAccessContractError::MalformedChain(
