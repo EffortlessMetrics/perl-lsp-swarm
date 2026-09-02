@@ -14,7 +14,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -1286,7 +1286,6 @@ struct DebuggeePerlResolution {
 
 static DEBUGGEE_PERL: OnceLock<DebuggeePerlResolution> = OnceLock::new();
 #[cfg(test)]
-static LAST_PROBE_PID: AtomicU32 = AtomicU32::new(0);
 #[cfg(test)]
 static ACTIVE_PROBE_READERS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(test, unix))]
@@ -1663,16 +1662,8 @@ fn wait_for_spawn_failure_control(descendant_pid_file: &Path) -> Result<(), Stri
 }
 
 #[cfg(test)]
-pub(crate) fn last_probe_pid_for_test() -> Option<u32> {
-    match LAST_PROBE_PID.load(Ordering::Acquire) {
-        0 => None,
-        pid => Some(pid),
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn clear_last_probe_pid_for_test() {
-    LAST_PROBE_PID.store(0, Ordering::Release);
+pub(crate) fn probe_pid_file_for_test(descendant_pid_file: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.probe", descendant_pid_file.display()))
 }
 
 #[cfg(test)]
@@ -1746,9 +1737,13 @@ fn probe_debuggee_perl_with_options(
         }
         let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
         #[cfg(test)]
-        // Record before Windows job assignment so the assignment-failure
-        // control can observe and verify cleanup of the suspended child.
-        LAST_PROBE_PID.store(child.id(), Ordering::Release);
+        if let Some(descendant_pid_file) = descendant_pid_file {
+            fs::write(
+                probe_pid_file_for_test(descendant_pid_file),
+                child.id().to_string(),
+            )
+                .map_err(|e| fail(format!("cannot publish probe child PID: {e}")))?;
+        }
         #[cfg(windows)]
         let _probe_job = if cleanup_fault.termination_failed() {
             // Leave the owned process tree live for the termination-failure

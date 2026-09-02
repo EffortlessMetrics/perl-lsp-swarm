@@ -372,9 +372,10 @@ fn main() {
     // observe a live descendant here races that intentional cleanup; the PID
     // plus ready marker establish startup, while the later exit check proves
     // the descendant was reaped.
-    let termination_probe_pid = common::last_probe_pid_for_test().ok_or_else(|| {
-        io::Error::other("termination-failure probe did not record its child PID")
-    })?;
+    let termination_probe_pid = wait_for_pid_file(
+        &common::probe_pid_file_for_test(&termination_pid_file),
+        Duration::from_secs(5),
+    )?;
     require!(
         process_exists(termination_probe_pid)?,
         "termination-failure probe child must be live before the injected cleanup failure"
@@ -459,16 +460,19 @@ fn main() {
         let descendant_pid_file = controls.path().join("assignment-failure.pid");
         let assignment_binary = hanging.clone();
         let assignment_descendant_binary = descendant.clone();
-        common::clear_last_probe_pid_for_test();
+        let assignment_pid_file = descendant_pid_file.clone();
         let probe = std::thread::spawn(move || {
             common::probe_debuggee_perl_for_test_with_job_assignment_failure(
                 &assignment_binary,
                 Duration::from_secs(2),
-                &descendant_pid_file,
+                &assignment_pid_file,
                 &assignment_descendant_binary,
             )
         });
-        let child_pid = wait_for_probe_pid(Duration::from_secs(5))?;
+        let child_pid = wait_for_pid_file(
+            &common::probe_pid_file_for_test(&descendant_pid_file),
+            Duration::from_secs(5),
+        )?;
         let assignment_failure =
             probe.join().map_err(|_| io::Error::other("job assignment probe thread panicked"))?;
         let assignment_error = match assignment_failure {
@@ -599,28 +603,6 @@ fn cleanup_command_wait_error_kills_and_reaps_helper() -> io::Result<()> {
         )));
     }
     wait_for_process_exit("cleanup-command-wait-error", pid, Duration::from_secs(5))
-}
-
-#[cfg(windows)]
-fn wait_for_probe_pid(timeout: Duration) -> io::Result<u32> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        // The assignment-failure path intentionally starts the probe suspended
-        // and then tears it down immediately.  Requiring tasklist to observe a
-        // live suspended process races that bounded cleanup.  The atomic PID
-        // publication is the stable identity; the subsequent exit check proves
-        // that the owned cleanup actually reaped it.
-        if let Some(pid) = common::last_probe_pid_for_test() {
-            return Ok(pid);
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "probe child PID was not observable",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
 }
 
 fn process_exists(pid: u32) -> io::Result<bool> {
