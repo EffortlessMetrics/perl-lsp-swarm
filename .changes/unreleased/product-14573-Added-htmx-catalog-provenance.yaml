@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: "Record the reviewed htmx reference snapshot as typed provenance beside the catalog it describes (source URL pinned to htmx v2.0.10, contract, review date, and both spellings of the dynamic `hx-on*`/`hx-on:` family), and add `cargo xtask htmx-catalog-drift --reference <path>` to report a proposed diff between the committed catalog and a maintainer-supplied copy of the htmx reference document. Header direction is compared, not just header names, and extraction fails closed on a missing or unreadable section so a document the task cannot parse can never report \"no drift\". Nothing in the repository fetches the network: the maintainer supplies the reference document deliberately, outside CI."
+time: 2026-09-02T07:30:00Z
+custom:
+  PR: "14573"
+  Slug: htmx-catalog-provenance-14571
+  Breaking: "no"
