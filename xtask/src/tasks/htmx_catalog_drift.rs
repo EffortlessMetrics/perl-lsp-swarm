@@ -89,6 +89,7 @@ fn print_provenance(reference: &Path) {
     println!("  htmx version : {}", provenance.htmx_version);
     println!("  contract     : {}.{}", provenance.contract_major, provenance.contract_minor);
     println!("  reviewed on  : {}", provenance.reviewed_on);
+    println!("  commit       : {}", provenance.reference_commit);
     println!("  reference    : {}", provenance.reference_url);
     println!("compared against");
     println!("  local file   : {}", reference.display());
@@ -212,25 +213,70 @@ fn canonical_attribute_name(upstream: &str) -> String {
 /// error rather than an empty result, because reporting "no drift" from a
 /// document this task could not read is the primary defect risk here.
 fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
-    let mut lines = document.lines();
-
-    if !lines.by_ref().any(|line| is_section_heading(line, section.anchor)) {
-        bail!(
-            "reference document has no {} section ({}); refusing to report a clean diff against \
-             a document this task cannot read",
-            section.label,
-            section.anchor
-        );
-    }
+    let (heading_line, depth) = locate_section(document, section)?;
 
     let mut names = Vec::new();
-    for line in lines {
+    let mut in_body = false;
+    let mut in_fence = false;
+
+    for line in document.lines().skip(heading_line + 1) {
         let trimmed = line.trim_start();
-        if trimmed.starts_with('#') {
-            break;
+
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            // A fenced example can contain pipe-table-shaped lines. Reading
+            // those as data would invent names, and a fenced separator row
+            // would make the following sample lines look like unreadable data.
+            in_fence = !in_fence;
+            in_body = false;
+            continue;
         }
-        if let Some(name) = table_row_name(trimmed) {
-            names.push(name);
+        if in_fence {
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            // A deeper heading is a subsection, so this section continues;
+            // only a heading at the same or shallower level ends it. Breaking
+            // at any heading would silently drop every row after an inserted
+            // subsection — hiding a real upstream addition behind a clean
+            // report, which is the exact failure this task exists to prevent.
+            if heading_depth(trimmed) <= depth {
+                break;
+            }
+            in_body = false;
+            continue;
+        }
+        if trimmed.is_empty() {
+            // Tables are contiguous, so a blank line ends one. A later table in
+            // the same section must present its own separator before its rows
+            // count as data.
+            in_body = false;
+            continue;
+        }
+        if !trimmed.starts_with('|') {
+            continue;
+        }
+        if is_separator_row(trimmed) {
+            in_body = true;
+            continue;
+        }
+        if !in_body {
+            // The table's own header row, above the separator.
+            continue;
+        }
+
+        // Every row below the separator is data. Skipping one this task cannot
+        // read is the dangerous failure: a newly added upstream entry would
+        // disappear into a clean report.
+        match table_row_name(trimmed) {
+            Some(name) => names.push(name),
+            None => bail!(
+                "the {} section ({}) has a table row this task cannot read:\n  {}\nA data row \
+                 must carry a backtick-quoted name in its first cell; skipping it would let a \
+                 new upstream entry vanish into a clean report",
+                section.label,
+                section.anchor,
+                trimmed.trim_end()
+            ),
         }
     }
 
@@ -246,9 +292,54 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
     Ok(names)
 }
 
-fn is_section_heading(line: &str, anchor: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed.starts_with('#') && trimmed.ends_with(anchor)
+/// Is this the `|---|---|` rule separating a table's header from its body?
+fn is_separator_row(line: &str) -> bool {
+    line.contains('-') && line.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
+}
+
+/// Find the one heading carrying this section's anchor, with its ATX depth.
+///
+/// Requires exactly one. Two headings sharing an anchor make the section's
+/// identity ambiguous, and taking the first would attribute a decoy's rows to
+/// the real section — a wrong report presented with the same confidence as a
+/// right one.
+fn locate_section(document: &str, section: &SectionSpec) -> Result<(usize, usize)> {
+    let mut located: Option<(usize, usize)> = None;
+
+    for (index, line) in document.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.ends_with(section.anchor) {
+            continue;
+        }
+        let depth = heading_depth(trimmed);
+        if depth == 0 {
+            continue;
+        }
+        if located.is_some() {
+            bail!(
+                "reference document has more than one {} heading ({}); the section's identity is \
+                 ambiguous, and choosing one would attribute the wrong rows to it",
+                section.label,
+                section.anchor
+            );
+        }
+        located = Some((index, depth));
+    }
+
+    match located {
+        Some(located) => Ok(located),
+        None => bail!(
+            "reference document has no {} section ({}); refusing to report a clean diff against \
+             a document this task cannot read",
+            section.label,
+            section.anchor
+        ),
+    }
+}
+
+/// ATX heading depth: the number of leading `#` characters, 0 if not a heading.
+fn heading_depth(trimmed_line: &str) -> usize {
+    trimmed_line.chars().take_while(|character| *character == '#').count()
 }
 
 /// Read the name out of a reference table row.
@@ -301,6 +392,8 @@ mod tests {
 | [`hx-boost`](@/attributes/hx-boost.md) | progressively enhances links |
 | [`hx-vars`](@/attributes/hx-vars.md)   | deprecated, please use `hx-vals` |
 
+## HTTP Header Reference {#headers}
+
 ### Request Headers Reference {#request_headers}
 
 | Header | Description |
@@ -347,6 +440,11 @@ mod tests {
         document.push_str("| Attribute | Description |\n|---|---|\n");
         document.push_str("| [`hx-boost`](@/attributes/hx-boost.md) | described |\n");
 
+        // Upstream nests both header tables one level under a shared `##`
+        // parent. Flattening them here would let the `##` attribute section run
+        // straight into the header tables, so the fixture keeps the real depth.
+        document.push_str("\n## HTTP Header Reference {#headers}\n");
+
         for (anchor, wanted) in [
             ("{#request_headers}", HtmxHeaderDirection::Request),
             ("{#response_headers}", HtmxHeaderDirection::Response),
@@ -375,29 +473,128 @@ mod tests {
     }
 
     #[test]
-    fn an_unterminated_backtick_is_not_read_as_a_name() {
-        // Accepting a single backtick would yield "hx-get | issues a GET" as the
-        // name and report it as drift. The row is malformed, so it is skipped;
-        // the section's other row still parses, and a section of only such rows
-        // fails closed on the zero-names check.
+    fn a_data_row_this_task_cannot_read_fails_instead_of_being_skipped() {
+        // The dangerous case is one unreadable row among readable ones: a newly
+        // added upstream entry would otherwise vanish into a clean report. The
+        // unterminated backtick must also not be read as a name, since taking
+        // the rest of the cell would report a bogus name as drift.
         let malformed = "\
 ## Core Attribute Reference {#attributes}
 
+| Attribute | Description |
+|-----------|-------------|
 | `hx-get | issues a GET to the specified URL |
 | [`hx-post`](@/attributes/hx-post.md) | issues a POST |
 ";
 
-        assert!(section_names(malformed, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-post"]));
+        assert!(
+            section_names(malformed, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("cannot read"))
+        );
+    }
 
-        let all_malformed = "\
+    #[test]
+    fn a_second_table_in_one_section_still_needs_its_own_separator() {
+        // A blank line ends a table, so the following table's header row must
+        // not be mistaken for data and rejected as unreadable.
+        let two_tables = "\
 ## Core Attribute Reference {#attributes}
 
-| `hx-get | issues a GET to the specified URL |
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-post`](@/attributes/hx-post.md) | issues a POST |
 ";
+
         assert!(
-            section_names(all_malformed, &CORE_ATTRIBUTES)
-                .is_err_and(|error| error.to_string().contains("vacuous"))
+            section_names(two_tables, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-post"])
         );
+    }
+
+    #[test]
+    fn a_subsection_does_not_truncate_the_section_and_hide_later_rows() {
+        // The worst failure this task can have is a silent clean report. An
+        // inserted subsection — a deprecation note, a "see also" — must not end
+        // the scan, or a genuinely new entry below it disappears and the
+        // comparison looks clean. Only a heading at the same or shallower level
+        // ends the section.
+        let with_subsection = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+### Deprecated Attributes
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-new-thing`](@/attributes/hx-new-thing.md) | a new upstream entry |
+
+## Additional Attribute Reference {#attributes-additional}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-boost`](@/attributes/hx-boost.md) | not part of the core section |
+";
+
+        assert!(
+            section_names(with_subsection, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-new-thing"])
+        );
+    }
+
+    #[test]
+    fn a_duplicated_section_anchor_fails_instead_of_taking_the_first() {
+        // Two headings sharing an anchor make the section ambiguous. Taking the
+        // first would report every real row as removed and the decoy's row as
+        // added — a confidently wrong report.
+        let decoy = "\
+## Deprecated, see below {#request_headers}
+
+| Header | Description |
+|--------|-------------|
+| `HX-Decoy-Only` | not real |
+
+### Request Headers Reference {#request_headers}
+
+| Header | Description |
+|--------|-------------|
+| `HX-Request` | set to true on htmx requests |
+";
+
+        assert!(
+            section_names(decoy, &REQUEST_HEADERS)
+                .is_err_and(|error| error.to_string().contains("more than one"))
+        );
+    }
+
+    #[test]
+    fn a_fenced_example_is_not_read_as_table_data() {
+        // A fenced sample can show a markdown table. Its rows are illustration,
+        // not catalog entries: reading them would invent names, and a fenced
+        // separator row would make the sample's own rows look like unreadable
+        // data and fail the run.
+        let fenced = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+```markdown
+| Attribute | Description |
+|-----------|-------------|
+| `hx-phantom` | only an example |
+| not even a name | still an example |
+```
+";
+
+        assert!(section_names(fenced, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
     }
 
     #[test]
@@ -409,15 +606,22 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_section_fails_instead_of_reporting_no_drift() {
-        // The section is present but its rows no longer carry backticked names,
-        // which is what a real upstream table restructure would look like.
-        let flattened = EXCERPT
-            .replace("[`hx-get`](@/attributes/hx-get.md)", "hx-get")
-            .replace("[`hx-on*`](@/attributes/hx-on.md)", "hx-on*");
-        let error = section_names(&flattened, &CORE_ATTRIBUTES);
+    fn a_section_that_lost_its_table_fails_instead_of_reporting_no_drift() {
+        // The section is present but carries no table at all — what an upstream
+        // restructure into prose or per-page documentation would look like.
+        // Zero names must be an error, never a clean comparison.
+        let prose_only = "\
+## Core Attribute Reference {#attributes}
 
-        assert!(error.is_err_and(|error| error.to_string().contains("vacuous")));
+The core attributes are now documented on their own pages.
+
+## Additional Attribute Reference {#attributes-additional}
+";
+
+        assert!(
+            section_names(prose_only, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("vacuous"))
+        );
     }
 
     #[test]
@@ -495,8 +699,14 @@ mod tests {
         assert!(report.added_headers.is_empty() && report.removed_headers.is_empty());
     }
 
+    /// Round-trip only: this renders the catalog into the reference shape and
+    /// re-extracts it, so it proves the renderer and extractor agree on
+    /// well-formed rows and that the event-handler transcription reverses
+    /// cleanly. It reads no upstream document, so it cannot prove the catalog
+    /// matches real htmx — that is established by running the command against
+    /// the reviewed document recorded in `HTMX_CATALOG_PROVENANCE`.
     #[test]
-    fn the_committed_catalog_is_clean_against_its_own_reviewed_shape() {
+    fn the_catalog_survives_a_render_and_re_extract_round_trip() {
         let document = document_from_catalog();
         let snapshot = reference_attributes(&document)
             .and_then(|attributes| reference_headers(&document).map(|h| (attributes, h)));

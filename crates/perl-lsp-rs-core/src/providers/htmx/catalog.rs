@@ -16,12 +16,19 @@
 /// repository fetches the network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HtmxCatalogProvenance {
-    /// Reviewed reference document, pinned to an immutable upstream revision.
+    /// Reviewed reference document, addressed by commit.
     ///
-    /// A moving branch would make the recorded review unreproducible, so this
-    /// names a released tag.
+    /// A branch moves by design and a Git tag can be moved or deleted, so
+    /// neither pins a review: retagging would silently change the reviewed
+    /// document while leaving this provenance untouched. Only a commit is
+    /// immutable, so the URL is commit-addressed.
     pub reference_url: &'static str,
+    /// Upstream commit that supplied the reviewed document.
+    pub reference_commit: &'static str,
     /// Released htmx version whose reference document was reviewed.
+    ///
+    /// Human-facing context for [`Self::reference_commit`], which is the
+    /// authority on exactly what was read.
     pub htmx_version: &'static str,
     /// Major component of the htmx contract this snapshot describes.
     pub contract_major: u32,
@@ -44,7 +51,9 @@ pub struct HtmxCatalogProvenance {
 /// The reviewed htmx reference snapshot behind [`HTMX_HEADERS`] and
 /// [`HTMX_ATTRIBUTES`].
 pub const HTMX_CATALOG_PROVENANCE: HtmxCatalogProvenance = HtmxCatalogProvenance {
-    reference_url: "https://github.com/bigskysoftware/htmx/blob/v2.0.10/www/content/reference.md",
+    reference_url: "https://github.com/bigskysoftware/htmx/blob/\
+                    bdc7d7d3e25d0390c7ee11049806e8279b075598/www/content/reference.md",
+    reference_commit: "bdc7d7d3e25d0390c7ee11049806e8279b075598",
     htmx_version: "2.0.10",
     contract_major: 2,
     contract_minor: 0,

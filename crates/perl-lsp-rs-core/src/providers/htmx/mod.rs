@@ -123,21 +123,22 @@ mod tests {
     fn provenance_pins_an_immutable_reviewed_revision() {
         let provenance = HTMX_CATALOG_PROVENANCE;
 
-        // A recorded review is only reproducible if the URL cannot change under
-        // it. `blob/main` or `blob/master` would silently re-point at whatever
-        // upstream looks like later, which is exactly the drift this provenance
-        // exists to make visible.
-        let tag = format!("/blob/v{}/", provenance.htmx_version);
+        // A recorded review is only reproducible if the revision cannot change
+        // under it. A branch moves by design, and a Git tag can be moved or
+        // deleted — retagging would swap the reviewed document while leaving
+        // this provenance untouched. Only a commit is immutable, so require a
+        // full 40-hex commit and require the URL to be addressed by it.
+        assert_eq!(provenance.reference_commit.len(), 40);
         assert!(
-            provenance.reference_url.contains(&tag),
-            "reference URL {} must be pinned to released tag v{}",
-            provenance.reference_url,
-            provenance.htmx_version
+            provenance.reference_commit.chars().all(|c| c.is_ascii_hexdigit()),
+            "reference commit {} is not a 40-hex Git object id",
+            provenance.reference_commit
         );
         assert!(
-            !provenance.reference_url.contains("/blob/main/")
-                && !provenance.reference_url.contains("/blob/master/"),
-            "reference URL must not point at a moving branch"
+            provenance.reference_url.contains(&format!("/blob/{}/", provenance.reference_commit)),
+            "reference URL {} must be addressed by commit {}",
+            provenance.reference_url,
+            provenance.reference_commit
         );
     }
 
@@ -153,10 +154,19 @@ mod tests {
             provenance.contract_major,
             provenance.contract_minor
         );
-        assert_eq!(provenance.reviewed_on.len(), "YYYY-MM-DD".len());
+        // Check the shape this assertion names. A length-plus-digits test is
+        // nearly vacuous: ten dashes and ten digits both satisfy it, so require
+        // exactly three `-`-separated all-digit parts of width 4, 2 and 2.
+        let parts: Vec<&str> = provenance.reviewed_on.split('-').collect();
+        assert_eq!(
+            parts.iter().map(|part| part.len()).collect::<Vec<_>>(),
+            vec![4, 2, 2],
+            "review date {} is not YYYY-MM-DD",
+            provenance.reviewed_on
+        );
         assert!(
-            provenance.reviewed_on.split('-').all(|part| part.chars().all(|c| c.is_ascii_digit())),
-            "review date {} is not ISO-8601",
+            parts.iter().all(|part| part.chars().all(|c| c.is_ascii_digit())),
+            "review date {} has a non-digit component",
             provenance.reviewed_on
         );
     }
