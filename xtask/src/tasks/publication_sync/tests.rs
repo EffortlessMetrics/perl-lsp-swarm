@@ -127,6 +127,14 @@ fn plan_value(document: &Value) -> Result<Receipt> {
     evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &test_product_surface())
 }
 
+/// Evaluate against a materialized repository root, using the real on-disk
+/// loader so filesystem-shaped rules (directory rows, crate roots) are exercised.
+fn plan_on_disk(document: &Value, root: &Path) -> Result<Receipt> {
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(document)?;
+    evaluate_with_surface(&manifest, &digest, root, load_input, &test_product_surface())
+}
+
 fn rows_mut(document: &mut Value) -> Result<&mut Vec<Value>> {
     document
         .get_mut("paths")
@@ -1538,6 +1546,77 @@ fn the_live_control_receipt_fixture_conforms_to_its_schema() -> Result<()> {
         .collect();
     if !errors.is_empty() {
         bail!("the live-control receipt fixture violates its schema: {errors:?}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// A row is subtree authority, so a directory row displaces everything under it
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_displacing_row_cannot_take_a_product_subtree() -> Result<()> {
+    // The exact parent-directory falsifier. `clients` and `vscode-extension`
+    // match no classifier as strings — no product segment, no source
+    // extension, not a Rust manifest, and the ledger holds file paths beneath
+    // them, not the parents themselves — yet a row on either carries every
+    // product file it contains.
+    for parent in ["clients", "clients/lite-xl", "vscode-extension"] {
+        if is_product_or_test_path(parent) || is_rust_build_manifest(parent) {
+            bail!("{parent} is already caught as a string; pick a sharper case");
+        }
+        for action in ["drop_swarm_only", "preserve_release", "regenerate"] {
+            let receipt = plan_displacing_row(parent, action, "governance")?;
+            assert_verdict(&receipt, Verdict::Blocked)?;
+            assert_finding(&receipt, "row_product_bearing_exclusion")?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_displacing_row_on_a_crate_root_is_blocked() -> Result<()> {
+    // `crates/perl-parser` holds no ledger entry (Rust files are excluded from
+    // the non-Rust allowlist by design), so the subtree check above cannot see
+    // it. The crate manifest beneath it can.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["path"] = json!("crates/perl-parser");
+    let (root, _, _) = materialize_repo(&document)?;
+    fs::create_dir_all(root.path().join("crates/perl-parser/src"))?;
+    fs::write(root.path().join("crates/perl-parser/Cargo.toml"), "[package]\nname = \"x\"\n")?;
+
+    let receipt = plan_on_disk(&document, root.path())?;
+    assert_verdict(&receipt, Verdict::Blocked)?;
+    assert_finding(&receipt, "row_product_bearing_exclusion")
+}
+
+#[test]
+fn a_displacing_row_on_a_plain_directory_is_blocked() -> Result<()> {
+    // No crate manifest and no ledger entry beneath it, but still a directory:
+    // the projection would take every path under it sight unseen.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["path"] = json!("some/bundle");
+    let (root, _, _) = materialize_repo(&document)?;
+    fs::create_dir_all(root.path().join("some/bundle"))?;
+    fs::write(root.path().join("some/bundle/notes.md"), "notes\n")?;
+
+    let receipt = plan_on_disk(&document, root.path())?;
+    assert_verdict(&receipt, Verdict::Blocked)?;
+    assert_finding(&receipt, "row_displaces_directory")
+}
+
+#[test]
+fn a_displacing_row_on_a_plain_file_is_not_a_directory_finding() -> Result<()> {
+    // Opposite direction: the subtree rule must not fire on ordinary file rows,
+    // or it would forbid every legitimate exclusion.
+    let document = clean_value()?;
+    let (root, _, _) = materialize_repo(&document)?;
+    fs::create_dir_all(root.path().join(".claude"))?;
+    fs::write(root.path().join(".claude/settings.json"), "{}\n")?;
+
+    let receipt = plan_on_disk(&document, root.path())?;
+    if receipt.findings.iter().any(|f| f.code == "row_displaces_directory") {
+        bail!("an ordinary file row was reported as a directory: {:?}", receipt.findings);
     }
     Ok(())
 }

@@ -708,6 +708,16 @@ impl ProductSurface {
         if is_product_or_test_path(path) || is_rust_build_manifest(path) {
             return SurfaceVerdict::ProductOrTest;
         }
+        // A row is subtree authority — the overlap rule forbids a second row
+        // beneath it — so a row naming a directory displaces everything under
+        // it. Testing only the row string would let `clients` or
+        // `vscode-extension` drop every product file they contain while
+        // matching no classifier itself.
+        if self.entries.iter().any(|entry| {
+            entry.path.as_deref().is_some_and(|governed| is_path_prefix(path, governed))
+        }) {
+            return SurfaceVerdict::ProductOrTest;
+        }
         let mut expired = false;
         for entry in self.entries.iter().filter(|e| file_policy::entry_matches_path(e, path)) {
             match (entry.expires.as_deref().and_then(parse_date), evaluated_at) {
@@ -878,6 +888,8 @@ fn display_findings(receipt: &Receipt, path: &Path) -> String {
 /// matters: "the file is not there" and "the file is there but escapes the
 /// checkout" need different remediation, and collapsing both into "missing"
 /// hides the second.
+const NOT_A_REGULAR_FILE: &str = "not a regular file";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LoadFailure {
     Missing,
@@ -910,7 +922,7 @@ fn load_input(repo_root: &Path, path: &str) -> Result<Vec<u8>, LoadFailure> {
         return Err(LoadFailure::Escapes);
     }
     if !resolved.is_file() {
-        return Err(LoadFailure::Unreadable("not a regular file".to_string()));
+        return Err(LoadFailure::Unreadable(NOT_A_REGULAR_FILE.to_string()));
     }
     fs::read(&resolved).map_err(|error| LoadFailure::Unreadable(error.to_string()))
 }
@@ -1340,7 +1352,30 @@ fn validate_rows(
         validate_row_authority(row, &declared_inputs, repo_root, loader, state);
 
         let displaces = row.action.displaces_swarm_content() || row.class == Class::ReleaseLineage;
-        let surface = product_surface.classify(&row.path, parse_date(&manifest.planned_at));
+        let mut surface = product_surface.classify(&row.path, parse_date(&manifest.planned_at));
+
+        // A displacing row that names a directory takes the whole subtree with
+        // it. The classifiers above only see the row string, so probe the
+        // checkout: a crate root, or anything that is not a regular file, is
+        // not something a publication projection may displace wholesale.
+        if displaces && surface != SurfaceVerdict::ProductOrTest {
+            let crate_manifest = format!("{}/Cargo.toml", row.path);
+            if loader(repo_root, &crate_manifest).is_ok() {
+                surface = SurfaceVerdict::ProductOrTest;
+            } else if matches!(
+                loader(repo_root, &row.path),
+                Err(LoadFailure::Unreadable(ref reason)) if reason == NOT_A_REGULAR_FILE
+            ) {
+                state.block(
+                    "row_displaces_directory",
+                    format!(
+                        "row {} displaces a directory, which carries every path beneath it; name the exact files instead",
+                        row.path
+                    ),
+                    "release/ci",
+                );
+            }
+        }
         let product_bearing = surface == SurfaceVerdict::ProductOrTest;
 
         if displaces && surface == SurfaceVerdict::ClassificationExpired {
