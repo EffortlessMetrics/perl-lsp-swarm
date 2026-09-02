@@ -3,7 +3,7 @@
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -93,6 +93,8 @@ struct OracleClassContract {
     coverage: String,
     #[serde(default)]
     fact_families: Vec<String>,
+    #[serde(default)]
+    pending_fact_families: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +150,7 @@ fn evaluate(root: &Path) -> Result<(ValidationStats, Vec<String>)> {
     let manifest = read_manifest(root, MANIFEST_PATH)?;
     let mut violations = Vec::new();
 
+    validate_against_schema(root, &mut violations)?;
     validate_manifest_shape(root, &manifest, &mut violations);
     validate_fixtures(root, &manifest, &mut violations);
     validate_class_contracts(&manifest, &mut violations);
@@ -172,6 +175,29 @@ fn validate(root: &Path) -> Result<ValidationStats> {
     }
 
     Ok(stats)
+}
+
+/// Apply the JSON Schema to the manifest.
+///
+/// Without this the schema file is documentation only: its `additionalProperties:
+/// false` and `required` lists gate nothing, because the Rust structs ignore
+/// unknown keys and default several fields. Compiling and applying it is the
+/// same pattern `ux_scorecard` uses for the CI receipt schema.
+fn validate_against_schema(root: &Path, violations: &mut Vec<String>) -> Result<()> {
+    let schema: serde_json::Value = serde_json::from_str(&read_text(root, SCHEMA_PATH)?)
+        .with_context(|| format!("failed to parse {SCHEMA_PATH} as JSON"))?;
+    let manifest: serde_json::Value = serde_json::from_str(&read_text(root, MANIFEST_PATH)?)
+        .with_context(|| format!("failed to parse {MANIFEST_PATH} as JSON"))?;
+
+    let validator = jsonschema::validator_for(&schema)
+        .with_context(|| format!("failed to compile {SCHEMA_PATH}"))?;
+    for error in validator.iter_errors(&manifest) {
+        violations.push(format!(
+            "{MANIFEST_PATH}: schema violation at {}: {error}",
+            error.instance_path()
+        ));
+    }
+    Ok(())
 }
 
 fn validate_json_parse(root: &Path, rel: &str) -> Result<()> {
@@ -331,9 +357,17 @@ fn validate_class_contracts(manifest: &OracleFixtureManifest, violations: &mut V
     let declared = manifest.comparison_classes.iter().map(String::as_str).collect::<BTreeSet<_>>();
 
     let mut covered_by_fixture = BTreeSet::new();
+    let mut attested_families: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for fixture in &manifest.fixtures {
         for class in &fixture.comparison_classes {
             covered_by_fixture.insert(class.as_str());
+            // A fixture attests a family only for the classes it itself declares.
+            let entry = attested_families.entry(class.as_str()).or_default();
+            for family in &fixture.expected_fact_families {
+                if class_fact_families(class).is_some_and(|f| f.contains(&family.as_str())) {
+                    entry.insert(family.as_str());
+                }
+            }
         }
     }
 
@@ -381,11 +415,52 @@ fn validate_class_contracts(manifest: &OracleFixtureManifest, violations: &mut V
             )),
             _ => {}
         }
+
+        validate_pending_fact_families(
+            &doc,
+            contract,
+            attested_families.get(class).unwrap_or(&BTreeSet::new()),
+            violations,
+        );
     }
 
     for class in declared.difference(&seen) {
         violations
             .push(format!("{MANIFEST_PATH}: comparison class {class:?} has no class_contract"));
+    }
+}
+
+/// `coverage` is class-granular, so "declared" alone can hide a fact family the
+/// class compares but no fixture exercises. Every family in the class contract
+/// must therefore be either attested by a fixture or listed as pending — and a
+/// family cannot be both.
+fn validate_pending_fact_families(
+    doc: &str,
+    contract: &OracleClassContract,
+    attested: &BTreeSet<&str>,
+    violations: &mut Vec<String>,
+) {
+    let declared_families =
+        contract.fact_families.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let pending =
+        contract.pending_fact_families.iter().map(String::as_str).collect::<BTreeSet<_>>();
+
+    for family in pending.difference(&declared_families) {
+        violations.push(format!(
+            "{doc}: pending_fact_families entry {family:?} is not one of this class's fact_families"
+        ));
+    }
+    for family in pending.intersection(attested) {
+        violations.push(format!(
+            "{doc}: fact family {family:?} is listed as pending but a fixture already attests it"
+        ));
+    }
+    for family in &declared_families {
+        if !attested.contains(family) && !pending.contains(family) {
+            violations.push(format!(
+                "{doc}: fact family {family:?} is neither attested by a fixture nor listed in pending_fact_families"
+            ));
+        }
     }
 }
 
@@ -455,6 +530,15 @@ fn validate_declared_module_topology(
     for (field, value) in std::iter::once(("source", &fixture.source))
         .chain(fixture.module_files.iter().map(|file| ("module_files", file)))
     {
+        // A `..` segment would satisfy the lexical prefix test below while
+        // actually resolving outside the declared root, and the repo-root check
+        // in `validate_relative_existing_path` would still pass. Declared fixture
+        // assets never need traversal, so refuse it outright.
+        if has_traversal_segment(value) {
+            violations
+                .push(format!("{doc}: {field} {value:?} must not contain a \"..\" path segment"));
+            continue;
+        }
         if !fixture.module_roots.iter().any(|module_root| is_contained_by(value, module_root)) {
             violations.push(format!(
                 "{doc}: {field} {value:?} is not contained by any declared module_root"
@@ -463,11 +547,20 @@ fn validate_declared_module_topology(
     }
 }
 
-/// Purely lexical containment on repo-relative slash paths. Existence and
-/// repo-root escape are checked separately by `validate_relative_existing_path`.
+fn has_traversal_segment(path: &str) -> bool {
+    path.split('/').any(|segment| segment == "..")
+}
+
+/// Purely lexical containment on repo-relative slash paths, used only after
+/// [`has_traversal_segment`] has ruled out `..`. Existence and repo-root escape
+/// are checked separately by `validate_relative_existing_path`.
+///
+/// The prefix test requires a following `/` so that a sibling directory sharing
+/// the root's name (root `fixtures` vs path `fixtures_evil/x.pm`) is not
+/// mistaken for containment.
 fn is_contained_by(path: &str, module_root: &str) -> bool {
     let root = module_root.trim_end_matches('/');
-    if root.is_empty() {
+    if root.is_empty() || has_traversal_segment(root) {
         return false;
     }
     path.strip_prefix(root).is_some_and(|rest| rest.starts_with('/'))
@@ -806,9 +899,9 @@ mod tests {
         fs::write(
             &manifest_path,
             text.replace(
-                r##"    {"comparison_class": "CompileEffect", "contract_version": "v1", "owner": "#13632", "coverage": "pending_fixture", "fact_families": ["compile_effects", "dynamic_boundaries"]}"##,
-                r##"    {"comparison_class": "CompileEffect", "contract_version": "v1", "owner": "#13632", "coverage": "pending_fixture", "fact_families": ["compile_effects", "dynamic_boundaries"]},
-    {"comparison_class": "CompileEffect", "contract_version": "v2", "owner": "#13632", "coverage": "pending_fixture", "fact_families": ["compile_effects", "dynamic_boundaries"]}"##,
+                r##"    {"comparison_class": "CompileEffect", "contract_version": "v1", "owner": "#13632", "coverage": "pending_fixture", "fact_families": ["compile_effects", "dynamic_boundaries"], "pending_fact_families": ["compile_effects", "dynamic_boundaries"]}"##,
+                r##"    {"comparison_class": "CompileEffect", "contract_version": "v1", "owner": "#13632", "coverage": "pending_fixture", "fact_families": ["compile_effects", "dynamic_boundaries"], "pending_fact_families": ["compile_effects", "dynamic_boundaries"]},
+    {"comparison_class": "CompileEffect", "contract_version": "v2", "owner": "#13632", "coverage": "pending_fixture", "fact_families": ["compile_effects", "dynamic_boundaries"], "pending_fact_families": ["compile_effects", "dynamic_boundaries"]}"##,
             ),
         )?;
 
@@ -829,7 +922,7 @@ mod tests {
             &manifest_path,
             text.replace(
                 r##",
-    {"comparison_class": "CompileEffect", "contract_version": "v1", "owner": "#13632", "coverage": "pending_fixture", "fact_families": ["compile_effects", "dynamic_boundaries"]}"##,
+    {"comparison_class": "CompileEffect", "contract_version": "v1", "owner": "#13632", "coverage": "pending_fixture", "fact_families": ["compile_effects", "dynamic_boundaries"], "pending_fact_families": ["compile_effects", "dynamic_boundaries"]}"##,
                 "",
             ),
         )?;
@@ -958,6 +1051,209 @@ mod tests {
         assert_violation(tempdir.path(), "module_files points to missing path fixtures/Absent.pm")
     }
 
+    /// The schema declares `additionalProperties: false`, but the Rust structs
+    /// ignore unknown keys — so this only fails if the schema is actually applied.
+    /// It is the proof that the schema file is enforcement, not documentation.
+    #[test]
+    fn rejects_unknown_key_that_only_the_schema_can_catch() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                r#""id": "package_basic","#,
+                r#""id": "package_basic", "smuggled": true,"#,
+            ),
+        )?;
+
+        assert_violation(tempdir.path(), "schema violation")
+    }
+
+    /// `coverage: "declared"` is class-granular, so without this rule a class can
+    /// read as covered while one of its fact families has no fixture at all.
+    /// Dropping a family from `pending_fact_families` must surface that.
+    #[test]
+    fn rejects_fact_family_neither_attested_nor_pending() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                r#""pending_fact_families": ["compile_effects", "dynamic_boundaries"]"#,
+                r#""pending_fact_families": ["compile_effects"]"#,
+            ),
+        )?;
+
+        assert_violation(
+            tempdir.path(),
+            r#"fact family "dynamic_boundaries" is neither attested by a fixture nor listed in pending_fact_families"#,
+        )
+    }
+
+    /// The opposite contradiction: a family a fixture does attest may not also be
+    /// reported as still pending.
+    #[test]
+    fn rejects_pending_fact_family_that_a_fixture_attests() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                r#""fact_families": ["generated_members"], "pending_fact_families": []"#,
+                r#""fact_families": ["generated_members"], "pending_fact_families": ["generated_members"]"#,
+            ),
+        )?;
+
+        assert_violation(
+            tempdir.path(),
+            r#"fact family "generated_members" is listed as pending but a fixture already attests it"#,
+        )
+    }
+
+    #[test]
+    fn rejects_pending_fact_family_outside_the_class_contract() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                r#""fact_families": ["generated_members"], "pending_fact_families": []"#,
+                r#""fact_families": ["generated_members"], "pending_fact_families": ["packages"]"#,
+            ),
+        )?;
+
+        assert_violation(
+            tempdir.path(),
+            r#"pending_fact_families entry "packages" is not one of this class's fact_families"#,
+        )
+    }
+
+    #[test]
+    fn rejects_class_contract_for_an_undeclared_comparison_class() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                r#""comparison_class": "CompileEffect""#,
+                r#""comparison_class": "Invented""#,
+            ),
+        )?;
+
+        assert_violation(
+            tempdir.path(),
+            r#"class_contracts declares unknown comparison class "Invented""#,
+        )
+    }
+
+    #[test]
+    fn rejects_malformed_contract_version() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                r##""owner": "#13645", "coverage""##,
+                r##""owner": "#13645", "contract_version_marker": "", "coverage""##,
+            )
+            .replace(
+                r##""contract_version": "v1", "owner": "#13645""##,
+                r##""contract_version": "1.0", "owner": "#13645""##,
+            ),
+        )?;
+
+        assert_violation(tempdir.path(), r#"contract_version "1.0" must look like "v1""#)
+    }
+
+    #[test]
+    fn rejects_class_contract_owner_that_is_not_an_issue_reference() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(r##""owner": "#13626""##, r#""owner": "team-oracle""#),
+        )?;
+
+        assert_violation(tempdir.path(), r#"owner "team-oracle" must be an issue reference"#)
+    }
+
+    #[test]
+    fn rejects_unknown_class_coverage_value() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                r##""owner": "#13626", "coverage": "pending_fixture""##,
+                r##""owner": "#13626", "coverage": "probably""##,
+            ),
+        )?;
+
+        assert_violation(tempdir.path(), r#"coverage "probably" is not allowed"#)
+    }
+
+    /// The class contract's fact families are pinned to the specification table,
+    /// so a contract may not quietly narrow or widen what its class compares.
+    #[test]
+    fn rejects_class_fact_families_that_disagree_with_the_specification() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                r#""fact_families": ["import_specs", "export_sets", "visible_symbols"], "pending_fact_families": ["import_specs", "export_sets", "visible_symbols"]"#,
+                r#""fact_families": ["import_specs", "export_sets"], "pending_fact_families": ["import_specs", "export_sets"]"#,
+            ),
+        )?;
+
+        assert_violation(
+            tempdir.path(),
+            r#"fact_families missing required entry "visible_symbols""#,
+        )
+    }
+
+    /// A `..` segment resolves outside the declared root while still living in
+    /// the repository, so neither the lexical prefix test nor the repo-root check
+    /// would catch it on its own.
+    #[test]
+    fn rejects_module_file_escaping_its_root_via_parent_traversal() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        fs::create_dir_all(tempdir.path().join("outside"))?;
+        fs::write(tempdir.path().join("outside/Helper.pm"), "package Helper; 1;\n")?;
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+        fs::write(
+            &manifest_path,
+            text.replace(
+                r#""module_files": []"#,
+                r#""module_files": ["fixtures/../outside/Helper.pm"]"#,
+            ),
+        )?;
+
+        assert_violation(tempdir.path(), r#"must not contain a ".." path segment"#)
+    }
+
+    /// A sibling directory whose name starts with the root's name is not inside
+    /// the root. `fixtures_evil/` must not pass as `fixtures/`.
+    #[test]
+    fn sibling_directory_sharing_a_root_name_is_not_contained() {
+        assert!(is_contained_by("fixtures/a.pm", "fixtures"));
+        assert!(is_contained_by("fixtures/sub/a.pm", "fixtures/"));
+        assert!(!is_contained_by("fixtures_evil/a.pm", "fixtures"));
+        assert!(!is_contained_by("fixtures", "fixtures"), "the root itself is not a file in it");
+        assert!(!is_contained_by("/abs/fixtures/a.pm", "fixtures"));
+        assert!(!is_contained_by("fixtures/a.pm", ""), "an empty root contains nothing");
+    }
+
     /// Assert that the manifest under `root` fails, and that it fails for the
     /// named reason — not merely that some rule somewhere rejected it.
     fn assert_violation(root: &Path, expected: &str) -> TestResult {
@@ -976,7 +1272,12 @@ mod tests {
         fs::create_dir_all(tempdir.path().join("docs/specs"))?;
         fs::create_dir_all(tempdir.path().join("crates/perl-corpus/fixtures/differential_oracle"))?;
         fs::create_dir_all(tempdir.path().join("fixtures"))?;
-        fs::write(tempdir.path().join(SCHEMA_PATH), "{}\n")?;
+        // The real schema, so tempdir tests are gated by the same document the
+        // repository ships rather than a permissive stub.
+        fs::write(
+            tempdir.path().join(SCHEMA_PATH),
+            include_str!("../../../schemas/oracle_fixture_manifest.v1.schema.json"),
+        )?;
         fs::write(tempdir.path().join(ORACLE_SPEC), "# oracle spec\n")?;
         fs::write(tempdir.path().join("fixtures/package_basic.pl"), "package Demo; 1;\n")?;
         fs::write(tempdir.path().join(MANIFEST_PATH), valid_manifest_text())?;
@@ -999,12 +1300,12 @@ mod tests {
   "required_environment_denials": ["PERL5LIB", "PERL5OPT", "local::lib"],
   "default_claim_boundary": "Fixture declaration only; no oracle runner, Perl execution, provider behavior, support-tier promotion, or parser/corpus bucket movement.",
   "class_contracts": [
-    {{"comparison_class": "PackageSubTable", "contract_version": "v1", "owner": "#13645", "coverage": "pending_fixture", "fact_families": ["packages", "named_subs", "source_ranges", "stash_entries"]}},
-    {{"comparison_class": "ImportExport", "contract_version": "v1", "owner": "#13624", "coverage": "pending_fixture", "fact_families": ["import_specs", "export_sets", "visible_symbols"]}},
-    {{"comparison_class": "IsaComposition", "contract_version": "v1", "owner": "#13626", "coverage": "pending_fixture", "fact_families": ["isa_entries", "inheritance_facts", "role_composition_facts"]}},
-    {{"comparison_class": "ConstantPrototype", "contract_version": "v1", "owner": "#13629", "coverage": "pending_fixture", "fact_families": ["constants", "prototype_entries", "compile_effects"]}},
-    {{"comparison_class": "FrameworkGeneratedMember", "contract_version": "v1", "owner": "#4766", "coverage": "declared", "fact_families": ["generated_members"]}},
-    {{"comparison_class": "CompileEffect", "contract_version": "v1", "owner": "#13632", "coverage": "pending_fixture", "fact_families": ["compile_effects", "dynamic_boundaries"]}}
+    {{"comparison_class": "PackageSubTable", "contract_version": "v1", "owner": "#13645", "coverage": "pending_fixture", "fact_families": ["packages", "named_subs", "source_ranges", "stash_entries"], "pending_fact_families": ["packages", "named_subs", "source_ranges", "stash_entries"]}},
+    {{"comparison_class": "ImportExport", "contract_version": "v1", "owner": "#13624", "coverage": "pending_fixture", "fact_families": ["import_specs", "export_sets", "visible_symbols"], "pending_fact_families": ["import_specs", "export_sets", "visible_symbols"]}},
+    {{"comparison_class": "IsaComposition", "contract_version": "v1", "owner": "#13626", "coverage": "pending_fixture", "fact_families": ["isa_entries", "inheritance_facts", "role_composition_facts"], "pending_fact_families": ["isa_entries", "inheritance_facts", "role_composition_facts"]}},
+    {{"comparison_class": "ConstantPrototype", "contract_version": "v1", "owner": "#13629", "coverage": "pending_fixture", "fact_families": ["constants", "prototype_entries", "compile_effects"], "pending_fact_families": ["constants", "prototype_entries", "compile_effects"]}},
+    {{"comparison_class": "FrameworkGeneratedMember", "contract_version": "v1", "owner": "#4766", "coverage": "declared", "fact_families": ["generated_members"], "pending_fact_families": []}},
+    {{"comparison_class": "CompileEffect", "contract_version": "v1", "owner": "#13632", "coverage": "pending_fixture", "fact_families": ["compile_effects", "dynamic_boundaries"], "pending_fact_families": ["compile_effects", "dynamic_boundaries"]}}
   ],
   "fixtures": [
     {{

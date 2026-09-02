@@ -225,7 +225,8 @@
         "named_subs",
         "source_ranges",
         "stash_entries"
-      ]
+      ],
+      "pending_fact_families": []
     },
     {
       "comparison_class": "ImportExport",
@@ -236,7 +237,8 @@
         "import_specs",
         "export_sets",
         "visible_symbols"
-      ]
+      ],
+      "pending_fact_families": []
     },
     {
       "comparison_class": "IsaComposition",
@@ -246,6 +248,9 @@
       "fact_families": [
         "isa_entries",
         "inheritance_facts",
+        "role_composition_facts"
+      ],
+      "pending_fact_families": [
         "role_composition_facts"
       ]
     },
@@ -258,6 +263,11 @@
         "constants",
         "prototype_entries",
         "compile_effects"
+      ],
+      "pending_fact_families": [
+        "constants",
+        "prototype_entries",
+        "compile_effects"
       ]
     },
     {
@@ -267,7 +277,8 @@
       "coverage": "declared",
       "fact_families": [
         "generated_members"
-      ]
+      ],
+      "pending_fact_families": []
     },
     {
       "comparison_class": "CompileEffect",
@@ -277,7 +288,8 @@
       "fact_families": [
         "compile_effects",
         "dynamic_boundaries"
-      ]
+      ],
+      "pending_fact_families": []
     }
   ]
 }

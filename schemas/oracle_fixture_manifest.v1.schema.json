@@ -299,7 +299,8 @@
         "contract_version",
         "owner",
         "coverage",
-        "fact_families"
+        "fact_families",
+        "pending_fact_families"
       ],
       "properties": {
         "comparison_class": {
@@ -322,6 +323,14 @@
           },
           "minItems": 1,
           "uniqueItems": true
+        },
+        "pending_fact_families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fact_family"
+          },
+          "uniqueItems": true,
+          "description": "Fact families this class compares that no fixture attests to yet. Together with the families fixtures do attest, this must account for every entry in fact_families."
         }
       }
     }
