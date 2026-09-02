@@ -449,7 +449,13 @@ impl DebugAdapter {
         program: &str,
         cwd: Option<&Path>,
     ) -> Result<PathBuf, String> {
-        let raw = Path::new(program);
+        // Normalize here rather than at each call site. `launch_debugger`
+        // trims the program for its own validation, but ownership selection in
+        // `handle_launch` resolves earlier — and untrimmed, a leading space
+        // makes an absolute path look relative, silently anchoring it under
+        // the working directory. Owning the trim keeps every caller agreeing
+        // on one path, which is the whole point of this function.
+        let raw = Path::new(program.trim());
         if raw.is_absolute() {
             return Ok(raw.to_path_buf());
         }
@@ -532,10 +538,6 @@ impl DebugAdapter {
         // a launch of `{program: "script.pl", cwd: "/outside"}` would pass the
         // workspace boundary and then execute outside it. Everything below
         // (existence, boundary, syntax check, spawn) uses this one path.
-        let resolved_program = Self::resolve_launch_program(program, cwd_override.as_deref())?;
-        let resolved_program_display = resolved_program.display().to_string();
-        let program_for_spawn = resolved_program_display.as_str();
-
         // Security: Validate program path before any process spawning
         // This prevents command injection via flag arguments (e.g., "-e malicious_code")
         // and ensures we're launching a real Perl script file.
@@ -571,6 +573,11 @@ impl DebugAdapter {
         // - exists() returns true for directories
         // - exists() returns true for symlinks to non-files
         // - is_file() specifically checks for regular files
+        // Resolve *after* the trim and quote validation above, so resolution
+        // sees the cleaned program: a leading space would otherwise make an
+        // absolute path look relative and silently anchor it to the cwd.
+        let resolved_program = Self::resolve_launch_program(program, cwd_override.as_deref())?;
+
         let path = resolved_program.as_path();
         match std::fs::metadata(path) {
             Ok(metadata) => {
@@ -617,12 +624,7 @@ impl DebugAdapter {
         // debugger.  This catches syntax errors early and surfaces a clear,
         // actionable message to the user instead of a generic "Cannot start
         // Perl debugger" failure after `perl -d` exits immediately.
-        Self::check_syntax(
-            perl_interpreter,
-            program_for_spawn,
-            &env_overrides,
-            cwd_override.clone(),
-        )?;
+        Self::check_syntax(perl_interpreter, path, &env_overrides, cwd_override.clone())?;
 
         // Use PerlOracleEnv to deny ambient PERL5LIB/PERL5OPT so the debug
         // session env is controlled entirely by launch.json `env` (#8688).
@@ -651,7 +653,7 @@ impl DebugAdapter {
         // Use -- to separate flags from script name, preventing argument injection
         // if program starts with -
         cmd.arg("--");
-        cmd.arg(program_for_spawn);
+        cmd.arg(&resolved_program);
         cmd.args(&args);
 
         // Set up pipes
@@ -728,7 +730,7 @@ impl DebugAdapter {
     /// produces the correct "perl not on PATH" error to the user.
     pub(super) fn check_syntax(
         perl_interpreter: &str,
-        program: &str,
+        program: &Path,
         env_overrides: &HashMap<String, String>,
         cwd_override: Option<PathBuf>,
     ) -> Result<(), String> {
@@ -738,9 +740,9 @@ impl DebugAdapter {
         let prog_cwd = if let Some(user_cwd) = cwd_override {
             user_cwd
         } else {
-            Path::new(program)
+            program
                 .parent()
-                .map(|p| p.to_path_buf())
+                .map(Path::to_path_buf)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         };
         let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
@@ -798,7 +800,8 @@ impl DebugAdapter {
 
         Err(format!(
             "Syntax error in '{}' — fix the error below before debugging:\n{}",
-            program, detail
+            program.display(),
+            detail
         ))
     }
 
@@ -2612,6 +2615,19 @@ mod tests {
         let resolved =
             must(DebugAdapter::resolve_launch_program("script.pl", Some(Path::new("/anchored"))));
         assert_eq!(resolved, PathBuf::from("/anchored/script.pl"));
+        assert!(resolved.is_absolute());
+    }
+
+    /// Surrounding whitespace must not turn an absolute program relative.
+    ///
+    /// The pre-existing `program.trim()` in `launch_debugger` runs after
+    /// ownership selection has already resolved the program, so the helper
+    /// owns the trim itself — otherwise a leading space anchors an absolute
+    /// path under the working directory at one call site but not the other.
+    #[test]
+    fn surrounding_whitespace_does_not_make_an_absolute_program_relative() {
+        let resolved = must(DebugAdapter::resolve_launch_program("  /trusted/script.pl  ", None));
+        assert_eq!(resolved, PathBuf::from("/trusted/script.pl"));
         assert!(resolved.is_absolute());
     }
 

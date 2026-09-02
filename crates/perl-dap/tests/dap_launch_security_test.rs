@@ -541,3 +541,30 @@ fn a_relative_program_inside_the_trusted_root_is_admitted() -> Result<(), Box<dy
     assert_workspace_accepted(&response, "a relative program inside the trusted root");
     Ok(())
 }
+
+/// A `program` with surrounding whitespace must still launch.
+///
+/// Devin review of #14592: the pre-existing `program.trim()` runs *after* the
+/// point where this change first resolved the program, so a leading space made
+/// an absolute path look relative and silently anchored it under the launch
+/// `cwd`. Resolution now happens after the trim and quote validation, on the
+/// cleaned program.
+#[test]
+fn a_program_with_surrounding_whitespace_still_launches() -> Result<(), Box<dyn std::error::Error>>
+{
+    let workspace = tempfile::tempdir()?;
+    let script = workspace.path().join("padded.pl");
+    fs::write(&script, "print 'padded';")?;
+
+    let mut adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+        &[workspace.path().to_path_buf()],
+        false,
+    )?);
+    initialize_adapter(&mut adapter);
+
+    let padded = format!("  {}  ", must_some(script.to_str()));
+    let response =
+        adapter.handle_request(2, "launch", Some(json!({ "program": padded, "args": [] })));
+    assert_workspace_accepted(&response, "an absolute program with surrounding whitespace");
+    Ok(())
+}
