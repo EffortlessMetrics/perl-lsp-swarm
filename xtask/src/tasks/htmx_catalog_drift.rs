@@ -243,8 +243,22 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
     let mut names = Vec::new();
     let mut in_body = false;
     let mut inert = InertScanner::new();
+    let mut ended_at_commented_boundary = false;
 
     for line in document.lines().skip(heading_line + 1) {
+        // An HTML comment can start at the end of the selected section and
+        // continue over the next section heading.  Markdown does not make
+        // that heading structural, but allowing the comment to carry on
+        // makes the following section's table look like part of this one
+        // when the comment eventually closes.  Treat a real same-or-shallower
+        // heading as the boundary of the selected scan and do not demand that
+        // the comment close inside the scan: its remaining extent belongs to
+        // the following section.
+        if inert.commented_heading_depth(line).is_some_and(|heading_here| heading_here <= depth) {
+            ended_at_commented_boundary = true;
+            break;
+        }
+
         // A fenced example or a commented-out table can contain pipe-table
         // shaped lines. Reading those as data would invent names, and their
         // separator rows would make the following sample lines look like
@@ -305,14 +319,16 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
         }
     }
 
-    if let Some(region) = inert.unterminated() {
-        bail!(
-            "the {} section ({}) has a {} that is never closed; everything after it was skipped \
+    if !ended_at_commented_boundary {
+        if let Some(region) = inert.unterminated() {
+            bail!(
+                "the {} section ({}) has a {} that is never closed; everything after it was skipped \
              as illustration, so a later upstream entry could vanish into a clean report",
-            section.label,
-            section.anchor,
-            region
-        );
+                section.label,
+                section.anchor,
+                region
+            );
+        }
     }
 
     if names.is_empty() {
@@ -433,6 +449,17 @@ struct InertScanner {
 impl InertScanner {
     fn new() -> Self {
         Self { inside: None }
+    }
+
+    /// Return a section boundary written on a line currently inside an HTML
+    /// comment.  This is intentionally used only by an already-located
+    /// section scan; section discovery must continue to ignore commented
+    /// headings.  See [`section_names`] for why a boundary ends the scan even
+    /// when the comment closes later.
+    fn commented_heading_depth(&self, line: &str) -> Option<usize> {
+        matches!(self.inside, Some(InertRegion::Comment))
+            .then(|| heading_depth(line.trim_start()))
+            .filter(|depth| *depth > 0)
     }
 
     /// Advance over one raw line and return the document content in it.
@@ -1398,6 +1425,32 @@ let example = 1;
                 .to_string()
                 .contains("HTML comment that is never closed"))
         );
+    }
+
+    #[test]
+    fn a_comment_spanning_the_next_section_does_not_leak_rows_back() {
+        // The comment begins after the selected table, while the following
+        // section heading is still commented out.  If the scan waits for the
+        // comment closer, a later table can be mistaken for another table in
+        // the selected section.  The section boundary must win, without
+        // treating the comment's later close as an unterminated comment for
+        // this section.
+        let document = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+<!-- editorial note
+## Following Attribute Reference {#following}
+This heading is inside the note.
+-->
+
+| [`hx-post`](@/attributes/hx-post.md) | belongs to the following section |
+";
+
+        assert!(section_names(&document, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
     }
 
     #[test]
