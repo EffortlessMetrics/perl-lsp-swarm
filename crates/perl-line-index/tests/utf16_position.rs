@@ -78,7 +78,7 @@ fn test_utf16_col_beyond_line_end_returns_none() -> Result<(), Box<dyn std::erro
     let idx = LineIndex::new(text);
 
     // "hi" has UTF-16 length 2; col 3 is out of range.
-    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3));
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), None);
     Ok(())
 }
 
@@ -163,7 +163,7 @@ fn test_utf16_crlf_line_accepts_newline_and_range_end_positions()
 
     assert_eq!(idx.position_to_byte_utf16(text, 0, 0), Some(0));
     assert_eq!(idx.position_to_byte_utf16(text, 0, 2), Some(2));
-    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), None);
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3));
     // #9837: column 4 is the start of line 1 — out of range for line 0.  The
     // pre-fix implementation returned Some(4), silently resolving to the next
     // line while the byte-column siblings reject the same position.
@@ -242,5 +242,3 @@ fn test_utf16_mismatched_shorter_text_returns_none() -> Result<(), Box<dyn std::
     assert_eq!(idx.position_to_byte_utf16("short", 1, 0), None);
     Ok(())
 }
-
-
