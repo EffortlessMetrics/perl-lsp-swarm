@@ -671,12 +671,12 @@ fn identical_objects_in_two_workspaces_produce_one_identity() -> Result<()> {
         first.candidate_identity_digest, second.candidate_identity_digest,
         "semantic identity is what this format guarantees across worktrees and hosts"
     );
-    // The declared identity differs only in `source` (observed versus declared),
-    // which is excluded from the transport, so the packs must agree byte for
-    // byte. This is the stronger property the contract asks for, demonstrated
-    // across the ordinary cross-host difference — loose objects versus a pack —
-    // at one Git version. Only the cross-Git-version case remains a declared
-    // limitation, because guaranteeing it would mean writing our own packer.
+    // Both sides observe the same remote, so nothing in the semantic identity
+    // differs and the packs must agree byte for byte. This is the stronger
+    // property the contract asks for, demonstrated across the ordinary
+    // cross-host difference — loose objects versus a pack — at one Git version.
+    // Only the cross-Git-version case remains a declared limitation, because
+    // guaranteeing it would mean writing our own packer.
     assert_eq!(
         first.transport.files[0].sha256, second.transport.files[0].sha256,
         "identical objects must produce identical transport bytes from either storage layout"
