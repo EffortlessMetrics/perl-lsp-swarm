@@ -575,3 +575,72 @@ fn the_plan_validator_rejects_a_drifted_schema_version() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Falsifier: a declared constraint the validator does not implement
+// ---------------------------------------------------------------------------
+
+/// The proof instrument must not fail open.
+///
+/// A validator that skips a keyword it does not implement reports "valid" for a
+/// payload that violates a constraint the schema genuinely declares — the
+/// canonical-payload proofs above would then be weaker than they read. Raised
+/// by review on the first revision of this suite, where `allOf`, `anyOf`, the
+/// `if`/`then` conditional, `maxItems`, and `minProperties` were all ignored.
+#[test]
+fn an_unimplemented_schema_keyword_is_rejected_rather_than_skipped() -> Result<()> {
+    // `multipleOf` is real JSON Schema this validator does not implement.
+    let schema = json!({"type": "integer", "multipleOf": 2});
+    let error = schema_check::validate(&schema, &json!(3))
+        .err()
+        .ok_or_else(|| eyre!("an unimplemented keyword must not be silently skipped"))?;
+    assert!(
+        error.contains("multipleOf"),
+        "the failure must name the unimplemented keyword, got: {error}"
+    );
+
+    // The keyword guard must not reject schemas built only from implemented
+    // keywords, or every proof above would pass vacuously on an error.
+    schema_check::validate(&json!({"type": "integer", "minimum": 1}), &json!(2))
+        .map_err(|error| eyre!("an implemented keyword must still validate: {error}"))?;
+    Ok(())
+}
+
+/// The drift contract states its status invariants as an `if`/`then`
+/// conditional: a `not_proven` receipt must carry a null fingerprint, empty
+/// added/removed/changed ID arrays, and a non-empty reason. Those constraints
+/// live only in `allOf`, so a validator that ignored applicators would report
+/// a contradictory receipt as schema-valid.
+#[test]
+fn the_drift_status_conditional_is_enforced() -> Result<()> {
+    let envelope = envelopes()?
+        .into_iter()
+        .find(|envelope| envelope.label == "target_topology_drift.v1")
+        .ok_or_else(|| eyre!("no drift envelope"))?;
+    assert_eq!(
+        envelope.payload.get("status").and_then(Value::as_str),
+        Some("not_proven"),
+        "this proof assumes the pinned drift fixture is a not_proven receipt"
+    );
+
+    // Each mutation contradicts the `not_proven` arm while leaving every
+    // unconditional constraint satisfied, so only the conditional can reject it.
+    let contradictions = [
+        ("/added_target_ids", json!(["component_base"])),
+        ("/removed_target_ids", json!(["component_base"])),
+        ("/changed_target_ids", json!(["component_base"])),
+        ("/not_proven_reason", json!("")),
+    ];
+    for (pointer, replacement) in contradictions {
+        let mut mutated = envelope.payload.clone();
+        let cursor = mutated
+            .pointer_mut(pointer)
+            .ok_or_else(|| eyre!("drift payload has no node at {pointer}"))?;
+        *cursor = replacement;
+        assert!(
+            schema_check::validate(&envelope.schema, &mutated).is_err(),
+            "the drift schema must reject a not_proven receipt contradicted at {pointer}"
+        );
+    }
+    Ok(())
+}

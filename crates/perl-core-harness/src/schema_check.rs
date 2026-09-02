@@ -6,6 +6,12 @@
 //! keywords the registered harness schemas use; any unknown keyword or pattern
 //! grammar fails closed rather than silently passing.
 //!
+//! "Fails closed" is enforced by [`KNOWN_KEYWORDS`], not merely intended. An
+//! unimplemented keyword that were simply skipped would fail *open* — the
+//! schema would appear to pass while the constraint it declares went
+//! unchecked — so a keyword outside that list is a hard error, and a schema
+//! that grows one fails here until this validator implements it.
+//!
 //! One shared instrument matters for the closed-world claim (#7729): a suite
 //! that carried its own copy could drift into accepting a shape another suite
 //! rejects, and "Rust and the registered schema agree" would no longer be a
@@ -26,7 +32,67 @@ pub fn validate_node(root: &Value, node: &Value, instance: &Value) -> Result<(),
     check(node, root, instance)
 }
 
+/// Every schema keyword this validator implements, plus the annotation
+/// keywords it may ignore safely.
+///
+/// A keyword outside this list is rejected rather than skipped. Silently
+/// ignoring an unimplemented keyword fails *open*: the schema would appear to
+/// pass while a constraint it declares went unchecked. Adding a keyword to a
+/// registered schema therefore fails here until it is implemented above.
+const KNOWN_KEYWORDS: &[&str] = &[
+    // Annotations, carrying no assertion.
+    "$schema",
+    "$id",
+    "$comment",
+    "$defs",
+    "title",
+    "description",
+    "examples",
+    "default",
+    "deprecated",
+    // Applicators.
+    "$ref",
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "if",
+    "then",
+    "else",
+    "items",
+    "properties",
+    "additionalProperties",
+    // Assertions.
+    "type",
+    "const",
+    "enum",
+    "pattern",
+    "required",
+    "minimum",
+    "maximum",
+    "minLength",
+    "maxLength",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "minProperties",
+    "maxProperties",
+];
+
 fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
+    // A boolean schema accepts or rejects everything.
+    if let Some(accepted) = schema.as_bool() {
+        return match accepted {
+            true => Ok(()),
+            false => Err("boolean schema false rejects every instance".to_string()),
+        };
+    }
+    if let Some(fields) = schema.as_object() {
+        for key in fields.keys() {
+            if !KNOWN_KEYWORDS.contains(&key.as_str()) {
+                return Err(format!("unsupported schema keyword {key}"));
+            }
+        }
+    }
     if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
         let pointer = reference.strip_prefix('#').unwrap_or(reference);
         let target =
@@ -72,6 +138,12 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
     {
         return Err(format!("instance {number} is below minimum {minimum}"));
     }
+    if let Some(maximum) = schema.get("maximum").and_then(Value::as_i64)
+        && let Some(number) = instance.as_i64()
+        && number > maximum
+    {
+        return Err(format!("instance {number} is above maximum {maximum}"));
+    }
     match instance {
         Value::String(text) => {
             if let Some(min) = schema.get("minLength").and_then(Value::as_u64)
@@ -91,6 +163,11 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
             {
                 return Err(format!("array shorter than minItems {min}"));
             }
+            if let Some(max) = schema.get("maxItems").and_then(Value::as_u64)
+                && (items.len() as u64) > max
+            {
+                return Err(format!("array longer than maxItems {max}"));
+            }
             if schema.get("uniqueItems") == Some(&Value::Bool(true)) {
                 let duplicated = items
                     .iter()
@@ -107,6 +184,16 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
             }
         }
         Value::Object(object) => {
+            if let Some(min) = schema.get("minProperties").and_then(Value::as_u64)
+                && (object.len() as u64) < min
+            {
+                return Err(format!("object has fewer than minProperties {min}"));
+            }
+            if let Some(max) = schema.get("maxProperties").and_then(Value::as_u64)
+                && (object.len() as u64) > max
+            {
+                return Err(format!("object has more than maxProperties {max}"));
+            }
             for key in schema.get("required").and_then(Value::as_array).into_iter().flatten() {
                 let key = key.as_str().ok_or("required entries must be strings")?;
                 if !object.contains_key(key) {
@@ -131,6 +218,40 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
             }
         }
         _ => {}
+    }
+    if let Some(branches) = schema.get("allOf").and_then(Value::as_array) {
+        for branch in branches {
+            check(branch, root, instance)?;
+        }
+    }
+    if let Some(branches) = schema.get("anyOf").and_then(Value::as_array)
+        && !branches.iter().any(|branch| check(branch, root, instance).is_ok())
+    {
+        let details = branches
+            .iter()
+            .filter_map(|branch| check(branch, root, instance).err())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        return Err(format!("instance satisfies no anyOf branch; branch errors: {details}"));
+    }
+    // `if`/`then`/`else`: the drift contract states its status-conditional
+    // invariants this way, so ignoring them would let a `not_proven` receipt
+    // carry a fingerprint and populated drift arrays unchallenged.
+    if let Some(condition) = schema.get("if") {
+        let matched = check(condition, root, instance).is_ok();
+        let branch = match matched {
+            true => schema.get("then"),
+            false => schema.get("else"),
+        };
+        if let Some(branch) = branch {
+            check(branch, root, instance).map_err(|error| {
+                let arm = match matched {
+                    true => "then",
+                    false => "else",
+                };
+                format!("instance violates conditional {arm}: {error}")
+            })?;
+        }
     }
     if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
         let passing =
