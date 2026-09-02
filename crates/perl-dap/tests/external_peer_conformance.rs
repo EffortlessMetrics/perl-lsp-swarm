@@ -985,3 +985,64 @@ fn overload_racing_peer_eof_yields_one_ordered_terminal_transition() {
     drop(backend);
     let _ = peer.handle.join();
 }
+
+/// A live peer answering `success: false` to `evaluate` is the #8758 case: an
+/// ordinary debuggee failure reported through the negotiated protocol.
+///
+/// This exercises the reachable layer — `ExternalDebuggerPeerBackend::evaluate`
+/// → `request()` → [`BackendError::RequestFailed`] — rather than constructing
+/// the error directly, so it would have caught the original defect where every
+/// such reply classified as `ErrorCategory::Bug` and was routed for adapter-bug
+/// repair.
+#[test]
+fn peer_reported_debuggee_failure_is_not_an_adapter_bug() {
+    use perl_dap::backend::{BackendError, BackendResponseOrigin};
+    use perl_parser_core::{ErrorCategory, ErrorClass};
+
+    const DIE: &str = "Undefined subroutine &main::foo called at t/x.pl line 3.";
+
+    let peer = FakePeer::start(
+        full_caps(),
+        vec![PeerStep::Answer(
+            command::EVALUATE,
+            PeerResponse {
+                seq: 0,
+                request_seq: 0,
+                success: false,
+                command: String::new(),
+                message: Some(DIE.to_string()),
+                body: None,
+            },
+        )],
+    );
+    let mut backend = connect(&peer);
+    must(backend.initialize(InitializeBackendParams::default()));
+
+    let err = must_err(backend.evaluate(EvaluateParams {
+        expression: "foo()".to_string(),
+        frame_id: Some(FrameId(1)),
+        context: EvaluateContext::Watch,
+    }));
+
+    match &err {
+        BackendError::RequestFailed { origin, command, message } => {
+            assert_eq!(*origin, BackendResponseOrigin::ExternalPeerResponse);
+            assert_eq!(command, command::EVALUATE);
+            assert_eq!(message, DIE);
+        }
+        other => panic!("expected RequestFailed from a peer success:false, got {other:?}"),
+    }
+
+    assert_ne!(
+        err.error_class(),
+        ErrorCategory::Bug,
+        "a debuggee die reported by a peer is not this adapter's invariant violation"
+    );
+    assert_eq!(err.error_class(), ErrorCategory::Advisory);
+
+    // The editor-visible text is unchanged by the added structure.
+    assert_eq!(err.to_string(), format!("debug backend reported an error: {DIE}"));
+
+    drop(backend);
+    let _ = peer.handle.join();
+}

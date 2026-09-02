@@ -538,9 +538,12 @@ pub fn perl_dap::backend::peer_launch::prepare_mirror_listen_session(config: &pe
 pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
 pub fn perl_dap::backend::peer_launch::static_mirror_capabilities() -> serde_json::value::Value
 pub enum perl_dap::backend::BackendError
-pub perl_dap::backend::BackendError::Engine(alloc::string::String)
 pub perl_dap::backend::BackendError::NotConnected
 pub perl_dap::backend::BackendError::Protocol(alloc::string::String)
+pub perl_dap::backend::BackendError::RequestFailed
+pub perl_dap::backend::BackendError::RequestFailed::command: alloc::string::String
+pub perl_dap::backend::BackendError::RequestFailed::message: alloc::string::String
+pub perl_dap::backend::BackendError::RequestFailed::origin: perl_dap::backend::BackendResponseOrigin
 pub perl_dap::backend::BackendError::ResourceLimit(alloc::string::String)
 pub perl_dap::backend::BackendError::Timeout(alloc::string::String)
 pub perl_dap::backend::BackendError::Transport(alloc::string::String)
@@ -549,6 +552,14 @@ pub fn perl_dap::backend::BackendError::clone(&self) -> perl_dap::backend::Backe
 pub fn perl_dap::backend::BackendError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::backend::BackendError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::backend::BackendError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub enum perl_dap::backend::BackendResponseOrigin
+pub perl_dap::backend::BackendResponseOrigin::ExternalPeerResponse
+pub perl_dap::backend::BackendResponseOrigin::NativeAdapterResponse
+pub const fn perl_dap::backend::BackendResponseOrigin::as_str(self) -> &'static str
+pub fn perl_dap::backend::BackendResponseOrigin::clone(&self) -> perl_dap::backend::BackendResponseOrigin
+pub fn perl_dap::backend::BackendResponseOrigin::eq(&self, other: &perl_dap::backend::BackendResponseOrigin) -> bool
+pub fn perl_dap::backend::BackendResponseOrigin::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::backend::BackendResponseOrigin::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_dap::backend::EvaluateContext
 pub perl_dap::backend::EvaluateContext::Hover
 pub perl_dap::backend::EvaluateContext::Other(alloc::string::String)

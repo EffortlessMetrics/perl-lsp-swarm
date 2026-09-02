@@ -20,9 +20,10 @@ use serde_json::{Value, json};
 
 use super::capabilities::{CatalogDapFlags, ControlMode, DebugBackendCapabilities};
 use super::{
-    AttachBackendParams, AttachResult, BackendError, BackendResult, ContinueResult, DebugBackend,
-    EvaluateParams, EvaluateResult, InitializeBackendParams, LaunchBackendParams, LaunchResult,
-    SetBackendBreakpointsParams, SetFunctionBreakpointsParams, StackTraceParams,
+    AttachBackendParams, AttachResult, BackendError, BackendResponseOrigin, BackendResult,
+    ContinueResult, DebugBackend, EvaluateParams, EvaluateResult, InitializeBackendParams,
+    LaunchBackendParams, LaunchResult, SetBackendBreakpointsParams, SetFunctionBreakpointsParams,
+    StackTraceParams,
 };
 use crate::debug_adapter::{DapMessage, DebugAdapter};
 use crate::model::{
@@ -65,9 +66,16 @@ impl NativePerlDbBackend {
                 if success {
                     Ok(body)
                 } else {
-                    Err(BackendError::Engine(
-                        message.unwrap_or_else(|| format!("{command} failed")),
-                    ))
+                    // The adapter's own cause (client input, session state,
+                    // transport I/O, or an unsupported mode) is not carried
+                    // across this `success: false` projection. Name the
+                    // responder and let it decide the category; the reason text
+                    // never does (#8758).
+                    Err(BackendError::RequestFailed {
+                        origin: BackendResponseOrigin::NativeAdapterResponse,
+                        command: command.to_string(),
+                        message: message.unwrap_or_else(|| format!("{command} failed")),
+                    })
                 }
             }
             other => Err(BackendError::Protocol(format!(
@@ -385,6 +393,12 @@ mod tests {
         assert!(out[0].actual_position.line >= 2);
     }
 
+    /// These four families staying `Unsupported` is also what keeps an ordinary
+    /// debuggee outcome off this backend's `delegate` path, which is why
+    /// [`BackendResponseOrigin::NativeAdapterResponse`] classifies as
+    /// `UserError` rather than `Advisory` (#8758). Wiring any of them through
+    /// `delegate` during the DF1/DF3 dispatch migration changes that population
+    /// and requires re-deriving the category — this test is the tripwire.
     #[test]
     fn deferred_data_methods_are_honest_unsupported() {
         let mut backend = NativePerlDbBackend::new();
