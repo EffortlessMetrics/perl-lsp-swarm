@@ -5,6 +5,7 @@
 //! server and supporting adapter infrastructure without requiring a live Perl
 //! debugger process.
 
+use perl_dap::security::WorkspaceAuthority;
 use perl_dap::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};
 use perl_dap::{DapConfig, DapMode, DapServer};
 use std::time::Duration;
@@ -34,26 +35,31 @@ fn dap_mode_debug_format() {
 
 #[test]
 fn dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
-    let config =
-        DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
+    let config = DapConfig {
+        log_level: "info".to_string(),
+        mode: DapMode::Native,
+        workspace_authority: WorkspaceAuthority::unconfigured(),
+    };
     let server = DapServer::new(config)?;
     assert_eq!(server.config.mode, DapMode::Native);
     assert_eq!(server.config.log_level, "info");
-    assert!(server.config.workspace_root.is_none());
+    assert!(!server.config.workspace_authority.is_bounded());
     Ok(())
 }
 
 #[test]
-fn dap_server_creation_preserves_workspace_root() -> Result<(), Box<dyn std::error::Error>> {
-    let root = std::path::PathBuf::from("/workspace");
+fn dap_server_creation_preserves_workspace_authority() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().canonicalize()?;
+    let authority = WorkspaceAuthority::from_startup(&[root.clone()], false)?;
     let config = DapConfig {
         log_level: "debug".to_string(),
         mode: DapMode::Native,
-        workspace_root: Some(root.clone()),
+        workspace_authority: authority,
     };
     let server = DapServer::new(config)?;
     assert_eq!(server.config.mode, DapMode::Native);
-    assert_eq!(server.config.workspace_root, Some(root));
+    assert_eq!(server.config.workspace_authority.trusted_roots(), &[root]);
     Ok(())
 }
 

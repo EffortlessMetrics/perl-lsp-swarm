@@ -80,6 +80,7 @@ use crate::debug_adapter::variable_cache::CachedVariable;
 use crate::debug_adapter::variable_cache::VariableCache;
 use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
 use crate::security;
+use crate::security::{SessionBoundary, WorkspaceAuthority};
 use patterns::{
     DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_FRAME_POLL_MS, DEBUGGER_QUERY_WAIT_MS,
     EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine,
@@ -175,8 +176,14 @@ pub struct DebugAdapter {
     goto_targets: Arc<Mutex<HashMap<i64, (String, i64)>>>,
     /// Monotonic goto target ID counter
     next_goto_target_id: Arc<Mutex<i64>>,
-    /// Workspace root for path validation (set during launch)
-    workspace_root: Arc<Mutex<Option<PathBuf>>>,
+    /// Trusted launch authority, established at construction and never mutated.
+    ///
+    /// Launch arguments read this to derive a session boundary; they can never
+    /// write it. See [`crate::security::workspace_authority`].
+    workspace_authority: Arc<WorkspaceAuthority>,
+    /// The boundary in force for the current session, recomputed on every
+    /// launch so a narrowing `workspaceRoot` cannot leak into a later session.
+    session_boundary: Arc<Mutex<Option<PathBuf>>>,
     /// Transport broken flag: set by event handler on persistent write failure
     transport_broken: Arc<AtomicBool>,
     /// Tracks whether initialize request has been received (state machine validation)
@@ -242,8 +249,23 @@ impl Drop for DebugAdapter {
 }
 
 impl DebugAdapter {
-    /// Create a new debug adapter
+    /// Create a new debug adapter with no configured launch authority.
+    ///
+    /// This is the legacy compatibility state
+    /// ([`UnboundedGrant::UnconfiguredDefault`]). Production construction goes
+    /// through [`DebugAdapter::with_workspace_authority`] so the operator's
+    /// startup choice is explicit.
+    ///
+    /// [`UnboundedGrant::UnconfiguredDefault`]: crate::security::UnboundedGrant::UnconfiguredDefault
     pub fn new() -> Self {
+        Self::with_workspace_authority(WorkspaceAuthority::unconfigured())
+    }
+
+    /// Create a debug adapter bound to `authority` for its whole lifetime.
+    ///
+    /// The authority is fixed here on purpose: it is the one place a trust
+    /// boundary can be established, so no request handler can widen it later.
+    pub fn with_workspace_authority(authority: WorkspaceAuthority) -> Self {
         Self {
             seq: Arc::new(Mutex::new(0)),
             session: Arc::new(Mutex::new(None)),
@@ -266,7 +288,8 @@ impl DebugAdapter {
             last_launch_args: Arc::new(Mutex::new(None)),
             goto_targets: Arc::new(Mutex::new(HashMap::new())),
             next_goto_target_id: Arc::new(Mutex::new(1)),
-            workspace_root: Arc::new(Mutex::new(None)),
+            workspace_authority: Arc::new(authority),
+            session_boundary: Arc::new(Mutex::new(None)),
             transport_broken: Arc::new(AtomicBool::new(false)),
             initialized: Arc::new(AtomicBool::new(false)),
         }
@@ -282,17 +305,27 @@ impl DebugAdapter {
         self.event_sender = Some(sender);
     }
 
-    /// Configure the workspace boundary used to validate launch/attach paths.
+    /// The trusted launch authority this adapter was constructed with.
     ///
-    /// This is the server-configured root — normally wired from
-    /// `DapConfig.workspace_root` when the adapter is constructed
-    /// (see `DapServer::new`). It is the authoritative boundary: a
-    /// launch-args `workspaceRoot` may narrow it for a single launch, but
-    /// can never widen it (see `handle_launch`). Takes `&self` because the
-    /// underlying field is an `Arc<Mutex<_>>`, so this is safe to call
-    /// without exclusive access to the adapter.
-    pub fn set_workspace_root(&self, root: PathBuf) {
-        *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
+    /// There is deliberately no setter: the authority is startup-owned, and a
+    /// launch may only derive a narrower session boundary from it.
+    #[must_use]
+    pub fn workspace_authority(&self) -> &WorkspaceAuthority {
+        &self.workspace_authority
+    }
+
+    /// Install the boundary derived for the session now starting.
+    ///
+    /// Called on every launch, including when the result is unbounded, so the
+    /// previous session's narrowing is always cleared rather than inherited.
+    pub(super) fn set_session_boundary(&self, boundary: &SessionBoundary) {
+        *lock_or_recover(&self.session_boundary, "debug_adapter.session_boundary") =
+            boundary.root().map(Path::to_path_buf);
+    }
+
+    /// The boundary in force for the current session, if one was derived.
+    pub(super) fn session_boundary(&self) -> Option<PathBuf> {
+        lock_or_recover(&self.session_boundary, "debug_adapter.session_boundary").clone()
     }
 
     /// Start a new session generation and reset its terminal-event gate.
@@ -332,67 +365,84 @@ impl DebugAdapter {
         lock_or_recover(&self.termination_state, "debug_adapter.termination_state").generation
     }
 
-    /// Validate a client-provided source path against the workspace root.
+    /// Validate a client-provided source path against the boundary in force.
     ///
-    /// Returns the validated `PathBuf` on success, or an error message on failure.
-    /// If no workspace root is set (pre-launch), the path is allowed through with a
-    /// warning — defense-in-depth only blocks when a workspace boundary is known.
+    /// Precedence is session boundary, then trusted startup roots, then the
+    /// unbounded fallback:
+    ///
+    /// - once a launch has derived a boundary, that narrowed root governs;
+    /// - before any launch, a workspace-bound adapter still admits paths inside
+    ///   any of its trusted roots, so pre-launch `setBreakpoints` is not blanket
+    ///   refused;
+    /// - only a genuinely unbounded adapter reaches the shape-only fallback,
+    ///   which allows the path through with a warning.
     fn validate_source_path(&self, path: &str) -> Result<PathBuf, String> {
-        let ws = lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root");
-        match ws.as_ref() {
-            Some(root) => security::validate_path(Path::new(path), root)
-                .map_err(|e| format!("Path validation failed: {e}")),
-            None => {
-                // No workspace set (pre-launch).  Defense-in-depth: reject paths
-                // that contain parent-directory traversal components.  Absolute
-                // paths outside the current working directory are allowed with an
-                // elevated warning (no workspace boundary is known, so we cannot
-                // definitively reject them — temp files and explicit user paths
-                // are legitimate pre-launch use cases).
-                let p = Path::new(path);
+        let boundary = self.session_boundary();
+        let roots: &[PathBuf] = match boundary.as_ref() {
+            Some(root) => std::slice::from_ref(root),
+            None => self.workspace_authority.trusted_roots(),
+        };
 
-                // Best-effort canonicalize for logging; fall back to raw path.
-                let resolved = std::fs::canonicalize(p)
-                    .map(|c| c.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| path.to_string());
+        if let Some((last, rest)) = roots.split_last() {
+            // Any trusted root may admit the path; report the final failure so
+            // the message names a concrete boundary.
+            for root in rest {
+                if let Ok(validated) = security::validate_path(Path::new(path), root) {
+                    return Ok(validated);
+                }
+            }
+            return security::validate_path(Path::new(path), last)
+                .map_err(|e| format!("Path validation failed: {e}"));
+        }
 
-                // Reject any path containing a ParentDir component — these can
-                // escape the (unknown) workspace boundary.
-                if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-                    return Err(format!(
-                        "Path validation failed: parent-directory traversal not allowed \
+        // No boundary known.  Defense-in-depth: reject paths
+        // that contain parent-directory traversal components.  Absolute
+        // paths outside the current working directory are allowed with an
+        // elevated warning (no workspace boundary is known, so we cannot
+        // definitively reject them — temp files and explicit user paths
+        // are legitimate pre-launch use cases).
+        let p = Path::new(path);
+
+        // Best-effort canonicalize for logging; fall back to raw path.
+        let resolved = std::fs::canonicalize(p)
+            .map(|c| c.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_string());
+
+        // Reject any path containing a ParentDir component — these can
+        // escape the (unknown) workspace boundary.
+        if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err(format!(
+                "Path validation failed: parent-directory traversal not allowed \
                          without a workspace boundary: {resolved}"
-                    ));
-                }
+            ));
+        }
 
-                // For absolute paths outside the current working directory, emit
-                // an elevated warning.  We cannot hard-reject because no workspace
-                // boundary is known and temp files / explicit user paths are
-                // legitimate pre-launch use cases.
-                if p.is_absolute()
-                    && let Ok(cwd) = std::env::current_dir()
-                {
-                    let canonical_p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-                    let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
-                    if !canonical_p.starts_with(&canonical_cwd) {
-                        tracing::warn!(
-                            target = "debug_adapter.security",
-                            path = %resolved,
-                            "Pre-launch absolute path outside current working directory \
-                             accepted without workspace boundary check"
-                        );
-                        return Ok(PathBuf::from(path));
-                    }
-                }
-
+        // For absolute paths outside the current working directory, emit
+        // an elevated warning.  We cannot hard-reject because no workspace
+        // boundary is known and temp files / explicit user paths are
+        // legitimate pre-launch use cases.
+        if p.is_absolute()
+            && let Ok(cwd) = std::env::current_dir()
+        {
+            let canonical_p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+            let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+            if !canonical_p.starts_with(&canonical_cwd) {
                 tracing::warn!(
                     target = "debug_adapter.security",
                     path = %resolved,
-                    "Pre-launch path accepted without workspace boundary check"
+                    "Pre-launch absolute path outside current working directory \
+                     accepted without workspace boundary check"
                 );
-                Ok(PathBuf::from(path))
+                return Ok(PathBuf::from(path));
             }
         }
+
+        tracing::warn!(
+            target = "debug_adapter.security",
+            path = %resolved,
+            "Pre-launch path accepted without workspace boundary check"
+        );
+        Ok(PathBuf::from(path))
     }
 
     /// Get next sequence number (monotonically increasing, poison-safe)
@@ -1854,8 +1904,7 @@ print "result: $final\n";
         adapter.handle_request(1, "initialize", None);
 
         let dir = tempfile::tempdir()?;
-        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
-            Some(dir.path().to_path_buf());
+        adapter.set_session_boundary(&SessionBoundary::Bounded(dir.path().to_path_buf()));
 
         let response = adapter.handle_request(
             2,
@@ -1886,10 +1935,9 @@ print "result: $final\n";
         let mut adapter = DebugAdapter::new();
         adapter.handle_request(1, "initialize", None);
 
-        // Set workspace root to a temp directory
+        // Bound this session to a temp directory
         let dir = tempfile::tempdir()?;
-        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
-            Some(dir.path().to_path_buf());
+        adapter.set_session_boundary(&SessionBoundary::Bounded(dir.path().to_path_buf()));
 
         let response = adapter.handle_request(
             2,
@@ -1920,8 +1968,7 @@ print "result: $final\n";
         adapter.handle_request(1, "initialize", None);
 
         let dir = tempfile::tempdir()?;
-        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
-            Some(dir.path().to_path_buf());
+        adapter.set_session_boundary(&SessionBoundary::Bounded(dir.path().to_path_buf()));
 
         let response = adapter.handle_request(
             2,
@@ -1952,8 +1999,7 @@ print "result: $final\n";
         adapter.handle_request(1, "initialize", None);
 
         let dir = tempfile::tempdir()?;
-        *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
-            Some(dir.path().to_path_buf());
+        adapter.set_session_boundary(&SessionBoundary::Bounded(dir.path().to_path_buf()));
 
         let response = adapter.handle_request(
             2,

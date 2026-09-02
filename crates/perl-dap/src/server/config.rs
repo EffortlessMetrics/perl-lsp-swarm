@@ -1,3 +1,4 @@
+use crate::security::WorkspaceAuthority;
 use crate::server::mode::DapMode;
 
 /// DAP server configuration.
@@ -10,6 +11,12 @@ pub struct DapConfig {
     pub log_level: String,
     /// Native debugger operating mode.
     pub mode: DapMode,
-    /// Workspace root directory.
-    pub workspace_root: Option<std::path::PathBuf>,
+    /// Trusted launch authority for this adapter process.
+    ///
+    /// This replaces the earlier `workspace_root: Option<PathBuf>` field. A
+    /// bare `Option` could not distinguish "the operator confined this adapter
+    /// to a directory" from "nothing was configured", and it was mutable, so a
+    /// per-launch `workspaceRoot` overwrote it for every later session. See
+    /// [`WorkspaceAuthority`].
+    pub workspace_authority: WorkspaceAuthority,
 }

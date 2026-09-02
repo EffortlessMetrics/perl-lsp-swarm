@@ -196,56 +196,41 @@ impl DebugAdapter {
             // self-validating and defeats the workspace check entirely.
             let user_cwd = args.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
 
-            // Determine the workspace boundary for this launch.
+            // Derive this session's workspace boundary from the adapter's
+            // startup authority.
             //
-            // The server-configured root (set once via `set_workspace_root`,
-            // typically from `DapConfig.workspace_root` at server construction)
-            // is the source of truth. A launch-args `workspaceRoot` may NARROW
-            // that boundary but must never WIDEN it — otherwise a malicious or
-            // misconfigured client could hand itself a broader root than the
-            // server allows. If no server root is configured, a launch-args
-            // `workspaceRoot` is accepted as the boundary for this launch (there
-            // is nothing to widen relative to).
+            // The authority itself is immutable (see
+            // `DebugAdapter::with_workspace_authority`). A launch-args
+            // `workspaceRoot` is only ever a NARROWING input: under a bounded
+            // authority it must resolve inside a trusted root or the launch is
+            // refused, and under an unbounded authority it confines this one
+            // session without becoming authority for the next.
             //
-            // If neither is present, validation is skipped entirely (see the
-            // `None` handling in `launch_debugger`) — this preserves current
-            // behavior for existing users, since `DapConfig.workspace_root` is
-            // not yet populated from any CLI/editor-supplied source (tracked
-            // separately in #5345; that fail-open gap is intentionally out of
-            // scope for this fix).
-            let server_root =
-                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            // The result is written to the per-session boundary — never back
+            // over the authority — so the previous session's narrowing is
+            // cleared on every launch rather than inherited (#14587).
             let launch_root_arg =
                 args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
 
-            let effective_root = match (server_root, launch_root_arg) {
-                (Some(server), Some(launch)) => match security::validate_path(&launch, &server) {
-                    Ok(narrowed) => Some(narrowed),
-                    Err(e) => {
-                        return DapMessage::Response {
-                            seq,
-                            request_seq,
-                            success: false,
-                            command: "launch".to_string(),
-                            body: None,
-                            message: Some(format!(
-                                "The launch 'workspaceRoot' ('{}') is outside your workspace \
-                                     folder and cannot widen the server-configured boundary. \
-                                     Details: {}",
-                                launch.display(),
-                                e
-                            )),
-                        };
-                    }
-                },
-                (Some(server), None) => Some(server),
-                (None, Some(launch)) => Some(launch),
-                (None, None) => None,
+            let boundary = match security::resolve_session_boundary(
+                self.workspace_authority(),
+                Path::new(program),
+                launch_root_arg.as_deref(),
+            ) {
+                Ok(boundary) => boundary,
+                Err(error) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: Some(error.to_string()),
+                    };
+                }
             };
 
-            if let Some(root) = effective_root {
-                *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
-            }
+            self.set_session_boundary(&boundary);
 
             let perl_args = args
                 .get("args")
@@ -485,11 +470,11 @@ impl DebugAdapter {
             }
         }
 
-        // Enforce workspace-bound launch paths when a workspace root is known.
-        // This prevents launching scripts outside the active project tree.
-        let workspace_root =
-            lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
-        if let Some(root) = workspace_root.as_ref() {
+        // Enforce workspace-bound launch paths when this session has a
+        // boundary. This prevents launching scripts outside the active project
+        // tree.
+        let session_boundary = self.session_boundary();
+        if let Some(root) = session_boundary.as_ref() {
             security::validate_path(path, root).map_err(|e| {
                 format!(
                     "The script '{}' is outside your workspace folder. \

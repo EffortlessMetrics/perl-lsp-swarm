@@ -13,6 +13,13 @@
 //! - Timeouts are capped at reasonable limits
 //! - Dangerous operations are blocked in safe evaluation mode
 
+pub mod workspace_authority;
+
+pub use workspace_authority::{
+    SessionBoundary, UnboundedGrant, WorkspaceAuthority, WorkspaceAuthorityError,
+    resolve_session_boundary,
+};
+
 use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
 use std::path::{Path, PathBuf};
 

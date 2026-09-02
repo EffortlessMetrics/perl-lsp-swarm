@@ -17,6 +17,7 @@ use perl_dap::backend::peer_launch::{
 use perl_dap::backend::{DapPeerBridge, run_external_peer_session_stdio};
 use perl_dap::model::{DebugSessionPacket, DebugSource};
 use perl_dap::ptkdb_bootstrap::render_ptkdbrc;
+use perl_dap::security::{UnboundedGrant, WorkspaceAuthority};
 use perl_dap::session_plan::DebugSessionPlanBuilder;
 use perl_dap::{DapConfig, DapMode, DapServer};
 use perl_lsp_rs_core::product_identity::{
@@ -269,6 +270,60 @@ struct Args {
     /// mirror-rejected. Editor `--socket` / `--port` fail before bind.
     #[arg(long, value_name = "HOST[:PORT]")]
     external_peer_listen: Option<String>,
+
+    /// Confine debug launches to DIR. Repeat for a multi-root workspace.
+    ///
+    /// This is the adapter's trusted startup authority: launch arguments may
+    /// narrow it but can never widen it, and neither the debugged program's own
+    /// directory nor its `cwd` can establish it.
+    #[arg(long, value_name = "DIR")]
+    workspace_root: Vec<PathBuf>,
+
+    /// Allow debug launches anywhere on this machine.
+    ///
+    /// Single-file debugging outside an opened workspace is legitimate, but it
+    /// must be the operator's deliberate choice rather than the silent
+    /// consequence of an unconfigured adapter. Conflicts with
+    /// `--workspace-root`.
+    #[arg(long)]
+    allow_unbounded_workspace: bool,
+}
+
+/// Record the launch authority this process is running under.
+///
+/// The unconfigured case is a warning, not an info line: it is the state
+/// #8145 exists to remove, and it is indistinguishable from the bounded case in
+/// a log that does not say so.
+fn log_workspace_authority(authority: &WorkspaceAuthority) {
+    match authority {
+        WorkspaceAuthority::WorkspaceBound { roots } => {
+            tracing::info!(
+                target = "perl_dap.security",
+                mode = authority.mode_identity(),
+                roots = roots.len(),
+                "Debug launches are confined to the configured workspace roots"
+            );
+        }
+        WorkspaceAuthority::Unbounded { grant: UnboundedGrant::OperatorFlag } => {
+            tracing::warn!(
+                target = "perl_dap.security",
+                mode = authority.mode_identity(),
+                grant = UnboundedGrant::OperatorFlag.as_str(),
+                "--allow-unbounded-workspace was passed: debug launches are not confined \
+                 to any workspace root"
+            );
+        }
+        WorkspaceAuthority::Unbounded { grant: UnboundedGrant::UnconfiguredDefault } => {
+            tracing::warn!(
+                target = "perl_dap.security",
+                mode = authority.mode_identity(),
+                grant = UnboundedGrant::UnconfiguredDefault.as_str(),
+                "No workspace authority configured: debug launches are not confined to any \
+                 workspace root. Pass --workspace-root <DIR> to confine them, or \
+                 --allow-unbounded-workspace to make this explicit."
+            );
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -337,11 +392,18 @@ fn main() -> anyhow::Result<()> {
 
     log_server_startup("perl-dap", env!("CARGO_PKG_VERSION"), args.transport.mode(), None, None);
 
+    // Establish the trust boundary before the server exists. A startup failure
+    // here is preferable to serving requests under an authority the operator
+    // did not actually ask for.
+    let workspace_authority =
+        WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace)?;
+    log_workspace_authority(&workspace_authority);
+
     // The shipped binary always runs the native adapter. External
     // implementations may be compared in repository-only conformance tooling,
     // but no alternate DAP server is reachable from this CLI or crate runtime.
     let config =
-        DapConfig { log_level: args.log_level, mode: DapMode::Native, workspace_root: None };
+        DapConfig { log_level: args.log_level, mode: DapMode::Native, workspace_authority };
 
     let mut server = DapServer::new(config)?;
 
@@ -354,8 +416,8 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, DEFAULT_DAP_PORT, editor_socket_retired, native_editor_socket_retired,
-        resolve_socket_port, windows_shell_quote,
+        Args, DEFAULT_DAP_PORT, UnboundedGrant, WorkspaceAuthority, editor_socket_retired,
+        native_editor_socket_retired, resolve_socket_port, windows_shell_quote,
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
@@ -488,5 +550,108 @@ mod tests {
     fn windows_remediation_uses_cmd_quoting() {
         assert_eq!(windows_shell_quote("[::1]:13604"), "\"[::1]:13604\"");
         assert_eq!(windows_shell_quote("100% ready\"now"), "\"100% ready\"\"now\"");
+    }
+
+    // --- workspace launch authority (#14587) ---
+
+    /// The shipped binary can actually reach workspace-bound mode.
+    ///
+    /// Before this flag existed, `DapConfig.workspace_root` was hardcoded to
+    /// `None` in `main`, so the bounded launch path was unreachable in the
+    /// product and every real session ran unbounded.
+    #[test]
+    fn workspace_root_flag_establishes_bounded_authority() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let alpha = temp.path().join("alpha");
+        let beta = temp.path().join("beta");
+        std::fs::create_dir_all(&alpha)?;
+        std::fs::create_dir_all(&beta)?;
+
+        let args = Args::parse_from([
+            "perl-dap",
+            "--stdio",
+            "--workspace-root",
+            alpha.to_str().ok_or("non-utf8 fixture path")?,
+            "--workspace-root",
+            beta.to_str().ok_or("non-utf8 fixture path")?,
+        ]);
+        assert_eq!(args.workspace_root.len(), 2, "the flag must be repeatable for multi-root");
+
+        let authority = WorkspaceAuthority::from_startup(&args.workspace_root, false)?;
+        assert!(authority.is_bounded());
+        assert_eq!(authority.trusted_roots().len(), 2);
+        Ok(())
+    }
+
+    /// An unconfigured adapter is unbounded, but nameably so.
+    #[test]
+    fn no_authority_flags_resolve_to_the_named_legacy_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let args = Args::parse_from(["perl-dap", "--stdio"]);
+        assert!(args.workspace_root.is_empty());
+        assert!(!args.allow_unbounded_workspace);
+
+        let authority =
+            WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace)?;
+        assert_eq!(
+            authority,
+            WorkspaceAuthority::Unbounded { grant: UnboundedGrant::UnconfiguredDefault }
+        );
+        Ok(())
+    }
+
+    /// The operator's explicit opt-in is distinguishable from the default.
+    #[test]
+    fn allow_unbounded_flag_records_an_operator_grant() -> Result<(), Box<dyn std::error::Error>> {
+        let args = Args::parse_from(["perl-dap", "--stdio", "--allow-unbounded-workspace"]);
+        assert!(args.allow_unbounded_workspace);
+
+        let authority =
+            WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace)?;
+        assert_eq!(
+            authority,
+            WorkspaceAuthority::Unbounded { grant: UnboundedGrant::OperatorFlag }
+        );
+        Ok(())
+    }
+
+    /// Asking to confine and to unconfine at once is a startup error, not a
+    /// silent precedence rule.
+    #[test]
+    fn contradictory_authority_flags_fail_startup() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("ws");
+        std::fs::create_dir_all(&root)?;
+
+        let args = Args::parse_from([
+            "perl-dap",
+            "--stdio",
+            "--workspace-root",
+            root.to_str().ok_or("non-utf8 fixture path")?,
+            "--allow-unbounded-workspace",
+        ]);
+        let result =
+            WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace);
+        assert!(result.is_err(), "both flags together must fail startup, got {result:?}");
+        Ok(())
+    }
+
+    /// A workspace root that does not exist fails startup rather than silently
+    /// degrading the adapter to unbounded.
+    #[test]
+    fn a_nonexistent_workspace_root_fails_startup() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let missing = temp.path().join("absent");
+
+        let args = Args::parse_from([
+            "perl-dap",
+            "--stdio",
+            "--workspace-root",
+            missing.to_str().ok_or("non-utf8 fixture path")?,
+        ]);
+        let result = WorkspaceAuthority::from_startup(&args.workspace_root, false);
+        assert!(result.is_err(), "a missing root must fail startup, got {result:?}");
+        Ok(())
     }
 }
