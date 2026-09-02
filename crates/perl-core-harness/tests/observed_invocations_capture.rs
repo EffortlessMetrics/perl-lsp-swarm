@@ -1053,6 +1053,34 @@ fn failed_reruns_clear_stale_successful_outputs() -> Result<()> {
 }
 
 #[test]
+fn early_patch_failure_clears_all_stale_successful_outputs() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let tree = fixture_tree(temp.path(), "clean", &["if.t"])?;
+    let patch = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
+    let config = config_for(&tree, &patch, temp.path(), "component_base", default_limits());
+    observe_invocations_command(&config)?;
+    assert!(config.output.is_file());
+    assert!(config.trace_output.is_file());
+    assert!(config.work_output.is_file());
+
+    // Patch decoding fails before any supervised capture starts. The prior
+    // successful receipts must nevertheless be absent, so they cannot be
+    // consumed as evidence for this failed rerun.
+    fs::write(&patch, br#"{"schema_version":"invalid"}"#)?;
+    let Err(error) = observe_invocations_command(&config) else {
+        bail!("an invalid patch specification must refuse before capture");
+    };
+    assert!(
+        error.to_string().contains("decoding patch specification"),
+        "expected the early patch failure, got: {error}"
+    );
+    assert!(!config.output.exists(), "stale parent receipt must be removed");
+    assert!(!config.trace_output.exists(), "stale trace receipt must be removed");
+    assert!(!config.work_output.exists(), "stale work receipt must be removed");
+    Ok(())
+}
+
+#[test]
 fn outputs_cannot_alias_the_matrix_or_the_reviewed_patch() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let tree = fixture_tree(temp.path(), "clean", &["if.t"])?;

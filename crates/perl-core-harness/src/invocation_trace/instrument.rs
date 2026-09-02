@@ -622,31 +622,7 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
     let matrix = read_matrix(&config.matrix)?;
     let entry =
         find_target(&matrix, &config.target_id).map_err(|error| color_eyre::eyre::eyre!(error))?;
-    let perl_tree = fs::canonicalize(&config.perl_tree).with_context(|| {
-        format!("canonicalizing prepared Perl tree {}", config.perl_tree.display())
-    })?;
-    if !perl_tree.is_dir() {
-        bail!("prepared Perl tree is not a directory: {}", perl_tree.display());
-    }
-    let host_perl = resolve_host_interpreter(&config.host_perl)?;
-    let receipt_destinations =
-        [config.output.clone(), config.trace_output.clone(), config.work_output.clone()];
-    reject_output_aliases(
-        &[
-            perl_tree.join("t").join("TEST"),
-            host_perl.clone(),
-            config.matrix.clone(),
-            config.patch.clone(),
-        ],
-        &receipt_destinations,
-    )?;
-    reject_subject_destinations(&host_perl, &perl_tree, &receipt_destinations)?;
-    for destination in &receipt_destinations {
-        crate::observed_discovery::capture::reject_matrix_output_alias(
-            &config.matrix,
-            destination,
-        )?;
-    }
+    let (perl_tree, host_perl) = validate_receipt_destinations(config)?;
 
     // Reviewed patch subject: the spec must pin the exact ordinary artifact.
     let patch_bytes = fs::read(&config.patch)
@@ -1180,17 +1156,13 @@ pub(crate) fn required_limitations() -> Vec<String> {
 /// validate the written evidence by reconstruction before reporting the
 /// terminal disposition. Every non-complete state is a typed failure exit.
 pub fn observe_invocations_command(config: &ObserveInvocationsConfig) -> Result<()> {
-    // Invalidate prior evidence before any fallible capture/setup step. An
-    // early error (for example, a malformed patch specification) must not
-    // leave receipts from a previous successful run available to consumers.
-    clear_stale_output(&config.output, true)?;
-    clear_stale_output(&config.trace_output, true)?;
-    clear_stale_output(&config.work_output, true)?;
+    // Receipt destinations must be proven safe before removing anything. Once
+    // that preflight succeeds, invalidate every prior receipt before entering
+    // any fallible capture/setup path so an early error cannot leave old proof
+    // available to file-based consumers.
+    validate_receipt_destinations(config)?;
+    invalidate_stale_outputs(config)?;
     let observation = observe_invocations(config)?;
-    // Absent receipts must not leave a previous run's successful evidence in
-    // place: file-based consumers would ingest stale proof for this run.
-    clear_stale_output(&config.output, observation.parent.is_none())?;
-    clear_stale_output(&config.trace_output, observation.trace.is_none())?;
     if let Some(parent) = &observation.parent {
         write_json(&config.output, parent)?;
     }
@@ -1279,10 +1251,53 @@ pub(crate) fn observe_invocations_from_options(mut options: Options) -> Result<(
     observe_invocations_command(&config)
 }
 
-/// Remove one output file when its receipt is absent from the current run so
-/// a stale success can never survive a typed failure.
-fn clear_stale_output(path: &Path, absent: bool) -> Result<()> {
-    if absent && path.exists() {
+/// Validate receipt destinations without mutating the prepared subject or
+/// any receipt. This must precede stale-output invalidation because a bad
+/// destination may alias authoritative input evidence.
+fn validate_receipt_destinations(config: &ObserveInvocationsConfig) -> Result<(PathBuf, PathBuf)> {
+    let perl_tree = fs::canonicalize(&config.perl_tree).with_context(|| {
+        format!("canonicalizing prepared Perl tree {}", config.perl_tree.display())
+    })?;
+    if !perl_tree.is_dir() {
+        bail!("prepared Perl tree is not a directory: {}", perl_tree.display());
+    }
+    let host_perl = resolve_host_interpreter(&config.host_perl)?;
+    let receipt_destinations =
+        [config.output.clone(), config.trace_output.clone(), config.work_output.clone()];
+    reject_output_aliases(
+        &[
+            perl_tree.join("t").join("TEST"),
+            host_perl.clone(),
+            config.matrix.clone(),
+            config.patch.clone(),
+        ],
+        &receipt_destinations,
+    )?;
+    reject_subject_destinations(&host_perl, &perl_tree, &receipt_destinations)?;
+    for destination in &receipt_destinations {
+        crate::observed_discovery::capture::reject_matrix_output_alias(
+            &config.matrix,
+            destination,
+        )?;
+    }
+    Ok((perl_tree, host_perl))
+}
+
+/// Remove all prior receipt files before a new capture begins. Continue
+/// attempting every destination so one cleanup error cannot leave other stale
+/// successful receipts consumable.
+fn invalidate_stale_outputs(config: &ObserveInvocationsConfig) -> Result<()> {
+    let mut first_error = None;
+    for path in [&config.output, &config.trace_output, &config.work_output] {
+        if let Err(error) = clear_stale_output(path) {
+            first_error.get_or_insert(error);
+        }
+    }
+    if let Some(error) = first_error { Err(error) } else { Ok(()) }
+}
+
+fn clear_stale_output(path: &Path) -> Result<()> {
+    if path.exists() {
         fs::remove_file(path)
             .with_context(|| format!("removing stale receipt {}", path.display()))?;
     }
