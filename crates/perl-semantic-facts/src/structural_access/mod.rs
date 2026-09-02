@@ -1,0 +1,686 @@
+//! Provider-neutral ordered structural access-hop contract (#13619).
+//!
+//! A structural access chain is the typed record of what
+//! `$config->{groups}{staff}[0]` actually did, hop by hop. Each
+//! [`StructuralAccessHop`] binds one *local* transition — the operator that
+//! was written at that position, the key or index it selected, the aggregate
+//! it selected out of, the value it produced, and the exact honesty state of
+//! that selection. [`StructuralAccessChain`] orders those hops and proves the
+//! order is intact.
+//!
+//! # Why the contract exists
+//!
+//! The compatibility receiver path in `perl-semantic-analyzer` encodes access
+//! history as a mixture of broad evidence variants and heuristic strings
+//! (`"array index receiver"`), keeps them in an unordered de-duplicated bag,
+//! and labels nested aggregates with whatever text is available — degrading to
+//! AST kind names such as `Binary` when the base is not a plain variable. That
+//! is adequate for a bounded compatibility fact and insufficient as a
+//! canonical contract: it cannot answer which operator was written where, in
+//! what order, against which aggregate, under what budget, or with what
+//! completeness.
+//!
+//! # Operator identity comes from the AST, never from source text
+//!
+//! Perl distinguishes four local subscript operators, and the parser already
+//! preserves all four as distinct `Binary` operator strings — `{}`, `->{}`,
+//! `[]`, `->[]`. [`StructuralAccessOperator`] mirrors exactly those four.
+//! Collapsing arrow and plain forms would destroy the distinction this
+//! contract exists to keep: in `$a->{b}{c}` the second hop is a *plain* hash
+//! slot even though an arrow appeared earlier, and `$a{b}->[0]` differs from
+//! `$a->{b}[0]` in its first hop.
+//!
+//! [`StructuralAccessSpelling`] carries the source text and range as
+//! *evidence*. It is deliberately excluded from every fingerprint and from
+//! every validation rule that decides an operator class, so no consumer can
+//! reintroduce a substring scan and mistake an earlier `->{` for the current
+//! local `{}`.
+//!
+//! # Transport trust boundary
+//!
+//! `Serialize`/`Deserialize` is a wire shape, not an invariant guard:
+//! deserializing untrusted JSON can produce records that
+//! [`StructuralAccessHop::new`] and [`StructuralAccessChain::new`] would have
+//! rejected. Any consumer accepting a chain from a transport must call
+//! [`StructuralAccessChain::validate`] before reuse, and must treat a
+//! fingerprint match as a candidate confirmed by structural equality rather
+//! than as proof of identity.
+//!
+//! # Ownership fence
+//!
+//! This module owns no LSP protocol type, parser type, AST type, provider
+//! policy, or workspace storage. It performs no traversal, resolves no
+//! aggregate, and changes no provider behavior — types, validation,
+//! canonical serialization, deterministic fingerprints, and synthetic
+//! fixtures only. Local aggregate flow analysis, callable-return shape
+//! production, and the provider projection remain with #7434, #9474, and
+//! #7464.
+
+mod chain;
+mod hop;
+
+#[cfg(test)]
+mod tests;
+
+pub use chain::StructuralAccessChain;
+pub use hop::StructuralAccessHop;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{BoundaryLink, FactId, FileId, SourceAnchor, SourceGeneration, ValueShape};
+
+/// `structural_access_chain.v1` schema version.
+pub const STRUCTURAL_ACCESS_CHAIN_SCHEMA_VERSION: u32 = 1;
+
+/// Stable schema tag folded into every fingerprint in this contract.
+///
+/// Producers and consumers must agree on this tag before comparing
+/// fingerprints; a mismatch is an incompatible contract, not an equality
+/// failure to be repaired by string comparison.
+pub const STRUCTURAL_ACCESS_SCHEMA_TAG: &str = "structural-access-chain.v1";
+
+/// Error returned by the structural access contract validators.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructuralAccessContractError {
+    /// An identity field that must identify a subject is empty or whitespace.
+    EmptyIdentityField(&'static str),
+    /// The selector class does not match the local operator class.
+    SelectorOperatorMismatch {
+        /// Operator tag written at this hop.
+        operator: &'static str,
+        /// Selector tag recorded against it.
+        selector: &'static str,
+    },
+    /// The hop's aggregate does not match its position in the chain.
+    AggregateChainPosition {
+        /// Zero-based position of the offending hop.
+        ordinal: u32,
+        /// Why the aggregate cannot occupy that position.
+        reason: &'static str,
+    },
+    /// A typed outcome/disposition/completeness combination cannot be claimed
+    /// together.
+    ContradictoryStatus(&'static str),
+    /// A source range is inverted or otherwise structurally impossible.
+    MalformedRange {
+        /// Inclusive start byte recorded on the anchor.
+        start_byte: u32,
+        /// Exclusive end byte recorded on the anchor.
+        end_byte: u32,
+    },
+    /// Budget accounting is not monotone, or contradicts the outcome.
+    MalformedBudget(&'static str),
+    /// A chain carries no hops, or hops that disagree about their subject.
+    MalformedChain(&'static str),
+}
+
+impl std::fmt::Display for StructuralAccessContractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyIdentityField(field) => {
+                write!(f, "structural access field `{field}` must be a non-empty identity")
+            }
+            Self::SelectorOperatorMismatch { operator, selector } => {
+                write!(f, "operator `{operator}` cannot select through a `{selector}` selector")
+            }
+            Self::AggregateChainPosition { ordinal, reason } => {
+                write!(f, "hop {ordinal} has an impossible input aggregate: {reason}")
+            }
+            Self::ContradictoryStatus(reason) => {
+                write!(f, "contradictory structural access status: {reason}")
+            }
+            Self::MalformedRange { start_byte, end_byte } => {
+                write!(f, "structural access range {start_byte}..{end_byte} is inverted")
+            }
+            Self::MalformedBudget(reason) => {
+                write!(f, "structural access budget is malformed: {reason}")
+            }
+            Self::MalformedChain(reason) => {
+                write!(f, "structural access chain is malformed: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StructuralAccessContractError {}
+
+/// One local subscript operator, exactly as written at this hop.
+///
+/// The four variants mirror the four distinct operator forms the parser
+/// preserves. An arrow at an earlier hop never relabels a later hop: in
+/// `$a->{b}{c}` the hops are [`Self::HashRefSlot`] then [`Self::HashSlot`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum StructuralAccessOperator {
+    /// Plain hash element access, `$hash{key}` / `...{key}`.
+    HashSlot,
+    /// Arrow hash dereference, `$ref->{key}`.
+    HashRefSlot,
+    /// Plain array element access, `$array[0]` / `...[0]`.
+    ArrayIndex,
+    /// Arrow array dereference, `$ref->[0]`.
+    ArrayRefIndex,
+}
+
+impl StructuralAccessOperator {
+    /// Stable discriminant tag used inside fingerprints and diagnostics.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::HashSlot => "hash-slot",
+            Self::HashRefSlot => "hashref-slot",
+            Self::ArrayIndex => "array-index",
+            Self::ArrayRefIndex => "arrayref-index",
+        }
+    }
+
+    /// Whether the operator addresses an aggregate by key rather than index.
+    #[must_use]
+    pub const fn is_keyed(self) -> bool {
+        matches!(self, Self::HashSlot | Self::HashRefSlot)
+    }
+
+    /// Whether the operator dereferences a reference before selecting.
+    ///
+    /// This is a property of the written form only. It never reclassifies a
+    /// later hop: `$a->{b}{c}` dereferences at the first hop and not the
+    /// second, even though both select out of the same chain.
+    #[must_use]
+    pub const fn dereferences(self) -> bool {
+        matches!(self, Self::HashRefSlot | Self::ArrayRefIndex)
+    }
+}
+
+/// Canonical identity of the member this hop selected.
+///
+/// A dynamic key and a dynamic index are separate boundaries and never
+/// collapse into one "dynamic" state: they limit different reasoning and the
+/// consumer's recovery differs.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StructuralAccessSelector {
+    /// A statically known hash key, already normalized to its canonical text.
+    StaticKey(String),
+    /// A statically known array index. Negative indices count from the end and
+    /// remain exact.
+    StaticIndex(i64),
+    /// The key is computed at runtime; the boundary carries why.
+    DynamicKey(BoundaryLink),
+    /// The index is computed at runtime; the boundary carries why.
+    DynamicIndex(BoundaryLink),
+}
+
+impl StructuralAccessSelector {
+    /// Stable discriminant tag used inside fingerprints and diagnostics.
+    #[must_use]
+    pub const fn tag(&self) -> &'static str {
+        match self {
+            Self::StaticKey(_) => "static-key",
+            Self::StaticIndex(_) => "static-index",
+            Self::DynamicKey(_) => "dynamic-key",
+            Self::DynamicIndex(_) => "dynamic-index",
+        }
+    }
+
+    /// Whether this selector addresses a keyed aggregate.
+    #[must_use]
+    pub const fn is_keyed(&self) -> bool {
+        matches!(self, Self::StaticKey(_) | Self::DynamicKey(_))
+    }
+
+    /// Whether the selected member is only known at runtime.
+    #[must_use]
+    pub const fn is_dynamic(&self) -> bool {
+        matches!(self, Self::DynamicKey(_) | Self::DynamicIndex(_))
+    }
+
+    /// Canonical identity text folded into the hop fingerprint.
+    ///
+    /// A dynamic selector contributes its boundary classification rather than
+    /// a value, so two dynamic hops with different boundary reasons remain
+    /// distinguishable without inventing a fake key.
+    #[must_use]
+    pub fn identity_text(&self) -> String {
+        match self {
+            Self::StaticKey(key) => key.clone(),
+            Self::StaticIndex(index) => index.to_string(),
+            Self::DynamicKey(boundary) | Self::DynamicIndex(boundary) => {
+                format!("{:?}/{:?}", boundary.kind, boundary.reason_code)
+            }
+        }
+    }
+}
+
+/// What this hop selected out of.
+///
+/// The first hop of a chain names a real input aggregate; every later hop
+/// names its immediate predecessor by ordinal. That is what makes a dropped
+/// or reordered hop detectable rather than merely unlikely.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StructuralAccessAggregate {
+    /// A source variable, identified by sigil and name (e.g. `$`, `config`).
+    ///
+    /// The sigil is the variable's own sigil as written, not the sigil implied
+    /// by the access. This is a typed identity, never a rendered label: an
+    /// unnameable base must use [`Self::Fact`] or [`Self::DynamicBoundary`]
+    /// rather than degrade to an AST kind name.
+    Variable {
+        /// Variable sigil as written.
+        sigil: String,
+        /// Variable name without its sigil.
+        name: String,
+    },
+    /// A canonical fact identity supplying the aggregate.
+    Fact(FactId),
+    /// The output of the immediately preceding hop in this chain.
+    PrecedingHop {
+        /// Zero-based ordinal of the preceding hop. Always `this ordinal - 1`.
+        ordinal: u32,
+    },
+    /// The aggregate could not be identified; the boundary carries why.
+    DynamicBoundary(BoundaryLink),
+}
+
+impl StructuralAccessAggregate {
+    /// Stable discriminant tag used inside fingerprints and diagnostics.
+    #[must_use]
+    pub const fn tag(&self) -> &'static str {
+        match self {
+            Self::Variable { .. } => "variable",
+            Self::Fact(_) => "fact",
+            Self::PrecedingHop { .. } => "preceding-hop",
+            Self::DynamicBoundary(_) => "dynamic-boundary",
+        }
+    }
+
+    /// Canonical identity text folded into the hop fingerprint.
+    #[must_use]
+    pub fn identity_text(&self) -> String {
+        match self {
+            Self::Variable { sigil, name } => format!("{sigil}{name}"),
+            Self::Fact(fact_id) => fact_id.0.to_string(),
+            Self::PrecedingHop { ordinal } => ordinal.to_string(),
+            Self::DynamicBoundary(boundary) => {
+                format!("{:?}/{:?}", boundary.kind, boundary.reason_code)
+            }
+        }
+    }
+
+    fn validate(&self) -> Result<(), StructuralAccessContractError> {
+        if let Self::Variable { sigil, name } = self {
+            if sigil.trim().is_empty() {
+                return Err(StructuralAccessContractError::EmptyIdentityField(
+                    "StructuralAccessAggregate::Variable.sigil",
+                ));
+            }
+            if name.trim().is_empty() {
+                return Err(StructuralAccessContractError::EmptyIdentityField(
+                    "StructuralAccessAggregate::Variable.name",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Source spelling and exact range for one hop.
+///
+/// This is evidence for explanation and navigation. It is excluded from every
+/// fingerprint and from every rule that classifies an operator, so moving or
+/// reformatting a file does not change hop identity and no consumer can
+/// recover an operator by scanning text.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuralAccessSpelling {
+    /// Source text of the hop as written, e.g. `->{groups}` or `[0]`.
+    pub text: String,
+    /// Exact source anchor for the hop.
+    pub anchor: SourceAnchor,
+}
+
+impl StructuralAccessSpelling {
+    /// Construct a spelling record.
+    ///
+    /// # Errors
+    /// Returns [`StructuralAccessContractError::EmptyIdentityField`] when the
+    /// text is blank, and [`StructuralAccessContractError::MalformedRange`]
+    /// when the anchor range is inverted.
+    pub fn new(
+        text: impl Into<String>,
+        anchor: SourceAnchor,
+    ) -> Result<Self, StructuralAccessContractError> {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return Err(StructuralAccessContractError::EmptyIdentityField(
+                "StructuralAccessSpelling.text",
+            ));
+        }
+        if anchor.start_byte > anchor.end_byte {
+            return Err(StructuralAccessContractError::MalformedRange {
+                start_byte: anchor.start_byte,
+                end_byte: anchor.end_byte,
+            });
+        }
+        Ok(Self { text, anchor })
+    }
+}
+
+/// Source, document, project, and root generation the hop is valid under.
+///
+/// Deliberately local to this contract rather than reused from the
+/// interprocedural call subject: that subject additionally binds a toolchain
+/// profile and a call site, neither of which identifies a structural access.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuralAccessSubject {
+    /// Document the access is written in.
+    pub document: FileId,
+    /// Accepted source generation of that document.
+    pub source_generation: SourceGeneration,
+    /// Workspace root identity, when established.
+    pub workspace_root: Option<String>,
+    /// Accepted project/workspace generation, when established.
+    pub project_generation: Option<SourceGeneration>,
+}
+
+impl StructuralAccessSubject {
+    /// Construct a subject.
+    ///
+    /// # Errors
+    /// Returns [`StructuralAccessContractError::EmptyIdentityField`] when the
+    /// workspace root is present but blank.
+    pub fn new(
+        document: FileId,
+        source_generation: SourceGeneration,
+        workspace_root: Option<String>,
+        project_generation: Option<SourceGeneration>,
+    ) -> Result<Self, StructuralAccessContractError> {
+        if let Some(root) = workspace_root.as_ref()
+            && root.trim().is_empty()
+        {
+            return Err(StructuralAccessContractError::EmptyIdentityField(
+                "StructuralAccessSubject.workspace_root",
+            ));
+        }
+        Ok(Self { document, source_generation, workspace_root, project_generation })
+    }
+
+    /// Canonical identity text folded into the chain fingerprint.
+    #[must_use]
+    pub fn identity_text(&self) -> String {
+        let generation = match &self.source_generation {
+            SourceGeneration::Known(value) => value.as_str(),
+            SourceGeneration::Unknown => "",
+        };
+        let project = match self.project_generation.as_ref() {
+            Some(SourceGeneration::Known(value)) => value.as_str(),
+            Some(SourceGeneration::Unknown) | None => "",
+        };
+        format!(
+            "{}|{}|{}|{}",
+            self.document.0,
+            generation,
+            self.workspace_root.as_deref().unwrap_or_default(),
+            project
+        )
+    }
+}
+
+/// Bounded work accounting across one hop.
+///
+/// Units are contract-neutral: the producer decides what one unit means and
+/// must only keep the accounting monotone.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct StructuralAccessBudget {
+    /// Units remaining before the hop was attempted.
+    pub units_before: u32,
+    /// Units remaining after the hop was attempted.
+    pub units_after: u32,
+}
+
+impl StructuralAccessBudget {
+    /// Construct a budget record.
+    ///
+    /// # Errors
+    /// Returns [`StructuralAccessContractError::MalformedBudget`] when the
+    /// remaining units increased across the hop.
+    pub const fn new(
+        units_before: u32,
+        units_after: u32,
+    ) -> Result<Self, StructuralAccessContractError> {
+        if units_after > units_before {
+            return Err(StructuralAccessContractError::MalformedBudget(
+                "remaining units cannot increase across a hop",
+            ));
+        }
+        Ok(Self { units_before, units_after })
+    }
+
+    /// Whether the hop consumed the last remaining unit.
+    #[must_use]
+    pub const fn is_exhausted(self) -> bool {
+        self.units_after == 0
+    }
+}
+
+/// Whether the aggregate's member set is closed.
+///
+/// This is what makes definite absence sayable at all: a member missing from
+/// an open aggregate is unknown, not absent.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum StructuralAggregateCompleteness {
+    /// Every member of the aggregate is known.
+    Closed,
+    /// Members may exist that the producer did not observe.
+    Open,
+}
+
+impl StructuralAggregateCompleteness {
+    /// Stable discriminant tag used inside fingerprints and diagnostics.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Open => "open",
+        }
+    }
+}
+
+/// Whether the aggregate escaped the producer's view or was mutated.
+///
+/// Escape and mutation are separate facts and are both retained: an aggregate
+/// may be handed to unanalyzed code without being written, and may be written
+/// without escaping.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum StructuralAggregateDisposition {
+    /// The aggregate neither escaped nor was mutated after construction.
+    Stable,
+    /// The aggregate reached code the producer did not analyze.
+    Escaped,
+    /// The aggregate was written after construction.
+    Mutated,
+    /// Both escape and mutation were observed.
+    EscapedAndMutated,
+}
+
+impl StructuralAggregateDisposition {
+    /// Stable discriminant tag used inside fingerprints and diagnostics.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Escaped => "escaped",
+            Self::Mutated => "mutated",
+            Self::EscapedAndMutated => "escaped-and-mutated",
+        }
+    }
+
+    /// Whether the aggregate is still exactly the one the producer observed.
+    #[must_use]
+    pub const fn is_stable(self) -> bool {
+        matches!(self, Self::Stable)
+    }
+}
+
+/// Whether the hop's outcome holds on every path or only on some path.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum StructuralHopCertainty {
+    /// The outcome holds on every admitted path.
+    Definite,
+    /// The outcome holds on at least one admitted path.
+    Possible,
+}
+
+impl StructuralHopCertainty {
+    /// Stable discriminant tag used inside fingerprints and diagnostics.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Definite => "definite",
+            Self::Possible => "possible",
+        }
+    }
+}
+
+/// What the hop produced, or the exact reason it produced nothing.
+///
+/// Every non-selecting state is distinct. In particular
+/// [`Self::AbsentMember`] (a definite answer: the member is not there) never
+/// collapses into [`Self::UnknownMember`] (no answer: the aggregate is open),
+/// and neither collapses into a boundary, a stale generation, or an exhausted
+/// budget.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StructuralHopOutcome {
+    /// The hop selected a value.
+    Selected {
+        /// Shape of the selected value.
+        shape: ValueShape,
+        /// Canonical fact identity for the selected value, when promoted.
+        value_fact: Option<FactId>,
+    },
+    /// The member is definitely not present. Requires a closed aggregate.
+    AbsentMember,
+    /// The member was not observed, and the aggregate is open, so absence is
+    /// not established.
+    UnknownMember,
+    /// The operator does not match the aggregate's actual shape, e.g. an
+    /// array index applied to a hash.
+    ShapeMismatch {
+        /// The shape the aggregate actually had.
+        observed: ValueShape,
+    },
+    /// The aggregate's generation no longer matches the subject.
+    StaleGeneration,
+    /// The work budget was exhausted before the hop could be decided.
+    BudgetExhausted,
+    /// A typed boundary stopped the hop; the link carries which.
+    Boundary(BoundaryLink),
+}
+
+impl StructuralHopOutcome {
+    /// Stable discriminant tag used inside fingerprints and diagnostics.
+    #[must_use]
+    pub const fn tag(&self) -> &'static str {
+        match self {
+            Self::Selected { .. } => "selected",
+            Self::AbsentMember => "absent-member",
+            Self::UnknownMember => "unknown-member",
+            Self::ShapeMismatch { .. } => "shape-mismatch",
+            Self::StaleGeneration => "stale-generation",
+            Self::BudgetExhausted => "budget-exhausted",
+            Self::Boundary(_) => "boundary",
+        }
+    }
+
+    /// Whether the hop produced a value another hop can select out of.
+    #[must_use]
+    pub const fn is_selecting(&self) -> bool {
+        matches!(self, Self::Selected { .. })
+    }
+
+    /// Canonical identity text folded into the hop fingerprint.
+    #[must_use]
+    pub fn identity_text(&self) -> String {
+        match self {
+            Self::Selected { shape, value_fact } => format!(
+                "{}/{}",
+                value_shape_identity_text(shape),
+                value_fact.map_or_else(String::new, |fact| fact.0.to_string())
+            ),
+            Self::ShapeMismatch { observed } => value_shape_identity_text(observed),
+            Self::Boundary(boundary) => {
+                format!("{:?}/{:?}", boundary.kind, boundary.reason_code)
+            }
+            Self::AbsentMember
+            | Self::UnknownMember
+            | Self::StaleGeneration
+            | Self::BudgetExhausted => String::new(),
+        }
+    }
+}
+
+/// Canonical text for a value shape inside a fingerprint.
+fn value_shape_identity_text(shape: &ValueShape) -> String {
+    match shape {
+        ValueShape::Unknown => "unknown".to_string(),
+        ValueShape::Scalar => "scalar".to_string(),
+        ValueShape::ArrayRef => "array-ref".to_string(),
+        ValueShape::HashRef => "hash-ref".to_string(),
+        ValueShape::CodeRef => "code-ref".to_string(),
+        ValueShape::PackageName { package } => format!("package:{package}"),
+        ValueShape::Object { package, confidence } => format!("object:{package}:{confidence:?}"),
+    }
+}
+
+/// Context or source limitation retained by one hop.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum StructuralAccessLimitation {
+    /// The selector is computed at runtime.
+    DynamicSelector,
+    /// The aggregate's member set is not closed.
+    OpenAggregate,
+    /// The aggregate reached unanalyzed code.
+    EscapedAggregate,
+    /// The aggregate was written after construction.
+    MutatedAggregate,
+    /// The hop was reconstructed from recovered syntax.
+    RecoveredSyntax,
+    /// The hop was produced without source, e.g. by generation.
+    GeneratedNoSource,
+    /// The work budget was exhausted.
+    BudgetExhausted,
+    /// A dependency generation is no longer current.
+    StaleDependency,
+    /// The hop came through the compatibility receiver bridge rather than the
+    /// canonical structural producer.
+    CompatibilityBridge,
+    /// The construct is not supported by the producer.
+    Unsupported,
+}
+
+impl StructuralAccessLimitation {
+    /// Stable discriminant tag used inside fingerprints and diagnostics.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::DynamicSelector => "dynamic-selector",
+            Self::OpenAggregate => "open-aggregate",
+            Self::EscapedAggregate => "escaped-aggregate",
+            Self::MutatedAggregate => "mutated-aggregate",
+            Self::RecoveredSyntax => "recovered-syntax",
+            Self::GeneratedNoSource => "generated-no-source",
+            Self::BudgetExhausted => "budget-exhausted",
+            Self::StaleDependency => "stale-dependency",
+            Self::CompatibilityBridge => "compatibility-bridge",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}

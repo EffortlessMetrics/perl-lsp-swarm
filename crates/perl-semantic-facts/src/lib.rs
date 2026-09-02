@@ -31,6 +31,8 @@ pub mod reachability_operation;
 pub mod route;
 /// Transport-neutral stable semantic identity and ownership contract (#12121).
 pub mod semantic_identity;
+/// Provider-neutral ordered structural access-hop contract (#13619).
+pub mod structural_access;
 
 pub use envelope::*;
 pub use handler::*;
