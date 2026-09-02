@@ -1881,13 +1881,18 @@ fn parse_policy_date(
 /// broad-glob helper.
 ///
 /// Breadth is decided by `**`, the only token that crosses a directory
-/// boundary. `*.md` used to be listed here because the loose matcher let its
-/// `*` cross `/`, making it a whole-repository grab; with segment-aware
-/// matching (#9994) it reaches only the repository root, so demanding a
+/// boundary, and it counts wherever it appears — `**/x`, `x/**`, and
+/// `x/**/y` all reach an arbitrary-depth tree. Testing only the leading and
+/// trailing forms let an internal `**` (`fixtures/pkt/**/*.json`) span a tree
+/// while the validator called it narrow and waived `broad_glob_reason`.
+///
+/// `*.md` used to be listed here because the loose matcher let its `*` cross
+/// `/`, making it a whole-repository grab; with segment-aware matching
+/// (#9994) it reaches only the repository root, so demanding a
 /// `broad_glob_reason` for it would force a misleading justification onto a
 /// genuinely narrow rule. Refs: #9994, #14583.
 fn is_policy_broad_glob(glob_str: &str) -> bool {
-    glob_str.starts_with("**") || glob_str.ends_with("/**") || glob_str.starts_with("**/")
+    glob_str.split('/').any(|segment| segment == "**")
 }
 
 // ---------------------------------------------------------------------------
@@ -3760,7 +3765,19 @@ review_after = "2026-06-01"
     fn broad_glob_detection_tracks_segment_aware_matching() {
         // `**` is the only token that crosses a directory boundary, so it is
         // the only thing that makes a matcher broad.
-        for broad in ["**/*.md", "**/*.pl", "docs/**", "**/LICENSE-*", "**"] {
+        for broad in [
+            "**/*.md",
+            "**/*.pl",
+            "docs/**",
+            "**/LICENSE-*",
+            "**",
+            // `**` counts wherever it sits. Checking only the leading and
+            // trailing forms let an internal `**` span a tree while the
+            // validator waived `broad_glob_reason`.
+            "docs/**/README.md",
+            "fixtures/agent_review_packet/**/*.json",
+            "crates/perl-parser/**/*.disabled",
+        ] {
             assert!(is_policy_broad_glob(broad), "{broad} reaches a whole tree");
         }
 
@@ -3820,6 +3837,8 @@ review_after = "2026-11-13"
         // never went through `cargo change` still matches the path class, and
         // is still the changelog gate's to reject. `validate_fragment` owns
         // that verdict and has its own negative suite in `changelog.rs`.
+        use crate::tasks::changelog::{ChangieConfig, Fragment, validate_fragment};
+
         let entry = changie_fragment_entry()?;
         let entries = vec![entry.clone()];
         let hand_written = ".changes/unreleased/not-a-real-fragment.yaml";
@@ -3831,6 +3850,53 @@ review_after = "2026-11-13"
         assert!(
             entry.covered_by.iter().any(|check| check == "cargo xtask changelog check"),
             "the entry must name the gate that actually validates fragment content"
+        );
+
+        // Drive the production validator with the production `.changie.yaml`,
+        // not a fixture copy of either: the claim is that the path rule leaves
+        // the real gate reachable, so a copy would prove nothing about it.
+        let config: ChangieConfig =
+            serde_yaml_ng::from_str(&fs::read_to_string(repo_root()?.join(".changie.yaml"))?)?;
+
+        let malformed: Fragment = serde_yaml_ng::from_str(concat!(
+            "project: not-a-project\n",
+            "kind: NotAKind\n",
+            "body: tiny\n",
+            "custom:\n",
+            "  PR: \"nonsense\"\n",
+        ))?;
+        let findings = validate_fragment(&malformed, &config);
+        assert!(
+            findings.iter().any(|f| f.contains("unknown project")),
+            "the real gate must still reject an unknown project: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("unknown kind")),
+            "the real gate must still reject an unknown kind: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("body")),
+            "the real gate must still reject an under-length body: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("PR")),
+            "the real gate must still reject a non-numeric PR reference: {findings:?}"
+        );
+
+        // Positive control: without it, a validator that rejected everything
+        // would satisfy the assertions above.
+        let well_formed: Fragment = serde_yaml_ng::from_str(concat!(
+            "project: product\n",
+            "component: Developer experience\n",
+            "kind: Changed\n",
+            "body: A sufficiently long changelog body line for the gate.\n",
+            "custom:\n",
+            "  PR: \"14588\"\n",
+            "  Breaking: \"no\"\n",
+        ))?;
+        assert!(
+            validate_fragment(&well_formed, &config).is_empty(),
+            "a well-formed fragment must pass the same production validator"
         );
         Ok(())
     }

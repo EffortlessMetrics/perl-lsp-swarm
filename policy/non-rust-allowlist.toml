@@ -3348,6 +3348,7 @@ covered_by = [
   "cargo xtask check-train-edge-contract",
   "cargo test -p xtask --bin xtask train_edge_contract --locked",
 ]
+broad_glob_reason = "The `**` spans the deliberately nested case layout under one owned fixture directory (valid, control, and invalid documents in sibling folders). Breadth is bounded by that directory; `cargo xtask check-train-edge-contract` fail-closed validates every document, and each invalid case names the reason code it must produce."
 created = "2026-08-24"
 review_after = "2026-11-24"
 
@@ -3396,6 +3397,7 @@ covered_by = [
   "cargo xtask check-agent-implementation-packet",
   "cargo test -p xtask --bin xtask agent_implementation_packet --locked",
 ]
+broad_glob_reason = "The `**` spans the deliberately nested case layout under one owned fixture directory (offline/live/consumer shapes, controls, goldens, and invalid documents in sibling folders). Breadth is bounded by that directory; `cargo xtask check-agent-implementation-packet` fail-closed validates every document."
 created = "2026-08-24"
 review_after = "2026-11-24"
 
@@ -3491,6 +3493,7 @@ reason = "Synthetic vectors for the #11179 standalone candidate/current-selectio
 covered_by = [
   "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
 ]
+broad_glob_reason = "The `**` spans the deliberately nested scenario layout under one owned fixture directory (required scenarios beside fail-closed falsifiers). Breadth is bounded by that directory; the example verifier reads exactly that root and rejects any document that does not name its expected reason code."
 created = "2026-08-24"
 review_after = "2026-11-24"
 
@@ -3555,6 +3558,7 @@ covered_by = [
   "cargo xtask check-agent-review-packet",
   "cargo test -p xtask --bin xtask agent_review_packet --locked",
 ]
+broad_glob_reason = "The `**` spans the deliberately nested case layout under one owned fixture directory (packet/finding/closure shapes, controls, goldens, and invalid documents in sibling folders). Breadth is bounded by that directory; `cargo xtask check-agent-review-packet` fail-closed validates every document."
 created = "2026-08-24"
 review_after = "2026-11-24"
 
@@ -3786,6 +3790,7 @@ covered_by = [
   "cargo test -p xtask --locked product_health_status",
   "cargo run -p xtask -- product-health check fixtures/product_health_status/expected/status.json",
 ]
+broad_glob_reason = "The `**` spans the deliberately nested rail-registry, source-packet, and golden-snapshot folders under one owned fixture directory. Breadth is bounded by that directory; the golden bytes are re-assembled and compared byte-for-byte, and the packet envelope is fail-closed validated."
 created = "2026-08-26"
 review_after = "2027-02-26"
 
