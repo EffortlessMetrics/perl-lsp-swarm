@@ -26,6 +26,12 @@ if [ -z "${PERL_LSP_TEST_TAR_PROFILE:-}" ]; then
     trap 'rm -rf "$DRIVER_TMP"' EXIT
 
     # `tar` as the host resolves it is always exercised, under its real name.
+    # PERL_LSP_REQUIRE_TAR_PROFILES=1 (set in CI) turns an absent profile into
+    # a failure. Without it a NOT PROVEN line degrades only the log, so a run
+    # covering one profile of three still exits 0 — which is exactly the
+    # "silently counted as covered" outcome this driver exists to prevent.
+    REQUIRE_PROFILES="${PERL_LSP_REQUIRE_TAR_PROFILES:-0}"
+    MISSING_PROFILES=""
     PROFILES=("system")
     for candidate in bsdtar busybox; do
         if command -v "$candidate" > /dev/null 2>&1; then
@@ -38,6 +44,7 @@ if [ -z "${PERL_LSP_TEST_TAR_PROFILE:-}" ]; then
             PROFILES+=("$candidate")
         else
             printf 'NOT PROVEN  tar profile %s is not installed on this host\n' "$candidate"
+            MISSING_PROFILES="${MISSING_PROFILES}${candidate} "
         fi
     done
 
@@ -56,6 +63,14 @@ if [ -z "${PERL_LSP_TEST_TAR_PROFILE:-}" ]; then
     done
 
     printf '\n=== tar profiles exercised: %s ===\n' "${PROFILES[*]}"
+    if [ -n "$MISSING_PROFILES" ]; then
+        printf '=== tar profiles NOT PROVEN: %s===\n' "$MISSING_PROFILES"
+        if [ "$REQUIRE_PROFILES" = "1" ]; then
+            printf 'FAIL  PERL_LSP_REQUIRE_TAR_PROFILES=1 and these profiles were absent: %s\n' \
+                "$MISSING_PROFILES" >&2
+            DRIVER_FAIL=1
+        fi
+    fi
     exit "$DRIVER_FAIL"
 fi
 
@@ -464,13 +479,33 @@ sentinel_setup
 make_case valid_posix
 ARCHIVE_PATH="$TMP/valid_posix.tar.gz"
 run_extract
+# The expected value comes from the driver's own choice of tar, or from a
+# banner test written here — never from archive_extractor_profile, which is the
+# function under test. Deriving the needle from that function made this case
+# vacuous: a stub returning a constant `gnu` passed while running under BusyBox.
+case "$PERL_LSP_TEST_TAR_PROFILE" in
+    bsdtar) EXPECT_EXTRACTOR="libarchive" ;;
+    busybox) EXPECT_EXTRACTOR="busybox" ;;
+    *)
+        HOST_TAR_BANNER="$(tar --version 2>/dev/null | head -n 1)"
+        if printf '%s' "$HOST_TAR_BANNER" | grep -q 'GNU tar'; then
+            EXPECT_EXTRACTOR="gnu"
+        elif printf '%s' "$HOST_TAR_BANNER" | grep -Eqi 'bsdtar|libarchive'; then
+            EXPECT_EXTRACTOR="libarchive"
+        elif printf '%s' "$HOST_TAR_BANNER" | grep -qi 'busybox'; then
+            EXPECT_EXTRACTOR="busybox"
+        else
+            EXPECT_EXTRACTOR="unknown"
+        fi
+        ;;
+esac
 if [ "$LAST_STATUS" -eq 0 ] \
-    && [[ "$LAST_OUTPUT" == *"extractor=$(archive_extractor_profile)"* ]] \
+    && [[ "$LAST_OUTPUT" == *"extractor=${EXPECT_EXTRACTOR}"* ]] \
     && [[ "$LAST_OUTPUT" != *"extractor=unknown"* ]]; then
-    pass "safety receipt records the resolved tar profile"
+    pass "safety receipt records the tar profile the driver selected"
 else
-    fail_case "safety receipt records the resolved tar profile" \
-        "profile=$(archive_extractor_profile) status=$LAST_STATUS output=$LAST_OUTPUT"
+    fail_case "safety receipt records the tar profile the driver selected" \
+        "expected=$EXPECT_EXTRACTOR status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS" "$FAIL"

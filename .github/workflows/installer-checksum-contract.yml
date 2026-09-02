@@ -66,6 +66,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends libarchive-tools busybox-static
 
       - name: Run archive-safety controls across tar profiles
+        # The install step above is the only reason all three profiles exist
+        # here, so require them: without this the driver reports NOT PROVEN in
+        # the log and still exits 0, and a silently degraded image would look
+        # green while covering one profile of three (#11508).
+        env:
+          PERL_LSP_REQUIRE_TAR_PROFILES: '1'
         run: bash scripts/tests/test-installer-archive-safety.sh
 
       - name: Run product-unit promotion controls

@@ -161,24 +161,66 @@ def newline_in_member_name(archive: tarfile.TarFile) -> None:
     _add_reg(archive, f"{PACKAGE}/ev\nil", b"split\n")
 
 
-def extended_pax_header(archive: tarfile.TarFile) -> None:
-    """A PAX extended header record ahead of a topology member (#11508).
+def _ustar_header(name: str, size: int, mode: int, typeflag: bytes) -> bytearray:
+    """One 512-byte POSIX ustar header block with a correct checksum."""
+    header = bytearray(512)
+    encoded = name.encode()
+    header[0 : len(encoded)] = encoded
+    header[100:108] = f"{mode:07o}\0".encode()
+    header[108:116] = b"0000000\0"
+    header[116:124] = b"0000000\0"
+    header[124:136] = f"{size:011o}\0".encode()
+    header[136:148] = b"00000000000\0"
+    header[156:157] = typeflag
+    header[257:263] = b"ustar\0"
+    header[263:265] = b"00"
+    header[148:156] = b" " * 8
+    header[148:156] = f"{sum(header) & 0o7777777:06o}\0 ".encode()
+    return header
 
-    ``x`` and ``g`` records can rewrite the path of the entry that follows
-    them, so the header walk must fail closed on them rather than skip them.
+
+def extended_pax_header(dest: Path) -> None:
+    """A PAX ``x`` record that renames the entry following it (#11508).
+
+    The hazard is identity rewriting: an ``x`` record's ``path`` key overrides
+    the ustar name of the next entry, so a classifier that skips the record
+    inspects one name while ``tar`` extracts under another. Here the topology's
+    ``SHA256SUMS.txt`` is delivered only through such an override, over a ustar
+    header that names ``decoy``.
+
+    The override is small and extraction-safe on purpose. An earlier version
+    forced the ``x`` record with an oversized uid, which real ``tar`` refused
+    during extraction — so the case passed even when the classifier was mutated
+    to skip extended records, proving nothing about the classifier itself.
     """
-    _add_dir(archive, PACKAGE)
-    info = tarfile.TarInfo(f"{PACKAGE}/perllsp")
-    info.size = len(POSIX_FILES["perllsp"])
-    info.mode = 0o755
-    info.type = tarfile.REGTYPE
-    # An oversized uid cannot be represented in the base header, so tarfile
-    # emits a preceding `x` record for it.
-    info.uid = 0o77777777777
-    archive.addfile(info, io.BytesIO(POSIX_FILES["perllsp"]))
-    _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
-    for name in ("README.md", "LICENSE-APACHE", "LICENSE-MIT", "SHA256SUMS.txt"):
-        _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
+    import gzip as _gzip
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as archive:
+        _add_dir(archive, PACKAGE)
+        _add_reg(archive, f"{PACKAGE}/perllsp", POSIX_FILES["perllsp"], 0o755)
+        _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
+        for name in ("README.md", "LICENSE-APACHE", "LICENSE-MIT"):
+            _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
+    body = bytes(raw.getvalue()).rstrip(b"\0")
+    body += b"\0" * ((-len(body)) % 512)
+
+    # PAX record: "<len> path=<value>\n", where <len> counts itself.
+    value = f"path={PACKAGE}/SHA256SUMS.txt\n"
+    length = len(value) + len(str(len(value))) + 1
+    if len(str(length)) != len(str(len(value))):
+        length += 1
+    record = f"{length} {value}".encode()
+
+    out = bytearray(body)
+    out += _ustar_header("PaxHeaders/SHA256SUMS.txt", len(record), 0o644, b"x")
+    out += record + b"\0" * ((-len(record)) % 512)
+    payload = POSIX_FILES["SHA256SUMS.txt"]
+    out += _ustar_header(f"{PACKAGE}/decoy", len(payload), 0o644, b"0")
+    out += payload + b"\0" * ((-len(payload)) % 512)
+    out += b"\0" * 1024
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_gzip.compress(bytes(out)))
 
 
 def fifo_entry(archive: tarfile.TarFile) -> None:
@@ -319,7 +361,9 @@ def corrupt_header_checksum(dest: Path) -> None:
     """A well-formed gzip stream whose second tar header no longer checksums.
 
     Decompression succeeds, so this reaches the header walk rather than the
-    gzip guard, and only the header checksum can reject it (#11508).
+    gzip guard. The corrupted field is one the classifier never reads, so no
+    path, type, or membership rule can catch it and only the header checksum
+    can reject it (#11508).
     """
     import gzip as _gzip
 
@@ -327,9 +371,11 @@ def corrupt_header_checksum(dest: Path) -> None:
     with tarfile.open(fileobj=raw, mode="w") as archive:
         valid_posix(archive)
     blocks = bytearray(raw.getvalue())
-    # Flip a byte inside the second header's name field, leaving its recorded
-    # checksum stale.
-    blocks[512] ^= 0x20
+    # Flip a byte in the second header's mtime field (offset 136..147), which
+    # the classifier never reads. Corrupting the name field instead would be
+    # caught by the ordinary path-membership rule, so the fixture would pass
+    # even with checksum verification disabled and would not isolate it.
+    blocks[512 + 136] ^= 0x01
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(_gzip.compress(bytes(blocks)))
 
@@ -438,7 +484,6 @@ TAR_CASES: dict[str, Callable[[tarfile.TarFile], None]] = {
     "hardlink_topology_member": hardlink_topology_member,
     "absolute_topology_member": absolute_topology_member,
     "newline_in_member_name": newline_in_member_name,
-    "extended_pax_header": extended_pax_header,
     "fifo_entry": fifo_entry,
     "duplicate_path": duplicate_path,
     "case_collision": case_collision,
@@ -481,6 +526,9 @@ def main() -> int:
         return 0
     if args.case == "sparse_entry":
         sparse_entry(dest)
+        return 0
+    if args.case == "extended_pax_header":
+        extended_pax_header(dest)
         return 0
     if args.case in TAR_CASES:
         _posix_tar(TAR_CASES[args.case], dest)

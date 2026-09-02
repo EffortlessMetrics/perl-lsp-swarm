@@ -62,8 +62,11 @@ reject_extended_headers = true
 entry_classification = "ustar_header_fields"
 verify_header_checksum = true
 reject_nonportable_header_name_bytes = true
-# Proven tar profiles for the extract step. Inspection does not depend on the
-# profile; absent profiles are reported NOT_PROVEN rather than assumed covered.
+# Tar profiles the adversarial corpus is required to exercise. Inspection does
+# not depend on the profile. Like the rest of this file these keys are
+# declarative and are not read at install time; the requirement is enforced by
+# the archive-safety driver under PERL_LSP_REQUIRE_TAR_PROFILES=1, which CI
+# sets. Absent profiles are reported NOT_PROVEN and fail the run there.
 proven_extractor_profiles = ["gnu", "libarchive", "busybox"]
 bind_extractor_profile_in_receipt = true
 
