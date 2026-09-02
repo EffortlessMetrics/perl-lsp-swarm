@@ -3286,7 +3286,7 @@ fn concurrent_exports_to_one_destination_cannot_corrupt_each_other() -> Result<(
 /// `#[cfg(unix)]` because Windows forbids a newline in a filename outright.
 #[cfg(unix)]
 #[test]
-fn a_newline_in_a_tracked_path_cannot_invent_an_object() -> Result<()> {
+fn a_newline_in_a_tracked_path_exports_and_validates() -> Result<()> {
     let fixture = Fixture::new()?;
     // Forty hex characters after the newline: what a naive reader would take
     // for an object id on a line of its own.
