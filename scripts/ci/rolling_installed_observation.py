@@ -937,7 +937,10 @@ def fan_in(args: argparse.Namespace) -> int:
         "subject_kind": "exact_current_main",
         "repository_sha": source_sha,
         "source_version": args.source_version,
-        "target_release": "0.18.0",
+        # The rolling target is the observed source version itself; a
+        # hard-coded release would disagree with the generated topology
+        # whenever main's version moves.
+        "target_release": args.source_version,
         "release_topology_digest": topology_digest,
         "artifact_hashes": {
             row_id: (
