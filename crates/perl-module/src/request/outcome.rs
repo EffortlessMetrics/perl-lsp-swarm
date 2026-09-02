@@ -70,7 +70,11 @@ impl ModuleResolutionOutcome {
         matches!(self, Self::Resolved(_) | Self::NotFound)
     }
 
-    /// Stable identifier for evidence rows and diagnostics.
+    /// Stable identifier for the *outcome class*, for evidence rows and diagnostics.
+    ///
+    /// This names which of the nine states was reached, not why the underlying
+    /// request was refused. Use [`Self::cause_boundary_id`] for the nested
+    /// classification an `InvalidRequest` or `Dynamic` outcome carries.
     #[must_use]
     pub const fn boundary_id(&self) -> &'static str {
         match self {
@@ -83,6 +87,23 @@ impl ModuleResolutionOutcome {
             Self::EnvironmentUnavailable => "module_resolution.environment_unavailable",
             Self::TimedOut => "module_resolution.timed_out",
             Self::IoLimited => "module_resolution.io_limited",
+        }
+    }
+
+    /// The nested classification this outcome carries, when it carries one.
+    ///
+    /// `InvalidRequest` and `Dynamic` wrap a more specific boundary than the
+    /// outcome class alone. Reporting only [`Self::boundary_id`] for them would
+    /// flatten "this was never a valid module name because it contains a path
+    /// separator" down to "invalid request" — the same erasure this vocabulary
+    /// exists to prevent — so the nested id is reachable without pattern
+    /// matching. Outcomes with no nested cause return `None`.
+    #[must_use]
+    pub const fn cause_boundary_id(&self) -> Option<&'static str> {
+        match self {
+            Self::InvalidRequest(error) => Some(error.boundary_id()),
+            Self::Dynamic(boundary) => Some(boundary.boundary_id()),
+            _ => None,
         }
     }
 }
@@ -268,5 +289,40 @@ mod tests {
 
         assert_eq!(unique.len(), ids.len(), "each outcome needs its own boundary id");
         assert!(ids.iter().all(|id| id.starts_with("module_resolution.")));
+    }
+
+    #[test]
+    fn nested_causes_stay_reachable_without_pattern_matching() {
+        let invalid = ModuleName::parse("Foo/Bar")
+            .err()
+            .map(ModuleRequestError::InvalidModuleName)
+            .map(ModuleResolutionOutcome::InvalidRequest);
+
+        assert_eq!(
+            invalid.as_ref().map(ModuleResolutionOutcome::boundary_id),
+            Some("module_resolution.invalid_request"),
+            "the outcome class stays stable"
+        );
+        assert_eq!(
+            invalid.as_ref().and_then(ModuleResolutionOutcome::cause_boundary_id),
+            Some("module_name.path_separator"),
+            "the nested reason must not be flattened away by the outcome class"
+        );
+
+        let dynamic = ModuleResolutionOutcome::Dynamic(RequestBoundary::ComputedExpression);
+        assert_eq!(dynamic.cause_boundary_id(), Some("request_boundary.computed_expression"));
+
+        for causeless in [
+            ModuleResolutionOutcome::NotFound,
+            ModuleResolutionOutcome::TimedOut,
+            ModuleResolutionOutcome::Ambiguous,
+            ModuleResolutionOutcome::Resolved(String::new()),
+        ] {
+            assert_eq!(
+                causeless.cause_boundary_id(),
+                None,
+                "{causeless:?} carries no nested classification to report"
+            );
+        }
     }
 }

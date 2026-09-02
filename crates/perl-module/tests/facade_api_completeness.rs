@@ -9,18 +9,26 @@
 //! Issue: #4420 (Wave 1 pilot — perl-module-* → perl-module facade)
 
 use perl_module::{
+    // request module (#8497) — every export added to api.rs must appear here
+    DynamicModuleRequest,
     // resolution module
     IncRoot,
     IncRootKind,
+    LegacySeparatorProfile,
     // import module
     LoadTiming,
+    ModuleFilePath,
+    ModuleFilePathError,
     ModuleImportKind,
-    // request module
     ModuleName,
+    ModuleNameError,
     ModuleRequest,
+    ModuleRequestError,
     ModuleRequestKind,
     ModuleResolutionOutcome,
+    ModuleUriResolution,
     PackageSeparatorForm,
+    PartialModuleRequest,
     RequestBoundary,
     // rename module
     apply_module_rename_edits,
@@ -48,12 +56,14 @@ use perl_module::{
     module_path_to_name,
     module_variant_pairs,
     normalize_package_separator,
+    outcome_from_uri_resolution,
     // import module
     parse_module_import_head,
     // token_parser module
     parse_module_token,
     plan_module_rename_edits,
     replace_module_token,
+    uri_resolution_from_outcome,
 };
 
 /// Verify that all items exported via api.rs can be imported and used.
@@ -116,6 +126,51 @@ fn test_request_module_types_are_accessible() -> Result<(), Box<dyn std::error::
 
     assert!(ModuleResolutionOutcome::NotFound.has_complete_denominator());
     assert!(!ModuleResolutionOutcome::TimedOut.has_complete_denominator());
+
+    // Error and evidence types reachable from the facade.
+    let name_error: Option<ModuleNameError> = ModuleName::parse("Foo/Bar").err();
+    assert!(name_error.is_some());
+    let path_error: Option<ModuleFilePathError> = ModuleFilePath::parse("/abs").err();
+    assert!(path_error.is_some());
+    let request_error: Option<ModuleRequestError> = ModuleRequest::bareword("").err();
+    assert!(request_error.is_some());
+
+    let strict = ModuleName::parse_with_profile("My'Module", LegacySeparatorProfile::Reject);
+    assert!(strict.is_err(), "the rejecting profile refuses the legacy separator");
+
+    let file = ModuleFilePath::parse("My/Module.pm")?;
+    assert_eq!(file.literal(), "My/Module.pm");
+
+    // Inexact request payload types.
+    let partial = ModuleRequest::partially_static(
+        "\"My::$leaf\"",
+        vec!["My::".to_string()],
+        None,
+        RequestBoundary::VariableInterpolation,
+    );
+    let partial_fragments = match &partial {
+        ModuleRequest::PartiallyStatic(inner) => {
+            Some(PartialModuleRequest::static_fragments(inner))
+        }
+        _ => None,
+    };
+    assert_eq!(partial_fragments, Some(&["My::".to_string()][..]));
+
+    let dynamic_form = match &dynamic {
+        ModuleRequest::Dynamic(inner) => Some(DynamicModuleRequest::source_form(inner)),
+        _ => None,
+    };
+    assert_eq!(dynamic_form, Some("$class"));
+
+    // Compatibility adapters.
+    let widened = outcome_from_uri_resolution(&ModuleUriResolution::NotFound);
+    assert_eq!(widened, ModuleResolutionOutcome::NotFound);
+    assert_eq!(uri_resolution_from_outcome(&widened), Some(ModuleUriResolution::NotFound));
+    assert_eq!(
+        uri_resolution_from_outcome(&ModuleResolutionOutcome::Ambiguous),
+        None,
+        "the narrowing adapter refuses to erase a classification"
+    );
     Ok(())
 }
 
@@ -317,16 +372,29 @@ fn test_module_token_surrounded_by_whitespace() {
     assert!(contains_module_token(source, "My::Module"));
 }
 
-/// Regression: verify all 73 api.rs exports are re-exported.
-/// Count the actual exports in api.rs to ensure the facade is complete.
+/// Regression: verify all api.rs exports are re-exported.
+///
+/// The import list above is the compile-time check: an item that leaves api.rs
+/// stops this file compiling. The count below is read from api.rs at test time
+/// rather than restated in a comment, so it cannot silently go stale the way the
+/// previous hand-maintained figure did (it still read 73 when api.rs had grown
+/// past it).
 #[test]
 fn test_api_rs_re_export_count() -> Result<(), Box<dyn std::error::Error>> {
-    // This test is compile-time verified by the import list above.
-    // If any export is missing from api.rs, this file will not compile.
-    // Count manually from api.rs: 73 pub use statements.
-    // If you add/remove items in api.rs, update this comment.
+    let api_rs = include_str!("../src/api.rs");
+    let exports = api_rs.lines().filter(|line| line.starts_with("pub use ")).count();
+
+    assert_eq!(
+        exports, EXPECTED_API_RE_EXPORTS,
+        "api.rs now has {exports} `pub use` statements but EXPECTED_API_RE_EXPORTS says          {EXPECTED_API_RE_EXPORTS}; add the new item to the import list at the top of this          file and update the constant"
+    );
     Ok(())
 }
+
+/// Number of `pub use` statements in `src/api.rs`.
+///
+/// Update this together with the import list above whenever the facade changes.
+const EXPECTED_API_RE_EXPORTS: usize = 85;
 
 /// Regression: verify legacy package separator handling.
 #[test]

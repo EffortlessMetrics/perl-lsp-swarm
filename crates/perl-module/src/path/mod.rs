@@ -32,9 +32,12 @@ pub fn module_name_to_path(module_name: &str) -> String {
 /// This predicate is the boolean projection of `ModuleName::parse` (#8497), which owns the
 /// grammar and the classified rejection reason. Callers that need to know *why* a name was
 /// rejected should construct a [`ModuleName`] instead of re-deriving the reason from `false`.
+///
+/// `ModuleName::is_valid` is the allocation-free form, so this stays a borrow-only check on
+/// the reference-extraction path that calls it per candidate token.
 #[must_use]
 pub fn is_lookup_safe_module_name(module_name: &str) -> bool {
-    ModuleName::parse(module_name).is_ok()
+    ModuleName::is_valid(module_name)
 }
 
 /// Convert a module path/key into a module name.
