@@ -68,7 +68,11 @@ fn a_validated_request_resolves_exactly_as_the_legacy_string_did() -> TestResult
 
     let outcome = outcome_from_uri_resolution(&legacy);
     assert!(outcome.is_resolved());
-    assert!(outcome.has_complete_denominator());
+    assert!(
+        !outcome.has_complete_denominator(),
+        "the legacy enum carries no completeness signal, so even a successful \
+         search cannot prove no higher-precedence root was skipped"
+    );
     assert_eq!(
         uri_resolution_from_outcome(&outcome),
         Some(legacy),
@@ -169,6 +173,80 @@ fn a_root_skipped_by_boundary_validation_still_reports_not_found() -> TestResult
         !outcome_from_uri_resolution(&resolution).has_complete_denominator(),
         "so the widened outcome must not claim a complete denominator"
     );
+    Ok(())
+}
+
+/// Regression: a match returned from a *lower*-precedence root is not provably
+/// the precedence winner, because a higher-precedence root can be skipped
+/// without any completeness signal.
+///
+/// `collect_module_uri_candidates` sorts roots with `sort_by_key(|r| r.precedence)`
+/// and then `continue`s past any root whose joined path fails workspace-boundary
+/// validation. So precedence 0 here never gets inspected, precedence 1 supplies
+/// the answer, and the legacy enum reports a bare `Resolved` that looks exact.
+/// That is why `outcome_from_uri_resolution` widens it to `NotProvenPrecedence`.
+#[test]
+fn a_win_behind_a_skipped_higher_precedence_root_is_not_proven_exact() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let workspace = temp.path().join("workspace");
+
+    // The higher-precedence root escapes the workspace, so it is skipped.
+    let escaped = temp.path().join("escape");
+    std::fs::create_dir_all(escaped.join("Foo"))?;
+    std::fs::write(escaped.join("Foo/Bar.pm"), "package Foo::Bar; 1; # higher precedence")?;
+
+    // The lower-precedence root is legitimate and holds the same module.
+    let lib = workspace.join("lib").join("Foo");
+    std::fs::create_dir_all(&lib)?;
+    std::fs::write(lib.join("Bar.pm"), "package Foo::Bar; 1; # lower precedence")?;
+
+    let workspace_uri = url::Url::from_directory_path(&workspace)
+        .map_err(|()| "failed to build workspace URI")?
+        .to_string();
+    let roots = [
+        IncRoot {
+            kind: IncRootKind::WorkspaceRelative,
+            path: std::path::PathBuf::from("../escape"),
+            precedence: 0,
+            source: "workspace-include-paths".to_string(),
+        },
+        IncRoot {
+            kind: IncRootKind::WorkspaceRelative,
+            path: std::path::PathBuf::from("lib"),
+            precedence: 1,
+            source: "workspace-include-paths".to_string(),
+        },
+    ];
+
+    let resolution = resolve_module_uri_with_effective_inc(
+        "Foo::Bar",
+        &[],
+        std::slice::from_ref(&workspace_uri),
+        &roots,
+        Duration::from_secs(5),
+    );
+
+    // The legacy enum cannot express that the winner is unproven.
+    assert!(
+        matches!(&resolution, ModuleUriResolution::Resolved(uri) if uri.ends_with("lib/Foo/Bar.pm")),
+        "the lower-precedence root supplies the answer, got {resolution:?}"
+    );
+
+    let outcome = outcome_from_uri_resolution(&resolution);
+    assert!(outcome.is_resolved(), "navigation must still work — a real file was found");
+    assert_eq!(
+        outcome.resolved_uri(),
+        Some(&resolution).and_then(|r| match r {
+            ModuleUriResolution::Resolved(uri) => Some(uri.as_str()),
+            _ => None,
+        }),
+        "the URI must pass through unchanged; this adapter moves no resolution decision"
+    );
+    assert!(
+        !outcome.has_complete_denominator(),
+        "but precedence 0 was skipped, not searched, so the win is not proven exact"
+    );
+    assert_eq!(outcome.boundary_id(), "module_resolution.not_proven_precedence");
     Ok(())
 }
 

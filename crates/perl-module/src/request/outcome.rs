@@ -25,7 +25,25 @@ use super::{ModuleRequestError, RequestBoundary};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleResolutionOutcome {
     /// An existing module was selected. Carries the winning URI.
+    ///
+    /// This is an *exact* selection: only a search that can prove it inspected
+    /// every root of higher precedence may report it, because the winner is
+    /// defined by precedence order rather than by mere existence.
     Resolved(String),
+    /// A module was found, but the search was never proven to have inspected
+    /// every higher-precedence root, so this may not be the precedence winner.
+    ///
+    /// The resolver orders include roots by precedence and then silently skips
+    /// any whose joined path fails workspace-boundary validation
+    /// (`full_path_for_root` returns `None` and the traversal `continue`s), and
+    /// a probe that fails with an I/O error is indistinguishable from a root
+    /// that simply does not hold the module. Either way an earlier root can go
+    /// uninspected while a later one supplies the answer.
+    ///
+    /// The URI is still the module the legacy resolver would have opened, so
+    /// navigation stays correct; what is not proven is that Perl would load
+    /// *this* file rather than one behind the skipped root.
+    NotProvenPrecedence(String),
     /// The request was valid, the denominator was complete, and nothing matched.
     ///
     /// This is an *exact* absence. Only a search that can prove it inspected every
@@ -56,17 +74,22 @@ pub enum ModuleResolutionOutcome {
 }
 
 impl ModuleResolutionOutcome {
-    /// `true` only for [`Self::Resolved`].
+    /// `true` when a module was found, whether or not the winner is proven exact.
+    ///
+    /// Both [`Self::Resolved`] and [`Self::NotProvenPrecedence`] carry a URI a
+    /// consumer can open, so navigation must not turn on this distinction. Use
+    /// [`Self::has_complete_denominator`] to tell the exact selection from the
+    /// unproven one.
     #[must_use]
     pub const fn is_resolved(&self) -> bool {
-        matches!(self, Self::Resolved(_))
+        matches!(self, Self::Resolved(_) | Self::NotProvenPrecedence(_))
     }
 
     /// The winning URI, when one was selected.
     #[must_use]
     pub fn resolved_uri(&self) -> Option<&str> {
         match self {
-            Self::Resolved(uri) => Some(uri.as_str()),
+            Self::Resolved(uri) | Self::NotProvenPrecedence(uri) => Some(uri.as_str()),
             _ => None,
         }
     }
@@ -90,6 +113,7 @@ impl ModuleResolutionOutcome {
     pub const fn boundary_id(&self) -> &'static str {
         match self {
             Self::Resolved(_) => "module_resolution.resolved",
+            Self::NotProvenPrecedence(_) => "module_resolution.not_proven_precedence",
             Self::NotFound => "module_resolution.not_found",
             Self::NotProvenAbsent => "module_resolution.not_proven_absent",
             Self::InvalidRequest(_) => "module_resolution.invalid_request",
@@ -124,6 +148,9 @@ impl fmt::Display for ModuleResolutionOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Resolved(uri) => write!(f, "resolved to {uri}"),
+            Self::NotProvenPrecedence(uri) => {
+                write!(f, "found {uri}, but higher-precedence roots were not proven inspected")
+            }
             Self::NotFound => f.write_str("not found"),
             Self::NotProvenAbsent => {
                 f.write_str("no candidate matched, but the denominator was not proven complete")
@@ -161,19 +188,36 @@ impl fmt::Display for ModuleResolutionOutcome {
 /// outside-authority, environment-unavailable, or I/O-limited states, so this
 /// adapter never manufactures them.
 ///
-/// It also refuses to manufacture an *exact* absence. A legacy `NotFound` widens
-/// to [`ModuleResolutionOutcome::NotProvenAbsent`], never to
-/// [`ModuleResolutionOutcome::NotFound`]: the resolver behind that enum skips any
-/// include root whose joined path fails workspace-boundary validation
+/// It also refuses to manufacture either *exact* answer, because the legacy enum
+/// carries no completeness signal in either direction.
+///
+/// A legacy `NotFound` widens to [`ModuleResolutionOutcome::NotProvenAbsent`],
+/// never to [`ModuleResolutionOutcome::NotFound`]: the resolver behind that enum
+/// skips any include root whose joined path fails workspace-boundary validation
 /// (`full_path_for_root` returns `None` and the traversal `continue`s) and cannot
 /// tell a filesystem probe's I/O error from a genuine absence. Neither leaves a
 /// completeness signal, so the miss it reports is not a proven absence. Widening
 /// it to the exact state would let a consumer report "this module does not exist"
 /// on evidence that never established it.
+///
+/// A legacy `Resolved` widens to
+/// [`ModuleResolutionOutcome::NotProvenPrecedence`] for the *same* reason applied
+/// to the winning side. The resolver sorts roots by precedence and then skips
+/// them under exactly the conditions above, so a match returned from a later root
+/// is not provably the winner: an earlier root may have been skipped rather than
+/// searched and found wanting. The URI is preserved unchanged — this moves no
+/// resolution decision — but the exact claim is withheld.
+///
+/// This is why [`ModuleResolutionOutcome::is_resolved`] covers both states while
+/// [`ModuleResolutionOutcome::has_complete_denominator`] separates them: an
+/// adapter-fed consumer should still navigate, and should not also claim the
+/// selection was proven exact.
 #[must_use]
 pub fn outcome_from_uri_resolution(resolution: &ModuleUriResolution) -> ModuleResolutionOutcome {
     match resolution {
-        ModuleUriResolution::Resolved(uri) => ModuleResolutionOutcome::Resolved(uri.clone()),
+        ModuleUriResolution::Resolved(uri) => {
+            ModuleResolutionOutcome::NotProvenPrecedence(uri.clone())
+        }
         ModuleUriResolution::NotFound => ModuleResolutionOutcome::NotProvenAbsent,
         ModuleUriResolution::TimedOut => ModuleResolutionOutcome::TimedOut,
     }
@@ -198,17 +242,22 @@ pub fn outcome_from_uri_resolution(resolution: &ModuleUriResolution) -> ModuleRe
 /// into `NotFound` — silently erasing a classification is exactly the defect
 /// this vocabulary exists to prevent.
 ///
-/// Both `NotFound` and `NotProvenAbsent` narrow to the legacy `NotFound`. That is
-/// not erasure but the direction of the conversion: the legacy state means the
-/// weaker of the two, so an exact absence is representable in it and merely stops
-/// being *marked* exact. Widening back therefore yields `NotProvenAbsent`, and a
-/// completeness claim is never round-tripped into existence.
+/// Both `NotFound` and `NotProvenAbsent` narrow to the legacy `NotFound`, and
+/// both `Resolved` and `NotProvenPrecedence` narrow to the legacy `Resolved`.
+/// That is not erasure but the direction of the conversion: each legacy state
+/// means the weaker of its pair, so the exact member is representable in it and
+/// merely stops being *marked* exact. Widening back therefore yields the unproven
+/// member of the pair, and a completeness claim is never round-tripped into
+/// existence.
 #[must_use]
 pub fn uri_resolution_from_outcome(
     outcome: &ModuleResolutionOutcome,
 ) -> Option<ModuleUriResolution> {
     match outcome {
-        ModuleResolutionOutcome::Resolved(uri) => Some(ModuleUriResolution::Resolved(uri.clone())),
+        ModuleResolutionOutcome::Resolved(uri)
+        | ModuleResolutionOutcome::NotProvenPrecedence(uri) => {
+            Some(ModuleUriResolution::Resolved(uri.clone()))
+        }
         ModuleResolutionOutcome::NotFound | ModuleResolutionOutcome::NotProvenAbsent => {
             Some(ModuleUriResolution::NotFound)
         }

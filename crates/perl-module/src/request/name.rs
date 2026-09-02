@@ -143,10 +143,46 @@ impl ModuleNameError {
 ///
 /// A `ModuleName` never carries a filesystem path. Converting one to a relative
 /// `.pm` path is a separate, explicit step owned by the `path` module.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// # Identity
+///
+/// Equality, ordering, and hashing are defined over the canonical spelling
+/// alone. `Foo'Bar` and `Foo::Bar` name the same module and resolve to the same
+/// file, so they compare equal and hash identically; deriving these traits would
+/// instead include [`PackageSeparatorForm`] and make the two distinct map keys
+/// for one module. The source spelling stays reachable through
+/// [`ModuleName::separator_form`] and [`ModuleName::legacy_spelling`] — it is
+/// retained provenance, not part of the name's identity.
+#[derive(Debug, Clone)]
 pub struct ModuleName {
     canonical: String,
     separator_form: PackageSeparatorForm,
+}
+
+impl PartialEq for ModuleName {
+    fn eq(&self, other: &Self) -> bool {
+        self.canonical == other.canonical
+    }
+}
+
+impl Eq for ModuleName {}
+
+impl std::hash::Hash for ModuleName {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.canonical.hash(state);
+    }
+}
+
+impl PartialOrd for ModuleName {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ModuleName {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.canonical.cmp(&other.canonical)
+    }
 }
 
 impl ModuleName {
@@ -433,5 +469,36 @@ mod tests {
         for input in ["..", ".", "../../etc/passwd", "Foo::..", "..::Foo"] {
             assert!(ModuleName::parse(input).is_err(), "`{input}` must never validate");
         }
+    }
+
+    /// Two spellings of one module are one name.
+    ///
+    /// Deriving `PartialEq`/`Hash` would include `separator_form` and make these
+    /// distinct keys for a single module — a caller keying a map by module would
+    /// silently hold two entries pointing at the same file.
+    #[test]
+    fn spelling_is_provenance_not_identity() -> Result<(), ModuleNameError> {
+        use std::collections::HashSet;
+
+        let canonical = ModuleName::parse("Foo::Bar")?;
+        let legacy = ModuleName::parse("Foo'Bar")?;
+
+        assert_ne!(
+            legacy.separator_form(),
+            canonical.separator_form(),
+            "the provenance really does differ, so this is not a vacuous comparison"
+        );
+        assert_eq!(canonical, legacy, "same module, same name");
+        assert_eq!(
+            canonical.cmp(&legacy),
+            std::cmp::Ordering::Equal,
+            "`Ord` must agree with `Eq` or sorted collections corrupt"
+        );
+
+        let mut set = HashSet::new();
+        set.insert(canonical);
+        set.insert(legacy);
+        assert_eq!(set.len(), 1, "one module must occupy one map slot");
+        Ok(())
     }
 }
