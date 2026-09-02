@@ -53,9 +53,10 @@ function asDebugConfiguration(value: Record<string, unknown>): vscode.DebugConfi
   return value as unknown as vscode.DebugConfiguration;
 }
 
-function buildDapExecutableArgs(value: unknown): string[] {
+function buildDapExecutableArgs(value: unknown, hostWorkspaceRoot?: string): string[] {
   return productionBuildDapExecutableArgs(
     value as unknown as vscode.DebugConfiguration | undefined,
+    hostWorkspaceRoot,
   );
 }
 
