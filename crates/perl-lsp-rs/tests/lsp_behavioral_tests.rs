@@ -6,7 +6,7 @@
 /// Behavioral tests for LSP functionality
 /// These tests verify actual functionality, not just response shapes
 /// They ensure the wired infrastructure produces real results
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::Path;
 use std::time::Duration;
 use url::Url;
@@ -34,6 +34,123 @@ fn uri_matches(expected: &str, actual: &str) -> bool {
     }
 
     false
+}
+
+fn workspace_edit_has_text_edits(edit: &Value, target_uri: &str) -> bool {
+    fn valid_text_edit(edit: &Value) -> bool {
+        let Some(range) = edit.get("range") else {
+            return false;
+        };
+        let position = |position: &Value| {
+            Some((
+                position.get("line").and_then(Value::as_u64)?,
+                position.get("character").and_then(Value::as_u64)?,
+            ))
+        };
+        let Some(start) = range.get("start").and_then(position) else {
+            return false;
+        };
+        let Some(end) = range.get("end").and_then(position) else {
+            return false;
+        };
+
+        start <= end && edit.get("newText").and_then(Value::as_str).is_some()
+    }
+
+    if edit.get("changes").and_then(Value::as_object).is_some_and(|changes| {
+        changes.iter().any(|(uri, edits)| {
+            uri_matches(target_uri, uri)
+                && edits.as_array().is_some_and(|edits| edits.iter().any(valid_text_edit))
+        })
+    }) {
+        return true;
+    }
+
+    edit.get("documentChanges").and_then(Value::as_array).is_some_and(|document_changes| {
+        document_changes.iter().any(|change| {
+            let Some(text_document) = change.get("textDocument") else {
+                return false;
+            };
+            let valid_version = text_document
+                .get("version")
+                .is_some_and(|version| version.is_null() || version.is_i64() || version.is_u64());
+            change
+                .pointer("/textDocument/uri")
+                .and_then(Value::as_str)
+                .is_some_and(|uri| uri_matches(target_uri, uri))
+                && valid_version
+                && change
+                    .get("edits")
+                    .and_then(Value::as_array)
+                    .is_some_and(|edits| edits.iter().any(valid_text_edit))
+        })
+    })
+}
+
+#[test]
+fn workspace_edit_requires_well_formed_text_edits() {
+    let target_uri = "file:///workspace/script.pl";
+    let range = json!({
+        "start": { "line": 0, "character": 0 },
+        "end": { "line": 0, "character": 4 }
+    });
+    let valid = json!({
+        "changes": {
+            (target_uri): [{ "range": range.clone(), "newText": "my $x" }]
+        }
+    });
+    assert!(workspace_edit_has_text_edits(&valid, target_uri));
+    let valid_document_changes = json!({
+        "documentChanges": [{
+            "textDocument": { "uri": target_uri, "version": null },
+            "edits": [{ "range": range.clone(), "newText": "my $x" }]
+        }]
+    });
+    assert!(workspace_edit_has_text_edits(&valid_document_changes, target_uri));
+
+    for malformed in [
+        json!({ "changes": { (target_uri): [null] } }),
+        json!({ "changes": { (target_uri): [{}] } }),
+        json!({
+            "changes": {
+                (target_uri): [{ "range": range.clone(), "newText": 42 }]
+            }
+        }),
+        json!({
+            "changes": {
+                (target_uri): [{
+                    "range": {
+                        "start": { "line": 2, "character": 0 },
+                        "end": { "line": 1, "character": 0 }
+                    },
+                    "newText": "my $x"
+                }]
+            }
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri },
+                "edits": [null]
+            }]
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri, "version": "1" },
+                "edits": [{ "range": range.clone(), "newText": "my $x" }]
+            }]
+        }),
+        json!({
+            "documentChanges": [{
+                "textDocument": { "uri": target_uri, "version": 1.5 },
+                "edits": [{ "range": range.clone(), "newText": "my $x" }]
+            }]
+        }),
+    ] {
+        assert!(
+            !workspace_edit_has_text_edits(&malformed, target_uri),
+            "malformed workspace edit must not satisfy the behavioral oracle: {malformed}"
+        );
+    }
 }
 
 mod test_fixtures {
@@ -186,10 +303,6 @@ fn test_cross_file_references() -> TestResult {
 
 #[test]
 fn test_workspace_symbol_search() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
-    unsafe {
-        std::env::set_var("LSP_TEST_FALLBACKS", "1");
-    }
     let (mut harness, workspace) = create_test_server()?;
 
     // Search for symbols across workspace
@@ -218,20 +331,30 @@ fn test_workspace_symbol_search() -> TestResult {
 
 #[test]
 fn test_extract_variable_returns_edits() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
-    unsafe {
-        std::env::set_var("LSP_TEST_FALLBACKS", "1");
-    }
     let (mut harness, workspace) = create_test_server()?;
+
+    // Keep this oracle on the production-reachable expression shape exercised by
+    // the runtime provider: a function call nested in a binary expression. The
+    // shared workspace fixture is intentionally about symbol resolution and its
+    // return expression is not a stable extract-variable input.
+    let extract_source = r#"
+my $str = "hello";
+my $result = length($str) + 10;
+print $result;
+"#;
+    let extract_uri = workspace.uri("extract.pl");
+    workspace.write("extract.pl", extract_source)?;
+    harness.open_document(&extract_uri, extract_source)?;
+    harness.wait_for_idle(Duration::from_millis(200));
 
     // Request code actions for expression extraction
     let result = harness.request(
         "textDocument/codeAction",
         json!({
-            "textDocument": {"uri": workspace.uri("script.pl")},
+            "textDocument": {"uri": extract_uri},
             "range": {
-                "start": {"line": 11, "character": 11},
-                "end": {"line": 11, "character": 18} // Select "$x + $y"
+                "start": {"line": 2, "character": 13},
+                "end": {"line": 2, "character": 25} // Select "length($str)"
             },
             "context": {"diagnostics": []}
         }),
@@ -239,24 +362,19 @@ fn test_extract_variable_returns_edits() -> TestResult {
 
     {
         let actions = result.as_array().ok_or("Should return action array")?;
+        let extract_action = actions
+            .iter()
+            .find(|action| action["title"].as_str().is_some_and(|title| title.contains("Extract")))
+            .ok_or("Should have extract variable action")?;
+        let edit = extract_action
+            .get("edit")
+            .ok_or("Extract variable action should include a workspace edit")?;
+        let file_uri = extract_uri;
 
-        // Find extract variable action
-        let extract_action =
-            actions.iter().find(|a| a["title"].as_str().is_some_and(|t| t.contains("Extract")));
-
-        if let Some(action) = extract_action {
-            // Verify it has actual edits
-            if let Some(edit) = action.get("edit") {
-                let changes = &edit["changes"];
-                assert!(!changes.is_null(), "Should have workspace edit changes");
-
-                // Check for edits in the file
-                let file_uri = workspace.uri("script.pl");
-                let file_edits = &changes[file_uri.as_str()];
-                let edits = file_edits.as_array().ok_or("Should have edits array")?;
-                assert!(!edits.is_empty(), "Should have actual text edits");
-            }
-        }
+        assert!(
+            workspace_edit_has_text_edits(edit, &file_uri),
+            "Extract variable action should include at least one text edit for {file_uri}; got {edit}"
+        );
     }
     Ok(())
 }
@@ -402,10 +520,6 @@ fn test_test_generation_actions_present() -> TestResult {
 
 #[test]
 fn test_completion_detail_formatting() -> TestResult {
-    // Ensure we use fast, deterministic fallbacks to avoid long waits
-    unsafe {
-        std::env::set_var("LSP_TEST_FALLBACKS", "1");
-    }
     let (mut harness, workspace) = create_test_server()?;
 
     // Request completion after $obj->
