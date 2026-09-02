@@ -320,8 +320,10 @@ impl DebugAdapter {
     /// begins a new session generation. Launch arguments can never replace or
     /// widen this authority.
     pub fn set_launch_authority(&self, authority: LaunchAuthority) {
-        *lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority") =
-            Some(authority);
+        let mut guard = lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority");
+        if guard.is_none() {
+            *guard = Some(authority);
+        }
     }
 
     /// Whether a resolved startup authority is installed.

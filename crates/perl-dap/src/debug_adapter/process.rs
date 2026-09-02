@@ -2603,6 +2603,25 @@ mod tests {
     }
 
     #[test]
+    fn launch_authority_can_only_be_installed_once() {
+        let first_root = tempfile::tempdir().expect("first temp root");
+        let second_root = tempfile::tempdir().expect("second temp root");
+        let adapter = DebugAdapter::new();
+
+        adapter.set_launch_authority(workspace_bound_authority(first_root.path()));
+        adapter.set_launch_authority(workspace_bound_authority(second_root.path()));
+
+        let (_, receipt) =
+            adapter.begin_authority_session().expect("first authority must remain installed");
+        let first = LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: vec![first_root.path().to_path_buf()],
+            allow_unbounded: None,
+        })
+        .expect("first authority resolution");
+        assert_eq!(receipt.authority_identity, first.receipt().authority_identity);
+    }
+
+    #[test]
     fn context_then_prompt_preserves_current_suspension_frame_id() -> Result<(), String> {
         let adapter = DebugAdapter::new();
         adapter.seed_session_for_test().map_err(|error| error.to_string())?;
