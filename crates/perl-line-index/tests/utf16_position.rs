@@ -156,7 +156,7 @@ fn test_utf16_first_line_unaffected_by_second_line() -> Result<(), Box<dyn std::
 /// CRLF is one line terminator: its interior bytes are not addressable, while
 /// the first byte of the next line is not reachable through the prior line.
 #[test]
-fn test_utf16_crlf_line_accepts_newline_and_range_end_positions()
+fn test_utf16_crlf_line_rejects_terminator_interior_positions()
 -> Result<(), Box<dyn std::error::Error>> {
     let text = "ab\r\nc\u{1F600}d";
     let idx = LineIndex::new(text);
@@ -211,8 +211,9 @@ fn test_utf16_crlf_one_past_next_line_start_is_rejected() -> Result<(), Box<dyn 
     assert_eq!(idx.position_to_byte_checked(0, 4), None);
     // Pre-fix this returned Some(4).
     assert_eq!(idx.position_to_byte_utf16(text, 0, 4), None);
-    // The established CRLF boundary remains addressable at column 3; the
-    // next line's start at column 4 is rejected.
+    // Column 2 is the line-end boundary (one past the content). Column 3
+    // lies inside the CRLF terminator and is rejected, as is the next
+    // line's start at column 4.
     assert_eq!(idx.position_to_byte_utf16(text, 0, 2), Some(2));
     assert_eq!(idx.position_to_byte_utf16(text, 0, 3), None);
     assert_eq!(idx.position_to_byte_utf16(text, 0, 4), None);
