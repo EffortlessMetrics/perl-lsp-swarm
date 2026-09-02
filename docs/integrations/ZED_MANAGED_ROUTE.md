@@ -51,7 +51,9 @@ contract: the current extension fixture has no safe injection seam for
 forcing either failure without substituting a different implementation for
 the real Zed route. The evidence issue must add those two scenarios before
 claiming complete upstream recovery coverage; this document does not count
-the seven listed scenarios as nine.
+the seven listed scenarios as nine. This follows #8753's stop condition:
+when safe injection of a real extension failure is unavailable, defer the
+scenario with a named follow-up rather than substituting a mock route.
 
 ## Journeys
 

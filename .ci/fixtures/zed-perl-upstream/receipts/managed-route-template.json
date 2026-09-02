@@ -17,6 +17,7 @@
     "resolution_route": null,
     "selected_provider": null,
     "fallback_server_id": null,
+    "fallback_allowed": null,
     "prior_managed_cache_absent": null,
     "selected_subject_sha256": null,
     "restart_subject_sha256": null,

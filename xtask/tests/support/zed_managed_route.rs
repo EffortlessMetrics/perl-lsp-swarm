@@ -10,6 +10,7 @@
 //! This module is infrastructure authority only: a template receipt ships as
 //! `not_run`, and the successor evidence issue performs the real Zed runs.
 
+use chrono::DateTime;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -44,6 +45,16 @@ pub const REQUIRED_RECOVERY_SCENARIOS: [&str; 7] = [
 /// Journeys a `pass` receipt must have observed.
 pub const REQUIRED_JOURNEYS: [&str; 4] =
     ["first_mile_install", "restart_cache_reuse", "normal_disable", "shutdown_no_orphan"];
+
+const REQUIRED_FAILURE_INVARIANTS: [&str; 7] = [
+    "provider_fallback_forbidden",
+    "path_route_forbidden",
+    "worktree_route_forbidden",
+    "binary_override_forbidden",
+    "partial_download_install_forbidden",
+    "unsafe_archive_member_forbidden",
+    "checksum_mismatch_install_forbidden",
+];
 
 fn text<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(Value::as_str).filter(|text| !text.trim().is_empty())
@@ -118,20 +129,22 @@ pub fn validate_contract(contract: &Value) -> Result<(), String> {
     {
         return Err(format!("`{OLDER_VERSIONS_PRESERVED_UNTIL_LAUNCH}` must be true"));
     }
+    if contract.pointer("/selection/fallback_allowed").and_then(Value::as_bool) != Some(false) {
+        return Err("selection.fallback_allowed must be false".to_string());
+    }
 
     let invariants = contract
         .get("failure_invariants")
         .ok_or_else(|| "contract lacks `failure_invariants`".to_string())?;
-    for pointer in [
-        "/provider_fallback_forbidden",
-        "/path_route_forbidden",
-        "/worktree_route_forbidden",
-        "/binary_override_forbidden",
-        "/partial_download_install_forbidden",
-        "/unsafe_archive_member_forbidden",
-        "/checksum_mismatch_install_forbidden",
-    ] {
-        required_flag(invariants, pointer)?;
+    let invariant_object =
+        invariants.as_object().ok_or_else(|| "failure_invariants must be an object".to_string())?;
+    for key in invariant_object.keys() {
+        if !REQUIRED_FAILURE_INVARIANTS.contains(&key.as_str()) {
+            return Err(format!("unknown failure invariant `{key}`"));
+        }
+    }
+    for key in REQUIRED_FAILURE_INVARIANTS {
+        required_flag(invariants, &format!("/{key}"))?;
     }
 
     let scenarios = contract
@@ -196,6 +209,7 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
             "/selection/resolution_route",
             "/selection/selected_provider",
             "/selection/fallback_server_id",
+            "/selection/fallback_allowed",
             "/selection/prior_managed_cache_absent",
             "/selection/selected_subject_sha256",
             "/selection/restart_subject_sha256",
@@ -222,8 +236,10 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         return Ok(());
     }
 
-    if receipt.get("observed_at").is_none_or(Value::is_null) {
-        return Err(format!("a `{result}` receipt must carry `observed_at`"));
+    let observed_at = text(receipt, "/observed_at")
+        .ok_or_else(|| format!("a `{result}` receipt must carry a non-empty observed_at"))?;
+    if DateTime::parse_from_rfc3339(observed_at).is_err() {
+        return Err("receipt observed_at must be RFC3339".to_string());
     }
     if !digest(receipt, "/contract/sha256") {
         return Err("receipt must record the contract sha256 digest".to_string());
@@ -260,6 +276,9 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
     }
     if !receipt.pointer("/selection/fallback_server_id").is_none_or(Value::is_null) {
         return Err("receipt must record no fallback server id".to_string());
+    }
+    if receipt.pointer("/selection/fallback_allowed").and_then(Value::as_bool) != Some(false) {
+        return Err("receipt must record fallback_allowed=false".to_string());
     }
     if receipt.pointer("/selection/prior_managed_cache_absent").and_then(Value::as_bool)
         != Some(true)

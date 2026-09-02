@@ -95,6 +95,7 @@ fn valid_pass(receipt: &mut Value) -> Result<(), Box<dyn Error>> {
     receipt["selection"]["resolution_route"] =
         Value::String(zed_managed_route::MANAGED_PUBLIC_ARTIFACT.to_string());
     receipt["selection"]["selected_provider"] = Value::String("perllsp".to_string());
+    receipt["selection"]["fallback_allowed"] = Value::Bool(false);
     receipt["selection"]["prior_managed_cache_absent"] = Value::Bool(true);
     receipt["selection"]["selected_subject_sha256"] = receipt["subject"]["asset_sha256"].clone();
     receipt["selection"]["restart_subject_sha256"] = receipt["subject"]["asset_sha256"].clone();
@@ -156,6 +157,31 @@ fn contract_requires_all_failure_invariants_and_revision() -> Result<(), Box<dyn
     let mut revision = contract.clone();
     revision["revision"] = Value::Number(2.into());
     assert!(zed_managed_route::validate_contract(&revision).is_err());
+    let mut unknown = contract;
+    unknown["failure_invariants"]["future_invariant"] = Value::Bool(true);
+    assert!(zed_managed_route::validate_contract(&unknown).is_err());
+    Ok(())
+}
+
+#[test]
+fn receipt_requires_typed_observed_at_and_fallback_authority() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let contract = read_json(&root, CONTRACT)?;
+    let mut baseline = read_json(&root, TEMPLATE)?;
+    valid_pass(&mut baseline)?;
+    for observed_at in [
+        Value::Bool(true),
+        Value::Number(1.into()),
+        Value::String(String::new()),
+        Value::String("not-a-date".to_string()),
+    ] {
+        let mut receipt = baseline.clone();
+        receipt["observed_at"] = observed_at;
+        assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_err());
+    }
+    let mut fallback = baseline;
+    fallback["selection"]["fallback_allowed"] = Value::Bool(true);
+    assert!(zed_managed_route::validate_receipt(&fallback, &contract).is_err());
     Ok(())
 }
 
