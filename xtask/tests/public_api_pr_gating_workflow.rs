@@ -122,6 +122,7 @@ fn active_if_expression(section: &str) -> Option<String> {
 fn public_api_job_runs(
     section: &str,
     event: &str,
+    dispatch_public_api: bool,
     action: Option<&str>,
     event_label: Option<&str>,
     labels: &[&str],
@@ -133,14 +134,17 @@ fn public_api_job_runs(
         return false;
     };
     let expected = format!(
-        "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, '{label}') && (github.event.action != 'labeled' || github.event.label.name == '{label}'))"
+        "(github.event_name == 'workflow_dispatch' && inputs.run_public_api) || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, '{label}') && (github.event.action != 'labeled' || github.event.label.name == '{label}'))"
     );
     if expression != expected {
         return false;
     }
 
     match event {
-        "workflow_dispatch" | "schedule" => true,
+        // GitHub evaluates an omitted or false boolean dispatch input as
+        // false, so an unspecified selector must not consume the runner.
+        "workflow_dispatch" => dispatch_public_api,
+        "schedule" => true,
         "pull_request" if labels.iter().any(|candidate| *candidate == label) => match action {
             Some("opened" | "synchronize" | "reopened" | "ready_for_review") => true,
             Some("labeled") => event_label == Some(label),
@@ -293,7 +297,14 @@ fn pull_request_public_api_gate_is_default_deny_with_named_bypasses() {
         "       || (github.event_name == 'pull_request' &&\n       contains(github.event.pull_request.labels.*.name, 'ci:other'))\n    steps: []",
     );
     assert!(
-        !public_api_job_runs(&extra_pr_label, "pull_request", Some("opened"), None, &["ci:other"],),
+        !public_api_job_runs(
+            &extra_pr_label,
+            "pull_request",
+            false,
+            Some("opened"),
+            None,
+            &["ci:other"],
+        ),
         "an extra active PR label disjunct must not pass the canonical gate"
     );
 
@@ -302,7 +313,7 @@ fn pull_request_public_api_gate_is_default_deny_with_named_bypasses() {
         "github.event_name == 'schedule' || github.event_name == 'push' ||",
     );
     assert!(
-        !public_api_job_runs(&extra_bypass, "push", None, None, &["ci:public-api"]),
+        !public_api_job_runs(&extra_bypass, "push", false, None, None, &["ci:public-api"]),
         "an extra active event bypass must not pass the canonical gate"
     );
 }
@@ -555,16 +566,21 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     }
 
     assert_eq!(label, "ci:public-api", "the public API lane owns one stable trigger label");
-    assert!(public_api.contains("github.event_name == 'workflow_dispatch' ||"));
+    assert!(
+        public_api
+            .contains("(github.event_name == 'workflow_dispatch' && inputs.run_public_api) ||")
+    );
     assert!(public_api.contains("github.event_name == 'schedule' ||"));
     assert!(!public_api.contains("github.event_name == 'pull_request' ||"));
     assert!(!public_api.contains("github.event_name == 'push'"));
-    assert!(public_api_job_runs(public_api, "workflow_dispatch", None, None, &[]));
-    assert!(public_api_job_runs(public_api, "schedule", None, None, &[]));
+    assert!(public_api_job_runs(public_api, "workflow_dispatch", true, None, None, &[]));
+    assert!(!public_api_job_runs(public_api, "workflow_dispatch", false, None, None, &[]));
+    assert!(public_api_job_runs(public_api, "schedule", false, None, None, &[]));
     for action in ["opened", "synchronize", "reopened", "ready_for_review"] {
         assert!(public_api_job_runs(
             public_api,
             "pull_request",
+            false,
             Some(action),
             None,
             &["ci:public-api"],
@@ -573,6 +589,7 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     assert!(public_api_job_runs(
         public_api,
         "pull_request",
+        false,
         Some("labeled"),
         Some("ci:public-api"),
         &["ci:public-api"],
@@ -580,6 +597,7 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     assert!(!public_api_job_runs(
         public_api,
         "pull_request",
+        false,
         Some("labeled"),
         Some("ci:unrelated"),
         &["ci:public-api", "ci:unrelated"],
@@ -587,6 +605,7 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     assert!(!public_api_job_runs(
         public_api,
         "pull_request",
+        false,
         Some("unlabeled"),
         Some("ci:unrelated"),
         &["ci:public-api"],
@@ -594,14 +613,16 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     assert!(!public_api_job_runs(
         public_api,
         "pull_request",
+        false,
         Some("labeled"),
         None,
         &["ci:public-api"],
     ));
-    assert!(!public_api_job_runs(public_api, "pull_request", Some("opened"), None, &[],));
+    assert!(!public_api_job_runs(public_api, "pull_request", false, Some("opened"), None, &[],));
     assert!(!public_api_job_runs(
         public_api,
         "pull_request",
+        false,
         Some("opened"),
         None,
         &["ci:not-public-api"],
@@ -609,11 +630,12 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     assert!(!public_api_job_runs(
         public_api,
         "pull_request",
+        false,
         Some("opened"),
         None,
         &["ci:public-api-extra"],
     ));
-    assert!(!public_api_job_runs(public_api, "push", None, None, &["ci:public-api"],));
+    assert!(!public_api_job_runs(public_api, "push", false, None, None, &["ci:public-api"],));
 
     let docs = read(&root, "docs/ci/labels.md")?;
     let governed_row = docs
@@ -645,10 +667,22 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
         .ok_or_else(|| format!("{label} must have a canonical description"))?;
 
     let provisioning = read(&root, "scripts/gh/ensure-labels.sh")?;
-    let expected = format!("ensure_reconciled \"{label}\" \"{color}\" \"{description}\"");
     assert!(
-        provisioning.lines().any(|line| line.trim() == expected),
-        "the provisioning metadata must join the canonical ci-config value"
+        provisioning.contains("public_api_metadata()")
+            && provisioning.contains(
+                "CI_CONFIG_PATH=\"${CI_CONFIG_PATH:-${REPO_ROOT}/.github/ci-config.yml}\"",
+            ),
+        "provisioning must read the canonical ci-config metadata"
+    );
+    assert!(
+        provisioning
+            .lines()
+            .any(|line| line.trim() == format!("ensure_reconciled \"{label}\" \"${{PUBLIC_API_COLOR}}\" \"${{PUBLIC_API_DESCRIPTION}}\"")),
+        "provisioning must pass catalog-derived metadata to reconciliation"
+    );
+    assert!(
+        !provisioning.contains(&format!("\"{color}\" \"{description}\"")),
+        "provisioning must not duplicate the catalog metadata literals"
     );
     assert!(
         provisioning.contains("gh label edit \"$name\""),

@@ -64,6 +64,48 @@ Return candidate/head identity, complete substantive finding set, classification
 dispositions, evidence, commits/issues used by the helper, affected proof/review
 results, unresolved contradictions, limitations, and typed result.
 
+## Reply quality
+
+The inline reply is a concise engineering decision record, not a completion signal.
+
+Before replying, decide separately:
+
+- whether the comment identifies a real failure on the current candidate;
+- whether the reviewer's proposed repair, scope, or layer is correct;
+- which invariant, owner, or architectural boundary governs the seam.
+
+Do not blindly agree. A comment can be right about the failure and wrong about the
+repair. Preserve the valid concern, reject the wrong mechanism, and repair the owning
+seam.
+
+Do not reflexively defend the candidate. Prior intent, familiarity, green checks, or
+"works as designed" do not answer the concern. Refute only from current source,
+governing authority, or discriminating evidence.
+
+State the narrowest supported conclusion. Preserve mixed findings: fully valid, partly
+valid, stale, superseded, and incorrect are different judgments. For `fixed`, explain
+the failure and why the selected repair belongs at that boundary. For `refuted`,
+identify the false premise or existing mechanism. For `superseded`, name the changed
+candidate or premise. For `follow-up`, explain why the current claim is complete and
+the residual is genuinely separate.
+
+A bare `fixed`, `done`, `addressed`, generic thanks, labels-only reply, or paraphrase of
+the diff is inadequate.
+
+Use one short paragraph between the required lines:
+
+```text
+Disposition: <class>
+
+<judgment, architectural reason, and what changed or why no change is warranted>
+
+Evidence: <specific current source, proof, commit, authority, or linked issue>
+```
+
+The reply must answer the comment in its inline context. Mention files, symbols, tests,
+or contracts only when they carry the reasoning; do not paste logs or narrate agent
+activity.
+
 ## Procedure
 
 1. Enumerate the PR's review threads with `scripts/reviews/threads <pr> [owner/repo] [--unresolved-only] [--json]`. This read-only enumerator is the sanctioned source of the `<threadId>` required by `disposition --thread` in step 5. `scripts/reviews/state` returns an aggregate classification without per-thread identity and cannot supply it; do not hand-roll a `reviewThreads` GraphQL query.
@@ -82,7 +124,7 @@ results, unresolved contradictions, limitations, and typed result.
    the failure signature against the candidate's merge base.
 3. Batch accepted repairs through one integrating writer.
 4. Run affected focused proof.
-5. Compose the canonical human reply with `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines, then pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
+5. Write the canonical human reply under the **Reply quality** contract: keep the `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines and put the concise reasoned judgment between them. Pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
 6. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply and post it. Terminal classes then resolve the thread; non-terminal classes keep it open, and reopen a falsely-resolved thread before posting evidence.
 7. Re-run the enumerator to confirm no substantive thread remains unresolved without a non-terminal disposition.
 8. If the reviewer applied a repair, treat the resulting head as a new authored candidate and invalidate affected review dimensions.

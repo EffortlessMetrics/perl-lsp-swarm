@@ -4,6 +4,13 @@
 //! (actionable guidance message) from "session present but signal delivery failed"
 //! (accurate "Failed to pause debugger" message).
 //!
+//! Since #8294 every thread-scoped request must also name the live synthetic
+//! execution context (`threadId`); a request that omits or mismatches it is
+//! rejected before any signal is delivered. The session-present tests here name
+//! the attached-PID identity so the request reaches the pause failure path
+//! (on Windows, the explicit PID-attached unsupported response) instead of
+//! being rejected by identity.
+//!
 //! Run with: cargo test -p perl-dap --test pause_signal_delivery_tests
 
 use perl_dap::{DapMessage, DebugAdapter};
@@ -71,12 +78,17 @@ fn test_pause_no_session_returns_guidance_message() {
 #[test]
 fn test_pause_session_present_signal_failure_returns_accurate_error() {
     let mut adapter = DebugAdapter::new();
-    // Seed an attached_pid that cannot receive signals (999_999 is virtually
-    // guaranteed not to exist). This makes send_interrupt_signal return false
-    // even though a "session" (attached pid) IS present.
-    adapter.seed_attached_pid_for_test(999_999);
+    // PID 0 is the test-only fail-closed sentinel: send_interrupt_signal
+    // rejects it before reaching the OS, so this test cannot signal an
+    // unrelated same-user process while a session remains present.
+    let attached_pid = 0;
+    adapter.seed_attached_pid_for_test(attached_pid);
 
-    let response = adapter.handle_request(1, "pause", None);
+    // #8294: the attached PID is the live synthetic execution context id, so the
+    // request must name it; otherwise the identity rejection fires before signal
+    // delivery and this test would no longer exercise the signal-failure path.
+    let response =
+        adapter.handle_request(1, "pause", Some(serde_json::json!({ "threadId": attached_pid })));
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
@@ -121,7 +133,11 @@ fn test_pause_pid_attach_is_unsupported_without_signaling_parent()
     let mut adapter = DebugAdapter::new();
     adapter.seed_attached_pid_for_test(parent_pid);
 
-    let response = adapter.handle_request(1, "pause", None);
+    // #8294: name the attached-PID identity so the request passes validation and
+    // reaches the Windows PID-attached pause path instead of the identity
+    // rejection.
+    let response =
+        adapter.handle_request(1, "pause", Some(serde_json::json!({ "threadId": parent_pid })));
     let DapMessage::Response { success, message, .. } = response else {
         return Err("expected a response for PID-attached pause".into());
     };
