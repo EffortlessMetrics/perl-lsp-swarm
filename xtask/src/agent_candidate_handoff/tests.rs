@@ -3313,6 +3313,61 @@ fn a_newline_in_a_tracked_path_exports_and_validates() -> Result<()> {
     Ok(())
 }
 
+/// Object enumeration refuses a record it cannot read as an object id.
+///
+/// This is the falsifier the newline control above is not, and it exists because
+/// the two changes it guards were previously only falsifiable together. The
+/// producer asks Git for ids and nothing else, so a real repository can never
+/// hand the reader a malformed record — which also means no end-to-end fixture
+/// can reach the refusal, and a rule that cannot be executed is not proven. So
+/// the reader is driven directly.
+///
+/// The prior implementation took `line.split(' ').next()` and dropped anything
+/// that did not parse, which is the specific failure this refuses: a silently
+/// shrunken `object_ids` is exactly what lets an envelope validate as a
+/// candidate whose objects it does not carry. Under that implementation the
+/// first two cases below return a short set instead of an error.
+#[test]
+fn an_unreadable_enumeration_record_is_an_instrument_failure() {
+    use super::create::parse_object_records;
+
+    let real = "b".repeat(40);
+
+    // A `<id> <path>` record: what Git prints without `--no-object-names`, and
+    // what the previous reader silently truncated to its first field.
+    let named = format!("{real} some/path.txt\n");
+    let outcome =
+        parse_object_records(&named).expect_err("a record carrying a path is not an object id");
+    assert_eq!(
+        outcome.0,
+        HandoffOutcome::InstrumentFailure,
+        "unexpected enumeration output must fail closed, not be parsed around"
+    );
+
+    // A record that is not an id at all, mixed with one that is. The previous
+    // reader kept the good one and dropped the rest, declaring a closure
+    // narrower than the candidate's.
+    let mixed = format!("{real}\nnot-an-object-id\n");
+    let outcome = parse_object_records(&mixed)
+        .expect_err("a record that is not an object id must be refused");
+    assert_eq!(outcome.0, HandoffOutcome::InstrumentFailure);
+
+    // An abbreviated id is not a partial success either: the declared set is
+    // content-addressed, so a short id names nothing the receiver can resolve.
+    let abbreviated = "c".repeat(12);
+    let outcome = parse_object_records(&format!("{abbreviated}\n"))
+        .expect_err("an abbreviated id is not a full object id");
+    assert_eq!(outcome.0, HandoffOutcome::InstrumentFailure);
+
+    // Anti-vacuity: well-formed records must still be accepted, and blank
+    // records skipped, or the assertions above would hold for a reader that
+    // refused everything.
+    let clean = format!("{real}\n\n{}\n", "d".repeat(40));
+    let ids = parse_object_records(&clean).expect("well-formed records must be accepted");
+    assert_eq!(ids.len(), 2, "blank records are skipped, real ones retained");
+    assert!(ids.contains(&real));
+}
+
 /// One invocation's staging directory is never reclaimed by another.
 ///
 /// This is the rule the concurrent-export defect reduces to, and unlike the

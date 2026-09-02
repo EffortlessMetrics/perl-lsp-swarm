@@ -880,14 +880,33 @@ fn enumerate_objects(
         ));
     }
 
-    // Every line is now an object id and nothing else, so a line that is not one
-    // is unexpected Git output rather than something to step over. Skipping it
-    // would silently shrink the declared set — the same failure this module
-    // refuses in the inventory and gitlink readers — and an incomplete
-    // `object_ids` is exactly what makes an envelope validate as a candidate it
-    // does not carry.
+    let ids = parse_object_records(&output.stdout())?;
+    if !ids.contains(&candidate.commit) {
+        return Err((
+            HandoffOutcome::MissingObject,
+            "the candidate commit object was not enumerated".to_string(),
+        ));
+    }
+    Ok(ids.into_iter().collect())
+}
+
+/// Read `rev-list --objects --no-object-names` records into a declared object set.
+///
+/// Separate from [`enumerate_objects`] so the refusal below is reachable from a
+/// test. With `--no-object-names` in place Git cannot emit a record that is not
+/// an object id, so driving this through a real repository can never exercise
+/// the failing branch; a rule that cannot be executed is not a proven rule.
+///
+/// Every record is an object id and nothing else, so a record that is not one is
+/// unexpected Git output rather than something to step over. Skipping it would
+/// silently shrink the declared set — the same failure this module refuses in
+/// the inventory and gitlink readers — and an incomplete `object_ids` is exactly
+/// what makes an envelope validate as a candidate it does not carry.
+pub(super) fn parse_object_records(
+    stdout: &str,
+) -> Result<BTreeSet<String>, (HandoffOutcome, String)> {
     let mut ids: BTreeSet<String> = BTreeSet::new();
-    for line in output.stdout().lines() {
+    for line in stdout.lines() {
         let id = line.trim();
         if id.is_empty() {
             continue;
@@ -900,13 +919,7 @@ fn enumerate_objects(
         }
         ids.insert(id.to_string());
     }
-    if !ids.contains(&candidate.commit) {
-        return Err((
-            HandoffOutcome::MissingObject,
-            "the candidate commit object was not enumerated".to_string(),
-        ));
-    }
-    Ok(ids.into_iter().collect())
+    Ok(ids)
 }
 
 /// Pack the candidate's object closure into transport bytes.
