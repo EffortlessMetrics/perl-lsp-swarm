@@ -324,8 +324,12 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         .ok_or_else(|| eyre!("allowlist must define an allow array"))?;
     let tables: Vec<&toml::map::Map<String, toml::Value>> =
         entries.iter().filter_map(toml::Value::as_table).collect();
-    for conflict in mispaired_provenance_conflicts(&tables) {
-        bail!("mispaired provenance: {conflict}");
+    // Reporting every conflict is what `mispaired_provenance_conflicts` returns a
+    // `Vec` for; the loop it replaced bailed on the first and discarded the rest,
+    // and tripped `clippy::never_loop` doing it.
+    let conflicts = mispaired_provenance_conflicts(&tables);
+    if !conflicts.is_empty() {
+        bail!("mispaired provenance: {}", conflicts.join(", "));
     }
     let mut matchers = std::collections::BTreeSet::new();
     for (index, raw) in entries.iter().enumerate() {
