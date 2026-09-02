@@ -943,3 +943,62 @@ What is not being changed, deliberately:
 The threshold is therefore not met and is not claimed to be. `#![warn(missing_docs)]`
 — which governs the crate's *public* surface, the part consumers read — passes
 with no warnings, and that is the coverage claim this PR makes.
+
+### Seventeenth review round (`1aaf268`) — the same pattern, a third and fourth time
+
+| Severity | Finding | Disposition | Mutation replay |
+|---|---|---|---|
+| 🟥 security | the shell gate decided argv-mode and stdin-mode independently, so `sh script.sh` fed data on stdin was refused while `-s` and stdin-naming operands were not modelled at all | **Fixed** — one classification of where a shell takes its commands, from argv and stdin together | KILLED ×3 |
+| correctness | `elect` returned `OutputLimitExceeded` or `CleanupFailed` beside a settlement saying nothing ever started | **Fixed** — one coherence guard over both exhaustive predicates, replacing the cancellation special case | KILLED ×3 |
+
+**Standing pattern 1, twice more.** Both findings are the same shape as the two
+before them: a rule stated for one member of a set. The cancellation
+contradiction check was written for the cancellation pair, and
+`OutputLimitExceeded` and `CleanupFailed` — which *outrank* cancellation, so
+they never reached that clause — went unchecked. It is now one guard:
+
+```text
+settlement NotStarted        → contradicts any cause that requires a started child
+settlement Exited | Signaled → contradicts any cause that asserts none started
+settlement NotObserved       → contradicts nothing
+```
+
+keyed on the two predicates that already classify every variant, so a new
+terminal cause is checked by construction rather than by remembering to add a
+clause.
+
+**A rationale I recorded one round ago was wrong.** `requires_a_started_child`
+excluded `CleanupFailed`, on the reasoning that "cleanup having failed already
+excludes every disposition claiming it was unnecessary". That was about a
+*different* rule — the `NotRequired` pairing — and carrying it across is the
+conflation this packet keeps recording. The contract's own position is already
+stated elsewhere: `ProcessResult::new` refuses a pre-start outcome carrying
+`CleanupDisposition::Failed`, so by its own rule a failed cleanup had a child
+to clean up after. `CleanupFailed` is in the predicate now.
+
+That change moved an assertion written last round. The claim it made — a
+contradicted cancellation must not discard a known cleanup failure — still
+holds, but its fixture used a settlement (`NotStarted`) that contradicts
+`CleanupFailed` too. The fixture now uses a settlement that contradicts only
+the cancellation, and the `NotStarted` case is asserted separately as
+`NotProven`. Strictly more coverage, not less.
+
+**The shell finding removed an over-rejection this PR introduced last round.**
+Refusing a shell paired with stdin content, without looking at argv, is
+fail-closed and has no hole — but `sh script.sh` fed data on stdin is an
+entirely ordinary plan, and it was unstartable. That is the test this packet
+set for itself in round 10: a contract that cannot express something ordinary
+is defective. Modelling the question properly also caught two shapes neither
+half saw alone — `sh -s script.sh`, where `-s` makes stdin the command channel
+*despite* the operand, and `sh -` / `sh /dev/stdin`, where the operand names
+the same descriptor. Both are refused now; both were admitted before.
+
+`OPERANDS_NAMING_STANDARD_INPUT` is documented as a floor rather than a
+boundary, in the same terms as `CODE_LOADING_VARIABLES`: a plan can always name
+a FIFO the list does not know about.
+
+**One mutation reported `SURVIVED` and was a harness false negative again** —
+the sixth of this PR. The replay named a control that did not exist yet, so
+zero tests ran and the run exited green. The `(control ran: …)` column added
+to the runner is what made it obvious; a bare pass/fail would have recorded a
+weak control that was in fact an absent one.

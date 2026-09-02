@@ -420,9 +420,21 @@ fn validate_invocation(plan: &ProcessPlan) -> Result<(), PlanRejection> {
         ExecutableResolution::Unresolved => String::new(),
     };
     for candidate in [logical_name, resolved_file_name.as_str()] {
-        if is_shell_invocation(candidate, plan.argv())
-            || hands_a_shell_a_script_on_stdin(candidate, plan.stdin())
-        {
+        // One question, asked once: does this plan give a shell commands to
+        // execute? An inline argument always does. Standard input does when
+        // the plan supplies content there — `Bytes` is a script by another
+        // spelling, and `Streamed` is the interactive form of the same open
+        // command channel. A script operand does not: the plan does not carry
+        // that file, and stdin beside it is the script's data.
+        let hands_a_shell_commands = match shell_command_source(candidate, plan.argv()) {
+            Some(ShellCommandSource::InlineArgument) => true,
+            Some(ShellCommandSource::StandardInput) => match plan.stdin() {
+                StdinPolicy::Bytes(_) | StdinPolicy::Streamed => true,
+                StdinPolicy::Closed => false,
+            },
+            Some(ShellCommandSource::ScriptOperand) | None => false,
+        };
+        if hands_a_shell_commands {
             return Err(PlanRejection::ShellInvocationRejected { shell: candidate.to_string() });
         }
     }
@@ -499,33 +511,6 @@ fn is_inline_command_argument(arg: &str) -> bool {
     }
 }
 
-/// Whether the plan feeds a shell a script over standard input.
-///
-/// A shell reads commands from stdin whenever it is given no script operand —
-/// `sh -s` names it explicitly, but a bare `sh` does the same thing. So
-/// `sh` with [`StdinPolicy::Bytes`] is an inline command in every sense that
-/// matters, spelled through a different channel, and
-/// [`StdinPolicy::Streamed`] is the interactive form of the same thing: the
-/// caller drives an open command channel for the run's lifetime.
-///
-/// This closes a gap the argv scan documented and left open. Saying that
-/// stdin's shape "is `StdinPolicy`'s business, not argv's" identified the
-/// right owner and then left nobody enforcing it, which meant the gate refused
-/// `sh -c 'cmd'` while admitting the same command as bytes on stdin.
-///
-/// [`StdinPolicy::Closed`] is the coherent pairing: a shell with no script
-/// operand, no inline flag, and no input has nothing to execute.
-fn hands_a_shell_a_script_on_stdin(logical_name: &str, stdin: &StdinPolicy) -> bool {
-    let base = program_base(logical_name);
-    if !SHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(base)) {
-        return false;
-    }
-    match stdin {
-        StdinPolicy::Bytes(_) | StdinPolicy::Streamed => true,
-        StdinPolicy::Closed => false,
-    }
-}
-
 /// Whether a PowerShell invocation hands the interpreter a command string.
 ///
 /// PowerShell does not speak POSIX option syntax, and scanning it as though it
@@ -549,7 +534,7 @@ fn hands_a_shell_a_script_on_stdin(logical_name: &str, stdin: &StdinPolicy) -> b
 ///   meant the execution policy spells it out;
 /// - the scan stops at `-File`, whose value and everything after it are the
 ///   script's arguments rather than PowerShell's.
-fn powershell_hands_an_inline_command(argv: &[String]) -> bool {
+fn powershell_command_source(argv: &[String]) -> ShellCommandSource {
     for arg in argv {
         // `-Command:value` and `--command=value` carry the value in the same
         // token; what binds the parameter is the name before the separator.
@@ -560,16 +545,18 @@ fn powershell_hands_an_inline_command(argv: &[String]) -> bool {
         // Tested first: `-File` ends PowerShell's own parameters, so a
         // `-Command` after it belongs to the script.
         if is_powershell_abbreviation_of(name, POWERSHELL_FILE_PARAMETER) {
-            return false;
+            return ShellCommandSource::ScriptOperand;
         }
         if POWERSHELL_COMMAND_PARAMETERS
             .iter()
             .any(|parameter| is_powershell_abbreviation_of(name, parameter))
         {
-            return true;
+            return ShellCommandSource::InlineArgument;
         }
     }
-    false
+    // No `-Command` and no `-File`: PowerShell starts a session that reads
+    // what it is given on standard input.
+    ShellCommandSource::StandardInput
 }
 
 /// Whether `arg` is a dash-led abbreviation PowerShell would bind to
@@ -596,33 +583,63 @@ fn is_powershell_abbreviation_of(arg: &str, parameter: &str) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case(letters))
 }
 
-/// Whether the invocation hands a shell an inline command string.
+/// Where a shell invocation would take the commands it executes.
+///
+/// A shell has exactly one command source, and which one it is depends on argv
+/// and stdin *together*. Deciding them independently was wrong in both
+/// directions: `-s` in argv makes stdin the command channel even when a script
+/// operand is present, and a script operand makes stdin ordinary data rather
+/// than commands — so `sh script.sh` fed bytes on stdin, an entirely ordinary
+/// plan, was unstartable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellCommandSource {
+    /// An argument carries the command string (`-c`, `/C`, `-Command`, …).
+    InlineArgument,
+    /// The shell reads its commands from standard input.
+    ///
+    /// The state of a bare `sh`, of `sh -s`, and of an operand that names
+    /// standard input. Whether that is a hazard depends on the stdin policy:
+    /// with [`StdinPolicy::Closed`] there is nothing to execute.
+    StandardInput,
+    /// An operand names a script file for the shell to run.
+    ///
+    /// The plan does not carry that file's content, so this is outside what
+    /// the gate can decide; stdin here belongs to the script, as data.
+    ScriptOperand,
+}
+
+/// Operands that name standard input rather than a file on disk.
+///
+/// `-` is POSIX; the others are the paths a shell would be handed to reach the
+/// same descriptor. A floor rather than a boundary — a plan can always name a
+/// FIFO this list does not know about — but each of these turns an apparent
+/// script operand back into the stdin channel, so leaving them out would let
+/// `sh /dev/stdin` past a gate that refuses `sh`.
+const OPERANDS_NAMING_STANDARD_INPUT: &[&str] =
+    &["-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"];
+
+/// Classify where a shell would take its commands from, or `None` for a
+/// program that is not a shell.
 ///
 /// Only the argument positions where a shell is still parsing *its own*
 /// options are examined. Option parsing ends at `--` or at the first operand,
-/// so in `sh script.sh -c` the `-c` belongs to the script and the plan is
-/// valid — scanning the whole argv would make ordinary shell tooling
-/// unstartable.
+/// so in `sh script.sh -c` the `-c` belongs to the script — scanning the whole
+/// argv would make ordinary shell tooling unstartable.
 ///
 /// The exception is a multi-call binary: `busybox sh -c 'cmd'` puts the applet
 /// name in the first operand position, and stopping there would let every
 /// BusyBox shell invocation through. When the operand that ends option parsing
 /// is itself a shell, scanning continues past it; when it is any other applet
 /// (`busybox ls -c`), the flags after it are that applet's business.
-///
-/// One inline form this cannot see is `sh -s`, which takes its commands from
-/// standard input rather than argv. That is stdin's shape, not argv's, and it
-/// is [`StdinPolicy`](super::StdinPolicy) that describes what a run feeds a
-/// child.
-fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
+fn shell_command_source(logical_name: &str, argv: &[String]) -> Option<ShellCommandSource> {
     let base = program_base(logical_name);
     if !SHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(base)) {
-        return false;
+        return None;
     }
     // A different grammar, not a different flag list: the POSIX scan below
     // both over- and under-refuses PowerShell argv.
     if POWERSHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(base)) {
-        return powershell_hands_an_inline_command(argv);
+        return Some(powershell_command_source(argv));
     }
     let mut index = 0;
     // A multi-call binary names its applet in the first operand slot.
@@ -637,18 +654,53 @@ fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
         // their flags `/C` — which is not dash-led, and would otherwise be
         // mistaken for the operand that ends option parsing.
         if is_inline_command_argument(arg) {
-            return true;
+            return Some(ShellCommandSource::InlineArgument);
+        }
+        // `-s` reads commands from standard input, and it wins over any
+        // operand: under `-s` the operands become positional parameters for
+        // the script arriving on stdin, not the script itself.
+        if is_read_from_standard_input_flag(arg) {
+            return Some(ShellCommandSource::StandardInput);
         }
         if arg == "--" || !arg.starts_with('-') {
-            // Options have ended; everything after belongs to the operand.
-            return false;
+            // Options have ended. What follows `--` is the operand too.
+            let operand = if arg == "--" { argv.get(index + 1) } else { Some(arg) };
+            return Some(match operand {
+                Some(name)
+                    if OPERANDS_NAMING_STANDARD_INPUT
+                        .iter()
+                        .any(|stdin_name| stdin_name.eq_ignore_ascii_case(name)) =>
+                {
+                    ShellCommandSource::StandardInput
+                }
+                Some(_) => ShellCommandSource::ScriptOperand,
+                // A trailing `--` with nothing after it leaves the shell with
+                // no script at all, which is the bare-shell case.
+                None => ShellCommandSource::StandardInput,
+            });
         }
         // An option whose value is the next word consumes it. Without this the
         // value looks like the operand that ends option parsing, and every
         // flag after it — including `-c` — goes unexamined.
         index += if takes_a_separate_value(arg) { 2 } else { 1 };
     }
-    false
+    // Options ran out with no operand: a bare shell reads standard input.
+    Some(ShellCommandSource::StandardInput)
+}
+
+/// Whether an argument tells a POSIX shell to read its commands from stdin.
+///
+/// The exact `-s` and any bundled cluster containing it, matching how the
+/// inline-command flag is recognised one function above.
+fn is_read_from_standard_input_flag(arg: &str) -> bool {
+    match arg.strip_prefix('-') {
+        Some(letters)
+            if !letters.is_empty() && letters.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
+            letters.contains('s')
+        }
+        _ => false,
+    }
 }
 
 /// Whether this option's value is the following argument.

@@ -363,6 +363,26 @@ impl TerminalDisposition {
     /// The operating-system mechanics that populate [`ControlState`] belong to
     /// the Linux lifecycle lane; this function is the pure rule it applies.
     pub fn elect(control: ControlState, settlement: ObservedSettlement) -> Self {
+        let candidate = Self::elect_by_precedence(control, settlement);
+        if !candidate.contradicted_by(settlement) {
+            return candidate;
+        }
+        // The elected cause is disproved by the child's own account. A cleanup
+        // failure is a separate observation that the contradiction does not
+        // touch, and the precedence order ranks it above an unproven outcome —
+        // so falling straight to `NotProven` would discard a known failure in
+        // favour of uncertainty. It is taken only when it is not itself
+        // contradicted; the election never falls further than that, because
+        // the settlement is half of what is being contradicted.
+        if control.cleanup_failed && !Self::CleanupFailed.contradicted_by(settlement) {
+            return Self::CleanupFailed;
+        }
+        Self::NotProven
+    }
+
+    /// The cause the fixed precedence order selects, before any coherence
+    /// check against the child's own account.
+    fn elect_by_precedence(control: ControlState, settlement: ObservedSettlement) -> Self {
         if control.supervisor_failed {
             return Self::SupervisorFailed;
         }
@@ -373,38 +393,6 @@ impl TerminalDisposition {
             return Self::TimedOut;
         }
         if let Some(reason) = control.cancellation_requested {
-            // The control plane says whether the child had started; the
-            // settlement is the child's own account. When the two disagree,
-            // electing either cancellation state would publish a claim the
-            // other half of the evidence disproves — "cancelled while running"
-            // for a child that never started, or "cancelled before start" for
-            // one that demonstrably exited. Neither is established, so the
-            // election fails closed to the state that says exactly that.
-            //
-            // `NotObserved` contradicts nothing: not having seen how the child
-            // settled is consistent with either.
-            let contradicted = matches!(
-                (control.started_before_cancellation, settlement),
-                (true, ObservedSettlement::NotStarted)
-                    | (
-                        false,
-                        ObservedSettlement::Exited { .. } | ObservedSettlement::Signaled { .. }
-                    )
-            );
-            if contradicted {
-                // The cancellation cause is not established, but a cleanup
-                // failure is a separate observation that the contradiction
-                // does not touch — and the precedence order already ranks it
-                // above an unproven outcome. Falling straight to `NotProven`
-                // would discard a known failure in favour of uncertainty,
-                // producing exactly the pairing `ProcessResult::new` refuses.
-                // The election does not fall further than this: the child's
-                // own settlement is half of what is being contradicted.
-                if control.cleanup_failed {
-                    return Self::CleanupFailed;
-                }
-                return Self::NotProven;
-            }
             return if control.started_before_cancellation {
                 Self::CancelledRunning(reason)
             } else {
@@ -418,6 +406,32 @@ impl TerminalDisposition {
             ObservedSettlement::Signaled { signal } => Self::Signaled { signal },
             ObservedSettlement::Exited { code } => Self::CompletedExit { code },
             ObservedSettlement::NotStarted | ObservedSettlement::NotObserved => Self::NotProven,
+        }
+    }
+
+    /// Whether the child's own account disproves this cause.
+    ///
+    /// The control plane and the settlement are two independent witnesses.
+    /// When they disagree, electing the control plane's cause would publish a
+    /// claim the other half of the evidence contradicts, so the election fails
+    /// closed instead.
+    ///
+    /// One rule for both directions, keyed on the two predicates that already
+    /// classify every cause, rather than a clause per pair. Stating it for the
+    /// cancellation pair alone left `OutputLimitExceeded` and `CleanupFailed`
+    /// electable beside a settlement saying nothing ever ran — an output
+    /// budget reached by a child that never existed, and a cleanup failure the
+    /// result assembler already refuses to pair with a pre-start outcome.
+    ///
+    /// [`ObservedSettlement::NotObserved`] contradicts nothing: not having seen
+    /// how the child settled is consistent with every cause.
+    fn contradicted_by(&self, settlement: ObservedSettlement) -> bool {
+        match settlement {
+            ObservedSettlement::NotStarted => self.requires_a_started_child(),
+            ObservedSettlement::Exited { .. } | ObservedSettlement::Signaled { .. } => {
+                self.asserts_no_child_started()
+            }
+            ObservedSettlement::NotObserved => false,
         }
     }
 
@@ -478,11 +492,14 @@ impl TerminalDisposition {
     /// `CancelledRunning` sit beside a cleanup disposition meaning "nothing
     /// started, so nothing needed cleaning up".
     ///
+    /// `CleanupFailed` is present: `ProcessResult::new` already refuses a
+    /// pre-start outcome carrying [`CleanupDisposition::Failed`], so by the
+    /// contract's own rule a cleanup that failed had a child to clean up
+    /// after.
+    ///
     /// `TimedOut`, `SupervisorFailed`, and `NotProven` are absent: a deadline
     /// can elapse while a spawn is still hanging, and the other two say
-    /// nothing about whether a child exists. `CleanupFailed` is absent because
-    /// cleanup having failed already excludes every disposition claiming it
-    /// was unnecessary.
+    /// nothing about whether a child exists.
     ///
     /// Exhaustive, so a new terminal cause is classified rather than admitted
     /// by default.
@@ -491,11 +508,11 @@ impl TerminalDisposition {
             Self::CompletedExit { .. }
             | Self::Signaled { .. }
             | Self::CancelledRunning(_)
-            | Self::OutputLimitExceeded => true,
+            | Self::OutputLimitExceeded
+            | Self::CleanupFailed => true,
             Self::TimedOut
             | Self::SupervisorFailed
             | Self::NotProven
-            | Self::CleanupFailed
             | Self::SpawnRejected(_)
             | Self::SpawnFailed { .. }
             | Self::CancelledBeforeStart(_)
