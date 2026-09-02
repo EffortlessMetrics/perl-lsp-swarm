@@ -1164,10 +1164,23 @@ fn skip_quote_like(
             if section == 0 {
                 open
             } else {
+                let gap_start = end;
                 while end < bytes.len() && matches!(bytes[end], b' ' | b'\t') {
                     end += 1;
                 }
-                *bytes.get(end)?
+                // perl draws the line exactly here: `s{a}#b#` is valid with `#`
+                // as the replacement delimiter, while `s{a} #b#` is a fatal
+                // "Substitution replacement not terminated" — a space makes the
+                // `#` a comment. Taking a comment for a delimiter left the run
+                // open and it swallowed later lines, so a later heredoc was
+                // missed. Give up on operator recognition instead, which is
+                // what already happens when the replacement starts on the next
+                // line.
+                let byte = *bytes.get(end)?;
+                if byte == b'#' && end > gap_start {
+                    return None;
+                }
+                byte
             }
         } else {
             open

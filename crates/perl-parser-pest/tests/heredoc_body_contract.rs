@@ -455,6 +455,12 @@ fn when_a_replacement_stands_off_from_its_pattern_then_a_later_heredoc_is_owned(
         "$t =~ tr{a} {b};\nmy $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
         // The gapless form must keep working.
         "$t =~ s{a}{b};\nmy $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        // The replacement may start on a later line, and a comment may sit in
+        // the gap. perl draws the line by adjacency: `s{a} #b#` is a fatal
+        // "Substitution replacement not terminated" because the space makes the
+        // `#` a comment, so the replacement is on the next line.
+        "$t =~ s{a} # comment\n{b};\nmy $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "$t =~ s{a}\n{b};\nmy $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
     ] {
         let scan = perl_parser_pest::heredoc::scan(source);
         assert_eq!(scan.captures().len(), 1, "the heredoc after it must be seen: {source:?}");
@@ -468,6 +474,22 @@ fn when_a_replacement_stands_off_from_its_pattern_then_a_later_heredoc_is_owned(
             "code after the terminator must survive: {source:?}"
         );
     }
+
+    // The other side of that adjacency rule: `s{a}#b#` *is* valid perl with `#`
+    // as the replacement delimiter (it substitutes, where the spaced form is a
+    // compile error), so an adjacent `#` must stay a delimiter and the
+    // substitution must still own nothing.
+    // The heredoc after it on the same line is what discriminates: if the `#`
+    // were read as a comment instead, everything after it — including the
+    // opener — would be swallowed. perl runs this and yields `x=body`.
+    let source = "$t =~ s{a}#b#; my $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n";
+    let scan = perl_parser_pest::heredoc::scan(source);
+    assert_eq!(scan.captures().len(), 1, "an adjacent `#` is a delimiter, not a comment");
+    assert_eq!(
+        scan.captures().first().map(|capture| capture.content()),
+        Some("body\n"),
+        "the heredoc after the substitution must still be owned"
+    );
 }
 
 #[test]
