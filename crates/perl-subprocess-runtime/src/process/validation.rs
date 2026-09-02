@@ -49,8 +49,20 @@ const SHELL_PROGRAMS: &[&str] = &[
 const EXECUTABLE_SUFFIXES: &[&str] = &[".exe", ".com", ".bat", ".cmd"];
 
 /// Flags that hand a shell an inline command string.
+///
+/// `/K` is here alongside `/C`: `cmd.exe /K "..."` runs the command string
+/// exactly as `/C` does and merely keeps the interpreter alive afterwards, so
+/// omitting it would leave the same door open under a different letter.
 const INLINE_COMMAND_FLAGS: &[&str] =
-    &["-c", "-command", "/c", "/C", "-Command", "-EncodedCommand", "--command"];
+    &["-c", "-command", "/c", "/C", "/k", "/K", "-Command", "-EncodedCommand", "--command"];
+
+/// Shell options whose value is the *next* argument rather than part of the
+/// same token.
+///
+/// These matter because the scan stops at the first operand: without knowing
+/// that `errexit` in `bash -o errexit -c 'cmd'` is `-o`'s value and not the
+/// script operand, the scan would stop there and never examine the `-c`.
+const OPTIONS_TAKING_A_SEPARATE_VALUE: &[&str] = &["-o", "+o", "--rcfile", "--init-file"];
 
 /// Programs that dispatch to an applet named by their first operand.
 ///
@@ -488,9 +500,30 @@ fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
             // Options have ended; everything after belongs to the operand.
             return false;
         }
-        index += 1;
+        // An option whose value is the next word consumes it. Without this the
+        // value looks like the operand that ends option parsing, and every
+        // flag after it — including `-c` — goes unexamined.
+        index += if takes_a_separate_value(arg) { 2 } else { 1 };
     }
     false
+}
+
+/// Whether this option's value is the following argument.
+///
+/// Covers the exact spellings and short-option clusters ending in `o`, since
+/// `bash -eo pipefail` puts the value after the cluster just as `-o` does.
+fn takes_a_separate_value(arg: &str) -> bool {
+    if OPTIONS_TAKING_A_SEPARATE_VALUE.iter().any(|option| option.eq_ignore_ascii_case(arg)) {
+        return true;
+    }
+    match arg.strip_prefix(['-', '+']) {
+        Some(letters)
+            if !letters.is_empty() && letters.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
+            letters.ends_with('o')
+        }
+        _ => false,
+    }
 }
 
 fn validate_cwd(plan: &ProcessPlan) -> Result<(), PlanRejection> {

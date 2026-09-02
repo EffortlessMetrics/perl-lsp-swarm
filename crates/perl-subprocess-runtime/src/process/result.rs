@@ -882,9 +882,15 @@ impl ProcessResult {
         // The cause names a capture budget as the reason the run ended, so
         // some channel must record the bound it reached. Both streams claiming
         // completeness contradicts the cause directly.
+        // `is_complete()` rather than the observation bound alone: a run
+        // terminated for reaching a *retention* budget has both channels
+        // retention-truncated and neither observation-truncated, and that is a
+        // coherent outcome. Keying on one axis made it unrepresentable — the
+        // over-rejection this rule's own documentation already ruled out by
+        // saying two *complete* streams contradict the cause.
         if disposition == TerminalDisposition::OutputLimitExceeded
-            && !stdout.truncation().observation_was_truncated()
-            && !stderr.truncation().observation_was_truncated()
+            && stdout.truncation().is_complete()
+            && stderr.truncation().is_complete()
         {
             return Err(ResultInconsistency::OutputLimitWithoutATruncatedStream);
         }

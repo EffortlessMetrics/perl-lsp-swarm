@@ -12,9 +12,9 @@ Every row below is proven by a named test in
 | Terminal process, supervisor, cleanup, truncation, stale, unsupported and not-proven states remain distinct | `a_control_plane_termination_never_becomes_an_ordinary_success`, `precedence_is_total_and_ordered`, `a_nonzero_exit_is_an_executed_result_not_an_instrument_failure`, `a_signal_and_an_unobserved_settlement_stay_distinct_from_success` |
 | Exact executable, argv, cwd, environment, budgets, operation, authorization, source/configuration references and claim boundary are retained | `the_supervisor_records_the_exact_plan_it_was_given`, `validation_binds_the_fingerprint_it_validated` |
 | Deterministic fake/recording supervisors support cheap, race-free consumer tests | the `FakeSupervisor` tests; `the_fake_supervisor_reads_no_clock_and_spawns_no_thread` pins the determinism mechanism itself |
-| Canonical encoding/fingerprints are deterministic, bounded, versioned and path/secret-safe at the public boundary — see the boundedness note below, which narrows what "bounded" is proven to mean | `canonical_encoding_is_stable_under_construction_order`, `a_meaning_change_moves_the_fingerprint`, `environment_values_never_reach_a_public_identity`, `private_paths_and_bytes_are_redacted_in_debug_output`, `the_canonical_encoding_of_a_fixture_plan_is_locked_to_the_schema_version` |
+| Fingerprints are deterministic, versioned, path/secret-safe, and bounded to 128 bits; the canonical encoding is deterministic, versioned, path/secret-safe, linear in plan size and non-amplifying, but **not** capped | `canonical_encoding_is_stable_under_construction_order`, `a_meaning_change_moves_the_fingerprint`, `environment_values_never_reach_a_public_identity`, `private_paths_and_bytes_are_redacted_in_debug_output`, `the_canonical_encoding_of_a_fixture_plan_is_locked_to_the_schema_version` |
 | Existing callers compile only through an explicitly temporary bounded adapter where unavoidable | `the_legacy_seam_is_contained_and_owned` for the ledger, `no_unrecorded_second_execution_seam_exists_in_the_crate` for the crate; `process::legacy` records what the seam cannot express and that `#1975` owns removal |
-| No OS process spawn or product behavior change occurs in this PR | `the_domain_never_reaches_for_an_operating_system_process_api`; no file outside the crate is touched |
+| No OS process spawn or product behavior change occurs in this PR | `the_domain_never_reaches_for_an_operating_system_process_api`. Outside the crate this PR changes only the three `.spec/11076-process-domain-contract/` files and the regenerated `docs/policy/NON_RUST_INVENTORY.md`; no product source is touched |
 
 ## Negative controls
 
@@ -78,8 +78,8 @@ reviewer's own mutations were replayed against them.
 | `the_legacy_seam_is_contained_and_owned` | circular: it checked the containment ledger against itself, so a brand-new unfenced `pub fn` execution seam elsewhere in the crate was invisible | new `no_unrecorded_second_execution_seam_exists_in_the_crate` scans every crate source for functions producing `SubprocessOutput` and requires each to be declared | KILLED |
 | `the_crate_takes_no_dependencies_that_could_carry_domain_semantics` | `[dependencies.log]` dotted-table syntax walked straight past a `line == "[dependencies]"` check | table headers are parsed, and any dotted or `target.*` dependency table fails | KILLED |
 | acceptance claimed the fake "spawns no thread and reads no clock" with nothing asserting it | — | new `the_fake_supervisor_reads_no_clock_and_spawns_no_thread` | — |
-| `PrivateBytes` stdin content is fingerprinted into the plan identity while `SecretValue` is excluded, with the asymmetry undocumented and untested | the two privacy tiers are now named and documented on `PrivateBytes` and `StdinPolicy::Bytes`, with guidance to use `SecretValue` for low-entropy secrets | `stdin_content_identifies_a_plan_while_its_bytes_stay_out_of_the_encoding` |
-| structural scans used a non-recursive `read_dir`, so files moved into submodules in the follow-on lanes would silently stop being covered | `rust_sources_under` recurses | — |
+| `PrivateBytes` stdin content is fingerprinted into the plan identity while `SecretValue` is excluded, with the asymmetry undocumented and untested | the two privacy tiers are now named and documented on `PrivateBytes` and `StdinPolicy::Bytes`, with guidance to use `SecretValue` for low-entropy secrets | `stdin_content_identifies_a_plan_while_its_bytes_stay_out_of_the_encoding` | — |
+| structural scans used a non-recursive `read_dir`, so files moved into submodules in the follow-on lanes would silently stop being covered | — | `rust_sources_under` recurses | — |
 
 One methodological note worth recording: two mutation runs first reported
 SURVIVED and were false negatives of the harness, not weak controls — a
@@ -309,8 +309,8 @@ its observation and its retention bound, so such a run had to claim one of the
 two had been complete.
 
 I had found the same gap myself, in the independent final challenge run one
-commit earlier, and **recorded it as a documented limitation deferred to
-#11085**. That was the wrong call, and the reviewer was right to press it.
+commit earlier, and **recorded it as a documented limitation deferred to issue
+`#11085`**. That was the wrong call, and the reviewer was right to press it.
 
 The reasoning I used was "no backend exists yet, so widening the type now is
 speculative design." What that missed is that the deliverable of this PR *is*
@@ -417,7 +417,7 @@ Five findings: four repaired, one answered as a standing claim boundary.
 | correctness | scanning every argv position refused valid plans: in `sh script.sh -c` the flag belongs to the script | **Fixed** — the scan stops at `--` or the first operand, with a multi-call exception | KILLED (×2) |
 | correctness | contradictory cancellation evidence became terminal truth | **Fixed** — election fails closed to `NotProven` | KILLED |
 | correctness | a rejected chunk left the event stream open, so a later poll could announce success | **Fixed** — the rejection settles the run | KILLED |
-| security | `Fingerprint` is unkeyed FNV-1a | **Standing boundary** — see below |
+| security | `Fingerprint` is unkeyed FNV-1a | **Standing boundary** — see below | — |
 
 **The bypass was the serious one.** `bash -lc 'curl … | sh'` is an ordinary
 idiom, and the gate compared whole argv tokens against `-c`, so every bundled
@@ -483,7 +483,7 @@ Three findings repaired, one answered with evidence.
 | correctness | a completed exit or signal could carry `CleanupDisposition::NotRequired`, whose contract says nothing started | **Fixed** — `SettledChildCarriesNoChildCleanup` | KILLED |
 | correctness | the fake inferred "the child started" from the poll count | **Fixed** — a `Started` event actually admitted | KILLED, after the first control failed to discriminate |
 | security | `CODE_LOADING_VARIABLES` omitted `PYTHONSTARTUP`, `RUBYLIB`, `NODE_PATH` | **Fixed** — added, with the list's nature documented | KILLED |
-| analysis | which public-API gates apply | **Answered with evidence** — see the PR thread |
+| analysis | which public-API gates apply | **Answered with evidence** — see the PR thread | — |
 
 The first is the **inverse of a rule I wrote two rounds earlier** and should have
 written at the same time. Round 11 established that a disposition asserting no

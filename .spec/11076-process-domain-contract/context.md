@@ -7,7 +7,11 @@ implementation slice of process epic #4836. The remaining train — #11078 Linux
 spawn, #11082 lifecycle and cleanup, #11085 receipts and conformance, #1975
 direct-spawn inventory — all depend on the contract this packet establishes.
 
-Reconciled against `origin/main@e175dc3` on 2026-09-01.
+The reconciliation findings below were established against
+`origin/main@e175dc3` on 2026-09-01. `main` has moved several times since, so
+that SHA dates the *findings*, not the branch's mergeability: the live fact is
+the `git merge-tree --write-tree origin/main HEAD` check recorded in the PR,
+which is re-run against whatever `main` currently is.
 
 ## Reconciliation findings on current main
 

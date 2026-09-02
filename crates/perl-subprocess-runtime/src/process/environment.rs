@@ -272,18 +272,40 @@ impl EnvironmentProjection {
     /// Names that appear in contradictory rules.
     pub fn contradictions(&self) -> Vec<&EnvVarName> {
         let mut contradictions: Vec<&EnvVarName> = Vec::new();
+        // Compared ignoring ASCII case, matching the admission check. Byte-exact
+        // membership here left a real hole: `allow("PERL5LIB")` with
+        // `deny("perl5lib")` reported no contradiction, while admission saw the
+        // lowercase denial and cleared the vector — so a plan holding one rule
+        // that says inherit and one that says do not passed both gates. On
+        // Windows those spellings name one variable, which is exactly the
+        // divergence this function exists to refuse.
         for name in &self.allowed {
             // Allowed-and-denied and allowed-and-removed are both undefined:
             // one rule says inherit the variable and the other says do not,
             // and no precedence between them exists. Two backends could
             // project different child environments from the same validated
             // plan, so the plan is refused instead.
-            if self.denied.contains(name) || self.removed.contains(name) {
+            if names_contain_ignoring_case(&self.denied, name)
+                || names_contain_ignoring_case(&self.removed, name)
+            {
                 contradictions.push(name);
             }
         }
         for name in self.additions.keys() {
-            if self.removed.contains(name) || self.denied.contains(name) {
+            if names_contain_ignoring_case(&self.removed, name)
+                || names_contain_ignoring_case(&self.denied, name)
+            {
+                contradictions.push(name);
+            }
+        }
+        // Two additions differing only in case are one variable on Windows, so
+        // the value the child receives would be backend-dependent.
+        for name in self.additions.keys() {
+            if self
+                .additions
+                .keys()
+                .any(|other| other != name && other.as_str().eq_ignore_ascii_case(name.as_str()))
+            {
                 contradictions.push(name);
             }
         }
