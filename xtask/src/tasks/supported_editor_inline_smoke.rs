@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const LSP_CLIENT_SUPPORT_POLICY: &str = "policy/lsp-client-support.toml";
+
 const ROUTES: &[SupportedEditorRouteRequirement] = &[
     SupportedEditorRouteRequirement {
         route: "stdio_cli_smoke",
@@ -241,6 +243,9 @@ fn summarize_supported_editor_routes(
     root: &Path,
     requirements: &[SupportedEditorRouteRequirement],
 ) -> Result<SupportedEditorInlineSmokeReceipt> {
+    if requirements.iter().any(|route| route.route == "lsp4ij_upstream_integration") {
+        validate_lsp4ij_policy(root)?;
+    }
     let mut supported_editor_routes = BTreeMap::new();
     for route in requirements {
         let mut proof_planes = BTreeMap::new();
@@ -323,6 +328,55 @@ fn summarize_supported_editor_routes(
         next_edit_boundary,
         future_gated,
     })
+}
+
+fn validate_lsp4ij_policy(root: &Path) -> Result<()> {
+    let path = root.join(LSP_CLIENT_SUPPORT_POLICY);
+    let source =
+        fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let policy: toml::Value =
+        toml::from_str(&source).with_context(|| format!("parsing {}", path.display()))?;
+    let clients = policy
+        .get("client")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| color_eyre::eyre::eyre!("{} must define [[client]] rows", path.display()))?;
+    let client = clients
+        .iter()
+        .find(|client| client.get("id").and_then(toml::Value::as_str) == Some("intellij_lsp4ij"))
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "{} must define the intellij_lsp4ij client authority",
+                path.display()
+            )
+        })?;
+    if client.get("integration_mode").and_then(toml::Value::as_str) != Some("lsp4ij_plugin") {
+        bail!("intellij_lsp4ij policy integration_mode must be `lsp4ij_plugin`");
+    }
+    if client.get("synthetic_profile").and_then(toml::Value::as_bool) != Some(true) {
+        bail!("intellij_lsp4ij policy must identify its synthetic profile");
+    }
+    let evidence = client
+        .get("evidence")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| color_eyre::eyre::eyre!("intellij_lsp4ij policy evidence is missing"))?;
+    for expected in [
+        "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
+        "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+    ] {
+        if !evidence
+            .iter()
+            .any(|entry| entry.get("path").and_then(toml::Value::as_str) == Some(expected))
+        {
+            bail!("intellij_lsp4ij policy evidence is missing `{expected}`");
+        }
+    }
+    let boundary = client.get("claim_boundary").and_then(toml::Value::as_str).ok_or_else(|| {
+        color_eyre::eyre::eyre!("intellij_lsp4ij policy claim_boundary is missing")
+    })?;
+    if !boundary.contains("not an actual IntelliJ/LSP4IJ launch") {
+        bail!("intellij_lsp4ij policy claim_boundary must preserve the host-support boundary");
+    }
+    Ok(())
 }
 
 fn validate_declared_status(route: &str, plane: &str, status: &str) -> Result<()> {
@@ -636,6 +690,23 @@ mod tests {
         };
         let message = error.to_string();
         assert!(message.contains("unsupported declared status `maybe`"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn lsp4ij_policy_authority_requires_expected_evidence() -> Result<()> {
+        let temp = TempDir::new()?;
+        let policy_dir = temp.path().join("policy");
+        fs::create_dir_all(&policy_dir)?;
+        fs::write(
+            policy_dir.join("lsp-client-support.toml"),
+            "[[client]]\nid = \"intellij_lsp4ij\"\nintegration_mode = \"lsp4ij_plugin\"\nsynthetic_profile = true\nevidence = [{ path = \"docs/EDITORS/INTELLIJ_IDEA_SETUP.md\" }]\nclaim_boundary = \"not an actual IntelliJ/LSP4IJ launch\"\n",
+        )?;
+
+        let Err(error) = validate_lsp4ij_policy(temp.path()) else {
+            bail!("missing protocol-profile evidence must be rejected");
+        };
+        assert!(error.to_string().contains("lsp_inline_completion_registration_tests.rs"));
         Ok(())
     }
 
