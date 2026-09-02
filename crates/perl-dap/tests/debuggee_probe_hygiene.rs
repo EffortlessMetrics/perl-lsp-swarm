@@ -500,11 +500,7 @@ fn main() {
         // The parent environment remains untouched, including any caller pin.
         let parent_pin = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV);
         let child = Command::new(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "probe_workspace_cleanup_covers_each_child_exit_path",
-                "--nocapture",
-            ])
+            .args(["--exact", "probe_workspace_cleanup_covers_each_child_exit_path", "--nocapture"])
             .env(INVALID_PIN_CHILD_MODE, "1")
             .env(DEBUGGEE_PERL_OVERRIDE_ENV, "/definitely/not/a/real/perl")
             .output()?;
