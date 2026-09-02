@@ -15,6 +15,8 @@
 //! ### Find-references
 //! - All uses of `$var` in a file -> expected site count
 //! - All call sites of `sub foo` -> expected site count
+//! - Package-qualified cursor component: a cursor on `Foo` (or the `::`) in
+//!   `Foo::bar()` does not report references to `sub bar`
 //! - Scope isolation: `my $x` in if-block vs else-block should not cross-match
 //!
 //! ### Rename
