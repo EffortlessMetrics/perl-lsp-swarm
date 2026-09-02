@@ -2013,7 +2013,11 @@ fn duplicate_id_count(entries: &[AllowEntry]) -> usize {
     seen_ids.values().filter(|count| **count > 1).count()
 }
 
-fn entry_matches_any_tracked_file(entry: &AllowEntry, tracked: &[String]) -> bool {
+/// Visible to the crate so `publication_sync` can prove its local
+/// `entry_governs` still agrees with this rule. That local copy exists to keep
+/// scope-sensitive churn out of this whole-tree policy surface; a differential
+/// test is what stops the two from drifting apart silently.
+pub(crate) fn entry_matches_any_tracked_file(entry: &AllowEntry, tracked: &[String]) -> bool {
     if let Some(path) = entry.path.as_deref() {
         return tracked.iter().any(|tracked_path| tracked_path == path);
     }

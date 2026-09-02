@@ -2201,3 +2201,89 @@ fn status_parsing_recovers_modified_untracked_and_renamed_paths() -> Result<()> 
     }
     Ok(())
 }
+
+/// `entry_governs` is a deliberate local copy of the ledger match rule, kept out
+/// of `file_policy` so this claim does not churn a whole-tree policy surface.
+/// A duplicated rule is a drift hazard, so pin the equivalence rather than
+/// trusting that two hand-written copies stay in step: if either side learns
+/// about glob parse errors, trailing slashes, or `retired` and the other does
+/// not, this fails.
+#[test]
+fn the_local_ledger_matcher_agrees_with_the_shared_one() -> Result<()> {
+    fn entry(path: Option<&str>, glob: Option<&str>) -> AllowEntry {
+        AllowEntry {
+            id: "differential".to_string(),
+            glob: glob.map(str::to_string),
+            path: path.map(str::to_string),
+            kind: String::new(),
+            language: String::new(),
+            surface: String::new(),
+            classification: "production".to_string(),
+            owner: String::new(),
+            reason: String::new(),
+            covered_by: Vec::new(),
+            created: String::new(),
+            review_after: String::new(),
+            expires: None,
+            broad_glob_reason: None,
+            retired: false,
+        }
+    }
+
+    let entries = [
+        entry(Some("install.sh"), None),
+        entry(Some("clients/sublime/LSP-perllsp/plugin.py"), None),
+        entry(None, Some("fixtures/publication_sync/*.json")),
+        entry(None, Some("crates/**/*.rs")),
+        // Neither field: the ledger shape forbids it, but both matchers have to
+        // agree on what they do with it anyway.
+        entry(None, None),
+        // An unparsable glob. Both sides must decline rather than panic.
+        entry(None, Some("[unterminated")),
+    ];
+
+    let candidates = [
+        "install.sh",
+        "install.ps1",
+        "clients/sublime/LSP-perllsp/plugin.py",
+        "clients/sublime/LSP-perllsp/",
+        "fixtures/publication_sync/clean_manifest.json",
+        "fixtures/publication_sync/nested/deep.json",
+        "crates/perl-parser/src/lexer.rs",
+        "crates/perl-parser/src",
+        "README.md",
+        "",
+    ];
+
+    let mut agreements = 0usize;
+    let mut positives = 0usize;
+    for entry in &entries {
+        for candidate in candidates {
+            let local = entry_governs(entry, candidate);
+            let shared =
+                file_policy::entry_matches_any_tracked_file(entry, &[candidate.to_string()]);
+            if local != shared {
+                bail!(
+                    "matchers disagree on entry {:?}/{:?} for {candidate:?}: \
+                     entry_governs={local}, entry_matches_any_tracked_file={shared}",
+                    entry.path,
+                    entry.glob
+                );
+            }
+            agreements += 1;
+            if local {
+                positives += 1;
+            }
+        }
+    }
+
+    // Guard against a vacuous pass: two matchers that both always answer `false`
+    // would agree on everything.
+    if positives == 0 {
+        bail!("no candidate matched any entry, so agreement proves nothing");
+    }
+    if agreements != entries.len() * candidates.len() {
+        bail!("the differential matrix did not run in full");
+    }
+    Ok(())
+}
