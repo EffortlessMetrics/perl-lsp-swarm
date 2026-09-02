@@ -996,6 +996,28 @@ gates:
     planning:
       role: rust_scoped
 
+  # The perl-parse CLI is an optional binary, so the routed `--tests` command
+  # does not exercise its integration test when `cli` is not enabled. Keep the
+  # read-failure accounting regression on a required, explicit feature-enabled
+  # path rather than allowing a feature-disabled test target to be vacuous.
+  - name: perl_parser_cli_regression
+    tier: pr_fast
+    description: "Feature-enabled perl-parse CLI regression for continued read failures"
+    required: true
+    command: cargo test --locked -p perl-parser --test perl_parse_cli --features cli -- --nocapture
+    timeout_seconds: 180
+    retry_count: 0
+    budgets:
+      max_duration_ms: 150000
+    quarantine: false
+    tags:
+      - test
+      - integration
+      - perl-parser
+      - cli
+    planning:
+      role: always_on
+
   # ===========================================================================
   # Tier: merge_gate
   # ===========================================================================
