@@ -1434,17 +1434,19 @@ fn normalize_line_endings(value: &str) -> String {
 }
 
 /// Escape a literal value for embedding in one Markdown table cell so the
-/// rendered row keeps exactly one cell per column: literal backslashes and
-/// pipes inside a value would otherwise make the cell codec ambiguous. The
-/// escape is reversed by [`parse_markdown_cells`].
+/// rendered row keeps exactly one cell per column: a literal `|` inside a
+/// value would otherwise split the row. Backslashes are intentionally left
+/// unchanged because values may be rendered inside Markdown code spans. The
+/// pipe escape is reversed by [`parse_markdown_cells`].
 fn escape_markdown_cell(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('|', "\\|")
+    value.replace('|', "\\|")
 }
 
 /// Split one rendered table row into its raw cell values, honoring
-/// [`escape_markdown_cell`] backslash escapes (`\\` and `\\|`) and trimming the
-/// surrounding whitespace the renderer emits. Unknown backslash sequences are
-/// preserved verbatim. Returns `None` for lines outside table rows.
+/// [`escape_markdown_cell`] pipe escapes and trimming the surrounding
+/// whitespace the renderer emits. Only the marker immediately before a pipe
+/// is consumed; all other backslashes are preserved verbatim. Returns `None`
+/// for lines outside table rows.
 fn parse_markdown_cells(line: &str) -> Option<Vec<String>> {
     let rest = line.trim().strip_prefix("| ")?;
     // Remove exactly the table delimiter. Using `trim_end_matches('|')` would
@@ -1453,23 +1455,16 @@ fn parse_markdown_cells(line: &str) -> Option<Vec<String>> {
     let trimmed = rest.trim_end().strip_suffix('|')?;
     let mut cells = Vec::new();
     let mut current = String::new();
-    let mut chars = trimmed.chars().peekable();
-    while let Some(ch) = chars.next() {
+    for ch in trimmed.chars() {
         match ch {
-            '\\' => match chars.peek().copied() {
-                Some('\\') => {
-                    chars.next();
-                    current.push('\\');
-                }
-                Some('|') => {
-                    chars.next();
-                    current.push('|');
-                }
-                _ => current.push('\\'),
-            },
             '|' => {
-                cells.push(current.trim().to_string());
-                current = String::new();
+                if current.ends_with('\\') {
+                    current.pop();
+                    current.push('|');
+                } else {
+                    cells.push(current.trim().to_string());
+                    current = String::new();
+                }
             }
             _ => current.push(ch),
         }
@@ -3583,6 +3578,7 @@ mod tests {
         // A backslash that is not part of a `\|` escape stays verbatim, and
         // the pipe after it still decodes (#14330 review).
         let raw = "docs\\a|b.md";
+        assert_eq!(escape_markdown_cell(raw), "docs\\a\\|b.md");
         let row = format!("| `{}` | documentation | `ab` | owner |\n", escape_markdown_cell(raw));
         let parsed = inventory_row_paths(&row);
         assert_eq!(
