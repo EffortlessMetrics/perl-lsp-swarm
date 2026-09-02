@@ -641,9 +641,15 @@ archive_extractor_profile() {
 # whose semantics differ per implementation: BusyBox tar reports a hardlink
 # with a regular-file type char and strips leading `/` and `../` from the name
 # it prints, so a link or an absolute-path member reads as an ordinary
-# canonical file (#11508). `od -An -v -tu1 -j -N` and awk's `%c` behave
-# identically across GNU, BusyBox, and macOS, so reading the header field is
-# implementation-independent where parsing a listing is not.
+# canonical file (#11508). `od -An -v -tu1 -j -N` and awk's `%c` were checked
+# byte-identical on GNU and BusyBox; both are POSIX-specified, but the macOS
+# one-true-awk leg is not covered by this repository's proof, so the macOS
+# host remains an open residual on #11508 rather than an assumed equivalence.
+#
+# Numeric fields are read as octal only. GNU tar switches `size` to base-256
+# past roughly 8 GiB, which this decoder reports as BAD; the uncompressed
+# ceiling above rejects such an archive long before the walk, so the gap is
+# unreachable rather than handled. Lifting that ceiling would make it live.
 read_tar_header() {
     od -An -v -tu1 -j "$2" -N 512 "$1" 2>/dev/null | awk '
 function fld(s, l,   i, r, c) {
@@ -798,6 +804,14 @@ EOF
         case "$type_char" in
             0|7|x|g|L|K)
                 data_blocks=$(( (size + 511) / 512 ))
+                ;;
+            S)
+                # GNU sparse. Its size field counts only the stored bytes, and
+                # a long sparse map continues into further blocks, so the
+                # entry's extent cannot be derived from this header alone.
+                # Refuse it by name rather than guessing an extent or
+                # mislabelling it as a dataless type that declared a size.
+                fail_archive_staging "sparse archive entries are not accepted: $name"
                 ;;
             *)
                 if [ "$size" -ne 0 ]; then

@@ -269,6 +269,47 @@ def sized_directory_entry(dest: Path) -> None:
     dest.write_bytes(_gzip.compress(raw.getvalue()))
 
 
+def sparse_entry(dest: Path) -> None:
+    """A GNU sparse member (typeflag ``S``) carrying real stored data (#11508).
+
+    A sparse header's size field counts only the stored bytes and a long
+    sparse map continues into further blocks, so the entry's extent is not
+    derivable from the header alone. It must be refused by name rather than
+    treated as a dataless type that wrongly declared a size.
+    """
+    import gzip as _gzip
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as archive:
+        valid_posix(archive)
+    blocks = bytearray(raw.getvalue())
+
+    header = bytearray(512)
+    name = f"{PACKAGE}/sparse".encode()
+    header[0 : len(name)] = name
+    header[100:108] = b"0000644\0"
+    header[108:116] = b"0000000\0"
+    header[116:124] = b"0000000\0"
+    header[124:136] = b"00000003400\0"  # 1792 stored bytes
+    header[136:148] = b"00000000000\0"
+    header[156] = ord("S")
+    header[257:265] = b"ustar  \0"  # GNU magic+version
+    header[148:156] = b" " * 8
+    checksum = sum(header) & 0o7777777
+    header[148:156] = (f"{checksum:06o}\0 ").encode()
+
+    # Splice the sparse header (plus its stored data blocks) ahead of the
+    # end-of-archive marker so the walk reaches it.
+    body = bytes(blocks).rstrip(b"\0")
+    pad = (-len(body)) % 512
+    out = bytearray(body + b"\0" * pad)
+    out += header
+    out += b"\0" * 1792
+    out += b"\0" * 1024
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_gzip.compress(bytes(out)))
+
+
 def truncated_garbage(dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(b"not-an-archive\n")
@@ -437,6 +478,9 @@ def main() -> int:
         return 0
     if args.case == "sized_directory_entry":
         sized_directory_entry(dest)
+        return 0
+    if args.case == "sparse_entry":
+        sparse_entry(dest)
         return 0
     if args.case in TAR_CASES:
         _posix_tar(TAR_CASES[args.case], dest)

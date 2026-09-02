@@ -381,6 +381,22 @@ else
     fail_case "dataless entry type declaring a size fails closed" "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
+# A GNU sparse member carries real stored data and a sparse map that may run
+# past this header, so it must be refused by name rather than mislabelled as a
+# dataless type that declared a size (#11508).
+sentinel_setup
+python3 "$FIXTURE_PY" --case sparse_entry --out "$TMP/sparse_entry.tar.gz"
+ARCHIVE_PATH="$TMP/sparse_entry.tar.gz"
+run_extract
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" == *"sparse archive entries are not accepted"* ]] \
+    && assert_sentinel_untouched \
+    && assert_install_untouched; then
+    pass "sparse entry fails closed on its own diagnostic"
+else
+    fail_case "sparse entry fails closed on its own diagnostic" "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
 # Instrument failure is not evidence of safety. With the header reader
 # unavailable the adapter must fail closed with its own diagnostic, not die
 # silently part-way through inspection (#11508).
