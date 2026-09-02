@@ -500,32 +500,42 @@ impl InertScanner {
 
     /// Remove this line's commented spans, advancing the comment state.
     ///
-    /// Both delimiters are ASCII, so every byte offset `find` returns is a
-    /// character boundary and the slicing below cannot split a code point.
+    /// A `<!--` inside an inline code span is an example of the delimiter, not
+    /// the delimiter: opening a comment on it skips every row until a later
+    /// example of `-->`, so a real addition between the two disappears into a
+    /// clean report. Openers inside a code span are therefore ignored.
+    ///
+    /// Markdown is not parsed inside an HTML comment, so once a comment is open
+    /// its `-->` closes it whatever backticks surround it, and code spans are
+    /// consulted only while outside one.
+    ///
+    /// Both delimiters and the backtick are ASCII, so every byte offset here is
+    /// a character boundary and the slicing cannot split a code point.
     fn strip_commented_spans<'line>(&mut self, line: &'line str) -> Cow<'line, str> {
         if !matches!(self.inside, Some(InertRegion::Comment)) && !line.contains("<!--") {
             return Cow::Borrowed(line);
         }
 
+        let spans = code_span_ranges(line);
         let mut visible = String::new();
-        let mut rest = line;
+        let mut cursor = 0;
         loop {
             match self.inside {
-                Some(InertRegion::Comment) => match rest.find("-->") {
-                    Some(end) => {
+                Some(InertRegion::Comment) => match line[cursor..].find("-->") {
+                    Some(offset) => {
                         self.inside = None;
-                        rest = &rest[end + "-->".len()..];
+                        cursor += offset + "-->".len();
                     }
                     None => return Cow::Owned(visible),
                 },
-                None => match rest.find("<!--") {
-                    Some(start) => {
-                        visible.push_str(&rest[..start]);
+                None => match next_comment_opener(line, cursor, &spans) {
+                    Some(at) => {
+                        visible.push_str(&line[cursor..at]);
                         self.inside = Some(InertRegion::Comment);
-                        rest = &rest[start + "<!--".len()..];
+                        cursor = at + "<!--".len();
                     }
                     None => {
-                        visible.push_str(rest);
+                        visible.push_str(&line[cursor..]);
                         return Cow::Owned(visible);
                     }
                 },
@@ -544,6 +554,76 @@ impl InertScanner {
             Some(InertRegion::Fence { .. }) => Some("code fence"),
             Some(InertRegion::Comment) => Some("HTML comment"),
         }
+    }
+}
+
+/// Byte ranges of this line that sit inside an inline code span.
+///
+/// A code span is delimited by matching backtick runs of equal length; a run
+/// with no match is literal text rather than an opener. Comment delimiters
+/// inside a span are examples of markup, not markup, so the comment scan skips
+/// these ranges.
+///
+/// Scoped to one line. A code span may in principle continue across a line
+/// break, which this does not model. An over-broad range makes a real comment
+/// opener look like an example, so the rows inside it read as data and produce
+/// a false *addition* — noise a maintainer sees. An under-broad one is the
+/// silent direction, and only an unmatched run produces it, which is correctly
+/// literal text anyway.
+fn code_span_ranges(line: &str) -> Vec<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] != b'`' {
+            index += 1;
+            continue;
+        }
+
+        let opener = index;
+        while index < bytes.len() && bytes[index] == b'`' {
+            index += 1;
+        }
+        let run = index - opener;
+
+        let mut search = index;
+        let mut closed = None;
+        while search < bytes.len() {
+            if bytes[search] != b'`' {
+                search += 1;
+                continue;
+            }
+            let candidate = search;
+            while search < bytes.len() && bytes[search] == b'`' {
+                search += 1;
+            }
+            if search - candidate == run {
+                closed = Some(search);
+                break;
+            }
+        }
+
+        // An unmatched run is literal, so the scan resumes just after it.
+        if let Some(end) = closed {
+            ranges.push((opener, end));
+            index = end;
+        }
+    }
+
+    ranges
+}
+
+/// The next real `<!--` at or after `cursor`, skipping examples in code spans.
+fn next_comment_opener(line: &str, cursor: usize, spans: &[(usize, usize)]) -> Option<usize> {
+    let mut search = cursor;
+    loop {
+        let at = search + line[search..].find("<!--")?;
+        if spans.iter().any(|(start, end)| at >= *start && at < *end) {
+            search = at + "<!--".len();
+            continue;
+        }
+        return Some(at);
     }
 }
 
@@ -692,8 +772,8 @@ fn closes_a_link(tail: &str) -> bool {
 mod tests {
     use super::{
         CORE_ATTRIBUTES, DirectionChange, DriftReport, REQUEST_HEADERS, catalog_attributes,
-        catalog_headers, compare_snapshot, indented_code_columns, reference_attributes,
-        reference_headers, section_names, table_row_name,
+        catalog_headers, code_span_ranges, compare_snapshot, indented_code_columns,
+        reference_attributes, reference_headers, section_names, table_row_name,
     };
     use perl_lsp_rs_core::providers::{
         HTMX_ATTRIBUTES, HTMX_CATALOG_PROVENANCE, HTMX_HEADERS, HtmxHeaderDirection,
@@ -1002,6 +1082,57 @@ let example = 1;
             error.to_string().contains("has no core attributes section"),
             "the refusal must name the missing section, not a downstream symptom: {error}"
         );
+    }
+
+    #[test]
+    fn a_comment_delimiter_inside_a_code_span_is_an_example() {
+        // Prose documenting the delimiter is not the delimiter. Opening a
+        // comment on `<!--` skips every row until a later example of `-->`, so
+        // `hx-post` — a genuine addition between the two — disappears into a
+        // clean report. This surface exists only because comment tracking was
+        // added at all; before it, delimiters were ignored entirely.
+        let documented = concat!(
+            "## Core Attribute Reference {#attributes}\n",
+            "\n",
+            "| Attribute | Description |\n",
+            "|-----------|-------------|\n",
+            "| [`hx-get`](@/attributes/hx-get.md) | issues a GET |\n",
+            "\n",
+            "Write `<!--` to open an HTML comment.\n",
+            "\n",
+            "| Attribute | Description |\n",
+            "|-----------|-------------|\n",
+            "| [`hx-post`](@/attributes/hx-post.md) | added upstream |\n",
+            "\n",
+            "Write `-->` to close one.\n",
+        );
+
+        assert!(
+            section_names(documented, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-post"])
+        );
+
+        // A real comment must still hide its rows, or the fix has simply
+        // disabled comment tracking rather than corrected it.
+        let real = concat!(
+            "## Core Attribute Reference {#attributes}\n",
+            "\n",
+            "<!--\n",
+            "| `hx-retired` | removed upstream |\n",
+            "-->\n",
+            "\n",
+            "| Attribute | Description |\n",
+            "|-----------|-------------|\n",
+            "| [`hx-get`](@/attributes/hx-get.md) | issues a GET |\n",
+        );
+
+        assert!(section_names(real, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
+
+        // Matching runs only: an unmatched backtick run is literal text, so a
+        // delimiter after it is real and must still open a comment.
+        assert_eq!(code_span_ranges("a `b` c"), vec![(2, 5)]);
+        assert_eq!(code_span_ranges("a ` b c"), Vec::new());
+        assert_eq!(code_span_ranges("``a `b` c``"), vec![(0, 11)]);
     }
 
     #[test]
