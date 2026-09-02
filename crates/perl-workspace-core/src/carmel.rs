@@ -1074,11 +1074,8 @@ our %environment = (
         fixture.dir("present/blib/lib");
 
         let detection = detect_carmel(&fixture.root);
-        let paths: Vec<String> = detection
-            .artifact_roots
-            .iter()
-            .map(|root| root.path.clone())
-            .collect();
+        let paths: Vec<String> =
+            detection.artifact_roots.iter().map(|root| root.path.clone()).collect();
         assert_eq!(Path::new(&paths[0]), fixture.root.join("present/blib/lib"));
         assert_eq!(Path::new(&paths[1]), fixture.root.join("absent/blib/lib"));
         let exists: Vec<Option<bool>> =
