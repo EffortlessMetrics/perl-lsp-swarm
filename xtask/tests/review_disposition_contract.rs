@@ -160,7 +160,12 @@ printf '%s\n' "$*" >> "$GH_STUB_LOG"
 
 case "$*" in
   *"query(\$threadId: ID!)"*)
-    printf '{"data":{"node":{"isResolved":%s,"comments":{"nodes":[]}}}}\n' "$GH_STUB_RESOLVED"
+    if [[ -n "${GH_STUB_MARKER:-}" ]]; then
+      jq -cn --argjson resolved "$GH_STUB_RESOLVED" --arg marker "$GH_STUB_MARKER" \
+        '{data:{node:{isResolved:$resolved,comments:{nodes:[{body:("prior note\n<!-- disposition:v1 " + $marker + " -->")}]}}}}'
+    else
+      printf '{"data":{"node":{"isResolved":%s,"comments":{"nodes":[]}}}}\n' "$GH_STUB_RESOLVED"
+    fi
     ;;
   *"addPullRequestReviewThreadReply"*)
     printf '%s\n' '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"C1"}}}}'
@@ -190,6 +195,7 @@ fn run_live(
     class: &str,
     extra: &[&str],
     initially_resolved: bool,
+    preseed_marker: Option<&str>,
 ) -> Result<(Output, String), Box<dyn Error>> {
     let temp = tempfile::tempdir()?;
     let stub_bin = write_gh_stub(temp.path())?;
@@ -222,6 +228,9 @@ fn run_live(
         .env("PATH", path)
         .env("GH_STUB_LOG", &log)
         .env("GH_STUB_RESOLVED", if initially_resolved { "true" } else { "false" });
+    if let Some(marker) = preseed_marker {
+        command.env("GH_STUB_MARKER", marker);
+    }
 
     let output = command.output()?;
     let calls = fs::read_to_string(log)?;
@@ -233,7 +242,7 @@ fn run_live(
 fn terminal_dispositions_resolve_and_live_blockers_do_not() -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
 
-    let (fixed, fixed_calls) = run_live(&root, "fixed", &["--commit", "abc1234"], false)?;
+    let (fixed, fixed_calls) = run_live(&root, "fixed", &["--commit", "abc1234"], false, None)?;
     assert!(fixed.status.success(), "fixed disposition failed: {}", output_text(&fixed));
     assert!(fixed_calls.contains("addPullRequestReviewThreadReply"));
     assert!(fixed_calls.lines().any(|line| line.contains(" resolveReviewThread")));
@@ -244,6 +253,7 @@ fn terminal_dispositions_resolve_and_live_blockers_do_not() -> Result<(), Box<dy
         "post-merge-follow-up",
         &["--issue", "13342", "--argument", "The current claim is satisfied; this is additive."],
         false,
+        None,
     )?;
     assert!(additive.status.success(), "post-merge follow-up failed: {}", output_text(&additive));
     assert!(additive_calls.lines().any(|line| line.contains(" resolveReviewThread")));
@@ -253,6 +263,7 @@ fn terminal_dispositions_resolve_and_live_blockers_do_not() -> Result<(), Box<dy
         "blocked-by-prerequisite",
         &["--issue", "13342", "--argument", "The defect remains until the prerequisite lands."],
         true,
+        None,
     )?;
     assert!(
         prerequisite.status.success(),
@@ -272,21 +283,79 @@ fn terminal_dispositions_resolve_and_live_blockers_do_not() -> Result<(), Box<dy
     assert!(!prerequisite_calls.lines().any(|line| line.contains(" resolveReviewThread")));
     assert!(output_text(&prerequisite).contains("reopened thread"));
 
+    // A live blocker on an unresolved thread still enforces the final state
+    // after posting, closing the window where a concurrent resolve would hide
+    // the blocker while the command reports success.
     let (current, current_calls) = run_live(
         &root,
         "current-blocker",
         &["--argument", "The candidate still contains the defect."],
         false,
+        None,
     )?;
     assert!(
         current.status.success(),
         "current blocker disposition failed: {}",
         output_text(&current)
     );
-    assert!(current_calls.contains("addPullRequestReviewThreadReply"));
-    assert!(!current_calls.contains("unresolveReviewThread"));
+    let current_reply = current_calls
+        .find("addPullRequestReviewThreadReply")
+        .ok_or("current blocker did not post its disposition")?;
+    let current_enforce = current_calls
+        .rfind("unresolveReviewThread")
+        .ok_or("current blocker did not enforce the final unresolved state")?;
+    assert!(
+        current_reply < current_enforce,
+        "the unresolved state must be enforced after the reply is posted"
+    );
     assert!(!current_calls.lines().any(|line| line.contains(" resolveReviewThread")));
     assert!(output_text(&current).contains("kept thread PRRT_test unresolved"));
+
+    // not-proven is non-terminal: it must never resolve the thread.
+    let (not_proven, not_proven_calls) = run_live(
+        &root,
+        "not-proven",
+        &["--argument", "Current evidence is incomplete."],
+        false,
+        None,
+    )?;
+    assert!(
+        not_proven.status.success(),
+        "not-proven disposition failed: {}",
+        output_text(&not_proven)
+    );
+    assert!(!not_proven_calls.lines().any(|line| line.contains(" resolveReviewThread")));
+    assert!(output_text(&not_proven).contains("kept thread PRRT_test unresolved"));
+
+    // Re-applying a matching keep-open disposition to a resolved thread is
+    // idempotent: no duplicate reply, and the falsely-clean thread is reopened.
+    let matching_marker = serde_json::json!({
+        "v": 1,
+        "class": "current-blocker",
+        "thread_id": "PRRT_test",
+        "by": "reviewer",
+        "head": "0123456789012345678901234567890123456789",
+        "evidence": {"argument": "The candidate still contains the defect."},
+        "thread_transition": "keep_open",
+    })
+    .to_string();
+    let (reapply, reapply_calls) = run_live(
+        &root,
+        "current-blocker",
+        &["--argument", "The candidate still contains the defect."],
+        true,
+        Some(&matching_marker),
+    )?;
+    assert!(reapply.status.success(), "re-apply disposition failed: {}", output_text(&reapply));
+    assert!(
+        output_text(&reapply).contains("matching disposition already exists"),
+        "a matching marker must suppress the duplicate reply: {}",
+        output_text(&reapply)
+    );
+    assert!(!reapply_calls.contains("addPullRequestReviewThreadReply"));
+    assert!(reapply_calls.contains("unresolveReviewThread"));
+    assert!(!reapply_calls.lines().any(|line| line.contains(" resolveReviewThread")));
+    assert!(output_text(&reapply).contains("reopened thread"));
 
     Ok(())
 }

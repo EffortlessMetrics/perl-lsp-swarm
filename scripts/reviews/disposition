@@ -114,7 +114,7 @@ _resolve_thread() {
             resolveReviewThread(input: {threadId: $threadId}) {
                 thread { id isResolved }
             }
-        }'
+        }' | jq -e '.data.resolveReviewThread.thread.isResolved == true' >/dev/null
 }
 
 _unresolve_thread() {
@@ -124,7 +124,7 @@ _unresolve_thread() {
             unresolveReviewThread(input: {threadId: $threadId}) {
                 thread { id isResolved }
             }
-        }'
+        }' | jq -e '.data.unresolveReviewThread.thread.isResolved == false' >/dev/null
 }
 
 _post_reply() {
@@ -144,7 +144,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     if [[ "$THREAD_TRANSITION" == "resolve" ]]; then
         echo "--- then: resolveReviewThread($THREAD) ---"
     else
-        echo "--- then: keep thread unresolved; unresolveReviewThread($THREAD) if currently resolved ---"
+        echo "--- then: keep thread unresolved; if currently resolved, unresolveReviewThread($THREAD) BEFORE posting the reply, and enforce unresolved again after posting ---"
     fi
     exit 0
 fi
@@ -236,6 +236,15 @@ if [[ "$THREAD_TRANSITION" == "resolve" ]]; then
     fi
     echo "OK resolved thread $THREAD (class=$CLASS, evidence=$EVIDENCE, observed_head=$HEAD)"
     exit 0
+fi
+
+# Close the race window: the initial isResolved observation is stale the moment
+# it returns, so a concurrent resolve could otherwise leave this command
+# reporting success while the live blocker sits resolved. Enforce the final
+# state after posting; unresolve is idempotent on an already-open thread.
+if ! _unresolve_thread "$THREAD" >/dev/null; then
+    echo "ERROR: failed to enforce unresolved state on thread $THREAD after non-terminal disposition" >&2
+    exit 2
 fi
 
 if [[ "$REOPENED" -eq 1 ]]; then
