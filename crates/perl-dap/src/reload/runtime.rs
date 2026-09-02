@@ -1726,6 +1726,43 @@ mod tests {
         }
     }
 
+    /// Acquire the live-Perl instrument, or report NOT_PROVEN.
+    ///
+    /// Shared by every live fixture on purpose. A missing instrument is
+    /// NOT_PROVEN, and NOT_PROVEN must not look like a pass — but Rust has
+    /// no runtime "skipped" state, so each test that open-coded this was
+    /// one opportunity to silently return `Ok(())`. Centralising it means
+    /// a new live test cannot forget: it gets the loud stderr line and the
+    /// `PERL_LSP_REQUIRE_LIVE_PERL=1` enforcement for free.
+    ///
+    /// Returns `Ok(Some(env))` when the instrument is present,
+    /// `Ok(None)` when it is absent and the skip is permitted, and `Err`
+    /// when it is absent and the caller demanded the proof.
+    fn live_perl_or_not_proven(
+        test_name: &str,
+    ) -> Result<Option<perl_lsp_rs_core::config::PerlOracleEnv>, Box<dyn std::error::Error>> {
+        let require_live =
+            std::env::var("PERL_LSP_REQUIRE_LIVE_PERL").map(|value| value == "1").unwrap_or(false);
+        let refuse = |reason: &str| -> Result<Option<_>, Box<dyn std::error::Error>> {
+            eprintln!(
+                "NOT_PROVEN {test_name}: {reason}. The generated command plan was not \
+                 executed against a real debuggee. Set PERL_LSP_REQUIRE_LIVE_PERL=1 to \
+                 make this a failure."
+            );
+            if require_live {
+                return Err(format!("live perl proof required but unavailable: {reason}").into());
+            }
+            Ok(None)
+        };
+        let Some(oracle) = perl_lsp_rs_core::config::PerlOracleEnv::for_dap_test_fixture() else {
+            return refuse("perl is not on PATH");
+        };
+        if !perl_debugger_available(&oracle) {
+            return refuse("perl is present but `perl -d` is unusable");
+        }
+        Ok(Some(oracle))
+    }
+
     /// Whether a real `perl -d` is usable here. A missing interpreter or a
     /// missing debugger is an instrument skip, never a pass.
     fn perl_debugger_available(oracle: &perl_lsp_rs_core::config::PerlOracleEnv) -> bool {
@@ -1894,26 +1931,11 @@ mod tests {
         // an unavailable instrument becomes a failure instead of a silent
         // green. Without it, a developer machine without perl still skips
         // rather than reporting a proof it did not run.
-        let require_live =
-            std::env::var("PERL_LSP_REQUIRE_LIVE_PERL").map(|value| value == "1").unwrap_or(false);
-        let not_proven = |reason: &str| -> Result<(), Box<dyn std::error::Error>> {
-            eprintln!(
-                "NOT_PROVEN live_perl_debuggee_reload_replaces_running_code: {reason}. \
-                 The generated command plan was not executed against a real debuggee. \
-                 Set PERL_LSP_REQUIRE_LIVE_PERL=1 to make this a failure."
-            );
-            if require_live {
-                return Err(format!("live perl proof required but unavailable: {reason}").into());
-            }
-            Ok(())
+        let Some(oracle) =
+            live_perl_or_not_proven("live_perl_debuggee_reload_replaces_running_code")?
+        else {
+            return Ok(());
         };
-
-        let Some(oracle) = perl_lsp_rs_core::config::PerlOracleEnv::for_dap_test_fixture() else {
-            return not_proven("perl is not on PATH");
-        };
-        if !perl_debugger_available(&oracle) {
-            return not_proven("perl is present but `perl -d` is unusable");
-        }
 
         let scratch = ScratchDir(std::env::temp_dir().join(format!(
             "perl-reload-live-{}-{}",
@@ -2115,12 +2137,10 @@ mod tests {
     /// entry is gone and a later `require` of it does not die.
     #[test]
     fn live_perl_failed_reload_does_not_poison_inc() -> TestResult {
-        let Some(oracle) = perl_lsp_rs_core::config::PerlOracleEnv::for_dap_test_fixture() else {
+        let Some(oracle) = live_perl_or_not_proven("live_perl_failed_reload_does_not_poison_inc")?
+        else {
             return Ok(());
         };
-        if !perl_debugger_available(&oracle) {
-            return Ok(());
-        }
         let scratch = ScratchDir(std::env::temp_dir().join(format!(
             "perl-reload-fail-{}-{}",
             std::process::id(),
