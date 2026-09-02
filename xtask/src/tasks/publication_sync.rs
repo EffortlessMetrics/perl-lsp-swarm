@@ -10,14 +10,16 @@
 //! The manifest's default projection basis is the complete prepared swarm tree
 //! `S`; every intended difference from `S` requires exactly one declared row.
 
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 
 use super::file_policy::{self, AllowEntry};
 use super::sync_divergence::{Verdict, is_product_or_test_path};
@@ -812,12 +814,19 @@ const MANIFEST_SCHEMA: &str =
 /// Validate a candidate manifest and write the plan receipt. Read-only: the
 /// only file written is the receipt.
 pub fn plan(config: PlanConfig) -> Result<()> {
+    plan_with(config, resolve_checkout)
+}
+
+/// `plan` with the checkout resolver injected, so proof can exercise the real
+/// entry point without depending on the test runner's working tree being a
+/// checkout of the prepared swarm commit.
+fn plan_with(config: PlanConfig, checkout: CheckoutResolver) -> Result<()> {
     let raw = fs::read(&config.manifest)
         .with_context(|| format!("reading manifest {}", config.manifest.display()))?;
 
     ensure_receipt_does_not_alias_inputs(&config, &raw)?;
 
-    let receipt = match build_receipt(&raw, &config.repo_root) {
+    let receipt = match build_receipt(&raw, &config.repo_root, checkout) {
         Ok(receipt) => receipt,
         Err(failure) => Receipt::unevaluated(failure.manifest_digest, failure.finding),
     };
@@ -924,7 +933,11 @@ fn finding(code: &str, message: impl Into<String>) -> Finding {
 /// admission boundary: serde alone would accept documents the contract forbids,
 /// because an `Option` field tolerates an omitted key and a `Vec` tolerates an
 /// empty array where the schema requires the key and a minimum length.
-fn build_receipt(raw: &[u8], repo_root: &Path) -> Result<Receipt, UnevaluatedManifest> {
+fn build_receipt(
+    raw: &[u8],
+    repo_root: &Path,
+    checkout: CheckoutResolver,
+) -> Result<Receipt, UnevaluatedManifest> {
     let document: Value = serde_json::from_slice(raw).map_err(|error| UnevaluatedManifest {
         manifest_digest: None,
         finding: finding("manifest_unparsable", format!("the manifest is not JSON: {error}")),
@@ -977,9 +990,11 @@ fn build_receipt(raw: &[u8], repo_root: &Path) -> Result<Receipt, UnevaluatedMan
         })?;
 
     let digest = manifest_digest.clone().unwrap_or_default();
-    evaluate(&manifest, &digest, repo_root, load_input).map_err(|error| UnevaluatedManifest {
-        manifest_digest,
-        finding: finding("plan_failed", format!("planning could not complete: {error}")),
+    evaluate(&manifest, &digest, repo_root, load_input, checkout).map_err(|error| {
+        UnevaluatedManifest {
+            manifest_digest,
+            finding: finding("plan_failed", format!("planning could not complete: {error}")),
+        }
     })
 }
 
@@ -1012,6 +1027,29 @@ enum LoadFailure {
 /// stays deterministic and testable without a repository fixture tree.
 type InputLoader = fn(&Path, &str) -> Result<Vec<u8>, LoadFailure>;
 
+/// Resolves the commit a checkout is at. Injected for the same reason.
+type CheckoutResolver = fn(&Path) -> Option<String>;
+
+/// The commit `repo_root` is checked out at, or `None` when that cannot be
+/// established.
+///
+/// This is the planner's one Git read, and it is an identity question rather
+/// than a tree question: everything else still comes from declared inputs.
+fn resolve_checkout(repo_root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let head = String::from_utf8(output.stdout).ok()?;
+    let head = head.trim().to_string();
+    is_object_name(&head).then_some(head)
+}
+
 /// Read a repository-relative artifact, refusing anything that resolves outside
 /// the checkout. `valid_repository_path` already rejects lexical traversal, but
 /// a symlink inside the tree can still point outside it, so confinement is
@@ -1043,11 +1081,18 @@ fn evaluate(
     manifest_digest: &str,
     repo_root: &Path,
     loader: InputLoader,
+    checkout: CheckoutResolver,
 ) -> Result<Receipt> {
     let mut probe = PlanState::default();
     let product_surface = ProductSurface::load(repo_root, &mut probe);
-    let mut receipt =
-        evaluate_with_surface(manifest, manifest_digest, repo_root, loader, &product_surface)?;
+    let mut receipt = evaluate_with_surface(
+        manifest,
+        manifest_digest,
+        repo_root,
+        loader,
+        &product_surface,
+        checkout,
+    )?;
     // Surface-loading findings are raised before evaluation, so fold them in.
     let (_, findings) = probe.finish();
     if !findings.is_empty() {
@@ -1065,9 +1110,11 @@ fn evaluate_with_surface(
     repo_root: &Path,
     loader: InputLoader,
     product_surface: &ProductSurface,
+    checkout: CheckoutResolver,
 ) -> Result<Receipt> {
     let mut state = PlanState::default();
 
+    validate_checkout_identity(manifest, repo_root, checkout, &mut state);
     validate_identity(manifest, &mut state);
     let inputs = validate_inputs(manifest, repo_root, loader, &mut state);
     validate_rows(manifest, repo_root, loader, product_surface, &mut state);
@@ -1160,6 +1207,24 @@ fn collect_cited_issues(manifest: &Manifest) -> Vec<String> {
         }
     }
     cited.into_iter().collect()
+}
+
+/// Whether an authority reference names a repository document.
+///
+/// A path segment is not required: `README.md` is a legitimate root-level
+/// authority, and demanding a `/` rejected it. A file extension is the
+/// discriminator that still separates a document from a prose sentence
+/// someone typed into the field.
+fn looks_like_document(reference: &str) -> bool {
+    if reference.contains('/') {
+        return true;
+    }
+    reference.rsplit_once('.').is_some_and(|(stem, extension)| {
+        !stem.is_empty()
+            && !extension.is_empty()
+            && extension.len() <= 12
+            && extension.chars().all(|character| character.is_ascii_alphanumeric())
+    })
 }
 
 /// A `#NNNN` issue reference. Shape only — planning is offline, so whether the
@@ -1328,9 +1393,42 @@ fn validate_inputs(
     receipt_inputs
 }
 
-/// The reconciliation input is a `sync-divergence` receipt. It is current only
-/// when it passed and when it reconciled exactly this manifest's `S` against
-/// exactly this manifest's `R`.
+/// The product surface and every path shape this planner probes come from
+/// `repo_root`. Those answers are only about the projection if that checkout
+/// *is* the prepared swarm commit: a stale or unrelated root can classify a
+/// product file differently, or present a file where `S` holds a directory.
+///
+/// The manifest already declares which commit it projects, so the check is a
+/// comparison rather than a new authority. When the checkout cannot be
+/// established at all, that is `not_proven` rather than an assumption.
+fn validate_checkout_identity(
+    manifest: &Manifest,
+    repo_root: &Path,
+    checkout: CheckoutResolver,
+    state: &mut PlanState,
+) {
+    match checkout(repo_root) {
+        Some(head) if head == manifest.prepared_swarm_sha => {}
+        Some(head) => state.not_proven(
+            "checkout_not_prepared_swarm",
+            format!(
+                "the repository root is at {head} but this manifest projects prepared_swarm_sha {}; its product surface and path shapes are not evidence about the projection",
+                manifest.prepared_swarm_sha
+            ),
+            "release/ci",
+        ),
+        None => state.not_proven(
+            "checkout_unresolvable",
+            format!(
+                "the commit at {} could not be established, so its product surface and path shapes cannot be bound to prepared_swarm_sha {}",
+                repo_root.display(),
+                manifest.prepared_swarm_sha
+            ),
+            "release/ci",
+        ),
+    }
+}
+
 /// Report one unreadable repository artifact, keeping "absent", "escapes the
 /// checkout" and "present but unreadable" distinguishable in the receipt.
 fn report_load_failure(
@@ -1361,6 +1459,9 @@ fn report_load_failure(
     }
 }
 
+/// The reconciliation input is a `sync-divergence` receipt. It is current only
+/// when it passed and when it reconciled exactly this manifest's `S` against
+/// exactly this manifest's `R`.
 fn validate_reconciliation(manifest: &Manifest, raw: Option<&[u8]>, state: &mut PlanState) {
     let Some(raw) = raw else {
         // A missing or unreadable reconciliation input is already reported by
@@ -1702,7 +1803,7 @@ fn validate_row_authority(
     if is_issue_reference(reference) {
         return;
     }
-    if valid_repository_path(reference) && reference.contains('/') {
+    if valid_repository_path(reference) && looks_like_document(reference) {
         // A document authority is only an authority if a reviewer can open it,
         // so the reference is resolved rather than merely shaped.
         if let Err(failure) = loader(repo_root, reference) {
@@ -2229,8 +2330,40 @@ fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
     }
     let content =
         serde_json::to_string_pretty(receipt).context("serializing publication-sync receipt")?;
-    fs::write(path, format!("{content}\n"))
+
+    // Write through a temporary file in the destination directory and rename.
+    // A direct write leaves malformed JSON behind if the process dies partway,
+    // and a consumer cannot tell a truncated receipt from a real one. Staging in
+    // the destination directory (rather than the system temporary directory)
+    // keeps the rename on one filesystem, so it is actually atomic.
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut staged = NamedTempFile::new_in(directory)
+        .with_context(|| format!("staging publication-sync receipt for {}", path.display()))?;
+    staged
+        .write_all(format!("{content}\n").as_bytes())
         .with_context(|| format!("writing publication-sync receipt {}", path.display()))?;
+    staged
+        .flush()
+        .with_context(|| format!("flushing publication-sync receipt {}", path.display()))?;
+
+    // A temporary file is created 0600 so its contents are never briefly
+    // world-readable. The receipt is a published artifact other tooling reads,
+    // and the direct write this replaced produced a normal 0644 file, so widen
+    // it back before publishing rather than silently narrowing the artifact.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        staged.as_file().set_permissions(fs::Permissions::from_mode(0o644)).with_context(|| {
+            format!("setting permissions on publication-sync receipt {}", path.display())
+        })?;
+    }
+
+    staged.persist(path).map_err(|error| {
+        eyre!("publishing publication-sync receipt {}: {error}", path.display())
+    })?;
     Ok(())
 }
 

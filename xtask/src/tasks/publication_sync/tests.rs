@@ -97,6 +97,7 @@ fn plan_with_mutated_receipt(mutate: impl FnOnce(&mut Value)) -> Result<Receipt>
         Path::new("."),
         mutating_loader,
         &test_product_surface(),
+        fixture_checkout,
     );
     MUTATED.with(|cell| *cell.borrow_mut() = None);
     outcome
@@ -139,7 +140,14 @@ fn plan_value(document: &Value) -> Result<Receipt> {
     let manifest: Manifest = serde_json::from_value(document.clone())
         .context("parsing the mutated fixture as publication_sync_manifest.v1")?;
     let digest = canonical_digest(document)?;
-    evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &test_product_surface())
+    evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &test_product_surface(),
+        fixture_checkout,
+    )
 }
 
 /// Evaluate against a materialized repository root, using the real on-disk
@@ -147,7 +155,28 @@ fn plan_value(document: &Value) -> Result<Receipt> {
 fn plan_on_disk(document: &Value, root: &Path) -> Result<Receipt> {
     let manifest: Manifest = serde_json::from_value(document.clone())?;
     let digest = canonical_digest(document)?;
-    evaluate_with_surface(&manifest, &digest, root, load_input, &test_product_surface())
+    evaluate_with_surface(
+        &manifest,
+        &digest,
+        root,
+        load_input,
+        &test_product_surface(),
+        fixture_checkout,
+    )
+}
+
+/// Drive the full `evaluate` entry point, including the checkout binding.
+fn plan_with_checkout(document: &Value, checkout: CheckoutResolver) -> Result<Receipt> {
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(document)?;
+    evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &test_product_surface(),
+        checkout,
+    )
 }
 
 fn rows_mut(document: &mut Value) -> Result<&mut Vec<Value>> {
@@ -527,7 +556,14 @@ fn a_stale_reconciliation_receipt_is_blocked() -> Result<()> {
     let mut document = clean_value()?;
     document["prepared_swarm_sha"] = json!("9999999999999999999999999999999999999999");
 
-    let receipt = plan_value(&document)?;
+    // Resolve the checkout to the mutated commit, so the checkout binding is
+    // satisfied and only reconciliation staleness is on trial. Without this the
+    // dominating `checkout_not_prepared_swarm` finding would mask the rule.
+    fn mutated_checkout(_repo_root: &Path) -> Option<String> {
+        Some("9999999999999999999999999999999999999999".to_string())
+    }
+
+    let receipt = plan_with_checkout(&document, mutated_checkout)?;
     assert_verdict(&receipt, Verdict::Blocked)?;
     assert_finding(&receipt, "reconciliation_stale")
 }
@@ -925,6 +961,12 @@ fn materialize_repo(document: &Value) -> Result<(tempfile::TempDir, PathBuf, Pat
     Ok((root, manifest_path, receipt_path))
 }
 
+/// A checkout resolver that answers with the fixture's declared prepared swarm
+/// commit, so the end-to-end tests exercise the planner rather than git.
+fn fixture_checkout(_repo_root: &Path) -> Option<String> {
+    Some("1111111111111111111111111111111111111111".to_string())
+}
+
 /// A minimal product-surface ledger in the real allowlist's shape.
 const FIXTURE_ALLOWLIST: &str = r#"
 schema_version = 1
@@ -949,11 +991,14 @@ fn plan_writes_a_pass_receipt_and_leaves_the_tree_alone() -> Result<()> {
     let (root, manifest, receipt) = materialize_repo(&document)?;
     let before = fs::read(&manifest)?;
 
-    plan(PlanConfig {
-        manifest: manifest.clone(),
-        repo_root: root.path().to_path_buf(),
-        receipt: receipt.clone(),
-    })?;
+    plan_with(
+        PlanConfig {
+            manifest: manifest.clone(),
+            repo_root: root.path().to_path_buf(),
+            receipt: receipt.clone(),
+        },
+        fixture_checkout,
+    )?;
 
     let written: Value = serde_json::from_slice(&fs::read(&receipt)?)?;
     if written.get("verdict").and_then(Value::as_str) != Some("pass") {
@@ -975,11 +1020,10 @@ fn plan_fails_loudly_but_still_writes_the_receipt() -> Result<()> {
     document["invariants"][0]["result"] = json!("blocked");
     let (root, manifest, receipt) = materialize_repo(&document)?;
 
-    let outcome = plan(PlanConfig {
-        manifest,
-        repo_root: root.path().to_path_buf(),
-        receipt: receipt.clone(),
-    });
+    let outcome = plan_with(
+        PlanConfig { manifest, repo_root: root.path().to_path_buf(), receipt: receipt.clone() },
+        fixture_checkout,
+    );
     if outcome.is_ok() {
         bail!("a blocked manifest returned success");
     }
@@ -1086,7 +1130,14 @@ fn an_unavailable_product_surface_is_not_proven() -> Result<()> {
     let manifest: Manifest = serde_json::from_value(document.clone())?;
     let digest = canonical_digest(&document)?;
     let surface = ProductSurface { entries: Vec::new(), available: false };
-    let receipt = evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &surface,
+        fixture_checkout,
+    )?;
 
     assert_verdict(&receipt, Verdict::NotProven)?;
     assert_finding(&receipt, "row_product_bearing_unverifiable")
@@ -1239,7 +1290,7 @@ fn an_omitted_required_digest_key_is_rejected_by_the_schema() -> Result<()> {
     }
 
     let raw = serde_json::to_vec(&document)?;
-    let receipt = build_receipt(&raw, Path::new("."))
+    let receipt = build_receipt(&raw, Path::new("."), fixture_checkout)
         .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
     assert_verdict(&receipt, Verdict::NotProven)?;
     assert_finding(&receipt, "manifest_schema_violation")
@@ -1255,7 +1306,7 @@ fn an_empty_invariant_list_is_rejected_by_the_schema() -> Result<()> {
     }
 
     let raw = serde_json::to_vec(&document)?;
-    let receipt = build_receipt(&raw, Path::new("."))
+    let receipt = build_receipt(&raw, Path::new("."), fixture_checkout)
         .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
     assert_verdict(&receipt, Verdict::NotProven)?;
     assert_finding(&receipt, "manifest_schema_violation")
@@ -1263,7 +1314,7 @@ fn an_empty_invariant_list_is_rejected_by_the_schema() -> Result<()> {
 
 #[test]
 fn an_unparsable_manifest_still_produces_a_receipt() -> Result<()> {
-    let receipt = build_receipt(b"{ not json", Path::new("."))
+    let receipt = build_receipt(b"{ not json", Path::new("."), fixture_checkout)
         .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
     assert_verdict(&receipt, Verdict::NotProven)?;
     if receipt.manifest_digest.is_some() {
@@ -1524,7 +1575,14 @@ fn an_expired_product_classification_is_not_proven_rather_than_ignored() -> Resu
 
     let manifest: Manifest = serde_json::from_value(document.clone())?;
     let digest = canonical_digest(&document)?;
-    let receipt = evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &surface,
+        fixture_checkout,
+    )?;
 
     assert_verdict(&receipt, Verdict::NotProven)?;
     assert_finding(&receipt, "row_product_classification_expired")
@@ -1544,7 +1602,14 @@ fn an_unexpired_classification_still_blocks() -> Result<()> {
 
     let manifest: Manifest = serde_json::from_value(document.clone())?;
     let digest = canonical_digest(&document)?;
-    let receipt = evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &surface,
+        fixture_checkout,
+    )?;
 
     assert_verdict(&receipt, Verdict::Blocked)?;
     assert_finding(&receipt, "row_product_bearing_exclusion")
@@ -1654,8 +1719,14 @@ fn shipped_tooling_cannot_be_displaced_even_when_classified_tooling() -> Result<
         rows_mut(&mut document)?[1]["path"] = json!(path);
         let manifest: Manifest = serde_json::from_value(document.clone())?;
         let digest = canonical_digest(&document)?;
-        let receipt =
-            evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+        let receipt = evaluate_with_surface(
+            &manifest,
+            &digest,
+            Path::new("."),
+            test_loader,
+            &surface,
+            fixture_checkout,
+        )?;
 
         assert_verdict(&receipt, Verdict::Blocked)?;
         assert_finding(&receipt, "row_product_bearing_exclusion")?;
@@ -1677,8 +1748,14 @@ fn documentation_on_a_shipped_surface_stays_displaceable() -> Result<()> {
         rows_mut(&mut document)?[1]["path"] = json!(path);
         let manifest: Manifest = serde_json::from_value(document.clone())?;
         let digest = canonical_digest(&document)?;
-        let receipt =
-            evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+        let receipt = evaluate_with_surface(
+            &manifest,
+            &digest,
+            Path::new("."),
+            test_loader,
+            &surface,
+            fixture_checkout,
+        )?;
 
         if receipt.findings.iter().any(|f| f.code == "row_product_bearing_exclusion") {
             bail!("{path} was treated as shipped product: {:?}", receipt.findings);
@@ -1710,33 +1787,42 @@ fn the_receipt_cannot_be_written_over_a_planning_input() -> Result<()> {
     let document = clean_value()?;
     let (root, manifest_path, _) = materialize_repo(&document)?;
 
-    let over_manifest = plan(PlanConfig {
-        manifest: manifest_path.clone(),
-        repo_root: root.path().to_path_buf(),
-        receipt: manifest_path.clone(),
-    });
+    let over_manifest = plan_with(
+        PlanConfig {
+            manifest: manifest_path.clone(),
+            repo_root: root.path().to_path_buf(),
+            receipt: manifest_path.clone(),
+        },
+        fixture_checkout,
+    );
     if over_manifest.is_ok() {
         bail!("the receipt was allowed to overwrite the manifest");
     }
 
     // A declared release input, reached through a non-canonical path.
     let evidence = root.path().join("docs/release/0.18.0/../0.18.0/public_claims.json");
-    let over_evidence = plan(PlanConfig {
-        manifest: manifest_path.clone(),
-        repo_root: root.path().to_path_buf(),
-        receipt: evidence,
-    });
+    let over_evidence = plan_with(
+        PlanConfig {
+            manifest: manifest_path.clone(),
+            repo_root: root.path().to_path_buf(),
+            receipt: evidence,
+        },
+        fixture_checkout,
+    );
     if over_evidence.is_ok() {
         bail!("the receipt was allowed to overwrite a declared release input");
     }
 
     // The manifest is still intact and a normal destination still works.
     let receipt_path = root.path().join("receipts/plan.json");
-    plan(PlanConfig {
-        manifest: manifest_path,
-        repo_root: root.path().to_path_buf(),
-        receipt: receipt_path.clone(),
-    })?;
+    plan_with(
+        PlanConfig {
+            manifest: manifest_path,
+            repo_root: root.path().to_path_buf(),
+            receipt: receipt_path.clone(),
+        },
+        fixture_checkout,
+    )?;
     if !receipt_path.exists() {
         bail!("a non-aliasing receipt destination was refused");
     }
@@ -1758,7 +1844,14 @@ fn an_expired_descendant_classification_is_not_proven() -> Result<()> {
 
     let manifest: Manifest = serde_json::from_value(document.clone())?;
     let digest = canonical_digest(&document)?;
-    let receipt = evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &surface,
+        fixture_checkout,
+    )?;
 
     assert_verdict(&receipt, Verdict::NotProven)?;
     assert_finding(&receipt, "row_product_classification_expired")
@@ -1778,7 +1871,14 @@ fn an_unexpired_descendant_still_blocks_the_parent() -> Result<()> {
 
     let manifest: Manifest = serde_json::from_value(document.clone())?;
     let digest = canonical_digest(&document)?;
-    let receipt = evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &surface,
+        fixture_checkout,
+    )?;
 
     assert_verdict(&receipt, Verdict::Blocked)?;
     assert_finding(&receipt, "row_product_bearing_exclusion")
@@ -1811,4 +1911,150 @@ fn a_translating_row_absent_from_the_checkout_is_not_a_shape_finding() -> Result
         bail!("a translating row was required to resolve: {:?}", receipt.findings);
     }
     Ok(())
+}
+
+#[test]
+fn a_root_level_document_can_be_a_row_authority() -> Result<()> {
+    // `README.md` is a legitimate root-level authority; requiring a `/`
+    // rejected it while the schema accepted it, so a valid manifest could not
+    // pass the planner.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[0]["authority_ref"] = json!("README.md");
+
+    let receipt = plan_value(&document)?;
+    if receipt.findings.iter().any(|f| f.code.starts_with("row_authority")) {
+        bail!("a root-level document authority was rejected: {:?}", receipt.findings);
+    }
+    Ok(())
+}
+
+#[test]
+fn a_root_level_authority_that_does_not_exist_is_still_resolved() -> Result<()> {
+    // Accepting root-level documents must not stop resolving them.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[0]["authority_ref"] = json!("NOT_THERE.md");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "row_authority_missing")
+}
+
+#[test]
+fn prose_in_the_authority_field_is_still_unresolved() -> Result<()> {
+    // Opposite direction: the extension discriminator must not turn a typed
+    // sentence into a "document" whose absence reads as a missing file.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[0]["authority_ref"] = json!("because we always did it this way");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "row_authority_unresolved")
+}
+
+#[test]
+fn a_checkout_that_is_not_the_prepared_swarm_commit_is_not_proven() -> Result<()> {
+    // The product surface and every path shape come from this checkout. They
+    // are only evidence about the projection if the checkout is S.
+    fn other_commit(_root: &Path) -> Option<String> {
+        Some("9999999999999999999999999999999999999999".to_string())
+    }
+    let receipt = plan_with_checkout(&clean_value()?, other_commit)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "checkout_not_prepared_swarm")
+}
+
+#[test]
+fn an_unresolvable_checkout_is_not_proven() -> Result<()> {
+    fn unresolvable(_root: &Path) -> Option<String> {
+        None
+    }
+    let receipt = plan_with_checkout(&clean_value()?, unresolvable)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "checkout_unresolvable")
+}
+
+#[test]
+fn the_prepared_swarm_checkout_plans_pass() -> Result<()> {
+    // Opposite direction: the binding must not reject the correct checkout.
+    let receipt = plan_with_checkout(&clean_value()?, fixture_checkout)?;
+    if !receipt.findings.is_empty() {
+        bail!("the prepared swarm checkout produced findings: {:?}", receipt.findings);
+    }
+    assert_verdict(&receipt, Verdict::Pass)
+}
+
+#[test]
+fn a_receipt_is_published_atomically() -> Result<()> {
+    // A direct write truncates the destination in place, so a process that dies
+    // partway leaves a half-receipt a consumer cannot distinguish from a real
+    // one. Staging and renaming means the destination goes from the old bytes to
+    // the complete new bytes with nothing observable in between.
+    //
+    // Content alone does not discriminate: `fs::write` also ends with valid
+    // JSON at the path. The observable that separates the two is the inode —
+    // a rename publishes a *new* file over the name, an in-place write keeps
+    // the old one. So that is what this asserts.
+    let document = clean_value()?;
+    let (root, _, receipt_path) = materialize_repo(&document)?;
+    fs::create_dir_all(root.path().join("receipts"))?;
+    fs::write(&receipt_path, "{ truncated")?;
+    let stale_identity = file_identity(&receipt_path)?;
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        root.path(),
+        load_input,
+        &test_product_surface(),
+        fixture_checkout,
+    )?;
+    write_receipt(&receipt_path, &receipt)?;
+
+    let written: Value = serde_json::from_slice(&fs::read(&receipt_path)?)
+        .context("the published receipt is not valid JSON")?;
+    if written.get("verdict").is_none() {
+        bail!("the published receipt has no verdict");
+    }
+    if file_identity(&receipt_path)? == stale_identity {
+        bail!("the receipt reused the stale file, so it was written in place rather than renamed");
+    }
+
+    // The staging file must not survive as a second artifact in the directory.
+    let published =
+        receipt_path.file_name().ok_or_else(|| eyre!("receipt path has no file name"))?.to_owned();
+    let directory = receipt_path.parent().ok_or_else(|| eyre!("receipt path has no parent"))?;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_name() != published {
+            bail!("staging left {} behind next to the receipt", entry.path().display());
+        }
+    }
+
+    // A temporary file is created 0600; the direct write this replaced produced
+    // a normal readable artifact, and other tooling consumes the receipt.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = fs::metadata(&receipt_path)?.permissions().mode() & 0o777;
+        if mode != 0o644 {
+            bail!("the published receipt is mode {mode:o}, not 644");
+        }
+    }
+    Ok(())
+}
+
+/// The identity of the file currently at `path`, so a rename-based publish can
+/// be told apart from an in-place rewrite.
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = fs::metadata(path)?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_identity(path: &Path) -> Result<Vec<u8>> {
+    Ok(fs::read(path)?)
 }
