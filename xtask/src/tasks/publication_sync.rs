@@ -724,13 +724,11 @@ impl ProductSurface {
         // it. Testing only the row string would let `clients` or
         // `vscode-extension` drop every product file they contain while
         // matching no classifier itself.
-        if self.entries.iter().any(|entry| {
-            entry.path.as_deref().is_some_and(|governed| is_path_prefix(path, governed))
-        }) {
-            return SurfaceVerdict::ProductOrTest;
-        }
         let mut expired = false;
-        for entry in self.entries.iter().filter(|e| entry_governs(e, path)) {
+        for entry in self.entries.iter().filter(|entry| {
+            entry_governs(entry, path)
+                || entry.path.as_deref().is_some_and(|governed| is_path_prefix(path, governed))
+        }) {
             match (entry.expires.as_deref().and_then(parse_date), evaluated_at) {
                 // `file_policy` stops honouring an entry once it expires. Here
                 // that cannot simply drop the row: an expired classification is
@@ -1475,18 +1473,32 @@ fn validate_rows(
             let crate_manifest = format!("{}/Cargo.toml", row.path);
             if loader(repo_root, &crate_manifest).is_ok() {
                 surface = SurfaceVerdict::ProductOrTest;
-            } else if matches!(
-                loader(repo_root, &row.path),
-                Err(LoadFailure::Unreadable(ref reason)) if reason == NOT_A_REGULAR_FILE
-            ) {
-                state.block(
-                    "row_displaces_directory",
-                    format!(
-                        "row {} displaces a directory, which carries every path beneath it; name the exact files instead",
-                        row.path
+            } else {
+                match loader(repo_root, &row.path) {
+                    Err(LoadFailure::Unreadable(ref reason)) if reason == NOT_A_REGULAR_FILE => {
+                        state.block(
+                            "row_displaces_directory",
+                            format!(
+                                "row {} displaces a directory, which carries every path beneath it; name the exact files instead",
+                                row.path
+                            ),
+                            "release/ci",
+                        );
+                    }
+                    // Absent from this checkout. Row digests are declarative and
+                    // the planner resolves neither S nor R, so nothing here can
+                    // establish that the row names a regular file rather than a
+                    // subtree in the declared trees. Refuse rather than assume.
+                    Err(LoadFailure::Missing) => state.not_proven(
+                        "row_shape_unresolvable",
+                        format!(
+                            "row {} displaces a path absent from this checkout, so the planner cannot establish that it names a file rather than a subtree",
+                            row.path
+                        ),
+                        "release/ci",
                     ),
-                    "release/ci",
-                );
+                    _ => {}
+                }
             }
         }
         let product_bearing = surface == SurfaceVerdict::ProductOrTest;

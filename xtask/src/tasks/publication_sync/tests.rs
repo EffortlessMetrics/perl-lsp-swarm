@@ -38,8 +38,23 @@ fn fixture_input_bytes(path: &str) -> Option<Vec<u8>> {
     if path.starts_with("docs/release/0.18.0/") || path == "docs/swarm/sync-protocol.md" {
         return Some(format!("publication-sync fixture input: {path}\n").into_bytes());
     }
+    // The fixture's own projection rows. A real plan runs in a checkout of the
+    // prepared swarm tree, so a displacing row resolves to a regular file
+    // there; the harness has to model that or every row is unresolvable.
+    if FIXTURE_ROW_PATHS.contains(&path) {
+        return Some(format!("publication-sync fixture row: {path}\n").into_bytes());
+    }
     None
 }
+
+/// Row paths the clean fixture projects, materialized so the planner can
+/// establish that each names a regular file rather than a subtree.
+const FIXTURE_ROW_PATHS: [&str; 4] = [
+    "README.md",
+    ".claude/settings.json",
+    "RELEASE_HISTORY.md",
+    "docs/policy/NON_RUST_INVENTORY.md",
+];
 
 /// A valid live-control receipt for `control`, after applying `mutate`. Tests
 /// mutate one identity/result/freshness field at a time from this baseline.
@@ -892,6 +907,7 @@ fn materialize_repo(document: &Value) -> Result<(tempfile::TempDir, PathBuf, Pat
         if valid_repository_path(&row.authority_ref) && row.authority_ref.contains('/') {
             materialized.insert(row.authority_ref.clone());
         }
+        materialized.insert(row.path.clone());
     }
     for relative in materialized {
         if let Some(bytes) = fixture_input_bytes(&relative) {
@@ -1723,6 +1739,76 @@ fn the_receipt_cannot_be_written_over_a_planning_input() -> Result<()> {
     })?;
     if !receipt_path.exists() {
         bail!("a non-aliasing receipt destination was refused");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_expired_descendant_classification_is_not_proven() -> Result<()> {
+    // The subtree check must age its evidence exactly as the exact-match check
+    // does. Returning ProductOrTest on a descendant without consulting expiry
+    // reported a confident `blocked` from a classification nobody re-checked.
+    let surface = ProductSurface::from_expiring_entries_for_test(vec![(
+        "clients/lite-xl/compose.lua",
+        "production",
+        Some("2026-01-01"),
+    )]);
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["path"] = json!("clients");
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let receipt = evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "row_product_classification_expired")
+}
+
+#[test]
+fn an_unexpired_descendant_still_blocks_the_parent() -> Result<()> {
+    // Opposite direction: aging the subtree check must not stop it protecting
+    // parents whose descendants are still current.
+    let surface = ProductSurface::from_expiring_entries_for_test(vec![(
+        "clients/lite-xl/compose.lua",
+        "production",
+        Some("2027-01-01"),
+    )]);
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["path"] = json!("clients");
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let receipt = evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+
+    assert_verdict(&receipt, Verdict::Blocked)?;
+    assert_finding(&receipt, "row_product_bearing_exclusion")
+}
+
+#[test]
+fn a_displacing_row_absent_from_the_checkout_is_not_proven() -> Result<()> {
+    // Row digests are declarative and the planner resolves neither S nor R, so
+    // a path missing here could be a file or an entire subtree in the declared
+    // trees. The directory guard only sees materialized paths, so absence has
+    // to fail closed rather than fall through it.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["path"] = json!("not/in/this/checkout.json");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "row_shape_unresolvable")
+}
+
+#[test]
+fn a_translating_row_absent_from_the_checkout_is_not_a_shape_finding() -> Result<()> {
+    // Opposite direction: only displacing rows take a subtree, so the shape
+    // requirement must not fire on translations.
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[0];
+    row["path"] = json!("not/in/this/checkout.md");
+
+    let receipt = plan_value(&document)?;
+    if receipt.findings.iter().any(|f| f.code == "row_shape_unresolvable") {
+        bail!("a translating row was required to resolve: {:?}", receipt.findings);
     }
     Ok(())
 }
