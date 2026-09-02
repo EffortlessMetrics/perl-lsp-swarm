@@ -2033,3 +2033,104 @@ fn an_autovivified_access_survives_the_transport_boundary() -> Result<(), Box<dy
     assert_eq!(decoded, chain);
     Ok(())
 }
+
+// ── Refused promotion (found by Devin) ────────────────────────────────────
+
+/// A hop whose selector or aggregate stands behind a chosen boundary.
+fn hop_behind_boundary(
+    disposition: BoundaryDisposition,
+    on_selector: bool,
+    value_fact: Option<FactId>,
+) -> Result<StructuralAccessHop, StructuralAccessContractError> {
+    let link = BoundaryLink::new(
+        Some(FactId(3)),
+        BoundaryKind::DynamicValue,
+        disposition,
+        SemanticReasonCode::DynamicValue,
+    );
+    let (aggregate, selector) = if on_selector {
+        (base_variable(), StructuralAccessSelector::DynamicKey(link))
+    } else {
+        (
+            StructuralAccessAggregate::DynamicBoundary(link),
+            StructuralAccessSelector::StaticKey("k".to_string()),
+        )
+    };
+    StructuralAccessHop::new(
+        0,
+        aggregate,
+        StructuralAccessOperator::HashRefSlot,
+        selector,
+        spelling("->{$k}", 0, 6)?,
+        StructuralHopOutcome::Selected { shape: ValueShape::ArrayRef, value_fact },
+        StructuralHopCertainty::Possible,
+        StructuralAggregateCompleteness::Open,
+        StructuralAggregateDisposition::Stable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(crate::Provenance::DynamicBoundary),
+        SemanticConfidence::Known(Confidence::Low),
+        SemanticReasonCode::DynamicValue,
+        StructuralAccessBudget::new(10, 9)?,
+        Vec::new(),
+    )
+}
+
+#[test]
+fn a_refusing_boundary_cannot_carry_a_promoted_value_fact() -> Result<(), Box<dyn Error>> {
+    // `BoundaryDisposition::Refuse` refuses *promotion*, and `value_fact` is
+    // the canonical fact identity "when promoted". Recording one through the
+    // other is a record contradicting itself, on either carrier.
+    for on_selector in [true, false] {
+        let error = contract_error(hop_behind_boundary(
+            BoundaryDisposition::Refuse,
+            on_selector,
+            Some(FactId(42)),
+        ))?;
+        assert!(
+            matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+            "a refused promotion must be rejected, got {error:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_refusing_boundary_still_admits_a_shape_without_promotion() -> Result<(), Box<dyn Error>> {
+    // Negative control, and the reason this law is narrow. A shape claim is
+    // not a promotion: a producer that refuses to evaluate a dynamic key may
+    // still know every value in the hash is an array reference — "I will not
+    // say which member, I will say what shape a member has". Refusing this
+    // would reject an honest record, and `SemanticFactEnvelope::status`
+    // already treats a refusing boundary as a status rather than as an
+    // impossible record.
+    for on_selector in [true, false] {
+        hop_behind_boundary(BoundaryDisposition::Refuse, on_selector, None)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_degrading_boundary_still_admits_a_promoted_value_fact() -> Result<(), Box<dyn Error>> {
+    // The other control: only `Refuse` refuses promotion. A degrading boundary
+    // permits a degraded answer, promotion included, so the law must key on
+    // the disposition and not merely on the presence of a boundary.
+    for on_selector in [true, false] {
+        hop_behind_boundary(BoundaryDisposition::Degrade, on_selector, Some(FactId(42)))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_refused_promotion_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    let honest = hop_behind_boundary(BoundaryDisposition::Refuse, true, None)?;
+    let chain = StructuralAccessChain::new(subject()?, vec![honest])?;
+    let mut value = serde_json::to_value(&chain)?;
+    value["hops"][0]["outcome"]["Selected"]["value_fact"] = serde_json::json!(42);
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "a promoted fact behind a refusing boundary must not survive transport"
+    );
+    chain.validate()?;
+    Ok(())
+}

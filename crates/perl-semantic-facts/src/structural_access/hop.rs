@@ -221,6 +221,10 @@ impl StructuralAccessHop {
     ///    [`validate_shape_identity`].
     /// 7. Limitations are sorted and duplicate-free, as the constructor
     ///    leaves them.
+    /// 8. A boundary that refuses promotion cannot carry a promoted value
+    ///    fact. Only the promotion is refused: a shape claim with no
+    ///    `value_fact` stays legal, since refusing to evaluate a dynamic key
+    ///    does not stop a producer knowing what shape any member has.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -239,6 +243,31 @@ impl StructuralAccessHop {
                 end_byte: self.spelling.anchor.end_byte,
             });
         }
+        // Law 9: a boundary that refuses promotion cannot carry a promoted
+        // value fact.
+        //
+        // `BoundaryDisposition::Refuse` is documented as refusing *promotion*,
+        // and `Selected::value_fact` is documented as the canonical fact
+        // identity "when promoted". Those are the same word for the same act,
+        // so recording one through the other is a record contradicting itself.
+        //
+        // Only the promotion is refused. `Selected { value_fact: None }`
+        // remains legal behind a refusing boundary, because a shape claim is
+        // not a promotion and is honestly reachable: a producer that refuses
+        // to evaluate a dynamic key may still know every value in the hash is
+        // an array reference — "I will not say which member, I will say what
+        // shape a member has". Refusing that too would reject a truthful
+        // record, and `crate::SemanticFactEnvelope::status` already treats a
+        // refusing boundary as a *status* (`Refused`) rather than as an
+        // impossible record, which this contract should not contradict.
+        if let StructuralHopOutcome::Selected { value_fact: Some(_), .. } = &self.outcome
+            && (self.aggregate.refuses_promotion() || self.selector.refuses_promotion())
+        {
+            return Err(StructuralAccessContractError::ContradictoryStatus(
+                "a boundary that refuses promotion cannot carry a promoted value fact",
+            ));
+        }
+
         // Law 6, for the outcome's own payload. The aggregate and spelling are
         // checked above; the shape a hop claims to have selected or observed
         // carries an identity too, and serde reaches it without a constructor.

@@ -231,6 +231,19 @@ pub enum StructuralAccessSelector {
 }
 
 impl StructuralAccessSelector {
+    /// Whether this selector stands behind a boundary that refuses promotion.
+    ///
+    /// A static selector names its member outright and stands behind nothing.
+    #[must_use]
+    pub const fn refuses_promotion(&self) -> bool {
+        match self {
+            Self::DynamicKey(link) | Self::DynamicIndex(link) => {
+                matches!(link.disposition, BoundaryDisposition::Refuse)
+            }
+            Self::StaticKey(_) | Self::StaticIndex(_) => false,
+        }
+    }
+
     /// Stable discriminant tag used inside fingerprints and diagnostics.
     #[must_use]
     pub const fn tag(&self) -> &'static str {
@@ -332,6 +345,17 @@ impl StructuralAccessAggregate {
             Self::DynamicBoundary(boundary) => {
                 fold_boundary("aggregate-boundary", boundary, accumulator)
             }
+        }
+    }
+
+    /// Whether this aggregate stands behind a boundary that refuses promotion.
+    #[must_use]
+    pub const fn refuses_promotion(&self) -> bool {
+        match self {
+            Self::DynamicBoundary(link) => {
+                matches!(link.disposition, BoundaryDisposition::Refuse)
+            }
+            Self::Variable { .. } | Self::Fact(_) | Self::PrecedingHop { .. } => false,
         }
     }
 
