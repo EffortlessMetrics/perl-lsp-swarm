@@ -1901,17 +1901,24 @@ fn duplicate_id_count(entries: &[AllowEntry]) -> usize {
     seen_ids.values().filter(|count| **count > 1).count()
 }
 
-fn entry_matches_any_tracked_file(entry: &AllowEntry, tracked: &[String]) -> bool {
+/// True when one allowlist entry governs `candidate`, by exact path or glob.
+/// Shared with `publication_sync`, which consults the same ledger to decide
+/// whether a publication exclusion would withhold product or test work.
+pub(crate) fn entry_matches_path(entry: &AllowEntry, candidate: &str) -> bool {
     if let Some(path) = entry.path.as_deref() {
-        return tracked.iter().any(|tracked_path| tracked_path == path);
+        return path == candidate;
     }
     if let Some(glob_str) = entry.glob.as_deref() {
         let Ok(pattern) = Pattern::new(glob_str) else {
             return false;
         };
-        return tracked.iter().any(|tracked_path| pattern.matches(tracked_path));
+        return pattern.matches(candidate);
     }
     false
+}
+
+fn entry_matches_any_tracked_file(entry: &AllowEntry, tracked: &[String]) -> bool {
+    tracked.iter().any(|tracked_path| entry_matches_path(entry, tracked_path))
 }
 
 fn unused_entry_count(entries: &[AllowEntry], tracked: &[String]) -> usize {

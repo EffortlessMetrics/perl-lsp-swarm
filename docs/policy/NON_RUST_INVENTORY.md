@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12630 |
+| Total tracked files | 12631 |
 | Rust-family files | 3921 |
-| Non-Rust files | 8709 |
-| Allowlisted | 6468 |
-| Unclassified | 2241 |
+| Non-Rust files | 8710 |
+| Allowlisted | 6471 |
+| Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
 | config | 502 |
-| documentation | 2840 |
+| documentation | 2841 |
 | generated | 2 |
 | production | 354 |
-| test | 2090 |
+| test | 2092 |
 | tooling | 680 |
-| unclassified | 2241 |
+| unclassified | 2239 |
 
 ## Unclassified files
 
@@ -206,8 +206,6 @@
 | `fixtures/publication_drift/publication_manifest.v1.json` | `json` |
 | `fixtures/publication_drift/windows_arm64_target_drift.json` | `json` |
 | `fixtures/publication_drift/windows_path.json` | `json` |
-| `fixtures/publication_sync/clean_manifest.json` | `json` |
-| `fixtures/publication_sync/reconciliation_receipt.json` | `json` |
 | `fuzz/artifacts/substitution_parsing/crash-b6dd6f9afe3c18f3efa0b5bb8454be7744f2a458` | `` |
 | `fuzz/corpus/builtin_functions/add_one.txt` | `txt` |
 | `fuzz/corpus/builtin_functions/array.txt` | `txt` |
@@ -2499,6 +2497,7 @@
 | `.changes/unreleased/product-7951-Fixed-121057.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7954-Added-121220.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7957-Added-121426.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-7972-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7975-Changed-213500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7980-Added-220800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7984-Added-230000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -6313,6 +6312,8 @@
 | `fixtures/product_health_status/sources/sec-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/sources/sec-ind.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/sources/unproven.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/publication_sync/clean_manifest.json` | test | `non-rust-publication-sync-fixtures` | release/ci |
+| `fixtures/publication_sync/reconciliation_receipt.json` | test | `non-rust-publication-sync-fixtures` | release/ci |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/external_stage_satisfied_internally.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |

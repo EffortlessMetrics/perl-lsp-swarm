@@ -19,10 +19,15 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::file_policy::{self, AllowEntry};
 use super::sync_divergence::{Verdict, is_product_or_test_path};
 
 const MANIFEST_SCHEMA_VERSION: &str = "publication_sync_manifest.v1";
 const RECEIPT_SCHEMA_VERSION: u32 = 1;
+
+/// The `sync-divergence` receipt version this planner consumes. Pinned so a
+/// receipt from another version cannot silently authorize a projection.
+const RECONCILIATION_RECEIPT_SCHEMA_VERSION: u32 = 2;
 
 /// Release inputs every manifest must bind. A missing id is not provable and a
 /// foreign id fails closed at the schema boundary.
@@ -159,10 +164,17 @@ impl Action {
         }
     }
 
-    /// Actions that withhold prepared swarm content from the publication tree.
-    /// These are the operations that can hide product or test work.
-    fn withholds_swarm_content(self) -> bool {
-        matches!(self, Action::DropSwarmOnly | Action::PreserveRelease)
+    /// Actions whose published bytes do not derive from the prepared swarm
+    /// content at that path: the path is dropped, replaced by the release
+    /// base's version, or regenerated from elsewhere. These are the operations
+    /// that can hide product or test work.
+    ///
+    /// `translate` is deliberately excluded. A translation still derives from
+    /// `S` at that path — #6356 contemplates translating "source comments that
+    /// ship through installers, extension or artifacts" — so it is constrained
+    /// by class instead of forbidden outright.
+    fn displaces_swarm_content(self) -> bool {
+        matches!(self, Action::DropSwarmOnly | Action::PreserveRelease | Action::Regenerate)
     }
 }
 
@@ -195,11 +207,45 @@ impl Class {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Invariant {
-    id: String,
-    sources: Vec<String>,
+    id: InvariantId,
+    sources: Vec<InputId>,
     result: Verdict,
     evidence: Vec<Evidence>,
 }
+
+/// The cross-file invariants #6356 requires a projection to settle. The set is
+/// closed and exhaustively required: an invented identifier cannot stand in for
+/// a required one, and omitting one cannot be hidden by declaring another twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum InvariantId {
+    ArtifactReachability,
+    EffectiveVersionIdentity,
+    PublicClaimStrength,
+    GovernanceTimeState,
+    ReleaseLineageCompleteness,
+}
+
+impl InvariantId {
+    fn as_str(self) -> &'static str {
+        match self {
+            InvariantId::ArtifactReachability => "artifact_reachability",
+            InvariantId::EffectiveVersionIdentity => "effective_version_identity",
+            InvariantId::PublicClaimStrength => "public_claim_strength",
+            InvariantId::GovernanceTimeState => "governance_time_state",
+            InvariantId::ReleaseLineageCompleteness => "release_lineage_completeness",
+        }
+    }
+}
+
+/// Every invariant #6356 names. A manifest must settle all of them.
+const REQUIRED_INVARIANT_IDS: [InvariantId; 5] = [
+    InvariantId::ArtifactReachability,
+    InvariantId::EffectiveVersionIdentity,
+    InvariantId::PublicClaimStrength,
+    InvariantId::GovernanceTimeState,
+    InvariantId::ReleaseLineageCompleteness,
+];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -239,6 +285,10 @@ impl LiveResult {
 struct Evidence {
     kind: EvidenceKind,
     reference: String,
+    /// Required for `live_receipt`, which the planner resolves and hashes; the
+    /// label alone never proves a live control. `null` for the other roles,
+    /// whose references are documents and rulings, not observed artifacts.
+    digest: Option<String>,
 }
 
 /// Evidence roles. A checked-in file proves what the repository says, never
@@ -251,6 +301,16 @@ enum EvidenceKind {
     ReviewRuling,
 }
 
+impl EvidenceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            EvidenceKind::LiveReceipt => "live_receipt",
+            EvidenceKind::RepositorySource => "repository_source",
+            EvidenceKind::ReviewRuling => "review_ruling",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Blocker {
@@ -260,11 +320,14 @@ struct Blocker {
 }
 
 /// The minimal typed view of a `sync-divergence` reconciliation receipt this
-/// planner needs. Unknown fields are tolerated deliberately: `sync_divergence`
-/// owns that receipt's shape and may extend it without invalidating currentness
-/// here. The fields read below are the ones that carry currentness meaning.
+/// planner needs. Unknown fields are tolerated deliberately — `sync_divergence`
+/// owns that receipt's shape and may add fields within a version — but
+/// `schema_version` is read and pinned, so a receipt from another version (or
+/// another producer that happens to carry a `verdict` and `subjects`) cannot
+/// authorize a plan.
 #[derive(Debug, Clone, Deserialize)]
 struct ReconciliationReceipt {
+    schema_version: u32,
     verdict: Verdict,
     subjects: ReconciliationSubjects,
 }
@@ -284,23 +347,52 @@ struct ReconciliationSubject {
 // Receipt
 // ---------------------------------------------------------------------------
 
+/// The plan receipt. It deliberately carries no local filesystem path: the
+/// manifest's identity is its canonical digest, so two runs over the same
+/// manifest reached through different absolute or relative paths produce
+/// byte-identical receipts.
+///
+/// The identity fields are optional because a manifest that fails to parse or
+/// to validate against the published schema still gets a machine-readable
+/// `not_proven` receipt naming why, rather than only a process exit code.
 #[derive(Debug, Serialize)]
 struct Receipt {
     schema_version: u32,
-    manifest: String,
-    manifest_digest: String,
-    manifest_schema_version: String,
-    release: String,
-    track: String,
-    prepared_swarm_sha: String,
-    release_base_sha: String,
-    expected_projected_tree: String,
+    manifest_digest: Option<String>,
+    manifest_schema_version: Option<String>,
+    release: Option<String>,
+    track: Option<String>,
+    prepared_swarm_sha: Option<String>,
+    release_base_sha: Option<String>,
+    expected_projected_tree: Option<String>,
     verdict: Verdict,
     inputs: Vec<ReceiptInput>,
     rows: Vec<ReceiptRow>,
     invariants: Vec<ReceiptInvariant>,
     live_controls: Vec<ReceiptLiveControl>,
     findings: Vec<Finding>,
+}
+
+impl Receipt {
+    /// A receipt for a manifest that never reached evaluation.
+    fn unevaluated(manifest_digest: Option<String>, finding: Finding) -> Self {
+        Self {
+            schema_version: RECEIPT_SCHEMA_VERSION,
+            manifest_digest,
+            manifest_schema_version: None,
+            release: None,
+            track: None,
+            prepared_swarm_sha: None,
+            release_base_sha: None,
+            expected_projected_tree: None,
+            verdict: Verdict::NotProven,
+            inputs: Vec::new(),
+            rows: Vec::new(),
+            invariants: Vec::new(),
+            live_controls: Vec::new(),
+            findings: vec![finding],
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -316,7 +408,7 @@ struct ReceiptRow {
     path: String,
     action: String,
     class: String,
-    withholds_swarm_content: bool,
+    displaces_swarm_content: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -480,31 +572,125 @@ fn is_path_prefix(parent: &str, candidate: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Product surface authority
+// ---------------------------------------------------------------------------
+
+/// Which paths carry product or test work, and may therefore never be withheld
+/// from publication.
+///
+/// `sync_divergence::is_product_or_test_path` recognizes source code by segment
+/// and extension. That is a floor, not the whole surface: shipped product also
+/// includes non-Rust editor clients and packaging metadata such as
+/// `clients/sublime/LSP-perllsp/plugin.py` and `clients/lite-xl/compose.lua`,
+/// which no source-extension heuristic can see. The repository already
+/// classifies those files in `policy/non-rust-allowlist.toml`, so that ledger is
+/// consulted as the authority rather than growing a second hand-maintained list
+/// here.
+struct ProductSurface {
+    entries: Vec<AllowEntry>,
+    /// `false` when the ledger could not be read, in which case exclusions
+    /// cannot be checked and every withholding row is `not_proven`.
+    available: bool,
+}
+
+impl ProductSurface {
+    fn load(repo_root: &Path, state: &mut PlanState) -> Self {
+        match file_policy::load_allowlist(repo_root) {
+            Ok(allowlist) => Self {
+                entries: allowlist
+                    .allow
+                    .into_iter()
+                    .filter(|entry| !entry.retired)
+                    .filter(|entry| {
+                        entry.classification == "production" || entry.classification == "test"
+                    })
+                    .collect(),
+                available: true,
+            },
+            Err(error) => {
+                state.not_proven(
+                    "product_surface_unavailable",
+                    format!(
+                        "policy/non-rust-allowlist.toml could not be read, so publication exclusions cannot be checked against the product surface: {error}"
+                    ),
+                    "release/ci",
+                );
+                Self { entries: Vec::new(), available: false }
+            }
+        }
+    }
+
+    /// Build a surface from explicit `(path, classification)` pairs. Tests use
+    /// this so a fixture's exclusion rules do not depend on the live allowlist
+    /// evolving underneath them.
+    #[cfg(test)]
+    fn from_entries_for_test(rows: Vec<(&str, &str)>) -> Self {
+        Self {
+            entries: rows
+                .into_iter()
+                .map(|(path, classification)| AllowEntry {
+                    id: path.to_string(),
+                    glob: None,
+                    path: Some(path.to_string()),
+                    kind: String::new(),
+                    language: String::new(),
+                    surface: String::new(),
+                    classification: classification.to_string(),
+                    owner: String::new(),
+                    reason: String::new(),
+                    covered_by: Vec::new(),
+                    created: String::new(),
+                    review_after: String::new(),
+                    expires: None,
+                    broad_glob_reason: None,
+                    retired: false,
+                })
+                .collect(),
+            available: true,
+        }
+    }
+
+    /// True when the repository treats `path` as product or test work. Source
+    /// code is recognized without the ledger; everything else is the ledger's
+    /// call.
+    fn bears_product_or_test(&self, path: &str) -> bool {
+        if is_product_or_test_path(path) {
+            return true;
+        }
+        self.entries.iter().any(|entry| file_policy::entry_matches_path(entry, path))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Planning
 // ---------------------------------------------------------------------------
+
+/// The published contract, compiled in so the command enforces exactly the
+/// schema this repository ships rather than a Rust approximation of it.
+const MANIFEST_SCHEMA: &str =
+    include_str!("../../../schemas/publication_sync_manifest.v1.schema.json");
 
 /// Validate a candidate manifest and write the plan receipt. Read-only: the
 /// only file written is the receipt.
 pub fn plan(config: PlanConfig) -> Result<()> {
     let raw = fs::read(&config.manifest)
         .with_context(|| format!("reading manifest {}", config.manifest.display()))?;
-    let document: Value = serde_json::from_slice(&raw)
-        .with_context(|| format!("parsing manifest {} as JSON", config.manifest.display()))?;
-    let manifest: Manifest = serde_json::from_value(document.clone()).with_context(|| {
-        format!("parsing manifest {} as {MANIFEST_SCHEMA_VERSION}", config.manifest.display())
-    })?;
-    let manifest_digest = canonical_digest(&document)?;
 
-    let receipt =
-        evaluate(&manifest, &manifest_digest, &config.manifest, &config.repo_root, load_input)?;
+    let receipt = match build_receipt(&raw, &config.repo_root) {
+        Ok(receipt) => receipt,
+        Err(failure) => Receipt::unevaluated(failure.manifest_digest, failure.finding),
+    };
     write_receipt(&config.receipt, &receipt)?;
 
     match receipt.verdict {
         Verdict::Pass => {
             println!(
                 "publication-sync: plan pass for release {} ({}); manifest digest {}",
-                receipt.release, receipt.track, receipt.manifest_digest
+                receipt.release.as_deref().unwrap_or("<unknown>"),
+                receipt.track.as_deref().unwrap_or("<unknown>"),
+                receipt.manifest_digest.as_deref().unwrap_or("<unknown>")
             );
+            println!("publication-sync: manifest {}", config.manifest.display());
             println!("publication-sync: receipt {}", config.receipt.display());
             Ok(())
         }
@@ -519,6 +705,80 @@ pub fn plan(config: PlanConfig) -> Result<()> {
     }
 }
 
+/// A manifest that never reached evaluation, with whatever identity could still
+/// be established.
+struct UnevaluatedManifest {
+    manifest_digest: Option<String>,
+    finding: Finding,
+}
+
+fn finding(code: &str, message: impl Into<String>) -> Finding {
+    Finding { code: code.to_string(), message: message.into(), owner: "release/ci".to_string() }
+}
+
+/// Parse, schema-validate, then evaluate. The published JSON Schema is the
+/// admission boundary: serde alone would accept documents the contract forbids,
+/// because an `Option` field tolerates an omitted key and a `Vec` tolerates an
+/// empty array where the schema requires the key and a minimum length.
+fn build_receipt(raw: &[u8], repo_root: &Path) -> Result<Receipt, UnevaluatedManifest> {
+    let document: Value = serde_json::from_slice(raw).map_err(|error| UnevaluatedManifest {
+        manifest_digest: None,
+        finding: finding("manifest_unparsable", format!("the manifest is not JSON: {error}")),
+    })?;
+
+    let manifest_digest = canonical_digest(&document).ok();
+
+    let schema: Value =
+        serde_json::from_str(MANIFEST_SCHEMA).map_err(|error| UnevaluatedManifest {
+            manifest_digest: manifest_digest.clone(),
+            finding: finding(
+                "manifest_schema_unreadable",
+                format!("the published manifest schema is not JSON: {error}"),
+            ),
+        })?;
+    let validator = jsonschema::validator_for(&schema).map_err(|error| UnevaluatedManifest {
+        manifest_digest: manifest_digest.clone(),
+        finding: finding(
+            "manifest_schema_unreadable",
+            format!("the published manifest schema does not compile: {error}"),
+        ),
+    })?;
+
+    let mut violations: Vec<String> = validator
+        .iter_errors(&document)
+        .map(|error| format!("{}: {error}", error.instance_path()))
+        .collect();
+    if !violations.is_empty() {
+        violations.sort();
+        violations.dedup();
+        return Err(UnevaluatedManifest {
+            manifest_digest,
+            finding: finding(
+                "manifest_schema_violation",
+                format!(
+                    "the manifest violates {MANIFEST_SCHEMA_VERSION}: {}",
+                    violations.join("; ")
+                ),
+            ),
+        });
+    }
+
+    let manifest: Manifest =
+        serde_json::from_value(document).map_err(|error| UnevaluatedManifest {
+            manifest_digest: manifest_digest.clone(),
+            finding: finding(
+                "manifest_model_violation",
+                format!("the manifest does not load as {MANIFEST_SCHEMA_VERSION}: {error}"),
+            ),
+        })?;
+
+    let digest = manifest_digest.clone().unwrap_or_default();
+    evaluate(&manifest, &digest, repo_root, load_input).map_err(|error| UnevaluatedManifest {
+        manifest_digest,
+        finding: finding("plan_failed", format!("planning could not complete: {error}")),
+    })
+}
+
 fn display_findings(receipt: &Receipt, path: &Path) -> String {
     let mut rendered = format!("{} ({} finding(s))", path.display(), receipt.findings.len());
     for finding in &receipt.findings {
@@ -531,28 +791,82 @@ fn display_findings(receipt: &Receipt, path: &Path) -> String {
     rendered
 }
 
-/// Reads one declared input from disk. Injected so the evaluation core stays
-/// deterministic and testable without a repository fixture tree.
-type InputLoader = fn(&Path, &str) -> Option<Vec<u8>>;
+/// Why a declared repository artifact could not be read. Distinguishing these
+/// matters: "the file is not there" and "the file is there but escapes the
+/// checkout" need different remediation, and collapsing both into "missing"
+/// hides the second.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LoadFailure {
+    Missing,
+    Escapes,
+    Unreadable(String),
+}
 
-fn load_input(repo_root: &Path, path: &str) -> Option<Vec<u8>> {
-    fs::read(repo_root.join(path)).ok()
+/// Reads one declared repository artifact. Injected so the evaluation core
+/// stays deterministic and testable without a repository fixture tree.
+type InputLoader = fn(&Path, &str) -> Result<Vec<u8>, LoadFailure>;
+
+/// Read a repository-relative artifact, refusing anything that resolves outside
+/// the checkout. `valid_repository_path` already rejects lexical traversal, but
+/// a symlink inside the tree can still point outside it, so confinement is
+/// checked against the resolved location rather than the declared one.
+fn load_input(repo_root: &Path, path: &str) -> Result<Vec<u8>, LoadFailure> {
+    let candidate = repo_root.join(path);
+    let resolved = match candidate.canonicalize() {
+        Ok(resolved) => resolved,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(LoadFailure::Missing);
+        }
+        Err(error) => return Err(LoadFailure::Unreadable(error.to_string())),
+    };
+    // A repository root that cannot itself be resolved gives no confinement
+    // boundary to check against, so refuse rather than read.
+    let root =
+        repo_root.canonicalize().map_err(|error| LoadFailure::Unreadable(error.to_string()))?;
+    if !resolved.starts_with(&root) {
+        return Err(LoadFailure::Escapes);
+    }
+    if !resolved.is_file() {
+        return Err(LoadFailure::Unreadable("not a regular file".to_string()));
+    }
+    fs::read(&resolved).map_err(|error| LoadFailure::Unreadable(error.to_string()))
 }
 
 fn evaluate(
     manifest: &Manifest,
     manifest_digest: &str,
-    manifest_path: &Path,
     repo_root: &Path,
     loader: InputLoader,
+) -> Result<Receipt> {
+    let mut probe = PlanState::default();
+    let product_surface = ProductSurface::load(repo_root, &mut probe);
+    let mut receipt =
+        evaluate_with_surface(manifest, manifest_digest, repo_root, loader, &product_surface)?;
+    // Surface-loading findings are raised before evaluation, so fold them in.
+    let (_, findings) = probe.finish();
+    if !findings.is_empty() {
+        receipt.verdict = Verdict::NotProven;
+        receipt.findings.extend(findings);
+        receipt.findings.sort();
+        receipt.findings.dedup();
+    }
+    Ok(receipt)
+}
+
+fn evaluate_with_surface(
+    manifest: &Manifest,
+    manifest_digest: &str,
+    repo_root: &Path,
+    loader: InputLoader,
+    product_surface: &ProductSurface,
 ) -> Result<Receipt> {
     let mut state = PlanState::default();
 
     validate_identity(manifest, &mut state);
     let inputs = validate_inputs(manifest, repo_root, loader, &mut state);
-    validate_rows(manifest, &mut state);
+    validate_rows(manifest, repo_root, loader, product_surface, &mut state);
     validate_invariants(manifest, &mut state);
-    validate_live_controls(manifest, &mut state);
+    validate_live_controls(manifest, repo_root, loader, &mut state);
     validate_declared_blockers(manifest, &mut state);
 
     let mut rows: Vec<ReceiptRow> = manifest
@@ -562,7 +876,7 @@ fn evaluate(
             path: row.path.clone(),
             action: row.action.as_str().to_string(),
             class: row.class.as_str().to_string(),
-            withholds_swarm_content: row.action.withholds_swarm_content(),
+            displaces_swarm_content: row.action.displaces_swarm_content(),
         })
         .collect();
     rows.sort_by(|left, right| left.path.cmp(&right.path));
@@ -570,7 +884,10 @@ fn evaluate(
     let mut invariants: Vec<ReceiptInvariant> = manifest
         .invariants
         .iter()
-        .map(|invariant| ReceiptInvariant { id: invariant.id.clone(), result: invariant.result })
+        .map(|invariant| ReceiptInvariant {
+            id: invariant.id.as_str().to_string(),
+            result: invariant.result,
+        })
         .collect();
     invariants.sort_by(|left, right| left.id.cmp(&right.id));
 
@@ -594,14 +911,13 @@ fn evaluate(
 
     Ok(Receipt {
         schema_version: RECEIPT_SCHEMA_VERSION,
-        manifest: manifest_path.display().to_string(),
-        manifest_digest: manifest_digest.to_string(),
-        manifest_schema_version: manifest.schema_version.clone(),
-        release: manifest.release.clone(),
-        track: manifest.track.as_str().to_string(),
-        prepared_swarm_sha: manifest.prepared_swarm_sha.clone(),
-        release_base_sha: manifest.release_base_sha.clone(),
-        expected_projected_tree: manifest.expected_projected_tree.clone(),
+        manifest_digest: Some(manifest_digest.to_string()),
+        manifest_schema_version: Some(manifest.schema_version.clone()),
+        release: Some(manifest.release.clone()),
+        track: Some(manifest.track.as_str().to_string()),
+        prepared_swarm_sha: Some(manifest.prepared_swarm_sha.clone()),
+        release_base_sha: Some(manifest.release_base_sha.clone()),
+        expected_projected_tree: Some(manifest.expected_projected_tree.clone()),
         verdict,
         inputs,
         rows,
@@ -714,7 +1030,7 @@ fn validate_inputs(
         }
 
         let observed = match loader(repo_root, &input.path) {
-            Some(bytes) => {
+            Ok(bytes) => {
                 let digest = sha256_digest(&bytes);
                 if digest != input.digest {
                     state.not_proven(
@@ -733,15 +1049,13 @@ fn validate_inputs(
                 }
                 Some(digest)
             }
-            None => {
-                state.not_proven(
-                    "input_missing",
-                    format!(
-                        "release input {} is declared at {} but no such file exists under the repository root",
-                        input.id.as_str(),
-                        input.path
-                    ),
-                    "release/ci",
+            Err(failure) => {
+                report_load_failure(
+                    state,
+                    "input",
+                    &format!("release input {}", input.id.as_str()),
+                    &input.path,
+                    &failure,
                 );
                 None
             }
@@ -774,6 +1088,36 @@ fn validate_inputs(
 /// The reconciliation input is a `sync-divergence` receipt. It is current only
 /// when it passed and when it reconciled exactly this manifest's `S` against
 /// exactly this manifest's `R`.
+/// Report one unreadable repository artifact, keeping "absent", "escapes the
+/// checkout" and "present but unreadable" distinguishable in the receipt.
+fn report_load_failure(
+    state: &mut PlanState,
+    prefix: &str,
+    subject: &str,
+    path: &str,
+    failure: &LoadFailure,
+) {
+    match failure {
+        LoadFailure::Missing => state.not_proven(
+            &format!("{prefix}_missing"),
+            format!(
+                "{subject} is declared at {path} but no such file exists under the repository root"
+            ),
+            "release/ci",
+        ),
+        LoadFailure::Escapes => state.not_proven(
+            &format!("{prefix}_escapes_repository"),
+            format!("{subject} at {path} resolves outside the repository root"),
+            "release/ci",
+        ),
+        LoadFailure::Unreadable(error) => state.not_proven(
+            &format!("{prefix}_unreadable"),
+            format!("{subject} at {path} could not be read: {error}"),
+            "release/ci",
+        ),
+    }
+}
+
 fn validate_reconciliation(manifest: &Manifest, raw: Option<&[u8]>, state: &mut PlanState) {
     let Some(raw) = raw else {
         // A missing or unreadable reconciliation input is already reported by
@@ -791,6 +1135,18 @@ fn validate_reconciliation(manifest: &Manifest, raw: Option<&[u8]>, state: &mut 
             return;
         }
     };
+
+    if receipt.schema_version != RECONCILIATION_RECEIPT_SCHEMA_VERSION {
+        state.not_proven(
+            "reconciliation_schema_version_unknown",
+            format!(
+                "the reconciliation input declares schema_version {} but this planner consumes sync-divergence receipt v{RECONCILIATION_RECEIPT_SCHEMA_VERSION}",
+                receipt.schema_version
+            ),
+            "release/ci",
+        );
+        return;
+    }
 
     match receipt.verdict {
         Verdict::Pass => {}
@@ -832,7 +1188,13 @@ fn validate_reconciliation(manifest: &Manifest, raw: Option<&[u8]>, state: &mut 
     }
 }
 
-fn validate_rows(manifest: &Manifest, state: &mut PlanState) {
+fn validate_rows(
+    manifest: &Manifest,
+    repo_root: &Path,
+    loader: InputLoader,
+    product_surface: &ProductSurface,
+    state: &mut PlanState,
+) {
     let declared_inputs: BTreeSet<&str> =
         manifest.inputs.iter().map(|input| input.id.as_str()).collect();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
@@ -855,26 +1217,50 @@ fn validate_rows(manifest: &Manifest, state: &mut PlanState) {
         }
 
         validate_row_digests(row, state);
-        validate_row_authority(row, &declared_inputs, state);
+        validate_row_authority(row, &declared_inputs, repo_root, loader, state);
 
-        if row.action.withholds_swarm_content() && is_product_or_test_path(&row.path) {
+        let displaces = row.action.displaces_swarm_content() || row.class == Class::ReleaseLineage;
+        let product_bearing = product_surface.bears_product_or_test(&row.path);
+
+        if displaces && product_bearing {
             state.block(
                 "row_product_bearing_exclusion",
                 format!(
-                    "row {} uses {} on a product- or test-bearing path; publication projection may not withhold product work",
+                    "row {} uses {} / {} on a path the repository classifies as product or test work; publication projection may not displace it",
                     row.path,
-                    row.action.as_str()
+                    row.action.as_str(),
+                    row.class.as_str()
+                ),
+                "release/ci",
+            );
+        } else if displaces && !product_surface.available {
+            state.not_proven(
+                "row_product_bearing_unverifiable",
+                format!(
+                    "row {} displaces swarm content but the product surface could not be consulted",
+                    row.path
                 ),
                 "release/ci",
             );
         }
 
-        if row.class == Class::ReleaseLineage && is_product_or_test_path(&row.path) {
+        // A translation may touch product code, but only to repair destination
+        // context (a repository URL, a branch name, an issue reference) inside
+        // it. Any other class on product code is a substantive product change
+        // presented as publication-only.
+        if row.action == Action::Translate
+            && product_bearing
+            && !matches!(
+                row.class,
+                Class::RepositoryContext | Class::BranchContext | Class::IssueReference
+            )
+        {
             state.block(
-                "row_product_bearing_exclusion",
+                "row_product_translation_class_invalid",
                 format!(
-                    "row {} is classified release_lineage on a product- or test-bearing path",
-                    row.path
+                    "row {} translates product or test work under class {}; only destination-context classes may translate product code",
+                    row.path,
+                    row.class.as_str()
                 ),
                 "release/ci",
             );
@@ -1004,7 +1390,13 @@ fn validate_row_digests(row: &PathRow, state: &mut PlanState) {
 
 /// `authority_ref` must resolve to something a reviewer can open: a declared
 /// release input, an issue reference, or a repository-relative document.
-fn validate_row_authority(row: &PathRow, declared_inputs: &BTreeSet<&str>, state: &mut PlanState) {
+fn validate_row_authority(
+    row: &PathRow,
+    declared_inputs: &BTreeSet<&str>,
+    repo_root: &Path,
+    loader: InputLoader,
+    state: &mut PlanState,
+) {
     let reference = row.authority_ref.trim();
     if reference.is_empty() {
         state.not_proven(
@@ -1024,6 +1416,17 @@ fn validate_row_authority(row: &PathRow, declared_inputs: &BTreeSet<&str>, state
         return;
     }
     if valid_repository_path(reference) && reference.contains('/') {
+        // A document authority is only an authority if a reviewer can open it,
+        // so the reference is resolved rather than merely shaped.
+        if let Err(failure) = loader(repo_root, reference) {
+            report_load_failure(
+                state,
+                "row_authority",
+                &format!("row {}'s authority document", row.path),
+                reference,
+                &failure,
+            );
+        }
         return;
     }
     state.not_proven(
@@ -1037,40 +1440,76 @@ fn validate_row_authority(row: &PathRow, declared_inputs: &BTreeSet<&str>, state
 }
 
 fn validate_invariants(manifest: &Manifest, state: &mut PlanState) {
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let declared_inputs: BTreeSet<InputId> = manifest.inputs.iter().map(|input| input.id).collect();
+    let mut seen: BTreeSet<InvariantId> = BTreeSet::new();
+
     for invariant in &manifest.invariants {
-        if !seen.insert(invariant.id.as_str()) {
+        if !seen.insert(invariant.id) {
             state.not_proven(
                 "invariant_duplicate",
-                format!("invariant {} is declared more than once", invariant.id),
+                format!("invariant {} is declared more than once", invariant.id.as_str()),
                 "release/ci",
             );
         }
+
+        // An invariant is settled against release inputs. Naming a source the
+        // manifest never bound means nothing was actually compared.
+        for source in &invariant.sources {
+            if !declared_inputs.contains(source) {
+                state.not_proven(
+                    "invariant_source_undeclared",
+                    format!(
+                        "invariant {} cites release input {} which the manifest does not declare",
+                        invariant.id.as_str(),
+                        source.as_str()
+                    ),
+                    "release/ci",
+                );
+            }
+        }
+
         match invariant.result {
             Verdict::Pass => {
                 if invariant.evidence.is_empty() {
                     state.not_proven(
                         "invariant_unevidenced_pass",
-                        format!("invariant {} claims pass with no evidence", invariant.id),
+                        format!("invariant {} claims pass with no evidence", invariant.id.as_str()),
                         "release/ci",
                     );
                 }
             }
             Verdict::Blocked => state.block(
                 "invariant_blocked",
-                format!("required invariant {} is blocked", invariant.id),
+                format!("required invariant {} is blocked", invariant.id.as_str()),
                 "release/ci",
             ),
             Verdict::NotProven => state.not_proven(
                 "invariant_not_proven",
-                format!("required invariant {} is not proven", invariant.id),
+                format!("required invariant {} is not proven", invariant.id.as_str()),
                 "release/ci",
             ),
         }
     }
+
+    // Exhaustive coverage: a projection that simply omits an invariant has not
+    // settled it, and a passing plan must not be reachable by declaring fewer.
+    for required in REQUIRED_INVARIANT_IDS {
+        if !seen.contains(&required) {
+            state.not_proven(
+                "invariant_required_missing",
+                format!("required invariant {} is not declared", required.as_str()),
+                "release/ci",
+            );
+        }
+    }
 }
 
-fn validate_live_controls(manifest: &Manifest, state: &mut PlanState) {
+fn validate_live_controls(
+    manifest: &Manifest,
+    repo_root: &Path,
+    loader: InputLoader,
+    state: &mut PlanState,
+) {
     for (name, control) in [
         ("branch_rules", &manifest.live_controls.branch_rules),
         ("environments", &manifest.live_controls.environments),
@@ -1078,11 +1517,12 @@ fn validate_live_controls(manifest: &Manifest, state: &mut PlanState) {
     ] {
         match control.result {
             LiveResult::Proven => {
-                let live = control
+                let live: Vec<&Evidence> = control
                     .evidence
                     .iter()
-                    .any(|evidence| evidence.kind == EvidenceKind::LiveReceipt);
-                if !live {
+                    .filter(|evidence| evidence.kind == EvidenceKind::LiveReceipt)
+                    .collect();
+                if live.is_empty() {
                     state.not_proven(
                         "live_control_source_only",
                         format!(
@@ -1090,6 +1530,12 @@ fn validate_live_controls(manifest: &Manifest, state: &mut PlanState) {
                         ),
                         "release/ci",
                     );
+                }
+                // The `live_receipt` label is a claim, not proof. Resolve and
+                // hash every referenced receipt so a nonexistent or altered
+                // observation cannot prove a live control.
+                for evidence in live {
+                    validate_live_receipt(name, evidence, repo_root, loader, state);
                 }
             }
             LiveResult::Blocked => state.block(
@@ -1103,6 +1549,89 @@ fn validate_live_controls(manifest: &Manifest, state: &mut PlanState) {
                 "release/ci",
             ),
         }
+
+        // Non-live evidence must not carry a digest it does not earn: only
+        // resolved observations are hashed, so a digest on a ruling or a
+        // document would read as verification that never happened.
+        for evidence in &control.evidence {
+            if evidence.kind != EvidenceKind::LiveReceipt && evidence.digest.is_some() {
+                state.not_proven(
+                    "live_control_evidence_digest_unexpected",
+                    format!(
+                        "live control {name} attaches a digest to {} evidence, which the planner does not resolve",
+                        evidence.kind.as_str()
+                    ),
+                    "release/ci",
+                );
+            }
+        }
+    }
+}
+
+/// Resolve one `live_receipt` reference and prove it is the exact observation
+/// the manifest declares.
+fn validate_live_receipt(
+    control: &str,
+    evidence: &Evidence,
+    repo_root: &Path,
+    loader: InputLoader,
+    state: &mut PlanState,
+) {
+    let Some(declared) = evidence.digest.as_deref() else {
+        state.not_proven(
+            "live_receipt_undigested",
+            format!(
+                "live control {control} cites live receipt {} without a digest, so the observation cannot be bound",
+                evidence.reference
+            ),
+            "release/ci",
+        );
+        return;
+    };
+    if !is_sha256_digest(declared) {
+        state.not_proven(
+            "live_receipt_digest_malformed",
+            format!(
+                "live control {control} cites live receipt {} with a malformed digest",
+                evidence.reference
+            ),
+            "release/ci",
+        );
+        return;
+    }
+    if !valid_repository_path(&evidence.reference) {
+        state.not_proven(
+            "live_receipt_path_invalid",
+            format!(
+                "live control {control} cites live receipt {:?}, which is not a repository-relative POSIX path",
+                evidence.reference
+            ),
+            "release/ci",
+        );
+        return;
+    }
+
+    match loader(repo_root, &evidence.reference) {
+        Ok(bytes) => {
+            let observed = sha256_digest(&bytes);
+            if observed != declared {
+                state.not_proven(
+                    "live_receipt_digest_mismatch",
+                    format!(
+                        "live control {control} cites live receipt {} which hashes to {observed} but is declared as {declared}",
+                        evidence.reference
+                    ),
+                    "release/ci",
+                );
+            }
+        }
+        Err(failure) => report_load_failure(
+            state,
+            "live_receipt",
+            &format!("live control {control}'s receipt"),
+            &evidence.reference,
+            &failure,
+        ),
     }
 }
 

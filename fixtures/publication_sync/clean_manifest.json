@@ -94,7 +94,8 @@
       "evidence": [
         {
           "kind": "repository_source",
-          "reference": "docs/release/0.18.0/prepared_topology.json"
+          "reference": "docs/release/0.18.0/prepared_topology.json",
+          "digest": null
         }
       ]
     },
@@ -108,7 +109,8 @@
       "evidence": [
         {
           "kind": "repository_source",
-          "reference": "docs/release/0.18.0/release_notes.json"
+          "reference": "docs/release/0.18.0/release_notes.json",
+          "digest": null
         }
       ]
     },
@@ -121,7 +123,36 @@
       "evidence": [
         {
           "kind": "review_ruling",
-          "reference": "#6355"
+          "reference": "#6355",
+          "digest": null
+        }
+      ]
+    },
+    {
+      "id": "governance_time_state",
+      "sources": [
+        "release_integrity"
+      ],
+      "result": "pass",
+      "evidence": [
+        {
+          "kind": "review_ruling",
+          "reference": "#6216",
+          "digest": null
+        }
+      ]
+    },
+    {
+      "id": "release_lineage_completeness",
+      "sources": [
+        "reconciliation"
+      ],
+      "result": "pass",
+      "evidence": [
+        {
+          "kind": "repository_source",
+          "reference": "docs/swarm/source-syncs/0.18.0-reconciliation-receipt.json",
+          "digest": null
         }
       ]
     }
@@ -132,7 +163,8 @@
       "evidence": [
         {
           "kind": "live_receipt",
-          "reference": "target/receipts/perl-lsp-master-branch-rules.json"
+          "reference": "docs/release/0.18.0/live/branch_rules_receipt.json",
+          "digest": "sha256:fdaa88fafa3e4248b05a2ffbee89ad792d496a2899ae05caba69bb1a8daec75b"
         }
       ]
     },
@@ -141,7 +173,8 @@
       "evidence": [
         {
           "kind": "live_receipt",
-          "reference": "target/receipts/perl-lsp-environments.json"
+          "reference": "docs/release/0.18.0/live/environments_receipt.json",
+          "digest": "sha256:c2f140cadf75b16b27945d8c0b69bd0a3353a0ae46b2850090919440d3f58317"
         }
       ]
     },
@@ -150,11 +183,13 @@
       "evidence": [
         {
           "kind": "live_receipt",
-          "reference": "target/receipts/perl-lsp-quality-exceptions.json"
+          "reference": "docs/release/0.18.0/live/quality_exceptions_receipt.json",
+          "digest": "sha256:8dadd0ec534888fbcc24a7ce7ec523c5deedfe63798e67324a84fabaf71d67bb"
         },
         {
           "kind": "review_ruling",
-          "reference": "#6216"
+          "reference": "#6216",
+          "digest": null
         }
       ]
     }

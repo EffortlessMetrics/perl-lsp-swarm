@@ -1891,6 +1891,21 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 [[allow]]
+id = "non-rust-publication-sync-fixtures"
+glob = "fixtures/publication_sync/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "release"
+classification = "test"
+owner = "release/ci"
+reason = "Clean `publication_sync_manifest.v1` example and the sync-divergence reconciliation receipt it consumes; the planner's positive control and the base every negative control mutates (#7972)."
+covered_by = [
+  "cargo test -p xtask --bins publication_sync",
+]
+created = "2026-09-02"
+review_after = "2026-12-02"
+
+[[allow]]
 id = "non-rust-publication-sync-manifest-schema"
 path = "schemas/publication_sync_manifest.v1.schema.json"
 kind = "release_contract"

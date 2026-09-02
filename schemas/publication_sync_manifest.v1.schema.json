@@ -65,10 +65,11 @@
     },
     "invariants": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 5,
       "items": {
         "$ref": "#/$defs/invariant"
-      }
+      },
+      "description": "Every invariant in the closed vocabulary must appear exactly once."
     },
     "live_controls": {
       "type": "object",
@@ -132,15 +133,7 @@
       ],
       "properties": {
         "id": {
-          "description": "Closed release-input vocabulary; an unknown token fails closed.",
-          "enum": [
-            "reconciliation",
-            "prepared_topology",
-            "release_note_catalog",
-            "published_api_audit",
-            "public_claims",
-            "release_integrity"
-          ]
+          "$ref": "#/$defs/input_id"
         },
         "path": {
           "$ref": "#/$defs/repository_path"
@@ -249,15 +242,21 @@
       ],
       "properties": {
         "id": {
-          "type": "string",
-          "minLength": 1
+          "description": "Closed cross-file invariant vocabulary (#6356). Every id must be settled exactly once; an invented id cannot stand in for a required one.",
+          "enum": [
+            "artifact_reachability",
+            "effective_version_identity",
+            "public_claim_strength",
+            "governance_time_state",
+            "release_lineage_completeness"
+          ]
         },
         "sources": {
           "type": "array",
           "minItems": 1,
+          "description": "Declared release inputs this invariant was settled against.",
           "items": {
-            "type": "string",
-            "minLength": 1
+            "$ref": "#/$defs/input_id"
           }
         },
         "result": {
@@ -300,7 +299,8 @@
       "additionalProperties": false,
       "required": [
         "kind",
-        "reference"
+        "reference",
+        "digest"
       ],
       "properties": {
         "kind": {
@@ -314,6 +314,17 @@
         "reference": {
           "type": "string",
           "minLength": 1
+        },
+        "digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required for live_receipt, which the planner resolves and hashes; null for repository_source and review_ruling, whose references are documents and rulings rather than observed artifacts."
         }
       }
     },
@@ -346,6 +357,17 @@
           "minLength": 1
         }
       }
+    },
+    "input_id": {
+      "description": "Closed release-input vocabulary; an unknown token fails closed.",
+      "enum": [
+        "reconciliation",
+        "prepared_topology",
+        "release_note_catalog",
+        "published_api_audit",
+        "public_claims",
+        "release_integrity"
+      ]
     }
   }
 }

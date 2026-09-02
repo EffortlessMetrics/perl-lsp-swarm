@@ -23,14 +23,28 @@ fn fixture_input_bytes(path: &str) -> Option<Vec<u8>> {
     if path == RECONCILIATION_PATH {
         return Some(RECONCILIATION_FIXTURE.to_vec());
     }
-    if path.starts_with("docs/release/0.18.0/") {
+    // Release inputs, live-control receipts, and the one document authority the
+    // fixture cites all resolve through the same deterministic generator.
+    if path.starts_with("docs/release/0.18.0/") || path == "docs/swarm/sync-protocol.md" {
         return Some(format!("publication-sync fixture input: {path}\n").into_bytes());
     }
     None
 }
 
-fn test_loader(_repo_root: &Path, path: &str) -> Option<Vec<u8>> {
-    fixture_input_bytes(path)
+fn test_loader(_repo_root: &Path, path: &str) -> Result<Vec<u8>, LoadFailure> {
+    fixture_input_bytes(path).ok_or(LoadFailure::Missing)
+}
+
+/// The product surface the row validator consults. Tests drive the classifier
+/// directly rather than materializing the repository's allowlist, except where
+/// the allowlist itself is the subject.
+fn test_product_surface() -> ProductSurface {
+    ProductSurface::from_entries_for_test(vec![
+        ("clients/sublime/LSP-perllsp/plugin.py", "production"),
+        ("clients/lite-xl/compose.lua", "production"),
+        ("vscode-extension/package.json", "production"),
+        ("clients/lite-xl/leaves/base/init.lua", "test"),
+    ])
 }
 
 fn clean_value() -> Result<Value> {
@@ -41,7 +55,7 @@ fn plan_value(document: &Value) -> Result<Receipt> {
     let manifest: Manifest = serde_json::from_value(document.clone())
         .context("parsing the mutated fixture as publication_sync_manifest.v1")?;
     let digest = canonical_digest(document)?;
-    evaluate(&manifest, &digest, Path::new("fixture.json"), Path::new("."), test_loader)
+    evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &test_product_surface())
 }
 
 fn rows_mut(document: &mut Value) -> Result<&mut Vec<Value>> {
@@ -768,22 +782,72 @@ fn path_prefix_detection_is_segment_aware() -> Result<()> {
 /// inputs, then runs the real `plan` entry point against it.
 fn materialize_repo(document: &Value) -> Result<(tempfile::TempDir, PathBuf, PathBuf)> {
     let root = tempfile::tempdir().context("creating a fixture repository root")?;
-    let manifest: Manifest = serde_json::from_value(document.clone())?;
-    for input in &manifest.inputs {
-        let Some(bytes) = fixture_input_bytes(&input.path) else {
-            continue;
-        };
-        let destination = root.path().join(&input.path);
+
+    let write = |relative: &str, bytes: Vec<u8>| -> Result<()> {
+        let destination = root.path().join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::write(destination, bytes)?;
+        Ok(())
+    };
+
+    // Every repository artifact the planner resolves: release inputs, the live
+    // control receipts, and any document authority a row cites.
+    let mut materialized: BTreeSet<String> = BTreeSet::new();
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    for input in &manifest.inputs {
+        materialized.insert(input.path.clone());
     }
+    for control in [
+        &manifest.live_controls.branch_rules,
+        &manifest.live_controls.environments,
+        &manifest.live_controls.quality_exceptions,
+    ] {
+        for evidence in &control.evidence {
+            if evidence.kind == EvidenceKind::LiveReceipt {
+                materialized.insert(evidence.reference.clone());
+            }
+        }
+    }
+    for row in &manifest.paths {
+        if valid_repository_path(&row.authority_ref) && row.authority_ref.contains('/') {
+            materialized.insert(row.authority_ref.clone());
+        }
+    }
+    for relative in materialized {
+        if let Some(bytes) = fixture_input_bytes(&relative) {
+            write(&relative, bytes)?;
+        }
+    }
+
+    // The product-surface authority. A fixture root without it is a legitimate
+    // `not_proven`, so the end-to-end positive control must provide one.
+    write("policy/non-rust-allowlist.toml", FIXTURE_ALLOWLIST.as_bytes().to_vec())?;
+
     let manifest_path = root.path().join("publication_sync_manifest.json");
     fs::write(&manifest_path, serde_json::to_string_pretty(document)?)?;
     let receipt_path = root.path().join("receipts/publication-sync-plan.json");
     Ok((root, manifest_path, receipt_path))
 }
+
+/// A minimal product-surface ledger in the real allowlist's shape.
+const FIXTURE_ALLOWLIST: &str = r#"
+schema_version = 1
+policy = "non-rust-allowlist"
+
+[[allow]]
+id = "fixture-sublime-plugin"
+path = "clients/sublime/LSP-perllsp/plugin.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Fixture product surface row."
+created = "2026-09-02"
+review_after = "2026-12-02"
+"#;
 
 #[test]
 fn plan_writes_a_pass_receipt_and_leaves_the_tree_alone() -> Result<()> {
@@ -828,6 +892,303 @@ fn plan_fails_loudly_but_still_writes_the_receipt() -> Result<()> {
     let written: Value = serde_json::from_slice(&fs::read(&receipt)?)?;
     if written.get("verdict").and_then(Value::as_str) != Some("blocked") {
         bail!("the blocked receipt was not written: {written}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Product-surface exclusion: every displacing action, over the whole surface
+// ---------------------------------------------------------------------------
+
+/// Rewrite row 0 into a displacing row at `path` and plan it.
+fn plan_displacing_row(path: &str, action: &str, class: &str) -> Result<Receipt> {
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[0];
+    row["path"] = json!(path);
+    row["action"] = json!(action);
+    row["class"] = json!(class);
+    row["source_digest"] =
+        json!("sha256:5000000000000000000000000000000000000000000000000000000000000001");
+    row["release_base_digest"] =
+        json!("sha256:5000000000000000000000000000000000000000000000000000000000000002");
+    row["expected_public_digest"] = match action {
+        "drop_swarm_only" => Value::Null,
+        "preserve_release" => {
+            json!("sha256:5000000000000000000000000000000000000000000000000000000000000002")
+        }
+        _ => json!("sha256:5000000000000000000000000000000000000000000000000000000000000003"),
+    };
+    plan_value(&document)
+}
+
+#[test]
+fn every_displacing_action_is_blocked_on_product_paths() -> Result<()> {
+    // `regenerate` substitutes published bytes that do not derive from S, so it
+    // hides product work exactly as dropping or preserving does. Omitting it
+    // from the rule let a manifest relabel an arbitrary substitution on real
+    // source as "regenerate" and plan clean.
+    for action in ["drop_swarm_only", "preserve_release", "regenerate"] {
+        let receipt = plan_displacing_row("crates/perl-parser/src/lexer.rs", action, "generated")?;
+        assert_verdict(&receipt, Verdict::Blocked)?;
+        assert_finding(&receipt, "row_product_bearing_exclusion")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn product_paths_the_source_heuristic_cannot_see_are_still_protected() -> Result<()> {
+    // None of these carry a product segment or a source extension, so the
+    // extension heuristic alone reports them as safe to withhold. The
+    // repository classifies all of them as product or test work.
+    for path in [
+        "clients/sublime/LSP-perllsp/plugin.py",
+        "clients/lite-xl/compose.lua",
+        "vscode-extension/package.json",
+        "clients/lite-xl/leaves/base/init.lua",
+    ] {
+        if is_product_or_test_path(path) {
+            bail!("{path} is already caught by the source heuristic; pick a sharper case");
+        }
+        let receipt = plan_displacing_row(path, "drop_swarm_only", "governance")?;
+        assert_verdict(&receipt, Verdict::Blocked)?;
+        assert_finding(&receipt, "row_product_bearing_exclusion")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_translation_of_product_code_must_carry_a_destination_context_class() -> Result<()> {
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[0];
+    row["path"] = json!("clients/lite-xl/compose.lua");
+    row["class"] = json!("public_claim");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::Blocked)?;
+    assert_finding(&receipt, "row_product_translation_class_invalid")
+}
+
+#[test]
+fn a_destination_context_translation_of_product_code_is_allowed() -> Result<()> {
+    // The opposite-direction control: #6356 contemplates translating source
+    // comments that ship through installers, so this must stay legal or the
+    // rule would be satisfied by refusing every product path.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[0]["path"] = json!("clients/lite-xl/compose.lua");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::Pass)?;
+    if !receipt.findings.is_empty() {
+        bail!("a destination-context translation was rejected: {:?}", receipt.findings);
+    }
+    Ok(())
+}
+
+#[test]
+fn an_unavailable_product_surface_is_not_proven() -> Result<()> {
+    // Without the ledger the planner cannot tell product work from publication
+    // context, so a withholding row must not pass on the source heuristic alone.
+    let document = clean_value()?;
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let surface = ProductSurface { entries: Vec::new(), available: false };
+    let receipt = evaluate_with_surface(&manifest, &digest, Path::new("."), test_loader, &surface)?;
+
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "row_product_bearing_unverifiable")
+}
+
+// ---------------------------------------------------------------------------
+// Live-control receipts are resolved, not trusted by label
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_live_receipt_that_does_not_exist_cannot_prove_a_control() -> Result<()> {
+    let mut document = clean_value()?;
+    document["live_controls"]["branch_rules"]["evidence"][0]["reference"] =
+        json!("docs/release/9.9.9/never_written.json");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_missing")
+}
+
+#[test]
+fn a_live_receipt_whose_bytes_changed_cannot_prove_a_control() -> Result<()> {
+    let mut document = clean_value()?;
+    document["live_controls"]["environments"]["evidence"][0]["digest"] =
+        json!("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_digest_mismatch")
+}
+
+#[test]
+fn a_live_receipt_without_a_digest_cannot_prove_a_control() -> Result<()> {
+    let mut document = clean_value()?;
+    document["live_controls"]["quality_exceptions"]["evidence"][0]["digest"] = Value::Null;
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_receipt_undigested")
+}
+
+#[test]
+fn unresolved_evidence_roles_may_not_carry_a_digest() -> Result<()> {
+    let mut document = clean_value()?;
+    document["live_controls"]["quality_exceptions"]["evidence"][1]["digest"] =
+        json!("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "live_control_evidence_digest_unexpected")
+}
+
+// ---------------------------------------------------------------------------
+// Authority, invariants and reconciliation identity
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_document_authority_that_does_not_exist_is_not_proven() -> Result<()> {
+    // An authority a reviewer cannot open is not an authority.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["authority_ref"] = json!("docs/does-not-exist.md");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "row_authority_missing")
+}
+
+#[test]
+fn an_omitted_required_invariant_is_not_proven() -> Result<()> {
+    let mut document = clean_value()?;
+    let invariants = document
+        .get_mut("invariants")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("fixture has no invariants"))?;
+    invariants.retain(|invariant| {
+        invariant.get("id").and_then(Value::as_str) != Some("governance_time_state")
+    });
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "invariant_required_missing")
+}
+
+#[test]
+fn an_invented_invariant_id_is_rejected_by_model_and_schema() -> Result<()> {
+    // A manifest must not be able to swap a required invariant for a
+    // comfortable invented one.
+    let mut document = clean_value()?;
+    document["invariants"][0]["id"] = json!("vibes_are_good");
+
+    if serde_json::from_value::<Manifest>(document.clone()).is_ok() {
+        bail!("an invented invariant id parsed into the typed model");
+    }
+    let schema: Value = serde_json::from_str(SCHEMA)?;
+    let validator =
+        jsonschema::validator_for(&schema).map_err(|error| eyre!("compiling schema: {error}"))?;
+    if validator.is_valid(&document) {
+        bail!("an invented invariant id passed the published schema");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_invariant_cannot_cite_an_undeclared_release_input() -> Result<()> {
+    let mut document = clean_value()?;
+    let inputs = inputs_mut(&mut document)?;
+    inputs.retain(|input| input.get("id").and_then(Value::as_str) != Some("public_claims"));
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "invariant_source_undeclared")
+}
+
+#[test]
+fn a_reconciliation_receipt_from_another_version_cannot_be_consumed() -> Result<()> {
+    let mut receipt_value: Value = serde_json::from_slice(RECONCILIATION_FIXTURE)?;
+    receipt_value["schema_version"] = json!(1);
+    let foreign = serde_json::to_vec(&receipt_value)?;
+
+    let manifest: Manifest = serde_json::from_str(CLEAN)?;
+    let mut state = PlanState::default();
+    validate_reconciliation(&manifest, Some(&foreign), &mut state);
+    let (verdict, findings) = state.finish();
+    if verdict != Verdict::NotProven {
+        bail!("a v1 reconciliation receipt produced verdict {verdict}");
+    }
+    if !findings.iter().any(|f| f.code == "reconciliation_schema_version_unknown") {
+        bail!("a v1 reconciliation receipt produced {findings:?}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The published schema is the admission boundary, not serde
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_omitted_required_digest_key_is_rejected_by_the_schema() -> Result<()> {
+    // `Option<String>` tolerates an absent key, so serde alone would accept a
+    // row that never states whether the path exists in R. The schema requires
+    // the key, and the command enforces the schema.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[0]
+        .as_object_mut()
+        .ok_or_else(|| eyre!("row 0 is not an object"))?
+        .remove("release_base_digest");
+
+    if serde_json::from_value::<Manifest>(document.clone()).is_err() {
+        bail!("serde rejected the omitted key, so this control proves nothing about the schema");
+    }
+
+    let raw = serde_json::to_vec(&document)?;
+    let receipt = build_receipt(&raw, Path::new("."))
+        .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "manifest_schema_violation")
+}
+
+#[test]
+fn an_empty_invariant_list_is_rejected_by_the_schema() -> Result<()> {
+    let mut document = clean_value()?;
+    document["invariants"] = json!([]);
+
+    if serde_json::from_value::<Manifest>(document.clone()).is_err() {
+        bail!("serde rejected the empty list, so this control proves nothing about the schema");
+    }
+
+    let raw = serde_json::to_vec(&document)?;
+    let receipt = build_receipt(&raw, Path::new("."))
+        .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "manifest_schema_violation")
+}
+
+#[test]
+fn an_unparsable_manifest_still_produces_a_receipt() -> Result<()> {
+    let receipt = build_receipt(b"{ not json", Path::new("."))
+        .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    if receipt.manifest_digest.is_some() {
+        bail!("an unparsable manifest reported a digest");
+    }
+    assert_finding(&receipt, "manifest_unparsable")
+}
+
+#[test]
+fn the_receipt_carries_no_local_filesystem_path() -> Result<()> {
+    // Identity is the canonical digest. A receipt naming the caller's path
+    // would make byte-identical reproduction depend on where the file sits.
+    let document = clean_value()?;
+    let receipt = plan_value(&document)?;
+    let rendered = serde_json::to_string(&receipt)?;
+    for marker in ["fixture.json", "/home/", "/tmp/", "publication_sync_manifest.json"] {
+        if rendered.contains(marker) {
+            bail!("the receipt embedded the local path marker {marker}");
+        }
     }
     Ok(())
 }
