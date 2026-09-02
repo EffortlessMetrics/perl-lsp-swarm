@@ -48,6 +48,12 @@ const EXPECTED_LEDGER_DECISIONS: &[(&str, &str, &str, &str)] = &[
         "n/a",
     ),
     (
+        "relative-pattern-notebook-selector",
+        "Notebook document-filter `relative pattern`",
+        "accepted-disposition",
+        "n/a",
+    ),
+    (
         "string-value-object-form",
         "Object-form `StringValue` inline insert text",
         "implementation-owner",
