@@ -91,7 +91,13 @@ pub(super) enum MetricKind {
 }
 
 /// One reviewed registry row.
+///
+/// Unknown fields are rejected. Two of the fields default when absent, so a typo would
+/// otherwise be silently ignored and the default silently used: `zero_buget = true` would
+/// leave `zero_budget` false and quietly disable a hard violation in a policy whose whole
+/// purpose is to fail closed.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct MetricPolicy {
     /// Canonical, stable metric identifier.
     pub(super) name: String,
@@ -164,6 +170,7 @@ impl MetricPolicy {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RegistryFile {
     schema_version: u32,
     #[serde(default)]
@@ -746,6 +753,26 @@ cadences = ["pr"]
             *direction = Direction::Down;
         }
         registry.validate_conformance(&[row]).expect("a fractional duration is well shaped");
+    }
+
+    #[test]
+    fn misspelled_zero_budget_is_rejected() {
+        // The dangerous shape: `zero_budget` defaults to false, so a typo would otherwise
+        // parse cleanly and silently disable the hard violation it was meant to declare.
+        let err = one_metric_registry(
+            r#"name = "typo_metric"
+family = "safety"
+kind = "count"
+direction = "down"
+min = 0.0
+zero_buget = true
+min_sample_count = 1
+high_confidence_sample_count = 1
+cadences = ["pr"]
+"#,
+        )
+        .expect_err("an unknown registry field must fail");
+        assert!(err.to_string().contains("zero_buget"), "{err}");
     }
 
     #[test]
