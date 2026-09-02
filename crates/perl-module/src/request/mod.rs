@@ -280,6 +280,13 @@ impl ModuleRequest {
     /// Perl looks a quoted operand up as a filename in `@INC` without translating
     /// `::` to `/`, so this never yields [`Self::BarewordModule`].
     ///
+    /// `text` is the **decoded** operand, not the raw source token: pass
+    /// `Foo/Bar.pm`, not `'Foo/Bar.pm'`. An undecoded token is rejected rather
+    /// than accepted as a filename containing quote bytes, so a caller bridging
+    /// HIR require targets cannot silently search for the quoted spelling.
+    /// Bareword operands need no such guard — a quote is the legacy package
+    /// separator there, and a wrapped token already fails segment validation.
+    ///
     /// # Errors
     ///
     /// Returns [`ModuleRequestError::InvalidFilePath`] when the operand is not a
