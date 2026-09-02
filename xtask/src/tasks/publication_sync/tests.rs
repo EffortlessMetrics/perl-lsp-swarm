@@ -335,6 +335,49 @@ fn traversal_and_absolute_row_paths_are_rejected() -> Result<()> {
     Ok(())
 }
 
+/// The published schema and the planner must agree on what a repository path
+/// is. A schema that accepts a path the planner refuses would let a manifest
+/// look contract-valid while being unplannable, and the reverse would let the
+/// contract bless an escape the planner only happens to catch.
+#[test]
+fn schema_and_planner_agree_on_repository_paths() -> Result<()> {
+    let schema: Value = serde_json::from_str(SCHEMA)?;
+    let validator =
+        jsonschema::validator_for(&schema).map_err(|error| eyre!("compiling schema: {error}"))?;
+
+    let cases = [
+        ("README.md", true),
+        ("docs/policy/FILE_POLICY.md", true),
+        (".claude/settings.json", true),
+        ("a", true),
+        ("...", true),
+        ("/etc/passwd", false),
+        ("../perl-lsp/README.md", false),
+        ("docs/../../escape.md", false),
+        ("docs/./here.md", false),
+        ("docs//here.md", false),
+        ("trailing/", false),
+        ("windows\\path.md", false),
+        (".", false),
+        ("..", false),
+    ];
+
+    for (candidate, expected) in cases {
+        let mut document = clean_value()?;
+        rows_mut(&mut document)?[0]["path"] = json!(candidate);
+        let by_schema = validator.is_valid(&document);
+        let by_planner = valid_repository_path(candidate);
+
+        if by_planner != expected {
+            bail!("planner returned {by_planner} for {candidate:?}, expected {expected}");
+        }
+        if by_schema != expected {
+            bail!("schema returned {by_schema} for {candidate:?}, expected {expected}");
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Input identity and reconciliation currentness
 // ---------------------------------------------------------------------------

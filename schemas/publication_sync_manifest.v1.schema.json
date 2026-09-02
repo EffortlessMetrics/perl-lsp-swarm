@@ -119,8 +119,8 @@
     "repository_path": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^[^/\\\\][^\\\\]*$",
-      "description": "Repository-relative POSIX path; absolute, backslash and traversal forms are rejected."
+      "pattern": "^([^/\\\\.]|[^/\\\\.][^/\\\\]|\\.[^/\\\\.]|[^/\\\\]{3,})(/([^/\\\\.]|[^/\\\\.][^/\\\\]|\\.[^/\\\\.]|[^/\\\\]{3,}))*$",
+      "description": "Repository-relative POSIX path. Every segment is non-empty and is neither `.` nor `..`, so absolute, backslash, empty-segment, trailing-slash and traversal forms are all rejected by the pattern itself, not only by the planner."
     },
     "input": {
       "type": "object",
