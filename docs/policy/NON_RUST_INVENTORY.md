@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12643 |
-| Rust-family files | 3933 |
-| Non-Rust files | 8710 |
-| Allowlisted | 6471 |
+| Total tracked files | 12647 |
+| Rust-family files | 3935 |
+| Non-Rust files | 8712 |
+| Allowlisted | 6473 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 501 |
-| documentation | 2844 |
+| documentation | 2845 |
 | generated | 2 |
 | production | 354 |
-| test | 2090 |
+| test | 2091 |
 | tooling | 680 |
 | unclassified | 2239 |
 
@@ -3681,6 +3681,7 @@
 | `clients/lite-xl/tests/diagnostics_currentness_test.lua` | test | `non-rust-litexl-diagnostics-currentness-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/harness.lua` | test | `non-rust-litexl-journey-harness` | editor/lite-xl |
 | `clients/lite-xl/tests/init_command_projection_test.lua` | test | `non-rust-litexl-command-projection-tests` | editor/lite-xl |
+| `clients/lite-xl/tests/init_completion_collision_test.lua` | test | `non-rust-litexl-init-completion-collision-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_completion_resolve_test.lua` | test | `non-rust-litexl-init-completion-resolve-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_configuration_items_test.lua` | test | `non-rust-litexl-init-configuration-items-tests` | editor/lite-xl |
 | `clients/lite-xl/tests/init_document_session_test.lua` | test | `non-rust-litexl-init-session-tests` | editor/lite-xl |

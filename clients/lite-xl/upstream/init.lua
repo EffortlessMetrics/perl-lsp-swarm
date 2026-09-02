@@ -847,19 +847,12 @@ local function new_completion_resolve_state(server, completion_item, round_subje
 end
 
 ---True when the original item alone carries every field the application
----paths consume (#11188 declared completeness policy): its own textEdit or
----an LSP-snippet insertText. Plain-text insertText/label items are not
----applied by any path without resolution supplying a textEdit.
+---paths consume (#11188 declared completeness policy): its own textEdit or an
+---explicitly supplied insertText. Plain-text insertText is a complete
+---application target even when resolution would only enrich metadata.
 local function completion_self_complete(item)
   if item.textEdit then return true end
-  if
-    snippets_found
-    and item.insertText
-    and item.insertTextFormat == Server.insert_text_format.Snippet
-  then
-    return true
-  end
-  return false
+  return item.insertText ~= nil
 end
 
 ---Resolved view over the original item (#11188): resolved fields win; fields
@@ -1002,6 +995,13 @@ local function apply_selected_completion(item, rstate)
       snippets.execute {format = 'lsp', template = effective.insertText}
       edit_applied = true
     end
+  elseif dv and effective.insertText then
+    local doc = dv.doc
+    local line2, col2 = doc:get_selection()
+    local line1, col1 = doc:position_offset(line2, col2, translate.start_of_word)
+    doc:set_selection(line1, col1, line2, col2)
+    doc:text_input(effective.insertText)
+    edit_applied = true
   end
   if edit_applied and effective.additionalTextEdits and #effective.additionalTextEdits > 0 then
     -- Apply the edits in reverse order, so that their ranges are not shifted
@@ -1010,6 +1010,21 @@ local function apply_selected_completion(item, rstate)
       local edit = effective.additionalTextEdits[i]
       apply_edit(item.data.server, dv.doc, edit, false, false)
     end
+  end
+  -- Local patch (#11189): a colliding label's internal menu key carries the
+  -- "#N" disambiguation suffix, and the autocomplete plugin's plain fallback
+  -- inserts the key text verbatim. For suffix-carrying rows only, the exact
+  -- pre-suffix insert target is applied here instead, so the internal
+  -- identity encoding can never leak into the document. Unsuffixed rows keep
+  -- the legacy plugin fallback byte-for-byte (key equals insert target).
+  if
+    not edit_applied
+    and dv
+    and item.data.insert_text
+    and item.data.internal_key_suffixed
+  then
+    dv.doc:text_input(item.data.insert_text)
+    edit_applied = true
   end
   if edit_applied then
     rstate.applied = true
@@ -1142,6 +1157,10 @@ end
 ---@param index integer
 ---@param item table
 local function autocomplete_onselect(index, item)
+  -- Lite XL uses item.text as its fallback insertion bytes. A suffixed
+  -- internal key must therefore always be claimed here, including synchronous
+  -- refusal paths, so the private identity never reaches the document.
+  local owns_internal_key = item.data and item.data.internal_key_suffixed == true
   -- Local patch (#11108): a completion edit computed for one accepted
   -- document state is revalidated against its stored subject at the
   -- moment of user selection; stale edits are never applied optimistically
@@ -1152,7 +1171,7 @@ local function autocomplete_onselect(index, item)
       core.log_quiet(
         "[LSP] completion edit refused (%s)", disposition or "stale"
       )
-      return false
+      return owns_internal_key or false
     end
   end
 
@@ -1163,7 +1182,8 @@ local function autocomplete_onselect(index, item)
   -- once regardless of repeated callbacks.
   local rstate = item.data.resolve
   if not rstate then
-    return apply_selected_completion(item, { state = "not_needed", applied = false })
+    local applied = apply_selected_completion(item, { state = "not_needed", applied = false })
+    return applied or owns_internal_key or false
   end
   if rstate.applied then
     return true
@@ -1176,11 +1196,18 @@ local function autocomplete_onselect(index, item)
     or rstate.state == "timed_out"
     or rstate.state == "stale"
   then
-    return apply_selected_completion(item, rstate)
+    local applied = apply_selected_completion(item, rstate)
+    -- A resolving item owns the selection even when its terminal refuses to
+    -- mutate (for example a stale or failed label-only result). Returning
+    -- false would make Lite XL insert the internal menu key as a fallback.
+    return applied or owns_internal_key or rstate.supported
   end
   if rstate.state == "in_flight" then
     rstate.pending_apply = true
-    return false
+    -- Lite XL inserts item.text when onselect returns false. Claim the
+    -- selection while resolve is pending so duplicate-key suffixes cannot
+    -- leak before the guarded terminal applies the result.
+    return true
   end
   -- unresolved: selection triggers the exact pre-apply resolution itself.
   rstate.pending_apply = true
@@ -1189,9 +1216,10 @@ local function autocomplete_onselect(index, item)
     -- The operation terminated synchronously (typed queue rejection or a
     -- missing session): its guarded terminal already fell back or refused,
     -- so selection surfaces that real outcome instead of a deferral.
-    return rstate.applied
+    return rstate.applied or owns_internal_key or false
   end
-  return false
+  -- The asynchronous terminal performs the sole document mutation.
+  return true
 end
 
 --
@@ -2454,7 +2482,27 @@ function lsp.request_completion(doc, line, col, forced)
             desc = desc:gsub("[%s\n]+$", "")
               :gsub("\n\n\n+", "\n\n")
 
-            symbols.items[label] = {
+            -- Local patch (#11189): display labels are presentation, not
+            -- identity. The completion menu is a label-keyed map, so two
+            -- valid items sharing one label used to collide and the later
+            -- item silently overwrote the earlier one. The first occurrence
+            -- of a label keeps it as the internal key (its key equals the
+            -- text the plugin always inserted, so plain items are unchanged);
+            -- later occurrences gain a deterministic source-order "#N"
+            -- suffix. The suffix lives in the internal key only: every row
+            -- keeps its own exact protocol item in data.completion_item, and
+            -- data.insert_text preserves the pre-suffix insert target so
+            -- selection below never leaks the disambiguator into the buffer.
+            local key = label
+            if symbols.items[key] then
+              local occurrence = 2
+              while symbols.items[label .. "#" .. occurrence] do
+                occurrence = occurrence + 1
+              end
+              key = label .. "#" .. occurrence
+            end
+
+            symbols.items[key] = {
               info = info,
               desc = desc,
               data = {
@@ -2463,7 +2511,13 @@ function lsp.request_completion(doc, line, col, forced)
                 server = server, completion_item = symbol, subject = subject,
                 -- Local patch (#11188): one structured pre-apply resolve
                 -- state per item; selection and hover share it.
-                resolve = new_completion_resolve_state(server, symbol, subject)
+                resolve = new_completion_resolve_state(server, symbol, subject),
+                -- Local patch (#11189): exact plain-insert target for
+                -- suffix-carrying keys (see the select-time fallback).
+                insert_text = symbol.insertText or label,
+                -- Explicit provenance avoids treating a unique custom
+                -- insertText as a collision suffix.
+                internal_key_suffixed = key ~= label
               },
               onselect = autocomplete_onselect
             }
@@ -2473,7 +2527,7 @@ function lsp.request_completion(doc, line, col, forced)
               and
               not symbol.documentation
             then
-              symbols.items[label].onhover = autocomplete_onhover
+              symbols.items[key].onhover = autocomplete_onhover
             end
 
             symbol_count = symbol_count + 1

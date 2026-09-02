@@ -2570,6 +2570,22 @@ review_after = "2026-11-19"
 # =============================================================================
 
 [[allow]]
+id = "non-rust-litexl-init-completion-collision-tests"
+path = "clients/lite-xl/tests/init_completion_collision_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "Framework-free Lua regression for the Lite XL init.lua runtime: it exercises the public request_completion projection and autocomplete selection callback, proving duplicate labels remain independently selectable and the plugin fallback cannot insert the internal collision key."
+covered_by = [
+  "lua clients/lite-xl/tests/init_completion_collision_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-01"
+review_after = "2026-12-01"
+
+[[allow]]
 id = "non-rust-litexl-json-decode-tests"
 path = "clients/lite-xl/tests/json_decode_test.lua"
 kind = "editor_extension_test"
