@@ -18,7 +18,7 @@ crates/perl-subprocess-runtime/src/process/
   port.rs         ProcessSupervisor, ProcessHandle, drop contract
   fake.rs         FakeSupervisor, ScriptedRun
   legacy.rs       containment record for the pre-domain seam
-crates/perl-subprocess-runtime/tests/process_domain_contract.rs   85 tests
+crates/perl-subprocess-runtime/tests/process_domain_contract.rs   86 tests
 ```
 
 ## Schema version and digest

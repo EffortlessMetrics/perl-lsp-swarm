@@ -214,6 +214,32 @@ was correct about *what* to refuse and wrong about *how*. Leaving the stream
 open reintroduced, one call later, exactly the divergence the guard existed to
 prevent. Refusing a thing without settling it is not refusing it.
 
+### Fifth external round (Devin, `01e447f`) — and a correction
+
+One finding: `ProcessResult::new` still derived limitations inline while
+`supervisor_failure` used the `derive_limitations` helper. Two implementations.
+
+**This packet previously claimed otherwise, and that claim was wrong.** The
+third-round entry above says "one `derive_limitations` shared by every assembly
+path", and the commit that introduced the helper said the same. In fact the
+edit replacing the inline derivation in `ProcessResult::new` silently did not
+apply — the text it searched for had been reflowed by `rustfmt` — so the helper
+was added and adopted by one caller only.
+
+Nothing behaved incorrectly: the two copies agreed, so every behavioural test
+passed and the duplication was invisible. That is exactly why the claim
+survived. A green suite confirmed the behaviour and said nothing about the
+structural property being asserted.
+
+Both are now fixed: `ProcessResult::new` calls the helper, and
+`limitation_derivation_has_exactly_one_implementation` fails if any constructor
+derives limitations outside it. Confirmed by replaying the duplication.
+
+The general lesson is recorded because it recurred: three separate edits in
+this PR silently failed to apply after `rustfmt` reflowed their target text,
+and in this case the failure was then asserted as done. An edit whose effect is
+not verified is not a change.
+
 ## Terminal precedence
 
 Fixed and total, highest first:

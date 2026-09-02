@@ -666,38 +666,14 @@ impl ProcessResult {
         {
             return Err(ResultInconsistency::CleanupContradictsDisposition);
         }
-        limitations.push(Limitation::NoIsolationClaimed);
-        if backend.evidence_class() == EvidenceClass::Fake {
-            limitations.push(Limitation::FakeEvidenceOnly);
-        }
-        match cleanup {
-            CleanupDisposition::Failed => limitations.push(Limitation::CleanupFailed),
-            CleanupDisposition::NotObserved => limitations.push(Limitation::CleanupNotObserved),
-            CleanupDisposition::Completed | CleanupDisposition::NotRequired => {}
-        }
-        if tree == TreeDisposition::ImmediateChildOnly || tree == TreeDisposition::Unknown {
-            limitations.push(Limitation::DescendantsUnaccounted);
-        }
-        let child_settled = matches!(
-            disposition,
-            TerminalDisposition::CompletedExit { .. } | TerminalDisposition::Signaled { .. }
+        derive_limitations(
+            &mut limitations,
+            &disposition,
+            cleanup,
+            tree,
+            Some((&stdout, &stderr)),
+            &backend,
         );
-        if !stdout.truncation().is_complete()
-            || !stderr.truncation().is_complete()
-            || !child_settled
-        {
-            // Kept in step with `claims_complete_output` deliberately: a
-            // result whose predicate says the output is partial must say so
-            // in its limitations too.
-            limitations.push(Limitation::OutputIncomplete);
-        }
-        if stdout.decoded_view() == DecodedViewLimitation::LossyUtf8
-            || stderr.decoded_view() == DecodedViewLimitation::LossyUtf8
-        {
-            limitations.push(Limitation::DecodedViewLossy);
-        }
-        limitations.sort();
-        limitations.dedup();
         Ok(Self {
             schema_version: super::PROCESS_DOMAIN_SCHEMA_VERSION,
             plan_id,

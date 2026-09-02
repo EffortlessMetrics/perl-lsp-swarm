@@ -2773,3 +2773,40 @@ fn a_rejected_script_settles_the_event_stream_it_rejected() -> TestResult {
     assert_eq!(*handle.wait().disposition(), TerminalDisposition::SupervisorFailed);
     Ok(())
 }
+
+#[test]
+fn limitation_derivation_has_exactly_one_implementation() -> TestResult {
+    // The wrong implementation this kills: a second constructor deriving
+    // limitations inline. Both copies agree the day they are written and drift
+    // the first time a limitation is added to one of them — and a divergence
+    // here is invisible to behavioural tests until the two paths disagree.
+    //
+    // This control exists because that duplication actually happened in this
+    // PR: a refactor moved the derivation into a helper, the edit silently did
+    // not apply to `ProcessResult::new`, and the resulting duplicate survived
+    // a green test run and a claim that it had been removed.
+    let source = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/process/result.rs"),
+    )?;
+    let mut in_helper = false;
+    let mut offenders = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("fn derive_limitations(") {
+            in_helper = true;
+        } else if in_helper && line == "}" {
+            in_helper = false;
+        }
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        if trimmed.contains("limitations.push(") && !in_helper {
+            offenders.push(trimmed.to_string());
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "limitations are derived outside `derive_limitations`, so constructors can drift: {offenders:?}"
+    );
+    Ok(())
+}
