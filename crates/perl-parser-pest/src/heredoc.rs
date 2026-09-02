@@ -1014,6 +1014,12 @@ fn scan_line_openers(
                     Some((opener, next)) => {
                         out.push(opener);
                         index = next;
+                        // The opener is a value — the body's text — so a `<<`
+                        // after it is a left shift, not a second opener. perl
+                        // gives 0 for `<<EOF <<2` with body "body\n". A comma
+                        // or other operator between them reopens term position,
+                        // so `(<<A, <<B)` still queues both.
+                        last_term_end = index;
                     }
                     None => index += 2,
                 }
@@ -1295,9 +1301,17 @@ fn skip_quote_like(
         }
         end = next;
     }
-    // Trailing flags (`m/x/gi`).
-    while end < bytes.len() && bytes[end].is_ascii_alphabetic() {
-        end += 1;
+    // Trailing flags (`m/x/gi`) belong to the regex family only. After `qq`,
+    // `q`, `qw` or `qx` the same byte is the repetition operator, which leaves
+    // its right operand in *term* position: perl reads `qq{a}x <<EOF` as
+    // `qq{a} x (<<EOF)` and consumes the heredoc. Eating the `x` as a modifier
+    // completed the term instead, so the opener was missed and its body stayed
+    // in the text to be misparsed as code. The carried path has always asked
+    // this question; the same-line path did not.
+    if operator_takes_modifiers(name) {
+        while end < bytes.len() && bytes[end].is_ascii_alphabetic() {
+            end += 1;
+        }
     }
     Some((end, None))
 }

@@ -383,6 +383,64 @@ fn when_a_closing_delimiter_is_followed_by_x_then_the_operator_decides() {
     let scan = perl_parser_pest::heredoc::scan(shifted);
     assert!(scan.captures().is_empty(), "`x` after qr is a modifier, so `<<2` is a shift");
     assert_eq!(scan.stripped(), shifted, "no source may be removed for: {shifted:?}");
+
+    // Both rows above span lines, so they only ever exercised the *carried*
+    // construct, which has always asked which operator takes modifiers. The
+    // same-line path did not ask, and swallowed the repetition operator: perl
+    // reads `qq{a}x <<EOF` as `qq{a} x (<<EOF)` and consumes the heredoc, but
+    // the scanner completed the term at the `x` and missed the opener, leaving
+    // the body in the text to be misparsed as code.
+    for owned in [
+        "my $x = qq{a}x <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "my $x = q{a}x <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(owned);
+        assert_eq!(scan.captures().len(), 1, "same-line `x` after q/qq is repetition: {owned:?}");
+        assert_eq!(scan.captures()[0].content(), "body\n", "{owned:?}");
+    }
+    for shifted in [
+        "my $x = qr{a}x <<2;\nmy $z = 3;\n",
+        "my $x = m{a}i <<2;\nmy $z = 3;\n",
+        "my $x = s{a}{b}g <<2;\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(shifted);
+        assert!(scan.captures().is_empty(), "same-line modifier completes the term: {shifted:?}");
+        assert_eq!(scan.stripped(), shifted, "no source may be removed for: {shifted:?}");
+    }
+}
+
+#[test]
+fn when_a_heredoc_opener_precedes_the_shift_then_no_second_body_is_owned() {
+    // A heredoc opener is a value — the body's text — so a `<<` after it is a
+    // left shift. perl 5.38 gives 0 for both of these, and `my $y = 3;`
+    // survives; the scanner took the `<<2` for a second opener and consumed
+    // that statement as its body.
+    //
+    //   my $x = <<EOF <<2;   # and the same expression continued after the
+    //   body                 # terminator, which is one logical line to perl
+    //   EOF
+    for source in [
+        "my $x = <<EOF <<2;\nbody\nEOF\nmy $y = 3;\n",
+        "my $x = <<EOF\nbody\nEOF\n <<2;\nmy $y = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(scan.captures().len(), 1, "only the first `<<` opens: {source:?}");
+        assert_eq!(scan.captures()[0].content(), "body\n", "{source:?}");
+        assert!(
+            scan.stripped().contains("my $y = 3;"),
+            "the shift must not consume following code: {:?}",
+            scan.stripped()
+        );
+    }
+
+    // The opposite direction, and the reason this cannot be a blanket rule: an
+    // operator between two openers reopens term position, so a comma-separated
+    // pair still queues both bodies in source order.
+    let pair =
+        perl_parser_pest::heredoc::scan("my ($a,$b) = (<<A, <<B);\nx\nA\ny\nB\nmy $y = 3;\n");
+    assert_eq!(pair.captures().len(), 2, "a comma reopens term position");
+    assert_eq!(pair.captures()[0].content(), "x\n");
+    assert_eq!(pair.captures()[1].content(), "y\n");
 }
 
 #[test]
@@ -974,7 +1032,7 @@ fn scanner_and_grammar_agree_on_openers() {
     //
     // Each row is one line of Perl with no body, so the grammar's count is its
     // unclouded opinion about that `<<` alone.
-    let rows: [&str; 43] = [
+    let rows: [&str; 48] = [
         // Term position — the grammar admits `heredoc` as an unconditional
         // `primary`, so any bareword counts, not just builtins.
         "my $x = <<EOF;\n",
@@ -1020,6 +1078,14 @@ fn scanner_and_grammar_agree_on_openers() {
         "my $y = Foo::BAR <<2;\n",
         "my $y = 0xff <<2;\n",
         "my $y = \"s\" <<2;\n",
+        // Same-line quote-like: `x` is repetition after `q`/`qq` (term stays
+        // open) and the /x modifier after `qr` (term completes).
+        "my $y = qq{a}x <<EOF;\n",
+        "my $y = q{a}x <<EOF;\n",
+        "my $y = qr{a}x <<2;\n",
+        "my $y = m{a}i <<2;\n",
+        // An opener is itself a completed term, so a following `<<` is a shift.
+        "my $y = <<EOF <<2;\n",
         // Not code at all.
         "my $x = /<<EOF/;\n",
         "my $x = 1; # <<EOF\n",
