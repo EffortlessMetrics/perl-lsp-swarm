@@ -1129,3 +1129,35 @@ fn a_bare_undef_value_stays_source_backed() {
         Some(StashConfidence::High)
     );
 }
+
+#[test]
+fn a_parenthesized_undef_value_stays_source_backed() {
+    // `undef()` is the same value as `undef`, written as a call. Treating it
+    // as generator-backed would withhold live completion from an export that
+    // is source-anchored — the under-claiming direction, but still wrong.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [ foo => undef() ] };\n",
+    );
+
+    assert_eq!(
+        first_declaration(&file, "My::Utils").map(|declaration| declaration.confidence),
+        Some(StashConfidence::High)
+    );
+}
+
+#[test]
+fn an_expression_beginning_with_parenthesized_undef_is_not_source_backed() {
+    // The control for the test above: accepting `undef()` must not re-admit
+    // anything that merely starts with it. `undef() // \&build` still yields
+    // a generator.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [ foo => undef() // \\&build ] };\n",
+    );
+
+    assert_eq!(
+        first_declaration(&file, "My::Utils").map(|declaration| declaration.confidence),
+        Some(StashConfidence::Medium)
+    );
+}

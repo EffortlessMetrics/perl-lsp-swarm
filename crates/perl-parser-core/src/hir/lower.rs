@@ -3386,11 +3386,16 @@ fn sub_exporter_export_names(value: &[String]) -> Option<SubExporterExports> {
         // is the *whole* value. An expression that merely begins with `undef`
         // (`undef // \&build`) still yields a generator, and reading it as
         // source-backed would hand a runtime-only name to the live completion
-        // gate at high confidence.
+        // gate at high confidence. `undef()` is that same value written as a
+        // call, so it is accepted too; anything beyond those two exact shapes
+        // may evaluate to a generator and is treated as one.
         if entry.get(1).map(String::as_str) == Some("=>") {
             let name = sub_exporter_single_name(&entry[0])?;
             let value = entry.get(2..).unwrap_or_default();
-            if !matches!(value, [only] if only == "undef") {
+            let no_generator = matches!(value, [only] if only == "undef")
+                || matches!(value, [word, open, close]
+                    if word == "undef" && open == "(" && close == ")");
+            if !no_generator {
                 generated.insert(name.clone());
             }
             names.push(name);
