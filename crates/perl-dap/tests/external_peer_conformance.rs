@@ -114,7 +114,13 @@ fn run_peer(listener: TcpListener, caps: PeerReportedCapabilities, steps: Vec<Pe
                             let mut resp = tmpl.clone();
                             resp.seq = seq;
                             resp.request_seq = req.seq;
-                            resp.command = req.command.clone();
+                            // A template that names its own command keeps it, so
+                            // a test can script a peer that echoes the *wrong*
+                            // command. An empty template command echoes the
+                            // request, which is what a conforming peer does.
+                            if resp.command.is_empty() {
+                                resp.command = req.command.clone();
+                            }
                             send(&mut write, &PeerMessage::Response(resp));
                         }
                         if req.command == command::GOODBYE {
@@ -1042,6 +1048,65 @@ fn peer_reported_debuggee_failure_is_not_an_adapter_bug() {
 
     // The editor-visible text is unchanged by the added structure.
     assert_eq!(err.to_string(), format!("debug backend reported an error: {DIE}"));
+
+    drop(backend);
+    let _ = peer.handle.join();
+}
+
+/// Responses are correlated by `request_seq` alone, so the echoed command is the
+/// only evidence that a reply answers the request we actually sent.
+///
+/// A peer that answers an `evaluate` sequence with a response echoing
+/// `stackTrace` has broken correlation. That is a protocol violation, not an
+/// outcome of the evaluate — and it must not be recorded as a `RequestFailed`
+/// carrying the command we asked for, which would assert an identity the peer
+/// never confirmed and classify a correlation failure as an ordinary advisory
+/// debuggee outcome (#8758 review).
+#[test]
+fn peer_response_echoing_a_different_command_is_a_protocol_violation() {
+    use perl_dap::backend::BackendError;
+    use perl_parser_core::{ErrorCategory, ErrorClass};
+
+    let peer = FakePeer::start(
+        full_caps(),
+        vec![PeerStep::Answer(
+            command::EVALUATE,
+            PeerResponse {
+                seq: 0,
+                request_seq: 0,
+                success: false,
+                // Crossed: this reply claims to answer a different command.
+                command: command::STACK_TRACE.to_string(),
+                message: Some("no active suspension".to_string()),
+                body: None,
+            },
+        )],
+    );
+    let mut backend = connect(&peer);
+    must(backend.initialize(InitializeBackendParams::default()));
+
+    let err = must_err(backend.evaluate(EvaluateParams {
+        expression: "$x".to_string(),
+        frame_id: Some(FrameId(1)),
+        context: EvaluateContext::Watch,
+    }));
+
+    match &err {
+        BackendError::Protocol(detail) => {
+            assert!(
+                detail.contains(command::EVALUATE) && detail.contains(command::STACK_TRACE),
+                "the protocol error names both the request and the echoed command: {detail}"
+            );
+        }
+        other => panic!("a crossed command must not be reported as an outcome, got {other:?}"),
+    }
+
+    assert_eq!(err.error_class(), ErrorCategory::Protocol);
+    assert_ne!(
+        err.error_class(),
+        ErrorCategory::Advisory,
+        "a correlation failure is not an ordinary debuggee outcome"
+    );
 
     drop(backend);
     let _ = peer.handle.join();
