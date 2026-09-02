@@ -697,7 +697,7 @@ fn collect_loaded_paths(node: &perl_parser::Node, paths: &mut BTreeSet<String>) 
                     }
                     // `require "Accuracy/Helper.pm"` names the path directly.
                     perl_parser::NodeKind::String { value, .. } => {
-                        if let Some(path) = literal_module_path(value) {
+                        if let Some(path) = literal_load_path(value) {
                             paths.insert(path);
                         }
                     }
@@ -717,17 +717,17 @@ fn collect_loaded_paths(node: &perl_parser::Node, paths: &mut BTreeSet<String>) 
 /// double-quoted strings as interpolated, so the real test is whether any
 /// interpolation sigil is present: `require "$class.pm"` is a runtime load and
 /// is out of scope, `require "Accuracy/Helper.pm"` is static.
-fn literal_module_path(value: &str) -> Option<String> {
+fn literal_load_path(value: &str) -> Option<String> {
     let unquoted = value
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
         .or_else(|| value.strip_prefix('\'').and_then(|rest| rest.strip_suffix('\'')))
         .unwrap_or(value);
-    let is_literal_pm = unquoted.ends_with(".pm")
-        && !unquoted.contains('$')
-        && !unquoted.contains('@')
-        && !unquoted.is_empty();
-    is_literal_pm.then(|| unquoted.to_string())
+    // No extension filter: `require "lib/helper.pl"` loads a real file just as
+    // `require "Foo/Bar.pm"` does. Whether the target is part of this fixture is
+    // decided by resolution under its declared roots, not by the suffix.
+    let is_literal = !unquoted.is_empty() && !unquoted.contains('$') && !unquoted.contains('@');
+    is_literal.then(|| unquoted.to_string())
 }
 
 /// `Foo::Bar` names the file `Foo/Bar.pm`. Version and feature forms
@@ -1342,7 +1342,7 @@ mod tests {
     #[test]
     fn used_module_paths_covers_every_static_load_form() -> TestResult {
         let paths = used_module_paths(
-            "use v5.36;\nuse Accuracy::ImportsExports;\nuse Helper;\nno Deprecated::Thing;\nrequire Bareword::Mod;\nrequire \"Quoted/Path.pm\";\n1;\n",
+            "use v5.36;\nuse Accuracy::ImportsExports;\nuse Helper;\nno Deprecated::Thing;\nrequire Bareword::Mod;\nrequire \"Quoted/Path.pm\";\nrequire \"lib/helper.pl\";\nrequire \"$computed.pm\";\n1;\n",
         )
         .ok_or_else(|| color_eyre::eyre::eyre!("fixture source should parse"))?;
 
@@ -1351,6 +1351,12 @@ mod tests {
         assert!(paths.contains("Deprecated/Thing.pm"), "`no Module` load missing: {paths:?}");
         assert!(paths.contains("Bareword/Mod.pm"), "bareword require missing: {paths:?}");
         assert!(paths.contains("Quoted/Path.pm"), "quoted require missing: {paths:?}");
+        assert!(paths.contains("lib/helper.pl"), "non-.pm literal require missing: {paths:?}");
+        // An interpolated target is a runtime load, not a static declaration.
+        assert!(
+            !paths.iter().any(|path| path.contains("computed")),
+            "interpolated require admitted: {paths:?}"
+        );
         // A version form names no file.
         assert!(
             !paths.iter().any(|path| path.starts_with('v')),
