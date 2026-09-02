@@ -1785,40 +1785,80 @@ fn validate_rows(
         let displaces = row.action.displaces_swarm_content() || row.class == Class::ReleaseLineage;
         let mut surface = product_surface.classify(&row.path, parse_date(&manifest.planned_at));
 
-        // A displacing row that names a directory takes the whole subtree with
-        // it. The classifiers above only see the row string, so probe the
-        // checkout: a crate root, or anything that is not a regular file, is
-        // not something a publication projection may displace wholesale.
-        if displaces && surface != SurfaceVerdict::ProductOrTest {
-            let crate_manifest = format!("{}/Cargo.toml", row.path);
-            if loader(repo_root, &crate_manifest).is_ok() {
-                surface = SurfaceVerdict::ProductOrTest;
-            } else {
-                match loader(repo_root, &row.path) {
-                    Err(LoadFailure::Unreadable(ref reason)) if reason == NOT_A_REGULAR_FILE => {
-                        state.block(
-                            "row_displaces_directory",
-                            format!(
-                                "row {} displaces a directory, which carries every path beneath it; name the exact files instead",
-                                row.path
-                            ),
-                            "release/ci",
-                        );
-                    }
-                    // Absent from this checkout. Row digests are declarative and
-                    // the planner resolves neither S nor R, so nothing here can
-                    // establish that the row names a regular file rather than a
-                    // subtree in the declared trees. Refuse rather than assume.
-                    Err(LoadFailure::Missing) => state.not_proven(
-                        "row_shape_unresolvable",
+        // Every row names content in `S`, whatever it then does with it: a
+        // translation rewrites those bytes for the destination context, and a
+        // displacement removes or replaces them. So every row's source must
+        // resolve in the checkout, which the checkout binding has established
+        // *is* `prepared_swarm_sha`.
+        //
+        // Restricting this to displacing rows let a translation name a path
+        // that exists nowhere, attach any well-formed `source_digest`, and
+        // pass — a plan asserting a translation of content that was never
+        // established to exist.
+        //
+        // The crate-root probe stays inside the displacing branch below,
+        // because it exists to protect product content from displacement.
+        // Translating product code is explicitly allowed.
+        let mut source_resolved = true;
+        match loader(repo_root, &row.path) {
+            Ok(_) => {}
+            Err(LoadFailure::Unreadable(ref reason)) if reason == NOT_A_REGULAR_FILE => {
+                source_resolved = false;
+                if displaces {
+                    state.block(
+                        "row_displaces_directory",
                         format!(
-                            "row {} displaces a path absent from this checkout, so the planner cannot establish that it names a file rather than a subtree",
+                            "row {} displaces a directory, which carries every path beneath it; name the exact files instead",
                             row.path
                         ),
                         "release/ci",
-                    ),
-                    _ => {}
+                    );
+                } else {
+                    // A row carries one `source_digest`, which cannot describe a
+                    // subtree, so a directory is incoherent here too.
+                    state.block(
+                        "row_source_not_a_file",
+                        format!(
+                            "row {} names a directory, but a row declares one source digest; name the exact files instead",
+                            row.path
+                        ),
+                        "release/ci",
+                    );
                 }
+            }
+            // Absent from this checkout. Row digests are declarative and the
+            // planner resolves neither `S` nor `R` as trees, so nothing here can
+            // establish what the row names. Refuse rather than assume.
+            Err(LoadFailure::Missing) => {
+                source_resolved = false;
+                state.not_proven(
+                    "row_source_absent",
+                    format!(
+                        "row {} names a path absent from the checkout at prepared_swarm_sha {}, so its declared source content cannot be established",
+                        row.path, manifest.prepared_swarm_sha
+                    ),
+                    "release/ci",
+                );
+            }
+            Err(failure) => {
+                source_resolved = false;
+                report_load_failure(
+                    state,
+                    "row",
+                    &format!("row {}", row.path),
+                    &row.path,
+                    &failure,
+                );
+            }
+        }
+
+        // A displacing row that names a crate root takes the whole crate with
+        // it. The classifiers above only see the row string, so probe for the
+        // build manifest a crate root would carry.
+        if displaces && surface != SurfaceVerdict::ProductOrTest && !source_resolved {
+            let crate_manifest = format!("{}/Cargo.toml", row.path);
+            if loader(repo_root, &crate_manifest).is_ok() {
+                surface = SurfaceVerdict::ProductOrTest;
             }
         }
         let product_bearing = surface == SurfaceVerdict::ProductOrTest;

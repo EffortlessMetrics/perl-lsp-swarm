@@ -44,8 +44,49 @@ fn fixture_input_bytes(path: &str) -> Option<Vec<u8>> {
     if FIXTURE_ROW_PATHS.contains(&path) {
         return Some(format!("publication-sync fixture row: {path}\n").into_bytes());
     }
+    // Real repository files that tests point rows at. Every row's source must
+    // resolve, and a real plan runs in a checkout of `S` where these exist, so
+    // the harness has to model that or a product-protection test would fail for
+    // absence rather than for the rule it is actually about.
+    if FIXTURE_PRESENT_PATHS.contains(&path) {
+        return Some(format!("publication-sync checkout file: {path}\n").into_bytes());
+    }
     None
 }
+
+/// Paths a checkout of the prepared swarm tree contains as regular files,
+/// beyond the fixture's own rows.
+const FIXTURE_PRESENT_PATHS: [&str; 15] = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "crates/perl-parser/Cargo.toml",
+    "crates/perl-parser/src/lexer.rs",
+    "crates/perl-parser/src/lib.rs",
+    "clients/lite-xl/compose.lua",
+    "clients/lite-xl/leaves/base/init.lua",
+    "clients/sublime/LSP-perllsp/plugin.py",
+    "vscode-extension/package.json",
+    "install.sh",
+    "install.ps1",
+    "tests/publication_projection.rs",
+    "docs/release-notes.md",
+    "schemas/some_contract.v1.schema.json",
+    "docs/policy/NON_RUST_INVENTORY.md.bak",
+];
+
+/// Paths that exist in that checkout as directories. The loader reports these
+/// the way the real one does, so subtree rules can be exercised without
+/// materializing a tree.
+const FIXTURE_DIRECTORY_PATHS: [&str; 8] = [
+    "clients",
+    "clients/lite-xl",
+    "clients/sublime",
+    "vscode-extension",
+    "crates/perl-parser",
+    "docs/policy",
+    "some/bundle",
+    "target/receipts",
+];
 
 /// Row paths the clean fixture projects, materialized so the planner can
 /// establish that each names a regular file rather than a subtree.
@@ -117,6 +158,9 @@ fn mutating_loader(_repo_root: &Path, path: &str) -> Result<Vec<u8>, LoadFailure
 }
 
 fn test_loader(_repo_root: &Path, path: &str) -> Result<Vec<u8>, LoadFailure> {
+    if FIXTURE_DIRECTORY_PATHS.contains(&path) {
+        return Err(LoadFailure::Unreadable(NOT_A_REGULAR_FILE.to_string()));
+    }
     fixture_input_bytes(path).ok_or(LoadFailure::Missing)
 }
 
@@ -1909,22 +1953,64 @@ fn a_displacing_row_absent_from_the_checkout_is_not_proven() -> Result<()> {
 
     let receipt = plan_value(&document)?;
     assert_verdict(&receipt, Verdict::NotProven)?;
-    assert_finding(&receipt, "row_shape_unresolvable")
+    assert_finding(&receipt, "row_source_absent")
 }
 
 #[test]
-fn a_translating_row_absent_from_the_checkout_is_not_a_shape_finding() -> Result<()> {
-    // Opposite direction: only displacing rows take a subtree, so the shape
-    // requirement must not fire on translations.
+fn a_translating_row_absent_from_the_checkout_is_not_proven() -> Result<()> {
+    // A translation rewrites bytes that exist in S for the destination context.
+    // If the path exists nowhere, the row asserts a translation of nothing, and
+    // a well-formed `source_digest` is not evidence that the content is there.
+    //
+    // An earlier version of this test asserted the opposite — that a
+    // translating row need not resolve — because it was written to protect a
+    // narrower property: the *subtree* rule must not fire on translations.
+    // That property is still worth keeping and is checked below; it does not
+    // license skipping existence.
     let mut document = clean_value()?;
-    let row = &mut rows_mut(&mut document)?[0];
-    row["path"] = json!("not/in/this/checkout.md");
+    rows_mut(&mut document)?[0]["path"] = json!("not/in/this/checkout.md");
 
     let receipt = plan_value(&document)?;
-    if receipt.findings.iter().any(|f| f.code == "row_shape_unresolvable") {
-        bail!("a translating row was required to resolve: {:?}", receipt.findings);
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "row_source_absent")?;
+
+    // The narrower property the old test was really defending: an absent
+    // translation is not accused of displacing a directory.
+    if receipt.findings.iter().any(|finding| finding.code == "row_displaces_directory") {
+        bail!("a translating row was accused of displacing a directory: {:?}", receipt.findings);
     }
     Ok(())
+}
+
+#[test]
+fn a_translating_row_on_a_directory_is_blocked() -> Result<()> {
+    // A row declares one `source_digest`, which cannot describe a subtree, so a
+    // directory is incoherent for a translation as much as for a displacement —
+    // but it earns its own finding rather than the displacement one.
+    // `some/bundle` rather than `docs/policy`: the latter is a path prefix of
+    // row 3, so it would also raise the ambiguity finding and the verdict would
+    // no longer be about this rule.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[0]["path"] = json!("some/bundle");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::Blocked)?;
+    assert_finding(&receipt, "row_source_not_a_file")?;
+    if receipt.findings.iter().any(|finding| finding.code == "row_displaces_directory") {
+        bail!("a translating row was accused of displacing: {:?}", receipt.findings);
+    }
+    Ok(())
+}
+
+#[test]
+fn a_translating_row_on_a_present_file_still_passes() -> Result<()> {
+    // Opposite direction. The clean fixture's row 0 is a translation of a
+    // materialized `README.md`; requiring existence must not reject it.
+    let receipt = plan_value(&clean_value()?)?;
+    if receipt.findings.iter().any(|finding| finding.code.starts_with("row_source_")) {
+        bail!("a resolvable translation was refused: {:?}", receipt.findings);
+    }
+    assert_verdict(&receipt, Verdict::Pass)
 }
 
 #[test]
