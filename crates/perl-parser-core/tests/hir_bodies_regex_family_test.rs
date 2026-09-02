@@ -344,10 +344,11 @@ fn element_subscript_target_is_a_place() {
 // ── Analysis anchoring ───────────────────────────────────────────────────────
 
 #[test]
-fn regex_forms_anchor_to_their_exact_full_source_range() {
-    // The anchor is the lookup key into the #7018 retained analysis table
-    // (`find_by_full_range`). It must be the construct's own range, so a
-    // consumer can resolve canonical facts without rescanning pattern text.
+fn an_unbound_regex_anchors_to_its_own_source_range() {
+    // For an UNBOUND construct the anchor is the operator's own range. This is
+    // the narrow case only; a bound operator's anchor also spans its target and
+    // binding operator, and end-to-end resolution of every form against a real
+    // `RegexAnalysisTable` is proven in `hir_regex_anchor_resolution_test.rs`.
     let source = "my $r = qr/foo/i;";
     let r = regex_of(source);
     let start = r.analysis.full_range.start;

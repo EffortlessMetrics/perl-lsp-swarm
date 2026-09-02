@@ -3713,9 +3713,12 @@ impl<'a> BodyBuilder2<'a> {
             // encoded the embedded-code fact by mangling the `ast_kind` string.
             //
             // Pattern text is never copied or rescanned here: each construct
-            // carries a `RegexAnalysisAnchor` (its exact full source range),
-            // which is the lookup key into the canonical retained analysis
-            // table from #7018.
+            // carries a `RegexAnalysisAnchor` holding its enclosing source
+            // range, which a consumer resolves against the canonical retained
+            // analysis table from #7018 via `find_enclosed_by`. For a bound
+            // operator that range covers the target and binding operator too,
+            // so it is an enclosing anchor and not an exact record key — see
+            // `RegexAnalysisAnchor`.
             NodeKind::Regex { modifiers, has_embedded_code, .. } => {
                 // Unbound regex construct. The AST does not distinguish `qr//`
                 // (regex value) from an unbound `m//` or bare `/.../` against

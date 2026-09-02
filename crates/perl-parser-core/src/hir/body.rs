@@ -512,18 +512,42 @@ pub enum HirExpr {
 /// Stable anchor binding a body-HIR regex operation to its canonical retained
 /// regex analysis record (#7018).
 ///
-/// This is the regex-family construct's exact full source range — the same key
-/// `RegexAnalysisTable::find_by_full_range` is indexed by. Body lowering has no
-/// handle on the analysis table (`lower_ast` receives only the AST), so HIR
-/// stores the *anchor* rather than the record: a consumer holding the table
-/// resolves the canonical facts itself.
+/// Body lowering has no handle on the analysis table (`lower_ast` receives only
+/// the AST), so HIR stores an *anchor* rather than the record: a consumer
+/// holding the table resolves the canonical facts itself.
+///
+/// # Resolving an anchor
+///
+/// Resolve with `RegexAnalysisTable::find_enclosed_by`, **not**
+/// `find_by_full_range`.
+///
+/// The anchor is the enclosing source range of the construct that was lowered.
+/// For an unbound construct that equals the operator's own range:
+///
+/// ```text
+/// my $r = qr/foo/i;    anchor 8..16 == record full_range 8..16
+/// ```
+///
+/// For a bound construct the anchor also spans the target and the binding
+/// operator, while the record keys on the operator range alone:
+///
+/// ```text
+/// $x =~ /foo/;         anchor 0..11  vs  record full_range 6..11
+/// ```
+///
+/// So exact-range lookup resolves only unbound constructs. The operator's own
+/// range is recovered from source geometry by the retained analysis and is not
+/// present in the AST, so HIR cannot carry it without rescanning source.
 ///
 /// This deliberately carries no completeness claim. A lookup that finds no
 /// record means the analysis is **unavailable**, never that the pattern is
 /// clean — HIR never asserts a regex is complete or valid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RegexAnalysisAnchor {
-    /// Exact full source range of the regex-family construct as written.
+    /// Enclosing source range of the regex-family construct as written.
+    ///
+    /// See the type documentation: this is the construct's own range for an
+    /// unbound form, and the whole binding expression's range for a bound one.
     pub full_range: SourceLocation,
 }
 

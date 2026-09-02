@@ -298,6 +298,34 @@ impl RegexAnalysisTable {
         self.records.iter().find(|record| record.pattern_range() == Some(range))
     }
 
+    /// Resolve the record a canonical body-HIR regex anchor refers to (#7136).
+    ///
+    /// A body-HIR regex operation anchors to the *enclosing* source range of
+    /// the construct it lowered. For an unbound construct (`qr/foo/`) that is
+    /// the operator's own range, so [`Self::find_by_full_range`] would suffice;
+    /// for a bound one (`$x =~ /foo/`) the anchor also spans the target and the
+    /// binding operator, while a record's `full_range` is the operator range
+    /// alone. Exact equality therefore fails for every bound form.
+    ///
+    /// Prefers an exact `full_range` match, then the last-starting record
+    /// wholly contained in `range` — the same rule the parser's own AST
+    /// compatibility projection applies, so both resolve identically.
+    ///
+    /// Returning `None` means the analysis is **unavailable** for that anchor,
+    /// never that the pattern is clean.
+    #[must_use]
+    pub fn find_enclosed_by(&self, range: SourceLocation) -> Option<&RegexAnalysisRecord> {
+        if let Some(exact) = self.find_by_full_range(range) {
+            return Some(exact);
+        }
+        self.records
+            .iter()
+            .filter(|record| {
+                range.start <= record.full_range.start && record.full_range.end <= range.end
+            })
+            .max_by_key(|record| record.full_range.start)
+    }
+
     /// Find the narrowest retained occurrence containing an original-source byte.
     #[must_use]
     pub fn find_at_offset(&self, offset: usize) -> Option<&RegexAnalysisRecord> {
