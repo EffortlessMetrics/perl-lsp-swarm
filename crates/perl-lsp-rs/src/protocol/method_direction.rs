@@ -621,36 +621,83 @@ mod tests {
     fn visibility_close(source: &str) -> Option<usize> {
         let bytes = source.as_bytes();
         let mut depth = 0;
+        let mut state = LexicalState::Normal;
         let mut index = 0;
         while index < bytes.len() {
-            if bytes[index..].starts_with(b"//") {
-                let newline = bytes[index..].iter().position(|byte| *byte == b'\n')?;
-                index += newline + 1;
-                continue;
-            }
-            if bytes[index..].starts_with(b"/*") {
-                let mut comment_depth = 1;
-                index += 2;
-                while index < bytes.len() && comment_depth > 0 {
+            match state {
+                LexicalState::Normal => {
+                    if bytes[index..].starts_with(b"//") {
+                        let newline = bytes[index..]
+                            .iter()
+                            .position(|byte| *byte == b'\n')
+                            .unwrap_or(bytes.len() - index);
+                        index += newline;
+                        continue;
+                    }
                     if bytes[index..].starts_with(b"/*") {
-                        comment_depth += 1;
+                        state = LexicalState::BlockComment(1);
+                        index += 2;
+                        continue;
+                    }
+                    if let Some((next, hashes)) = raw_string_start(bytes, index) {
+                        state = LexicalState::RawString { hashes };
+                        index = next;
+                        continue;
+                    }
+                    if bytes[index] == b'"'
+                        || (bytes[index] == b'b' && bytes.get(index + 1) == Some(&b'"'))
+                    {
+                        state = LexicalState::Quoted { delimiter: b'"', escaped: false };
+                        index += usize::from(bytes[index] == b'b') + 1;
+                        continue;
+                    }
+                    if bytes[index] == b'\'' && char_literal_ends_on_line(bytes, index) {
+                        state = LexicalState::Quoted { delimiter: b'\'', escaped: false };
+                        index += 1;
+                        continue;
+                    }
+                    match bytes[index] {
+                        b'(' => depth += 1,
+                        b')' if depth == 1 => return Some(index),
+                        b')' if depth > 1 => depth -= 1,
+                        _ => {}
+                    }
+                    index += 1;
+                }
+                LexicalState::BlockComment(comment_depth) => {
+                    if bytes[index..].starts_with(b"/*") {
+                        state = LexicalState::BlockComment(comment_depth + 1);
                         index += 2;
                     } else if bytes[index..].starts_with(b"*/") {
-                        comment_depth -= 1;
+                        state = if comment_depth == 1 {
+                            LexicalState::Normal
+                        } else {
+                            LexicalState::BlockComment(comment_depth - 1)
+                        };
                         index += 2;
                     } else {
                         index += 1;
                     }
                 }
-                continue;
+                LexicalState::Quoted { delimiter, escaped } => {
+                    if escaped {
+                        state = LexicalState::Quoted { delimiter, escaped: false };
+                    } else if bytes[index] == b'\\' {
+                        state = LexicalState::Quoted { delimiter, escaped: true };
+                    } else if bytes[index] == delimiter {
+                        state = LexicalState::Normal;
+                    }
+                    index += 1;
+                }
+                LexicalState::RawString { hashes } => {
+                    if raw_string_ends_at(bytes, index, hashes) {
+                        state = LexicalState::Normal;
+                        index += hashes + 1;
+                    } else {
+                        index += 1;
+                    }
+                }
             }
-            match bytes[index] {
-                b'(' => depth += 1,
-                b')' if depth == 1 => return Some(index),
-                b')' if depth > 1 => depth -= 1,
-                _ => {}
-            }
-            index += 1;
         }
         None
     }
@@ -1564,6 +1611,43 @@ fn after_raw() { client.send_request("production/after-raw"); }
         assert!(stripped.contains("raw-only/second-cfg-suffix"));
         assert!(!stripped.contains("test-only/later-real"));
         assert!(stripped.contains("production/after-raw"));
+    }
+
+    #[test]
+    fn strip_test_modules_handles_same_line_forms_and_keeps_enclosing_braces() {
+        let source = r#"
+fn inline_parent() {
+    #[cfg(test)] pub(in crate::protocol /* fake ) */) mod compact { fn send() { client.send_request("test-only/compact-nested"); } } send("production/compact-nested");
+}
+fn multiline_parent() { #[cfg(test)] pub(crate) mod multiline {
+    fn send() { client.send_request("test-only/multiline-nested"); }
+} send("production/multiline-nested"); }
+fn external_parent() { #[cfg(test)] pub(crate) mod external; send("production/external-nested"); }
+"#;
+
+        let stripped = strip_test_modules(source);
+        assert!(!stripped.contains("test-only/compact-nested"));
+        assert!(!stripped.contains("test-only/multiline-nested"));
+        assert!(!stripped.contains("pub(crate) mod external;"));
+        assert!(stripped.contains("fn inline_parent() {"));
+        assert!(stripped.contains("production/compact-nested"));
+        assert!(stripped.contains("production/multiline-nested"));
+        assert!(stripped.contains("production/external-nested"));
+        assert!(stripped.matches('{').count() == stripped.matches('}').count());
+    }
+
+    #[test]
+    fn strip_test_modules_visibility_parser_ignores_delimiters_in_comments() {
+        let source = r#"
+#[cfg(test)] pub(in crate::protocol /* fake ) */ /* nested /* ) */ comment */) mod commented_visibility {
+    fn send() { client.send_request("test-only/literal-visibility"); }
+}
+fn production() { client.send_request("production/after-literal-visibility"); }
+"#;
+
+        let stripped = strip_test_modules(source);
+        assert!(!stripped.contains("test-only/literal-visibility"));
+        assert!(stripped.contains("production/after-literal-visibility"));
     }
 
     fn quoted_literals(line: &str) -> Vec<&str> {
