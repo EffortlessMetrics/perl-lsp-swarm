@@ -320,6 +320,68 @@ fn when_shift_follows_a_value_then_no_body_is_owned() {
 }
 
 #[test]
+fn when_shift_follows_a_method_call_then_following_source_survives() {
+    // perl 5.38: with `sub val { 4 }`, `$o->val <<2` prints 16 — a left shift.
+    // A method call takes no unparenthesized list, so the call is a completed
+    // term. Reading the method name as a bareword list operator makes `<<2` an
+    // opener, and the pre-pass then deletes every following line as body text.
+    for source in [
+        "my $y = $o->val <<2;\nmy $z = 3;\n",
+        "my $y = $o -> val <<2;\nmy $z = 3;\n",
+        "my $y = Foo->new <<2;\nmy $z = 3;\n",
+        "my $y = $o->val <<EOF;\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "method-call shift must own no body: {source:?}");
+        assert_eq!(scan.stripped(), source, "no source may be removed for: {source:?}");
+        assert!(
+            sexp(source).contains("(variable_declaration $z   = (number 3)"),
+            "the statement after a method-call shift must still parse: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn when_opener_follows_defined_or_then_the_body_is_owned() {
+    // perl 5.38: `my $x = $u // <<EOF;` assigns the heredoc body when `$u` is
+    // undef, so `//` here is the defined-or *operator* and `<<EOF` starts a
+    // term. Treating `//` as a completed value (an empty pattern) makes the
+    // scanner miss the opener, leaving the body to be misparsed as code.
+    for source in [
+        "my $x = $u // <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "my $x = $u // $v // <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "my $x = /a/ // <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(scan.captures().len(), 1, "defined-or must leave term position: {source:?}");
+        assert_eq!(
+            scan.captures().first().map(|capture| capture.content()),
+            Some("body\n"),
+            "the body must be owned for: {source:?}"
+        );
+        assert!(
+            !scan.stripped().contains("body"),
+            "the body must leave the text handed to Pest for: {source:?}"
+        );
+        assert!(
+            sexp(source).contains("(variable_declaration $z   = (number 3)"),
+            "code after the terminator must still parse: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn when_empty_pattern_is_in_term_position_then_it_completes_a_term() {
+    // The other half of the `//` split: in term position `//` is an empty
+    // pattern, a value, so a `<<` after it is a shift and owns no body.
+    for source in ["my $y = $x =~ // <<2;\nmy $z = 3;\n", "my $y = $x =~ //i <<2;\nmy $z = 3;\n"] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "empty pattern is a value: {source:?}");
+        assert_eq!(scan.stripped(), source, "no source may be removed for: {source:?}");
+    }
+}
+
+#[test]
 fn when_opener_text_is_inside_a_comment_or_string_then_no_body_is_owned() {
     // Each of these is ordinary data in perl; treating any as an opener eats
     // the following lines.
@@ -641,7 +703,7 @@ fn scanner_and_grammar_agree_on_openers() {
     //
     // Each row is one line of Perl with no body, so the grammar's count is its
     // unclouded opinion about that `<<` alone.
-    let rows: [&str; 24] = [
+    let rows: [&str; 30] = [
         // Term position — the grammar admits `heredoc` as an unconditional
         // `primary`, so any bareword counts, not just builtins.
         "my $x = <<EOF;\n",
@@ -652,6 +714,10 @@ fn scanner_and_grammar_agree_on_openers() {
         "my $x = Dumper <<EOF;\n",
         "my $x = FOO <<2;\n",
         "my ($a,$b) = (<<A, <<B);\n",
+        // Defined-or is an operator, so it leaves term position open.
+        "my $y = $u // <<EOF;\n",
+        "my $y = $u // $v // <<EOF;\n",
+        "my $y = /a/ // <<EOF;\n",
         // Operator position — a completed term makes `<<` a left shift.
         "my $y = $x <<2;\n",
         "my $y = 1 <<2;\n",
@@ -659,6 +725,10 @@ fn scanner_and_grammar_agree_on_openers() {
         "my $y = $a[0] <<2;\n",
         "my $y = $i++ <<2;\n",
         "my $y = $i-- <<2;\n",
+        // A method call takes no unparenthesized list, so it completes a term.
+        "my $y = $o->val <<2;\n",
+        "my $y = $o -> val <<2;\n",
+        "my $y = Foo->new <<2;\n",
         // Completed terms the preceding byte alone cannot recognize: a regex
         // ends in `/` or a flag letter, a special variable in punctuation, a
         // hex literal in a letter, a qualified name in a word byte.

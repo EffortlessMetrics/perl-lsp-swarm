@@ -863,8 +863,17 @@ fn scan_line_openers(
             // a regex scan leaves an unterminated construct that carries to the
             // next line and swallows a later heredoc.
             b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                // Only the empty pattern completes a term. Defined-or is an
+                // operator, so `$x // <<EOF` opens a heredoc — marking it as a
+                // completed term made the scanner miss that body.
+                let empty_pattern = is_term_position(line, bytes, index, last_term_end);
                 index += 2;
-                last_term_end = index;
+                if empty_pattern {
+                    while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
+                        index += 1;
+                    }
+                    last_term_end = index;
+                }
             }
             b'/' if is_term_position(line, bytes, index, last_term_end) => {
                 let (next, open) = skip_delimited(bytes, index, b'/');
@@ -1215,6 +1224,16 @@ fn is_term_position(line: &str, bytes: &[u8], index: usize, last_term_end: usize
             // A sigil before the word makes it a variable; `::` makes it a
             // qualified name, which the grammar also treats as a value.
             if word_start >= 2 && bytes.get(word_start - 2..word_start) == Some(b"::") {
+                return false;
+            }
+            // `->name` is a method call, and Perl gives it no unparenthesized
+            // list, so the call is a completed term and `$o->val <<2` is a
+            // shift. Without this the word looks like a bareword list operator.
+            let mut before = word_start;
+            while before > 0 && matches!(bytes[before - 1], b' ' | b'\t') {
+                before -= 1;
+            }
+            if before >= 2 && bytes.get(before - 2..before) == Some(b"->".as_slice()) {
                 return false;
             }
             !word_start
