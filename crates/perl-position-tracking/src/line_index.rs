@@ -445,6 +445,24 @@ mod newline_policy_tests {
     }
 
     #[test]
+    fn offsets_inside_crlf_clamp_to_content_end() {
+        let text = "ab\r\ncd";
+        let cache = LineStartsCache::new(text);
+        let rope = Rope::from_str(text);
+        let rope_cache = LineStartsCache::new_rope(&rope);
+        let index = LineIndex::new(text.to_owned());
+
+        // Both bytes of CRLF are separators, so the boundary between them
+        // must not produce a column beyond the content length of line zero.
+        assert_eq!(cache.offset_to_position(text, 2), (0, 2));
+        assert_eq!(cache.offset_to_position(text, 3), (0, 2));
+        assert_eq!(rope_cache.offset_to_position_rope(&rope, 2), (0, 2));
+        assert_eq!(rope_cache.offset_to_position_rope(&rope, 3), (0, 2));
+        assert_eq!(index.offset_to_position(2), (0, 2));
+        assert_eq!(index.offset_to_position(3), (0, 2));
+    }
+
+    #[test]
     fn rope_chunks_do_not_inherit_ropey_unicode_separator_policy() {
         let text = "a\u{000b}b\u{000c}c\u{0085}d\u{2028}e\u{2029}f\ng";
         let cache = LineStartsCache::new_rope(&Rope::from_str(text));
