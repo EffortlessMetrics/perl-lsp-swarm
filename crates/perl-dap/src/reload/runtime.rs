@@ -304,10 +304,47 @@ fn module_key_is_safe(inc_key: &str) -> bool {
 /// guard that refuses them is a bug rather than caution.
 ///
 /// So this rejects only what cannot be a usable path at all: empty,
-/// absurdly long, or containing a NUL — which no filesystem path may
-/// contain and which would truncate the decoded value inside Perl.
+/// absurdly long, containing a NUL — which no filesystem path may contain
+/// and which would truncate the decoded value inside Perl — or **not
+/// absolute**.
+///
+/// The absoluteness requirement is load-bearing, not tidiness. `require`
+/// only skips the `@INC` search for an absolute path; a relative one is
+/// searched exactly like a bare module key:
+///
+/// ```text
+/// $ perl -e 'use lib "b"; require "a/App/Core.pm"'
+/// Can't locate a/App/Core.pm in @INC (@INC entries checked: b ...)
+/// ```
+///
+/// So a relative bound path would silently undo the whole reason the
+/// mutation names a path instead of the key, and could execute a
+/// same-named module from somewhere else on `@INC`. `LoadedModuleSubject`
+/// documents this field as the runtime-resolved *absolute* path; this
+/// enforces it rather than trusting it.
 fn runtime_path_is_safe(path: &str) -> bool {
-    !path.trim().is_empty() && path.len() <= 4096 && !path.contains('\u{0}')
+    !path.trim().is_empty()
+        && path.len() <= 4096
+        && !path.contains('\u{0}')
+        && path_is_absolute(path)
+}
+
+/// Whether a debuggee-side path is absolute, for POSIX or Windows.
+///
+/// This deliberately does not use `std::path`: the path describes the
+/// debuggee's filesystem, which need not match the host the adapter is
+/// compiled for, so host-conditional semantics would be wrong.
+fn path_is_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    // POSIX root, or a Windows UNC / rooted path.
+    if bytes.first() == Some(&b'/') || path.starts_with("\\\\") {
+        return true;
+    }
+    // Windows drive-letter root: `C:\...` or `C:/...`.
+    matches!(
+        (bytes.first(), bytes.get(1), bytes.get(2)),
+        (Some(drive), Some(b':'), Some(b'\\' | b'/')) if drive.is_ascii_alphabetic()
+    )
 }
 
 /// The three command sets one transaction issues, derived from the subject.
@@ -381,7 +418,7 @@ pub fn plan_commands(
         format!(
             "p do {{ my $k = pack(q(H*),q({key_hex})); \
              \"{marker} \" . (exists $INC{{$k}} ? q(present) : q(absent)) \
-             . \" \" . (defined $INC{{$k}} ? $INC{{$k}} : q(-)) }}"
+             . \" \" . (defined $INC{{$k}} ? unpack(q(H*), $INC{{$k}}) : q(-)) }}"
         )
     };
     let mutation_marker = marker_for(MUTATION_MARKER, operation);
@@ -421,6 +458,27 @@ pub fn plan_commands(
         )],
         read_back: vec![observe(READBACK_MARKER)],
     })
+}
+
+/// Decode a Perl `unpack("H*", ...)` payload back to a string.
+///
+/// Returns `None` for anything that is not an even-length run of hex
+/// digits, or whose bytes are not valid UTF-8 — an unreadable observation
+/// is never silently treated as a path that happens not to match.
+fn decode_perl_hex(hex: &str) -> Option<String> {
+    if hex.is_empty() || !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    let raw = hex.as_bytes();
+    for pair in raw.chunks_exact(2) {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        // Both digits are < 16, so the product fits a u8 without any
+        // fallible conversion.
+        bytes.push((hi * 16 + lo) as u8);
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// A parsed `%INC` registration observation.
@@ -491,10 +549,22 @@ fn parse_registration(lines: &[String], marker: &str) -> Option<RegistrationObse
             "absent" => false,
             _ => continue,
         };
-        let path = if remainder.is_empty() { "-" } else { remainder };
+        // The path arrives hex-encoded so it round-trips exactly: a path
+        // with leading or trailing whitespace would otherwise be trimmed
+        // by this parser and never match the bound subject, refusing every
+        // reload of it. `-` is the sentinel for "no value".
+        let path = if remainder == "-" {
+            String::new()
+        } else {
+            match decode_perl_hex(remainder) {
+                Some(decoded) => decoded,
+                // An unreadable payload is not an observation at all.
+                None => continue,
+            }
+        };
         // Keep scanning: the debuggee's own output can carry a marker-like
         // line, and the transaction's own answer is the last one in frame.
-        found = Some(RegistrationObservation { present, path: path.to_string() });
+        found = Some(RegistrationObservation { present, path });
     }
     found
 }
@@ -933,9 +1003,12 @@ mod tests {
             }
         }
 
+        /// Build an observation frame the way the debuggee does: the
+        /// path travels hex-encoded.
         fn ok(marker: &str, present: bool, path: &str) -> ChannelSettlement {
             let state = if present { "present" } else { "absent" };
-            ChannelSettlement::Acknowledged(vec![format!("{marker} {state} {path}")])
+            let payload = if path == "-" { "-".to_string() } else { perl_hex(path) };
+            ChannelSettlement::Acknowledged(vec![format!("{marker} {state} {payload}")])
         }
 
         /// The happy path: preflight present, mutation ok, read-back present.
@@ -2025,8 +2098,8 @@ mod tests {
             None
         );
         let present = parse_registration(
-            &[format!("  DB<2> {PREFLIGHT_MARKER} present /ws/lib/App/Core.pm")],
-            PREFLIGHT_MARKER,
+            &[format!("  DB<2> {} present {}", mark(PREFLIGHT_MARKER), perl_hex(PATH))],
+            &mark(PREFLIGHT_MARKER),
         );
         assert_eq!(
             present,
@@ -2060,7 +2133,7 @@ mod tests {
         let spaced = "/ws/my lib/App/Core.pm";
         assert_eq!(
             parse_registration(
-                &[format!("{} present {spaced}", mark(READBACK_MARKER))],
+                &[format!("{} present {}", mark(READBACK_MARKER), perl_hex(spaced))],
                 &mark(READBACK_MARKER)
             ),
             Some(RegistrationObservation { present: true, path: spaced.to_string() })
@@ -2287,6 +2360,110 @@ mod tests {
         Ok(())
     }
 
+    /// A relative bound path is refused: `require` would search `@INC`.
+    ///
+    /// This is the whole reason the mutation names a path rather than the
+    /// key. Verified against real Perl while writing this:
+    /// `perl -e 'use lib "b"; require "a/App/Core.pm"'` reports
+    /// `Can't locate a/App/Core.pm in @INC`, so a relative path is
+    /// searched exactly like a bare key and could execute a same-named
+    /// module from elsewhere on `@INC`.
+    #[test]
+    fn relative_runtime_paths_are_refused() -> TestResult {
+        for relative in [
+            "App/Core.pm",
+            "lib/App/Core.pm",
+            "./lib/App/Core.pm",
+            "../lib/App/Core.pm",
+            "C:lib/App/Core.pm", // drive-relative, not drive-rooted
+        ] {
+            assert!(!runtime_path_is_safe(relative), "{relative:?} must be refused");
+            assert!(!path_is_absolute(relative));
+        }
+        for absolute in [
+            "/ws/lib/App/Core.pm",
+            "C:\\ws\\lib\\App\\Core.pm",
+            "C:/ws/lib/App/Core.pm",
+            "\\\\server\\share\\App\\Core.pm",
+        ] {
+            assert!(path_is_absolute(absolute), "{absolute:?} must be absolute");
+            assert!(runtime_path_is_safe(absolute), "{absolute:?} must be accepted");
+        }
+
+        // End to end: a relative subject refuses without touching the
+        // debuggee, rather than reaching a `require` that would search.
+        let relative = SubjectCandidate {
+            resolved_runtime_path: "lib/App/Core.pm".to_string(),
+            ..candidate()
+        }
+        .bind()
+        .map_err(|_| "candidate must bind")?;
+        assert_eq!(
+            plan_commands(&relative, ReloadMechanism::IncDeletionAndRequire),
+            Err(CommandPlanError::UnsafeRuntimePath)
+        );
+        let plan = plan_reload(&relative, &admitted_observation())
+            .map_err(|_| "admission is observation-driven")?;
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let mut channel = ScriptedChannel::happy();
+        let execution =
+            execute_reload(&plan, ReloadMechanism::IncDeletionAndRequire, &mut channel, &mut clock);
+        assert_eq!(execution.phase_reached, ReloadTransactionPhase::Admission);
+        assert!(channel.issued_mutations.is_empty());
+        Ok(())
+    }
+
+    /// A path with surrounding whitespace round-trips exactly.
+    ///
+    /// The observation carries the path hex-encoded precisely so this
+    /// works: a whitespace-delimited frame would have the parser trim the
+    /// value, mismatch the bound subject, and refuse every reload of such
+    /// a module.
+    #[test]
+    fn whitespace_bearing_paths_round_trip() -> TestResult {
+        let odd = "/ws/ odd lib /App/Core.pm ";
+        assert!(runtime_path_is_safe(odd));
+        assert_eq!(
+            parse_registration(
+                &[format!("{} present {}", mark(READBACK_MARKER), perl_hex(odd))],
+                &mark(READBACK_MARKER)
+            ),
+            Some(RegistrationObservation { present: true, path: odd.to_string() }),
+            "the trailing space must survive the frame"
+        );
+
+        let subject = SubjectCandidate { resolved_runtime_path: odd.to_string(), ..candidate() }
+            .bind()
+            .map_err(|_| "subject must bind")?;
+        let plan = plan_reload(&subject, &admitted_observation()).map_err(|_| "must admit")?;
+        let mut channel = ScriptedChannel::new(
+            vec![
+                ScriptedChannel::ok(&mark(PREFLIGHT_MARKER), true, odd),
+                ScriptedChannel::ok(&mark(READBACK_MARKER), true, odd),
+            ],
+            ChannelSettlement::Acknowledged(vec![format!("{} 1", mark(MUTATION_MARKER))]),
+        );
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let execution =
+            execute_reload(&plan, ReloadMechanism::IncDeletionAndRequire, &mut channel, &mut clock);
+        assert_eq!(execution.outcome, LoadedModuleReloadOutcome::Reloaded);
+        Ok(())
+    }
+
+    /// An unreadable hex payload is not an observation.
+    #[test]
+    fn malformed_hex_payloads_are_refused() {
+        let marker = mark(READBACK_MARKER);
+        for payload in ["zz", "abc", "", "6g"] {
+            assert_eq!(
+                parse_registration(&[format!("{marker} present {payload}")], &marker),
+                None,
+                "{payload:?} must not decode"
+            );
+        }
+        assert_eq!(decode_perl_hex(&perl_hex("/ws/x.pm")).as_deref(), Some("/ws/x.pm"));
+    }
+
     /// A built command plan is read-only.
     ///
     /// `plan_commands` owns command derivation, which is what makes the
@@ -2357,8 +2534,9 @@ mod tests {
     #[test]
     fn ansi_decorated_frames_parse_cleanly() {
         let decorated = format!(
-            "\u{1b}[4m  DB<2> \u{1b}[24m\u{1b}[1m\u{1b}[m\u{0f}{} present {PATH}",
-            mark(READBACK_MARKER)
+            "\u{1b}[4m  DB<2> \u{1b}[24m\u{1b}[1m\u{1b}[m\u{0f}{} present {}",
+            mark(READBACK_MARKER),
+            perl_hex(PATH)
         );
         assert_eq!(
             parse_registration(&[decorated], &mark(READBACK_MARKER)),
