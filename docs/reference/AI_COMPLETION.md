@@ -52,8 +52,8 @@ ignored key.
 | `apiKeyPrefix` | string | `"Bearer"` | no — rejected (#5684) | Scheme prepended to the key, sent as `<prefix> <key>`. Set to `""` to send the raw key with no prefix — required by providers that expect a bare token. Values containing control characters are ignored. |
 | `timeoutMs` | integer | `1800` | yes | Per-request timeout in milliseconds. |
 | `maxOutputTokens` | integer | `64` | yes | Maximum tokens the model may generate per request. |
-| `rateLimitRps` | float | `1.0` | yes | Maximum requests per second (token-bucket rate). |
-| `maxInflight` | integer | `1` | yes | Maximum concurrent in-flight requests (burst size). |
+| `rateLimitRps` | float | `1.0` | yes | Maximum requests per second (token-bucket rate). Controls how often a request may *start*, not how many may run at once. |
+| `maxInflight` | integer | `1` | yes | Maximum *simultaneously active* requests. A permit is held for the whole request and released on every outcome — success, error, timeout, or cancellation. Separate from `rateLimitRps`; raising one does not raise the other (#8300). |
 | `fallback` | boolean | `true` | yes | Fall back to deterministic completions on AI failure. |
 | `streaming.enabled` | boolean | `true` | no — rejected (#4997) | Enable streaming mode (progressive ghost text). Streaming preferences never imply backend authorization. |
 | `streaming.updateDebounceMs` | integer | `60` | yes | Minimum milliseconds between streamed ghost text updates. The first and final cumulative updates are always emitted. |
@@ -229,9 +229,14 @@ the server falls back to deterministic pattern-based completions when
 
 - Increase `timeoutMs` if the provider is slow (default is 1800ms).
 - Check `rateLimitRps` and `maxInflight`. With defaults of 1.0 rps and 1
-  concurrent request, rapid typing will hit the rate limiter. The server
-  returns `RateLimited` errors silently and falls back to deterministic
-  completions.
+  concurrent request, rapid typing will hit both limits. Exceeding
+  `rateLimitRps` is reported as `RateLimited` ("too frequent"); exceeding
+  `maxInflight` is reported as `Saturated` ("nowhere to run"). Both are
+  handled silently and fall back to deterministic completions.
+- Typing-triggered requests never queue: if `maxInflight` is already reached
+  they fall back immediately rather than wait behind a remote call, because a
+  suggestion that arrives after the cursor has moved is not useful. Explicitly
+  invoked completions wait briefly for a slot, bounded by their own deadline.
 - After the trusted activation adapter lands, streaming may lower perceived
   latency. Generic `streaming.enabled` settings are currently rejected.
 
