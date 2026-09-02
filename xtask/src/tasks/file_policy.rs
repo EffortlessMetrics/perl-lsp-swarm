@@ -231,13 +231,18 @@ fn validate_exact_allow_entries(entries: &[AllowEntry]) -> Result<()> {
 /// file; markers left at the top level already fail TOML parsing. Git writes
 /// markers at column 0, so the raw line prefix is matched and indented or
 /// commented mentions are not flagged.
-const POLICY_CONFLICT_MARKERS: &[&str] = &["<<<<<<<", "=======", ">>>>>>>", "|||||||"];
+const POLICY_CONFLICT_MARKER_PREFIXES: &[&str] = &["<<<<<<< ", ">>>>>>> ", "||||||| "];
+
+fn is_policy_conflict_marker(line: &str) -> bool {
+    line == "======="
+        || POLICY_CONFLICT_MARKER_PREFIXES.iter().any(|prefix| line.starts_with(prefix))
+}
 
 /// Return 1-based line numbers that begin a Git conflict marker.
 fn policy_conflict_marker_lines(text: &str) -> Vec<usize> {
     text.lines()
         .enumerate()
-        .filter(|(_, line)| POLICY_CONFLICT_MARKERS.iter().any(|marker| line.starts_with(marker)))
+        .filter(|(_, line)| is_policy_conflict_marker(line))
         .map(|(index, _)| index + 1)
         .collect()
 }
@@ -3198,6 +3203,22 @@ review_after = "2026-06-01"
         );
         let err = validate_exact_policy_bytes(policy.as_bytes()).unwrap_err();
         assert!(err.to_string().contains("conflict markers"), "{}", err);
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_multiline_reason_separator_is_not_a_conflict_marker() -> Result<()> {
+        let policy = mispaired_allowlist_fixture().replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"\"\"\n======= Overview\nDescribes the alpha subsystem.\n\"\"\"",
+            1,
+        );
+        let policy = policy.replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"Documents the beta subsystem with its own operator guide.\"",
+            1,
+        );
+        validate_exact_policy_bytes(policy.as_bytes())?;
         Ok(())
     }
 
