@@ -3174,7 +3174,7 @@ reason = "Documents the alpha subsystem with its full user contract."
 covered_by = ["manual review"]
 created = "2026-01-01"
 review_after = "2026-06-01"
-"#
+"#,
         .to_string()
     }
 
