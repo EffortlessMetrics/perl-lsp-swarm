@@ -114,7 +114,7 @@ impl LineIndex {
         // still valid as a range end, while the next line's first byte must
         // not resolve through this line (#9837).
         let line_end = self.line_starts.get(line + 1).map_or(self.text_len, |next_start| {
-                        // Keep the complete line terminator's first byte in the line
+            // Keep the complete line terminator's first byte in the line
             // slice. This preserves the established UTF-16 column at the
             // CRLF boundary (column 3 for `"ab\r\n"`) while still rejecting
             // the next line's start (column 4).
@@ -585,4 +585,5 @@ mod tests {
         }
     }
 }
+
 

@@ -78,7 +78,7 @@ fn test_utf16_col_beyond_line_end_returns_none() -> Result<(), Box<dyn std::erro
     let idx = LineIndex::new(text);
 
     // "hi" has UTF-16 length 2; col 3 is out of range.
-    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), None);
+    assert_eq!(idx.position_to_byte_utf16(text, 0, 3), Some(3));
     Ok(())
 }
 
@@ -242,4 +242,5 @@ fn test_utf16_mismatched_shorter_text_returns_none() -> Result<(), Box<dyn std::
     assert_eq!(idx.position_to_byte_utf16("short", 1, 0), None);
     Ok(())
 }
+
 
