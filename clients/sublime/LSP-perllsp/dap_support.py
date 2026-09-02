@@ -95,7 +95,12 @@ def resolve_dap_path(
     )
 
 
-def dap_command(path: Path) -> list[str]:
+def dap_command(path: Path, trusted_root: Path | None = None) -> list[str]:
     if not path.is_file():
         raise DapPathError(f"perl-dap executable is missing: {path}")
-    return [str(path.resolve()), "--stdio"]
+    command = [str(path.resolve()), "--stdio"]
+    if trusted_root is not None:
+        if not trusted_root.is_dir():
+            raise DapPathError(f"perl-dap trusted root is missing: {trusted_root}")
+        command.extend(["--trusted-root", str(trusted_root.resolve())])
+    return command

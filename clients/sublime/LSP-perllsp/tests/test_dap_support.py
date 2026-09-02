@@ -24,7 +24,17 @@ class DapSupportContractTests(unittest.TestCase):
             binary.write_bytes(b"exact")
             resolved = support.resolve_dap_path(str(binary), which=lambda _: None)
             self.assertEqual(resolved, binary.resolve())
-            self.assertEqual(support.dap_command(resolved), [str(binary.resolve()), "--stdio"])
+        self.assertEqual(support.dap_command(resolved), [str(binary.resolve()), "--stdio"])
+
+    def test_dap_command_adds_host_owned_trusted_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "perl-dap"
+            binary.write_text("", encoding="utf-8")
+            root = Path(directory)
+            self.assertEqual(
+                support.dap_command(binary, root),
+                [str(binary.resolve()), "--stdio", "--trusted-root", str(root.resolve())],
+            )
 
     def test_explicit_bare_name_uses_path_but_relative_path_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -92,7 +102,7 @@ class DapSupportContractTests(unittest.TestCase):
 
         self.assertIn('type = "perl"', source)
         self.assertIn("StdioTransport(command=command, cwd=cwd)", source)
-        self.assertIn('return [str(path.resolve()), "--stdio"]', (PACKAGE / "dap_support.py").read_text(encoding="utf-8"))
+        self.assertIn('command = [str(path.resolve()), "--stdio"]', (PACKAGE / "dap_support.py").read_text(encoding="utf-8"))
         self.assertIn('settings.get("dap_path", "auto")', source)
         self.assertIn('settings.get("server_path", "auto")', source)
         self.assertNotIn('configuration.get("dap_path"', source)
