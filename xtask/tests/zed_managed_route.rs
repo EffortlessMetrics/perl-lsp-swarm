@@ -71,7 +71,7 @@ fn pass_candidate_cannot_substitute_path_or_omit_known_good_recovery() -> Result
     let root = repo_root()?;
     let contract = read_json(&root, CONTRACT)?;
     let mut receipt = read_json(&root, TEMPLATE)?;
-    valid_pass(&mut receipt);
+    valid_pass(&mut receipt)?;
     assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_ok());
     receipt["selection"]["resolution_route"] = Value::String("worktree_path".to_string());
     assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_err());
@@ -82,7 +82,7 @@ fn pass_candidate_cannot_substitute_path_or_omit_known_good_recovery() -> Result
     Ok(())
 }
 
-fn valid_pass(receipt: &mut Value) {
+fn valid_pass(receipt: &mut Value) -> Result<(), Box<dyn Error>> {
     receipt["result"] = Value::String("pass".to_string());
     receipt["observed_at"] = Value::String("2026-08-14T00:00:00Z".to_string());
     receipt["contract"]["sha256"] = Value::String(format!("sha256:{}", "0".repeat(64)));
@@ -102,10 +102,13 @@ fn valid_pass(receipt: &mut Value) {
     for journey in zed_managed_route::REQUIRED_JOURNEYS {
         receipt["journeys"][journey] = Value::String("pass".to_string());
     }
-    let observations = receipt["recovery_observations"].as_object_mut().expect("template object");
+    let observations = receipt["recovery_observations"]
+        .as_object_mut()
+        .ok_or_else(|| io::Error::other("template recovery observations must be an object"))?;
     for scenario in zed_managed_route::REQUIRED_RECOVERY_SCENARIOS {
         observations.insert(scenario.to_string(), Value::String("pass".to_string()));
     }
+    Ok(())
 }
 
 #[test]
