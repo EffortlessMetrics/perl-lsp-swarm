@@ -122,9 +122,7 @@ struct FilesystemIdentity {
     #[cfg(unix)]
     inode: u64,
     #[cfg(windows)]
-    created: Option<std::time::SystemTime>,
-    #[cfg(windows)]
-    modified: Option<std::time::SystemTime>,
+    created: u64,
     #[cfg(not(any(unix, windows)))]
     canonical: PathBuf,
 }
@@ -138,7 +136,8 @@ impl FilesystemIdentity {
         }
         #[cfg(windows)]
         {
-            Self { created: metadata.created().ok(), modified: metadata.modified().ok() }
+            use std::os::windows::fs::MetadataExt;
+            Self { created: metadata.creation_time() }
         }
         #[cfg(not(any(unix, windows)))]
         {
