@@ -119,27 +119,66 @@ mod tests {
     };
     use crate::providers::file_completion::FileCompletionContext;
 
+    /// Does this provenance pin the reviewed document to an immutable revision?
+    ///
+    /// A recorded review is only reproducible if the revision cannot change
+    /// under it. A branch moves by design, and a Git tag can be moved or
+    /// deleted — retagging would swap the reviewed document while leaving the
+    /// provenance untouched. Only a commit is immutable, so the revision must
+    /// be a full 40-hex object id and the URL must be addressed by it.
+    ///
+    /// Expressed as a predicate rather than inline assertions so the negative
+    /// controls below can falsify it. Asserting only against the real value
+    /// would leave "immutable" true by accident rather than by construction.
+    fn pins_an_immutable_revision(provenance: &super::HtmxCatalogProvenance) -> bool {
+        provenance.reference_commit.len() == 40
+            && provenance.reference_commit.chars().all(|c| c.is_ascii_hexdigit())
+            && provenance.reference_url.contains(&format!("/blob/{}/", provenance.reference_commit))
+    }
+
     #[test]
     fn provenance_pins_an_immutable_reviewed_revision() {
-        let provenance = HTMX_CATALOG_PROVENANCE;
+        assert!(pins_an_immutable_revision(&HTMX_CATALOG_PROVENANCE));
+    }
 
-        // A recorded review is only reproducible if the revision cannot change
-        // under it. A branch moves by design, and a Git tag can be moved or
-        // deleted — retagging would swap the reviewed document while leaving
-        // this provenance untouched. Only a commit is immutable, so require a
-        // full 40-hex commit and require the URL to be addressed by it.
-        assert_eq!(provenance.reference_commit.len(), 40);
-        assert!(
-            provenance.reference_commit.chars().all(|c| c.is_ascii_hexdigit()),
-            "reference commit {} is not a 40-hex Git object id",
-            provenance.reference_commit
-        );
-        assert!(
-            provenance.reference_url.contains(&format!("/blob/{}/", provenance.reference_commit)),
-            "reference URL {} must be addressed by commit {}",
-            provenance.reference_url,
-            provenance.reference_commit
-        );
+    #[test]
+    fn a_revision_that_is_not_a_commit_is_rejected() {
+        let committed = HTMX_CATALOG_PROVENANCE;
+
+        // Retargeting the tag cannot preserve this provenance: addressing the
+        // URL by the tag, or by a branch, fails even when every other field is
+        // left exactly as reviewed.
+        for moving in [
+            "https://github.com/bigskysoftware/htmx/blob/v2.0.10/www/content/reference.md",
+            "https://github.com/bigskysoftware/htmx/blob/main/www/content/reference.md",
+            "https://github.com/bigskysoftware/htmx/blob/master/www/content/reference.md",
+        ] {
+            let tag_addressed = super::HtmxCatalogProvenance { reference_url: moving, ..committed };
+            assert!(
+                !pins_an_immutable_revision(&tag_addressed),
+                "{moving} is not an immutable revision"
+            );
+        }
+
+        // An abbreviated or non-hex revision is not a full object id, even when
+        // the URL agrees with it.
+        for short in ["bdc7d7d", "v2.0.10", "not-a-commit-at-all"] {
+            let abbreviated = super::HtmxCatalogProvenance {
+                reference_commit: short,
+                reference_url: "https://github.com/bigskysoftware/htmx/blob/bdc7d7d/x.md",
+                ..committed
+            };
+            assert!(!pins_an_immutable_revision(&abbreviated), "{short} is not a full commit");
+        }
+
+        // A well-formed commit whose URL points somewhere else is also not
+        // pinned: the two fields must agree, not merely both look plausible.
+        let mismatched = super::HtmxCatalogProvenance {
+            reference_url: "https://github.com/bigskysoftware/htmx/blob/\
+                            0000000000000000000000000000000000000000/www/content/reference.md",
+            ..committed
+        };
+        assert!(!pins_an_immutable_revision(&mismatched));
     }
 
     #[test]
