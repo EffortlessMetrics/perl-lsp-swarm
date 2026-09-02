@@ -30,6 +30,7 @@ mod tests {
     ];
     const ORACLE_TIMEOUT: Duration = Duration::from_secs(10);
     const ORACLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+    const ORDINARY_SUB_LINE: &str = "sub ordinary { 1 }\n";
     const FIXTURE_SOURCE: &str = r#"
 package Oracle::Base;
 sub inherited { 1 }
@@ -498,14 +499,17 @@ for my $sub (qw(Oracle::Demo::proto)) {
     }
 
     #[test]
-    fn compiler_oracle_comparison_preserves_both_disagreement_directions() -> Result<()> {
-        let observed = run_perl_oracle(FIXTURE_SOURCE)?;
-        let mut rust_facts = observed.facts.clone();
-        rust_facts.insert(normalized("package", "Oracle::RustOnly".to_string()));
-        let mut perl_facts = observed.facts;
-        perl_facts.insert(normalized("package", "Oracle::PerlOnly".to_string()));
+    fn compiler_oracle_comparison_preserves_both_disagreement_directions() {
+        let rust_facts = BTreeSet::from([
+            normalized("package", "Oracle::RustOnly".to_string()),
+            normalized("sub", "Oracle::Shared".to_string()),
+        ]);
+        let perl_facts = BTreeSet::from([
+            normalized("package", "Oracle::PerlOnly".to_string()),
+            normalized("sub", "Oracle::Shared".to_string()),
+        ]);
 
-        let receipt = compare_facts(observed.perl_version, rust_facts, perl_facts);
+        let receipt = compare_facts("v-test".to_string(), rust_facts, perl_facts);
 
         assert_eq!(receipt.matched_facts, vec![normalized("sub", "Oracle::Shared".to_string())]);
         assert_eq!(
