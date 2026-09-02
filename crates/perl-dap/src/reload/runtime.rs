@@ -402,11 +402,21 @@ pub fn plan_commands(
         // bookkeeping is restored afterwards: the stray absolute entry is
         // dropped and the canonical key is repointed at the same path the
         // subject is bound to.
+        // The absolute-path `%INC` entry is scratch space for this
+        // transaction, but it may also have been a real registration
+        // already — a module loaded once by key and once by absolute path
+        // has both. Deleting it and not putting it back would silently
+        // cost that alias its idempotence: the next `require` of the
+        // absolute path would re-execute the module instead of returning
+        // immediately. So the prior value is captured and restored, and
+        // only an entry this transaction invented is removed.
         mutation: vec![format!(
             "p do {{ my $k = pack(q(H*),q({key_hex})); my $p = pack(q(H*),q({path_hex})); \
+             my $had = exists $INC{{$p}}; my $prev = $INC{{$p}}; \
              delete $INC{{$k}}; delete $INC{{$p}}; \
              my $ok = eval {{ require $p; 1 }} ? 1 : 0; \
-             if ($ok) {{ delete $INC{{$p}}; $INC{{$k}} = $p; }} \
+             if ($ok) {{ if ($had) {{ $INC{{$p}} = $prev; }} else {{ delete $INC{{$p}}; }} \
+             $INC{{$k}} = $p; }} \
              \"{mutation_marker} $ok\" }}"
         )],
         read_back: vec![observe(READBACK_MARKER)],
@@ -464,10 +474,14 @@ fn parse_registration(lines: &[String], marker: &str) -> Option<RegistrationObse
     let mut found = None;
     for line in lines {
         let line = sanitize_frame_line(line);
-        let Some(index) = line.rfind(marker) else {
+        // Match the marker plus its separator, so one marker cannot be
+        // read inside a longer one that merely starts with it (operation
+        // 9's `..._9` is a prefix of operation 91's `..._91`).
+        let needle = format!("{marker} ");
+        let Some(index) = line.rfind(&needle) else {
             continue;
         };
-        let rest = line.get(index + marker.len()..).unwrap_or("").trim();
+        let rest = line.get(index + needle.len()..).unwrap_or("").trim();
         let (state, remainder) = match rest.split_once(char::is_whitespace) {
             Some((state, remainder)) => (state, remainder.trim()),
             None => (rest, ""),
@@ -495,10 +509,11 @@ fn parse_mutation_ack(lines: &[String], marker: &str) -> Option<bool> {
     let mut found = None;
     for line in lines {
         let line = sanitize_frame_line(line);
-        let Some(index) = line.rfind(marker) else {
+        let needle = format!("{marker} ");
+        let Some(index) = line.rfind(&needle) else {
             continue;
         };
-        let rest = line.get(index + marker.len()..).unwrap_or("");
+        let rest = line.get(index + needle.len()..).unwrap_or("");
         match rest.split_whitespace().next() {
             // Keep scanning rather than returning: reloaded module code
             // that prints a marker-like line lands in the same frame, and
@@ -1760,8 +1775,11 @@ mod tests {
         run.stdout
             .lines()
             .filter_map(|line| {
-                let index = line.rfind(marker)?;
-                let rest = line.get(index + marker.len()..)?;
+                // Marker plus separator, so `..._ALIAS` is not found
+                // inside `..._ALIAS_AFTER`.
+                let needle = format!("{marker} ");
+                let index = line.rfind(&needle)?;
+                let rest = line.get(index + needle.len()..)?;
                 rest.split_whitespace().next().map(|field| field.to_string())
             })
             .next_back()
@@ -1862,12 +1880,27 @@ mod tests {
                 perl_hex(&resolved),
                 perl_hex(&replacement)
             );
-            let mut stream =
-                vec!["p \"PERLLSP_TEST_BEFORE \" . App::Core::answer()".to_string(), rewrite];
+            // Register the absolute path as a second %INC alias, the way a
+            // program that required both spellings would leave it. The
+            // transaction must not cost that alias its idempotence.
+            let alias = format!(
+                "p do {{ my $p = pack(q(H*),q({})); $INC{{$p}} = $p; \"PERLLSP_TEST_ALIAS ok\" }}",
+                perl_hex(&resolved)
+            );
+            let mut stream = vec![
+                "p \"PERLLSP_TEST_BEFORE \" . App::Core::answer()".to_string(),
+                alias,
+                rewrite,
+            ];
             stream.extend(commands.preflight().iter().cloned());
             stream.extend(commands.mutation().iter().cloned());
             stream.extend(commands.read_back().iter().cloned());
             stream.push("p \"PERLLSP_TEST_AFTER \" . App::Core::answer()".to_string());
+            // Did the pre-existing absolute alias survive the reload?
+            stream.push(format!(
+                "p do {{ my $p = pack(q(H*),q({})); \"PERLLSP_TEST_ALIAS_AFTER \"                  . (exists $INC{{$p}} ? q(present) : q(absent)) }}",
+                perl_hex(&resolved)
+            ));
 
             let run = drive_live_debuggee(oracle, scratch, &program_path, &stream)?;
             let context = || format!("debuggee stdout was:\n{}", run.stdout);
@@ -1925,6 +1958,20 @@ mod tests {
                 live_field(&run, "PERLLSP_TEST_AFTER").as_deref(),
                 Some("42"),
                 "the reload must replace the running sub; {}",
+                context()
+            );
+
+            assert_eq!(
+                live_field(&run, "PERLLSP_TEST_ALIAS").as_deref(),
+                Some("ok"),
+                "the fixture must register the absolute alias; {}",
+                context()
+            );
+            // A pre-existing absolute registration keeps its idempotence.
+            assert_eq!(
+                live_field(&run, "PERLLSP_TEST_ALIAS_AFTER").as_deref(),
+                Some("present"),
+                "a pre-existing absolute %INC alias must survive the reload; {}",
                 context()
             );
 
