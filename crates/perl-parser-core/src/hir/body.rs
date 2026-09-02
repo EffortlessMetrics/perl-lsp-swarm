@@ -26,8 +26,8 @@
 use crate::SourceLocation;
 
 use super::model::{
-    BranchKeyword, ControlTransferKind, LoopKind, ReadlineSource, StatementModifierKind,
-    glob_pattern_interpolates,
+    BranchKeyword, ControlTransferKind, LoopKind, ReadlineSource, RegexTargetKind,
+    StatementModifierKind, glob_pattern_interpolates,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -471,11 +471,195 @@ pub enum HirExpr {
         interpolated: bool,
     },
 
+    /// An unbound regex-family construct (#7136).
+    ///
+    /// # Known representational limit
+    ///
+    /// The parser AST does not distinguish `qr//` regex-value construction
+    /// from an unbound match (`m//`, bare `/.../`) applied to the default
+    /// topic: all three produce `NodeKind::Regex` with no operator
+    /// discriminator (see `engine/parser/expressions/quotes.rs` and
+    /// `engine/parser/expressions/primary.rs`). Canonical body HIR therefore
+    /// records the construct and its facts **without claiming value
+    /// semantics**. Consumers must not read this variant as proof of a regex
+    /// value. Separating the forms needs a parser-level discriminator and is
+    /// tracked separately.
+    Regex(HirRegex),
+
+    /// Match application with an explicit `=~` / `!~` binding (#7136).
+    Match(HirRegexMatch),
+
+    /// Substitution application, `s///` (#7136).
+    Substitution(HirSubstitution),
+
+    /// Transliteration application, `tr///` or `y///` (#7136).
+    ///
+    /// A distinct non-regex language: it carries no regex analysis anchor,
+    /// because its search/replace lists are character lists, not patterns.
+    Transliteration(HirTransliteration),
+
     /// Opaque expression — used when the AST shape is not yet modeled.
     Opaque {
         /// The AST node kind name for diagnostics.
         ast_kind: String,
     },
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Regex-family operations (#7136)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Stable anchor binding a body-HIR regex operation to its canonical retained
+/// regex analysis record (#7018).
+///
+/// This is the regex-family construct's exact full source range — the same key
+/// `RegexAnalysisTable::find_by_full_range` is indexed by. Body lowering has no
+/// handle on the analysis table (`lower_ast` receives only the AST), so HIR
+/// stores the *anchor* rather than the record: a consumer holding the table
+/// resolves the canonical facts itself.
+///
+/// This deliberately carries no completeness claim. A lookup that finds no
+/// record means the analysis is **unavailable**, never that the pattern is
+/// clean — HIR never asserts a regex is complete or valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegexAnalysisAnchor {
+    /// Exact full source range of the regex-family construct as written.
+    pub full_range: SourceLocation,
+}
+
+/// The operand a regex-family operator applies to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HirRegexTarget {
+    /// No explicit binding: the operator applies to the default topic `$_`.
+    ///
+    /// Represented as an explicit state rather than a fabricated `$_`
+    /// identifier node, so that a real `$_ =~ /x/` stays distinguishable from
+    /// an implicit `/x/`.
+    DefaultTopic,
+
+    /// An explicitly bound operand, lowered exactly once in source order.
+    Bound {
+        /// The lowered target expression.
+        expr: HirExprId,
+        /// Whether the operand is a statically known lvalue place.
+        kind: RegexTargetKind,
+        /// Parser AST kind name of the bound operand, for target resolution.
+        ast_kind: &'static str,
+    },
+}
+
+/// How a substitution's replacement is evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ReplacementEvaluation {
+    /// Interpolated replacement text; no Perl code is evaluated.
+    Literal,
+    /// `/e` — the replacement is evaluated once as Perl code.
+    Expression,
+    /// `/ee` — the replacement is evaluated, and its result evaluated again.
+    DoubleEval,
+}
+
+impl ReplacementEvaluation {
+    /// Classify replacement evaluation from the substitution's raw modifiers.
+    ///
+    /// Perl escalates on the *count* of `e`: one `e` evaluates the replacement
+    /// as code, two or more evaluate the result again.
+    #[must_use]
+    pub fn from_modifiers(modifiers: &str) -> Self {
+        match modifiers.chars().filter(|c| *c == 'e').count() {
+            0 => Self::Literal,
+            1 => Self::Expression,
+            _ => Self::DoubleEval,
+        }
+    }
+
+    /// Whether this replacement form evaluates Perl code at runtime.
+    #[must_use]
+    pub fn is_dynamic(self) -> bool {
+        !matches!(self, Self::Literal)
+    }
+}
+
+/// Payload for an unbound regex-family construct — see [`HirExpr::Regex`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HirRegex {
+    /// Raw modifiers as written, in source order.
+    pub modifiers: String,
+    /// Whether the pattern embeds runtime-evaluated code (`(?{…})`/`(??{…})`).
+    pub embedded_code: bool,
+    /// Anchor for canonical retained analysis lookup (#7018).
+    pub analysis: RegexAnalysisAnchor,
+}
+
+/// Payload for a bound match operation — see [`HirExpr::Match`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HirRegexMatch {
+    /// Operand the match applies to.
+    pub target: HirRegexTarget,
+    /// Whether the binding operator was `!~`.
+    pub negated: bool,
+    /// Raw modifiers as written, in source order.
+    pub modifiers: String,
+    /// Whether the pattern embeds runtime-evaluated code.
+    pub embedded_code: bool,
+    /// Anchor for canonical retained analysis lookup (#7018).
+    pub analysis: RegexAnalysisAnchor,
+}
+
+/// Payload for a substitution operation — see [`HirExpr::Substitution`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HirSubstitution {
+    /// Operand the substitution applies to.
+    pub target: HirRegexTarget,
+    /// Whether the binding operator was `!~`.
+    pub negated: bool,
+    /// Raw modifiers as written, in source order.
+    pub modifiers: String,
+    /// Whether the pattern or replacement embeds runtime-evaluated code.
+    pub embedded_code: bool,
+    /// How the replacement is evaluated (`/e`, `/ee`).
+    pub replacement: ReplacementEvaluation,
+    /// Anchor for canonical retained analysis lookup (#7018).
+    pub analysis: RegexAnalysisAnchor,
+}
+
+impl HirSubstitution {
+    /// Whether the operator writes back to its target.
+    ///
+    /// `/r` returns a modified copy and leaves the target unmodified. This
+    /// reports operator intent; whether the target can actually be written is
+    /// a separate fact carried by [`HirRegexTarget::Bound::kind`].
+    #[must_use]
+    pub fn mutates_target(&self) -> bool {
+        !self.modifiers.contains('r')
+    }
+}
+
+/// Payload for a transliteration operation — see [`HirExpr::Transliteration`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HirTransliteration {
+    /// Operand the transliteration applies to.
+    pub target: HirRegexTarget,
+    /// Whether the binding operator was `!~`.
+    pub negated: bool,
+    /// Raw modifiers as written (`c`, `d`, `s`, `r`), in source order.
+    pub modifiers: String,
+}
+
+impl HirTransliteration {
+    /// Whether the operator writes back to its target.
+    ///
+    /// `/r` returns a modified copy and leaves the target unmodified.
+    #[must_use]
+    pub fn mutates_target(&self) -> bool {
+        !self.modifiers.contains('r')
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
