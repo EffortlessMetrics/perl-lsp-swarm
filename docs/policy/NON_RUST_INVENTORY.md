@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12624 |
+| Total tracked files | 12625 |
 | Rust-family files | 3918 |
-| Non-Rust files | 8706 |
-| Allowlisted | 6467 |
+| Non-Rust files | 8707 |
+| Allowlisted | 6468 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2840 |
 | generated | 2 |
 | production | 354 |
-| test | 2090 |
+| test | 2091 |
 | tooling | 680 |
 | unclassified | 2239 |
 
@@ -8739,6 +8739,7 @@
 | `xtask/tests/fixtures/native-critic/false-positive/test2_v0_subtests.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/native-critic/false-positive/test_more_subtests.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/native-critic/false-positive/test_more_usage.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `xtask/tests/fixtures/product-12815-Fixed-221500.yaml` | test | `non-rust-changelog-product-12815-fixture` | tooling/changelog |
 | `xtask/tests/fixtures/release-artifacts/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `xtask/tests/fixtures/vim_host_toolchain/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 
