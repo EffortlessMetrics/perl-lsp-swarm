@@ -1062,3 +1062,14 @@ conflicted again — the same generated file, for the third time, always because
 another lane regenerated it. Resolved the same way: merge the base in and
 regenerate with `cargo xtask non-rust inventory --write`. Both sides survive and
 the unclassified count is unchanged at 2239.
+
+**Follow-up in the same round: a non-claim nobody could read.** The cache-key
+prohibition first landed on `EnvironmentProjection::encode`, which is
+`pub(crate)`. A consumer looking at `ProcessPlan::semantic_fingerprint` — the
+public method whose return value the prohibition is *about* — would never see
+it. Documenting a limitation where its audience cannot reach it is the same
+failure as not documenting it, and this packet has now recorded that shape
+twice: once for a rule whose owner was named but not enforced (the stdin gate),
+and once here for a warning whose reader was never considered. Moved to the
+public accessor, with the contrasting `StdinPolicy::Bytes` case beside it so
+the rule reads as a privacy-tier decision rather than an omission.

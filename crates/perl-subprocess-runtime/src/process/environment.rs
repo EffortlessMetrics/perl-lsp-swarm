@@ -321,14 +321,11 @@ impl EnvironmentProjection {
     /// that differ only in an addition's value therefore share a semantic
     /// fingerprint, which is a deliberate, documented limitation.
     ///
-    /// # What this forbids a consumer from doing
-    ///
-    /// The plan fingerprint is not a complete execution-input key. Caching a
-    /// result under it, or treating a fingerprint match as "same inputs, reuse
-    /// the outcome", would serve one secret's result for a run configured with
-    /// another. A consumer that needs to key on values owns that keying
-    /// itself, with its own handling for the secrets involved; this identity
-    /// answers "the same plan *shape*", and nothing more.
+    /// What that forbids a consumer from doing is documented where a consumer
+    /// reads it — on
+    /// [`ProcessPlan::semantic_fingerprint`](super::ProcessPlan::semantic_fingerprint),
+    /// which is public, rather than here on a `pub(crate)` method no consumer
+    /// can see.
     pub(crate) fn encode(&self, encoder: &mut CanonicalEncoder) {
         encoder.section("environment");
         encoder.text(&self.projection_id);

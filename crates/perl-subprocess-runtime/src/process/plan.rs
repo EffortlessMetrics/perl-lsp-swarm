@@ -535,6 +535,24 @@ impl ProcessPlan {
     ///
     /// Fixed size for any plan: see [`Self::canonical_bytes`] for what that
     /// does and does not bound.
+    ///
+    /// # This is not an execution-input key
+    ///
+    /// Environment variable **values** are excluded from the encoding — not
+    /// even as a nested fingerprint, because a fingerprint of a low-entropy
+    /// secret is a guessable secret. Two plans that differ only in an
+    /// addition's value therefore share this identity.
+    ///
+    /// So a consumer must not cache a result under it, and must not read a
+    /// fingerprint match as "same inputs, reuse the outcome": doing either
+    /// would serve one secret's result for a run configured with another. This
+    /// answers "the same plan *shape*", and nothing more. A consumer that
+    /// needs to key on values owns that keying itself, along with the handling
+    /// the secrets in it require.
+    ///
+    /// [`StdinPolicy::Bytes`] is the contrasting case and shows the rule is
+    /// about privacy tier rather than about omission: its content *is*
+    /// fingerprinted, so two plans feeding different input stay distinguishable.
     pub fn semantic_fingerprint(&self) -> PlanFingerprint {
         let mut encoder = CanonicalEncoder::new();
         self.encode(&mut encoder);
