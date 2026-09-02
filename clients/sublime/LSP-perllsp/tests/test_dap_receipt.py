@@ -107,6 +107,17 @@ class SublimeDapReceiptContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "two entries, or four"):
             validator.validate(payload)
 
+        for malformed in (None, 7, {"path": "/tmp/workspace"}):
+            payload = host_receipt()
+            payload["binary"]["command"] = [
+                "/tmp/perl-dap",
+                "--stdio",
+                "--trusted-root",
+                malformed,
+            ]
+            with self.assertRaisesRegex(ValueError, "entries must be strings"):
+                validator.validate(payload)
+
     def test_validator_rejects_stage_identity_and_false_green_drift(self) -> None:
         validator = load_validator()
 
