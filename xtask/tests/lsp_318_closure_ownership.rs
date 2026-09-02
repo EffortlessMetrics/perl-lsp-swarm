@@ -42,12 +42,6 @@ const EXPECTED_LEDGER_DECISIONS: &[(&str, &str, &str, &str)] = &[
         "n/a",
     ),
     (
-        "relative-pattern-watcher",
-        "`RelativePattern` watcher registrations (3.17 watcher globs)",
-        "accepted-disposition",
-        "n/a",
-    ),
-    (
         "relative-pattern-notebook-selector",
         "Notebook document-filter `relative pattern`",
         "accepted-disposition",
