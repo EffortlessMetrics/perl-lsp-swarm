@@ -231,21 +231,33 @@ impl StructuralAccessChain {
 /// Whether a known value shape can carry the next hop's operator class.
 ///
 /// A hash reference carries keyed operators, an array reference indexed ones.
-/// A plain scalar, a code reference and a package name carry neither: none is a
-/// subscriptable reference, and subscripting a package-name string is a strict
-/// refs error (`Can't use string ("Foo") as a HASH ref`) or a symbolic
-/// dereference, which belongs at this contract's own symbolic-reference
-/// boundary rather than in a plain selection.
 ///
-/// Only `Object` and `Unknown` carry everything, and they do so because they
-/// assert too little to contradict anything — a blessed reference may be a
-/// blessed hash or a blessed array — not because every operator truly applies.
+/// A code reference and a package name carry neither, and both are decisive
+/// about it: each is a defined value that cannot become something else, so
+/// subscripting one is an error rather than an access. Verified against the
+/// interpreter — `$coderef->{k}` is `Not a HASH reference`, and `$str->{k}`
+/// for a defined string is `Can't use string ("Foo") as a HASH ref while
+/// "strict refs" in use`. A symbolic dereference belongs at this contract's
+/// own symbolic-reference boundary rather than in a plain selection.
+///
+/// `Scalar`, `Object` and `Unknown` carry everything, and each does so because
+/// it asserts too little to contradict anything — never because every operator
+/// truly applies:
+///
+/// - `Scalar` does not distinguish `undef` from a defined non-reference, and
+///   `undef` *is* subscriptable: Perl autovivifies it. `my $x; $x->{k} = 1`
+///   leaves `$x` a hash reference, and even the rvalue `$z->{k}` on an undef
+///   `$z` succeeds and autovivifies. Treating every `Scalar` as decisively
+///   non-subscriptable rejected that honest chain.
+/// - `Object` is a blessed reference that may be a blessed hash or a blessed
+///   array.
+/// - `Unknown` asserts nothing at all.
 fn shape_carries(shape: &ValueShape, next_is_keyed: bool) -> bool {
     match shape {
         ValueShape::HashRef => next_is_keyed,
         ValueShape::ArrayRef => !next_is_keyed,
-        ValueShape::Scalar | ValueShape::CodeRef | ValueShape::PackageName { .. } => false,
-        ValueShape::Object { .. } | ValueShape::Unknown => true,
+        ValueShape::CodeRef | ValueShape::PackageName { .. } => false,
+        ValueShape::Scalar | ValueShape::Object { .. } | ValueShape::Unknown => true,
     }
 }
 
@@ -259,7 +271,6 @@ fn shape_is_decisive(shape: &ValueShape) -> bool {
         shape,
         ValueShape::HashRef
             | ValueShape::ArrayRef
-            | ValueShape::Scalar
             | ValueShape::CodeRef
             | ValueShape::PackageName { .. }
     )

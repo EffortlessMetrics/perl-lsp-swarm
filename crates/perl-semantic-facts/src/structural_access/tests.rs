@@ -1398,16 +1398,18 @@ fn workspace_root_presence_reaches_the_chain_fingerprint() -> Result<(), Box<dyn
 }
 
 #[test]
-fn a_non_reference_shape_cannot_be_subscripted_into_a_selection() -> Result<(), Box<dyn Error>> {
-    // A plain scalar, a code reference and a package name are not subscriptable
-    // references — `"Foo"->{k}` is a strict-refs error, verified against the
-    // interpreter. Any apparent selection through one is a symbolic
-    // dereference, which has its own boundary and must be recorded as one.
-    for shape in [
-        ValueShape::Scalar,
-        ValueShape::CodeRef,
-        ValueShape::PackageName { package: "Foo".to_string() },
-    ] {
+fn a_shape_that_can_never_be_subscripted_cannot_carry_a_selection() -> Result<(), Box<dyn Error>> {
+    // A code reference and a package name are defined values that cannot
+    // become something else, so subscripting either is an error rather than an
+    // access. Verified against the interpreter: `$coderef->{k}` is `Not a HASH
+    // reference`, and `"Foo"->{k}` is `Can't use string ("Foo") as a HASH ref
+    // while "strict refs" in use`. Any apparent selection through one is a
+    // symbolic dereference, which has its own boundary and must be recorded
+    // as one.
+    //
+    // `Scalar` is deliberately absent from this list: it does not distinguish
+    // `undef`, which Perl autovivifies. See the autovivification test below.
+    for shape in [ValueShape::CodeRef, ValueShape::PackageName { package: "Foo".to_string() }] {
         let head = selecting_hop(
             0,
             base_variable(),
@@ -1918,5 +1920,116 @@ fn a_dishonest_absence_cannot_survive_the_transport_boundary() -> Result<(), Box
     // Control: the unmutated chain validates, so the rejection is the outcome
     // swap and not some incidental defect in the fixture.
     honest.validate()?;
+    Ok(())
+}
+
+// ── Autovivification through an undef scalar (found by Devin) ─────────────
+
+#[test]
+fn an_undef_scalar_can_still_be_subscripted() -> Result<(), Box<dyn Error>> {
+    // `ValueShape::Scalar` does not distinguish `undef` from a defined
+    // non-reference, and `undef` is subscriptable: Perl autovivifies it.
+    // Verified against the interpreter rather than reasoned about:
+    //
+    //   my $x; $x->{k} = 1;   # $x is now a HASH reference
+    //   my $y; $y->[0] = 1;   # $y is now an ARRAY reference
+    //   my $z; my $v = $z->{k};   # rvalue: succeeds, $z autovivifies to HASH
+    //
+    // Treating every `Scalar` as decisively non-subscriptable rejected that
+    // honest chain, so `Scalar` is permissive and non-decisive. It asserts too
+    // little to contradict an operator, exactly like `Object` and `Unknown`.
+    for operator in [
+        StructuralAccessOperator::HashRefSlot,
+        StructuralAccessOperator::ArrayRefIndex,
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessOperator::ArrayIndex,
+    ] {
+        let head = selecting_hop(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("b".to_string()),
+            "->{b}",
+            ValueShape::Scalar,
+        )?;
+        let selector = if operator.is_keyed() {
+            StructuralAccessSelector::StaticKey("c".to_string())
+        } else {
+            StructuralAccessSelector::StaticIndex(0)
+        };
+        let follower = selecting_hop(
+            1,
+            StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+            operator,
+            selector,
+            "{c}",
+            ValueShape::Scalar,
+        )?;
+        StructuralAccessChain::new(subject()?, vec![head, follower])?;
+    }
+    Ok(())
+}
+
+#[test]
+fn an_undef_scalar_cannot_be_contradicted_by_a_shape_mismatch() -> Result<(), Box<dyn Error>> {
+    // The other half of non-decisiveness. Law 8 refuses a `ShapeMismatch`
+    // whose operator the predecessor's shape does carry — but only where the
+    // shape is decisive. `Scalar` is not, so a producer that did observe a
+    // mismatch against something it could only classify as a scalar must
+    // still be able to record it.
+    let head = selecting_hop(
+        0,
+        base_variable(),
+        StructuralAccessOperator::HashRefSlot,
+        StructuralAccessSelector::StaticKey("b".to_string()),
+        "->{b}",
+        ValueShape::Scalar,
+    )?;
+    let mismatch = StructuralAccessHop::new(
+        1,
+        StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+        StructuralAccessOperator::ArrayIndex,
+        StructuralAccessSelector::StaticIndex(0),
+        spelling("[0]", 10, 13)?,
+        StructuralHopOutcome::ShapeMismatch { observed: ValueShape::Scalar },
+        StructuralHopCertainty::Definite,
+        StructuralAggregateCompleteness::Closed,
+        StructuralAggregateDisposition::Stable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(crate::Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticReasonCode::ExactSource,
+        StructuralAccessBudget::new(99, 98)?,
+        Vec::new(),
+    )?;
+    StructuralAccessChain::new(subject()?, vec![head, mismatch])?;
+    Ok(())
+}
+
+#[test]
+fn an_autovivified_access_survives_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    // The permissive reading must hold across serde too, not only in the
+    // constructor: a chain whose first hop selected an undef scalar and whose
+    // second subscripts it validates after a round trip.
+    let head = selecting_hop(
+        0,
+        base_variable(),
+        StructuralAccessOperator::HashRefSlot,
+        StructuralAccessSelector::StaticKey("b".to_string()),
+        "->{b}",
+        ValueShape::Scalar,
+    )?;
+    let follower = selecting_hop(
+        1,
+        StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessSelector::StaticKey("c".to_string()),
+        "{c}",
+        ValueShape::Scalar,
+    )?;
+    let chain = StructuralAccessChain::new(subject()?, vec![head, follower])?;
+    let decoded: StructuralAccessChain = serde_json::from_str(&serde_json::to_string(&chain)?)?;
+    decoded.validate()?;
+    assert_eq!(decoded, chain);
     Ok(())
 }
