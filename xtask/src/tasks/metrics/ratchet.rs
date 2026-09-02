@@ -133,7 +133,7 @@ pub fn check_floor_metrics(
 ///
 /// Returns `true` if the metric name ends with `_count`, `_nodes`, or
 /// `_unreadable`, or if it is present in the explicit `lower_is_better` list.
-fn is_lower_better_metric(metric: &str, explicit: &[String]) -> bool {
+pub(super) fn is_lower_better_metric(metric: &str, explicit: &[String]) -> bool {
     if explicit.iter().any(|s| s == metric) {
         return true;
     }

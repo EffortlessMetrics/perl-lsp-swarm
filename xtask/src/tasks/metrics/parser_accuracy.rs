@@ -48,6 +48,7 @@ use crate::utils::project_root;
 use xtask::parser_accuracy_legacy_population::legacy_whitespace_case_applies;
 
 mod failure_packet;
+mod registry;
 
 const DEFAULT_MANIFEST: &str = "crates/perl-corpus/fixtures/parser_accuracy/manifest.json";
 const DEFAULT_OUTPUT: &str = "target/metrics/parser_accuracy.json";
@@ -1035,8 +1036,17 @@ pub fn run(
 
     let (manifest, artifact) = build_status_artifact(&root, &manifest_path, cadence)?;
 
+    // Every path below either publishes the artifact or reports on it, so the contract is
+    // enforced here rather than inside one branch: `--json` and `--export-status-receipts`
+    // must not be able to write a scorecard that `--check` would have rejected.
+    validate_artifact_contract(&artifact)?;
+    if is_canonical_manifest(&root, &manifest_path) {
+        // Only a canonical-manifest run is expected to score every plane, so the registry's
+        // completeness half is enforced here rather than on every artifact.
+        registry::MetricRegistry::load()?.validate_completeness(&artifact.metrics)?;
+    }
+
     if check {
-        validate_artifact_contract(&artifact)?;
         println!(
             "parser accuracy artifact check passed: {} fixtures across {} families",
             artifact.denominator.fixture_count, artifact.denominator.fixture_family_count
@@ -1061,11 +1071,28 @@ pub fn run(
     Ok(())
 }
 
+/// Whether `manifest_path` names the canonical fixture manifest.
+///
+/// Compared after normalization so an equivalent relative, `..`-bearing, or symlinked
+/// spelling of the same manifest still counts as canonical and cannot silently skip the
+/// registry's completeness half. Normalization is best-effort: if either path cannot be
+/// canonicalized the raw comparison stands, which fails closed toward "not canonical" and
+/// therefore never invents completeness evidence for a manifest that was not scored.
+fn is_canonical_manifest(root: &Path, manifest_path: &Path) -> bool {
+    let default_path = root.join(DEFAULT_MANIFEST);
+    match (manifest_path.canonicalize(), default_path.canonicalize()) {
+        (Ok(selected), Ok(default)) => selected == default,
+        _ => manifest_path == default_path,
+    }
+}
+
 pub fn refresh_default_artifact_for_status(root: &Path) -> Result<()> {
     let manifest_path = root.join(DEFAULT_MANIFEST);
     let output_path = root.join(DEFAULT_OUTPUT);
     let (_manifest, artifact) = build_status_artifact(root, &manifest_path, Cadence::Pr)?;
     validate_artifact_contract(&artifact)?;
+    // This refresh always uses the canonical manifest, so the full registry must be emitted.
+    registry::MetricRegistry::load()?.validate_completeness(&artifact.metrics)?;
     write_artifact(&output_path, &artifact)?;
     write_ratchet_receipt(root, &artifact)?;
     println!("parser accuracy artifact written: {}", output_path.display());
@@ -1092,6 +1119,10 @@ fn build_status_artifact(
     settle_artifact_size(&mut artifact)?;
     sync_allocation_metric_rows(&mut artifact, cadence);
     sync_runtime_metric_rows(&mut artifact, cadence);
+    // The two sync steps above replace runtime rows after `build_artifact` returned, so the
+    // registry is reapplied here. `apply` is idempotent: it is run after every step that can
+    // introduce or replace a metric row.
+    registry::MetricRegistry::load()?.apply(&mut artifact.metrics)?;
     Ok((manifest, artifact))
 }
 
@@ -1210,6 +1241,8 @@ fn build_artifact(
     metrics.extend(determinism_metrics(&determinism_score, cadence));
     metrics.extend(gold_drift_metrics(&gold_drift, denominator.fixture_count, cadence));
     apply_safety_floor_metadata(&mut metrics);
+    // The registry owns per-metric direction and the confidence a sample count can carry.
+    registry::MetricRegistry::load()?.apply(&mut metrics)?;
 
     Ok(ParserAccuracyArtifact {
         schema_version: 1,
@@ -6098,6 +6131,7 @@ fn validate_artifact_contract(artifact: &ParserAccuracyArtifact) -> Result<()> {
             MetricRow::Measured { .. } | MetricRow::InsufficientData { .. } => {}
         }
     }
+    registry::MetricRegistry::load()?.validate_conformance(&artifact.metrics)?;
     Ok(())
 }
 
@@ -6599,9 +6633,7 @@ fn measured_metric_value(artifact: &ParserAccuracyArtifact, name: &str) -> Optio
 
 fn apply_safety_floor_metadata(metrics: &mut [MetricRow]) {
     for row in metrics {
-        let MetricRow::Measured {
-            metric, value, previous, delta, floor, threshold, direction, ..
-        } = row
+        let MetricRow::Measured { metric, value, previous, delta, floor, threshold, .. } = row
         else {
             continue;
         };
@@ -6616,7 +6648,6 @@ fn apply_safety_floor_metadata(metrics: &mut [MetricRow]) {
         *delta = Some(*value - *floor_value);
         *floor = Some(*floor_value);
         *threshold = Some(*floor_value);
-        *direction = Direction::Down;
     }
 }
 
@@ -8748,6 +8779,8 @@ sub dynamic_boundary_case {
 
         apply_safety_floor_metadata(&mut metrics);
 
+        // `apply_safety_floor_metadata` owns floor/threshold/previous/delta only. Since
+        // #14553 the metric registry owns `direction`, asserted separately below.
         for name in ["dynamic_false_precision_count", "fast_path_wrong_result_count"] {
             assert!(metrics.iter().any(|metric| {
                 matches!(
@@ -8759,7 +8792,6 @@ sub dynamic_boundary_case {
                         delta: Some(0.0),
                         floor: Some(0.0),
                         threshold: Some(0.0),
-                        direction: Direction::Down,
                         sample_count: 1,
                         ..
                     } if metric == name && (*value - 0.0).abs() < f64::EPSILON
@@ -8773,11 +8805,31 @@ sub dynamic_boundary_case {
                     metric,
                     floor: None,
                     threshold: None,
-                    direction: Direction::Neutral,
                     ..
                 } if metric == "line_construct_f1"
             )
         }));
+
+        // Direction is now the registry's to assign, and it distinguishes the two
+        // lower-is-better safety floors from a higher-is-better accuracy metric.
+        registry::MetricRegistry::load()
+            .expect("authored registry parses")
+            .apply(&mut metrics)
+            .expect("all three metrics are registered");
+        let direction_of = |name: &str| {
+            metrics
+                .iter()
+                .find_map(|row| match row {
+                    MetricRow::Measured { metric, direction, .. } if metric == name => {
+                        Some(*direction)
+                    }
+                    _ => None,
+                })
+                .expect("metric row is present")
+        };
+        assert_eq!(direction_of("dynamic_false_precision_count"), Direction::Down);
+        assert_eq!(direction_of("fast_path_wrong_result_count"), Direction::Down);
+        assert_eq!(direction_of("line_construct_f1"), Direction::Up);
     }
 
     #[test]
@@ -9901,6 +9953,275 @@ sub dynamic_boundary_case {
                         && (*value - 1.0).abs() < f64::EPSILON
             )
         }));
+    }
+
+    /// End-to-end proof that the canonical run satisfies the authored registry in both
+    /// directions: every emitted row conforms to its entry, and every registered metric is
+    /// actually emitted.
+    ///
+    /// This is the discriminating check. The focused unit tests in `registry` prove the
+    /// validator rejects each violation shape against synthetic rows; this one proves the
+    /// real 190-plus-row artifact the repository publishes is conformant, so the registry
+    /// cannot quietly drift away from the emitter.
+    #[test]
+    fn canonical_manifest_artifact_satisfies_the_metric_registry() -> Result<()> {
+        let root = project_root()?;
+        let manifest_path = root.join(DEFAULT_MANIFEST);
+        let (_manifest, artifact) = build_status_artifact(&root, &manifest_path, Cadence::Pr)?;
+        let registry = registry::MetricRegistry::load()?;
+
+        registry.validate_conformance(&artifact.metrics)?;
+        registry.validate_completeness(&artifact.metrics)?;
+        assert_eq!(
+            artifact.metrics.len(),
+            registry.len(),
+            "the canonical run and the registry must agree on the metric denominator"
+        );
+        Ok(())
+    }
+
+    /// The ratchet baseline and the registry must not disagree about which way is better.
+    ///
+    /// `metrics/ratchet.rs` infers better/worse from its own convention (a `_count`, `_nodes`,
+    /// or `_unreadable` suffix, plus an explicit `lower_is_better` list) rather than from this
+    /// registry. Migrating it is retained on the parent issue, so until then the two are
+    /// genuinely separate authorities over one question.
+    ///
+    /// Raised in review: while they stay separate, a metric added to the baseline whose name
+    /// carries no lower-is-better signal is silently enforced in the direction opposite to the
+    /// one the registry publishes. This binds the seam without duplicating either rule — it
+    /// calls the ratchet's own predicate rather than restating the suffix convention, so the
+    /// ratchet remains the sole authority for its side of the comparison.
+    #[test]
+    fn ratchet_baseline_directions_agree_with_the_registry() -> Result<()> {
+        let root = project_root()?;
+        let baseline = super::super::ratchet::load_baseline(&root, "parser_accuracy")?;
+        let registry = registry::MetricRegistry::load()?;
+
+        let mut checked = 0usize;
+        let mut disagreements = Vec::new();
+        for metric in baseline.floor_metrics.keys().chain(baseline.improvement_metrics.keys()) {
+            let Some(policy) = registry.policy(metric) else {
+                // A baseline metric absent from the registry is the completeness check's
+                // business, not this one's.
+                continue;
+            };
+            let ratchet_says_lower_is_better =
+                super::super::ratchet::is_lower_better_metric(metric, &baseline.lower_is_better);
+            let registry_says_lower_is_better = match policy.direction {
+                Direction::Down => true,
+                Direction::Up => false,
+                // Neither authority claims a preferred direction; nothing to contradict.
+                Direction::Flat | Direction::Neutral => continue,
+            };
+            if ratchet_says_lower_is_better != registry_says_lower_is_better {
+                disagreements.push(format!(
+                    "'{metric}': the registry declares {:?} but the ratchet treats it as \
+                     {}-is-better",
+                    policy.direction,
+                    if ratchet_says_lower_is_better { "lower" } else { "higher" }
+                ));
+            }
+            checked += 1;
+        }
+
+        assert!(
+            disagreements.is_empty(),
+            "{} ratchet baseline metric(s) are enforced against the registry's declared \
+             direction; add the metric to the baseline's `lower_is_better` list or correct its \
+             registry entry:\n  {}",
+            disagreements.len(),
+            disagreements.join("\n  ")
+        );
+        assert!(checked > 0, "the parser_accuracy baseline governs no registered metric");
+        Ok(())
+    }
+
+    /// Every metric's declared `family` must match the function that actually emits it.
+    ///
+    /// `family` is the one registry field with no counterpart on `MetricRow`, so
+    /// `validate_conformance` cannot check it against an emitted row — a misassigned plane
+    /// would otherwise be unfalsifiable. The producing function supplies the missing oracle:
+    /// each `*_metrics` function owns exactly one evidence plane, so every row it returns must
+    /// be registered under that plane.
+    ///
+    /// This is independent of the registry in the way the direction and confidence checks are
+    /// not: the expectation comes from the call graph, not from the registry the assertion
+    /// reads. It found four real mislabels on its first runs — `ast_projection_ms_p95`,
+    /// `line_span_exact_rate`, `ast_hash_stability_rate`, and
+    /// `diagnostic_hash_stability_rate` — each one a row whose registered plane had been
+    /// seeded from its name prefix rather than from the function that emits it.
+    ///
+    /// The producers cover 184 of the 192 registered rows; the other 8 are pinned as an
+    /// exact exception set below rather than left under a coverage floor, so the partition
+    /// stays closed as metrics are added.
+    #[test]
+    fn every_metric_is_registered_under_its_producing_family() {
+        let registry = registry::MetricRegistry::load().expect("authored registry parses");
+        let cadence = Cadence::Pr;
+
+        // Eight producers short-circuit to a single `insufficient` row when their gold
+        // denominator is zero, so a wholly default score would exercise only the degenerate
+        // path. Clearing each guard with a single expectation reaches the full row set; the
+        // values are irrelevant here because only the emitted metric *names* are read.
+        let line = LineScore { line_count: 1, ..LineScore::default() };
+        let ast = AstScore { expected_node_count: 1, ..AstScore::default() };
+        let symbol = SymbolScore { entity_expected_count: 1, ..SymbolScore::default() };
+        let recovery = RecoveryScore { expectation_count: 1, ..RecoveryScore::default() };
+        let incremental = IncrementalScore { expectation_count: 1, ..IncrementalScore::default() };
+        let span = SpanScore { expectation_count: 1, ..SpanScore::default() };
+        let scale = ScaleCostScore { fixture_count: 1, ..ScaleCostScore::default() };
+        let determinism = DeterminismScore { fixture_count: 1, ..DeterminismScore::default() };
+
+        let producers: Vec<(&str, Vec<MetricRow>)> = vec![
+            ("line", line_metrics(&line, cadence)),
+            ("ast", ast_metrics(&ast, cadence)),
+            ("symbol", symbol_metrics(&symbol, cadence)),
+            ("safety", safety_metrics(&line, &symbol, cadence)),
+            ("recovery", recovery_metrics(&recovery, cadence)),
+            ("incremental", incremental_metrics(&incremental, cadence)),
+            ("span", span_metrics(&span, cadence)),
+            ("confidence", confidence_metrics(&symbol, cadence)),
+            ("unsupported", unsupported_metrics(&UnsupportedScore::default(), cadence)),
+            (
+                "provider",
+                provider_impact_metrics(
+                    &MethodCompletionProviderScore::default(),
+                    &DiagnosticProviderScore::default(),
+                    &NavigationProviderScore::default(),
+                    cadence,
+                ),
+            ),
+            ("scale", scale_metrics(&scale, cadence)),
+            (
+                "cost",
+                cost_metrics(
+                    &scale,
+                    &recovery,
+                    &MethodCompletionProviderScore::default(),
+                    &NavigationProviderScore::default(),
+                    cadence,
+                ),
+            ),
+            ("cache_reuse", cache_reuse_metrics(&incremental, cadence)),
+            ("determinism", determinism_metrics(&determinism, cadence)),
+            ("gold_drift", gold_drift_metrics(&GoldDrift::default(), 1, cadence)),
+        ];
+
+        // Collect every disagreement rather than stopping at the first, so a reseeded
+        // registry reports its full correction set in one run.
+        let mut covered = BTreeSet::new();
+        let mut mismatches = Vec::new();
+        for (expected_family, rows) in producers {
+            for row in rows {
+                let name = row.name();
+                let policy = registry
+                    .policy(name)
+                    .unwrap_or_else(|| panic!("metric '{name}' is not registered"));
+                if policy.family != expected_family {
+                    mismatches.push(format!(
+                        "'{name}' is emitted by the {expected_family} plane but registered \
+                         under '{}'",
+                        policy.family
+                    ));
+                }
+                covered.insert(name.to_string());
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "{} metric(s) are registered under a family that does not emit them:\n  {}",
+            mismatches.len(),
+            mismatches.join("\n  ")
+        );
+
+        // The remaining rows are not produced by any score-taking `*_metrics` function: the
+        // runtime plane is filled in by `sync_runtime_metric_rows` /
+        // `sync_allocation_metric_rows` after the artifact is built, and the denominator row
+        // is derived from the manifest. Pinning the exception set exactly — rather than
+        // asserting a coverage floor — keeps the oracle closed: a newly registered metric
+        // must either be emitted by a producer, and so have its family checked above, or be
+        // added here deliberately.
+        let uncovered: BTreeSet<String> =
+            registry.names().filter(|name| !covered.contains(*name)).map(str::to_string).collect();
+        let expected_uncovered: BTreeSet<String> = [
+            "denominator_fixture_count",
+            "metric_artifact_size_bytes",
+            "metric_cache_hit_rate",
+            "metric_ci_runner_failure_count",
+            "metric_flake_count",
+            "metric_orphan_process_count",
+            "metric_runtime_ms",
+            "metric_timeout_count",
+        ]
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+        assert_eq!(
+            uncovered, expected_uncovered,
+            "the set of metrics no producing function emits changed; a new metric must either \
+             be emitted by a `*_metrics` producer or be listed here deliberately"
+        );
+    }
+
+    /// A row introduced after `apply` must fail conformance.
+    ///
+    /// This guards a hazard that actually occurred while building this feature.
+    /// `sync_allocation_metric_rows` and `sync_runtime_metric_rows` run *after*
+    /// `build_artifact` returns and append or replace rows carrying `measured_value`'s
+    /// placeholder `Direction::Neutral` / `Confidence::High`. With only the first `apply`
+    /// call in place, the canonical run failed with "metric 'peak_rss_mb' reported direction
+    /// Neutral but the registry declares Down" — which is why `build_status_artifact`
+    /// reapplies the registry after those steps.
+    ///
+    /// Without this test the direction and confidence checks would look unfalsifiable: in a
+    /// correctly ordered pipeline `apply` always precedes validation, so nothing else proves
+    /// they still bite when a future post-`apply` step forgets to reapply.
+    #[test]
+    fn a_row_added_after_apply_fails_conformance() -> Result<()> {
+        let root = project_root()?;
+        let manifest_path = root.join(DEFAULT_MANIFEST);
+        let (_manifest, artifact) = build_status_artifact(&root, &manifest_path, Cadence::Pr)?;
+        let registry = registry::MetricRegistry::load()?;
+        registry.validate_conformance(&artifact.metrics)?;
+
+        // Replace a registered row exactly the way a post-`apply` sync step would: rebuilt
+        // through `measured_value`, so it carries the placeholder direction and confidence.
+        let mut mutated = artifact.metrics.clone();
+        let index = mutated
+            .iter()
+            .position(|row| row.name() == "peak_rss_mb")
+            .expect("peak_rss_mb is emitted by the canonical run");
+        mutated[index] = measured_value("peak_rss_mb", 12.0, 1, Cadence::Pr);
+
+        let err = registry
+            .validate_conformance(&mutated)
+            .expect_err("a placeholder row reintroduced after apply must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("peak_rss_mb") && message.contains("direction"),
+            "expected a direction disagreement, got: {message}"
+        );
+        Ok(())
+    }
+
+    /// The registry must actually discriminate: a metric that stops being emitted has to
+    /// fail the canonical run rather than pass unnoticed.
+    #[test]
+    fn dropping_an_emitted_metric_fails_the_registry_denominator() -> Result<()> {
+        let root = project_root()?;
+        let manifest_path = root.join(DEFAULT_MANIFEST);
+        let (_manifest, artifact) = build_status_artifact(&root, &manifest_path, Cadence::Pr)?;
+        let registry = registry::MetricRegistry::load()?;
+
+        let mut mutated = artifact.metrics.clone();
+        let dropped = mutated.remove(0);
+        let err = registry
+            .validate_completeness(&mutated)
+            .expect_err("a dropped metric must fail the denominator");
+        assert!(err.to_string().contains(dropped.name()), "{err}");
+        Ok(())
     }
 
     #[test]
