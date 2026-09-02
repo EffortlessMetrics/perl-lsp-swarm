@@ -5,10 +5,28 @@
  *   - inferPackageName: derive Perl package name from file path
  *   - generateBoilerplate: produce correct file content for .pm and .t files
  *
+ * and the workspace-folder gate the file-creation handler applies before using
+ * that content (`populateCreatedFiles`, #14547).
+ *
  * Issue: #2056
  */
 
+import * as vscode from 'vscode';
+
+jest.mock('vscode-languageclient/node', () => ({
+  LanguageClient: class {},
+  Trace: {
+    Off: 'off',
+    Messages: 'messages',
+    Verbose: 'verbose',
+  },
+  TransportKind: {
+    stdio: 0,
+  },
+}));
+
 import { inferPackageName, generateBoilerplate, FileKind } from '../fileCreation';
+import { populateCreatedFiles } from '../extension';
 
 // ---------------------------------------------------------------------------
 // inferPackageName
@@ -142,5 +160,149 @@ describe('generateBoilerplate for unsupported files', () => {
 
   test('returns null for .pod files', () => {
     expect(generateBoilerplate('/project/doc.pod')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// populateCreatedFiles — workspace-folder gate (#14547)
+// ---------------------------------------------------------------------------
+
+const ENABLED_ROOT = '/ws/enabled';
+const DISABLED_ROOT = '/ws/disabled';
+
+/**
+ * Install a `getConfiguration` that models the one property of the real API
+ * this claim turns on: **only a scoped read can observe a folder value**.
+ *
+ * An unscoped `getConfiguration('perl-lsp')` has no resource to resolve
+ * against, so VS Code answers it from the global/workspace layers alone. The
+ * fake reproduces exactly that, which is what makes the contradictory-roots
+ * cases below fail if the read is hoisted back out of the loop.
+ */
+function installScopedConfiguration(
+  workspaceValue: boolean | undefined,
+  folderValues: ReadonlyArray<readonly [string, boolean]> = [],
+): void {
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(
+    (section?: string, scope?: { fsPath: string }) => ({
+      get: (key: string, defaultValue?: unknown) => {
+        if (section !== 'perl-lsp' || key !== 'autoPopulateNewFiles') {
+          return defaultValue;
+        }
+        if (scope) {
+          const folder = folderValues.find(([root]) => scope.fsPath.startsWith(`${root}/`));
+          if (folder) {
+            return folder[1];
+          }
+        }
+        return workspaceValue ?? defaultValue;
+      },
+      has: () => false,
+      inspect: () => undefined,
+      update: () => undefined,
+    }),
+  );
+}
+
+/** Paths the handler actually staged boilerplate for. */
+function populatedPaths(): string[] {
+  const applyEdit = vscode.workspace.applyEdit as jest.Mock;
+  return applyEdit.mock.calls.flatMap((call) => {
+    const edit = call[0] as { inserts: Array<{ uri: { fsPath: string } }> };
+    return edit.inserts.map((insert) => insert.uri.fsPath);
+  });
+}
+
+function creationEvent(...paths: string[]): vscode.FileCreateEvent {
+  return { files: paths.map((p) => vscode.Uri.file(p)) } as unknown as vscode.FileCreateEvent;
+}
+
+describe('populateCreatedFiles gates on the folder each file was created in (#14547)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('a folder that disables population is not populated while a sibling folder is', async () => {
+    // Hoisting the read out of the loop makes the unscoped answer (true) apply
+    // to both files, so the disabled root would be populated too.
+    installScopedConfiguration(true, [[DISABLED_ROOT, false]]);
+
+    await populateCreatedFiles(
+      creationEvent(`${ENABLED_ROOT}/lib/Kept.pm`, `${DISABLED_ROOT}/lib/Skipped.pm`),
+    );
+
+    expect(populatedPaths()).toEqual([`${ENABLED_ROOT}/lib/Kept.pm`]);
+  });
+
+  test('a folder that enables population is populated while the workspace default is off', async () => {
+    // The mirror case: hoisting makes the unscoped answer (false) suppress both.
+    installScopedConfiguration(false, [[ENABLED_ROOT, true]]);
+
+    await populateCreatedFiles(
+      creationEvent(`${DISABLED_ROOT}/t/skipped.t`, `${ENABLED_ROOT}/t/kept.t`),
+    );
+
+    expect(populatedPaths()).toEqual([`${ENABLED_ROOT}/t/kept.t`]);
+  });
+
+  test('the gate is resolved against every created URI, not just the first', async () => {
+    installScopedConfiguration(true, [[DISABLED_ROOT, false]]);
+    const files = [`${ENABLED_ROOT}/lib/A.pm`, `${DISABLED_ROOT}/lib/B.pm`];
+
+    await populateCreatedFiles(creationEvent(...files));
+
+    const scopes = (vscode.workspace.getConfiguration as jest.Mock).mock.calls.map(
+      (call) => (call[1] as { fsPath: string } | undefined)?.fsPath,
+    );
+    expect(scopes).toEqual(files);
+  });
+
+  test('a disabled folder is not opened at all', async () => {
+    installScopedConfiguration(true, [[DISABLED_ROOT, false]]);
+
+    await populateCreatedFiles(creationEvent(`${DISABLED_ROOT}/lib/Skipped.pm`));
+
+    expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled();
+    expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
+  });
+
+  test('an unset value still populates, in a single-root workspace as before', async () => {
+    installScopedConfiguration(undefined);
+
+    await populateCreatedFiles(creationEvent('/only-root/lib/Foo/Bar.pm'));
+
+    expect(populatedPaths()).toEqual(['/only-root/lib/Foo/Bar.pm']);
+    const applyEdit = vscode.workspace.applyEdit as jest.Mock;
+    const edit = applyEdit.mock.calls[0]?.[0] as { inserts: Array<{ newText: string }> };
+    expect(edit.inserts[0]?.newText).toContain('package Foo::Bar;');
+  });
+
+  test('a file outside every workspace folder falls back to the workspace value', async () => {
+    installScopedConfiguration(false, [[ENABLED_ROOT, true]]);
+
+    await populateCreatedFiles(creationEvent('/elsewhere/lib/Foo.pm'));
+
+    expect(populatedPaths()).toEqual([]);
+  });
+
+  test('an enabled folder still skips files that already have content', async () => {
+    installScopedConfiguration(true);
+    (vscode.workspace.openTextDocument as jest.Mock).mockImplementation(async (value: unknown) => ({
+      uri: value,
+      getText: () => 'package Existing;\n',
+    }));
+
+    await populateCreatedFiles(creationEvent(`${ENABLED_ROOT}/lib/Existing.pm`));
+
+    expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
+  });
+
+  test('an enabled folder still skips extensions that get no boilerplate', async () => {
+    installScopedConfiguration(true);
+
+    await populateCreatedFiles(creationEvent(`${ENABLED_ROOT}/script.pl`));
+
+    expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled();
+    expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
   });
 });

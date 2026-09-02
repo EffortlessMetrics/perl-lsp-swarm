@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "`perl-lsp.autoPopulateNewFiles` now honours the per-folder scope it is contributed with. The setting is declared `resource`, so the settings UI offers it per workspace folder, but the file-creation listener read it once without a resource before looking at the created files — a read with no resource cannot see a folder value, so in a multi-root workspace the global or workspace-wide value decided the behaviour for every folder. The gate is now resolved against each created file's own URI: a folder that sets the value to `false` no longer has new `.pm` and `.t` files auto-populated even when the workspace-wide value is `true`, and a folder that sets it to `true` gets population even when the workspace-wide value is `false`. Single-root workspaces, files created outside any workspace folder, and workspaces that never set the value behave exactly as before."
+time: 2026-09-02T00:00:00Z
+custom:
+  PR: "14547"
+  Slug: folder-scoped-auto-populate
+  Breaking: "no"

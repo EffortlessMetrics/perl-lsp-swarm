@@ -1186,27 +1186,7 @@ async function runExtensionActivation(
 
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
     try {
-      const config = vscode.workspace.getConfiguration('perl-lsp');
-      if (!config.get<boolean>('autoPopulateNewFiles', true)) {
-        return;
-      }
-
-      for (const uri of event.files) {
-        const boilerplate = generateBoilerplate(uri.fsPath);
-        if (!boilerplate) {
-          continue;
-        }
-
-        const doc = await vscode.workspace.openTextDocument(uri);
-        if (doc.getText().length > 0) {
-          // File already has content — don't overwrite
-          continue;
-        }
-
-        const edit = new vscode.WorkspaceEdit();
-        edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
-        await vscode.workspace.applyEdit(edit);
-      }
+      await populateCreatedFiles(event);
     } catch (e) {
       outputChannel.error('File creation handler error', e);
     }
@@ -2647,6 +2627,44 @@ export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent)
   }
 
   void vscode.commands.executeCommand('editor.action.triggerSuggest');
+}
+
+/**
+ * Insert boilerplate into newly created Perl files that are still empty.
+ *
+ * `perl-lsp.autoPopulateNewFiles` is contributed `scope: "resource"`, so the
+ * gate is resolved against each created URI rather than once for the whole
+ * event (#14547). An unscoped `getConfiguration('perl-lsp')` cannot observe a
+ * `workspaceFolderValue` at all, so a multi-root workspace where one folder
+ * turns population off previously took the global value for every folder. The
+ * read must stay inside the loop for the declared scope to mean anything.
+ *
+ * A URI outside every workspace folder resolves to the global/workspace value,
+ * which is the same answer the hoisted read gave — single-root workspaces and
+ * unset values are unaffected.
+ */
+export async function populateCreatedFiles(event: vscode.FileCreateEvent): Promise<void> {
+  for (const uri of event.files) {
+    const scoped = vscode.workspace.getConfiguration('perl-lsp', uri);
+    if (!scoped.get<boolean>('autoPopulateNewFiles', true)) {
+      continue;
+    }
+
+    const boilerplate = generateBoilerplate(uri.fsPath);
+    if (!boilerplate) {
+      continue;
+    }
+
+    const doc = await vscode.workspace.openTextDocument(uri);
+    if (doc.getText().length > 0) {
+      // File already has content — don't overwrite
+      continue;
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
+    await vscode.workspace.applyEdit(edit);
+  }
 }
 
 /**
