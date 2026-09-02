@@ -406,23 +406,6 @@ impl perl_parser_core::ErrorClass for BackendError {
     }
 }
 
-/// Why a backend request was made.
-///
-/// The backend needs this to decide what a saturated concurrency ceiling means
-/// (`#8300`): an as-you-type request that cannot start now is stale by the time
-/// a slot frees, while an explicitly invoked one is worth a short wait.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum BackendTriggerKind {
-    /// Fired by typing, without the user asking for a suggestion.
-    ///
-    /// The default: a caller that cannot prove the user asked must not obtain
-    /// the more patient admission policy by omission.
-    #[default]
-    Automatic,
-    /// The user explicitly asked for a completion.
-    Invoked,
-}
-
 /// Request payload sent to an AI completion backend.
 #[derive(Debug, Clone)]
 pub struct BackendRequest {
@@ -432,8 +415,6 @@ pub struct BackendRequest {
     pub max_output_tokens: u32,
     /// Timeout in milliseconds.
     pub timeout_ms: u64,
-    /// Whether the user asked for this completion or typing triggered it.
-    pub trigger: BackendTriggerKind,
 }
 
 /// A chunk emitted by a streaming backend.

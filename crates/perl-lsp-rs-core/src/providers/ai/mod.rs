@@ -17,8 +17,6 @@ pub use destination::{
     validate_endpoint_with_resolver, validate_tcp_attach_host,
     validate_tcp_attach_host_with_resolver,
 };
-pub use inflight::{
-    AdmissionError, AdmissionPolicy, InflightCounters, InflightGate, InflightPermit,
-};
+pub use inflight::{InflightCounters, InflightGate, InflightPermit};
 pub use openai::{OpenAiConfig, OpenAiProvider};
 pub use rate_limiter::RateLimiter;

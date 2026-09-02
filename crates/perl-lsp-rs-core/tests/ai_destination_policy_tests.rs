@@ -30,7 +30,6 @@ fn backend_request() -> BackendRequest {
         },
         max_output_tokens: 16,
         timeout_ms: 2_000,
-        trigger: perl_lsp_rs_core::providers::inline_completion::BackendTriggerKind::Automatic,
     }
 }
 

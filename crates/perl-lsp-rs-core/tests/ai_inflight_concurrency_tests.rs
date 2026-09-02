@@ -6,21 +6,19 @@
 //! dispatch and never returned, so N callers could each take a token and then
 //! all remain in flight at once. These tests fail against that arrangement.
 
-use perl_lsp_rs_core::providers::ai::{
-    AdmissionPolicy, InflightGate, OpenAiConfig, OpenAiProvider, RateLimiter,
-};
+use perl_lsp_rs_core::providers::ai::{InflightGate, OpenAiConfig, OpenAiProvider, RateLimiter};
 use perl_lsp_rs_core::providers::inline_completion::{
-    BackendError, BackendRequest, BackendTriggerKind, InlineCompletionBackend,
-    PreparedInlineCompletionContext, StreamControl,
+    BackendError, BackendRequest, InlineCompletionBackend, PreparedInlineCompletionContext,
+    StreamControl,
 };
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-fn backend_request(trigger: BackendTriggerKind) -> BackendRequest {
+fn backend_request() -> BackendRequest {
     BackendRequest {
         context: PreparedInlineCompletionContext {
             prefix: "my $x = ".to_string(),
@@ -29,7 +27,6 @@ fn backend_request(trigger: BackendTriggerKind) -> BackendRequest {
         },
         max_output_tokens: 16,
         timeout_ms: 2_000,
-        trigger,
     }
 }
 
@@ -64,13 +61,9 @@ fn saturated_gate_refuses_before_any_network_dispatch() -> Result<(), Box<dyn st
     let provider = provider(&format!("http://127.0.0.1:{port}/v1/chat/completions"), 1);
 
     // Occupy the only slot.
-    let held = provider
-        .inflight()
-        .acquire(AdmissionPolicy::Immediate, &|| false)
-        .map_err(|_| "the gate must admit the first holder")?;
+    let held = provider.inflight().try_acquire().ok_or("the gate must admit the first holder")?;
 
-    let outcome = provider
-        .stream(&backend_request(BackendTriggerKind::Automatic), &mut |_| StreamControl::Continue);
+    let outcome = provider.stream(&backend_request(), &mut |_| StreamControl::Continue);
 
     assert!(
         matches!(outcome, Err(BackendError::Saturated)),
@@ -82,8 +75,34 @@ fn saturated_gate_refuses_before_any_network_dispatch() -> Result<(), Box<dyn st
     Ok(())
 }
 
-/// Once the slot is free the same provider dispatches normally, so the test
-/// above is not passing because the provider is broken for every request.
+/// Refusal must be immediate. `stream()` runs on the LSP's shared read-worker
+/// pool, so a saturated gate that parked the caller would hold one of those
+/// slots — degrading hover and definition — which is the problem `maxInflight`
+/// exists to prevent.
+#[test]
+fn saturation_refuses_immediately_rather_than_parking_the_caller()
+-> Result<(), Box<dyn std::error::Error>> {
+    let port = {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.local_addr()?.port()
+    };
+    let provider = provider(&format!("http://127.0.0.1:{port}/v1/chat/completions"), 1);
+    let _held = provider.inflight().try_acquire().ok_or("the gate must admit the first holder")?;
+
+    let started = Instant::now();
+    let outcome = provider.stream(&backend_request(), &mut |_| StreamControl::Continue);
+    let elapsed = started.elapsed();
+
+    assert!(matches!(outcome, Err(BackendError::Saturated)));
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "a saturated request must return now, not occupy a read worker; took {elapsed:?}"
+    );
+    Ok(())
+}
+
+/// Once the slot is free the same provider dispatches normally, so the tests
+/// above are not passing because the provider is broken for every request.
 #[test]
 fn a_free_gate_lets_the_request_reach_the_network() -> Result<(), Box<dyn std::error::Error>> {
     let port = {
@@ -92,8 +111,7 @@ fn a_free_gate_lets_the_request_reach_the_network() -> Result<(), Box<dyn std::e
     };
     let provider = provider(&format!("http://127.0.0.1:{port}/v1/chat/completions"), 1);
 
-    let outcome = provider
-        .stream(&backend_request(BackendTriggerKind::Automatic), &mut |_| StreamControl::Continue);
+    let outcome = provider.stream(&backend_request(), &mut |_| StreamControl::Continue);
 
     assert!(
         matches!(outcome, Err(BackendError::Transport(_))),
@@ -128,8 +146,8 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
         // suite instead of failing it.
         let _ = listener.set_nonblocking(true);
         let mut held = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_millis(1_500);
-        while std::time::Instant::now() < deadline {
+        let deadline = Instant::now() + Duration::from_millis(1_500);
+        while Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     accepted_worker.fetch_add(1, Ordering::SeqCst);
@@ -164,10 +182,7 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
             let saturated = Arc::clone(&saturated);
             thread::spawn(move || {
                 start.wait();
-                let outcome = provider
-                    .stream(&backend_request(BackendTriggerKind::Automatic), &mut |_| {
-                        StreamControl::Continue
-                    });
+                let outcome = provider.stream(&backend_request(), &mut |_| StreamControl::Continue);
                 if matches!(outcome, Err(BackendError::Saturated)) {
                     saturated.fetch_add(1, Ordering::SeqCst);
                 }
@@ -183,7 +198,7 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
     assert_eq!(
         saturated.load(Ordering::SeqCst),
         1,
-        "exactly one of two concurrent automatic requests must be refused at maxInflight=1"
+        "exactly one of two concurrent requests must be refused at maxInflight=1"
     );
     assert_eq!(
         accepted.load(Ordering::SeqCst),
@@ -200,8 +215,8 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
 /// names: burst is a refill allowance, not a concurrency ceiling.
 #[test]
 fn a_large_rate_limit_burst_cannot_raise_live_concurrency() {
-    let gate = Arc::new(InflightGate::new(2));
-    let limiter = Arc::new(RateLimiter::new(1_000.0, 1_000));
+    let gate = InflightGate::new(2);
+    let limiter = RateLimiter::new(1_000.0, 1_000);
 
     // Every caller can take a rate token...
     for _ in 0..8 {
@@ -211,46 +226,15 @@ fn a_large_rate_limit_burst_cannot_raise_live_concurrency() {
     // ...but only `maxInflight` may be live at once.
     let mut permits = Vec::new();
     for _ in 0..2 {
-        let permit = gate.acquire(AdmissionPolicy::Immediate, &|| false);
-        assert!(permit.is_ok());
+        let permit = gate.try_acquire();
+        assert!(permit.is_some());
         permits.push(permit);
     }
     assert!(
-        gate.acquire(AdmissionPolicy::Immediate, &|| false).is_err(),
+        gate.try_acquire().is_none(),
         "rate-limit burst headroom must not increase the live-request ceiling"
     );
     assert_eq!(gate.counters().peak_active, 2);
-}
-
-/// An invoked request waits for a slot; an automatic one does not.
-///
-/// Both contend against a fully occupied gate. The automatic request must
-/// return promptly rather than queue behind remote work.
-#[test]
-fn automatic_requests_fail_fast_while_invoked_requests_wait() {
-    let gate = InflightGate::new(1);
-    let _held = gate.acquire(AdmissionPolicy::Immediate, &|| false);
-
-    let automatic_started = std::time::Instant::now();
-    let automatic = gate.acquire(AdmissionPolicy::Immediate, &|| false);
-    let automatic_elapsed = automatic_started.elapsed();
-
-    assert!(automatic.is_err(), "an automatic request must not wait behind an in-flight call");
-    assert!(
-        automatic_elapsed < Duration::from_millis(50),
-        "automatic saturation must return immediately, took {automatic_elapsed:?}"
-    );
-
-    let invoked_started = std::time::Instant::now();
-    let invoked = gate
-        .acquire(AdmissionPolicy::BoundedWait { budget: Duration::from_millis(150) }, &|| false);
-    let invoked_elapsed = invoked_started.elapsed();
-
-    assert!(invoked.is_err(), "the slot is still held, so the wait must end in saturation");
-    assert!(
-        invoked_elapsed >= Duration::from_millis(100),
-        "an invoked request must actually wait for its budget, took {invoked_elapsed:?}"
-    );
 }
 
 /// Reconfiguring the profile builds a new provider. Permits outstanding on the
@@ -259,19 +243,17 @@ fn automatic_requests_fail_fast_while_invoked_requests_wait() {
 fn a_reconfigured_provider_does_not_share_or_strand_permits()
 -> Result<(), Box<dyn std::error::Error>> {
     let old = provider("http://127.0.0.1:9/v1/chat/completions", 1);
-    let held = old
-        .inflight()
-        .acquire(AdmissionPolicy::Immediate, &|| false)
-        .map_err(|_| "the old generation must admit its first request")?;
+    let held =
+        old.inflight().try_acquire().ok_or("the old generation must admit its first request")?;
     assert_eq!(old.inflight().counters().active, 1);
 
-    // Profile replacement.
+    // Profile replacement. Bind the permit: a temporary would drop inside the
+    // assertion and the occupancy check below would read zero.
     let new = provider("http://127.0.0.1:9/v1/chat/completions", 1);
-    let fresh = new.inflight().acquire(AdmissionPolicy::Immediate, &|| false);
-    assert!(
-        fresh.is_ok(),
-        "a permit outstanding on the retired generation must not consume the new gate's capacity"
-    );
+    let _fresh = new
+        .inflight()
+        .try_acquire()
+        .ok_or("a permit outstanding on the retired generation must not consume new capacity")?;
 
     drop(held);
     assert_eq!(

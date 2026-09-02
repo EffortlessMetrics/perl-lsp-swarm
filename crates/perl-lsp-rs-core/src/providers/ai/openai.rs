@@ -1,7 +1,7 @@
 //! OpenAI-compatible completion provider.
 
 use super::destination::{ApprovedDestination, credential_may_attach, validate_endpoint};
-use super::inflight::{AdmissionError, AdmissionPolicy, InflightGate};
+use super::inflight::InflightGate;
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
 use super::sanitize::{sanitize_completion_text, sanitize_streaming_text};
@@ -11,8 +11,7 @@ use crate::config::{
     normalize_ai_api_key_header, normalize_ai_api_key_prefix,
 };
 use crate::providers::inline_completion::{
-    BackendError, BackendRequest, BackendTriggerKind, InlineCompletionBackend, StreamChunk,
-    StreamControl,
+    BackendError, BackendRequest, InlineCompletionBackend, StreamChunk, StreamControl,
 };
 use std::io::{BufRead, BufReader};
 use std::net::{IpAddr, SocketAddr};
@@ -20,12 +19,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use ureq::unversioned::resolver::{ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
-
-/// Longest an explicitly invoked request will wait for a concurrency permit.
-///
-/// Bounds editor latency independently of a generously configured request
-/// timeout.
-const INVOKED_ADMISSION_WAIT_CEILING: Duration = Duration::from_secs(1);
 
 /// Configuration for the OpenAI-compatible provider.
 #[derive(Debug, Clone)]
@@ -137,27 +130,6 @@ impl OpenAiProvider {
     /// material.
     pub fn inflight(&self) -> &InflightGate {
         &self.inflight
-    }
-
-    /// How a request of this trigger kind should treat a saturated gate.
-    ///
-    /// Automatic requests never wait: a slot that frees later belongs to a
-    /// cursor position the user has already left, and blocking the LSP worker
-    /// behind remote work is exactly what `maxInflight` exists to prevent.
-    ///
-    /// Invoked requests wait, but only for part of their own deadline — a wait
-    /// that consumed the whole budget would guarantee a timeout instead of a
-    /// completion. Half the deadline, capped, leaves the request time to run.
-    fn admission_policy(trigger: BackendTriggerKind, timeout_ms: u64) -> AdmissionPolicy {
-        match trigger {
-            BackendTriggerKind::Automatic => AdmissionPolicy::Immediate,
-            BackendTriggerKind::Invoked => {
-                let half_deadline = Duration::from_millis(timeout_ms / 2);
-                AdmissionPolicy::BoundedWait {
-                    budget: half_deadline.min(INVOKED_ADMISSION_WAIT_CEILING),
-                }
-            }
-        }
     }
 
     fn approved_destination(&self) -> Result<&ApprovedDestination, BackendError> {
@@ -767,13 +739,9 @@ impl InlineCompletionBackend for OpenAiProvider {
         // so a request that has nowhere to run does not burn rate budget, and
         // held for the whole of `stream()` — every exit below, including `?`
         // and panic unwind, releases it by dropping this guard.
-        let _permit = self
-            .inflight
-            .acquire(Self::admission_policy(req.trigger, req.timeout_ms), &|| false)
-            .map_err(|err| match err {
-                AdmissionError::Saturated => BackendError::Saturated,
-                AdmissionError::CancelledWaiting => BackendError::Cancelled,
-            })?;
+        let Some(_permit) = self.inflight.try_acquire() else {
+            return Err(BackendError::Saturated);
+        };
 
         if !self.limiter.try_acquire() {
             return Err(BackendError::RateLimited);
@@ -789,7 +757,7 @@ impl InlineCompletionBackend for OpenAiProvider {
         }
 
         let body = self.build_request_body(req);
-        let timeout = std::time::Duration::from_millis(req.timeout_ms);
+        let timeout = Duration::from_millis(req.timeout_ms);
         let agent = Self::build_http_agent(timeout, approved);
         let auth_value = self.auth_header_value()?;
 

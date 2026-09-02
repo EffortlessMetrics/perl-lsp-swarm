@@ -78,25 +78,6 @@ pub(crate) enum InlineCompletionTriggerKind {
     LegacyNoContext,
 }
 
-impl InlineCompletionTriggerKind {
-    /// Map the protocol trigger onto the backend's admission vocabulary
-    /// (`#8300`).
-    ///
-    /// `LegacyNoContext` means the client sent no `context.triggerKind` at all,
-    /// so there is no evidence the user asked for anything. It is treated as
-    /// automatic: a client that omits the field must not thereby obtain the
-    /// policy that waits for a concurrency permit.
-    pub(crate) fn backend_trigger(
-        self,
-    ) -> perl_lsp_rs_core::providers::inline_completion::BackendTriggerKind {
-        use perl_lsp_rs_core::providers::inline_completion::BackendTriggerKind;
-        match self {
-            Self::Invoked => BackendTriggerKind::Invoked,
-            Self::Automatic | Self::LegacyNoContext => BackendTriggerKind::Automatic,
-        }
-    }
-}
-
 #[cfg(feature = "workspace")]
 fn is_inline_workspace_module_symbol(symbol: &crate::workspace_index::WorkspaceSymbol) -> bool {
     matches!(
@@ -1099,7 +1080,6 @@ impl LspServer {
                 ) {
                     let backend_result = self.try_ai_inline_completion(
                         &context,
-                        trigger_kind.backend_trigger(),
                         ai_max_output_tokens,
                         ai_timeout_ms,
                     );
@@ -1369,7 +1349,6 @@ impl LspServer {
     fn try_ai_inline_completion(
         &self,
         context: &perl_lsp_rs_core::providers::inline_completion::PreparedInlineCompletionContext,
-        trigger: perl_lsp_rs_core::providers::inline_completion::BackendTriggerKind,
         max_output_tokens: u32,
         timeout_ms: u64,
     ) -> Result<
@@ -1387,7 +1366,6 @@ impl LspServer {
             context: context.clone(),
             max_output_tokens,
             timeout_ms,
-            trigger,
         };
 
         let texts = backend.complete(&req)?;
