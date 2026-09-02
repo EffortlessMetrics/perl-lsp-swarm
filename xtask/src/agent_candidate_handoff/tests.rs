@@ -3570,18 +3570,53 @@ fn a_destination_created_mid_export_cannot_be_clobbered() -> Result<()> {
         *probe = None;
     }
 
-    assert_eq!(
-        observed,
-        std::io::ErrorKind::AlreadyExists,
-        "the destination must already be reserved while the envelope is staged; \
-         a probe that succeeds here is the directory the rename would replace"
-    );
-    assert!(outcome.is_ok(), "reserving the destination must not break an ordinary export");
-    assert_eq!(
-        check_handoff(&destination.envelope()).outcome,
-        HandoffOutcome::ValidHandoff,
-        "the published envelope must still validate"
-    );
+    // The property under test is the same on both platforms — a destination
+    // that appears mid-export is never replaced — but the mechanism differs, so
+    // the assertions do too. Asserting the *mechanism* everywhere would make
+    // this test wrong on one platform rather than discriminating on both.
+    #[cfg(unix)]
+    {
+        // Unix reserves the path for the whole build, so the probe cannot take
+        // it. A probe that succeeds here is the directory the rename replaces.
+        assert_eq!(
+            observed,
+            std::io::ErrorKind::AlreadyExists,
+            "the destination must already be reserved while the envelope is staged"
+        );
+        assert!(outcome.is_ok(), "reserving the destination must not break an ordinary export");
+        assert_eq!(
+            check_handoff(&destination.envelope()).outcome,
+            HandoffOutcome::ValidHandoff,
+            "the published envelope must still validate"
+        );
+    }
+
+    // Windows takes no reservation, because its rename refuses an existing
+    // destination and a reservation would have to be released before the rename
+    // — reopening the very window it exists to close. So the probe *does* take
+    // the path, and the guarantee is that publication then fails rather than
+    // replacing it. This is the executable no-clobber control for Windows: it
+    // drives a real competitor into the real publication path.
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            observed,
+            std::io::ErrorKind::Other,
+            "with no reservation the probe should take the path; \
+             it is publication that must then refuse"
+        );
+        let Err((_, detail)) = outcome else {
+            bail!("publication must not succeed over a destination taken mid-export");
+        };
+        let _ = detail;
+        // The competitor's directory must survive untouched, and must not have
+        // become an envelope.
+        assert!(destination.envelope().is_dir(), "the competitor's directory must survive");
+        assert!(
+            !destination.envelope().join(MANIFEST_FILE_NAME).exists(),
+            "publication must not have written an envelope over the competitor's path"
+        );
+    }
     Ok(())
 }
 
