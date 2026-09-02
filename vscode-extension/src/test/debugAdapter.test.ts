@@ -725,6 +725,13 @@ describe('buildDapExecutableArgs', () => {
     expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' })).toEqual([]);
   });
 
+  test('native editor sessions receive host-owned workspace authority', () => {
+    expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' }, '/workspace')).toEqual([
+      '--trusted-root',
+      '/workspace',
+    ]);
+  });
+
   test('never emits an editor --socket or --port flag', () => {
     const configs: Array<Record<string, unknown> | undefined> = [
       undefined,
