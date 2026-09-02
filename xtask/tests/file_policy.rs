@@ -7,7 +7,8 @@
 use assert_cmd::Command;
 use color_eyre::eyre::{Result, ensure, eyre};
 use serde_yaml_ng::Value;
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 // ---------------------------------------------------------------------------
@@ -258,12 +259,73 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
         .unwrap_or_default();
     assert_eq!(mapped, 1, "gate must be mapped exactly once in the policy shard");
 
-    let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
-    assert!(
-        workflow.contains(
-            "docs_build adr_link_check non_rust_inventory_check lint_policy v2_bundle_sync"
-        ),
-        "the live policy matrix must execute the inventory scan gate"
+    let shard_gates = policy_shard_gates(&root)?;
+
+    // Negative control for the parse, asserted before membership. A membership
+    // test over an empty or mis-navigated list is silently false rather than
+    // loud, so first prove the resolved row is the real one: every name it
+    // declares must be a gate `.ci/gate-policy.yaml` actually defines. A parse
+    // that landed on the wrong matrix row or a default empty sequence cannot
+    // satisfy this, and a gate name that exists in neither file is drift the
+    // shard should not be allowed to carry.
+    let defined = defined_gate_names(&policy)?;
+    let undefined: Vec<&str> =
+        shard_gates.iter().map(String::as_str).filter(|name| !defined.contains(*name)).collect();
+    ensure!(
+        undefined.is_empty(),
+        "the `policy` shard names gates that .ci/gate-policy.yaml does not define: {undefined:?}"
     );
+
+    ensure!(
+        shard_gates.iter().filter(|name| *name == "non_rust_inventory_check").count() == 1,
+        "the live policy matrix must execute the inventory scan gate exactly once; \
+         the `policy` shard declares {shard_gates:?}"
+    );
+
     Ok(())
+}
+
+/// Gate names the `policy` merge-gate shard actually declares, in matrix order.
+///
+/// This resolves the workflow structurally — job, strategy, matrix row — rather
+/// than matching a literal run of adjacent gate names. The literal form went
+/// stale the moment `must_context_check` was inserted mid-list (#14585), which
+/// turned a wiring contract into an ordering assertion. Membership survives
+/// insertion, removal, and reordering of neighbouring gates; only actually
+/// dropping the gate from the shard fails it.
+fn policy_shard_gates(root: &Path) -> Result<Vec<String>> {
+    let workflow: Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(root.join(".github/workflows/ci.yml"))?)?;
+    let gates = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("merge-gate-shards"))
+        .and_then(|job| job.get("strategy"))
+        .and_then(|strategy| strategy.get("matrix"))
+        .and_then(|matrix| matrix.get("include"))
+        .and_then(Value::as_sequence)
+        .and_then(|shards| {
+            shards.iter().find(|shard| shard.get("name").and_then(Value::as_str) == Some("policy"))
+        })
+        .and_then(|shard| shard.get("gates"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            eyre!(
+                "ci.yml no longer declares a `policy` row with a `gates` list under \
+                 jobs.merge-gate-shards.strategy.matrix.include"
+            )
+        })?;
+    Ok(gates.split_whitespace().map(str::to_owned).collect())
+}
+
+/// Every gate name defined in `.ci/gate-policy.yaml`.
+fn defined_gate_names(policy: &Value) -> Result<BTreeSet<String>> {
+    let gates = policy
+        .get("gates")
+        .and_then(Value::as_sequence)
+        .ok_or_else(|| eyre!(".ci/gate-policy.yaml no longer defines a `gates` sequence"))?;
+    Ok(gates
+        .iter()
+        .filter_map(|gate| gate.get("name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect())
 }
