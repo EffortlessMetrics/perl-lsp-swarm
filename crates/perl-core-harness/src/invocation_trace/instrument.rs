@@ -590,6 +590,20 @@ fn manifest_changes(
     changed
 }
 
+/// Re-read the patched artifact so the published manifest is bound to the
+/// bytes that actually reached the disposable tree.
+fn remeasure_instrumented_artifact(path: &Path, expected: &str) -> Result<String> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("re-measuring instrumented artifact {}", path.display()))?;
+    let measured = sha256_bytes(&bytes);
+    if measured != expected {
+        bail!(
+            "instrumented artifact changed while writing: expected {expected}, measured {measured}"
+        );
+    }
+    Ok(measured)
+}
+
 /// Run one exact instrumented observation and assemble the strict receipts.
 ///
 /// The ordinary prepared tree is never modified: the patch applies to a
@@ -668,8 +682,10 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
     fs::write(&instrumented_artifact_path, &instrumented_bytes).with_context(|| {
         format!("writing instrumented artifact {}", instrumented_artifact_path.display())
     })?;
+    let measured_instrumented_digest =
+        remeasure_instrumented_artifact(&instrumented_artifact_path, &instrumented_digest)?;
     let mut manifest_after = manifest_before.clone();
-    manifest_after.insert("t/TEST".to_string(), instrumented_digest.clone());
+    manifest_after.insert("t/TEST".to_string(), measured_instrumented_digest);
     let changed = manifest_changes(&manifest_before, &manifest_after);
     if changed != ["t/TEST"] {
         bail!("instrumentation may only change the runner artifact; manifest delta: {changed:?}");
@@ -1316,7 +1332,7 @@ mod contract_tests {
     use super::{
         CleanupRecord, ExactPatchOp, ExactPatchSpec, InstrumentationState, InstrumentationWork,
         PatchApplicationError, apply_exact_patch, derive_instrumentation_state, manifest_changes,
-        prescan_instrument_stream, required_limitations,
+        prescan_instrument_stream, remeasure_instrumented_artifact, required_limitations,
     };
     use crate::invocation_trace::model::{
         TraceStreamOutcome, UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION,
@@ -1430,6 +1446,17 @@ mod contract_tests {
             1,
             "any non-artifact change is visible in the delta"
         );
+    }
+
+    #[test]
+    fn remeasurement_binds_manifest_to_written_bytes() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("t-TEST");
+        std::fs::write(&path, b"written")?;
+        let expected = super::sha256_bytes(b"written");
+        assert_eq!(remeasure_instrumented_artifact(&path, &expected)?, expected);
+        assert!(remeasure_instrumented_artifact(&path, &super::sha256_bytes(b"other")).is_err());
+        Ok(())
     }
 
     #[test]
