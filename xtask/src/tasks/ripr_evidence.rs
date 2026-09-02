@@ -17,6 +17,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, classify_ancestry};
 
 #[cfg(test)]
 static RIPR_BIN_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -3249,7 +3250,7 @@ fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<Committ
         ArtifactIdentity::CommitRange { base: base.to_string(), head: head.to_string() },
         repo,
     )
-    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    .with_context(|| merge_base_failure_guidance(repo, base, head))?;
     let (resolved_base, resolved_head) = match resolved.identity {
         ArtifactIdentity::CommitRange { base, head } => (base, head),
         ArtifactIdentity::StagedTree { .. } => {
@@ -3272,7 +3273,7 @@ fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<Committ
             range.as_str(),
         ],
     )
-    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    .with_context(|| merge_base_failure_guidance(repo, base, head))?;
     let entries = parse_name_status_z(&raw)?;
     let changed_paths = entries
         .iter()
@@ -3342,27 +3343,65 @@ fn parse_name_status_z(raw: &[u8]) -> Result<Vec<CommittedDiffEntry>> {
     Ok(entries)
 }
 
-fn is_shallow_clone(repo: &Path) -> bool {
-    run_git_output(repo, &["rev-parse", "--is-shallow-repository"])
-        .map(|out| out.trim() == "true")
-        .unwrap_or(false)
+/// Actionable guidance for a committed-diff range that could not be resolved.
+///
+/// Interpreting an absent merge base is the shared ancestry authority's job, not
+/// RIPR's. A shallow, partial, or object-incomplete checkout cannot prove that
+/// two refs are unrelated, so this message reports the typed `not_proven_*`
+/// disposition instead of asserting absent history (#10304).
+fn merge_base_failure_guidance(repo: &Path, base: &str, head: &str) -> String {
+    ancestry_failure_guidance(base, head, &classify_ancestry(repo, base, head))
 }
 
-fn merge_base_failure_guidance(base: &str, head: &str, shallow: bool) -> String {
-    let mut message =
-        format!("cannot compute diff range `{base}...{head}`: no merge base between them.");
-    if shallow {
-        message.push_str(&format!(
-            " This checkout is a shallow clone, so `{base}` and `{head}` share no common history. \
+/// Pure projection of one ancestry receipt into RIPR-specific operator guidance.
+///
+/// Only [`AncestryDisposition::Unrelated`] — which the classifier reaches solely
+/// from a complete-enough local graph — may state that two refs share no common
+/// history.
+fn ancestry_failure_guidance(base: &str, head: &str, receipt: &AncestryReceipt) -> String {
+    let mut message = format!(
+        "cannot resolve diff range `{base}...{head}`: git ancestry is `{}` ({}).",
+        receipt.disposition.as_str(),
+        receipt.reason
+    );
+    match receipt.disposition {
+        AncestryDisposition::NotProvenShallow => message.push_str(&format!(
+            " A shallow checkout cannot prove whether `{base}` and `{head}` share history. \
              Deepen the clone before running diff-scoped RIPR locally, e.g. \
              `git fetch --unshallow` or `git fetch --deepen=200 origin {base}`. \
              CI is unaffected: the RIPR workflow checks out with fetch-depth: 0."
-        ));
-    } else {
-        message.push_str(&format!(
-            " Ensure `{base}` is fetched and shares history with `{head}`, \
-             e.g. `git fetch origin {base}`."
-        ));
+        )),
+        AncestryDisposition::NotProvenPartialClone => message.push_str(&format!(
+            " A partial/promisor checkout can omit the objects this range needs. \
+             Materialize the required commit graph, e.g. \
+             `git fetch --refetch origin {base}`, before running diff-scoped RIPR locally. \
+             CI is unaffected: the RIPR workflow checks out with fetch-depth: 0."
+        )),
+        AncestryDisposition::NotProvenMissingObject => message.push_str(&format!(
+            " The requested revision could not be resolved locally, which does not \
+             establish that `{base}` and `{head}` are unrelated. Confirm the revision \
+             spelling and fetch the exact objects, e.g. `git fetch origin {base}`."
+        )),
+        AncestryDisposition::Unrelated => message.push_str(&format!(
+            " Both commit objects are present in a complete local graph and share no \
+             common history, so `{base}...{head}` has no diff range to compute. \
+             Select a base that shares history with `{head}`."
+        )),
+        AncestryDisposition::Ancestor | AncestryDisposition::Diverged => {
+            message.push_str(&format!(
+                " `{base}` and `{head}` are related in this checkout, so ancestry does not \
+             explain the failure; inspect the underlying git error above."
+            ))
+        }
+        AncestryDisposition::InvalidInput => message.push_str(
+            " Check the base and head revision values passed to the diff-scoped command.",
+        ),
+        AncestryDisposition::InstrumentFailure => message.push_str(
+            " Git could not be inspected, so no ancestry conclusion is available for this range.",
+        ),
+    }
+    for limitation in &receipt.limitations {
+        message.push_str(&format!(" Limitation: {limitation}."));
     }
     message
 }
@@ -7141,22 +7180,244 @@ esac
         Ok(())
     }
 
-    #[test]
-    fn merge_base_guidance_points_to_unshallow_for_shallow_clone() {
-        let message = merge_base_failure_guidance("origin/main", "HEAD", true);
-        assert!(message.contains("origin/main...HEAD"), "range echoed: {message}");
-        assert!(message.contains("no merge base"), "diagnosis: {message}");
-        assert!(message.contains("shallow clone"), "shallow cause: {message}");
-        assert!(message.contains("git fetch --unshallow"), "remedy: {message}");
-        assert!(message.contains("fetch-depth: 0"), "CI note: {message}");
+    /// One ancestry receipt carrying a chosen disposition, for projecting the
+    /// RIPR guidance vocabulary without a repository.
+    fn ancestry_receipt(disposition: AncestryDisposition, reason: &str) -> AncestryReceipt {
+        AncestryReceipt {
+            schema_version: "git_ancestry.v1".to_string(),
+            repository: ".".to_string(),
+            repository_root: None,
+            git_dir: None,
+            git_common_dir: None,
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            base_sha: None,
+            head_sha: None,
+            merge_base: None,
+            is_shallow_repository: None,
+            is_partial_clone: None,
+            base_object_exists: false,
+            head_object_exists: false,
+            base_is_ancestor_of_head: None,
+            head_is_ancestor_of_base: None,
+            disposition,
+            reason: reason.to_string(),
+            guidance: Vec::new(),
+            limitations: Vec::new(),
+        }
     }
 
+    /// The false-history claim #10051/#10205 came from: a shallow checkout is
+    /// missing history, not proof that two refs are unrelated.
     #[test]
-    fn merge_base_guidance_suggests_fetch_for_non_shallow() {
-        let message = merge_base_failure_guidance("origin/main", "HEAD", false);
-        assert!(message.contains("no merge base"), "diagnosis: {message}");
-        assert!(!message.contains("shallow"), "must not blame shallow: {message}");
+    fn shallow_guidance_reports_not_proven_instead_of_absent_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::NotProvenShallow,
+            "the checkout is shallow; local absence is not proof of unrelated history",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("origin/main...HEAD"), "range echoed: {message}");
+        assert!(message.contains("not_proven_shallow"), "typed disposition: {message}");
+        assert!(message.contains("git fetch --unshallow"), "remedy preserved: {message}");
+        assert!(message.contains("fetch-depth: 0"), "CI note preserved: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "shallow must never assert absent history: {message}"
+        );
+        assert!(
+            !message.contains("unrelated`"),
+            "shallow must not report the unrelated disposition: {message}"
+        );
+    }
+
+    /// A promisor/partial checkout is the same class of incomplete evidence.
+    #[test]
+    fn partial_clone_guidance_reports_not_proven_instead_of_absent_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::NotProvenPartialClone,
+            "the checkout is partial; local absence is not proof of unrelated history",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("not_proven_partial_clone"), "typed disposition: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "partial clone must never assert absent history: {message}"
+        );
+    }
+
+    /// An unresolvable revision is a bad ref or missing object, not a history claim.
+    #[test]
+    fn missing_object_guidance_does_not_blame_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::NotProvenMissingObject,
+            "the base commit object is unavailable",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("not_proven_missing_object"), "typed disposition: {message}");
         assert!(message.contains("git fetch origin origin/main"), "fetch remedy: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "missing object must never assert absent history: {message}"
+        );
+        assert!(!message.contains("shallow"), "must not blame shallow: {message}");
+    }
+
+    /// `unrelated` is the one disposition permitted to state absent history,
+    /// and the classifier reaches it only from a complete-enough local graph.
+    #[test]
+    fn only_proven_unrelated_guidance_states_absent_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::Unrelated,
+            "both commit objects are present in a non-shallow, non-partial graph and no merge base exists",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("unrelated"), "typed disposition: {message}");
+        assert!(
+            message.contains("share no common history"),
+            "proven unrelated may state absent history: {message}"
+        );
+        assert!(!message.contains("--unshallow"), "must not blame shallow: {message}");
+    }
+
+    /// Related refs mean the diff failure has some other cause; the guidance
+    /// must not misattribute it to ancestry.
+    #[test]
+    fn related_history_guidance_does_not_blame_ancestry() {
+        for disposition in [AncestryDisposition::Ancestor, AncestryDisposition::Diverged] {
+            let receipt = ancestry_receipt(disposition, "the requested refs are related");
+            let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+            assert!(message.contains("are related in this checkout"), "related: {message}");
+            assert!(
+                !message.contains("share no common history"),
+                "related refs must never assert absent history: {message}"
+            );
+        }
+    }
+
+    /// Invalid input and instrument failure stay distinct from every history claim.
+    #[test]
+    fn invalid_and_instrument_guidance_make_no_history_claim() {
+        for (disposition, expected) in [
+            (AncestryDisposition::InvalidInput, "invalid_input"),
+            (AncestryDisposition::InstrumentFailure, "instrument_failure"),
+        ] {
+            let receipt = ancestry_receipt(disposition, "no domain result was reached");
+            let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+            assert!(message.contains(expected), "typed disposition: {message}");
+            assert!(
+                !message.contains("share no common history"),
+                "{expected} must never assert absent history: {message}"
+            );
+        }
+    }
+
+    /// The production seam, not just the formatter: a real shallow checkout must
+    /// reach the shared authority and report `not_proven_shallow`. Re-mapping a
+    /// failed merge base back to "unrelated" fails here.
+    #[test]
+    fn shallow_repository_production_guidance_uses_the_shared_authority() -> Result<()> {
+        let origin = tempfile::tempdir()?;
+        ancestry_git(origin.path(), &["init", "--quiet", "--initial-branch=main", "."])?;
+        ancestry_git(origin.path(), &["config", "user.email", "ripr@example.invalid"])?;
+        ancestry_git(origin.path(), &["config", "user.name", "RIPR Test"])?;
+        for index in 0..3 {
+            fs::write(origin.path().join("file.txt"), format!("revision {index}\n"))?;
+            ancestry_git(origin.path(), &["add", "file.txt"])?;
+            ancestry_git(origin.path(), &["commit", "--quiet", "-m", &format!("c{index}")])?;
+        }
+
+        let shallow = tempfile::tempdir()?;
+        let source = format!("file://{}", origin.path().display());
+        let target = shallow.path().join("clone");
+        ancestry_git(
+            shallow.path(),
+            &["clone", "--quiet", "--depth", "1", &source, &target.display().to_string()],
+        )?;
+        assert_eq!(
+            ancestry_git(&target, &["rev-parse", "--is-shallow-repository"])?.trim(),
+            "true",
+            "fixture must actually be shallow"
+        );
+
+        let message = merge_base_failure_guidance(&target, "main~2", "HEAD");
+        assert!(message.contains("not_proven_shallow"), "shared disposition: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "shallow production path must never assert absent history: {message}"
+        );
+        Ok(())
+    }
+
+    /// A complete clone with genuinely unrelated orphan histories is the only
+    /// production case allowed to report absent history.
+    #[test]
+    fn complete_unrelated_history_production_guidance_states_absent_history() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        ancestry_git(repo.path(), &["init", "--quiet", "--initial-branch=main", "."])?;
+        ancestry_git(repo.path(), &["config", "user.email", "ripr@example.invalid"])?;
+        ancestry_git(repo.path(), &["config", "user.name", "RIPR Test"])?;
+        fs::write(repo.path().join("main.txt"), "main\n")?;
+        ancestry_git(repo.path(), &["add", "main.txt"])?;
+        ancestry_git(repo.path(), &["commit", "--quiet", "-m", "main"])?;
+
+        ancestry_git(repo.path(), &["checkout", "--quiet", "--orphan", "other"])?;
+        ancestry_git(repo.path(), &["rm", "-rf", "--quiet", "."])?;
+        fs::write(repo.path().join("other.txt"), "other\n")?;
+        ancestry_git(repo.path(), &["add", "other.txt"])?;
+        ancestry_git(repo.path(), &["commit", "--quiet", "-m", "other"])?;
+
+        let message = merge_base_failure_guidance(repo.path(), "main", "other");
+        assert!(message.contains("unrelated"), "proven unrelated: {message}");
+        assert!(
+            message.contains("share no common history"),
+            "complete graph may state absent history: {message}"
+        );
+        Ok(())
+    }
+
+    /// A bogus revision in a complete clone is a missing object, never unrelated
+    /// history — the conflation the retired private helper encoded.
+    #[test]
+    fn missing_object_production_guidance_is_not_unrelated() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        ancestry_git(repo.path(), &["init", "--quiet", "--initial-branch=main", "."])?;
+        ancestry_git(repo.path(), &["config", "user.email", "ripr@example.invalid"])?;
+        ancestry_git(repo.path(), &["config", "user.name", "RIPR Test"])?;
+        fs::write(repo.path().join("main.txt"), "main\n")?;
+        ancestry_git(repo.path(), &["add", "main.txt"])?;
+        ancestry_git(repo.path(), &["commit", "--quiet", "-m", "main"])?;
+
+        let message = merge_base_failure_guidance(repo.path(), "ripr-no-such-base-xyz", "HEAD");
+        assert!(message.contains("not_proven_missing_object"), "typed disposition: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "a bad ref must never assert absent history: {message}"
+        );
+        Ok(())
+    }
+
+    fn ancestry_git(repository: &Path, arguments: &[&str]) -> Result<String> {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(repository)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .with_context(|| format!("running git {arguments:?}"))?;
+        if !output.status.success() {
+            bail!(
+                "git {arguments:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim().to_string()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     #[test]
@@ -7166,10 +7427,16 @@ esac
         // instead of propagating a raw git failure.
         let repo = repo_root()?;
         match changed_files(&repo, "ripr-no-such-base-xyz", "HEAD") {
-            Ok(files) => Err(eyre!("expected missing-merge-base error, got {files:?}")),
+            Ok(files) => Err(eyre!("expected unresolvable-range error, got {files:?}")),
             Err(err) => {
                 let message = format!("{err:#}");
-                assert!(message.contains("no merge base"), "guidance surfaced: {message}");
+                assert!(message.contains("cannot resolve diff range"), "guidance: {message}");
+                // The workspace checkout may be shallow or complete; either way a
+                // bogus base is never proof that the two refs are unrelated.
+                assert!(
+                    !message.contains("share no common history"),
+                    "a bad ref must never assert absent history: {message}"
+                );
                 Ok(())
             }
         }
@@ -7182,9 +7449,6 @@ esac
         let repo = repo_root()?;
         let files = changed_files(&repo, "HEAD", "HEAD")?;
         assert!(files.is_empty(), "HEAD...HEAD has no changed files: {files:?}");
-        // Exercise the shallow probe; its value is environment-dependent, so we
-        // only assert it returns without error.
-        let _ = is_shallow_clone(&repo);
         Ok(())
     }
 
