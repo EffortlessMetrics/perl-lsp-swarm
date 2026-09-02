@@ -1434,46 +1434,45 @@ fn normalize_line_endings(value: &str) -> String {
 }
 
 /// Escape a literal value for embedding in one Markdown table cell so the
-/// rendered row keeps exactly one cell per column: a literal `|` inside a
-/// path would otherwise split the row. The escape is reversed by
-/// [`parse_markdown_cells`].
+/// rendered row keeps exactly one cell per column: literal backslashes and
+/// pipes inside a value would otherwise make the cell codec ambiguous. The
+/// escape is reversed by [`parse_markdown_cells`].
 fn escape_markdown_cell(value: &str) -> String {
-    value.replace('|', "\\|")
+    value.replace('\\', "\\\\").replace('|', "\\|")
 }
 
 /// Split one rendered table row into its raw cell values, honoring
-/// [`escape_markdown_cell`] backslash escapes and trimming the surrounding
-/// whitespace the renderer emits. Returns `None` for lines outside table rows.
+/// [`escape_markdown_cell`] backslash escapes (`\\` and `\\|`) and trimming the
+/// surrounding whitespace the renderer emits. Unknown backslash sequences are
+/// preserved verbatim. Returns `None` for lines outside table rows.
 fn parse_markdown_cells(line: &str) -> Option<Vec<String>> {
     let rest = line.trim().strip_prefix("| ")?;
-    let trimmed = rest.trim_end().trim_end_matches('|');
+    // Remove exactly the table delimiter. Using `trim_end_matches('|')` would
+    // also remove a literal pipe when a caller provides a row without the
+    // renderer's separating whitespace.
+    let trimmed = rest.trim_end().strip_suffix('|')?;
     let mut cells = Vec::new();
     let mut current = String::new();
-    let mut escaped = false;
-    for ch in trimmed.chars() {
+    let mut chars = trimmed.chars().peekable();
+    while let Some(ch) = chars.next() {
         match ch {
-            '\\' if !escaped => escaped = true,
-            '|' if !escaped => {
+            '\\' => match chars.peek().copied() {
+                Some('\\') => {
+                    chars.next();
+                    current.push('\\');
+                }
+                Some('|') => {
+                    chars.next();
+                    current.push('|');
+                }
+                _ => current.push('\\'),
+            },
+            '|' => {
                 cells.push(current.trim().to_string());
                 current = String::new();
             }
-            _ => {
-                if escaped {
-                    escaped = false;
-                    // The writer escapes exactly one character (`|` as
-                    // `\|`), so only that pair decodes to the raw value;
-                    // every other backslash sequence is preserved verbatim
-                    // so paths round-trip exactly (#14330 review).
-                    if ch != '|' {
-                        current.push('\\');
-                    }
-                }
-                current.push(ch);
-            }
+            _ => current.push(ch),
         }
-    }
-    if escaped {
-        current.push('\\');
     }
     cells.push(current.trim().to_string());
     Some(cells)
@@ -3591,6 +3590,43 @@ mod tests {
             vec![raw],
             "non-escape backslashes must round-trip verbatim"
         );
+    }
+
+    #[test]
+    fn markdown_metadata_cells_round_trip_odd_backslashes_before_pipe() {
+        for count in 1..=3 {
+            let prefix = "\\".repeat(count);
+            let id = format!("id-{prefix}|suffix");
+            let owner = format!("owner-{prefix}|suffix");
+            let row = format!(
+                "| `path.md` | documentation | `{}` | {} |\n",
+                escape_markdown_cell(&id),
+                escape_markdown_cell(&owner)
+            );
+            let cells = parse_markdown_cells(&row).expect("rendered row must parse");
+            assert_eq!(cells.len(), 4, "metadata backslashes must not add cells");
+            assert_eq!(cells[2], format!("`{id}`"));
+            assert_eq!(cells[3], owner);
+        }
+    }
+
+    #[test]
+    fn markdown_metadata_cells_round_trip_trailing_literal_pipe() {
+        let id = "id|";
+        let owner = "owner|";
+        let row = format!(
+            "| `path.md` | documentation | `{}` | {} |\n",
+            escape_markdown_cell(id),
+            escape_markdown_cell(owner)
+        );
+        let cells = parse_markdown_cells(&row).expect("rendered row must parse");
+        assert_eq!(cells, vec!["`path.md`", "documentation", "`id|`", "owner|"]);
+
+        // The codec must also preserve a final literal pipe when there is no
+        // whitespace before the table delimiter.
+        let compact = "| `path.md`|documentation|`id\\|`|owner\\||";
+        let cells = parse_markdown_cells(compact).expect("compact row must parse");
+        assert_eq!(cells, vec!["`path.md`", "documentation", "`id|`", "owner|"]);
     }
 
     #[test]
