@@ -121,7 +121,7 @@ impl LineIndex {
                 1
             };
             next_start.saturating_sub(terminator_len)
-        });        let line_text = text.get(line_start..line_end)?;
+        });`n        let line_text = text.get(line_start..line_end)?;
 
         // Walk the line, accumulating UTF-16 units until we reach `column`.
         let mut utf16_units: usize = 0;
