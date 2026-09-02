@@ -28,7 +28,7 @@
 
 use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
-use glob::Pattern;
+use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -410,13 +410,39 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Match options for every allowlist glob.
+///
+/// `require_literal_separator` stops `*` and `?` at `/`, so a single-segment
+/// matcher governs exactly the directory it names: `.changes/unreleased/*.yaml`
+/// covers the fragments sitting directly in that directory, and a nested path
+/// such as `.changes/unreleased/archive/old.yaml` cannot inherit the entry.
+/// Entries that genuinely own a tree opt in explicitly with `**`.
+///
+/// The `glob` crate's default (used by the bare `Pattern::matches`) lets `*`
+/// cross `/`, which silently widens every single-segment entry into a
+/// whole-tree entry and contradicts the documented schema in
+/// `docs/policy/NON_RUST_POLICY.md`. Refs: #9994.
+const POLICY_MATCH_OPTIONS: MatchOptions = MatchOptions {
+    case_sensitive: true,
+    require_literal_separator: true,
+    require_literal_leading_dot: false,
+};
+
+/// Match one repo-relative path against an allowlist glob.
+///
+/// Every allowlist matcher goes through here so glob breadth is decided in one
+/// place instead of per call site.
+fn glob_matches_path(pattern: &Pattern, path: &str) -> bool {
+    pattern.matches_with(path, POLICY_MATCH_OPTIONS)
+}
+
 fn find_matching_prepared_entry<'a>(
     file_path: &str,
     entries: &[PreparedAllowEntry<'a>],
 ) -> Option<&'a AllowEntry> {
     for prepared in entries {
         let matched = if let Some(pattern) = prepared.glob.as_ref() {
-            pattern.matches(file_path)
+            glob_matches_path(pattern, file_path)
         } else if let Some(ref exact) = prepared.entry.path {
             exact == file_path
         } else {
@@ -559,7 +585,7 @@ fn expired_paths_in_tree(
         .filter(|path| {
             !is_rust_file(path)
                 && expired.iter().any(|(glob, exact, _)| {
-                    glob.as_ref().is_some_and(|pattern| pattern.matches(path))
+                    glob.as_ref().is_some_and(|pattern| glob_matches_path(pattern, path))
                         || exact.is_some_and(|candidate| candidate == path)
                 })
                 && find_matching_prepared_entry(path, &active).is_none()
@@ -2021,7 +2047,7 @@ fn entry_matches_any_tracked_file(entry: &AllowEntry, tracked: &[String]) -> boo
         let Ok(pattern) = Pattern::new(glob_str) else {
             return false;
         };
-        return tracked.iter().any(|tracked_path| pattern.matches(tracked_path));
+        return tracked.iter().any(|tracked_path| glob_matches_path(&pattern, tracked_path));
     }
     false
 }
@@ -3580,6 +3606,338 @@ review_after = "2026-06-01"
         let entries = vec![entry];
         let rec = classify_file("docs/policy/FILE_POLICY.md", &entries);
         assert_eq!(rec.category, "unclassified", "retired entry must not match");
+    }
+
+    // --- glob breadth: `*` is one segment, `**` is a tree (#9994) ---
+
+    /// The repository root, for proofs that must bind to the shipped policy
+    /// rather than a fixture copy of it.
+    fn repo_root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask/ always has a workspace-root parent")
+            .to_path_buf()
+    }
+
+    /// The single production rule that governs unreleased Changie fragments.
+    fn changie_fragment_entry() -> Result<AllowEntry> {
+        let allowlist = load_allowlist(&repo_root())?;
+        allowlist
+            .allow
+            .into_iter()
+            .find(|entry| entry.id == CHANGIE_FRAGMENT_ENTRY_ID)
+            .ok_or_else(|| eyre!("allowlist is missing entry {CHANGIE_FRAGMENT_ENTRY_ID}"))
+    }
+
+    const CHANGIE_FRAGMENT_ENTRY_ID: &str = "non-rust-changelog-fragments";
+
+    #[test]
+    fn single_star_glob_stops_at_a_directory_separator() {
+        let entries = vec![make_entry("fragments", Some("a/b/*.yaml"), None, "documentation")];
+
+        assert!(classify_file("a/b/one.yaml", &entries).allowlisted, "direct child must match");
+        assert!(
+            !classify_file("a/b/nested/one.yaml", &entries).allowlisted,
+            "`*` must not cross `/`: a nested path cannot inherit a single-segment entry"
+        );
+        assert!(
+            !classify_file("a/b/nested/deeper/one.yaml", &entries).allowlisted,
+            "`*` must not cross `/` at any depth"
+        );
+    }
+
+    #[test]
+    fn double_star_glob_still_owns_a_whole_tree() {
+        // Negative control for the fix above: tree-shaped entries must keep
+        // matching nested paths, or the matcher change would silently strip
+        // coverage from every `**` entry in the ledger.
+        let entries = vec![make_entry("docs", Some("docs/**"), None, "documentation")];
+
+        assert!(classify_file("docs/policy/FILE_POLICY.md", &entries).allowlisted);
+        assert!(classify_file("docs/a/b/c/deep.md", &entries).allowlisted);
+    }
+
+    #[test]
+    fn leading_double_star_glob_matches_root_and_nested_paths() {
+        // `**/*.md` is the breadth `non-rust-root-governance-docs` carries.
+        let entries = vec![make_entry("markdown", Some("**/*.md"), None, "documentation")];
+
+        assert!(classify_file("README.md", &entries).allowlisted, "root-level markdown");
+        assert!(classify_file("book/src/intro.md", &entries).allowlisted, "nested markdown");
+    }
+
+    #[test]
+    fn nested_markdown_keeps_the_coverage_the_loose_matcher_used_to_supply() -> Result<()> {
+        // Tightening `*` to one segment would have dropped every nested
+        // markdown file out of the ledger, because the entry that covered them
+        // was written `*.md` and only reached them through the loose matcher.
+        // The breadth is now declared instead of accidental; this proves the
+        // fix did not quietly shrink what the policy governs.
+        let allowlist = load_allowlist(&repo_root())?;
+        let prepared = prepare_allow_entries(&allowlist.allow);
+
+        for nested in [
+            ".claude/skills/deliver-pr/SKILL.md",
+            "docs/policy/NON_RUST_POLICY.md",
+            "book/src/SUMMARY.md",
+        ] {
+            assert!(
+                find_matching_prepared_entry(nested, &prepared).is_some(),
+                "{nested} must stay governed by the allowlist"
+            );
+        }
+        Ok(())
+    }
+
+    // --- one typed rule governs the Changie fragment class (#9994) ---
+
+    #[test]
+    fn changie_rule_governs_exactly_the_fragment_directory() -> Result<()> {
+        let entry = changie_fragment_entry()?;
+        let entries = vec![entry];
+
+        // Ordinary fragments the producer creates are covered with no edit here.
+        for fragment in [
+            ".changes/unreleased/product-1-Added-101010.yaml",
+            ".changes/unreleased/product-14466-Fixed-000000.yaml",
+        ] {
+            assert!(
+                classify_file(fragment, &entries).allowlisted,
+                "{fragment} must be governed by the typed rule"
+            );
+        }
+
+        // Nothing outside the exact fragment path class may inherit the rule.
+        for outsider in [
+            ".changes/unreleased/nested/product-1-Added-101010.yaml",
+            ".changes/unreleased/archive/2025/product-1-Added-101010.yaml",
+            ".changes/product-1-Added-101010.yaml",
+            ".changes/v0.1.0.yaml",
+            "CHANGELOG.md",
+            "docs/product-1-Added-101010.yaml",
+            "crates/perl-parser/fixtures/product-1-Added-101010.yaml",
+        ] {
+            assert!(
+                !classify_file(outsider, &entries).allowlisted,
+                "{outsider} must not inherit the Changie fragment rule"
+            );
+        }
+
+        // The rule is bound to the producer's extension, not to YAML generally.
+        assert!(
+            !classify_file(".changes/unreleased/product-1-Added-101010.yml", &entries).allowlisted,
+            "`.yml` is not the fragment extension Changie writes"
+        );
+        assert!(
+            !classify_file(".changes/unreleased/.gitkeep", &entries).allowlisted,
+            "the directory keeper is not a fragment and is covered on its own terms"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn changie_rule_is_narrow_enough_to_need_no_broad_glob_justification() -> Result<()> {
+        let entry = changie_fragment_entry()?;
+        let glob = entry.glob.as_deref().ok_or_else(|| eyre!("fragment rule must be a glob"))?;
+
+        assert!(
+            !is_policy_broad_glob(glob),
+            "{glob} must stay a narrow path class; a broad matcher would let unrelated files in"
+        );
+        assert!(
+            entry.broad_glob_reason.is_none(),
+            "a narrow rule must not carry a decorative broad-glob justification"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn broad_changes_tree_glob_is_rejected_without_a_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let allowlist = temp.path().join("allow.toml");
+        let debt = temp.path().join("debt.toml");
+        fs::write(
+            &allowlist,
+            r#"
+schema_version = 1
+policy = "non-rust-allowlist"
+
+[[allow]]
+id = "non-rust-changes-tree"
+glob = ".changes/**"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Everything under the changes directory."
+covered_by = []
+created = "2026-05-13"
+review_after = "2026-11-13"
+"#,
+        )?;
+        fs::write(&debt, "debt = []\n")?;
+
+        let validation = validate_non_rust_policy_files(&allowlist, &debt);
+
+        assert!(
+            validation.errors.iter().any(|error| error.contains("broad_glob_reason")),
+            "a `.changes/**` tree grab must be refused, not silently accepted: {:?}",
+            validation.errors
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fragment_path_coverage_is_not_a_claim_about_fragment_content() -> Result<()> {
+        // The path rule says only "this path class is accounted for". It must
+        // not become an implicit content exemption: a hand-written file that
+        // never went through `cargo change` still matches the path class, and
+        // is still the changelog gate's to reject. `validate_fragment` owns
+        // that verdict and has its own negative suite in `changelog.rs`.
+        let entry = changie_fragment_entry()?;
+        let entries = vec![entry.clone()];
+        let hand_written = ".changes/unreleased/not-a-real-fragment.yaml";
+
+        assert!(
+            classify_file(hand_written, &entries).allowlisted,
+            "the path class must stay checkable rather than routing around the content gate"
+        );
+        assert!(
+            entry.covered_by.iter().any(|check| check == "cargo xtask changelog check"),
+            "the entry must name the gate that actually validates fragment content"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_per_fragment_allowlist_rows_remain() -> Result<()> {
+        let allowlist = load_allowlist(&repo_root())?;
+
+        let per_fragment: Vec<&str> = allowlist
+            .allow
+            .iter()
+            .filter(|entry| entry.id != CHANGIE_FRAGMENT_ENTRY_ID)
+            .filter(|entry| {
+                let matcher = entry.glob.as_deref().or(entry.path.as_deref()).unwrap_or_default();
+                matcher.starts_with(".changes/unreleased/")
+            })
+            .map(|entry| entry.id.as_str())
+            .collect();
+
+        assert!(
+            per_fragment.is_empty(),
+            "individual fragments must not earn allowlist rows; found {per_fragment:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_tracked_fragment_resolves_to_the_single_typed_rule() -> Result<()> {
+        let root = repo_root();
+        let allowlist = load_allowlist(&root)?;
+        let prepared = prepare_allow_entries(&allowlist.allow);
+
+        let mut fragments: Vec<String> = list_tracked_files(&root)?
+            .into_iter()
+            .filter(|path| path.starts_with(".changes/unreleased/") && path.ends_with(".yaml"))
+            .collect();
+
+        // A release drains the directory, so the tracked population is
+        // legitimately empty some of the time. Always exercise a synthetic
+        // fragment as well, so this proof can never pass vacuously on the
+        // release commit.
+        fragments.push(".changes/unreleased/product-1-Added-101010.yaml".to_string());
+
+        for fragment in &fragments {
+            let owner = find_matching_prepared_entry(fragment, &prepared)
+                .ok_or_else(|| eyre!("{fragment} is not covered by any allowlist entry"))?;
+            assert_eq!(
+                owner.id, CHANGIE_FRAGMENT_ENTRY_ID,
+                "{fragment} must be governed by the typed rule, not by {}",
+                owner.id
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn draining_the_fragment_directory_leaves_no_stale_policy_row() -> Result<()> {
+        // A release renders and deletes every unreleased fragment. Because the
+        // rule names a path class rather than instances, the ledger needs no
+        // edit; the entry simply stops matching. This is the property that a
+        // per-fragment row could not have.
+        let entry = changie_fragment_entry()?;
+        let entries = vec![entry.clone()];
+
+        assert!(
+            classify_file(".changes/unreleased/product-1-Added-101010.yaml", &entries).allowlisted,
+            "covered before the release drains the directory"
+        );
+        assert!(
+            !entry_matches_any_tracked_file(&entry, &[".changes/unreleased/.gitkeep".to_string()]),
+            "after the drain the rule matches nothing and leaves no per-file receipt behind"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn two_independent_fragment_additions_do_not_touch_the_allowlist() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        let entry = changie_fragment_entry()?;
+        let allowlist_toml =
+            format!("[[allow]]\n{}", toml::to_string(&entry).context("serializing rule")?);
+
+        run_git(root, &["init", "-q"])?;
+        run_git(root, &["config", "user.email", "fixture@example.invalid"])?;
+        run_git(root, &["config", "user.name", "fixture"])?;
+        // Name the base branch without depending on `git init -b` or on the
+        // host's `init.defaultBranch`.
+        run_git(root, &["checkout", "-q", "-b", "base"])?;
+        write_fixture(root, "policy/non-rust-allowlist.toml", &allowlist_toml)?;
+        write_fixture(root, ".changes/unreleased/.gitkeep", "")?;
+        run_git(root, &["add", "."])?;
+        run_git(root, &["commit", "-qm", "base"])?;
+
+        let first = ".changes/unreleased/product-101-Added-101010.yaml";
+        let second = ".changes/unreleased/product-202-Fixed-202020.yaml";
+
+        for (branch, fragment) in [("candidate-a", first), ("candidate-b", second)] {
+            run_git(root, &["checkout", "-q", "-b", branch, "base"])?;
+            write_fixture(root, fragment, "project: product\nkind: Added\nbody: fixture\n")?;
+            run_git(root, &["add", fragment])?;
+            run_git(root, &["commit", "-qm", branch])?;
+        }
+
+        // Neither candidate edited the shared policy authority: that is the
+        // whole point of the typed rule. #9680's conflicts came from both
+        // candidates appending a row to this one file.
+        for branch in ["candidate-a", "candidate-b"] {
+            let output = std::process::Command::new("git")
+                .current_dir(root)
+                .args(["diff", "--name-only", "base", branch])
+                .output()
+                .context("diffing candidate against base")?;
+            let changed = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                !changed.contains("policy/non-rust-allowlist.toml"),
+                "adding a fragment must not mutate the allowlist; {branch} changed: {changed}"
+            );
+        }
+
+        run_git(root, &["checkout", "-q", "candidate-a"])?;
+        run_git(root, &["merge", "-q", "--no-edit", "candidate-b"])?;
+
+        let entries = vec![entry];
+        for fragment in [first, second] {
+            assert!(root.join(fragment).exists(), "{fragment} must survive the merge");
+            assert!(
+                classify_file(fragment, &entries).allowlisted,
+                "{fragment} must be governed after the merge with no allowlist edit"
+            );
+        }
+        Ok(())
     }
 
     // --- extension extraction ---
