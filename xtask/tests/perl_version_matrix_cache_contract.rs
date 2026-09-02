@@ -15,6 +15,39 @@ fn perl_matrix_uses_default_branch_cache_producers() -> Result<(), Box<dyn std::
     let workflow_path = project_root().join(".github/workflows/perl-version-matrix.yml");
     let source = fs::read_to_string(&workflow_path)?;
     let workflow: Value = serde_yaml_ng::from_str(&source)?;
+    let triggers = workflow
+        .get("on")
+        .and_then(Value::as_mapping)
+        .ok_or("perl-version-matrix.yml must declare mapping-valued triggers")?;
+    assert!(
+        triggers.contains_key(Value::String("pull_request".into())),
+        "the matrix cache contract must run on ordinary pull requests"
+    );
+    assert!(
+        !triggers.contains_key(Value::String("pull_request_target".into())),
+        "candidate-controlled pull_request_target runs must not become cache producers"
+    );
+    assert!(
+        triggers.contains_key(Value::String("schedule".into())),
+        "the matrix cache contract must retain its scheduled producer"
+    );
+    assert!(
+        triggers.contains_key(Value::String("workflow_dispatch".into())),
+        "the matrix cache contract must retain its manual producer"
+    );
+    let pull_request = triggers
+        .get(Value::String("pull_request".into()))
+        .and_then(Value::as_mapping)
+        .ok_or("pull_request trigger must declare branch filters")?;
+    let branches = pull_request
+        .get(Value::String("branches".into()))
+        .and_then(Value::as_sequence)
+        .ok_or("pull_request trigger must declare branches")?;
+    assert_eq!(
+        branches,
+        &vec![Value::String("main".into()), Value::String("master".into())],
+        "cache producers must be limited to the canonical branches"
+    );
     let job = workflow
         .get("jobs")
         .and_then(|jobs| jobs.get("perl-version-matrix"))
