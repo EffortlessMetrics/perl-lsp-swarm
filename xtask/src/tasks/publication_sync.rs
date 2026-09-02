@@ -676,6 +676,22 @@ impl ProductSurface {
         surface
     }
 
+    /// As above, but each row is a glob rather than an exact path, so a broad
+    /// entry that sweeps in several files can be exercised.
+    #[cfg(test)]
+    fn from_glob_rows_for_test(rows: Vec<(&str, &str, &str)>) -> Self {
+        let mut surface = Self::from_expiring_entries_for_test(
+            rows.iter().map(|(glob, class, _)| (*glob, *class, None)).collect(),
+        );
+        for (entry, (glob, _, ledger_surface)) in surface.entries.iter_mut().zip(rows) {
+            entry.path = None;
+            entry.glob = Some(glob.to_string());
+            entry.surface = ledger_surface.to_string();
+        }
+        surface.entries.retain(entry_is_protected);
+        surface
+    }
+
     /// As above, with an explicit `expires` date per row.
     #[cfg(test)]
     fn from_expiring_entries_for_test(rows: Vec<(&str, &str, Option<&str>)>) -> Self {
@@ -728,8 +744,21 @@ impl ProductSurface {
         // matching no classifier itself.
         let mut expired = false;
         for entry in self.entries.iter().filter(|entry| {
-            entry_governs(entry, path)
-                || entry.path.as_deref().is_some_and(|governed| is_path_prefix(path, governed))
+            (entry_governs(entry, path)
+                || entry.path.as_deref().is_some_and(|governed| is_path_prefix(path, governed)))
+                // A broad `config` glob can sweep in prose it merely lives
+                // beside. The LSP4IJ template entry says so itself: its
+                // `broad_glob_reason` describes "a fixed directory of sibling
+                // descriptors ... plus its maintainer README; the host requires
+                // them to live together". Protecting the JSON descriptors is the
+                // point; protecting a maintainer README would make
+                // development-only prose undroppable, which is exactly what
+                // publication is for.
+                //
+                // Only `config` is carved this way. `production` and `test` are
+                // deliberate statements about every file they cover, prose
+                // included, and are not weakened here.
+                && !(entry.classification == "config" && is_prose_document(path))
         }) {
             match (entry.expires.as_deref().and_then(parse_date), evaluated_at) {
                 // `file_policy` stops honouring an entry once it expires. Here
@@ -803,6 +832,22 @@ fn entry_is_protected(entry: &AllowEntry) -> bool {
     }
     SHIPPED_SURFACES.contains(&entry.surface.as_str())
         && matches!(entry.classification.as_str(), "tooling" | "generated" | "config")
+}
+
+/// A prose document, by extension.
+///
+/// Used only to carve prose out of broad `config` entries. Extension rather than
+/// content because the ledger governs paths, and a path is all the planner has:
+/// it never opens the file to decide what to protect.
+fn is_prose_document(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.rsplit_once('.').is_some_and(|(stem, extension)| {
+        !stem.is_empty()
+            && matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "md" | "markdown" | "txt" | "rst" | "adoc"
+            )
+    })
 }
 
 /// Rust-family build and toolchain manifests at any depth.

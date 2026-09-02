@@ -227,6 +227,21 @@ fn plan_with_checkout(document: &Value, checkout: CheckoutResolver) -> Result<Re
     )
 }
 
+/// Evaluate the clean fixture against a caller-supplied product surface.
+fn plan_with_surface(document: &Value, surface: &ProductSurface) -> Result<Receipt> {
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(document)?;
+    evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        surface,
+        fixture_checkout,
+        fixture_tree,
+    )
+}
+
 fn rows_mut(document: &mut Value) -> Result<&mut Vec<Value>> {
     document
         .get_mut("paths")
@@ -2872,4 +2887,65 @@ fn shipped_configuration_may_still_be_translated() -> Result<()> {
         bail!("translating shipped config was refused: {:?}", receipt.findings);
     }
     Ok(())
+}
+
+/// The real mixed-content entry: `integrations/lsp4ij/perl-lsp/**`, classified
+/// `config` on the `editor` surface. Its own `broad_glob_reason` in
+/// `policy/non-rust-allowlist.toml` describes the directory as "a fixed
+/// directory of sibling descriptors (template, settings, settings schema,
+/// initialization options) plus its maintainer README".
+///
+/// Both halves of that sentence have to hold: the descriptors are protected,
+/// the maintainer README is not.
+#[test]
+fn a_broad_config_glob_protects_its_descriptors_but_not_its_prose() -> Result<()> {
+    let surface = ProductSurface::from_glob_rows_for_test(vec![(
+        "integrations/lsp4ij/perl-lsp/**",
+        "config",
+        "editor",
+    )]);
+
+    let functional = "integrations/lsp4ij/perl-lsp/template.json";
+    let prose = "integrations/lsp4ij/perl-lsp/README.md";
+
+    // Neither is caught by a cheaper classifier, so both answers come from the
+    // ledger rule under test.
+    for path in [functional, prose] {
+        if is_product_or_test_path(path) || is_rust_build_manifest(path) {
+            bail!("{path} is already caught as a string; pick a sharper case");
+        }
+    }
+
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["path"] = json!(functional);
+    let receipt = plan_with_surface(&document, &surface)?;
+    if !receipt.findings.iter().any(|f| f.code == "row_product_bearing_exclusion") {
+        bail!("the functional descriptor was displaceable: {:?}", receipt.findings);
+    }
+
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["path"] = json!(prose);
+    let receipt = plan_with_surface(&document, &surface)?;
+    if receipt.findings.iter().any(|f| f.code == "row_product_bearing_exclusion") {
+        bail!("the maintainer README was made undroppable: {:?}", receipt.findings);
+    }
+    Ok(())
+}
+
+#[test]
+fn prose_inside_a_production_entry_stays_protected() -> Result<()> {
+    // The carve-out is deliberately narrow. `production` and `test` are
+    // statements about every file they cover, prose included; only the `config`
+    // widening needed carving, so a `.md` under a production glob must not be
+    // swept out with it.
+    let surface = ProductSurface::from_glob_rows_for_test(vec![(
+        "clients/sublime/**",
+        "production",
+        "editor",
+    )]);
+
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[1]["path"] = json!("clients/sublime/README.md");
+    let receipt = plan_with_surface(&document, &surface)?;
+    assert_finding(&receipt, "row_product_bearing_exclusion")
 }
