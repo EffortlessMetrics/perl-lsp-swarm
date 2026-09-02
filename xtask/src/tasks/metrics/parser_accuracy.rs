@@ -48,6 +48,7 @@ use crate::utils::project_root;
 use xtask::parser_accuracy_legacy_population::legacy_whitespace_case_applies;
 
 mod failure_packet;
+mod registry;
 
 const DEFAULT_MANIFEST: &str = "crates/perl-corpus/fixtures/parser_accuracy/manifest.json";
 const DEFAULT_OUTPUT: &str = "target/metrics/parser_accuracy.json";
@@ -1034,9 +1035,15 @@ pub fn run(
     let output_path = output.unwrap_or_else(|| root.join(DEFAULT_OUTPUT));
 
     let (manifest, artifact) = build_status_artifact(&root, &manifest_path, cadence)?;
+    let canonical_manifest = manifest_path == root.join(DEFAULT_MANIFEST);
 
     if check {
         validate_artifact_contract(&artifact)?;
+        if canonical_manifest {
+            // Only a canonical-manifest run is expected to score every plane, so the
+            // registry's completeness half is enforced here rather than on every artifact.
+            registry::MetricRegistry::load()?.validate_completeness(&artifact.metrics)?;
+        }
         println!(
             "parser accuracy artifact check passed: {} fixtures across {} families",
             artifact.denominator.fixture_count, artifact.denominator.fixture_family_count
@@ -1066,6 +1073,8 @@ pub fn refresh_default_artifact_for_status(root: &Path) -> Result<()> {
     let output_path = root.join(DEFAULT_OUTPUT);
     let (_manifest, artifact) = build_status_artifact(root, &manifest_path, Cadence::Pr)?;
     validate_artifact_contract(&artifact)?;
+    // This refresh always uses the canonical manifest, so the full registry must be emitted.
+    registry::MetricRegistry::load()?.validate_completeness(&artifact.metrics)?;
     write_artifact(&output_path, &artifact)?;
     write_ratchet_receipt(root, &artifact)?;
     println!("parser accuracy artifact written: {}", output_path.display());
@@ -1092,6 +1101,10 @@ fn build_status_artifact(
     settle_artifact_size(&mut artifact)?;
     sync_allocation_metric_rows(&mut artifact, cadence);
     sync_runtime_metric_rows(&mut artifact, cadence);
+    // The two sync steps above replace runtime rows after `build_artifact` returned, so the
+    // registry is reapplied here. `apply` is idempotent: it is run after every step that can
+    // introduce or replace a metric row.
+    registry::MetricRegistry::load()?.apply(&mut artifact.metrics)?;
     Ok((manifest, artifact))
 }
 
@@ -1210,6 +1223,8 @@ fn build_artifact(
     metrics.extend(determinism_metrics(&determinism_score, cadence));
     metrics.extend(gold_drift_metrics(&gold_drift, denominator.fixture_count, cadence));
     apply_safety_floor_metadata(&mut metrics);
+    // The registry owns per-metric direction and the confidence a sample count can carry.
+    registry::MetricRegistry::load()?.apply(&mut metrics)?;
 
     Ok(ParserAccuracyArtifact {
         schema_version: 1,
@@ -6098,6 +6113,7 @@ fn validate_artifact_contract(artifact: &ParserAccuracyArtifact) -> Result<()> {
             MetricRow::Measured { .. } | MetricRow::InsufficientData { .. } => {}
         }
     }
+    registry::MetricRegistry::load()?.validate_conformance(&artifact.metrics)?;
     Ok(())
 }
 
@@ -6599,9 +6615,7 @@ fn measured_metric_value(artifact: &ParserAccuracyArtifact, name: &str) -> Optio
 
 fn apply_safety_floor_metadata(metrics: &mut [MetricRow]) {
     for row in metrics {
-        let MetricRow::Measured {
-            metric, value, previous, delta, floor, threshold, direction, ..
-        } = row
+        let MetricRow::Measured { metric, value, previous, delta, floor, threshold, .. } = row
         else {
             continue;
         };
@@ -6616,7 +6630,6 @@ fn apply_safety_floor_metadata(metrics: &mut [MetricRow]) {
         *delta = Some(*value - *floor_value);
         *floor = Some(*floor_value);
         *threshold = Some(*floor_value);
-        *direction = Direction::Down;
     }
 }
 
@@ -8748,6 +8761,8 @@ sub dynamic_boundary_case {
 
         apply_safety_floor_metadata(&mut metrics);
 
+        // `apply_safety_floor_metadata` owns floor/threshold/previous/delta only. Since
+        // #14553 the metric registry owns `direction`, asserted separately below.
         for name in ["dynamic_false_precision_count", "fast_path_wrong_result_count"] {
             assert!(metrics.iter().any(|metric| {
                 matches!(
@@ -8759,7 +8774,6 @@ sub dynamic_boundary_case {
                         delta: Some(0.0),
                         floor: Some(0.0),
                         threshold: Some(0.0),
-                        direction: Direction::Down,
                         sample_count: 1,
                         ..
                     } if metric == name && (*value - 0.0).abs() < f64::EPSILON
@@ -8773,11 +8787,31 @@ sub dynamic_boundary_case {
                     metric,
                     floor: None,
                     threshold: None,
-                    direction: Direction::Neutral,
                     ..
                 } if metric == "line_construct_f1"
             )
         }));
+
+        // Direction is now the registry's to assign, and it distinguishes the two
+        // lower-is-better safety floors from a higher-is-better accuracy metric.
+        registry::MetricRegistry::load()
+            .expect("authored registry parses")
+            .apply(&mut metrics)
+            .expect("all three metrics are registered");
+        let direction_of = |name: &str| {
+            metrics
+                .iter()
+                .find_map(|row| match row {
+                    MetricRow::Measured { metric, direction, .. } if metric == name => {
+                        Some(*direction)
+                    }
+                    _ => None,
+                })
+                .expect("metric row is present")
+        };
+        assert_eq!(direction_of("dynamic_false_precision_count"), Direction::Down);
+        assert_eq!(direction_of("fast_path_wrong_result_count"), Direction::Down);
+        assert_eq!(direction_of("line_construct_f1"), Direction::Up);
     }
 
     #[test]
@@ -9901,6 +9935,49 @@ sub dynamic_boundary_case {
                         && (*value - 1.0).abs() < f64::EPSILON
             )
         }));
+    }
+
+    /// End-to-end proof that the canonical run satisfies the authored registry in both
+    /// directions: every emitted row conforms to its entry, and every registered metric is
+    /// actually emitted.
+    ///
+    /// This is the discriminating check. The focused unit tests in `registry` prove the
+    /// validator rejects each violation shape against synthetic rows; this one proves the
+    /// real 190-plus-row artifact the repository publishes is conformant, so the registry
+    /// cannot quietly drift away from the emitter.
+    #[test]
+    fn canonical_manifest_artifact_satisfies_the_metric_registry() -> Result<()> {
+        let root = project_root()?;
+        let manifest_path = root.join(DEFAULT_MANIFEST);
+        let (_manifest, artifact) = build_status_artifact(&root, &manifest_path, Cadence::Pr)?;
+        let registry = registry::MetricRegistry::load()?;
+
+        registry.validate_conformance(&artifact.metrics)?;
+        registry.validate_completeness(&artifact.metrics)?;
+        assert_eq!(
+            artifact.metrics.len(),
+            registry.len(),
+            "the canonical run and the registry must agree on the metric denominator"
+        );
+        Ok(())
+    }
+
+    /// The registry must actually discriminate: a metric that stops being emitted has to
+    /// fail the canonical run rather than pass unnoticed.
+    #[test]
+    fn dropping_an_emitted_metric_fails_the_registry_denominator() -> Result<()> {
+        let root = project_root()?;
+        let manifest_path = root.join(DEFAULT_MANIFEST);
+        let (_manifest, artifact) = build_status_artifact(&root, &manifest_path, Cadence::Pr)?;
+        let registry = registry::MetricRegistry::load()?;
+
+        let mut mutated = artifact.metrics.clone();
+        let dropped = mutated.remove(0);
+        let err = registry
+            .validate_completeness(&mutated)
+            .expect_err("a dropped metric must fail the denominator");
+        assert!(err.to_string().contains(dropped.name()), "{err}");
+        Ok(())
     }
 
     #[test]
