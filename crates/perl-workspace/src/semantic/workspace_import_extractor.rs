@@ -483,6 +483,42 @@ fn classify_use(module: &str, args: &[String], file_id: FileId, node: &Node) -> 
     })
 }
 
+/// The `use` argument tokens that are not part of a module configuration hash.
+///
+/// A standalone `{ ... }` in an import list configures the module — `use M 'a',
+/// { key => 'value' }` asks for `a` alone — so its body is not a list of requested
+/// symbols, and reading it publishes the configuration's keys and values as
+/// imported names.
+///
+/// A hash whose first key is dash-prefixed is left alone. That is
+/// Sub::Exporter's per-symbol option form, `foo => { -as => 'bar' }`, which
+/// describes the symbol being imported rather than the module; the parser drops
+/// the `=>` before it, so the two shapes are otherwise indistinguishable here.
+/// Modelling the rename is out of scope, but dropping the body would hide the
+/// installed name (`bar`) while keeping the name that is not installed (`foo`),
+/// which is worse than the imprecision it replaces.
+fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
+    let mut kept = Vec::new();
+    let mut skip_depth = 0usize;
+    for (index, arg) in args.iter().enumerate() {
+        let trimmed = arg.trim();
+        if skip_depth > 0 {
+            match trimmed {
+                "{" => skip_depth = skip_depth.saturating_add(1),
+                "}" => skip_depth = skip_depth.saturating_sub(1),
+                _ => {}
+            }
+            continue;
+        }
+        if trimmed == "{" && args.get(index + 1).map(|next| next.trim()) != Some("-") {
+            skip_depth = 1;
+            continue;
+        }
+        kept.push(trimmed);
+    }
+    kept
+}
+
 fn classify_args(args: &[String], module: &str, node: &Node) -> (ImportKind, ImportSymbols) {
     if args.is_empty() {
         let bare_len = "use ".len() + module.len() + 1; // +1 for ';'
@@ -495,29 +531,13 @@ fn classify_args(args: &[String], module: &str, node: &Node) -> (ImportKind, Imp
 
     let mut explicit_names: Vec<String> = Vec::new();
     let mut tags: Vec<String> = Vec::new();
-    // Tokens inside a `{ ... }` argument are a configuration hash, not a list
-    // of requested symbols: `use M 'a', { key => 'value' }` asks for `a` alone.
-    // These names reach the live `ImportExportIndex`, so reading the hash body
-    // would make its keys and values resolve as imported symbols.
-    let mut hash_depth = 0usize;
+    // These names reach the live `ImportExportIndex`, so a configuration hash
+    // read as an import list resolves its keys and values as symbols this file
+    // imported.
+    let requested = arguments_outside_configuration_hashes(args);
 
-    for arg in args {
-        let trimmed = arg.trim();
-
-        match trimmed {
-            "{" => {
-                hash_depth = hash_depth.saturating_add(1);
-                continue;
-            }
-            "}" => {
-                hash_depth = hash_depth.saturating_sub(1);
-                continue;
-            }
-            _ => {}
-        }
-        if hash_depth > 0 {
-            continue;
-        }
+    for trimmed in &requested {
+        let trimmed = *trimmed;
 
         if let Some(inner) = parse_qw_content(trimmed) {
             for word in inner.split_whitespace() {
@@ -545,11 +565,13 @@ fn classify_args(args: &[String], module: &str, node: &Node) -> (ImportKind, Imp
         }
     }
 
+    // Only arguments outside a configuration hash may keep this from being an
+    // empty import. `use Sub::Exporter -setup => { exports => [qw(foo)] };`
+    // requests nothing, and falling through to `Use`/`Default` would claim the
+    // file receives the module's default exports.
     if explicit_names.is_empty() && tags.is_empty() && !args.is_empty() {
-        let has_any_symbol = args.iter().any(|a| {
-            let t = a.trim();
-            looks_like_symbol_name(t) || parse_qw_content(t).is_some()
-        });
+        let has_any_symbol =
+            requested.iter().any(|t| looks_like_symbol_name(t) || parse_qw_content(t).is_some());
         if !has_any_symbol {
             return (ImportKind::UseEmpty, ImportSymbols::None);
         }
@@ -1000,6 +1022,49 @@ mod tests {
             spec.symbols,
             ImportSymbols::Explicit(vec!["param1".to_string(), "param2".to_string()])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_configuration_only_use_is_an_empty_import_not_a_default_one()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Asserting the kind, not just the absence of leaked names. Skipping the
+        // hash body leaves nothing that looks like a symbol, and the
+        // empty-result fallback must reach `UseEmpty` on that basis rather than
+        // finding `exports` inside the skipped hash and falling through to
+        // `Use`/`Default` — which would claim this file receives Sub::Exporter's
+        // default exports.
+        let specs = parse_and_extract("use Sub::Exporter -setup => { exports => [qw(foo bar)] };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Sub::Exporter")
+            .ok_or("expected an ImportSpec for Sub::Exporter")?;
+
+        assert_eq!(spec.kind, ImportKind::UseEmpty);
+        assert_eq!(spec.symbols, ImportSymbols::None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_per_symbol_option_hash_keeps_the_installed_name() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // `foo => { -as => 'bar' }` installs `bar`, not `foo`. This pass does not
+        // model the rename — that is a stated non-goal — but skipping the option
+        // hash would drop `bar` and keep only `foo`, turning an imprecise answer
+        // into a wrong one. A dash-prefixed first key marks the per-symbol form.
+        let specs = parse_and_extract("use Module foo => { -as => 'bar' };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Module")
+            .ok_or("expected an ImportSpec for Module")?;
+
+        match &spec.symbols {
+            ImportSymbols::Explicit(names) => assert!(
+                names.iter().any(|name| name == "bar"),
+                "the installed name must survive: {names:?}"
+            ),
+            other => return Err(format!("expected an explicit list, got {other:?}").into()),
+        }
         Ok(())
     }
 

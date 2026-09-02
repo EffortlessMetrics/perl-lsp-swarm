@@ -23,6 +23,39 @@ use perl_semantic_facts::{
     AnchorId, Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance,
 };
 
+/// The `use` argument tokens that are not part of a module configuration hash.
+///
+/// A standalone `{ ... }` in an import list configures the module — `use M 'a',
+/// { key => 'value' }` asks for `a` alone — so its body is not a list of
+/// requested symbols.
+///
+/// A hash whose first key is dash-prefixed is left alone: that is
+/// Sub::Exporter's per-symbol option form, `foo => { -as => 'bar' }`, which
+/// describes the symbol rather than the module. Modelling the rename is out of
+/// scope here, but dropping the body would hide the installed name while
+/// keeping the one that is not installed.
+fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
+    let mut kept = Vec::new();
+    let mut skip_depth = 0usize;
+    for (index, arg) in args.iter().enumerate() {
+        let trimmed = arg.trim();
+        if skip_depth > 0 {
+            match trimmed {
+                "{" => skip_depth = skip_depth.saturating_add(1),
+                "}" => skip_depth = skip_depth.saturating_sub(1),
+                _ => {}
+            }
+            continue;
+        }
+        if trimmed == "{" && args.get(index + 1).map(|next| next.trim()) != Some("-") {
+            skip_depth = 1;
+            continue;
+        }
+        kept.push(trimmed);
+    }
+    kept
+}
+
 /// Extractor that walks an AST to produce [`ImportSpec`] entries for each
 /// `use` and `require` statement found.
 pub struct ImportExtractor;
@@ -485,29 +518,10 @@ impl ImportExtractor {
         // Collect explicit names, tags, and detect qw() forms.
         let mut explicit_names: Vec<String> = Vec::new();
         let mut tags: Vec<String> = Vec::new();
-        // Tokens inside a `{ ... }` argument are a configuration hash, not a
-        // list of requested symbols: `use M 'a', { key => 'value' }` asks for
-        // `a` alone, and reading the hash body would report `key` and `value`
-        // as imported names.
-        let mut hash_depth = 0usize;
+        let requested = arguments_outside_configuration_hashes(args);
 
-        for arg in args {
-            let trimmed = arg.trim();
-
-            match trimmed {
-                "{" => {
-                    hash_depth = hash_depth.saturating_add(1);
-                    continue;
-                }
-                "}" => {
-                    hash_depth = hash_depth.saturating_sub(1);
-                    continue;
-                }
-                _ => {}
-            }
-            if hash_depth > 0 {
-                continue;
-            }
+        for trimmed in &requested {
+            let trimmed = *trimmed;
 
             // qw(...) form: "qw(a b c)"
             if let Some(inner) = Self::parse_qw_content(trimmed) {
@@ -545,11 +559,12 @@ impl ImportExtractor {
         if explicit_names.is_empty() && tags.is_empty() && !args.is_empty() {
             // The parser consumed `()` but produced no meaningful args.
             // However, args may contain punctuation tokens from complex use statements.
-            // If all args are non-symbol tokens, treat as empty import.
-            let has_any_symbol = args.iter().any(|a| {
-                let t = a.trim();
-                Self::looks_like_symbol_name(t) || Self::parse_qw_content(t).is_some()
-            });
+            // If all args are non-symbol tokens, treat as empty import. Only
+            // arguments outside a configuration hash count: a configuration-only
+            // `use` requests nothing and must not fall through to a default import.
+            let has_any_symbol = requested
+                .iter()
+                .any(|t| Self::looks_like_symbol_name(t) || Self::parse_qw_content(t).is_some());
             if !has_any_symbol {
                 return (ImportKind::UseEmpty, ImportSymbols::None);
             }

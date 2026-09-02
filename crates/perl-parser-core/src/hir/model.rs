@@ -2498,6 +2498,39 @@ fn import_spec(
     }
 }
 
+/// The `use` argument tokens that are not part of a module configuration hash.
+///
+/// A standalone `{ ... }` in an import list configures the module — `use M 'a',
+/// { key => 'value' }` asks for `a` alone — so its body is not a list of
+/// requested symbols.
+///
+/// A hash whose first key is dash-prefixed is left alone: that is
+/// Sub::Exporter's per-symbol option form, `foo => { -as => 'bar' }`, which
+/// describes the symbol rather than the module. Modelling the rename is out of
+/// scope here, but dropping the body would hide the installed name while
+/// keeping the one that is not installed.
+fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
+    let mut kept = Vec::new();
+    let mut skip_depth = 0usize;
+    for (index, arg) in args.iter().enumerate() {
+        let trimmed = arg.trim();
+        if skip_depth > 0 {
+            match trimmed {
+                "{" => skip_depth = skip_depth.saturating_add(1),
+                "}" => skip_depth = skip_depth.saturating_sub(1),
+                _ => {}
+            }
+            continue;
+        }
+        if trimmed == "{" && args.get(index + 1).map(|next| next.trim()) != Some("-") {
+            skip_depth = 1;
+            continue;
+        }
+        kept.push(trimmed);
+    }
+    kept
+}
+
 fn classify_import_args(
     args: &[String],
     module: &str,
@@ -2520,30 +2553,10 @@ fn classify_import_args(
     let mut explicit_names = Vec::new();
     let mut tags = Vec::new();
     let mut has_dynamic_arg = false;
-    // Tokens inside a `{ ... }` argument are a configuration hash, not a list of
-    // requested symbols: `use Sub::Exporter -setup => { exports => [qw(foo)] }`
-    // asks for nothing, and `use M 'a', { key => 'value' }` asks for `a` alone.
-    // Reading the hash body would publish its keys and values as imported names
-    // at `ExactAst`/`High`, which is the same over-claim in the import direction
-    // that the export lowering refuses in the export direction.
-    let mut hash_depth = 0usize;
-
-    for arg in args {
-        let trimmed = arg.trim();
-        match trimmed {
-            "{" => {
-                hash_depth = hash_depth.saturating_add(1);
-                continue;
-            }
-            "}" => {
-                hash_depth = hash_depth.saturating_sub(1);
-                continue;
-            }
-            _ => {}
-        }
-        if hash_depth > 0 {
-            continue;
-        }
+    // Reading a configuration hash body would publish its keys and values as
+    // imported names at `ExactAst`/`High` — the same over-claim in the import
+    // direction that the export lowering refuses in the export direction.
+    for trimmed in arguments_outside_configuration_hashes(args) {
         if trimmed == "=>" || trimmed == "," || trimmed == "\\" {
             continue;
         }

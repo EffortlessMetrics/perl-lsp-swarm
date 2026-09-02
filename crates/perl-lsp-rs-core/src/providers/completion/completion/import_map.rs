@@ -101,6 +101,40 @@ fn collect(node: &Node, map: &mut ImportMap) {
     }
 }
 
+/// The `use` argument tokens that are not part of a module configuration hash.
+///
+/// A standalone `{ ... }` in an import list configures the module — `use M 'a',
+/// { key => 'value' }` asks for `a` alone — so its body is not a list of
+/// requested symbols, and these symbols are the filter deciding which of a
+/// module's names completion may offer.
+///
+/// A hash whose first key is dash-prefixed is left alone: that is
+/// Sub::Exporter's per-symbol option form, `foo => { -as => 'bar' }`, which
+/// describes the symbol rather than the module. Modelling the rename is out of
+/// scope here, but dropping the body would drop `bar` — the name actually
+/// installed — while keeping `foo`, which is not.
+fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
+    let mut kept = Vec::new();
+    let mut skip_depth = 0usize;
+    for (index, arg) in args.iter().enumerate() {
+        let trimmed = arg.trim();
+        if skip_depth > 0 {
+            match trimmed {
+                "{" => skip_depth = skip_depth.saturating_add(1),
+                "}" => skip_depth = skip_depth.saturating_sub(1),
+                _ => {}
+            }
+            continue;
+        }
+        if trimmed == "{" && args.get(index + 1).map(|next| next.trim()) != Some("-") {
+            skip_depth = 1;
+            continue;
+        }
+        kept.push(trimmed);
+    }
+    kept
+}
+
 fn collect_use_import(module: &str, args: &[String], map: &mut ImportMap) {
     if !is_importable_module(module) || args.is_empty() {
         return;
@@ -110,27 +144,10 @@ fn collect_use_import(module: &str, args: &[String], map: &mut ImportMap) {
     let mut has_symbol_args = false;
     let mut has_unresolved_tag = false;
 
-    // Tokens inside a `{ ... }` argument are a configuration hash, not a list
-    // of requested symbols: `use M 'a', { key => 'value' }` asks for `a` alone.
     // `collect_import_symbols` skips a bare brace token but not the body
-    // between them, so the depth is tracked here — otherwise the hash's keys
-    // and values become the filter that decides which completions this module
-    // may offer.
-    let mut hash_depth = 0usize;
-
-    for arg in args {
-        match arg.trim() {
-            "{" => {
-                hash_depth = hash_depth.saturating_add(1);
-                continue;
-            }
-            "}" => {
-                hash_depth = hash_depth.saturating_sub(1);
-                continue;
-            }
-            _ => {}
-        }
-        if hash_depth > 0 || !is_symbol_arg_candidate(arg) {
+    // between them, so configuration hashes are removed here instead.
+    for arg in arguments_outside_configuration_hashes(args) {
+        if !is_symbol_arg_candidate(arg) {
             continue;
         }
         // The second tuple element signals an unresolvable export tag.  We used
@@ -216,6 +233,20 @@ mod tests {
         assert!(symbols.contains("param2"), "param2 is requested; got: {symbols:?}");
         assert!(!symbols.contains("key"), "a hash key is not imported; got: {symbols:?}");
         assert!(!symbols.contains("value"), "a hash value is not imported; got: {symbols:?}");
+    }
+
+    /// `foo => { -as => 'bar' }` installs `bar`. Skipping the option hash would
+    /// leave the filter allowing `foo` — which is not installed — and blocking
+    /// `bar`, which is, hiding a real symbol from completion.
+    #[test]
+    fn a_per_symbol_option_hash_keeps_the_installed_name_in_the_filter() {
+        let code = "use Module foo => { -as => 'bar' };\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Module"));
+        assert!(symbols.contains("bar"), "the installed name must survive; got: {symbols:?}");
     }
 
     #[test]
