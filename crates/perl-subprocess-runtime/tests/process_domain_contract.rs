@@ -1030,7 +1030,10 @@ fn truncated_or_limited_output_never_claims_to_be_complete() -> TestResult {
             1024,
             perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
             b"retained".to_vec(),
-            TruncationState::ObservationTruncated { limit_bytes: 1024 },
+            // Both bounds were reached: reading stopped at 1024 and only 8 of
+            // those bytes were kept. Naming just one of them would assert the
+            // other was complete.
+            TruncationState::observation_and_retention_truncated(1024, 8),
         ),
         StreamEvidence::empty(StreamChannel::Stderr),
         TerminalDisposition::CompletedExit { code: 0 },
@@ -2192,7 +2195,7 @@ fn a_result_cannot_carry_swapped_or_incoherent_stream_evidence() -> TestResult {
             10_000,
             perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
             b"retained".to_vec(),
-            TruncationState::Complete,
+            TruncationState::complete(),
         ),
         StreamEvidence::empty(StreamChannel::Stderr),
         TerminalDisposition::CompletedExit { code: 0 },
@@ -2315,7 +2318,7 @@ fn truncation_evidence_must_agree_with_the_limit_that_stopped_it() -> TestResult
             10,
             perl_subprocess_runtime::process::ContentFingerprint::of(b"x"),
             b"x".to_vec(),
-            TruncationState::ObservationTruncated { limit_bytes: 1024 },
+            TruncationState::observation_truncated(1024),
         ),
         StreamEvidence::empty(StreamChannel::Stderr),
         TerminalDisposition::CompletedExit { code: 0 },
@@ -2330,7 +2333,7 @@ fn truncation_evidence_must_agree_with_the_limit_that_stopped_it() -> TestResult
             10_000,
             perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
             vec![b'x'; 64],
-            TruncationState::RetentionTruncated { limit_bytes: 8 },
+            TruncationState::retention_truncated(8),
         ),
         StreamEvidence::empty(StreamChannel::Stderr),
         TerminalDisposition::CompletedExit { code: 0 },
@@ -2689,7 +2692,7 @@ fn retention_truncation_must_match_its_stop_point_exactly() -> TestResult {
             10_000,
             perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
             vec![b'x'; 4],
-            TruncationState::RetentionTruncated { limit_bytes: 64 },
+            TruncationState::retention_truncated(64),
         ),
         StreamEvidence::empty(StreamChannel::Stderr),
         TerminalDisposition::CompletedExit { code: 0 },
@@ -2704,7 +2707,7 @@ fn retention_truncation_must_match_its_stop_point_exactly() -> TestResult {
             64,
             perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
             vec![b'x'; 64],
-            TruncationState::RetentionTruncated { limit_bytes: 64 },
+            TruncationState::retention_truncated(64),
         ),
         StreamEvidence::empty(StreamChannel::Stderr),
         TerminalDisposition::CompletedExit { code: 0 },
@@ -2723,7 +2726,7 @@ fn retention_truncation_must_match_its_stop_point_exactly() -> TestResult {
             10_000,
             perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
             vec![b'x'; 64],
-            TruncationState::RetentionTruncated { limit_bytes: 64 },
+            TruncationState::retention_truncated(64),
         ),
         StreamEvidence::empty(StreamChannel::Stderr),
         TerminalDisposition::CompletedExit { code: 0 },
@@ -2826,7 +2829,7 @@ fn observation_truncation_must_match_its_stop_point_exactly() -> TestResult {
             10_000,
             perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
             b"kept".to_vec(),
-            TruncationState::ObservationTruncated { limit_bytes: 1024 },
+            TruncationState::observation_and_retention_truncated(1024, 4),
         ),
         StreamEvidence::empty(StreamChannel::Stderr),
         TerminalDisposition::CompletedExit { code: 0 },
@@ -2845,7 +2848,7 @@ fn observation_truncation_must_match_its_stop_point_exactly() -> TestResult {
             1024,
             perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
             b"kept".to_vec(),
-            TruncationState::ObservationTruncated { limit_bytes: 1024 },
+            TruncationState::observation_and_retention_truncated(1024, 4),
         ),
         StreamEvidence::empty(StreamChannel::Stderr),
         TerminalDisposition::CompletedExit { code: 0 },
@@ -2885,5 +2888,80 @@ fn a_rejected_script_reports_the_events_it_actually_emitted() -> TestResult {
         emitted,
         "the result under-reported the events the consumer received"
     );
+    Ok(())
+}
+
+// ──────────────── controls added after the seventh bot review round ──────────
+
+#[test]
+fn a_channel_that_reaches_both_bounds_can_say_so() -> TestResult {
+    // The wrong model this kills: one truncation choice per channel. Observing
+    // and retaining are independent budgets on `CaptureBudget`, so a channel
+    // can reach both — `CaptureBudget::observe_only` produces exactly that
+    // shape. Forcing a single choice made such a run assert that whichever
+    // bound it did not name had been complete, which is a false statement
+    // about a perfectly ordinary run.
+    let both = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            1024,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            vec![b'x'; 64],
+            TruncationState::observation_and_retention_truncated(1024, 64),
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    )?;
+    let truncation = both.stdout().truncation();
+    assert_eq!(truncation.observation_limit(), Some(1024));
+    assert_eq!(truncation.retention_limit(), Some(64));
+    assert!(truncation.observation_was_truncated());
+    assert!(truncation.retention_was_truncated());
+    assert!(!truncation.is_complete());
+    assert!(!both.claims_complete_output());
+    assert!(both.limitations().contains(&Limitation::OutputIncomplete));
+
+    // Neither bound may be asserted as complete when it was not. Claiming only
+    // the observation bound leaves retention unbounded, which asserts every
+    // observed byte was kept — and 64 of 1024 were.
+    let hides_the_retention_bound = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            1024,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            vec![b'x'; 64],
+            TruncationState::observation_truncated(1024),
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(
+        hides_the_retention_bound.is_err(),
+        "an unbounded retention claim must account for every observed byte"
+    );
+
+    // Claiming only the retention bound asserts everything the child wrote was
+    // observed, which is false when reading stopped at 1024.
+    let hides_the_observation_bound = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            1024,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"observed"),
+            vec![b'x'; 64],
+            TruncationState::retention_truncated(64),
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    )?;
+    // This one is representable, and means something different: everything was
+    // observed and retention stopped at 64. It must not claim the observation
+    // bound it does not carry.
+    assert_eq!(hides_the_observation_bound.stdout().truncation().observation_limit(), None);
     Ok(())
 }

@@ -67,13 +67,6 @@ stdin bytes.
 - `PROCESS_DOMAIN_SCHEMA_VERSION` stays at 1 through the post-review repair.
   Version movement protects *shipped* meaning; v1 has never been on `main`, so
   there is no consumer for an amendment to be incompatible with.
-- `TruncationState` carries one bound per channel, not two. A channel whose
-  observation was capped *and* whose retention was separately capped below that
-  cap cannot name both; the backend reports the bound that actually stopped it.
-  Widening this is #11085's, where retained projections are first produced —
-  designing it now, with no backend to validate it against, would be
-  speculative. The obligation is documented on the type rather than left for a
-  backend author to discover.
 - Env var *set membership* (allow/deny/remove) is byte-exact; only
   code-loading *detection* folds ASCII case, which is the fail-safe direction.
   A future Windows profile will need case-insensitive membership too.

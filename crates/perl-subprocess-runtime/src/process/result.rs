@@ -17,49 +17,89 @@ pub enum StreamChannel {
     Stderr,
 }
 
-/// Whether a channel's retained bytes are the whole of what was observed.
+/// Which of a channel's two capture bounds stopped it, and where.
 ///
-/// # Obligations this places on a backend
+/// [`CaptureBudget`](super::CaptureBudget) carries two independent limits —
+/// how much the supervisor reads, and how much of what it read it keeps — so a
+/// channel can reach either, both, or neither. They are therefore recorded as
+/// two separate facts rather than as one choice between them.
 ///
-/// A channel reports exactly one of these states, and each carries an exact
-/// byte count that [`ProcessResult::new`] enforces. Two consequences bind
-/// whoever implements a real supervisor:
+/// Collapsing them into a single choice would make an ordinary run
+/// unrepresentable. `CaptureBudget::observe_only(1024)` observes up to 1024
+/// bytes and retains none of them; a child that writes more than that reaches
+/// *both* bounds, and naming only one would assert that the other was complete
+/// when it was not. A contract that cannot say what happened is worse than a
+/// verbose one.
 ///
-/// - **Reads must be bounded by the remaining budget.** Reporting
-///   [`Self::ObservationTruncated`] asserts that observation stopped *at*
-///   `limit_bytes`, so a backend must clamp each read to what is left of the
-///   budget. A backend that reads fixed-size buffers and stops after the read
-///   that crosses the limit will have observed *more* than `limit_bytes` and
-///   its result will be refused as
-///   [`ResultInconsistency::TruncationLimitContradicted`] — correctly, because
-///   it did not in fact stop where it says it did.
-/// - **One channel cannot report both bounds.** A channel whose observation
-///   was capped *and* whose retention was separately capped below that cap has
-///   no variant naming both; a backend must report the bound that actually
-///   stopped it. Carrying both is a modelling change owned by #11085, where
-///   retained projections are first produced.
+/// # Obligation this places on a backend
+///
+/// Each bound recorded here names the exact byte count at which that bound
+/// stopped, and [`ProcessResult::new`] enforces it. Reporting an observation
+/// bound asserts that reading stopped *at* it, so a backend must clamp each
+/// read to what is left of the budget. One that reads fixed-size buffers and
+/// stops after the read that crosses the limit will have observed *more* than
+/// it claims, and its result is refused as
+/// [`ResultInconsistency::TruncationLimitContradicted`] — correctly, because it
+/// did not stop where it says it did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TruncationState {
-    /// Everything observed was retained.
-    Complete,
-    /// Observation stopped at the budget, so more output may have existed.
-    ObservationTruncated {
-        /// The observation limit that was reached.
-        ///
-        /// Exactly the number of bytes observed — see the type's obligations.
-        limit_bytes: u64,
-    },
-    /// Everything was observed but retention stopped at the budget.
-    RetentionTruncated {
-        /// The retention limit that was reached.
-        limit_bytes: u64,
-    },
+pub struct TruncationState {
+    observation_limit_bytes: Option<u64>,
+    retention_limit_bytes: Option<u64>,
 }
 
 impl TruncationState {
+    /// Neither bound was reached: everything observed was retained.
+    pub const fn complete() -> Self {
+        Self { observation_limit_bytes: None, retention_limit_bytes: None }
+    }
+
+    /// Observation stopped at its limit; everything observed was retained.
+    pub const fn observation_truncated(limit_bytes: u64) -> Self {
+        Self { observation_limit_bytes: Some(limit_bytes), retention_limit_bytes: None }
+    }
+
+    /// Retention stopped at its limit; everything the child wrote was observed.
+    pub const fn retention_truncated(limit_bytes: u64) -> Self {
+        Self { observation_limit_bytes: None, retention_limit_bytes: Some(limit_bytes) }
+    }
+
+    /// Both bounds were reached, each at its own limit.
+    pub const fn observation_and_retention_truncated(
+        observation_limit_bytes: u64,
+        retention_limit_bytes: u64,
+    ) -> Self {
+        Self {
+            observation_limit_bytes: Some(observation_limit_bytes),
+            retention_limit_bytes: Some(retention_limit_bytes),
+        }
+    }
+
+    /// The byte count at which observation stopped, if it was bounded.
+    pub fn observation_limit(self) -> Option<u64> {
+        self.observation_limit_bytes
+    }
+
+    /// The byte count at which retention stopped, if it was bounded.
+    pub fn retention_limit(self) -> Option<u64> {
+        self.retention_limit_bytes
+    }
+
+    /// Whether observation reached its bound, so more output may have existed.
+    pub fn observation_was_truncated(self) -> bool {
+        self.observation_limit_bytes.is_some()
+    }
+
+    /// Whether retention reached its bound, so some observed bytes were dropped.
+    pub fn retention_was_truncated(self) -> bool {
+        self.retention_limit_bytes.is_some()
+    }
+
     /// Whether the retained bytes are the complete channel content.
+    ///
+    /// True only when *neither* bound was reached. A channel that hit either
+    /// one is not complete, so no single-axis check can stand in for this.
     pub fn is_complete(self) -> bool {
-        matches!(self, Self::Complete)
+        self.observation_limit_bytes.is_none() && self.retention_limit_bytes.is_none()
     }
 }
 
@@ -114,7 +154,7 @@ impl StreamEvidence {
     pub fn complete(channel: StreamChannel, bytes: Vec<u8>) -> Self {
         let fingerprint = ContentFingerprint::of(&bytes);
         let observed = bytes.len() as u64;
-        Self::new(channel, observed, fingerprint, bytes, TruncationState::Complete)
+        Self::new(channel, observed, fingerprint, bytes, TruncationState::complete())
     }
 
     /// An empty channel.
@@ -605,38 +645,44 @@ fn check_stream(
     if evidence.retained().len() as u64 > evidence.observed_bytes() {
         return Err(ResultInconsistency::RetainedExceedsObserved { channel: expected });
     }
-    match evidence.truncation() {
-        TruncationState::Complete => {
-            if evidence.observed_bytes() != evidence.retained().len() as u64 {
-                return Err(ResultInconsistency::CompleteEvidenceCountMismatch {
-                    channel: expected,
-                });
-            }
-            if evidence.observed_fingerprint() != ContentFingerprint::of(evidence.retained()) {
-                return Err(ResultInconsistency::CompleteEvidenceFingerprintMismatch {
-                    channel: expected,
-                });
-            }
+    let truncation = evidence.truncation();
+    let retained_len = evidence.retained().len() as u64;
+
+    // The two bounds are checked independently, because they are independent
+    // facts. Checking them as one choice is what previously made a channel
+    // that reached both unable to describe itself honestly.
+    match truncation.observation_limit() {
+        // Observation stopped *at* the limit, so that is exactly how much was
+        // seen. Reading past the point you say you stopped at contradicts the
+        // stop point as surely as stopping short of it.
+        Some(limit_bytes) if evidence.observed_bytes() != limit_bytes => {
+            return Err(ResultInconsistency::TruncationLimitContradicted { channel: expected });
         }
-        TruncationState::ObservationTruncated { limit_bytes } => {
-            // Observation stopped *at* the limit, so that is exactly how much
-            // was seen. Reading past the point you say you stopped at
-            // contradicts the stop point as surely as stopping short of it.
-            if evidence.observed_bytes() != limit_bytes {
-                return Err(ResultInconsistency::TruncationLimitContradicted { channel: expected });
-            }
+        _ => {}
+    }
+    match truncation.retention_limit() {
+        // Retention stopped *at* the limit, so exactly that much was kept:
+        // keeping less contradicts the stop point as surely as keeping more
+        // does. And retention can only have been truncated if there was more
+        // to keep than the limit allowed.
+        Some(limit_bytes)
+            if retained_len != limit_bytes || evidence.observed_bytes() <= limit_bytes =>
+        {
+            return Err(ResultInconsistency::TruncationLimitContradicted { channel: expected });
         }
-        TruncationState::RetentionTruncated { limit_bytes } => {
-            // Retention stopped *at* the limit, so exactly that much was kept:
-            // keeping less contradicts the stop point as surely as keeping
-            // more does. And retention can only have been truncated if there
-            // was more to keep than the limit allowed.
-            if evidence.retained().len() as u64 != limit_bytes
-                || evidence.observed_bytes() <= limit_bytes
-            {
-                return Err(ResultInconsistency::TruncationLimitContradicted { channel: expected });
-            }
+        // Retention was not bounded, so everything observed had to be kept —
+        // including when observation itself stopped early.
+        None if retained_len != evidence.observed_bytes() => {
+            return Err(ResultInconsistency::CompleteEvidenceCountMismatch { channel: expected });
         }
+        _ => {}
+    }
+    // The fingerprint identifies the content actually observed, so it can only
+    // be checked against the retained bytes when those are the whole of it.
+    if truncation.is_complete()
+        && evidence.observed_fingerprint() != ContentFingerprint::of(evidence.retained())
+    {
+        return Err(ResultInconsistency::CompleteEvidenceFingerprintMismatch { channel: expected });
     }
     Ok(())
 }

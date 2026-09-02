@@ -301,3 +301,56 @@ electing another cause never discards it.
   They never stand in for evidence that a real process behaves that way.
 - Nothing here claims sandboxing, isolation, or hermeticity;
   `Limitation::NoIsolationClaimed` is attached to every result.
+
+### Seventh external round (Devin, `3376e5c`) — a documented limitation was the wrong answer
+
+One finding: `TruncationState` could not describe a channel that reached both
+its observation and its retention bound, so such a run had to claim one of the
+two had been complete.
+
+I had found the same gap myself, in the independent final challenge run one
+commit earlier, and **recorded it as a documented limitation deferred to
+#11085**. That was the wrong call, and the reviewer was right to press it.
+
+The reasoning I used was "no backend exists yet, so widening the type now is
+speculative design." What that missed is that the deliverable of this PR *is*
+the contract. A contract that cannot express an ordinary outcome is defective
+as a contract, whatever exists downstream of it. And the outcome is ordinary:
+`CaptureBudget` carries two independent limits, and the crate's own
+`CaptureBudget::observe_only(n)` constructor sets `retain_limit_bytes: 0` with
+`observe_limit_bytes: n` — a child that writes past `n` reaches both bounds.
+That is not an exotic future case; it is the shipped convenience constructor.
+
+Documenting a hole is honest, but honesty about a defect is not a substitute
+for fixing one that is cheap to fix. It was also inconsistent with how this
+same PR handled `StreamChunkEvidence.channel`, which was *removed* rather than
+validated on the explicit grounds that unrepresentable beats checked.
+
+`TruncationState` is now a struct carrying two independent optional bounds
+rather than a choice between them, with `complete()`,
+`observation_truncated()`, `retention_truncated()`, and
+`observation_and_retention_truncated()` constructors. `check_stream` validates
+each bound separately: an observation bound must equal the observed count, a
+retention bound must equal the retained length and be exceeded by the observed
+count, and an *absent* retention bound now asserts that every observed byte was
+kept — which is the check that had been missing entirely.
+
+| Finding | Disposition | Mutation replay |
+|---|---|---|
+| a channel reaching both capture bounds has no truthful state | **Fixed** — two independent facts, each with its exact bound | KILLED |
+
+Two of this packet's own fixtures turned out to be instances of the reported
+bug: `truncated_or_limited_output_never_claims_to_be_complete` and
+`observation_truncation_must_match_its_stop_point_exactly` both declared
+`ObservationTruncated { limit_bytes: 1024 }` while retaining 8 and 4 bytes
+respectively. Under the old model that was silently accepted, because nothing
+constrained retention when observation was the named bound. Under the new one
+both are rejected until they state the retention bound they actually had. The
+controls had been writing the defect they existed to catch — which is the
+strongest evidence available that the gap was real and reachable, and not a
+theoretical objection.
+
+New control `a_channel_that_reaches_both_bounds_can_say_so` asserts the dual
+state round-trips and that neither bound can be hidden. Mutation-verified:
+restoring the old permissiveness — dropping the "absent retention bound means
+everything observed was kept" check — kills exactly that control and no other.
