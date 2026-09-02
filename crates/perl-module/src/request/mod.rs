@@ -19,6 +19,21 @@
 //! policy. Validation proves the *shape* of a request; it never proves that a
 //! module exists.
 //!
+//! # Not to be confused with `perl_parser_core::hir::ModuleRequest`
+//!
+//! The upstream `perl-parser-core` crate defines its own `ModuleRequest` and
+//! `ModuleRequestKind`. Those are a *different layer* and are not duplicated
+//! here: a HIR `ModuleRequest` is a post-parse compiled fact carrying a source
+//! range, scope, package context, resolution status, provenance, and confidence,
+//! and its `ModuleRequestKind` names the directive that produced it
+//! (`Use` / `Require` / `Parent` / `Base`).
+//!
+//! The [`ModuleRequest`] in this module classifies the *syntactic shape of a raw
+//! operand* before any resolution has happened, and deliberately carries no
+//! provenance, confidence, or resolution state. The two meet later: a HIR fact
+//! supplies the operand, this vocabulary validates and classifies it. Import
+//! whichever is meant by its crate path rather than unqualified.
+//!
 //! # Compatibility adapters
 //!
 //! | Adapter | Caller inventory | Removal owner |
