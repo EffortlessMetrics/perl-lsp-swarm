@@ -738,7 +738,7 @@ Since 3.17 there is a meta model describing the LSP protocol:
 * Added refresh support for folding ranges.
 * Support to format multiple ranges at once.
 * Support for snippets in workspace edits.
-* Relative Pattern support for document filters and notebook document filters.
+* Relative Pattern support for document filters and notebook document filters. Document-selector `RelativePattern` support remains unclaimed.
 * Support for code action kind documentation.
 * Add support for `activeParameter` on `SignatureHelp` and `SignatureInformation` being `null`.
 * Support tooltips for `Command`.
