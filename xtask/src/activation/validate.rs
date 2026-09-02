@@ -257,26 +257,23 @@ fn authority_fragment_exists(root: &Path, path: &str, fragment: &str) -> bool {
     let Ok(document) = toml::from_str::<toml::Value>(&text) else {
         return false;
     };
-    if path.ends_with("Cargo.toml") {
-        if let Some((section, name)) = fragment.split_once('.') {
-            match section {
-                "bench" => {
-                    return document.get("bench").and_then(toml::Value::as_array).is_some_and(
-                        |rows| {
-                            rows.iter().any(|row| {
-                                row.get("name").and_then(toml::Value::as_str) == Some(name)
-                            })
-                        },
-                    );
-                }
-                "features" => {
-                    return document
-                        .get("features")
-                        .and_then(toml::Value::as_table)
-                        .is_some_and(|features| features.contains_key(name));
-                }
-                _ => {}
+    if path.ends_with("Cargo.toml")
+        && let Some((section, name)) = fragment.split_once('.')
+    {
+        match section {
+            "bench" => {
+                return document.get("bench").and_then(toml::Value::as_array).is_some_and(|rows| {
+                    rows.iter()
+                        .any(|row| row.get("name").and_then(toml::Value::as_str) == Some(name))
+                });
             }
+            "features" => {
+                return document
+                    .get("features")
+                    .and_then(toml::Value::as_table)
+                    .is_some_and(|features| features.contains_key(name));
+            }
+            _ => {}
         }
     }
     let mut current = &document;
