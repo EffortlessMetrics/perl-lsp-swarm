@@ -168,6 +168,121 @@ impl CatalogDapFlags {
     }
 }
 
+/// Whether a pure, selected-frame hover inspection path has been proven (#9573).
+///
+/// DAP's `supportsEvaluateForHovers` is a promise that an `evaluate` request
+/// carrying `context: "hover"` is a *pure inspection* of the frame the client
+/// selected. `perl-dap` has no such path yet: `handle_evaluate` issues a raw
+/// perl5db command against the debugger's *current* frame, and the custom
+/// `allowSideEffects` field can widen the screened expression subset. Until the
+/// parser-backed pure inspection path exists, advertising the capability would
+/// invite editors to route hover text into a general Perl evaluator whose frame
+/// and side-effect semantics are not the claimed feature.
+///
+/// Flipping this to `true` requires the re-enable gate recorded on #9573:
+/// selected-frame identity, an immutable value graph, bounded parser-backed
+/// inspection, trust routing that keeps REPL authority out of hover, and exact
+/// public-stdio proof. Nothing else — not `dap.core`, not backend `evaluate`,
+/// not handler presence, not a successful raw evaluation — may widen it.
+pub(crate) const PURE_HOVER_INSPECTION_PROVEN: bool = false;
+
+/// The single authority for the advertised `supportsEvaluateForHovers` value.
+///
+/// This deliberately consumes no catalog flag, backend flag, or handler-presence
+/// signal. Hover support is gated on a proof that does not exist yet, so the
+/// value is derived from [`PURE_HOVER_INSPECTION_PROVEN`] alone (#9573).
+#[must_use]
+pub(crate) const fn advertises_evaluate_for_hovers() -> bool {
+    PURE_HOVER_INSPECTION_PROVEN
+}
+
+/// The DAP standard `context` value for hover evaluation.
+const HOVER_EVALUATE_CONTEXT: &str = "hover";
+
+/// Refusal message used when hover-context evaluation is declined (#9573).
+pub(crate) const HOVER_UNSUPPORTED_MESSAGE: &str = "evaluate with context 'hover' is not supported: supportsEvaluateForHovers is advertised \
+     false because perl-dap has no pure selected-frame inspection path yet (#9573)";
+
+/// Whether an `evaluate` request's `context` selects hover.
+///
+/// Matched ASCII-case-insensitively. The DAP-standard spelling is lowercase
+/// `hover`; while the capability is closed, accepting case variants only ever
+/// *widens the refusal*, so a client sending `Hover` cannot slip past the floor.
+///
+/// A missing or unrecognised context is deliberately **not** hover. Those keep
+/// their own conservative policy rather than being silently reclassified as
+/// hover or REPL (#9573).
+///
+/// Every backend mode routes its hover refusal through this one predicate so
+/// native, attach, and external-peer sessions cannot drift apart.
+#[must_use]
+pub(crate) fn is_hover_evaluate_context(context: Option<&str>) -> bool {
+    context.is_some_and(|value| value.eq_ignore_ascii_case(HOVER_EVALUATE_CONTEXT))
+}
+
+/// Whether a mode must refuse this `evaluate` request as unsupported hover.
+///
+/// The invariant every mode holds: **a mode refuses hover exactly when it does
+/// not advertise hover.** `advertised_hover` is the value that *this* mode puts
+/// on the wire for `supportsEvaluateForHovers`, so admission and advertisement
+/// can never disagree.
+///
+/// This matters at promotion time, not just today. If the refusal ignored the
+/// advertised value, flipping [`PURE_HOVER_INSPECTION_PROVEN`] would advertise
+/// hover while still rejecting every hover request — the same
+/// capability-versus-behaviour contradiction #9573 exists to remove, only
+/// pointing the other way.
+///
+/// Modes stay independent: each passes its own advertised value, so promoting
+/// the native gate does not silently open an external-peer path that has no
+/// pure inspection of its own.
+#[must_use]
+pub(crate) fn refuse_hover_evaluation(advertised_hover: bool, context: Option<&str>) -> bool {
+    !advertised_hover && is_hover_evaluate_context(context)
+}
+
+/// The `supportsEvaluateForHovers` value the external-peer bridge advertises.
+///
+/// Deliberately **independent of [`PURE_HOVER_INSPECTION_PROVEN`]**, which is
+/// the *native* proof gate. An external peer runs its own evaluator and has no
+/// pure selected-frame inspection of its own, so promoting the native gate must
+/// not silently open a path that routes hover text to a live external debugger.
+/// #9573 states this directly: "Keep processId attach, TCP, and external peer
+/// modes independently false unless they have their own pure hover
+/// implementation and proof."
+///
+/// Promoting this requires that separate peer-side proof.
+pub(crate) const PEER_BRIDGE_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
+
+/// The external-peer bridge's hover decision, as a pure function.
+///
+/// `native_hover_gate` is accepted and **deliberately not used**. That is the
+/// property under test, not an oversight: the peer mode must not inherit the
+/// native proof gate (#9573). Taking it as a parameter is what makes the
+/// independence provable in CI — a test can evaluate this under both possible
+/// native values and require the result to be identical, without mutating any
+/// constant. If someone later re-reads the native gate here, that test fails.
+///
+/// The peer's own gate decides, still intersected with whether the peer can
+/// evaluate at all, so promoting the peer gate cannot over-advertise against a
+/// peer that offered no evaluation.
+#[must_use]
+pub(crate) fn peer_bridge_hover_admission(
+    _native_hover_gate: bool,
+    peer_hover_gate: bool,
+    backend_can_evaluate: bool,
+) -> bool {
+    peer_hover_gate && backend_can_evaluate
+}
+
+/// The `supportsEvaluateForHovers` value the static mirror profile advertises.
+///
+/// Mirror mode is conservative by construction and has no pure hover inspection
+/// of its own, so it stays false independently of the native gate (#9573). Both
+/// `static_mirror_capabilities` and the mirror request gate read this, so the
+/// profile cannot advertise one thing and enforce another.
+pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
+
 /// The negotiated DAP capability flags: catalog ∩ backend.
 ///
 /// Field names mirror the DAP `capabilities` payload keys the frontend emits in
@@ -186,7 +301,21 @@ pub struct NegotiatedDapCapabilities {
     /// `supportsDataBreakpoints`.
     pub supports_data_breakpoints: bool,
     /// `supportsEvaluateForHovers`.
+    ///
+    /// Pinned false by the crate-internal hover authority, independently of
+    /// [`Self::supports_evaluate`], until a pure selected-frame inspection path
+    /// is proven (#9573).
     pub supports_evaluate_for_hovers: bool,
+    /// Whether the backend can serve a general `evaluate` request.
+    ///
+    /// DAP has no `supportsEvaluate` wire capability — `evaluate` is always
+    /// requestable — so this is an internal backend fact, not an advertised
+    /// flag. It is kept separate from [`Self::supports_evaluate_for_hovers`]
+    /// because hover is a narrower promise (pure inspection of the *selected*
+    /// frame) than general evaluation, and the two must not imply each other
+    /// (#9573).
+    #[serde(default)]
+    pub supports_evaluate: bool,
     /// `supportsSetVariable`.
     pub supports_set_variable: bool,
 }
@@ -208,7 +337,14 @@ pub fn intersect_dap_capabilities(
         supports_log_points: catalog.logpoints && backend.logpoints,
         supports_function_breakpoints: catalog.function_breakpoints && backend.function_breakpoints,
         supports_data_breakpoints: catalog.watchpoints && backend.data_breakpoints,
-        supports_evaluate_for_hovers: catalog.core && backend.evaluate,
+        // #9573: hover is gated on a pure selected-frame inspection proof that
+        // does not exist yet. The catalog ∩ backend intersection still applies
+        // (decision D6) so that re-enabling the gate cannot over-advertise, but
+        // neither conjunct can widen the capability on its own.
+        supports_evaluate_for_hovers: advertises_evaluate_for_hovers()
+            && catalog.core
+            && backend.evaluate,
+        supports_evaluate: catalog.core && backend.evaluate,
         supports_set_variable: catalog.core && backend.set_variable,
     }
 }
@@ -236,8 +372,16 @@ mod tests {
         assert!(n.supports_log_points);
         assert!(n.supports_function_breakpoints);
         assert!(n.supports_data_breakpoints);
-        assert!(n.supports_evaluate_for_hovers);
         assert!(n.supports_set_variable);
+        // General evaluation is available with a full catalog and backend...
+        assert!(n.supports_evaluate);
+        // ...but hover stays closed regardless: it is a narrower promise than
+        // general evaluation and its pure-inspection proof does not exist
+        // (#9573). "Everything" deliberately excludes it.
+        assert!(
+            !n.supports_evaluate_for_hovers,
+            "hover must not ride along with a fully capable catalog and backend"
+        );
     }
 
     #[test]
@@ -251,7 +395,11 @@ mod tests {
         );
         assert!(n.supports_conditional_breakpoints, "ptkdb supports conditions");
         assert!(n.supports_function_breakpoints, "ptkdb supports sub breakpoints");
-        assert!(n.supports_evaluate_for_hovers, "ptkdb supports evaluate");
+        assert!(n.supports_evaluate, "ptkdb supports evaluate");
+        assert!(
+            !n.supports_evaluate_for_hovers,
+            "a peer that can evaluate still does not get the hover promise (#9573)"
+        );
         assert!(!n.supports_log_points, "ptkdb v1 has no logpoints");
         assert!(!n.supports_hit_conditional_breakpoints, "ptkdb v1 has no hit conditions");
         assert!(!n.supports_data_breakpoints, "ptkdb v1 has no data breakpoints");
@@ -263,10 +411,147 @@ mod tests {
         // Backend can evaluate, but catalog didn't compile dap.core.
         let catalog = CatalogDapFlags { core: false, ..all_catalog() };
         let n = intersect_dap_capabilities(&catalog, &DebugBackendCapabilities::full());
-        assert!(!n.supports_evaluate_for_hovers);
+        // Discriminate on `supports_evaluate`: asserting `!supports_evaluate_for_hovers`
+        // here would be vacuous while the #9573 gate pins hover false, so this
+        // test would stop proving that the catalog gate works at all.
+        assert!(!n.supports_evaluate);
         assert!(!n.supports_set_variable);
         // A non-core feature is unaffected.
         assert!(n.supports_conditional_breakpoints);
+    }
+
+    /// The #9573 floor: no catalog/backend combination may advertise hover.
+    #[test]
+    fn hover_capability_is_closed_for_every_catalog_and_backend_combination() {
+        let catalogs = [
+            all_catalog(),
+            CatalogDapFlags { core: false, ..all_catalog() },
+            CatalogDapFlags {
+                core: true,
+                breakpoints_basic: false,
+                hit_condition: false,
+                logpoints: false,
+                watchpoints: false,
+                function_breakpoints: false,
+            },
+        ];
+        let backends = [
+            DebugBackendCapabilities::full(),
+            DebugBackendCapabilities::none(),
+            DebugBackendCapabilities::ptkdb_v1_defaults(),
+            // A backend that can evaluate but is otherwise bare: the exact shape
+            // that would tempt `catalog.core && backend.evaluate` into a true.
+            DebugBackendCapabilities { evaluate: true, ..DebugBackendCapabilities::none() },
+        ];
+
+        for catalog in &catalogs {
+            for backend in &backends {
+                let n = intersect_dap_capabilities(catalog, backend);
+                assert!(
+                    !n.supports_evaluate_for_hovers,
+                    "hover advertised for catalog {catalog:?} + backend {backend:?}"
+                );
+            }
+        }
+
+        assert!(
+            !advertises_evaluate_for_hovers(),
+            "the single hover authority must report false until #9573's re-enable gate passes"
+        );
+    }
+
+    /// #9573 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing `advertised_hover`
+    /// explicitly exercises the flipped state without mutating the constant:
+    /// when a mode advertises hover, it must stop refusing it; when it does
+    /// not, it must refuse. Anything else republishes the exact
+    /// capability-versus-behaviour contradiction this issue removes.
+    #[test]
+    fn hover_refusal_tracks_the_advertised_capability_in_both_directions() {
+        // Closed: hover contexts refused, everything else untouched.
+        assert!(refuse_hover_evaluation(false, Some("hover")));
+        assert!(refuse_hover_evaluation(false, Some("Hover")));
+        assert!(!refuse_hover_evaluation(false, Some("watch")));
+        assert!(!refuse_hover_evaluation(false, Some("repl")));
+        assert!(!refuse_hover_evaluation(false, Some("clipboard")));
+        assert!(!refuse_hover_evaluation(false, None));
+
+        // Promoted: hover is admitted, and nothing else changes behaviour.
+        assert!(
+            !refuse_hover_evaluation(true, Some("hover")),
+            "a mode that advertises hover must stop refusing it, or promotion \
+             would advertise a capability the handler still rejects"
+        );
+        assert!(!refuse_hover_evaluation(true, Some("watch")));
+        assert!(!refuse_hover_evaluation(true, None));
+    }
+
+    /// #9573: the peer bridge's hover decision does not read the native gate.
+    ///
+    /// Asserting "the peer is closed today" would be vacuous — both gates are
+    /// false, so a *recoupled* implementation would pass it too, and CI could
+    /// only catch recoupling by mutating production source. This instead
+    /// evaluates the decision under **both** native values and requires the
+    /// result to be identical, which fails the moment the native gate is read
+    /// again, with no mutation needed.
+    #[test]
+    fn peer_hover_admission_is_independent_of_the_native_gate() {
+        for peer_gate in [false, true] {
+            for can_evaluate in [false, true] {
+                assert_eq!(
+                    peer_bridge_hover_admission(false, peer_gate, can_evaluate),
+                    peer_bridge_hover_admission(true, peer_gate, can_evaluate),
+                    "the peer decision changed with the native gate \
+                     (peer_gate={peer_gate}, can_evaluate={can_evaluate}); promoting native \
+                     must never open an external-peer hover path"
+                );
+            }
+        }
+
+        // The peer's own gate is what decides, and it still respects whether the
+        // peer can evaluate at all.
+        assert!(
+            !peer_bridge_hover_admission(true, false, true),
+            "a closed peer gate stays closed even with native promoted"
+        );
+        assert!(
+            peer_bridge_hover_admission(false, true, true),
+            "an open peer gate opens on its own authority, not the native one"
+        );
+        assert!(
+            !peer_bridge_hover_admission(true, true, false),
+            "a peer that cannot evaluate is never advertised for hover"
+        );
+    }
+
+    /// Mirror mode advertises and enforces the same value, independently.
+    #[test]
+    fn mirror_profile_advertisement_and_admission_agree() {
+        // Mirror advertises hover false and must therefore refuse hover. The
+        // advertised value itself is pinned at runtime by
+        // `peer_launch::tests::static_capabilities_match_the_conservative_profile`,
+        // which reads it back out of the emitted JSON.
+        assert!(
+            refuse_hover_evaluation(MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS, Some("hover")),
+            "mirror advertises hover false, so it must refuse hover"
+        );
+        assert!(
+            !refuse_hover_evaluation(MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS, Some("watch")),
+            "the mirror gate must stay scoped to hover"
+        );
+    }
+
+    /// Hover and general evaluation are independent evidence cells.
+    #[test]
+    fn general_evaluate_survives_the_hover_floor() {
+        let n = intersect_dap_capabilities(&all_catalog(), &DebugBackendCapabilities::full());
+        assert!(
+            n.supports_evaluate,
+            "closing hover must not disable general evaluate; watch/repl/clipboard depend on it"
+        );
+        assert!(!n.supports_evaluate_for_hovers);
     }
 
     #[test]

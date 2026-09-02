@@ -1206,3 +1206,24 @@ expensive = false
 duplicate_of = []
 review_after = "2026-08-10"
 expires = "2026-12-10"
+
+[[lane]]
+id = "critic_rule_proof"
+workflow = ".github/workflows/critic-rule-proof.yml"
+job = "validate"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 8
+owner = "native-critic"
+intent = "Path-filtered checker for the versioned critic rule-proof manifest, fixture digests, identity/remediation authorities, live critic propositions, and generated status (#6973)."
+failure_mode = "Rule-proof schema, fixture digest, identity/alias, suppression, remediation, or live critic proposition drift lands without failing --check."
+proof_obligation = "Run cargo test -p xtask --locked --test critic_rule_proof and cargo xtask critic-rule-proof check."
+evidence = ["job output"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-11-26"
+expires = "2026-12-26"

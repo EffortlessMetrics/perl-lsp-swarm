@@ -36,7 +36,12 @@ impl PerlLexer<'_> {
     /// Budget protection (Issue #422):
     /// - `MAX_REGEX_PARSE_STEPS` bounds literal scanning before the byte budget
     /// - `MAX_REGEX_BYTES` bounds total bytes consumed in a single regex literal
-    /// - Budget exceeded → `UnknownRest`
+    /// - Budget exceeded → `UnknownRest` with empty text over
+    ///   `[start, input.len())`: geometry-only recovery that never copies the
+    ///   unbounded remainder (crate-level budget-stop recovery contract;
+    ///   `tests/budget_recovery_contract.rs` pins the shape). The
+    ///   line-bounded unterminated `Error` below is a different,
+    ///   payload-carrying shape precisely because its span is bounded.
     pub(crate) fn parse_regex(&mut self, start: usize) -> Token {
         self.advance(); // Skip opening /
 
@@ -65,7 +70,7 @@ impl PerlLexer<'_> {
                 };
             }
 
-            if let Some(token) = self.budget_guard(start, 0) {
+            if let Some(token) = self.budget_guard(start) {
                 return token;
             }
 

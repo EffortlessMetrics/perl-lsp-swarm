@@ -84,7 +84,7 @@ updates:
       - "cargo"
       - "automated"
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "chore"
       include: "scope"
 
   # GitHub Actions workflow dependencies
@@ -166,6 +166,16 @@ updates:
       # VSCode engine updates require careful compatibility checks
       - dependency-name: "vscode"
         update-types: ["version-update:semver-major"]
+      # @types/vscode is the compile-time fence for engines.vscode (#13358):
+      # it must never float above the engines floor, because source can
+      # typecheck against newer API surface while crashing or missing members
+      # on a supported host. Raise it only in the same change that moves
+      # engines.vscode; intended to be enforced by the
+      # vscode_extension_types_fence xtask test (upper-bound and ci-scope
+      # routing gaps tracked under #13476, so it is not yet wired into CI
+      # for dependabot.yml/vscode-extension/package.json-only changes).
+      - dependency-name: "@types/vscode"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     labels:
       - "dependencies"
       - "npm"
