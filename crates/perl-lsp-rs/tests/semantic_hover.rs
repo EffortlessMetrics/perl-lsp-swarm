@@ -900,13 +900,12 @@ mod module_hover_tests {
                 content.contains("Tool.pm") && content.contains("Go to module"),
                 "hover should show resolved path for PERL5LIB module, got: {content}"
             );
+            println!("PERL_LSP_SEMANTIC_HOVER_PERL5LIB_CHILD_RAN");
             return Ok(());
         }
 
         let temp = tempfile::tempdir()?;
-        let workspace = temp.path().join("workspace");
         let external_lib = temp.path().join("external").join("lib");
-        fs::create_dir_all(&workspace)?;
         fs::create_dir_all(&external_lib)?;
         let before = std::env::var_os("PERL5LIB");
         let mut command = std::process::Command::new(std::env::current_exe()?);
@@ -918,6 +917,11 @@ mod module_hover_tests {
             output.status.success(),
             "child hover failed: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("PERL_LSP_SEMANTIC_HOVER_PERL5LIB_CHILD_RAN"),
+            "child selector did not execute the intended test: {stdout}"
         );
         assert_eq!(std::env::var_os("PERL5LIB"), before, "parent environment changed");
         Ok(())
