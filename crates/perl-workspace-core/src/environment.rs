@@ -1530,6 +1530,30 @@ mod tests {
         )
     }
 
+    fn valid_snapshot() -> Result<ProjectEnvironmentSnapshot, EnvironmentBuildError> {
+        let configured = input(
+            "environment.configured",
+            EnvironmentInputAuthority::UserConfiguration,
+            "configured",
+            "settings",
+        );
+        ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+            .with_input(configured.clone())
+            .with_selected_interpreter(InterpreterIdentityRef {
+                logical_id: "perl:fixture".to_string(),
+                executable: EnvironmentPathRef::new("/usr/bin/perl", "interpreter:fixture"),
+                evidence_fingerprint: Digest::of("perl"),
+                input_id: configured.id.clone(),
+            })
+            .with_include_entry(IncludeEntry::new(
+                IncludeEntryRole::Other,
+                EnvironmentPathRef::new("/repo/include", "include:fixture"),
+                configured.id,
+                0,
+            ))
+            .build()
+    }
+
     #[test]
     fn precedence_and_output_are_input_order_independent() -> Result<(), EnvironmentBuildError> {
         let user = input(
@@ -1958,6 +1982,73 @@ mod tests {
         snapshot.workspace_id.clear();
 
         assert!(matches!(snapshot.validate(), Err(EnvironmentBuildError::EmptyWorkspaceId)));
+        Ok(())
+    }
+
+    #[test]
+    fn reconstructed_snapshot_validation_rejects_each_mutated_invariant()
+    -> Result<(), EnvironmentBuildError> {
+        let mut empty_input = valid_snapshot()?;
+        empty_input.inputs[0].semantic_key.clear();
+        assert!(matches!(
+            empty_input.validate(),
+            Err(EnvironmentBuildError::EmptyInputField { field: "semantic_key", .. })
+        ));
+
+        let mut empty_path = valid_snapshot()?;
+        empty_path.include_entries[0].path.normalized.clear();
+        assert!(matches!(
+            empty_path.validate(),
+            Err(EnvironmentBuildError::EmptyPathField {
+                owner: "include_entry",
+                field: "normalized",
+            })
+        ));
+
+        let mut missing_reference = valid_snapshot()?;
+        missing_reference.include_entries[0].input_id =
+            EnvironmentInputId("input:missing".to_string());
+        assert!(matches!(
+            missing_reference.validate(),
+            Err(EnvironmentBuildError::MissingInputReference { owner: "include_entry", .. })
+        ));
+
+        let mut inactive_interpreter = valid_snapshot()?;
+        inactive_interpreter.inputs[0].state = EnvironmentInputState::Denied;
+        assert!(matches!(
+            inactive_interpreter.validate(),
+            Err(EnvironmentBuildError::InactiveSelectedInterpreter { .. })
+        ));
+
+        let mut unsupported_schema = valid_snapshot()?;
+        unsupported_schema.schema_version = 99;
+        assert!(matches!(
+            unsupported_schema.validate(),
+            Err(EnvironmentBuildError::UnsupportedSchemaVersion { schema_version: 99 })
+        ));
+
+        let mut stale_fingerprint = valid_snapshot()?;
+        stale_fingerprint.fingerprint = EnvironmentFingerprint(Digest::of("forged"));
+        assert!(matches!(
+            stale_fingerprint.validate(),
+            Err(EnvironmentBuildError::StaleFingerprint)
+        ));
+
+        let trusted_input = input(
+            "environment.trusted",
+            EnvironmentInputAuthority::TrustedProjectConfiguration,
+            "trusted",
+            "project",
+        );
+        let mut untrusted_project_input =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(trusted_input)
+                .build()?;
+        untrusted_project_input.trust = WorkspaceTrust::Untrusted;
+        assert!(matches!(
+            untrusted_project_input.validate(),
+            Err(EnvironmentBuildError::TrustedProjectInputWithoutTrust { .. })
+        ));
         Ok(())
     }
 
