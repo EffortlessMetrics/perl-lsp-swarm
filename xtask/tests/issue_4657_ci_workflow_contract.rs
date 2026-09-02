@@ -3,6 +3,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+use serde_yaml_ng::Value;
+
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -51,50 +53,6 @@ fn job_block<'a>(workflow: &'a str, job: &str) -> Option<&'a str> {
         })
         .map_or(rest.len(), |(idx, _)| body_offset + idx + 1);
     Some(&rest[..end])
-}
-
-/// Extract one named step from a job block.
-///
-/// The Windows job contains several multiline `run: |` steps. Anchoring the
-/// lookup to the step name prevents a contract from accidentally inspecting a
-/// preceding helper step instead of the command it intends to guard.
-fn step_block<'a>(job: &'a str, step_name: &str) -> Option<&'a str> {
-    let header = format!("      - name: {step_name}\n");
-    let start = job.find(&header)?;
-    let rest = &job[start..];
-    let end = rest.match_indices("\n      - ").next().map_or(rest.len(), |(idx, _)| idx);
-    Some(&rest[..end])
-}
-
-/// Extract the script from a named step's inline or YAML-block `run` field.
-fn step_run_script(step: &str) -> Option<String> {
-    let mut in_block = false;
-    let mut script = Vec::new();
-    for line in step.lines() {
-        let trimmed = line.trim();
-        if in_block {
-            if line.trim().is_empty() {
-                script.push(String::new());
-                continue;
-            }
-            // A block-scalar body is indented beneath `run: |`. The first
-            // non-indented line terminates the scalar, even when the step is
-            // the last step in the job and the enclosing job has trailing
-            // comments. Remove only YAML's fixed body indentation so shell
-            // indentation remains observable to the contract.
-            let Some(content) = line.strip_prefix("          ") else {
-                break;
-            };
-            script.push(content.to_string());
-        } else if let Some(command) = trimmed.strip_prefix("run: ") {
-            if command == "|" {
-                in_block = true;
-            } else {
-                return Some(command.to_string());
-            }
-        }
-    }
-    in_block.then(|| script.join("\n"))
 }
 
 /// #9594: the bit-rot guard must not pin the pull-request head SHA.
@@ -278,15 +236,21 @@ fn windows_platform_smoke_compiles_integration_targets_without_running_them()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
-    let job = job_block(&ci, "windows-platform-smoke")
-        .ok_or("ci.yml no longer defines a `windows-platform-smoke` job")?;
-    let smoke_step = step_block(job, "Run Windows portability smoke")
-        .ok_or("windows platform smoke has no named smoke step")?;
-    assert!(
-        !smoke_step.contains("scope_cache_key.py"),
-        "Windows portability smoke contract must not inspect the preceding cache-key step"
-    );
-    let run = step_run_script(smoke_step).ok_or("windows platform smoke has no run command")?;
+    let workflow: Value = serde_yaml_ng::from_str(&ci)?;
+    let run = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("windows-platform-smoke"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                let name = step.get("name")?.as_str()?;
+                (name == "Run Windows portability smoke")
+                    .then(|| step.get("run")?.as_str().map(str::to_owned))
+                    .flatten()
+            })
+        })
+        .ok_or("windows platform smoke has no named run command")?;
     assert!(
         !run.contains("Conflict-marker guard"),
         "run extraction must stop at the end of the YAML block scalar; command: {run}"
