@@ -570,6 +570,24 @@ fn informational_switches_terminate_further_argv_decoding() {
 }
 
 #[test]
+fn debugger_and_configuration_switch_values_follow_perl_boundaries() {
+    let invocation = perl(&["-d:Foo", "script.pl"]);
+    assert_eq!(neutral(&invocation), vec![NeutralSwitch::Debugger]);
+    assert_eq!(invocation.neutral_switches[0].value.as_deref(), Some(":Foo"));
+
+    assert!(matches!(
+        perl_error(&["-VZ"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: 'Z', .. }
+    ));
+    assert!(matches!(
+        perl_error(&["-CZ"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: 'Z', .. }
+    ));
+    let invocation = perl(&["-CSD", "script.pl"]);
+    assert_eq!(invocation.neutral_switches[0].value.as_deref(), Some("SD"));
+}
+
+#[test]
 fn record_separator_and_line_ending_octal_values_are_limited_to_three_digits() {
     assert!(matches!(
         perl_error(&["-07777e", "print"]),

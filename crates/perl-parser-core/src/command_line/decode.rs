@@ -356,13 +356,37 @@ fn decode_cluster<S: AsRef<str>>(
                 invocation.unsupported_switches.push(UnsupportedSwitch { kind, spelling, span });
                 break;
             }
+            // Debugger accepts an optional `:MODULE` suffix as one value.
+            'd' => {
+                let (value, value_span) = if cluster.remaining().starts_with(':') {
+                    cluster.rest()
+                } else {
+                    ("", letter_span)
+                };
+                invocation.neutral_switches.push(NeutralSwitchUse {
+                    switch: NeutralSwitch::Debugger,
+                    value: (!value.is_empty()).then(|| value.to_owned()),
+                    span: if value.is_empty() { letter_span } else { value_span },
+                    switch_span: letter_span,
+                });
+                break;
+            }
             // Neutral switches taking an optional attached value.
-            'C' | 'i' | 'V' => {
+            'C' | 'i' => {
                 let (value, value_span) = cluster.rest();
-                let switch = match letter {
-                    'C' => NeutralSwitch::UnicodeFlags,
-                    'i' => NeutralSwitch::InPlaceEdit,
-                    _ => NeutralSwitch::Configuration,
+                if letter == 'C' && !value.chars().all(is_unicode_flag) {
+                    return Err(InvocationDecodeError::UnrecognizedSwitch {
+                        switch: value
+                            .chars()
+                            .find(|character| !is_unicode_flag(*character))
+                            .unwrap_or('C'),
+                        span: value_span,
+                    });
+                }
+                let switch = if letter == 'C' {
+                    NeutralSwitch::UnicodeFlags
+                } else {
+                    NeutralSwitch::InPlaceEdit
                 };
                 let span = if value.is_empty() { letter_span } else { value_span };
                 invocation.neutral_switches.push(NeutralSwitchUse {
@@ -372,6 +396,24 @@ fn decode_cluster<S: AsRef<str>>(
                     switch_span: letter_span,
                 });
                 break;
+            }
+            'V' => {
+                if cluster.remaining().starts_with(':') {
+                    let (value, value_span) = cluster.rest();
+                    invocation.neutral_switches.push(NeutralSwitchUse {
+                        switch: NeutralSwitch::Configuration,
+                        value: Some(value.to_owned()),
+                        span: value_span,
+                        switch_span: letter_span,
+                    });
+                    break;
+                }
+                invocation.neutral_switches.push(NeutralSwitchUse {
+                    switch: NeutralSwitch::Configuration,
+                    value: None,
+                    span: letter_span,
+                    switch_span: letter_span,
+                });
             }
             // Neutral switches taking no value; bundling continues.
             _ => {
@@ -404,6 +446,11 @@ fn push_fact(
 
 fn is_octal_digit(character: char) -> bool {
     matches!(character, '0'..='7')
+}
+
+fn is_unicode_flag(character: char) -> bool {
+    character.is_ascii_digit()
+        || matches!(character, 'I' | 'O' | 'D' | 'E' | 'S' | 'i' | 'o' | 'd' | 'e' | 's')
 }
 
 /// Read the digits after `-0`.
