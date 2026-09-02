@@ -760,9 +760,18 @@ fn notebook_document_filter_relative_pattern_is_never_emitted() -> TestResult {
     let caps = init
         .get("capabilities")
         .ok_or_else(|| format!("initialize response missing capabilities: {init}"))?;
+    let notebook_sync = caps
+        .pointer("/notebookDocumentSync")
+        .ok_or_else(|| format!("FeatureProfile::All missing notebook producer path: {caps}"))?;
+    let selectors = notebook_sync
+        .pointer("/notebookSelector")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("notebookDocumentSync missing static notebookSelector: {caps}"))?;
+    assert!(!selectors.is_empty(), "notebook producer returned no static selectors");
+    let rendered_sync = serde_json::to_string(notebook_sync)?;
     assert!(
-        caps.pointer("/notebookDocumentSync").is_some(),
-        "FeatureProfile::All should exercise the notebook producer path: {caps}"
+        !rendered_sync.contains("baseUri"),
+        "notebook static selectors must never contain RelativePattern baseUri: {rendered_sync}"
     );
 
     let requests = harness.drain_server_requests(250);
