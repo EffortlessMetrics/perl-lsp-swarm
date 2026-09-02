@@ -769,6 +769,18 @@ class WorkedLaneWorkflowTests(unittest.TestCase):
     }
 
     def test_workflow_exists(self) -> None:
+        """Catches an accidental rename or move, but not a deletion.
+
+        This test is run *by* the workflow it asserts, so a candidate that
+        deletes the workflow also deletes the only thing that would notice: the
+        path filter matches the deletion, no definition remains to schedule, and
+        the ledger silently loses enforcement with nothing red. Detecting that
+        needs an assertion in a gate that always runs, which every
+        `docs/agents/` contract workflow here lacks equally --
+        `agent-authority-status.yml`, `active-authority-contract.yml`, and
+        `legacy-authority-banners.yml` all guard themselves the same circular
+        way. Tracked for the whole class rather than patched for this one file.
+        """
         self.assertTrue(
             WORKFLOW.is_file(),
             f"{WORKFLOW_PATH} must exist, otherwise this contract is a local "
