@@ -138,7 +138,12 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn validate(root: &Path) -> Result<ValidationStats> {
+/// Run every rule and return the stats alongside the exact violations.
+///
+/// Kept separate from [`validate`] so tests can assert *which* rule fired rather
+/// than only that something failed — a rejection test that accepts any error can
+/// pass on an unrelated violation.
+fn evaluate(root: &Path) -> Result<(ValidationStats, Vec<String>)> {
     validate_json_parse(root, SCHEMA_PATH)?;
     let manifest = read_manifest(root, MANIFEST_PATH)?;
     let mut violations = Vec::new();
@@ -146,6 +151,17 @@ fn validate(root: &Path) -> Result<ValidationStats> {
     validate_manifest_shape(root, &manifest, &mut violations);
     validate_fixtures(root, &manifest, &mut violations);
     validate_class_contracts(&manifest, &mut violations);
+
+    let stats = ValidationStats {
+        fixtures: manifest.fixtures.len(),
+        comparison_classes: manifest.comparison_classes.len(),
+        result_classes: manifest.result_classes.len(),
+    };
+    Ok((stats, violations))
+}
+
+fn validate(root: &Path) -> Result<ValidationStats> {
+    let (stats, violations) = evaluate(root)?;
 
     if !violations.is_empty() {
         eprintln!("oracle fixture manifest violations:");
@@ -155,11 +171,7 @@ fn validate(root: &Path) -> Result<ValidationStats> {
         bail!("oracle fixture manifest check failed with {} violation(s)", violations.len());
     }
 
-    Ok(ValidationStats {
-        fixtures: manifest.fixtures.len(),
-        comparison_classes: manifest.comparison_classes.len(),
-        result_classes: manifest.result_classes.len(),
-    })
+    Ok(stats)
 }
 
 fn validate_json_parse(root: &Path, rel: &str) -> Result<()> {
@@ -800,10 +812,10 @@ mod tests {
             ),
         )?;
 
-        let err = validate(tempdir.path()).expect_err("duplicate class contract must fail");
-
-        assert!(err.to_string().contains("oracle fixture manifest check failed"), "{err:?}");
-        Ok(())
+        assert_violation(
+            tempdir.path(),
+            r#"duplicate class_contract for comparison class "CompileEffect""#,
+        )
     }
 
     /// Every declared class needs an owner. Dropping a contract must fail rather
@@ -822,10 +834,10 @@ mod tests {
             ),
         )?;
 
-        let err = validate(tempdir.path()).expect_err("missing class contract must fail");
-
-        assert!(err.to_string().contains("oracle fixture manifest check failed"), "{err:?}");
-        Ok(())
+        assert_violation(
+            tempdir.path(),
+            r#"comparison class "CompileEffect" has no class_contract"#,
+        )
     }
 
     /// A class claiming `declared` coverage with no fixture behind it is the
@@ -843,11 +855,10 @@ mod tests {
             ),
         )?;
 
-        let err =
-            validate(tempdir.path()).expect_err("declared coverage without fixture must fail");
-
-        assert!(err.to_string().contains("oracle fixture manifest check failed"), "{err:?}");
-        Ok(())
+        assert_violation(
+            tempdir.path(),
+            "coverage is \"declared\" but no fixture declares this comparison class",
+        )
     }
 
     /// The opposite direction: a class a fixture really does declare may not be
@@ -865,11 +876,10 @@ mod tests {
             ),
         )?;
 
-        let err =
-            validate(tempdir.path()).expect_err("pending coverage for a covered class must fail");
-
-        assert!(err.to_string().contains("oracle fixture manifest check failed"), "{err:?}");
-        Ok(())
+        assert_violation(
+            tempdir.path(),
+            "coverage is \"pending_fixture\" but a fixture already declares",
+        )
     }
 
     /// A fixture may not expect a fact family none of its comparison classes
@@ -887,10 +897,10 @@ mod tests {
             ),
         )?;
 
-        let err = validate(tempdir.path()).expect_err("cross-class fact family must fail");
-
-        assert!(err.to_string().contains("oracle fixture manifest check failed"), "{err:?}");
-        Ok(())
+        assert_violation(
+            tempdir.path(),
+            r#"expected_fact_families entry "prototype_entries" is not compared by any"#,
+        )
     }
 
     #[test]
@@ -908,10 +918,10 @@ mod tests {
             ),
         )?;
 
-        let err = validate(tempdir.path()).expect_err("non-issue fixture owner must fail");
-
-        assert!(err.to_string().contains("oracle fixture manifest check failed"), "{err:?}");
-        Ok(())
+        assert_violation(
+            tempdir.path(),
+            r#"owner "perl-lsp maintainers" must be an issue reference"#,
+        )
     }
 
     /// #13622 falsifier 6: a fixture may not rely on a module outside the roots
@@ -928,10 +938,10 @@ mod tests {
             text.replace(r#""module_files": []"#, r#""module_files": ["outside/Helper.pm"]"#),
         )?;
 
-        let err = validate(tempdir.path()).expect_err("undeclared module root must fail");
-
-        assert!(err.to_string().contains("oracle fixture manifest check failed"), "{err:?}");
-        Ok(())
+        assert_violation(
+            tempdir.path(),
+            r#"module_files "outside/Helper.pm" is not contained by any declared module_root"#,
+        )
     }
 
     /// A declared load file that does not exist must fail, not be skipped.
@@ -945,9 +955,18 @@ mod tests {
             text.replace(r#""module_files": []"#, r#""module_files": ["fixtures/Absent.pm"]"#),
         )?;
 
-        let err = validate(tempdir.path()).expect_err("missing module file must fail");
+        assert_violation(tempdir.path(), "module_files points to missing path fixtures/Absent.pm")
+    }
 
-        assert!(err.to_string().contains("oracle fixture manifest check failed"), "{err:?}");
+    /// Assert that the manifest under `root` fails, and that it fails for the
+    /// named reason — not merely that some rule somewhere rejected it.
+    fn assert_violation(root: &Path, expected: &str) -> TestResult {
+        let (_, violations) = evaluate(root)?;
+        assert!(
+            violations.iter().any(|violation| violation.contains(expected)),
+            "expected a violation containing {expected:?}, got: {violations:#?}"
+        );
+        validate(root).expect_err("a manifest with violations must fail the check");
         Ok(())
     }
 
