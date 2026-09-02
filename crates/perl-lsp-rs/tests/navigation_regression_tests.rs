@@ -823,6 +823,10 @@ fn reported_lines(result: &serde_json::Value) -> Vec<u64> {
 /// `package Foo;` declaration (line 0), because the token `Foo` really does occur
 /// there. It can never include the `sub bar` declaration on line 2 -- that location
 /// is only reachable by resolving the cursor to the final component `bar`.
+///
+/// Every request propagates its error with `?` rather than defaulting to `null`.
+/// These are negative assertions, so a swallowed transport or server error would
+/// collapse the result to an empty line set and pass them for the wrong reason.
 #[test]
 fn test_refs_package_qualified_prefix_does_not_report_sub_declaration() -> TestResult {
     let doc = concat!(
@@ -847,16 +851,14 @@ fn test_refs_package_qualified_prefix_does_not_report_sub_declaration() -> TestR
     // MUST be reported. This proves the fixture, the harness, and the resolution
     // machinery can reach line 2 at all, so the prefix assertion below is a real
     // discriminator rather than a vacuous pass on an empty result.
-    let on_final = harness
-        .request(
-            "textDocument/references",
-            json!({
-                "textDocument": {"uri": "file:///refs_pkg_qual_prefix.pl"},
-                "position": {"line": 8, "character": 13},
-                "context": {"includeDeclaration": true}
-            }),
-        )
-        .unwrap_or(json!(null));
+    let on_final = harness.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": "file:///refs_pkg_qual_prefix.pl"},
+            "position": {"line": 8, "character": 13},
+            "context": {"includeDeclaration": true}
+        }),
+    )?;
     let final_lines = reported_lines(&on_final);
     assert!(
         final_lines.contains(&2),
@@ -867,16 +869,14 @@ fn test_refs_package_qualified_prefix_does_not_report_sub_declaration() -> TestR
     );
 
     // Cursor on `F` (character 8) -- the start of the `Foo` prefix component.
-    let on_prefix = harness
-        .request(
-            "textDocument/references",
-            json!({
-                "textDocument": {"uri": "file:///refs_pkg_qual_prefix.pl"},
-                "position": {"line": 8, "character": 8},
-                "context": {"includeDeclaration": true}
-            }),
-        )
-        .unwrap_or(json!(null));
+    let on_prefix = harness.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": "file:///refs_pkg_qual_prefix.pl"},
+            "position": {"line": 8, "character": 8},
+            "context": {"includeDeclaration": true}
+        }),
+    )?;
     let prefix_lines = reported_lines(&on_prefix);
     assert!(
         !prefix_lines.contains(&2),
@@ -887,16 +887,14 @@ fn test_refs_package_qualified_prefix_does_not_report_sub_declaration() -> TestR
     );
 
     // Cursor on the `::` separator (character 11) is on no component at all.
-    let on_separator = harness
-        .request(
-            "textDocument/references",
-            json!({
-                "textDocument": {"uri": "file:///refs_pkg_qual_prefix.pl"},
-                "position": {"line": 8, "character": 11},
-                "context": {"includeDeclaration": true}
-            }),
-        )
-        .unwrap_or(json!(null));
+    let on_separator = harness.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": "file:///refs_pkg_qual_prefix.pl"},
+            "position": {"line": 8, "character": 11},
+            "context": {"includeDeclaration": true}
+        }),
+    )?;
     let separator_lines = reported_lines(&on_separator);
     assert!(
         !separator_lines.contains(&2),
@@ -936,16 +934,14 @@ fn test_refs_three_component_qualified_middle_does_not_report_sub_declaration() 
     harness.open_document("file:///refs_three_component.pl", doc)?;
 
     // Negative control: cursor on `process` (character 11) must still reach line 2.
-    let on_final = harness
-        .request(
-            "textDocument/references",
-            json!({
-                "textDocument": {"uri": "file:///refs_three_component.pl"},
-                "position": {"line": 8, "character": 11},
-                "context": {"includeDeclaration": true}
-            }),
-        )
-        .unwrap_or(json!(null));
+    let on_final = harness.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": "file:///refs_three_component.pl"},
+            "position": {"line": 8, "character": 11},
+            "context": {"includeDeclaration": true}
+        }),
+    )?;
     let final_lines = reported_lines(&on_final);
     assert!(
         final_lines.contains(&2),
@@ -955,16 +951,14 @@ fn test_refs_three_component_qualified_middle_does_not_report_sub_declaration() 
     );
 
     // Cursor on `U` of `Utils` (character 4) -- the middle component.
-    let on_middle = harness
-        .request(
-            "textDocument/references",
-            json!({
-                "textDocument": {"uri": "file:///refs_three_component.pl"},
-                "position": {"line": 8, "character": 4},
-                "context": {"includeDeclaration": true}
-            }),
-        )
-        .unwrap_or(json!(null));
+    let on_middle = harness.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": "file:///refs_three_component.pl"},
+            "position": {"line": 8, "character": 4},
+            "context": {"includeDeclaration": true}
+        }),
+    )?;
     let middle_lines = reported_lines(&on_middle);
     assert!(
         !middle_lines.contains(&2),
