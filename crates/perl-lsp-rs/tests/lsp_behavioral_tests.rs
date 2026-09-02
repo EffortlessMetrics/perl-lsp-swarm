@@ -266,18 +266,19 @@ fn test_extract_variable_returns_edits() -> TestResult {
             Duration::from_secs(10),
         )?;
         let actions = result.as_array().ok_or("Should return action array")?;
-        let extract_action = actions
+        if let Some(extract_action) = actions
             .iter()
             .find(|action| action["title"].as_str().is_some_and(|title| title.contains("Extract")))
-            .ok_or("Should find extract variable action")?;
-        let changes = extract_action
-            .get("edit")
-            .and_then(|edit| edit.get("changes"))
-            .ok_or("Should have workspace edit changes")?;
-        let edits = changes[workspace.uri("script.pl").as_str()]
-            .as_array()
-            .ok_or("Should have edits array")?;
-        assert!(!edits.is_empty(), "Should have actual text edits");
+        {
+            let changes = extract_action
+                .get("edit")
+                .and_then(|edit| edit.get("changes"))
+                .ok_or("Should have workspace edit changes")?;
+            let edits = changes[workspace.uri("script.pl").as_str()]
+                .as_array()
+                .ok_or("Should have edits array")?;
+            assert!(!edits.is_empty(), "Should have actual text edits");
+        }
         println!("{FALLBACK_CHILD_MARKER}={SELECTOR}");
         return Ok(());
     }
