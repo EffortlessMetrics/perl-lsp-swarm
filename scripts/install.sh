@@ -1563,9 +1563,6 @@ main() {
 
     need_cmd curl
     need_cmd tar
-    # Archive inspection classifies entries from the ustar headers rather than
-    # from a tar listing, so `od` is as required as `tar` (#11508).
-    need_cmd od
 
     resolve_version
     TMPDIR="$(mktemp -d)"
@@ -1573,6 +1570,11 @@ main() {
     trap "rm -rf '$TMPDIR'" EXIT
 
     if [ "$INSTALL_MODE" = "release" ]; then
+        # Archive inspection classifies entries from the ustar headers rather
+        # than from a tar listing, so the release path needs `od` as well as
+        # `tar` (#11508). A source build never inspects an archive, so the
+        # requirement stays inside this branch instead of gating both modes.
+        need_cmd od
         download_and_verify
         extract_archive
     else

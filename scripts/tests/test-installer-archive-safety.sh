@@ -407,6 +407,40 @@ else
         "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
+# `od` is required by archive inspection, not by a source build. Recording
+# which commands `main` demands in each mode proves the requirement is scoped
+# to the release path rather than gating hosts that never inspect an archive
+# (#11508).
+probe_need_cmds() {
+    (
+        PROBED=""
+        need_cmd() { PROBED="${PROBED}${1} "; }
+        detect_platform() { :; }
+        resolve_version() { :; }
+        download_and_verify() { :; }
+        extract_archive() { :; }
+        build_from_source() { :; }
+        install_binaries() { :; }
+        verify_install() { :; }
+        check_path() { :; }
+        configure_claude() { :; }
+        say() { :; }
+        INSTALL_MODE="$1"
+        PRINT_TARGET=0
+        WITH_CLAUDE=0
+        main > /dev/null 2>&1 || true
+        printf '%s' "$PROBED"
+    )
+}
+RELEASE_NEEDS="$(probe_need_cmds release)"
+SOURCE_NEEDS="$(probe_need_cmds source)"
+if [[ " $RELEASE_NEEDS" == *" od "* ]] && [[ " $SOURCE_NEEDS" != *" od "* ]]; then
+    pass "od is required for release inspection and not for a source build"
+else
+    fail_case "od is required for release inspection and not for a source build" \
+        "release=[$RELEASE_NEEDS] source=[$SOURCE_NEEDS]"
+fi
+
 # The receipt names the tar that staged the members. Inspection no longer
 # depends on it, but the profile has to be visible in installer evidence for a
 # host report to mean anything (#11508).
