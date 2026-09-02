@@ -2387,6 +2387,112 @@ fn a_non_utf8_commit_message_is_refused_rather_than_silently_mangled() -> Result
     Ok(())
 }
 
+/// A credential hidden in the commit date is refused, not carried.
+///
+/// The date reads like a field nothing could hide in, which is why the scanner
+/// skipped it. But `parse_commit_person` takes everything after the closing
+/// `>` and only requires it to be non-empty — the `<seconds> <offset>` shape is
+/// Git's convention, not a rule this format enforces — so any trailing text
+/// becomes `candidate.author.date` and is retained in the manifest and covered
+/// by the semantic digest.
+///
+/// Git's own fsck refuses to write such a commit (`badTimezone`), so this needs
+/// `hash-object --literally`. That is the honest fixture rather than a
+/// contrived one: the producer validates the object it is given, not the object
+/// Git would have chosen to make, and an envelope may be produced from a
+/// repository built by something other than `git commit`.
+///
+/// Measured before the fix: the token reached `candidate.author.date` verbatim
+/// and `check` returned `VALID_HANDOFF`.
+#[test]
+fn a_credential_in_the_commit_date_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    let tree = fixture.git(&["rev-parse", "HEAD^{tree}"])?.trim().to_string();
+    let token = synthetic_github_token();
+    let raw_commit = format!(
+        "tree {tree}\n\
+         author Fixture Author <fixture@example.invalid> 1600000000 +0000 {token}\n\
+         committer Fixture Author <fixture@example.invalid> 1600000000 +0000\n\n\
+         ordinary subject\n"
+    );
+    fs::write(fixture.path().join("raw-commit.bin"), raw_commit.as_bytes())?;
+    let commit = fixture
+        .git(&["hash-object", "-t", "commit", "-w", "--literally", "--", "raw-commit.bin"])?
+        .trim()
+        .to_string();
+    fixture.git(&["update-ref", "refs/heads/main", &commit])?;
+
+    let destination = Destination::new()?;
+    let Err((outcome, detail)) = create_handoff(&request(&fixture, &destination)) else {
+        bail!("a credential in the commit date must not reach a published envelope");
+    };
+    assert_eq!(outcome, HandoffOutcome::UnsafeContent);
+    assert!(
+        detail.contains("candidate.author.date"),
+        "the refusal must name the field it found: {detail}"
+    );
+    assert!(!destination.envelope().exists(), "a refused export publishes nothing");
+
+    // Anti-vacuity: the same commit with an ordinary date must still export, or
+    // this control would pass for a producer that refused every literal commit.
+    let ordinary = raw_commit.replace(&format!(" +0000 {token}\n"), " +0000\n");
+    fs::write(fixture.path().join("raw-commit.bin"), ordinary.as_bytes())?;
+    let clean = fixture
+        .git(&["hash-object", "-t", "commit", "-w", "--literally", "--", "raw-commit.bin"])?
+        .trim()
+        .to_string();
+    fixture.git(&["update-ref", "refs/heads/main", &clean])?;
+    let second = Destination::new()?;
+    let manifest = export_valid(&fixture, &second)?;
+    assert_eq!(manifest.candidate.author.date, "1600000000 +0000");
+    Ok(())
+}
+
+/// A credential shaped like a proof id is refused, not admitted as well-formed.
+///
+/// `is_proof_id` accepts lowercase alphanumerics with `.`, `_`, and `-` up to
+/// 128 bytes, which is exactly the shape of a bare access token — so the id
+/// passed validation and was retained unscanned. Establishing that a string is
+/// well-formed is not establishing that it is not a secret, and the two checks
+/// had been standing in for each other.
+#[test]
+fn a_credential_shaped_proof_id_is_refused() -> Result<()> {
+    let token = synthetic_github_token();
+    // Anti-vacuity for the premise: the defect only exists because the token
+    // *is* a legal proof id. If this stopped holding, the control below would
+    // be testing the wrong refusal.
+    assert!(
+        super::hygiene::is_proof_id(&token),
+        "the finding depends on a token being a well-formed proof id"
+    );
+
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    let commit = fixture.commit("root")?;
+
+    let proof_dir = Destination::new()?;
+    let proof_path = proof_dir.root().join(format!("{token}.json"));
+    fs::write(&proof_path, format!("{{\"commit\":\"{commit}\"}}\n"))?;
+
+    let destination = Destination::new()?;
+    let mut inputs = request(&fixture, &destination);
+    inputs.proofs = vec![proof_path];
+
+    let Err((outcome, detail)) = create_handoff(&inputs) else {
+        bail!("a credential-shaped proof id must not reach a published envelope");
+    };
+    assert_eq!(outcome, HandoffOutcome::UnsafeContent);
+    assert!(
+        detail.contains("proof_references"),
+        "the refusal must name the field it found: {detail}"
+    );
+    assert!(!destination.envelope().exists(), "a refused export publishes nothing");
+    Ok(())
+}
+
 /// `owner/name` alone does not name a repository.
 ///
 /// The same pair exists on every forge, so an observed identity that dropped

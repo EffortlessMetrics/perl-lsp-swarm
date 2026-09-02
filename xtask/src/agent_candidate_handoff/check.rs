@@ -612,7 +612,26 @@ pub(super) fn find_unsafe_content(manifest: &Manifest) -> Option<String> {
         ("candidate.author.email".to_string(), candidate.author.email.as_str()),
         ("candidate.committer.name".to_string(), candidate.committer.name.as_str()),
         ("candidate.committer.email".to_string(), candidate.committer.email.as_str()),
+        // The date looks like a field no secret could fit in, and that is
+        // exactly why it was skipped. `parse_commit_person` takes everything
+        // after the closing `>` and only requires it to be non-empty, so the
+        // shape is Git's convention rather than this format's rule. Git's own
+        // fsck refuses to write such a commit, but `hash-object --literally`
+        // does, and the producer validates the object it is given, not the one
+        // Git would have made. Measured: a token appended to the author date
+        // reached `candidate.author.date` verbatim and `check` returned
+        // `VALID_HANDOFF`.
+        ("candidate.author.date".to_string(), candidate.author.date.as_str()),
+        ("candidate.committer.date".to_string(), candidate.committer.date.as_str()),
     ];
+    // A proof id is caller-supplied and retained, and `is_proof_id` admits
+    // lowercase alphanumerics with `.`, `_`, and `-` up to 128 bytes — which is
+    // precisely the shape of a bare access token. Validating that a string is
+    // well-formed is not the same as establishing it is not a secret.
+    for proof in &manifest.proof_references {
+        fields.push((format!("proof_references[{}].id", proof.id), proof.id.as_str()));
+        fields.push((format!("proof_references[{}].path", proof.id), proof.path.as_str()));
+    }
     if let Some(value) = &manifest.repository_identity.value {
         fields.push(("repository_identity.value".to_string(), value.as_str()));
     }
