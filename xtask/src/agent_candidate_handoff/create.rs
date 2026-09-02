@@ -332,6 +332,76 @@ fn resolve_commit(repository: &Path, revision: &str) -> Result<String, (HandoffO
     Ok(sha)
 }
 
+/// The commit header fields this format retains.
+pub(super) struct CommitHeaders {
+    /// Tree the commit names.
+    pub tree: String,
+    /// Parent ids, in the order the object records them.
+    pub parents: Vec<String>,
+    /// Authoring identity and date.
+    pub author: CommitPerson,
+    /// Committing identity and date.
+    pub committer: CommitPerson,
+}
+
+/// Read `tree`, `parent`, `author`, and `committer` out of a commit's header block.
+///
+/// Separate from [`read_commit_identity`] so the refusal below is reachable
+/// from a test: `git cat-file commit` cannot emit a header line without a
+/// space, so no fixture can drive that branch through a real repository.
+///
+/// Skipping such a line would silently drop a `parent`, and the consequence is
+/// worse here than a missing field would be. `check` reruns this same function
+/// against the imported objects, so producer and validator would shrink the
+/// parent list identically and agree with each other while disagreeing with the
+/// commit — leaving `is_merge_commit`, the ordered parents, and the object
+/// closure derived from a candidate that was never read correctly. Unexpected
+/// output is refused instead.
+pub(super) fn parse_commit_headers(
+    headers: &str,
+    commit: &str,
+) -> Result<CommitHeaders, (HandoffOutcome, String)> {
+    let mut tree: Option<String> = None;
+    let mut parents: Vec<String> = Vec::new();
+    let mut author: Option<CommitPerson> = None;
+    let mut committer: Option<CommitPerson> = None;
+    for line in headers.lines() {
+        // A multi-line header (`gpgsig`) continues with a leading space. None
+        // of the fields read here are multi-line, so continuations are skipped
+        // rather than mistaken for a new header. This is the one legitimate
+        // skip: the continuation belongs to a header already read.
+        if line.starts_with(' ') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(' ') else {
+            return Err((
+                HandoffOutcome::InstrumentFailure,
+                format!("commit {commit} reported a header record that is not `name value`"),
+            ));
+        };
+        match name {
+            "tree" => tree = Some(value.to_string()),
+            "parent" => parents.push(value.to_string()),
+            "author" => author = Some(parse_commit_person(value, commit, "author")?),
+            "committer" => committer = Some(parse_commit_person(value, commit, "committer")?),
+            // Headers this format does not retain — `gpgsig`, `encoding`,
+            // `mergetag`. Ignoring a header whose name was read is not the same
+            // as ignoring a record that could not be read at all.
+            _ => {}
+        }
+    }
+
+    let instrument = |what: &str| {
+        (HandoffOutcome::InstrumentFailure, format!("commit {commit} did not report `{what}`"))
+    };
+    Ok(CommitHeaders {
+        tree: tree.ok_or_else(|| instrument("tree"))?,
+        parents,
+        author: author.ok_or_else(|| instrument("author"))?,
+        committer: committer.ok_or_else(|| instrument("committer"))?,
+    })
+}
+
 /// Read one commit's complete identity from a repository or object database.
 ///
 /// The commit *object* is the source, not `git show`'s formatted projection.
@@ -380,35 +450,7 @@ pub fn read_commit_identity(
     let message =
         std::str::from_utf8(message_bytes).map_err(|_| unsupported("message"))?.to_string();
 
-    let mut tree: Option<String> = None;
-    let mut parents: Vec<String> = Vec::new();
-    let mut author: Option<CommitPerson> = None;
-    let mut committer: Option<CommitPerson> = None;
-    for line in headers.lines() {
-        // A multi-line header (`gpgsig`) continues with a leading space. None
-        // of the fields read here are multi-line, so continuations are skipped
-        // rather than mistaken for a new header.
-        if line.starts_with(' ') {
-            continue;
-        }
-        let Some((name, value)) = line.split_once(' ') else {
-            continue;
-        };
-        match name {
-            "tree" => tree = Some(value.to_string()),
-            "parent" => parents.push(value.to_string()),
-            "author" => author = Some(parse_commit_person(value, commit, "author")?),
-            "committer" => committer = Some(parse_commit_person(value, commit, "committer")?),
-            _ => {}
-        }
-    }
-
-    let instrument = |what: &str| {
-        (HandoffOutcome::InstrumentFailure, format!("commit {commit} did not report `{what}`"))
-    };
-    let tree = tree.ok_or_else(|| instrument("tree"))?;
-    let author = author.ok_or_else(|| instrument("author"))?;
-    let committer = committer.ok_or_else(|| instrument("committer"))?;
+    let CommitHeaders { tree, parents, author, committer } = parse_commit_headers(headers, commit)?;
 
     if !is_full_object_id(&tree) {
         return Err((

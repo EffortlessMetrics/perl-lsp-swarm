@@ -17,7 +17,7 @@ use super::{
     CheckReport, CreateRequest, DimensionVerdict, HandoffOutcome, canonical_json, check_handoff,
     create_handoff, explain,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serial_test::serial;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -3223,7 +3223,7 @@ fn concurrent_exports_to_one_destination_cannot_corrupt_each_other() -> Result<(
     let destination = Destination::new()?;
 
     let barrier = Arc::new(Barrier::new(2));
-    let outcomes: Vec<_> = (0..2)
+    let handles: Vec<_> = (0..2)
         .map(|_| {
             let barrier = Arc::clone(&barrier);
             let inputs = request(&fixture, &destination);
@@ -3232,10 +3232,14 @@ fn concurrent_exports_to_one_destination_cannot_corrupt_each_other() -> Result<(
                 create_handoff(&inputs)
             })
         })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|handle| handle.join().expect("export thread must not panic"))
         .collect();
+    let mut outcomes = Vec::with_capacity(handles.len());
+    for handle in handles {
+        // A panicking export is a distinct failure from a refused one, and the
+        // assertions below would read a panic as "did not publish".
+        let Ok(outcome) = handle.join() else { bail!("an export thread panicked") };
+        outcomes.push(outcome);
+    }
 
     let succeeded = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
     assert!(
@@ -3328,44 +3332,114 @@ fn a_newline_in_a_tracked_path_exports_and_validates() -> Result<()> {
 /// candidate whose objects it does not carry. Under that implementation the
 /// first two cases below return a short set instead of an error.
 #[test]
-fn an_unreadable_enumeration_record_is_an_instrument_failure() {
+fn an_unreadable_enumeration_record_is_an_instrument_failure() -> Result<()> {
     use super::create::parse_object_records;
+
+    let refused = |records: &str, why: &str| -> Result<()> {
+        match parse_object_records(records) {
+            Ok(ids) => bail!("{why}: accepted {records:?} and declared {} objects", ids.len()),
+            Err((outcome, _)) => {
+                assert_eq!(outcome, HandoffOutcome::InstrumentFailure, "{why}");
+                Ok(())
+            }
+        }
+    };
 
     let real = "b".repeat(40);
 
     // A `<id> <path>` record: what Git prints without `--no-object-names`, and
     // what the previous reader silently truncated to its first field.
-    let named = format!("{real} some/path.txt\n");
-    let outcome =
-        parse_object_records(&named).expect_err("a record carrying a path is not an object id");
-    assert_eq!(
-        outcome.0,
-        HandoffOutcome::InstrumentFailure,
-        "unexpected enumeration output must fail closed, not be parsed around"
-    );
+    refused(
+        &format!("{real} some/path.txt\n"),
+        "unexpected enumeration output must fail closed, not be parsed around",
+    )?;
 
     // A record that is not an id at all, mixed with one that is. The previous
     // reader kept the good one and dropped the rest, declaring a closure
     // narrower than the candidate's.
-    let mixed = format!("{real}\nnot-an-object-id\n");
-    let outcome = parse_object_records(&mixed)
-        .expect_err("a record that is not an object id must be refused");
-    assert_eq!(outcome.0, HandoffOutcome::InstrumentFailure);
+    refused(
+        &format!("{real}\nnot-an-object-id\n"),
+        "a record that is not an object id must be refused",
+    )?;
 
     // An abbreviated id is not a partial success either: the declared set is
     // content-addressed, so a short id names nothing the receiver can resolve.
-    let abbreviated = "c".repeat(12);
-    let outcome = parse_object_records(&format!("{abbreviated}\n"))
-        .expect_err("an abbreviated id is not a full object id");
-    assert_eq!(outcome.0, HandoffOutcome::InstrumentFailure);
+    refused(&format!("{}\n", "c".repeat(12)), "an abbreviated id is not a full object id")?;
 
     // Anti-vacuity: well-formed records must still be accepted, and blank
     // records skipped, or the assertions above would hold for a reader that
     // refused everything.
     let clean = format!("{real}\n\n{}\n", "d".repeat(40));
-    let ids = parse_object_records(&clean).expect("well-formed records must be accepted");
+    let ids = parse_object_records(&clean).map_err(|(outcome, detail)| {
+        anyhow!("well-formed records must parse: {outcome:?} {detail}")
+    })?;
     assert_eq!(ids.len(), 2, "blank records are skipped, real ones retained");
     assert!(ids.contains(&real));
+    Ok(())
+}
+
+/// A commit header record that is not `name value` is refused, not skipped.
+///
+/// The same fail-open class as the enumeration control above, in the reader
+/// `check` shares with the producer — which is what makes it worth pinning.
+/// A silently dropped `parent` would be re-derived identically on both sides,
+/// so the two would agree with each other while disagreeing with the commit,
+/// and no validation dimension could see it. `git cat-file commit` cannot emit
+/// such a record, so the branch is unreachable end to end and the parser is
+/// driven directly.
+#[test]
+fn an_unreadable_commit_header_record_is_an_instrument_failure() -> Result<()> {
+    use super::create::parse_commit_headers;
+
+    let commit = "e".repeat(40);
+    let tree = format!("tree {}", "1".repeat(40));
+    let first_parent = format!("parent {}", "2".repeat(40));
+    let second_parent = format!("parent {}", "3".repeat(40));
+    let author = "author A U Thor <a@example.com> 1700000000 +0000";
+    let committer = "committer A U Thor <a@example.com> 1700000000 +0000";
+
+    let parsed = |block: &str, why: &str| match parse_commit_headers(block, &commit) {
+        Ok(headers) => Ok(headers),
+        Err((outcome, detail)) => Err(anyhow!("{why}: {outcome:?} {detail}")),
+    };
+    let refused = |block: &str, why: &str| -> Result<()> {
+        match parse_commit_headers(block, &commit) {
+            Ok(headers) => {
+                bail!("{why}: accepted the block and kept {} parents", headers.parents.len())
+            }
+            Err((outcome, _)) => {
+                assert_eq!(outcome, HandoffOutcome::InstrumentFailure, "{why}");
+                Ok(())
+            }
+        }
+    };
+
+    // Anti-vacuity first: a well-formed header block must parse, with both
+    // parents retained in order, or the refusals below would hold for a parser
+    // that rejected everything.
+    let ordered = format!("{tree}\n{first_parent}\n{second_parent}\n{author}\n{committer}");
+    let headers = parsed(&ordered, "a well-formed block must parse")?;
+    assert_eq!(headers.parents, vec!["2".repeat(40), "3".repeat(40)], "parent order is retained");
+
+    // A multi-line `gpgsig` continuation is the one legitimate skip: it belongs
+    // to a header already read, and must not be mistaken for a bad record.
+    let signed = format!(
+        "{tree}\n{first_parent}\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n abcdef\n -----END PGP SIGNATURE-----\n{author}\n{committer}"
+    );
+    let headers = parsed(&signed, "a signature continuation is not a bad record")?;
+    assert_eq!(headers.parents.len(), 1, "a signed commit keeps its parent");
+
+    // The refusal: a record with no space at all. Skipping it is what drops a
+    // parent silently.
+    refused(
+        &format!("{tree}\n{first_parent}\nparent\n{author}\n{committer}"),
+        "an unreadable header record must fail closed, not shrink the parent list",
+    )?;
+
+    // And it is refused rather than tolerated even when nothing required is
+    // missing, so the rule is about the record and not about the outcome.
+    refused(&format!("{tree}\n{author}\n{committer}\nstray"), "a stray record is still refused")?;
+    Ok(())
 }
 
 /// One invocation's staging directory is never reclaimed by another.
