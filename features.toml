@@ -2506,7 +2506,7 @@ evidence = [
   { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs" },
 ]
 limitations = [
-  "Unsupported and negative-gated: no notebook selectors are registered and notebookDocumentSync stays unadvertised (#8897).",
+  "Unsupported and negative-gated: the preview profile may advertise notebookDocumentSync, but no notebook selectors are registered and no selector carries a relative-pattern baseUri (#8897).",
 ]
 description = "Notebook document-filter relative-pattern support is the LSP 3.18 notebook-filter surface; independently unclaimed from text-document filters (identity split #8897)."
 

@@ -295,7 +295,7 @@ const ROWS: &[MatrixRow] = &[
         proof: "`lsp_318_negative_claims` (`notebook_document_filter_relative_pattern_is_never_emitted`); `check-lsp-318-claims`",
         owner: "negative-gated; no producer (no notebook selectors are registered)",
         priority: "P3",
-        notes: "Notebook-filter relative-pattern support is independently unclaimed from the text-document filter surface (#8897): `notebookDocumentSync` stays unadvertised and no registration may carry a notebook selector or `baseUri`.",
+        notes: "Notebook-filter relative-pattern support is independently unclaimed from the text-document filter surface (#8897): the preview profile may advertise `notebookDocumentSync`, but no registration may carry a notebook selector or `baseUri`.",
     },
     MatrixRow {
         feature: "`CodeLens.resolveSupport.properties`",
