@@ -65,7 +65,7 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("product", 16),
     ("preview", 2),
     ("compatibility_shim", 1),
-    ("test_api", 10),
+    ("test_api", 13),
     ("lab", 21),
     ("oracle", 1),
     ("benchmark", 14),
@@ -334,6 +334,58 @@ fn override_cannot_reclassify_a_derived_surface() -> TestResult {
     file.overrides[0].surface_id = "feature:lsp.hover".to_string();
     file.overrides[0].class = "lab".to_string();
     expect_override_violation(&file, &index, "would reclassify a derived surface")
+}
+
+#[test]
+fn product_row_cannot_be_unowned() -> TestResult {
+    // The `unowned` token is admissible on a preview row whose authority
+    // records no implementation crate. On a product row it is a contradiction.
+    let mut inventory = canonical_inventory()?;
+    row_mut(&mut inventory, "feature:lsp.completion").ok_or("product row not found")?["owner"] =
+        json!(activation::UNOWNED);
+    expect_violation(&inventory, "product row requires a real owner")
+}
+
+#[test]
+fn unowned_preview_rows_say_so_instead_of_inventing_an_owner() -> TestResult {
+    // features.toml records `implementation_owner = "missing"` for these two.
+    // The inventory must not launder that into a plausible-looking owner.
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let unowned: Vec<&str> = inventory
+        .rows
+        .iter()
+        .filter(|row| row.owner == activation::UNOWNED)
+        .map(|row| row.surface_id.as_str())
+        .collect();
+    assert_eq!(
+        unowned,
+        vec!["feature:lsp.notebook_cell_execution", "feature:lsp.notebook_document_sync"]
+    );
+    for row in inventory.rows.iter().filter(|row| row.owner == activation::UNOWNED) {
+        let note = row.notes.as_deref().unwrap_or_default();
+        assert!(note.contains("no implementation crate recorded"), "{note}");
+    }
+    assert!(
+        !inventory.rows.iter().any(|row| row.owner == "missing"),
+        "features.toml's `missing` sentinel must never be passed through as an owner"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_api_rule_covers_the_repository_s_other_test_feature_spellings() -> TestResult {
+    // `slow_tests` and `integration-test` are real test-only features that a
+    // `test-*`/`expose_*` prefix rule alone would miss.
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let ids: Vec<&str> = inventory.rows.iter().map(|row| row.surface_id.as_str()).collect();
+    for expected in [
+        "cargo-feature:perl-lexer/slow_tests",
+        "cargo-feature:perl-parser/slow_tests",
+        "cargo-feature:perl-lsp-ux-tests/integration-test",
+    ] {
+        assert!(ids.contains(&expected), "missing test_api row `{expected}`");
+    }
+    Ok(())
 }
 
 #[test]

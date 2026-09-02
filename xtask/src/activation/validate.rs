@@ -175,6 +175,17 @@ fn validate_class_rules(row: &ActivationRow, violations: &mut Vec<String>) {
         violations.push(format!("row `{}`: requires a non-blank owner", row.surface_id));
     }
     if row.class == ActivationClass::Product {
+        // `unowned` is the closed token a derivation records when its
+        // authority declares no owner. A product surface with no owner is a
+        // contradiction, so the token is admissible on other classes and not
+        // on this one.
+        if row.owner == derive::UNOWNED {
+            violations.push(format!(
+                "row `{}`: product row requires a real owner, not `{}`",
+                row.surface_id,
+                derive::UNOWNED
+            ));
+        }
         if row.semantic_authority.trim().is_empty() {
             violations.push(format!(
                 "row `{}`: product row requires a semantic authority",

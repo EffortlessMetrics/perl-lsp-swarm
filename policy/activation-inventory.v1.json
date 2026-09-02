@@ -18,8 +18,8 @@
       "authority": "crates/*/Cargo.toml",
       "emits": "test_api",
       "considered": 78,
-      "emitted": 10,
-      "not_seeded_reason": "features not named test-*, expose_*, stress-tests, or experimental-* are ordinary build features, not test-api surfaces"
+      "emitted": 13,
+      "not_seeded_reason": "a feature is seeded when its name matches a known test-only spelling (test-*, expose_*, experimental-*, stress-tests, slow_tests, integration-test); this is a name rule, not a proof, so a test feature under a new spelling stays unseeded until it is added"
     },
     {
       "rule": "features-preview",
@@ -514,6 +514,36 @@
       }
     },
     {
+      "surface_id": "cargo-feature:perl-lexer/slow_tests",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lexer/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lexer/Cargo.toml#features.slow_tests",
+      "consumers": [
+        "crates/perl-lexer"
+      ],
+      "compile_profiles": [
+        "slow_tests"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lexer/Cargo.toml",
+        "detail": "[features] slow_tests = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lexer/Cargo.toml"
+      },
+      "owner": "perl-lexer",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
       "surface_id": "cargo-feature:perl-lsp-rs/experimental-features",
       "class": "test_api",
       "class_authority": {
@@ -664,6 +694,36 @@
       }
     },
     {
+      "surface_id": "cargo-feature:perl-lsp-ux-tests/integration-test",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-ux-tests/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-ux-tests/Cargo.toml#features.integration-test",
+      "consumers": [
+        "crates/perl-lsp-ux-tests"
+      ],
+      "compile_profiles": [
+        "integration-test"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-ux-tests/Cargo.toml",
+        "detail": "[features] integration-test = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-ux-tests/Cargo.toml"
+      },
+      "owner": "perl-lsp-ux-tests",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
       "surface_id": "cargo-feature:perl-parser/experimental-features",
       "class": "test_api",
       "class_authority": {
@@ -712,6 +772,36 @@
         "state": "established",
         "authority": "crates/perl-parser/Cargo.toml",
         "detail": "[features] expose_lsp_test_api = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/slow_tests",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.slow_tests",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "slow_tests"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] slow_tests = []"
       },
       "proof_references": [],
       "publication": {
@@ -1217,10 +1307,11 @@
         "authority": "features.toml"
       },
       "maturity_authority": "features.toml#lsp.notebook_cell_execution",
-      "owner": "missing",
+      "owner": "unowned",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "no implementation crate recorded: features.toml sets implementation_owner = \"missing\""
     },
     {
       "surface_id": "feature:lsp.notebook_document_sync",
@@ -1253,10 +1344,11 @@
         "authority": "features.toml"
       },
       "maturity_authority": "features.toml#lsp.notebook_document_sync",
-      "owner": "missing",
+      "owner": "unowned",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "no implementation crate recorded: features.toml sets implementation_owner = \"missing\""
     },
     {
       "surface_id": "feature:lsp.prepare_rename",

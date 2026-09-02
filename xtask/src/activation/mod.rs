@@ -11,7 +11,7 @@ mod overrides;
 mod render;
 mod validate;
 
-pub use derive::derived_class_index;
+pub use derive::{UNOWNED, derived_class_index};
 pub use model::{
     ActivationClass, ActivationError, ActivationInventory, ActivationRow, INVENTORY_PATH,
     OVERRIDES_PATH, SCHEMA_PATH,

@@ -23,6 +23,11 @@ const GATE_POLICY_YAML: &str = ".ci/gate-policy.yaml";
 const FUZZ_TARGETS_DIR: &str = "fuzz/fuzz_targets";
 const FUZZ_CARGO_TOML: &str = "fuzz/Cargo.toml";
 
+/// Closed token recorded when an authority declares no owner for a surface.
+/// It is deliberately not a plausible team or crate name: a reader must not be
+/// able to mistake an absent owner for a real one.
+pub const UNOWNED: &str = "unowned";
+
 /// Output of one derivation rule: the rows it emits plus its summary entry.
 pub struct RuleOutput {
     pub rows: Vec<ActivationRow>,
@@ -153,7 +158,18 @@ fn feature_row(
     let owning_crate = crate_dir_of(implementation_owner);
 
     let consumers = owning_crate.clone().map(|dir| vec![dir]).unwrap_or_default();
-    let owner = owning_crate.unwrap_or_else(|| implementation_owner.to_string());
+    // `features.toml` writes the literal `missing` when no implementation
+    // crate is recorded. Passing that through as an owner would produce a
+    // plausible-looking name that satisfies a non-blank owner check while
+    // meaning the opposite, so the absence is recorded as the closed
+    // `unowned` token instead. `validate` forbids `unowned` on a product row.
+    let owner = owning_crate.unwrap_or_else(|| UNOWNED.to_string());
+    let unowned_note = (owner == UNOWNED).then(|| {
+        format!(
+            "no implementation crate recorded: {FEATURES_TOML} sets \
+             implementation_owner = \"{implementation_owner}\""
+        )
+    });
 
     let established = capability_gate != "missing" && registration_field != "missing";
     let registration = Registration {
@@ -203,7 +219,7 @@ fn feature_row(
         owner,
         promotion: not_evaluated(),
         retirement: None,
-        notes: None,
+        notes: unowned_note,
     }
 }
 
@@ -403,11 +419,21 @@ fn derive_benches(root: &Path) -> Result<RuleOutput, ActivationError> {
     })
 }
 
+/// Cargo features that gate a test-only surface.
+///
+/// This is a name-based rule over a repository whose test features do not
+/// share one spelling, so it enumerates the real spellings in use
+/// (`test-*`, `expose_*`, `experimental-*`, `stress-tests`, `slow_tests`,
+/// `integration-test`) rather than pretending a single prefix covers them.
+/// It cannot be complete by construction: a future test feature under a new
+/// spelling would not be seeded until it is added here, which is why the
+/// rule's `not_seeded_reason` says so instead of claiming everything
+/// unmatched is an ordinary build feature.
 fn is_test_api_feature(name: &str) -> bool {
     name.starts_with("test-")
         || name.starts_with("expose_")
-        || name == "stress-tests"
         || name.starts_with("experimental-")
+        || matches!(name, "stress-tests" | "slow_tests" | "integration-test")
 }
 
 fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
@@ -472,8 +498,10 @@ fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
             emits: ActivationClass::TestApi.as_str().to_string(),
             considered,
             emitted: rows.len(),
-            not_seeded_reason: "features not named test-*, expose_*, stress-tests, or \
-                experimental-* are ordinary build features, not test-api surfaces"
+            not_seeded_reason: "a feature is seeded when its name matches a known \
+                test-only spelling (test-*, expose_*, experimental-*, stress-tests, \
+                slow_tests, integration-test); this is a name rule, not a proof, so a \
+                test feature under a new spelling stays unseeded until it is added"
                 .to_string(),
         },
         rows,
