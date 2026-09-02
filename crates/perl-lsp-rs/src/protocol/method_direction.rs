@@ -836,7 +836,10 @@ mod tests {
         // visibility, and block comments) without substring matching words in
         // function bodies or string literals.
         let declaration = format!("{} {{", &line[..comment]);
-        test_module_declaration(&declaration).is_some()
+        matches!(
+            test_module_declaration(&declaration),
+            Some(TestModuleDeclaration { kind: TestModuleKind::Inline, .. })
+        )
     }
 
     fn outer_attribute_end(source: &str) -> Option<usize> {
