@@ -3373,10 +3373,15 @@ fn sub_exporter_export_names(value: &[String]) -> Option<SubExporterExports> {
     for entry in comma_separated_entries(body) {
         // `name => <generator>`: the generator is dynamic, but the exported
         // name itself is declared here. `undef` is Sub::Exporter's spelling
-        // for "no generator", so it stays source-anchored.
+        // for "no generator", so it stays source-anchored — but only when it
+        // is the *whole* value. An expression that merely begins with `undef`
+        // (`undef // \&build`) still yields a generator, and reading it as
+        // source-backed would hand a runtime-only name to the live completion
+        // gate at high confidence.
         if entry.get(1).map(String::as_str) == Some("=>") {
             let name = sub_exporter_single_name(&entry[0])?;
-            if entry.get(2).map(String::as_str) != Some("undef") {
+            let value = entry.get(2..).unwrap_or_default();
+            if !matches!(value, [only] if only == "undef") {
                 generated.insert(name.clone());
             }
             names.push(name);

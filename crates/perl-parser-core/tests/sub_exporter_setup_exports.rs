@@ -1088,3 +1088,44 @@ fn a_leading_config_hashref_before_setup_publishes_no_exports() {
     );
     assert!(!export_boundaries(&file, "My::Utils").is_empty());
 }
+
+#[test]
+fn a_generator_expression_beginning_with_undef_is_not_source_backed() {
+    // `undef` is Sub::Exporter's spelling for "no generator", and that reading
+    // holds only when `undef` is the whole value. `undef // \&build` still
+    // produces a generator, so the name need not correspond to a sub in this
+    // source and must not reach the live completion gate's `High` threshold.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [ foo => undef // \\&build ] };\n",
+    );
+
+    let confidences: Vec<StashConfidence> = file
+        .stash_graph
+        .export_declarations
+        .iter()
+        .filter(|declaration| declaration.package == "My::Utils")
+        .map(|declaration| declaration.confidence)
+        .collect();
+
+    assert!(!confidences.is_empty(), "the name is still declared");
+    assert!(
+        confidences.iter().all(|confidence| *confidence == StashConfidence::Medium),
+        "a value that only begins with undef is generator-backed: {confidences:?}"
+    );
+}
+
+#[test]
+fn a_bare_undef_value_stays_source_backed() {
+    // The control: the documented `name => undef` form must keep its `High`
+    // confidence, so tightening the check does not withdraw it.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [ foo => undef ] };\n",
+    );
+
+    assert_eq!(
+        first_declaration(&file, "My::Utils").map(|declaration| declaration.confidence),
+        Some(StashConfidence::High)
+    );
+}
