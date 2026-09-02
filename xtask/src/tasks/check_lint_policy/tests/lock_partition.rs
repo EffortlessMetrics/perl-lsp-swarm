@@ -34,6 +34,10 @@ const HELD_BINDING_MARKER: &str = "held_";
 const MAX_DIAGNOSTIC_LINES: usize = 20;
 const MAX_DIAGNOSTIC_CHARS_PER_LINE: usize = 500;
 
+/// The fixture resolves `parking_lot` from the local registry cache under
+/// `--offline`. That cache is necessarily warm here: `xtask` depends on
+/// `perl-workspace`, which depends on `parking_lot` unconditionally, so any
+/// environment that can build this test binary has already fetched it.
 const FIXTURE_MANIFEST: &str = r#"[package]
 name = "let-underscore-lock-partition-fixture"
 version = "0.0.0"
