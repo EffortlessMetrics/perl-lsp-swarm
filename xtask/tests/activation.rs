@@ -280,6 +280,35 @@ fn override_review_after_rejects_an_impossible_month() -> TestResult {
 }
 
 #[test]
+fn override_review_after_rejects_an_impossible_calendar_day() -> TestResult {
+    // Bounding month and day independently accepts 2026-02-31; a real
+    // calendar check is what makes the expiry a date rather than a shape.
+    let (mut file, index) = overrides_and_index()?;
+    file.overrides[0].review_after = Some("2026-02-31".to_string());
+    expect_override_violation(&file, &index, "is not an ISO `YYYY-MM-DD` date")
+}
+
+#[test]
+fn override_review_after_rejects_a_non_leap_february_29() -> TestResult {
+    let (mut file, index) = overrides_and_index()?;
+    file.overrides[0].review_after = Some("2027-02-29".to_string());
+    expect_override_violation(&file, &index, "is not an ISO `YYYY-MM-DD` date")
+}
+
+#[test]
+fn override_review_after_accepts_a_real_leap_day() -> TestResult {
+    // The control that keeps the calendar check from being over-strict.
+    let (mut file, index) = overrides_and_index()?;
+    file.overrides[0].review_after = Some("2028-02-29".to_string());
+    let violations = validate_overrides(&repo_root(), &file, &index);
+    assert!(
+        !violations.iter().any(|violation| violation.contains("ISO `YYYY-MM-DD`")),
+        "a real leap day must be accepted: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn override_authority_path_must_exist() -> TestResult {
     let (mut file, index) = overrides_and_index()?;
     file.overrides[0].semantic_authority = "policy/not-a-real-ledger.toml".to_string();

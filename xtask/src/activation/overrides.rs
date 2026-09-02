@@ -157,6 +157,10 @@ fn check_hand_written_authority(
 /// date that cannot be read at all is a different thing: it makes the expiry
 /// unreviewable, so it fails closed.
 fn is_iso_date(value: &str) -> bool {
+    // The width and ASCII-digit checks are kept because `NaiveDate` parsing
+    // alone would accept shapes this ledger should not (`2026-1-5`), and the
+    // calendar check is delegated rather than hand-rolled because bounding
+    // month and day independently accepts impossible dates like `2026-02-31`.
     let mut parts = value.split('-');
     let (Some(year), Some(month), Some(day), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
@@ -169,10 +173,12 @@ fn is_iso_date(value: &str) -> bool {
     if !digits(year, 4) || !digits(month, 2) || !digits(day, 2) {
         return false;
     }
-    let (Ok(month), Ok(day)) = (month.parse::<u32>(), day.parse::<u32>()) else {
+    let (Ok(year), Ok(month), Ok(day)) =
+        (year.parse::<i32>(), month.parse::<u32>(), day.parse::<u32>())
+    else {
         return false;
     };
-    (1..=12).contains(&month) && (1..=31).contains(&day)
+    chrono::NaiveDate::from_ymd_opt(year, month, day).is_some()
 }
 
 /// `crate:<name>` is the one surface-id kind no derivation rule in

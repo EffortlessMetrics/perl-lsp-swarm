@@ -189,7 +189,15 @@ fn feature_row(
     // reported success. An absent `evidence` array is a different thing — the
     // authority simply records none — and stays an empty list.
     let mut proof_references = Vec::new();
-    if let Some(entries) = feature.get("evidence").and_then(toml::Value::as_array) {
+    if let Some(evidence) = feature.get("evidence") {
+        // Absent and present-but-wrong-type are different facts. `and_then`
+        // alone would collapse them, so a scalar or table `evidence` would
+        // read as "records no proof" and silently drop every reference.
+        let entries = evidence.as_array().ok_or_else(|| {
+            ActivationError::new(format!(
+                "{FEATURES_TOML}: feature `{id}` has an `evidence` value that is not an array"
+            ))
+        })?;
         for entry in entries {
             let class = entry.get("class").and_then(toml::Value::as_str).filter(|v| !v.is_empty());
             let evidence_id =
@@ -763,6 +771,40 @@ mod tests {
         };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("evidence entry without a non-empty string"), "{message}");
+    }
+
+    #[test]
+    fn non_array_evidence_fails_instead_of_reading_as_absent() {
+        let root = scratch_root("feature-scalar-evidence");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"proven\"\nadvertised = true\n\
+             implementation_owner = \"crates/demo/src/lib.rs\"\nevidence = \"see the tests\"\n"
+        ));
+        let message = match derive_features(&root) {
+            Ok(_) => "unexpectedly derived".to_string(),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("`evidence` value that is not an array"), "{message}");
+    }
+
+    #[test]
+    fn absent_evidence_is_not_an_error() {
+        // Absence is the authority recording no proof, which is a fact, not a
+        // defect. Only a present-but-malformed value is an error.
+        let root = scratch_root("feature-no-evidence");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"proven\"\nadvertised = true\n\
+             implementation_owner = \"crates/demo/src/lib.rs\"\n"
+        ));
+        let count = derive_features(&root)
+            .map(|(product, _)| product.rows.first().map(|row| row.proof_references.len()));
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(count, Ok(Some(0)));
     }
 
     #[test]
