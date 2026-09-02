@@ -350,22 +350,51 @@ fn build_config(args: &Args) -> anyhow::Result<DapConfig> {
     Ok(DapConfig { log_level: args.log_level.clone(), mode: DapMode::Native, workspace_authority })
 }
 
+/// How the startup log should report an authority.
+///
+/// Split out from the emit so the classification is provable. The operator-facing
+/// signal is half of what naming the unconfigured state buys: an adapter that is
+/// silently unconfined looks exactly like a confined one in a log that does not
+/// say so. Asserting on `tracing` output is awkward and brittle, but the decision
+/// this enum records is the part that can be wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthorityLogRecord {
+    /// Confined to `roots` trusted directories — informational.
+    Confined { roots: usize },
+    /// Unconfined because the operator asked for it — a warning.
+    OperatorGrant,
+    /// Unconfined because nothing was configured — a warning naming the remedy.
+    Unconfigured,
+}
+
+/// Classify an authority for the startup log.
+fn classify_workspace_authority(authority: &WorkspaceAuthority) -> AuthorityLogRecord {
+    match authority.unbounded_grant() {
+        None => AuthorityLogRecord::Confined { roots: authority.trusted_roots().len() },
+        Some(UnboundedGrant::OperatorFlag) => AuthorityLogRecord::OperatorGrant,
+        Some(UnboundedGrant::UnconfiguredDefault) => AuthorityLogRecord::Unconfigured,
+    }
+}
+
 /// Record the launch authority this process is running under.
 ///
 /// The unconfigured case is a warning, not an info line: it is the state
 /// #8145 exists to remove, and it is indistinguishable from the bounded case in
 /// a log that does not say so.
 fn log_workspace_authority(authority: &WorkspaceAuthority) {
-    match authority {
-        WorkspaceAuthority::WorkspaceBound { .. } => {
+    // Dispatch on the classification the tests assert on. Emitting from a second
+    // `match` over the authority would let the two drift, and the test would then
+    // be proving something the shipped binary does not do.
+    match classify_workspace_authority(authority) {
+        AuthorityLogRecord::Confined { roots } => {
             tracing::info!(
                 target = "perl_dap.security",
                 mode = authority.mode_identity(),
-                roots = authority.trusted_roots().len(),
+                roots,
                 "Debug launches are confined to the configured workspace roots"
             );
         }
-        WorkspaceAuthority::Unbounded { grant: UnboundedGrant::OperatorFlag, .. } => {
+        AuthorityLogRecord::OperatorGrant => {
             tracing::warn!(
                 target = "perl_dap.security",
                 mode = authority.mode_identity(),
@@ -374,7 +403,7 @@ fn log_workspace_authority(authority: &WorkspaceAuthority) {
                  to any workspace root"
             );
         }
-        WorkspaceAuthority::Unbounded { grant: UnboundedGrant::UnconfiguredDefault, .. } => {
+        AuthorityLogRecord::Unconfigured => {
             tracing::warn!(
                 target = "perl_dap.security",
                 mode = authority.mode_identity(),
@@ -479,7 +508,8 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, DEFAULT_DAP_PORT, UnboundedGrant, build_config, editor_socket_retired,
+        Args, AuthorityLogRecord, DEFAULT_DAP_PORT, UnboundedGrant, WorkspaceAuthority,
+        build_config, classify_workspace_authority, editor_socket_retired,
         native_editor_socket_retired, resolve_socket_port, windows_shell_quote,
         workspace_flags_unsupported_in_peer_mode,
     };
@@ -722,6 +752,44 @@ mod tests {
             missing.to_str().ok_or("non-utf8 fixture path")?,
         ]);
         assert!(build_config(&args).is_err(), "a missing root must fail startup");
+        Ok(())
+    }
+
+    /// The startup log distinguishes all three authority states.
+    ///
+    /// An operator reads this line to learn whether launches are confined. If
+    /// the unconfigured default were reported like the bounded case, the state
+    /// #8145 exists to remove would be invisible — which is the whole reason
+    /// `UnconfiguredDefault` is a named variant rather than a silent `None`.
+    #[test]
+    fn the_startup_log_distinguishes_every_authority_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let alpha = temp.path().join("alpha");
+        let beta = temp.path().join("beta");
+        std::fs::create_dir_all(&alpha)?;
+        std::fs::create_dir_all(&beta)?;
+
+        let bound = WorkspaceAuthority::from_startup(&[alpha, beta], false)?;
+        assert_eq!(
+            classify_workspace_authority(&bound),
+            AuthorityLogRecord::Confined { roots: 2 },
+            "a bounded adapter must report how many roots confine it"
+        );
+
+        let operator = WorkspaceAuthority::from_startup(&[], true)?;
+        assert_eq!(classify_workspace_authority(&operator), AuthorityLogRecord::OperatorGrant);
+
+        let legacy = WorkspaceAuthority::unconfigured();
+        assert_eq!(classify_workspace_authority(&legacy), AuthorityLogRecord::Unconfigured);
+
+        // The two unconfined states must not collapse: one is a deliberate
+        // operator choice, the other is the gap #8145 tracks.
+        assert_ne!(
+            classify_workspace_authority(&operator),
+            classify_workspace_authority(&legacy),
+            "an operator grant and the legacy default must be distinguishable in the log"
+        );
         Ok(())
     }
 
