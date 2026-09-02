@@ -349,7 +349,11 @@ fn main() {
         &termination_pid_file.with_extension("pid.ready"),
         Duration::from_secs(5),
     )?;
-    wait_for_process_start(termination_descendant_pid, Duration::from_secs(5))?;
+    // The injected termination failure can begin tearing down the descendant
+    // immediately after it publishes its ready marker.  Requiring tasklist to
+    // observe a live descendant here races that intentional cleanup; the PID
+    // plus ready marker establish startup, while the later exit check proves
+    // the descendant was reaped.
     let termination_probe_pid = common::last_probe_pid_for_test().ok_or_else(|| {
         io::Error::other("termination-failure probe did not record its child PID")
     })?;
@@ -497,7 +501,10 @@ fn main() {
             &descendant_pid_file.with_extension("pid.ready"),
             Duration::from_secs(5),
         )?;
-        wait_for_process_start(descendant_pid, Duration::from_secs(5))?;
+        // Injected reader/writer-spawn failures can begin cleanup immediately
+        // after the descendant publishes its ready marker.  The PID file plus
+        // marker prove that the descendant started; the exit check below proves
+        // that failure cleanup reaped it without a tasklist race.
         let failure =
             probe.join().map_err(|_| io::Error::other(format!("{label} probe thread panicked")))?;
         let error = match failure {
@@ -579,9 +586,12 @@ fn cleanup_command_wait_error_kills_and_reaps_helper() -> io::Result<()> {
 fn wait_for_probe_pid(timeout: Duration) -> io::Result<u32> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if let Some(pid) = common::last_probe_pid_for_test()
-            && process_exists(pid)?
-        {
+        // The assignment-failure path intentionally starts the probe suspended
+        // and then tears it down immediately.  Requiring tasklist to observe a
+        // live suspended process races that bounded cleanup.  The atomic PID
+        // publication is the stable identity; the subsequent exit check proves
+        // that the owned cleanup actually reaped it.
+        if let Some(pid) = common::last_probe_pid_for_test() {
             return Ok(pid);
         }
         if std::time::Instant::now() >= deadline {
