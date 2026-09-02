@@ -242,27 +242,44 @@ impl EnvironmentProjection {
     /// make the permissive policy the one place the acknowledgement gate
     /// never fires, which is precisely backwards.
     pub fn admitted_code_loading_variables(&self) -> Vec<EnvVarName> {
-        let mut admitted: Vec<EnvVarName> = self
-            .allowed
-            .iter()
-            .chain(self.additions.keys())
-            .filter(|name| is_code_loading_variable(name))
-            .cloned()
-            .collect();
-        if self.inheritance == AmbientInheritance::InheritExceptDenied {
-            admitted.extend(
-                CODE_LOADING_VARIABLES
-                    .iter()
-                    .map(|name| EnvVarName::new(*name))
-                    // Compared case-insensitively to match detection. Exact
-                    // matching meant a lowercase denial failed to clear the
-                    // canonical name, so a plan that had already denied the
-                    // vector was still asked to acknowledge it.
-                    .filter(|name| {
-                        !names_contain_ignoring_case(&self.denied, name)
-                            && !names_contain_ignoring_case(&self.removed, name)
-                    }),
-            );
+        // An addition always counts: the plan sets the variable itself, so it
+        // reaches the child under every inheritance policy.
+        let mut admitted: Vec<EnvVarName> =
+            self.additions.keys().filter(|name| is_code_loading_variable(name)).cloned().collect();
+        let allowed_loaders =
+            || self.allowed.iter().filter(|name| is_code_loading_variable(name)).cloned();
+        // Whether the *allow list* admits anything depends on the policy, and
+        // an exhaustive match rather than a single equality test so a new
+        // policy has to be classified here.
+        match self.inheritance {
+            // Nothing ambient is inherited, so an allow-list entry names a
+            // variable that cannot reach the child by any route. Counting it
+            // demanded an acknowledgement for a vector the plan had already
+            // closed — an over-rejection aimed squarely at hermetic plans,
+            // which are the ones most likely to name a loader in order to be
+            // explicit about refusing it.
+            AmbientInheritance::DenyAll => {}
+            // Here the allow list *is* the inheritance mechanism.
+            AmbientInheritance::AllowListedOnly => admitted.extend(allowed_loaders()),
+            AmbientInheritance::InheritExceptDenied => {
+                admitted.extend(allowed_loaders());
+                // Admission is not only what the projection names explicitly:
+                // this policy passes every ambient variable through, so a
+                // loader is admitted unless it is explicitly excluded.
+                admitted.extend(
+                    CODE_LOADING_VARIABLES
+                        .iter()
+                        .map(|name| EnvVarName::new(*name))
+                        // Compared case-insensitively to match detection. Exact
+                        // matching meant a lowercase denial failed to clear the
+                        // canonical name, so a plan that had already denied the
+                        // vector was still asked to acknowledge it.
+                        .filter(|name| {
+                            !names_contain_ignoring_case(&self.denied, name)
+                                && !names_contain_ignoring_case(&self.removed, name)
+                        }),
+                );
+            }
         }
         admitted.sort();
         admitted.dedup();

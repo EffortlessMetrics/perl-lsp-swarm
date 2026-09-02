@@ -1073,3 +1073,30 @@ twice: once for a rule whose owner was named but not enforced (the stdin gate),
 and once here for a warning whose reader was never considered. Moved to the
 public accessor, with the contrasting `StdinPolicy::Bytes` case beside it so
 the rule reads as a privacy-tier decision rather than an omission.
+
+### Nineteenth review round (`ce2029f`) — the gate refused the plans it was built for
+
+| Severity | Finding | Disposition | Mutation replay |
+|---|---|---|---|
+| correctness | under `AmbientInheritance::DenyAll`, an allow-listed loader name still triggered the acknowledgement gate, though nothing ambient can reach the child | **Fixed** — allow-list admission depends on whether the policy can deliver it | KILLED ×3 |
+
+Admission has three sources and they do not follow the same rule, which is what
+the single `allowed.chain(additions)` collection had flattened:
+
+| Source | Admits when |
+|---|---|
+| an **addition** | always — the plan sets the variable itself |
+| the **allow list** | only under `AllowListedOnly` and `InheritExceptDenied`; under `DenyAll` it names a variable no route can deliver |
+| **ambient sweep** | only under `InheritExceptDenied`, minus denied and removed |
+
+The over-rejection landed on exactly the plans taking the most care.
+`DenyAll` is the hermetic posture, and a hermetic plan is the one most likely to
+name a loader *in order to be explicit about it* — and was then told to
+acknowledge an injection risk it had already closed. A gate that fires hardest
+on its most careful callers teaches them to set `AcknowledgedByOwner` to make
+the noise stop, which is the opposite of what it exists to do.
+
+Written as an exhaustive `match` on the inheritance policy rather than an
+equality test, so a new policy is classified rather than defaulting into
+whichever branch happened to be the fallthrough — the same shape used for the
+terminal-cause predicates.

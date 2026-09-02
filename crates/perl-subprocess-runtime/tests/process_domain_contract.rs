@@ -5043,3 +5043,49 @@ fn a_settlement_saying_nothing_ran_disproves_every_cause_that_needed_a_child() -
     }
     Ok(())
 }
+
+#[test]
+fn an_allow_list_admits_a_loader_only_where_inheritance_can_deliver_it() -> TestResult {
+    // The wrong implementation this kills: counting every allow-list entry as
+    // an admission regardless of the inheritance policy. Under `DenyAll`
+    // nothing ambient reaches the child at all, so an allow-listed loader name
+    // cannot arrive by any route — and demanding an acknowledgement for it
+    // over-rejects exactly the plans that are being most careful, since a
+    // hermetic plan is the one most likely to name a loader in order to be
+    // explicit about it.
+    let hermetic = EnvironmentProjection::new("env-1", AmbientInheritance::DenyAll)
+        .allow(EnvVarName::new("PERL5LIB"))
+        .allow(EnvVarName::new("LD_PRELOAD"));
+    assert!(
+        hermetic.admitted_code_loading_variables().is_empty(),
+        "a denied-inheritance plan was asked to acknowledge a loader it cannot receive"
+    );
+
+    // The allow list *is* the inheritance mechanism here, so it admits.
+    let allow_listed = EnvironmentProjection::new("env-1", AmbientInheritance::AllowListedOnly)
+        .allow(EnvVarName::new("PERL5LIB"));
+    assert_eq!(
+        allow_listed.admitted_code_loading_variables(),
+        vec![EnvVarName::new("PERL5LIB")],
+        "an allow-listed loader stopped counting where the allow list is what inherits"
+    );
+
+    // An addition is the plan setting the variable itself, so it counts under
+    // every policy — including the one that inherits nothing.
+    let added = EnvironmentProjection::new("env-1", AmbientInheritance::DenyAll)
+        .add(EnvVarName::new("PERL5OPT"), SecretValue::new("-M-ops"));
+    assert_eq!(
+        added.admitted_code_loading_variables(),
+        vec![EnvVarName::new("PERL5OPT")],
+        "a loader the plan sets itself escaped the acknowledgement gate"
+    );
+
+    // And the permissive policy still admits every known vector it has not
+    // excluded, which is the rule an earlier round added.
+    let permissive = EnvironmentProjection::new("env-1", AmbientInheritance::InheritExceptDenied);
+    assert!(
+        permissive.admitted_code_loading_variables().len() >= CODE_LOADING_VARIABLES.len(),
+        "ambient inheritance stopped counting toward the acknowledgement gate"
+    );
+    Ok(())
+}
