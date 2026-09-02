@@ -7,7 +7,8 @@
 //! callers. One additional test reconciles the real committed ledger against
 //! the real working tree so the ledger cannot rot silently.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![expect(clippy::expect_used, reason = "test harness asserts on fixture setup")]
+#![expect(clippy::unwrap_used, reason = "test harness asserts on fixture setup")]
 
 use assert_cmd::Command;
 use sha2::{Digest, Sha256};
@@ -227,10 +228,10 @@ fn one_occurrence_cannot_carry_two_classifications() {
 
 #[test]
 fn closed_vocabularies_reject_unknown_values_and_pairings() {
-    for (classification, target) in [
-        ("not_a_class", "none"),
-        ("release_readiness", "legacy_receipt_readiness"),
-        ("historical_prose", "perl_release_readiness"),
+    for (classification, target, expected) in [
+        ("not_a_class", "none", "unknown classification"),
+        ("release_readiness", "legacy_receipt_readiness", "unknown migration_target"),
+        ("historical_prose", "perl_release_readiness", "cannot target"),
     ] {
         let dir = tempfile::tempdir().expect("tempdir");
         write(&dir, "a.txt", &format!("{CALLER_LINE}\n")).expect("write");
@@ -245,7 +246,45 @@ fn closed_vocabularies_reject_unknown_values_and_pairings() {
             !output.status.success(),
             "classification {classification:?} targeting {target:?} must be rejected"
         );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(expected),
+            "classification {classification:?} targeting {target:?} must be rejected with {expected:?}, got: {stderr}"
+        );
     }
+}
+
+#[test]
+fn broad_exclusions_are_rejected_before_scanning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(&dir, "src/caller.rs", &format!("{CALLER_LINE}\n")).expect("write caller");
+    let ledger = format!(
+        "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n\
+         [[excluded_surface]]\npattern = \"*\"\nowner_issue = 8752\nreason = \"bad\"\n"
+    );
+    write(&dir, "policy/kwalitee-namespace-inventory.toml", &ledger).expect("ledger");
+    let output = inventory(dir.path()).arg("--check").output().expect("run inventory");
+    assert!(!output.status.success(), "catch-all exclusions must fail closed");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("too broad"),
+        "failure should identify broad exclusion: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn check_and_scaffold_are_mutually_exclusive() {
+    let dir = classified_tree().expect("fixture tree");
+    let output = inventory(dir.path())
+        .args(["--check", "--scaffold"])
+        .output()
+        .expect("run inventory");
+    assert!(!output.status.success(), "check and scaffold must conflict");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("cannot be used with"),
+        "clap should report the conflict: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

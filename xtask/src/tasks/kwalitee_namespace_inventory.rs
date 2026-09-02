@@ -177,7 +177,15 @@ fn walk(
         if surface_excluded(&name, &rel, excluded) {
             continue;
         }
-        let meta = entry.metadata().with_context(|| format!("stat {}", path.display()))?;
+        // `DirEntry::metadata` follows links.  That is unsafe for an
+        // inventory rooted at `root`: a linked directory can escape the
+        // selected tree (and a link cycle can recurse forever).  Refuse
+        // links explicitly rather than silently omitting their contents.
+        let meta = fs::symlink_metadata(&path)
+            .with_context(|| format!("stat {}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            bail!("symlinked inventory path is not supported: {rel}");
+        }
         if meta.is_dir() {
             walk(root, &path, excluded, found)?;
         } else if meta.is_file() && !SELF_ARTIFACTS.contains(&rel.as_str()) {
@@ -204,6 +212,33 @@ fn surface_excluded(component: &str, rel: &str, excluded: &[&str]) -> bool {
     })
 }
 
+fn validate_exclusion_pattern(pattern: &str) -> Result<()> {
+    if pattern.is_empty()
+        || pattern == "*"
+        || pattern.contains('\\')
+        || pattern.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        bail!("excluded surface pattern {pattern:?} is too broad or not normalized");
+    }
+    if pattern.contains('/') {
+        let prefix = pattern.strip_suffix("/**").ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "excluded surface pattern {pattern:?} must name a repository subtree with /**"
+            )
+        })?;
+        if prefix.is_empty() || prefix.contains('*') || prefix.contains('?') || prefix.contains('[') {
+            bail!("excluded surface pattern {pattern:?} is too broad");
+        }
+    } else if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        // Component globs are intentionally limited to the reviewed
+        // worktree prefix convention; arbitrary globs can hide the root.
+        if !pattern.starts_with('.') || !pattern.ends_with("-*") || pattern.len() <= 2 {
+            bail!("excluded surface pattern {pattern:?} is too broad");
+        }
+    }
+    Ok(())
+}
+
 fn glob_component(pattern: &str, name: &str) -> bool {
     match pattern.split_once('*') {
         None => pattern == name,
@@ -221,7 +256,12 @@ fn scan_file(path: &Path) -> Result<Vec<Occurrence>> {
     let mut out = Vec::new();
     for (idx, line) in text.lines().enumerate() {
         let trimmed = line.trim();
-        if is_reference(&trimmed.to_ascii_lowercase()) {
+        let lower = trimmed.to_ascii_lowercase();
+        let count = TOKENS_LOWER
+            .iter()
+            .map(|token| lower.match_indices(token).count())
+            .sum::<usize>();
+        for _ in 0..count {
             out.push(Occurrence {
                 line_no: idx + 1,
                 text: trimmed.to_string(),
@@ -241,9 +281,10 @@ impl Ledger {
             bail!("ledger controller_issue {} is not {CONTROLLER_ISSUE}", self.controller_issue);
         }
         for surface in &self.excluded_surfaces {
-            if surface.pattern.is_empty() || surface.reason.trim().is_empty() {
+            if surface.reason.trim().is_empty() {
                 bail!("excluded surface {:?} needs a pattern and a reason", surface.pattern);
             }
+            validate_exclusion_pattern(&surface.pattern)?;
             if surface.owner_issue == 0 {
                 bail!("excluded surface {:?} needs a nonzero owner_issue", surface.pattern);
             }
@@ -543,6 +584,9 @@ pub fn run(check: bool, scaffold_mode: bool, root_override: Option<PathBuf>) -> 
     ledger.validate_static()?;
 
     if scaffold_mode {
+        if check {
+            bail!("--scaffold and --check are exclusive; scaffold never validates the tree");
+        }
         print!("{}", scaffold(&root, &ledger)?);
         return Ok(());
     }

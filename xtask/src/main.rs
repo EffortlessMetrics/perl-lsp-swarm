@@ -334,11 +334,11 @@ enum Commands {
     /// counts by migration target (#8752).
     #[command(name = "kwalitee-inventory")]
     KwaliteeInventory {
-        /// Validate only, and fail on unclassified or stale references.
+        /// Reconcile references and add a confirmation line on success.
         #[arg(long)]
         check: bool,
         /// Print entry skeletons with current line hashes instead of checking.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "check")]
         scaffold: bool,
         /// Evaluate a different repository tree (for hermetic tests).
         #[arg(long)]
