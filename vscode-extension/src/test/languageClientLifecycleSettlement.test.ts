@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import {
   LanguageClientLifecycle,
+  LanguageClientLifecycleError,
   type LifecycleClient,
   type LifecycleDisposable,
 } from '../languageClientLifecycle';
@@ -68,9 +69,7 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
       const restart = controller.restart();
       await jest.advanceTimersByTimeAsync(10);
 
-      await expect(restart).rejects.toThrow(
-        'Language client cleanup is incomplete; replacement startup is blocked',
-      );
+      await expect(restart).rejects.toBeInstanceOf(LanguageClientLifecycleError);
       expect(clients).toHaveLength(1);
       expect(first!.dispose).toHaveBeenCalledTimes(1);
       expect(controller.snapshot.state).toBe('failed');
@@ -96,9 +95,7 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      await expect(controller.start()).rejects.toThrow(
-        'Language client cleanup is incomplete; replacement startup is blocked',
-      );
+      await expect(controller.start()).rejects.toBeInstanceOf(LanguageClientLifecycleError);
       expect(clients).toHaveLength(1);
     } finally {
       jest.useRealTimers();
@@ -125,9 +122,7 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     await controller.start();
     const restart = controller.restart();
 
-    await expect(restart).rejects.toThrow(
-      'Language client cleanup is incomplete; replacement startup is blocked',
-    );
+    await expect(restart).rejects.toBeInstanceOf(LanguageClientLifecycleError);
     expect(clients).toHaveLength(1);
     expect(clients[0]!.stop).toHaveBeenCalledTimes(1);
     expect(clients[0]!.dispose).toHaveBeenCalledTimes(1);
@@ -141,9 +136,7 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
       await controller.start();
       clients[0]![operation].mockRejectedValue(undefined);
 
-      await expect(controller.restart()).rejects.toThrow(
-        'Language client cleanup is incomplete; replacement startup is blocked',
-      );
+      await expect(controller.restart()).rejects.toBeInstanceOf(LanguageClientLifecycleError);
       expect(clients).toHaveLength(1);
       expect(controller.snapshot.state).toBe('failed');
     },
