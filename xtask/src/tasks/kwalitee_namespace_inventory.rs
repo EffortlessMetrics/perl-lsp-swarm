@@ -26,7 +26,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{bail, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -144,10 +144,14 @@ fn is_reference(line_lower: &str) -> bool {
 /// `.git` and the ledger's declared non-content surfaces are skipped, so
 /// generated files and ignored-but-present files cannot hide callers.
 fn scan(root: &Path, ledger: &Ledger) -> Result<BTreeMap<String, Vec<Occurrence>>> {
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("canonicalizing inventory root {}", root.display()))?;
     let excluded: Vec<&str> =
         ledger.excluded_surfaces.iter().map(|surface| surface.pattern.as_str()).collect();
     let mut found = BTreeMap::new();
-    walk(root, root, &excluded, &mut found)?;
+    let mut visited_dirs = BTreeSet::new();
+    let mut visited_files = BTreeSet::new();
+    walk(&root, &root, &excluded, &mut found, &mut visited_dirs, &mut visited_files)?;
     Ok(found)
 }
 
@@ -156,8 +160,15 @@ fn walk(
     dir: &Path,
     excluded: &[&str],
     found: &mut BTreeMap<String, Vec<Occurrence>>,
+    visited_dirs: &mut BTreeSet<PathBuf>,
+    visited_files: &mut BTreeSet<PathBuf>,
 ) -> Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(dir)
+    let dir = fs::canonicalize(dir)
+        .with_context(|| format!("canonicalizing inventory directory {}", dir.display()))?;
+    if !visited_dirs.insert(dir.clone()) {
+        return Ok(());
+    }
+    let mut entries: Vec<_> = fs::read_dir(&dir)
         .with_context(|| format!("reading directory {}", dir.display()))?
         .collect::<std::io::Result<Vec<_>>>()
         .with_context(|| format!("reading directory {}", dir.display()))?;
@@ -170,19 +181,14 @@ fn walk(
         if name == ".git" {
             continue;
         }
-        let rel = match path.strip_prefix(root) {
+        let meta =
+            fs::symlink_metadata(&path).with_context(|| format!("stat {}", path.display()))?;
+        let resolved = fs::canonicalize(&path)
+            .with_context(|| format!("resolving inventory path {}", path.display()))?;
+        let rel = match resolved.strip_prefix(root) {
             Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
-            Err(_) => bail!("walked path {} escapes root {}", path.display(), root.display()),
+            Err(_) => bail!("symlinked inventory path escapes root: {}", path.display()),
         };
-        // `DirEntry::metadata` follows links.  That is unsafe for an
-        // inventory rooted at `root`: a linked directory can escape the
-        // selected tree (and a link cycle can recurse forever).  Refuse
-        // links explicitly rather than silently omitting their contents.
-        let meta = fs::symlink_metadata(&path)
-            .with_context(|| format!("stat {}", path.display()))?;
-        if meta.file_type().is_symlink() {
-            bail!("symlinked inventory path is not supported: {rel}");
-        }
         // Bare component exclusions identify root-level cache/worktree
         // directories, not files.  Inspect metadata before applying them so
         // a file with a cache-like name cannot hide a reference, and so links
@@ -190,10 +196,15 @@ fn walk(
         if surface_excluded(&name, &rel, excluded, meta.is_dir()) {
             continue;
         }
-        if meta.is_dir() {
-            walk(root, &path, excluded, found)?;
-        } else if meta.is_file() && !SELF_ARTIFACTS.contains(&rel.as_str()) {
-            let occurrences = scan_file(&path)?;
+        let resolved_meta = fs::metadata(&resolved)
+            .with_context(|| format!("stat resolved inventory path {}", resolved.display()))?;
+        if resolved_meta.is_dir() {
+            walk(root, &resolved, excluded, found, visited_dirs, visited_files)?;
+        } else if resolved_meta.is_file()
+            && visited_files.insert(resolved.clone())
+            && !SELF_ARTIFACTS.contains(&rel.as_str())
+        {
+            let occurrences = scan_file(&resolved)?;
             if !occurrences.is_empty() {
                 found.insert(rel, occurrences);
             }
@@ -243,7 +254,8 @@ fn validate_exclusion_pattern(pattern: &str) -> Result<()> {
                 "excluded surface pattern {pattern:?} must name a repository subtree with /**"
             )
         })?;
-        if prefix.is_empty() || prefix.contains('*') || prefix.contains('?') || prefix.contains('[') {
+        if prefix.is_empty() || prefix.contains('*') || prefix.contains('?') || prefix.contains('[')
+        {
             bail!("excluded surface pattern {pattern:?} is too broad");
         }
     } else if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
@@ -274,10 +286,8 @@ fn scan_file(path: &Path) -> Result<Vec<Occurrence>> {
     for (idx, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         let lower = trimmed.to_ascii_lowercase();
-        let count = TOKENS_LOWER
-            .iter()
-            .map(|token| lower.match_indices(token).count())
-            .sum::<usize>();
+        let count =
+            TOKENS_LOWER.iter().map(|token| lower.match_indices(token).count()).sum::<usize>();
         for _ in 0..count {
             out.push(Occurrence {
                 line_no: idx + 1,
@@ -448,7 +458,8 @@ fn reconcile(ledger: &Ledger, observed: &BTreeMap<String, Vec<Occurrence>>) -> R
 
         for (hash, claimants) in &claims {
             let observed_count = observed_counts.get(hash).copied().unwrap_or(0);
-            if claimants.len() == observed_count {
+            let distinct: BTreeSet<_> = claimants.iter().copied().collect();
+            if claimants.len() == observed_count && (observed_count < 2 || distinct.len() == 1) {
                 continue;
             }
             if claimants.len() < observed_count {
@@ -459,7 +470,6 @@ fn reconcile(ledger: &Ledger, observed: &BTreeMap<String, Vec<Occurrence>>) -> R
                 ));
                 continue;
             }
-            let distinct: BTreeSet<_> = claimants.iter().copied().collect();
             let kind = if distinct.len() > 1 {
                 "duplicate classification"
             } else {
