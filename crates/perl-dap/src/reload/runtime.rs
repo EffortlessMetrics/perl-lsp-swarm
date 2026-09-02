@@ -445,15 +445,35 @@ pub fn plan_commands(
         // has both. Deleting it and not putting it back would silently
         // cost that alias its idempotence: the next `require` of the
         // absolute path would re-execute the module instead of returning
-        // immediately. So the prior value is captured and restored, and
-        // only an entry this transaction invented is removed.
+        // immediately. So on success the prior value is restored, and only
+        // an entry this transaction invented is removed.
+        //
+        // The failure branch is not symmetric, and both halves of it are
+        // deliberate.
+        //
+        // Perl marks a *failed* `require` by leaving `$INC{$p}` present
+        // but undefined, and every later `require` of that exact path then
+        // dies with `Attempt to reload ... aborted` — permanently, for the
+        // life of the process. Verified on 5.38.2. So the entry must be
+        // removed after a failure, or this transaction would leave a
+        // latent fatal in unrelated application code that merely happens
+        // to require the same absolute path.
+        //
+        // It is removed rather than restored to `$prev`. A failed
+        // `require` leaves the module *partially executed* — `BEGIN`
+        // blocks may have run and subs may have been redefined before it
+        // died — so restoring either registration would advertise that
+        // half-built state as the intact previous module, and the next
+        // `require` would return immediately on a package that never
+        // finished loading. Deleting says "not cleanly loaded", which is
+        // the truth, and leaves recovery possible.
         mutation: vec![format!(
             "p do {{ my $k = pack(q(H*),q({key_hex})); my $p = pack(q(H*),q({path_hex})); \
              my $had = exists $INC{{$p}}; my $prev = $INC{{$p}}; \
              delete $INC{{$k}}; delete $INC{{$p}}; \
              my $ok = eval {{ require $p; 1 }} ? 1 : 0; \
              if ($ok) {{ if ($had) {{ $INC{{$p}} = $prev; }} else {{ delete $INC{{$p}}; }} \
-             $INC{{$k}} = $p; }} \
+             $INC{{$k}} = $p; }} else {{ delete $INC{{$p}}; }} \
              \"{mutation_marker} $ok\" }}"
         )],
         read_back: vec![observe(READBACK_MARKER)],
@@ -2079,6 +2099,126 @@ mod tests {
         // Cleanup is the `ScratchDir` guard's job, so it also runs when an
         // assertion above panics.
         result
+    }
+
+    /// A failed reload does not leave a poisoned `%INC` entry behind.
+    ///
+    /// Perl marks a failed `require` by leaving `$INC{$p}` present but
+    /// undefined, and every later `require` of that path then dies with
+    /// `Attempt to reload ... aborted` for the life of the process. That
+    /// is the realistic case — someone edits a loaded module, introduces
+    /// a bug, and reloads — so the transaction must not turn it into a
+    /// latent fatal in unrelated code that requires the same path.
+    ///
+    /// Drives real `perl -d` end to end: registers the absolute alias,
+    /// breaks the source, runs the generated mutation, and proves the
+    /// entry is gone and a later `require` of it does not die.
+    #[test]
+    fn live_perl_failed_reload_does_not_poison_inc() -> TestResult {
+        let Some(oracle) = perl_lsp_rs_core::config::PerlOracleEnv::for_dap_test_fixture() else {
+            return Ok(());
+        };
+        if !perl_debugger_available(&oracle) {
+            return Ok(());
+        }
+        let scratch = ScratchDir(std::env::temp_dir().join(format!(
+            "perl-reload-fail-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_nanos())
+                .unwrap_or(0),
+        )));
+        let scratch = &scratch.0;
+        let module_dir = scratch.join("App");
+        std::fs::create_dir_all(&module_dir)?;
+        let module_path = module_dir.join("Core.pm");
+        std::fs::write(&module_path, "package App::Core;\nsub answer { 41 }\n1;\n")?;
+        let program_path = scratch.join("main.pl");
+        std::fs::write(&program_path, "use App::Core;\nmy $x = App::Core::answer();\n")?;
+
+        let resolved = module_path.to_string_lossy().into_owned();
+        let subject = SubjectCandidate {
+            inc_key: KEY.to_string(),
+            resolved_runtime_path: resolved.clone(),
+            ..candidate()
+        }
+        .bind()
+        .map_err(|_| "subject must bind")?;
+        let commands = plan_commands(&subject, ReloadMechanism::IncDeletionAndRequire)
+            .map_err(|_| "must plan")?;
+        let path_hex = perl_hex(&resolved);
+
+        // Register the absolute alias, then break the source so `require`
+        // fails inside the mutation.
+        let broken = "package App::Core; sub answer { syntax ( error ;\n";
+        let mut stream = vec![
+            format!(
+                "p do {{ my $p = pack(q(H*),q({path_hex})); $INC{{$p}} = $p; \"PERLLSP_TEST_ALIAS ok\" }}"
+            ),
+            format!(
+                "p do {{ my $f = pack(q(H*),q({path_hex})); my $c = pack(q(H*),q({})); \
+                 open(my $fh, q(>), $f) or die; print $fh $c; close $fh; \
+                 \"PERLLSP_TEST_BROKE ok\" }}",
+                perl_hex(broken)
+            ),
+        ];
+        stream.extend(commands.mutation().iter().cloned());
+        // Is the entry gone, and does a later require survive?
+        stream.push(format!(
+            "p do {{ my $p = pack(q(H*),q({path_hex})); \"PERLLSP_TEST_POISON \" \
+             . (exists $INC{{$p}} ? q(present) : q(absent)) }}"
+        ));
+        // Repair the source, then require again. This is the
+        // discriminating step: a poisoned entry makes `require` die with
+        // `Attempt to reload ... aborted` regardless of file contents, so
+        // recovery would be impossible for the life of the process.
+        let repaired = "package App::Core; sub answer { 42 } 1;\n";
+        stream.push(format!(
+            "p do {{ my $f = pack(q(H*),q({path_hex})); my $c = pack(q(H*),q({})); \
+             open(my $fh, q(>), $f) or die; print $fh $c; close $fh; \
+             \"PERLLSP_TEST_REPAIRED ok\" }}",
+            perl_hex(repaired)
+        ));
+        stream.push(format!(
+            "p do {{ my $p = pack(q(H*),q({path_hex})); \
+             my $r = eval {{ require $p; 1 }} ? q(ok) : q(died); \"PERLLSP_TEST_RECOVERS $r\" }}"
+        ));
+
+        let run = drive_live_debuggee(oracle, scratch, &program_path, &stream)?;
+        let context = || format!("debuggee stdout was:\n{}", run.stdout);
+
+        assert_eq!(live_field(&run, "PERLLSP_TEST_ALIAS").as_deref(), Some("ok"), "{}", context());
+        assert_eq!(live_field(&run, "PERLLSP_TEST_BROKE").as_deref(), Some("ok"), "{}", context());
+        // The require really did fail — otherwise this proves nothing.
+        assert_eq!(
+            live_field(&run, &mark(MUTATION_MARKER)).as_deref(),
+            Some("0"),
+            "the mutation must fail for this test to mean anything; {}",
+            context()
+        );
+        // No poisoned entry survives the failure.
+        assert_eq!(
+            live_field(&run, "PERLLSP_TEST_POISON").as_deref(),
+            Some("absent"),
+            "a failed reload must not leave a poisoned %INC entry; {}",
+            context()
+        );
+        assert_eq!(
+            live_field(&run, "PERLLSP_TEST_REPAIRED").as_deref(),
+            Some("ok"),
+            "{}",
+            context()
+        );
+        // Recovery is possible: with a poisoned entry this dies with
+        // `Attempt to reload ... aborted` no matter how good the source is.
+        assert_eq!(
+            live_field(&run, "PERLLSP_TEST_RECOVERS").as_deref(),
+            Some("ok"),
+            "a repaired module must be requirable again after a failed reload; {}",
+            context()
+        );
+        Ok(())
     }
 
     /// Marker parsing refuses partial and malformed frames instead of
