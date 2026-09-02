@@ -608,26 +608,48 @@ fn require_declared_module_graph(
     fixture: &OracleFixture,
     violations: &mut Vec<String>,
 ) {
-    let Ok(source) = fs::read_to_string(root.join(&fixture.source)) else {
-        return; // Missing/unreadable source is already reported by the path checks.
-    };
     let declared = fixture.module_files.iter().map(String::as_str).collect::<BTreeSet<_>>();
 
-    for module in used_module_names(&source) {
-        let relative = format!("{}.pm", module.replace("::", "/"));
-        for module_root in &fixture.module_roots {
-            let candidate = format!("{}/{relative}", module_root.trim_end_matches('/'));
-            if root.join(&candidate).is_file() && !declared.contains(candidate.as_str()) {
-                violations.push(format!(
-                    "{doc}: source loads module {module:?}, which resolves to {candidate:?} inside a declared module_root, but that file is not listed in module_files"
-                ));
+    // Walk the source *and* every declared load file: a declared module can pull
+    // in a further module, and that transitive file is just as required.
+    for (field, asset) in std::iter::once(("source", fixture.source.as_str()))
+        .chain(fixture.module_files.iter().map(|file| ("module_files", file.as_str())))
+    {
+        let path = root.join(asset);
+        if !path.is_file() {
+            continue; // Reported by the existence / regular-file checks.
+        }
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                // Existence and file type are not readability. An unreadable
+                // asset cannot be loaded, so it must not pass silently.
+                violations.push(format!("{doc}: {field} {asset:?} could not be read: {error}"));
+                continue;
+            }
+        };
+
+        for module in used_module_names(&text) {
+            let relative = format!("{}.pm", module.replace("::", "/"));
+            for module_root in &fixture.module_roots {
+                let candidate = format!("{}/{relative}", module_root.trim_end_matches('/'));
+                if root.join(&candidate).is_file() && !declared.contains(candidate.as_str()) {
+                    violations.push(format!(
+                        "{doc}: {field} {asset:?} loads module {module:?}, which resolves to {candidate:?} inside a declared module_root, but that file is not listed in module_files"
+                    ));
+                }
             }
         }
     }
 }
 
-/// Package-style `use`/`require` targets only. Pragmas and version/feature forms
-/// are lowercase or numeric and never name a fixture module file.
+/// Package-style `use`/`require` targets only.
+///
+/// Single-segment names (`use Helper;`) count as well as `::`-qualified ones —
+/// a fixture module need not be nested. Pragmas (`strict`, `feature`) are
+/// lowercase and version forms (`use v5.36`) are numeric, so requiring an
+/// uppercase initial excludes them; core and CPAN modules are excluded later by
+/// simply not resolving to a file inside a declared fixture root.
 fn used_module_names(source: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for line in source.lines() {
@@ -642,7 +664,10 @@ fn used_module_names(source: &str) -> BTreeSet<String> {
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
             .collect();
-        if name.contains("::") && name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+        if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && !name.ends_with(':')
+            && !name.contains(":::")
+        {
             names.insert(name);
         }
     }
@@ -1183,22 +1208,23 @@ mod tests {
 
         let tempdir = mirror_repository_manifest(&root, &stripped)?;
 
-        assert_violation(tempdir.path(), "source loads module \"Accuracy::ImportsExports\"")
+        assert_violation(tempdir.path(), r#"loads module "Accuracy::ImportsExports""#)
     }
 
     /// A symlink written inside a declared root but pointing at a repo-internal
     /// file outside it passes both the lexical containment test and the repo-root
     /// escape check. Only comparing resolved paths catches it.
-    #[cfg(unix)]
     #[test]
     fn rejects_module_file_symlinked_outside_its_declared_root() -> TestResult {
         let tempdir = valid_manifest_workspace()?;
         fs::create_dir_all(tempdir.path().join("outside"))?;
         fs::write(tempdir.path().join("outside/Helper.pm"), "package Helper; 1;\n")?;
-        std::os::unix::fs::symlink(
-            tempdir.path().join("outside/Helper.pm"),
-            tempdir.path().join("fixtures/Helper.pm"),
-        )?;
+        if !create_file_symlink_for_test(
+            &tempdir.path().join("outside/Helper.pm"),
+            &tempdir.path().join("fixtures/Helper.pm"),
+        )? {
+            return Ok(()); // Windows session without the symlink privilege.
+        }
         let manifest_path = tempdir.path().join(MANIFEST_PATH);
         let text = fs::read_to_string(&manifest_path)?;
         fs::write(
@@ -1255,6 +1281,61 @@ mod tests {
         assert!(names.contains("Accuracy::ImportsExports"));
         assert!(names.contains("Deep::Nested::Thing"));
         assert_eq!(names.len(), 2, "unexpected extra module names: {names:?}");
+    }
+
+    /// Repository convention (see `xtask/src/publication_drift`): Windows keeps
+    /// symlink coverage but skips visibly when the session lacks the privilege
+    /// (os error 1314), rather than dropping the platform entirely.
+    #[cfg(unix)]
+    fn create_file_symlink_for_test(target: &Path, link: &Path) -> TestResult<bool> {
+        std::os::unix::fs::symlink(target, link)?;
+        Ok(true)
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink_for_test(target: &Path, link: &Path) -> TestResult<bool> {
+        if perl_tdd_support::symlink_test_decision().skip_visibly() {
+            return Ok(false);
+        }
+        Ok(perl_tdd_support::try_create_file_symlink(target, link)?.is_some())
+    }
+
+    /// A single-segment module is still a fixture dependency, and a declared
+    /// module file can pull in a further one. Both must be discovered.
+    #[test]
+    fn rejects_undeclared_single_segment_and_transitive_module_dependencies() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        // package_basic.pl loads Helper; Helper.pm loads Deeper.
+        fs::write(
+            tempdir.path().join("fixtures/package_basic.pl"),
+            "package Demo;\nuse strict;\nuse Helper;\n1;\n",
+        )?;
+        fs::write(tempdir.path().join("fixtures/Helper.pm"), "package Helper;\nuse Deeper;\n1;\n")?;
+        fs::write(tempdir.path().join("fixtures/Deeper.pm"), "package Deeper;\n1;\n")?;
+
+        let manifest_path = tempdir.path().join(MANIFEST_PATH);
+        let text = fs::read_to_string(&manifest_path)?;
+
+        // Single-segment dependency undeclared.
+        assert_violation(tempdir.path(), r#"loads module "Helper""#)?;
+
+        // Declaring it surfaces the transitive one.
+        fs::write(
+            &manifest_path,
+            text.replace(r#""module_files": []"#, r#""module_files": ["fixtures/Helper.pm"]"#),
+        )?;
+
+        assert_violation(tempdir.path(), r#"loads module "Deeper""#)
+    }
+
+    /// Existence and file type are not readability. A file whose bytes are not
+    /// UTF-8 cannot be read as source on any platform, and must not pass.
+    #[test]
+    fn rejects_unreadable_fixture_source() -> TestResult {
+        let tempdir = valid_manifest_workspace()?;
+        fs::write(tempdir.path().join("fixtures/package_basic.pl"), [0xff, 0xfe, 0x00, 0x9f])?;
+
+        assert_violation(tempdir.path(), "could not be read")
     }
 
     /// Copy the repository's real schema, spec, fixture assets, and a (possibly
