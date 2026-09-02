@@ -1278,6 +1278,20 @@ impl<'a> Parser<'a> {
                         // from one carrying no configuration at all.
                         let mut depth = 0usize;
                         while !self.tokens.is_eof() {
+                            // A statement terminator sitting directly inside the
+                            // block means the block never closes — malformed or
+                            // half-typed source, which an editor sees constantly.
+                            // Consuming past it would pull every later
+                            // declaration in the file into this one `use`, so the
+                            // subs and statements after it would vanish from the
+                            // tree entirely. Hand it back to the statement parser
+                            // instead, which is what happened before this arm
+                            // existed. A semicolon nested deeper belongs to a
+                            // block inside the hash, such as the body of
+                            // `generator => sub { ...; ... }`, and is kept.
+                            if depth == 1 && self.peek_kind() == Some(TokenKind::Semicolon) {
+                                break;
+                            }
                             match self.peek_kind() {
                                 Some(TokenKind::LeftBrace) => {
                                     depth = depth.saturating_add(1);

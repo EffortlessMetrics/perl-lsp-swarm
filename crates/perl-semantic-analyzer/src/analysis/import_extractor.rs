@@ -485,9 +485,29 @@ impl ImportExtractor {
         // Collect explicit names, tags, and detect qw() forms.
         let mut explicit_names: Vec<String> = Vec::new();
         let mut tags: Vec<String> = Vec::new();
+        // Tokens inside a `{ ... }` argument are a configuration hash, not a
+        // list of requested symbols: `use M 'a', { key => 'value' }` asks for
+        // `a` alone, and reading the hash body would report `key` and `value`
+        // as imported names.
+        let mut hash_depth = 0usize;
 
         for arg in args {
             let trimmed = arg.trim();
+
+            match trimmed {
+                "{" => {
+                    hash_depth = hash_depth.saturating_add(1);
+                    continue;
+                }
+                "}" => {
+                    hash_depth = hash_depth.saturating_sub(1);
+                    continue;
+                }
+                _ => {}
+            }
+            if hash_depth > 0 {
+                continue;
+            }
 
             // qw(...) form: "qw(a b c)"
             if let Some(inner) = Self::parse_qw_content(trimmed) {

@@ -1142,11 +1142,43 @@ fn a_trailing_config_hashref_after_setup_publishes_no_exports() {
 }
 
 #[test]
+fn a_redirect_name_nested_in_a_trailing_hashref_value_does_not_withhold_exports() {
+    // The discriminating control on the scan's depth gate. `as` here is a key
+    // of a hash the generator builds at run time — three levels inside an
+    // unrelated closure — and has nothing to do with installing this module's
+    // exporter. Scanning every token outside the setup body matches it and
+    // withholds a fully readable `exports` list over a coincidence of naming.
+    //
+    // Custom `generator` subs are ordinary Sub::Exporter, so this is a real
+    // shape, not a constructed one. It fails without the depth gate.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(foo)] }, { generator => sub {\n\
+             my (%opt) = @_;\n\
+             return { as => $opt{as} };\n\
+         } };\n",
+    );
+
+    assert_eq!(
+        declarations(&file, "My::Utils"),
+        vec![
+            (ExportDeclarationKind::Optional, None, vec!["foo".to_string()]),
+            (ExportDeclarationKind::Tag, Some("all".to_string()), vec!["foo".to_string()]),
+        ]
+    );
+    assert!(
+        export_boundaries(&file, "My::Utils").is_empty(),
+        "a redirect name nested in a value is not a redirect"
+    );
+}
+
+#[test]
 fn a_trailing_hashref_that_redirects_nothing_leaves_the_exports_published() {
-    // The negative control for the scan above: it must key on the documented
-    // installation-redirecting options, not on a configuration hashref being
-    // present at all. `generator` beside `-setup` configures how Sub::Exporter
-    // builds its own exports for this line; it moves nobody's installation.
+    // A guard rather than a discriminator: this passes both with and without
+    // the redirect scan, because neither reading finds a redirect key here.
+    // It is kept to pin that the trigger stays the documented install-affecting
+    // options and never widens to "a configuration hashref is present", which
+    // is the cheapest wrong way to make the contract above pass.
     let file = lower(
         "package My::Utils;\n\
          use Sub::Exporter -setup => { exports => [qw(foo)] }, { generator => \\&build };\n",

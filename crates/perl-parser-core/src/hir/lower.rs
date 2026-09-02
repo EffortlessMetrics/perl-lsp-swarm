@@ -3268,15 +3268,37 @@ fn sub_exporter_redirect_beside_setup(args: &[String]) -> Option<String> {
         })
         .collect();
 
-    args.iter().enumerate().find_map(|(index, token)| {
-        if setup_bodies.iter().any(|(open, close)| index >= *open && index <= *close) {
-            return None;
+    // Only a key of the configuration hash itself counts. A redirect name can
+    // occur arbitrarily deep inside an unrelated value — `{ generator => sub {
+    // ...; return { as => $opt{as} }; } }` builds a runtime hash whose `as` has
+    // nothing to do with installing this module's exporter — and matching it
+    // would withhold a fully readable export list over a coincidence of naming.
+    let mut depth = 0usize;
+    let mut found = None;
+    for (index, token) in args.iter().enumerate() {
+        match token.as_str() {
+            "{" | "[" | "(" => {
+                depth = depth.saturating_add(1);
+                continue;
+            }
+            "}" | "]" | ")" => {
+                depth = depth.saturating_sub(1);
+                continue;
+            }
+            _ => {}
+        }
+        if depth > 1 || setup_bodies.iter().any(|(open, close)| index >= *open && index <= *close) {
+            continue;
         }
         let key = unquote_literal(token);
-        (SUB_EXPORTER_INSTALL_REDIRECT_KEYS.contains(&key)
-            && args.get(index + 1).map(String::as_str) == Some("=>"))
-        .then(|| key.to_string())
-    })
+        if SUB_EXPORTER_INSTALL_REDIRECT_KEYS.contains(&key)
+            && args.get(index + 1).map(String::as_str) == Some("=>")
+        {
+            found = Some(key.to_string());
+            break;
+        }
+    }
+    found
 }
 
 /// Token slice inside a `use Sub::Exporter -setup => { ... }` configuration hash.
