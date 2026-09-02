@@ -415,18 +415,22 @@ fn render_markdown(receipt: &CadenceReceipt) -> String {
         "# Policy cadence obligations\n\nAs of `{}`. Advisory projection only; domain validators remain authoritative.\n\n",
         receipt.as_of
     );
-    output.push_str("| State | Kind | Record | Owner | Review | Expiry | Decision |\n");
-    output.push_str("|---|---|---|---|---|---|---|\n");
+    output.push_str(
+        "| State | Kind | Record | Owner | Review | Expiry | Decision | Disposition | Falsifier |\n",
+    );
+    output.push_str("|---|---|---|---|---|---|---|---|---|\n");
     for item in &receipt.obligations {
         output.push_str(&format!(
-            "| `{:?}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} |\n",
+            "| `{:?}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} | `{}` | {} |\n",
             item.state,
             item.source_kind,
             item.record_id,
             item.owner,
             item.review_after.as_deref().unwrap_or("—"),
             item.expires.as_deref().unwrap_or("—"),
-            item.required_decision.replace('|', "\\|")
+            item.required_decision.replace('|', "\\|"),
+            item.disposition.as_deref().unwrap_or("—").replace('|', "\\|"),
+            item.falsifier.as_deref().unwrap_or("—").replace('|', "\\|"),
         ));
     }
     output
@@ -578,6 +582,27 @@ falsifier = "fresh coverage reaches target"
             quality_entry_invalid_reason(&entry)
                 .is_some_and(|reason| reason.contains("non-empty falsifier"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_projection_retains_quality_decision_metadata() -> Result<()> {
+        let mut item = raw(None, None, true);
+        item.disposition = Some("renew_with_new_evidence".to_string());
+        item.falsifier = Some("fresh receipt | reaches target".to_string());
+        let as_of =
+            NaiveDate::from_ymd_opt(2026, 8, 12).ok_or_else(|| eyre!("invalid fixture date"))?;
+        let receipt = CadenceReceipt {
+            schema_version: SCHEMA_VERSION,
+            as_of: as_of.to_string(),
+            advisory_only: true,
+            obligations: vec![classify(item, as_of)],
+        };
+
+        let markdown = render_markdown(&receipt);
+        assert!(markdown.contains("Disposition | Falsifier"));
+        assert!(markdown.contains("renew_with_new_evidence"));
+        assert!(markdown.contains("fresh receipt \\| reaches target"));
         Ok(())
     }
 
