@@ -229,7 +229,7 @@ import sys
 
 with open(sys.argv[1], "rb") as handle:
     argv = handle.read().split(b"\0")[:-1]
-if argv[:3] != [b"install", b"perllsp", b"--locked"]:
+if argv[:5] != [b"install", b"perllsp", b"--locked", b"--registry", b"crates-io"]:
     raise SystemExit(f"unexpected cargo install prefix: {argv!r}")
 PY
 then

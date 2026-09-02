@@ -1188,7 +1188,7 @@ build_from_source() {
     # `${_target_arg[@]+"${_target_arg[@]}"}` — a bare `"${_target_arg[@]}"`
     # would abort under `set -u` on bash < 4.4 (macOS /bin/bash 3.2) whenever
     # TARGET is unset, which is the default host-target source build.
-    if ! cargo install perllsp --locked \
+    if ! cargo install perllsp --locked --registry crates-io \
         ${_version_arg[@]+"${_version_arg[@]}"} \
         ${_target_arg[@]+"${_target_arg[@]}"} \
         --root "$TMPDIR/install-root"; then
