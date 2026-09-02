@@ -454,9 +454,19 @@ impl InertScanner {
             // the fence over genuine rows. A comment delimiter here is sample
             // text, so comment state is deliberately not advanced.
             Some(InertRegion::Fence { marker, length }) => {
-                if fence_delimiter(trimmed_line).is_some_and(|delimiter| {
-                    delimiter.can_close && delimiter.marker == marker && delimiter.length >= length
-                }) {
+                // A closing fence carries at most three columns of indent; at
+                // four it is content inside the block. Closing on it ends the
+                // fence early, so the example's own rows read as document text
+                // and the real closer re-opens the fence over the genuine rows
+                // after it — the same silent swallow an unmatched marker used
+                // to cause, reached through indentation instead.
+                if !indented_code_columns(line)
+                    && fence_delimiter(trimmed_line).is_some_and(|delimiter| {
+                        delimiter.can_close
+                            && delimiter.marker == marker
+                            && delimiter.length >= length
+                    })
+                {
                     self.inside = None;
                 }
                 None
@@ -991,6 +1001,59 @@ let example = 1;
         assert!(
             error.to_string().contains("has no core attributes section"),
             "the refusal must name the missing section, not a downstream symptom: {error}"
+        );
+    }
+
+    #[test]
+    fn an_indented_delimiter_does_not_close_an_open_fence() {
+        // A closing fence carries at most three columns of indent; at four it
+        // is content inside the block. Closing on it ends the fence early, the
+        // example's rows read as document text, and the real closer re-opens
+        // the fence over the genuine rows after it. The trailing well-formed
+        // fence restores the parity the unclosed-fence guard relies on, so
+        // nothing fails and `hx-post` simply disappears.
+        let indented_closer = concat!(
+            "## Core Attribute Reference {#attributes}\n",
+            "\n",
+            "| Attribute | Description |\n",
+            "|-----------|-------------|\n",
+            "| [`hx-get`](@/attributes/hx-get.md) | issues a GET |\n",
+            "\n",
+            "```text\n",
+            "    ```\n",
+            "| [`hx-fake`](@/attributes/hx-fake.md) | sample |\n",
+            "```\n",
+            "\n",
+            "| Attribute | Description |\n",
+            "|-----------|-------------|\n",
+            "| [`hx-post`](@/attributes/hx-post.md) | added upstream |\n",
+            "\n",
+            "```rust\n",
+            "let x = 1;\n",
+            "```\n",
+        );
+
+        assert!(
+            section_names(indented_closer, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-post"])
+        );
+
+        // Up to three columns is a legitimate closer, so it must still close —
+        // refusing it would leave the fence open and swallow every row after.
+        let shallow_closer = concat!(
+            "## Core Attribute Reference {#attributes}\n",
+            "\n",
+            "```text\n",
+            "| `hx-phantom` | only an example |\n",
+            "   ```\n",
+            "\n",
+            "| Attribute | Description |\n",
+            "|-----------|-------------|\n",
+            "| [`hx-get`](@/attributes/hx-get.md) | issues a GET |\n",
+        );
+
+        assert!(
+            section_names(shallow_closer, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"])
         );
     }
 
