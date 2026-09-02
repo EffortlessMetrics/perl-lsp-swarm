@@ -1501,6 +1501,12 @@ fn is_term_position(
             if word_start >= 2 && bytes.get(word_start - 2..word_start) == Some(b"$^".as_slice()) {
                 return false;
             }
+            // `$#array` is @array's last index: a completed term, so `$#a <<2`
+            // is a shift (perl: `$#a` of 2 gives 8). The sigil test below looks
+            // at one byte and sees the `#`, not the `$`.
+            if word_start >= 2 && bytes.get(word_start - 2..word_start) == Some(b"$#".as_slice()) {
+                return false;
+            }
             // `->name` is a method call, and Perl gives it no unparenthesized
             // list, so the call is a completed term and `$o->val <<2` is a
             // shift. Without this the word looks like a bareword list operator.

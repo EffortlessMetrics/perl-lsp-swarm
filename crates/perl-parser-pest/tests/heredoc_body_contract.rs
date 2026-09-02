@@ -523,6 +523,72 @@ fn when_a_control_character_variable_precedes_a_shift_then_no_body_is_owned() {
 }
 
 #[test]
+fn when_an_array_last_index_precedes_the_shift_then_no_body_is_owned() {
+    // perl 5.38: with `my @a=(1,2,3)`, `$#a <<2` is 8 — `$#a` is 2 and the
+    // `<<` is a left shift. The sigil test inspects the single byte before the
+    // word and sees the `#`, not the `$`, so `<<2` was taken for an opener and
+    // the following statement was consumed as body text.
+    //
+    // As with `$^W`, this crate's grammar *does* admit a heredoc after the bare
+    // `$#a` form, so the scanner and the grammar deliberately disagree; the
+    // disagreement is reported by `parse_heredoc_outcome` and not deleting real
+    // source is the safe side of it. That row is therefore absent from the
+    // agreement matrix. The `$#{$r}` and `$#$ref` forms the grammar reads
+    // correctly, so those two rows are in the matrix.
+    for source in [
+        "my $y = $#a <<2;\nmy $z = 3;\n",
+        "my $y = $#array <<2;\nmy $z = 3;\n",
+        "my $y = $#{$r} <<2;\nmy $z = 3;\n",
+        "my $y = $#$ref <<2;\nmy $z = 3;\n",
+        // A bareword marker is no different — still a shift, by a bareword.
+        "my $y = $#a <<EOF;\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "array last index is a value: {source:?}");
+        assert_eq!(scan.stripped(), source, "no source may be removed for: {source:?}");
+    }
+
+    // The opposite direction: `$#` must not turn every following word into a
+    // value. A heredoc after an ordinary bareword is still owned.
+    let owned = perl_parser_pest::heredoc::scan("my $x = FOO <<EOF;\nbody\nEOF\n");
+    assert_eq!(owned.captures().len(), 1, "an ordinary bareword still leaves term position");
+    assert_eq!(owned.captures()[0].content(), "body\n");
+}
+
+#[test]
+fn when_a_replacement_spans_lines_then_its_text_is_not_scanned_for_openers() {
+    // Reported as a defect; it does not reproduce, and this pins that.
+    //
+    // perl 5.38 for the multiline form:
+    //
+    //   $t =~ s{a}
+    //   {<<NOT_A_HEREDOC};
+    //   my $h = <<EOF;      # t becomes "<<NOT_A_HEREDOCaa", h becomes "body"
+    //
+    // so the `<<NOT_A_HEREDOC` inside the replacement is literal text, and the
+    // real opener below it still owns its body.
+    for source in [
+        "$t =~ s{a}\n{<<NOT_A_HEREDOC};\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+        "$t =~ s{a}{<<NOT_A_HEREDOC};\nmy $h = <<EOF;\nbody\nEOF\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(scan.captures().len(), 1, "only the real opener is owned: {source:?}");
+        assert_eq!(scan.captures()[0].marker(), "EOF", "{source:?}");
+        assert_eq!(scan.captures()[0].content(), "body\n", "{source:?}");
+        assert!(
+            scan.stripped().contains("<<NOT_A_HEREDOC"),
+            "replacement text must survive in the parsed source: {:?}",
+            scan.stripped()
+        );
+        assert!(
+            scan.stripped().contains("my $z = 3;"),
+            "no following source may be deleted: {:?}",
+            scan.stripped()
+        );
+    }
+}
+
+#[test]
 fn when_opener_follows_defined_or_then_the_body_is_owned() {
     // perl 5.38: `my $x = $u // <<EOF;` assigns the heredoc body when `$u` is
     // undef, so `//` here is the defined-or *operator* and `<<EOF` starts a
@@ -884,7 +950,7 @@ fn scanner_and_grammar_agree_on_openers() {
     //
     // Each row is one line of Perl with no body, so the grammar's count is its
     // unclouded opinion about that `<<` alone.
-    let rows: [&str; 41] = [
+    let rows: [&str; 43] = [
         // Term position — the grammar admits `heredoc` as an unconditional
         // `primary`, so any bareword counts, not just builtins.
         "my $x = <<EOF;\n",
@@ -933,6 +999,11 @@ fn scanner_and_grammar_agree_on_openers() {
         // Not code at all.
         "my $x = /<<EOF/;\n",
         "my $x = 1; # <<EOF\n",
+        // `$#array` is a completed term: @array's last index. The bare-name
+        // form is a deliberate disagreement (see the dedicated test) and is
+        // therefore absent here; these two forms the grammar reads correctly.
+        "my $y = $#{$r} <<2;\n",
+        "my $y = $#$ref <<2;\n",
         // A newline inside an expression is ordinary whitespace to both, so the
         // term/operator split has to survive the line break in both directions.
         "my $y = 1\n <<2;\n",
