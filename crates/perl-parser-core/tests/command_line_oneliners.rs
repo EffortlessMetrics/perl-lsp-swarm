@@ -15,7 +15,7 @@ use perl_parser_core::hir::{CompilePhase, HirFile, HirKind, lower_ast};
 use perl_parser_core::{Node, Parser};
 
 fn collect_ast_shapes<'a>(node: &'a Node, shapes: &mut Vec<(&'static str, usize, usize)>) {
-    shapes.push((node.kind.kind_name(), node.location.start, node.location.end));
+    shapes.push((node.kind.kind_name(), node.location.start(), node.location.end()));
     for child in node.children() {
         collect_ast_shapes(child, shapes);
     }
@@ -49,7 +49,7 @@ fn assert_hir_range_contains(source: &str, hir: &HirFile, anchor_kind: &str, fra
     let found = hir.items.iter().any(|item| {
         item.anchor.node_kind == anchor_kind
             && source
-                .get(item.range.start..item.range.end)
+                .get(item.range.start()..item.range.end())
                 .is_some_and(|range| range.contains(fragment))
     });
     assert!(
@@ -176,7 +176,7 @@ fn positive_idioms_have_typed_ast_hir_and_source_range_proof() -> TestResult {
             .find(|fact| fact.phase == phase)
             .ok_or_else(|| format!("missing {phase:?} HIR phase block"))?;
         let range = phase_source
-            .get(fact.range.start..fact.range.end)
+            .get(fact.range.start()..fact.range.end())
             .ok_or("phase HIR range is not a source boundary")?;
         assert!(range.contains(fragment), "phase range {range:?} must contain {fragment:?}");
     }
@@ -224,7 +224,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
     assert_not_single_line_source(multiline);
     let (multiline_ast, multiline_hir) = parse_clean_with_hir(multiline)?;
     assert_ast_range_contains(multiline, &multiline_ast, "Program", "\n");
-    assert!(multiline_hir.items.iter().all(|item| item.range.end <= multiline.len()));
+    assert!(multiline_hir.items.iter().all(|item| item.range.end() <= multiline.len()));
 
     Ok(())
 }

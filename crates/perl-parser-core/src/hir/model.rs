@@ -474,7 +474,7 @@ fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec
                 source_item: binding.declaration_item,
                 scope_id: Some(binding.scope_id),
                 package_context: binding.package_context.clone(),
-                fact_anchor_id: Some(AnchorId(binding.range.start as u64)),
+                fact_anchor_id: Some(AnchorId(binding.range.start() as u64)),
                 dynamic_reason: None,
                 source_hash: source_hash.clone(),
                 provenance: CompileProvenance::ExactAst,
@@ -523,7 +523,7 @@ fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec
                 source_item: root.directive_item,
                 scope_id: root.scope_id,
                 package_context: root.package_context.clone(),
-                fact_anchor_id: Some(AnchorId(root.range.start as u64)),
+                fact_anchor_id: Some(AnchorId(root.range.start() as u64)),
                 dynamic_reason: None,
                 source_hash: source_hash.clone(),
                 provenance: root.provenance,
@@ -544,7 +544,7 @@ fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec
                 source_item: request.directive_item,
                 scope_id: request.scope_id,
                 package_context: request.package_context.clone(),
-                fact_anchor_id: Some(AnchorId(request.range.start as u64)),
+                fact_anchor_id: Some(AnchorId(request.range.start() as u64)),
                 dynamic_reason: None,
                 source_hash: source_hash.clone(),
                 provenance: request.provenance,
@@ -589,7 +589,7 @@ fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec
                 source_item: edge.declaration_item,
                 scope_id: None,
                 package_context: Some(edge.from_package.clone()),
-                fact_anchor_id: Some(AnchorId(edge.range.start as u64)),
+                fact_anchor_id: Some(AnchorId(edge.range.start() as u64)),
                 dynamic_reason: None,
                 source_hash: source_hash.clone(),
                 provenance: stash_provenance_to_compile(edge.provenance),
@@ -615,7 +615,7 @@ fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec
                 source_item: boundary.boundary_item,
                 scope_id: boundary.scope_id,
                 package_context: boundary.package_context.clone(),
-                fact_anchor_id: Some(AnchorId(boundary.range.start as u64)),
+                fact_anchor_id: Some(AnchorId(boundary.range.start() as u64)),
                 dynamic_reason: Some(boundary.reason.clone()),
                 source_hash: source_hash.clone(),
                 provenance: boundary.provenance,
@@ -636,7 +636,7 @@ fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec
                 source_item: boundary.boundary_item,
                 scope_id: None,
                 package_context: boundary.package.clone(),
-                fact_anchor_id: Some(AnchorId(boundary.range.start as u64)),
+                fact_anchor_id: Some(AnchorId(boundary.range.start() as u64)),
                 dynamic_reason: Some(boundary.reason.clone()),
                 source_hash: source_hash.clone(),
                 provenance: stash_provenance_to_compile(boundary.provenance),
@@ -645,7 +645,7 @@ fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec
         );
     }
 
-    entries.sort_by_key(|entry| (entry.effect.range.start, entry.source_order));
+    entries.sort_by_key(|entry| (entry.effect.range.start(), entry.source_order));
     entries
         .into_iter()
         .enumerate()
@@ -676,7 +676,7 @@ fn push_item_effects(
                     source_item: Some(item.id),
                     scope_id: item.scope_context,
                     package_context: Some(decl.name.clone()),
-                    fact_anchor_id: Some(AnchorId(item.range.start as u64)),
+                    fact_anchor_id: Some(AnchorId(item.range.start() as u64)),
                     dynamic_reason: None,
                     source_hash: source_hash.clone(),
                     provenance: CompileProvenance::ExactAst,
@@ -700,7 +700,7 @@ fn push_item_effects(
                     source_item: Some(item.id),
                     scope_id: item.scope_context,
                     package_context: item.package_context.clone(),
-                    fact_anchor_id: Some(AnchorId(item.range.start as u64)),
+                    fact_anchor_id: Some(AnchorId(item.range.start() as u64)),
                     dynamic_reason: None,
                     source_hash: source_hash.clone(),
                     provenance: CompileProvenance::ExactAst,
@@ -721,7 +721,7 @@ fn push_item_effects(
                     source_item: Some(item.id),
                     scope_id: item.scope_context,
                     package_context: item.package_context.clone(),
-                    fact_anchor_id: Some(AnchorId(item.range.start as u64)),
+                    fact_anchor_id: Some(AnchorId(item.range.start() as u64)),
                     dynamic_reason: None,
                     source_hash: source_hash.clone(),
                     provenance: CompileProvenance::ExactAst,
@@ -765,7 +765,7 @@ fn push_slot_effects(
             source_item: slot.declaration_item,
             scope_id: None,
             package_context: Some(package.package.clone()),
-            fact_anchor_id: Some(AnchorId(slot.range.start as u64)),
+            fact_anchor_id: Some(AnchorId(slot.range.start() as u64)),
             dynamic_reason: None,
             source_hash: source_hash.clone(),
             provenance: stash_provenance_to_compile(slot.provenance),
@@ -1156,7 +1156,7 @@ impl ExportSetBuilder {
     }
 
     fn absorb(&mut self, declaration: &ExportDeclaration) {
-        if declaration.range.start < self.anchor_range.start {
+        if declaration.range.start() < self.anchor_range.start() {
             self.anchor_range = declaration.range;
         }
         self.provenance =
@@ -1202,7 +1202,7 @@ impl ExportSetBuilder {
             provenance: self.provenance,
             confidence: self.confidence,
             module_name: Some(self.module_name),
-            anchor_id: Some(AnchorId(self.anchor_range.start as u64)),
+            anchor_id: Some(AnchorId(self.anchor_range.start() as u64)),
         }
     }
 }
@@ -1490,7 +1490,7 @@ impl CompileEnvironment {
     /// Return the latest effective pragma state fact at or before `offset`.
     #[must_use]
     pub fn pragma_state_at(&self, offset: usize) -> Option<&PragmaStateFact> {
-        let idx = self.pragma_state_facts.partition_point(|fact| fact.range.start <= offset);
+        let idx = self.pragma_state_facts.partition_point(|fact| fact.range.start() <= offset);
         if idx > 0 { self.pragma_state_facts.get(idx - 1) } else { None }
     }
 
@@ -1612,7 +1612,7 @@ impl CompileEnvironment {
         let mut active = Vec::new();
 
         for (order, root) in self.inc_roots.iter().enumerate() {
-            if root.range.start > request.range.start {
+            if root.range.start() > request.range.start() {
                 continue;
             }
             if root.kind != IncRootKind::UseLib {
@@ -1625,7 +1625,7 @@ impl CompileEnvironment {
                         path: root.path.clone(),
                         kind: root.kind,
                         source: "use-lib-lexical".to_string(),
-                        range_start: root.range.start,
+                        range_start: root.range.start(),
                         order,
                     });
                 }
@@ -2022,7 +2022,7 @@ fn visible_symbol_for_export(
         context: Some(VisibleSymbolContext::new(
             Some(declaration.package.clone()),
             None,
-            Some(AnchorId(declaration.range.start as u64)),
+            Some(AnchorId(declaration.range.start() as u64)),
         )),
     }
 }
@@ -2489,9 +2489,9 @@ fn import_spec(
         provenance,
         confidence,
         file_id: Some(file_id),
-        anchor_id: Some(AnchorId(directive.range.start as u64)),
+        anchor_id: Some(AnchorId(directive.range.start() as u64)),
         scope_id: directive.scope_id.map(|id| ScopeId(id.index() as u64)),
-        span_start_byte: Some(directive.range.start.min(u32::MAX as usize) as u32),
+        span_start_byte: Some(directive.range.start().min(u32::MAX as usize) as u32),
     }
 }
 
@@ -2502,7 +2502,7 @@ fn classify_import_args(
 ) -> (ImportKind, ImportSymbols, Provenance, Confidence) {
     if args.is_empty() {
         let bare_len = "use ".len() + module.len() + 1;
-        let span_len = range.end.saturating_sub(range.start);
+        let span_len = range.end().saturating_sub(range.start());
         if span_len > bare_len {
             return (
                 ImportKind::UseEmpty,

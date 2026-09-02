@@ -50,7 +50,7 @@ pub fn check_pod_coverage(node: &Node, source: &str, diagnostics: &mut Vec<Diagn
     let mut sub_locations: Vec<(String, usize, usize)> = Vec::new();
     walk_node(node, &mut |n| {
         if let NodeKind::Subroutine { name: Some(name), .. } = &n.kind {
-            sub_locations.push((name.clone(), n.location.start, n.location.end));
+            sub_locations.push((name.clone(), n.location.start(), n.location.end()));
         }
     });
 
@@ -260,7 +260,7 @@ fn collect_names_from_expr(node: &Node, names: &mut Vec<(String, usize, usize)>)
                     && !value.starts_with('@')
                     && !value.starts_with('%')
                 {
-                    names.push((value.clone(), elem.location.start, elem.location.end));
+                    names.push((value.clone(), elem.location.start(), elem.location.end()));
                 }
             }
         }
@@ -270,7 +270,7 @@ fn collect_names_from_expr(node: &Node, names: &mut Vec<(String, usize, usize)>)
                 && !value.starts_with('@')
                 && !value.starts_with('%') =>
         {
-            names.push((value.clone(), node.location.start, node.location.end));
+            names.push((value.clone(), node.location.start(), node.location.end()));
         }
         NodeKind::FunctionCall { args, .. } => {
             for arg in args {
@@ -376,25 +376,25 @@ mod tests {
     fn make_string_node(value: &str, start: usize, end: usize) -> Node {
         Node::new(
             NodeKind::String { value: value.to_string(), interpolated: false },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         )
     }
 
     fn make_array_literal(elements: Vec<Node>, start: usize, end: usize) -> Node {
-        Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
+        Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation::new(start, end))
     }
 
     fn make_var(sigil: &str, name: &str, start: usize, end: usize) -> Node {
         Node::new(
             NodeKind::Variable { sigil: sigil.to_string(), name: name.to_string() },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         )
     }
 
     fn make_use(module: &str, start: usize, end: usize) -> Node {
         Node::new(
             NodeKind::Use { module: module.to_string(), args: Vec::new(), has_filter_risk: false },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         )
     }
 
@@ -409,16 +409,16 @@ mod tests {
                 attributes: Vec::new(),
                 body: Box::new(Node::new(
                     NodeKind::Block { statements: Vec::new() },
-                    SourceLocation { start: start + 10, end: end - 1 },
+                    SourceLocation::new(start + 10, end - 1),
                 )),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         )
     }
 
     fn make_program(stmts: Vec<Node>) -> Node {
-        let end = stmts.last().map_or(0, |n| n.location.end);
-        Node::new(NodeKind::Program { statements: stmts }, SourceLocation { start: 0, end })
+        let end = stmts.last().map_or(0, |n| n.location.end());
+        Node::new(NodeKind::Program { statements: stmts }, SourceLocation::new(0, end))
     }
 
     fn make_var_decl(
@@ -436,7 +436,7 @@ mod tests {
                 attributes: Vec::new(),
                 initializer: init.map(Box::new),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         )
     }
 
@@ -710,18 +710,18 @@ sub something { 1 }
         };
         Node::new(
             NodeKind::Use { module: "constant".to_string(), args, has_filter_risk: false },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         )
     }
 
     fn make_typeglob(name: &str, start: usize, end: usize) -> Node {
-        Node::new(NodeKind::Typeglob { name: name.to_string() }, SourceLocation { start, end })
+        Node::new(NodeKind::Typeglob { name: name.to_string() }, SourceLocation::new(start, end))
     }
 
     fn make_assignment(lhs: Node, rhs: Node, start: usize, end: usize) -> Node {
         Node::new(
             NodeKind::Assignment { lhs: Box::new(lhs), rhs: Box::new(rhs), op: "=".to_string() },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         )
     }
 
@@ -887,7 +887,7 @@ our @EXPORT_OK = qw(FOO BAR);
         let arg = make_string_node("run", 20, 23);
         let call_node = Node::new(
             NodeKind::FunctionCall { name: "qw".to_string(), args: vec![arg] },
-            SourceLocation { start: 10, end: 24 },
+            SourceLocation::new(10, 24),
         );
         let mut names = Vec::new();
         collect_names_from_expr(&call_node, &mut names);
@@ -909,7 +909,7 @@ our @EXPORT_OK = qw(FOO BAR);
         let rhs = make_array_literal(vec![make_string_node("foo", 35, 38)], 33, 39);
         let assign = Node::new(
             NodeKind::Assignment { lhs: Box::new(lhs), rhs: Box::new(rhs), op: "=".to_string() },
-            SourceLocation { start: 23, end: 40 },
+            SourceLocation::new(23, 40),
         );
         let ast = make_program(vec![make_use("Exporter", 0, 22), assign]);
         let names = collect_exported_names(&ast, source);
@@ -948,7 +948,7 @@ our @EXPORT_OK = qw(FOO BAR);
                 args: vec!["FOO".to_string(), "=>".to_string(), "1".to_string()],
                 has_filter_risk: false,
             },
-            SourceLocation { start: 0, end: 20 },
+            SourceLocation::new(0, 20),
         );
         let no_names = collect_constant_names(&make_program(vec![non_constant_use]));
         assert!(no_names.is_empty(), "non-constant Use must yield no names: {no_names:?}");
@@ -1017,7 +1017,7 @@ our @EXPORT_OK = qw(FOO BAR);
                 args: args.iter().map(|s| s.to_string()).collect(),
                 has_filter_risk: false,
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         )
     }
 

@@ -112,7 +112,7 @@ impl PirSourceAnchor {
         Self {
             kind: PirAnchorKind::ExplicitSource,
             range: Some(range),
-            anchor_id: Some(AnchorId(range.start as u64)),
+            anchor_id: Some(AnchorId(range.start() as u64)),
             hir_item: Some(hir_item),
         }
     }
@@ -123,7 +123,7 @@ impl PirSourceAnchor {
         Self {
             kind: PirAnchorKind::DynamicBoundary,
             range: Some(range),
-            anchor_id: Some(AnchorId(range.start as u64)),
+            anchor_id: Some(AnchorId(range.start() as u64)),
             hir_item: Some(hir_item),
         }
     }
@@ -926,7 +926,7 @@ mod tests {
 
     #[test]
     fn pir_source_anchor_explicit_creates_anchored() {
-        let loc = SourceLocation { start: 0, end: 5 };
+        let loc = SourceLocation::new(0, 5);
         let anchor = PirSourceAnchor::explicit(loc, HirId::from_index(1));
         assert!(anchor.is_anchored());
         assert_eq!(anchor.kind, PirAnchorKind::ExplicitSource);
@@ -935,7 +935,7 @@ mod tests {
 
     #[test]
     fn pir_source_anchor_dynamic_boundary_creates_anchored() {
-        let loc = SourceLocation { start: 10, end: 20 };
+        let loc = SourceLocation::new(10, 20);
         let anchor = PirSourceAnchor::dynamic_boundary(loc, HirId::from_index(2));
         assert!(anchor.is_anchored());
         assert_eq!(anchor.kind, PirAnchorKind::DynamicBoundary);
@@ -1170,7 +1170,7 @@ mod tests {
 
     #[test]
     fn pir_graph_empty_returns_false_for_nodes() {
-        let loc = SourceLocation { start: 0, end: 1 };
+        let loc = SourceLocation::new(0, 1);
         let node = PirNode {
             id: PirId::from_index(0),
             source_anchor: PirSourceAnchor::explicit(loc, HirId::from_index(1)),
@@ -1203,7 +1203,7 @@ mod tests {
 
     #[test]
     fn pir_graph_node_lookup() {
-        let loc = SourceLocation { start: 0, end: 1 };
+        let loc = SourceLocation::new(0, 1);
         let node = PirNode {
             id: PirId::from_index(0),
             source_anchor: PirSourceAnchor::explicit(loc, HirId::from_index(1)),

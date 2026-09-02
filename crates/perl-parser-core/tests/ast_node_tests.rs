@@ -6,10 +6,10 @@ use perl_parser_core::{
 fn v1_node_creation() -> Result<(), Box<dyn std::error::Error>> {
     let node = V1Node::new(
         V1NodeKind::Number { value: "42".to_string() },
-        SourceLocation { start: 0, end: 2 },
+        SourceLocation::new(0, 2),
     );
-    assert_eq!(node.location.start, 0);
-    assert_eq!(node.location.end, 2);
+    assert_eq!(node.location.start(), 0);
+    assert_eq!(node.location.end(), 2);
     assert_eq!(node.kind.kind_name(), "Number");
     Ok(())
 }
@@ -18,7 +18,7 @@ fn v1_node_creation() -> Result<(), Box<dyn std::error::Error>> {
 fn v1_node_to_sexp() -> Result<(), Box<dyn std::error::Error>> {
     let node = V1Node::new(
         V1NodeKind::Number { value: "42".to_string() },
-        SourceLocation { start: 0, end: 2 },
+        SourceLocation::new(0, 2),
     );
     let sexp = node.to_sexp();
     assert!(!sexp.is_empty(), "S-expression should not be empty");
@@ -29,11 +29,11 @@ fn v1_node_to_sexp() -> Result<(), Box<dyn std::error::Error>> {
 fn v1_program_node() -> Result<(), Box<dyn std::error::Error>> {
     let child = V1Node::new(
         V1NodeKind::Number { value: "1".to_string() },
-        SourceLocation { start: 0, end: 1 },
+        SourceLocation::new(0, 1),
     );
     let program = V1Node::new(
         V1NodeKind::Program { statements: vec![child] },
-        SourceLocation { start: 0, end: 1 },
+        SourceLocation::new(0, 1),
     );
     match &program.kind {
         V1NodeKind::Program { statements } => assert_eq!(statements.len(), 1),

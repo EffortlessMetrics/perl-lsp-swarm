@@ -1284,9 +1284,9 @@ impl LspServer {
                         if sym.name == name {
                             // Return enhanced symbol with detail and accurate range
                             let start_pos =
-                                doc.line_starts.offset_to_position(&doc.text, sym.location.start);
+                                doc.line_starts.offset_to_position(&doc.text, sym.location.start());
                             let end_pos =
-                                doc.line_starts.offset_to_position(&doc.text, sym.location.end);
+                                doc.line_starts.offset_to_position(&doc.text, sym.location.end());
 
                             // Start with the provided symbol JSON so we can add
                             // additional details without panicking if fields are missing

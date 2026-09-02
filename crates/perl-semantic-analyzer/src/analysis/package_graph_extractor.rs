@@ -216,7 +216,7 @@ impl ExtractorState {
 
     /// Derive an [`AnchorId`] from a node's byte-offset span.
     fn anchor_from_node(node: &Node) -> AnchorId {
-        AnchorId(node.location.start as u64)
+        AnchorId(node.location.start() as u64)
     }
 
     /// Check whether a node is the `@ISA` variable.

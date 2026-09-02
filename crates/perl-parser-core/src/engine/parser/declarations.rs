@@ -22,10 +22,10 @@ impl<'a> Parser<'a> {
 
         if self.peek_kind().is_some_and(Self::can_be_sub_name) {
             let (rest, rest_span) = self.parse_qualified_name(true)?;
-            Ok((format!("::{rest}"), SourceLocation { start: lead_start, end: rest_span.end }))
+            Ok((format!("::{rest}"), SourceLocation::new(lead_start, rest_span.end())))
         } else {
             // Bare `package ::` with no following name — mirror `sub ::`.
-            Ok(("::".to_string(), SourceLocation { start: lead_start, end: lead_end }))
+            Ok(("::".to_string(), SourceLocation::new(lead_start, lead_end)))
         }
     }
 
@@ -85,7 +85,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok((name, SourceLocation { start: name_start, end: name_end }))
+        Ok((name, SourceLocation::new(name_start, name_end)))
     }
 
     /// Built-in class-level attributes defined by Perl 5.38+ `use feature 'class'`.
@@ -256,7 +256,11 @@ impl<'a> Parser<'a> {
     /// Parse subroutine definition
     fn parse_subroutine(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'sub'
+        // Consume through the tracked path so `previous_position` reflects the
+        // last consumed byte; raw stream reads would leave a stale end behind
+        // and reverse the declaration span (#8740 hardening caught this).
+        let sub_token = self.consume_token()?;
+        let _ = sub_token;
 
         let (name, name_span) = if self.peek_kind() == Some(TokenKind::DoubleColon) {
             // Leading :: qualifier — subroutine in the main package (e.g., sub ::PCDATA { })
@@ -266,19 +270,21 @@ impl<'a> Parser<'a> {
                 // sub ::PCDATA or sub ::DB_File::splice
                 let ident_token = self.tokens.next()?;
                 let full_name = format!("::{}", ident_token.text);
-                (Some(full_name), Some(SourceLocation { start: name_start, end: ident_token.end() }))
+                (Some(full_name), Some(SourceLocation::new(name_start, ident_token.end())))
             } else {
                 // sub :: with no following name — treat as name "::"
                 (
                     Some("::".to_string()),
-                    Some(SourceLocation { start: name_start, end: dc_token.end() }),
+                    Some(SourceLocation::new(name_start, dc_token.end())),
                 )
             }
         } else if self.peek_kind().is_some_and(Self::can_be_sub_name) {
             let (name, span) = self.parse_subroutine_name()?;
+            self.last_end_position = span.end();
             (Some(name), Some(span))
         } else if self.is_legacy_tick_subroutine_name_start() {
             let (name, span) = self.parse_legacy_tick_subroutine_name()?;
+            self.last_end_position = span.end();
             (Some(name), Some(span))
         } else {
             // No name - anonymous subroutine (next token is {, (, :, or similar)
@@ -304,7 +310,7 @@ impl<'a> Parser<'a> {
                 let proto_content = self.parse_prototype()?;
                 let proto_node = Node::new(
                     NodeKind::Prototype { content: proto_content },
-                    SourceLocation { start: proto_start, end: self.previous_position() },
+                    SourceLocation::new(proto_start, self.previous_position()),
                 );
                 (Some(Box::new(proto_node)), None)
             } else {
@@ -313,7 +319,7 @@ impl<'a> Parser<'a> {
                 let params = self.parse_signature()?;
                 let sig_node = Node::new(
                     NodeKind::Signature { parameters: params },
-                    SourceLocation { start: sig_start, end: self.previous_position() },
+                    SourceLocation::new(sig_start, self.previous_position()),
                 );
                 (None, Some(Box::new(sig_node)))
             }
@@ -333,7 +339,7 @@ impl<'a> Parser<'a> {
             let pos = self.current_position();
             Node::new(
                 NodeKind::Block { statements: vec![] },
-                SourceLocation { start: pos, end: pos },
+                SourceLocation::new(pos, pos),
             )
         } else {
             self.parse_block()?
@@ -350,7 +356,7 @@ impl<'a> Parser<'a> {
                 attributes,
                 body: Box::new(body),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -395,7 +401,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok((name, SourceLocation { start, end }))
+        Ok((name, SourceLocation::new(start, end)))
     }
 
     fn is_legacy_tick_subroutine_name_start(&mut self) -> bool {
@@ -415,7 +421,7 @@ impl<'a> Parser<'a> {
         let package_name = package.text.trim_matches('\'');
         let sub_name = self.tokens.next()?;
         let name = format!("{package_name}::{}", sub_name.text);
-        Ok((name, SourceLocation { start: package.start(), end: sub_name.end() }))
+        Ok((name, SourceLocation::new(package.start(), sub_name.end())))
     }
 
     /// Parse class declaration (Perl 5.38+)
@@ -495,7 +501,7 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         Ok(Node::new(
             NodeKind::Class { name, name_span: Some(name_span), parents, body: Box::new(body) },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -506,10 +512,7 @@ impl<'a> Parser<'a> {
 
         let name_token = self.expect(TokenKind::Identifier)?;
         let name = name_token.text.to_string();
-        let name_span = Some(SourceLocation {
-            start: name_token.start(),
-            end: name_token.end(),
-        });
+        let name_span = Some(SourceLocation::new(name_token.start(), name_token.end(),));
 
         let mut attributes = self.parse_declaration_attributes()?;
 
@@ -519,7 +522,7 @@ impl<'a> Parser<'a> {
             let params = self.parse_signature()?;
             Some(Box::new(Node::new(
                 NodeKind::Signature { parameters: params },
-                SourceLocation { start: sig_start, end: self.previous_position() },
+                SourceLocation::new(sig_start, self.previous_position()),
             )))
         } else {
             None
@@ -537,7 +540,7 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         Ok(Node::new(
             NodeKind::Method { name, name_span, signature, attributes, body: Box::new(body) },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -557,7 +560,7 @@ impl<'a> Parser<'a> {
                 attributes: Vec::new(),
                 body: Box::new(body),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -595,13 +598,10 @@ impl<'a> Parser<'a> {
                     body.push_str(body_token.text.as_ref());
                 }
             }
-            let name_span = Some(SourceLocation {
-                start: token.start(),
-                end: token.start() + assign_index,
-            });
+            let name_span = Some(SourceLocation::new(token.start(), token.start() + assign_index,));
             return Ok(Node::new(
                 NodeKind::Format { name, name_span, body },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
@@ -622,17 +622,14 @@ impl<'a> Parser<'a> {
                 }
                 body.push_str(body_token.text.as_ref());
             }
-            let name_span = Some(SourceLocation {
-                start: name_token.start(),
-                end: name_token.end(),
-            });
+            let name_span = Some(SourceLocation::new(name_token.start(), name_token.end(),));
             return Ok(Node::new(
                 NodeKind::Format {
                     name: name_token.text.trim_start_matches('\'').to_string(),
                     name_span,
                     body,
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
@@ -643,10 +640,7 @@ impl<'a> Parser<'a> {
         } else if self.peek_kind() == Some(TokenKind::DoubleColon) {
             let double_colon = self.tokens.next()?;
             let name_token = self.expect(TokenKind::Identifier)?;
-            let span = SourceLocation {
-                start: double_colon.start(),
-                end: name_token.end(),
-            };
+            let span = SourceLocation::new(double_colon.start(), name_token.end(),);
             (format!("::{}", name_token.text), Some(span))
         } else if self
             .tokens
@@ -661,10 +655,7 @@ impl<'a> Parser<'a> {
         {
             let tick = self.tokens.next()?;
             let name_token = self.tokens.next()?;
-            let span = SourceLocation {
-                start: tick.start(),
-                end: name_token.end(),
-            };
+            let span = SourceLocation::new(tick.start(), name_token.end(),);
             (name_token.text.to_string(), Some(span))
         } else if self.peek_kind() == Some(TokenKind::String)
             && self.tokens.peek().ok().is_some_and(|token| {
@@ -672,18 +663,12 @@ impl<'a> Parser<'a> {
             })
         {
             let name_token = self.tokens.next()?;
-            let span = SourceLocation {
-                start: name_token.start(),
-                end: name_token.end(),
-            };
+            let span = SourceLocation::new(name_token.start(), name_token.end(),);
             (name_token.text.trim_matches('\'').to_string(), Some(span))
         } else {
             // Named format
             let name_token = self.expect(TokenKind::Identifier)?;
-            let span = SourceLocation {
-                start: name_token.start(),
-                end: name_token.end(),
-            };
+            let span = SourceLocation::new(name_token.start(), name_token.end(),);
             (name_token.text.to_string(), Some(span))
         };
 
@@ -706,7 +691,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Format { name, name_span, body }, SourceLocation { start, end }))
+        Ok(Node::new(NodeKind::Format { name, name_span, body }, SourceLocation::new(start, end)))
     }
 
     /// Parse package declaration
@@ -765,7 +750,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Package { name, name_span, block }, SourceLocation { start, end }))
+        Ok(Node::new(NodeKind::Package { name, name_span, block }, SourceLocation::new(start, end)))
     }
 
     /// Parse use statement
@@ -912,7 +897,7 @@ impl<'a> Parser<'a> {
             let has_filter_risk = Self::is_filter_module(&module);
             return Ok(Node::new(
                 NodeKind::Use { module, args: cond_args, has_filter_risk },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
@@ -1325,7 +1310,7 @@ impl<'a> Parser<'a> {
         let has_filter_risk = Self::is_filter_module(&module);
         Ok(Node::new(
             NodeKind::Use { module, args, has_filter_risk },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1336,10 +1321,10 @@ impl<'a> Parser<'a> {
         let name = name_token.text.to_string();
 
         // Capture name_span from token for precise LSP navigation
-        let name_span = Some(SourceLocation { start: name_token.start(), end: name_token.end() });
+        let name_span = Some(SourceLocation::new(name_token.start(), name_token.end()));
 
         let block = self.parse_block()?;
-        let end = block.location.end;
+        let end = block.location.end();
 
         // Treat as a special subroutine
         Ok(Node::new(
@@ -1352,7 +1337,7 @@ impl<'a> Parser<'a> {
                 attributes: vec![],
                 body: Box::new(block),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1363,7 +1348,7 @@ impl<'a> Parser<'a> {
         let phase = phase_token.text.to_string();
 
         // Capture phase_span from token for precise LSP navigation
-        let phase_span = Some(SourceLocation { start: phase_token.start(), end: phase_token.end() });
+        let phase_span = Some(SourceLocation::new(phase_token.start(), phase_token.end()));
 
         // Phase blocks must be followed by a block
         if self.peek_kind() != Some(TokenKind::LeftBrace) {
@@ -1374,12 +1359,12 @@ impl<'a> Parser<'a> {
         }
 
         let block = self.parse_block()?;
-        let end = block.location.end;
+        let end = block.location.end();
 
         // Create a special node for phase blocks
         Ok(Node::new(
             NodeKind::PhaseBlock { phase, phase_span, block: Box::new(block) },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1391,7 +1376,7 @@ impl<'a> Parser<'a> {
         // token positions rather than deriving it from string lengths.
         let marker_token = self.consume_token()?;
         let marker = marker_token.text.to_string();
-        let marker_span = Some(SourceLocation { start, end: self.previous_position() });
+        let marker_span = Some(SourceLocation::new(start, self.previous_position()));
 
         // Check if there's a data body token, capturing its exact span the
         // same way. No body means no span, not an empty range.
@@ -1399,7 +1384,7 @@ impl<'a> Parser<'a> {
             let body_start = self.current_position();
             let body_token = self.consume_token()?;
             let text = body_token.text.to_string();
-            let span = Some(SourceLocation { start: body_start, end: self.previous_position() });
+            let span = Some(SourceLocation::new(body_start, self.previous_position()));
             (Some(text), span)
         } else {
             (None, None)
@@ -1411,7 +1396,7 @@ impl<'a> Parser<'a> {
         // before so existing consumers of the node's own location do not shift.
         Ok(Node::new(
             NodeKind::DataSection { marker, marker_span, body, body_span },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1499,7 +1484,7 @@ impl<'a> Parser<'a> {
             let has_filter_risk = Self::is_filter_module(&module);
             return Ok(Node::new(
                 NodeKind::No { module, args: cond_args, has_filter_risk },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
@@ -1647,7 +1632,7 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
         let has_filter_risk = Self::is_filter_module(&module);
-        Ok(Node::new(NodeKind::No { module, args, has_filter_risk }, SourceLocation { start, end }))
+        Ok(Node::new(NodeKind::No { module, args, has_filter_risk }, SourceLocation::new(start, end)))
     }
 
     /// Consume a value expression on the right-hand side of `=>` inside a `use`

@@ -200,7 +200,7 @@ fn hir_use_lib_facts(doc_text: &str) -> Vec<UseLibHirFact> {
         facts.push(UseLibHirFact {
             path: use_lib_path,
             action: fact.action,
-            offset: fact.range.start,
+            offset: fact.range.start(),
         });
     }
 

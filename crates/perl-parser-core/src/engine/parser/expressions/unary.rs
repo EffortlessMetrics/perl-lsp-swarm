@@ -94,19 +94,19 @@ impl<'a> Parser<'a> {
                         op: op_token.text.to_string(),
                         operand: Box::new(Node::new(
                             NodeKind::Undef,
-                            SourceLocation { start: end, end },
+                            SourceLocation::new(end, end),
                         )),
                     },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ));
             }
 
             let operand = self.parse_unary()?;
-            let end = operand.location.end;
+            let end = operand.location.end();
 
             return Ok(Node::new(
                 NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
@@ -133,7 +133,7 @@ impl<'a> Parser<'a> {
                                     NodeKind::Identifier {
                                         name: format!("-{}", test_token.text),
                                     },
-                                    SourceLocation { start, end },
+                                    SourceLocation::new(start, end),
                                 ));
                             }
 
@@ -172,16 +172,16 @@ impl<'a> Parser<'a> {
                                         sigil: "$".to_string(),
                                         name: "_".to_string(),
                                     },
-                                    SourceLocation { start: test_token.end(), end: test_token.end() },
+                                    SourceLocation::new(test_token.end(), test_token.end()),
                                 )
                             } else {
                                 self.parse_unary()?
                             };
 
-                            let end = operand.location.end;
+                            let end = operand.location.end();
                             return Ok(Node::new(
                                 NodeKind::Unary { op: file_test, operand: Box::new(operand) },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             ));
                         }
                     }
@@ -203,17 +203,17 @@ impl<'a> Parser<'a> {
                                     NodeKind::Identifier {
                                         name: format!("-{}", kw_token.text),
                                     },
-                                    SourceLocation { start, end },
+                                    SourceLocation::new(start, end),
                                 ));
                             }
 
                     // Regular unary minus
                     let operand = self.parse_power()?;
-                    let end = operand.location.end;
+                    let end = operand.location.end();
 
                     return Ok(Node::new(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     ));
                 }
                 TokenKind::Plus => {
@@ -225,12 +225,12 @@ impl<'a> Parser<'a> {
                     if self.peek_kind() == Some(TokenKind::LeftBrace) {
                         // Parse as hash literal
                         let hash = self.parse_hash_or_block()?;
-                        let end = hash.location.end;
+                        let end = hash.location.end();
 
                         // Wrap the hash in a unary plus to preserve the explicit disambiguation
                         let node = Node::new(
                             NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(hash) },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         );
                         return self.parse_postfix_chain(node);
                     }
@@ -244,19 +244,19 @@ impl<'a> Parser<'a> {
                                 op: op_token.text.to_string(),
                                 operand: Box::new(Node::new(
                                     NodeKind::Undef,
-                                    SourceLocation { start: end, end },
+                                    SourceLocation::new(end, end),
                                 )),
                             },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         ));
                     }
 
                     let operand = self.parse_power()?;
-                    let end = operand.location.end;
+                    let end = operand.location.end();
 
                     return Ok(Node::new(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     ));
                 }
                 // Handle 'not' keyword as a unary prefix at expression level.
@@ -272,22 +272,22 @@ impl<'a> Parser<'a> {
                                 op: op_token.text.to_string(),
                                 operand: Box::new(Node::new(
                                     NodeKind::Undef,
-                                    SourceLocation { start: end, end },
+                                    SourceLocation::new(end, end),
                                 )),
                             },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         ));
                     }
 
                     let operand = self.parse_unary()?;
-                    let end = operand.location.end;
+                    let end = operand.location.end();
 
                     return Ok(Node::new(
                         NodeKind::Unary {
                             op: op_token.text.to_string(),
                             operand: Box::new(operand),
                         },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     ));
                 }
                 TokenKind::Not | TokenKind::Backslash | TokenKind::BitwiseNot | TokenKind::Star => {
@@ -314,7 +314,7 @@ impl<'a> Parser<'a> {
                                 let t = self.tokens.next()?;
                                 return Ok(Node::new(
                                     NodeKind::Typeglob { name },
-                                    SourceLocation { start, end: t.end() },
+                                    SourceLocation::new(start, t.end()),
                                 ));
                             }
 
@@ -326,7 +326,7 @@ impl<'a> Parser<'a> {
                                     let end = id_token.end();
                                     let node = Node::new(
                                         NodeKind::Typeglob { name: id_token.text.to_string() },
-                                        SourceLocation { start, end },
+                                        SourceLocation::new(start, end),
                                     );
                                     // Allow postfix chaining: *$self->{key}
                                     return self.parse_postfix_chain(node);
@@ -339,10 +339,10 @@ impl<'a> Parser<'a> {
                                     let brace_expr = self.parse_primary()?;
                                     let direct_assignment =
                                         self.peek_kind() == Some(TokenKind::Assign);
-                                    let body_start = brace_expr.location.start.saturating_add(1);
-                                    let body_end = brace_expr.location.end;
+                                    let body_start = brace_expr.location.start().saturating_add(1);
+                                    let body_end = brace_expr.location.end();
                                     let brace_expr = self.parse_postfix_chain(brace_expr)?;
-                                    let end = brace_expr.location.end;
+                                    let end = brace_expr.location.end();
                                     if direct_assignment {
                                         let name = String::from_utf8_lossy(
                                             &self.src_bytes[body_start..body_end.saturating_sub(1)],
@@ -353,7 +353,7 @@ impl<'a> Parser<'a> {
                                         .to_string();
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name },
-                                            SourceLocation { start, end: body_end },
+                                            SourceLocation::new(start, body_end),
                                         ));
                                     }
                                     let node = Node::new(
@@ -361,7 +361,7 @@ impl<'a> Parser<'a> {
                                             op: "*{}".to_string(),
                                             operand: Box::new(brace_expr),
                                         },
-                                        SourceLocation { start, end },
+                                        SourceLocation::new(start, end),
                                     );
                                     return self.parse_postfix_chain(node);
                                 }
@@ -374,7 +374,7 @@ impl<'a> Parser<'a> {
                                         let end = id_token.end();
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name },
-                                            SourceLocation { start, end },
+                                            SourceLocation::new(start, end),
                                         ));
                                     }
                                     // Standalone *^ — fall through to parse operand
@@ -391,7 +391,7 @@ impl<'a> Parser<'a> {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name: "<".to_string() },
-                                            SourceLocation { start, end: t.end() },
+                                            SourceLocation::new(start, t.end()),
                                         ));
                                     }
                                 }
@@ -402,7 +402,7 @@ impl<'a> Parser<'a> {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name: ">".to_string() },
-                                            SourceLocation { start, end: t.end() },
+                                            SourceLocation::new(start, t.end()),
                                         ));
                                     }
                                 }
@@ -413,7 +413,7 @@ impl<'a> Parser<'a> {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name: "(".to_string() },
-                                            SourceLocation { start, end: t.end() },
+                                            SourceLocation::new(start, t.end()),
                                         ));
                                     }
                                 }
@@ -424,7 +424,7 @@ impl<'a> Parser<'a> {
                                     let t = self.tokens.next()?;
                                     return Ok(Node::new(
                                         NodeKind::Typeglob { name: ")".to_string() },
-                                        SourceLocation { start, end: t.end() },
+                                        SourceLocation::new(start, t.end()),
                                     ));
                                 }
                                 // *? = typeglob for $? (child process status).
@@ -433,7 +433,7 @@ impl<'a> Parser<'a> {
                                     let t = self.tokens.next()?;
                                     return Ok(Node::new(
                                         NodeKind::Typeglob { name: "?".to_string() },
-                                        SourceLocation { start, end: t.end() },
+                                        SourceLocation::new(start, t.end()),
                                     ));
                                 }
                                 // *, = typeglob for $, (output field separator).
@@ -442,7 +442,7 @@ impl<'a> Parser<'a> {
                                     let t = self.tokens.next()?;
                                     return Ok(Node::new(
                                         NodeKind::Typeglob { name: ",".to_string() },
-                                        SourceLocation { start, end: t.end() },
+                                        SourceLocation::new(start, t.end()),
                                     ));
                                 }
                                 // *= — the lexer emits StarAssign for the compound assignment
@@ -452,7 +452,7 @@ impl<'a> Parser<'a> {
                                     let t = self.tokens.next()?;
                                     return Ok(Node::new(
                                         NodeKind::Typeglob { name: "=".to_string() },
-                                        SourceLocation { start, end: t.end() },
+                                        SourceLocation::new(start, t.end()),
                                     ));
                                 }
                                 // */ = typeglob for $/ (input record separator).
@@ -465,7 +465,7 @@ impl<'a> Parser<'a> {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name: "/".to_string() },
-                                            SourceLocation { start, end: t.end() },
+                                            SourceLocation::new(start, t.end()),
                                         ));
                                     }
                                 }
@@ -479,7 +479,7 @@ impl<'a> Parser<'a> {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name: ".".to_string() },
-                                            SourceLocation { start, end: t.end() },
+                                            SourceLocation::new(start, t.end()),
                                         ));
                                     }
                                 }
@@ -493,7 +493,7 @@ impl<'a> Parser<'a> {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name: "|".to_string() },
-                                            SourceLocation { start, end: t.end() },
+                                            SourceLocation::new(start, t.end()),
                                         ));
                                     }
                                 }
@@ -507,7 +507,7 @@ impl<'a> Parser<'a> {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name: ":".to_string() },
-                                            SourceLocation { start, end: t.end() },
+                                            SourceLocation::new(start, t.end()),
                                         ));
                                     }
                                 }
@@ -524,10 +524,10 @@ impl<'a> Parser<'a> {
                                 op: op_token.text.to_string(),
                                 operand: Box::new(Node::new(
                                     NodeKind::Undef,
-                                    SourceLocation { start: end, end },
+                                    SourceLocation::new(end, end),
                                 )),
                             },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         ));
                     }
 
@@ -539,11 +539,11 @@ impl<'a> Parser<'a> {
                     } else {
                         self.parse_unary()?
                     };
-                    let end = operand.location.end;
+                    let end = operand.location.end();
 
                     let node = Node::new(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
 
                     // For typeglob (*), allow postfix chaining: *$self->{field}
@@ -558,11 +558,11 @@ impl<'a> Parser<'a> {
                     let op_token = self.tokens.next()?;
                     let start = op_token.start();
                     let operand = self.parse_unary()?;
-                    let end = operand.location.end;
+                    let end = operand.location.end();
 
                     return Ok(Node::new(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     ));
                 }
                 TokenKind::SmartMatch => {
@@ -579,19 +579,19 @@ impl<'a> Parser<'a> {
                                 op: op_token.text.to_string(),
                                 operand: Box::new(Node::new(
                                     NodeKind::Undef,
-                                    SourceLocation { start: end, end },
+                                    SourceLocation::new(end, end),
                                 )),
                             },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         ));
                     }
 
                     let operand = self.parse_unary()?;
-                    let end = operand.location.end;
+                    let end = operand.location.end();
 
                     return Ok(Node::new(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     ));
                 }
                 _ => {}

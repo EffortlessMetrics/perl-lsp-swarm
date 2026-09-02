@@ -27,7 +27,7 @@ mod tests {
     use perl_parser_core::{GotoTargetForm, Node, NodeKind, Parser, SourceLocation};
 
     fn loc(start: usize) -> SourceLocation {
-        SourceLocation { start, end: start + 1 }
+        SourceLocation::new(start, start + 1)
     }
 
     fn leaf_number(start: usize) -> Node {

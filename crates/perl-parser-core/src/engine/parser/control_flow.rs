@@ -105,7 +105,7 @@ impl<'a> Parser<'a> {
                 else_branch,
                 keyword: None,
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -125,7 +125,7 @@ impl<'a> Parser<'a> {
         // Negate the condition
         let negated_condition = Node::new(
             NodeKind::Unary { op: "!".to_string(), operand: Box::new(condition) },
-            SourceLocation { start, end: self.previous_position() },
+            SourceLocation::new(start, self.previous_position()),
         );
 
         let then_branch = self.parse_block()?;
@@ -172,7 +172,7 @@ impl<'a> Parser<'a> {
                 else_branch,
                 keyword: Some("unless".to_string()),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -189,7 +189,7 @@ impl<'a> Parser<'a> {
             let loc = self.current_position();
             Node::new(
                 NodeKind::Number { value: "1".to_string() },
-                SourceLocation { start: loc, end: loc },
+                SourceLocation::new(loc, loc),
             )
         } else if matches!(
             self.peek_kind(),
@@ -224,7 +224,7 @@ impl<'a> Parser<'a> {
                 continue_block,
                 keyword: None,
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -241,7 +241,7 @@ impl<'a> Parser<'a> {
         // Negate the condition
         let negated_condition = Node::new(
             NodeKind::Unary { op: "!".to_string(), operand: Box::new(condition) },
-            SourceLocation { start, end: self.previous_position() },
+            SourceLocation::new(start, self.previous_position()),
         );
 
         let body = self.parse_block()?;
@@ -263,7 +263,7 @@ impl<'a> Parser<'a> {
                 continue_block,
                 keyword: Some("until".to_string()),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -338,7 +338,7 @@ impl<'a> Parser<'a> {
                 // Create implicit $_ variable
                 let implicit_var = Node::new(
                     NodeKind::Variable { sigil: "$".to_string(), name: "_".to_string() },
-                    SourceLocation { start, end: start },
+                    SourceLocation::new(start, start),
                 );
 
                 return Ok(Node::new(
@@ -348,7 +348,7 @@ impl<'a> Parser<'a> {
                         body: Box::new(body),
                         continue_block: None, // No continue block for implicit foreach
                     },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ));
             }
 
@@ -412,7 +412,7 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         Ok(Node::new(
             NodeKind::For { init, condition, update, body: Box::new(body), continue_block },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -469,7 +469,7 @@ impl<'a> Parser<'a> {
                 body: Box::new(body),
                 continue_block,
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -506,7 +506,7 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let start = variable.location.start;
+        let start = variable.location.start();
         let end = self.previous_position();
 
         Ok(Node::new(
@@ -516,7 +516,7 @@ impl<'a> Parser<'a> {
                 body: Box::new(body),
                 continue_block,
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -544,8 +544,8 @@ impl<'a> Parser<'a> {
             Some(Box::new(self.parse_expression()?))
         };
 
-        let end = value.as_ref().map(|v| v.location.end).unwrap_or(return_end);
-        Ok(Node::new(NodeKind::Return { value }, SourceLocation { start, end }))
+        let end = value.as_ref().map(|v| v.location.end()).unwrap_or(return_end);
+        Ok(Node::new(NodeKind::Return { value }, SourceLocation::new(start, end)))
     }
 
     /// Parse return in expression context (e.g. ternary branches, short-circuit).
@@ -580,8 +580,8 @@ impl<'a> Parser<'a> {
             Some(Box::new(self.parse_assignment()?))
         };
 
-        let end = value.as_ref().map(|v| v.location.end).unwrap_or(return_end);
-        Ok(Node::new(NodeKind::Return { value }, SourceLocation { start, end }))
+        let end = value.as_ref().map(|v| v.location.end()).unwrap_or(return_end);
+        Ok(Node::new(NodeKind::Return { value }, SourceLocation::new(start, end)))
     }
 
     /// Parse eval expression/block
@@ -592,13 +592,13 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::LeftBrace) {
             // eval { ... }
             let block = self.parse_block()?;
-            let end = block.location.end;
-            Ok(Node::new(NodeKind::Eval { block: Box::new(block) }, SourceLocation { start, end }))
+            let end = block.location.end();
+            Ok(Node::new(NodeKind::Eval { block: Box::new(block) }, SourceLocation::new(start, end)))
         } else {
             // eval "string" or eval $expr
             let expr = self.parse_expression()?;
-            let end = expr.location.end;
-            Ok(Node::new(NodeKind::Eval { block: Box::new(expr) }, SourceLocation { start, end }))
+            let end = expr.location.end();
+            Ok(Node::new(NodeKind::Eval { block: Box::new(expr) }, SourceLocation::new(start, end)))
         }
     }
 
@@ -626,7 +626,7 @@ impl<'a> Parser<'a> {
         // Parse the target as an assignment-level expression (not full comma
         // expression) to avoid consuming surrounding list separators.
         let target = self.parse_assignment()?;
-        let end = target.location.end;
+        let end = target.location.end();
 
         // Phase 2: Determine form based on parsed target (and whether it started with &)
         let form = if starts_with_ampersand {
@@ -646,7 +646,7 @@ impl<'a> Parser<'a> {
 
         Ok(Node::new(
             NodeKind::Goto { target: Box::new(target), form },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -654,8 +654,8 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_defer(&mut self) -> ParseResult<Node> {
         let start = self.consume_token()?.start(); // consume 'defer'
         let block = self.parse_block()?;
-        let end = block.location.end;
-        Ok(Node::new(NodeKind::Defer { block: Box::new(block) }, SourceLocation { start, end }))
+        let end = block.location.end();
+        Ok(Node::new(NodeKind::Defer { block: Box::new(block) }, SourceLocation::new(start, end)))
     }
 
     /// Parse try/catch/finally block
@@ -745,9 +745,9 @@ impl<'a> Parser<'a> {
 
         let end = finally_block
             .as_ref()
-            .map(|b| b.location.end)
-            .or_else(|| catch_blocks.last().map(|(_, b)| b.location.end))
-            .unwrap_or(body.location.end);
+            .map(|b| b.location.end())
+            .or_else(|| catch_blocks.last().map(|(_, b)| b.location.end()))
+            .unwrap_or(body.location.end());
 
         Ok(Node::new(
             NodeKind::Try {
@@ -755,7 +755,7 @@ impl<'a> Parser<'a> {
                 catch_blocks: catch_blocks.into_iter().map(|(v, b)| (v, Box::new(b))).collect(),
                 finally_block,
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -767,13 +767,13 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::LeftBrace) {
             // do { ... }
             let block = self.parse_block()?;
-            let end = block.location.end;
-            Ok(Node::new(NodeKind::Do { block: Box::new(block) }, SourceLocation { start, end }))
+            let end = block.location.end();
+            Ok(Node::new(NodeKind::Do { block: Box::new(block) }, SourceLocation::new(start, end)))
         } else {
             // do "filename" or do $expr
             let expr = self.parse_expression()?;
-            let end = expr.location.end;
-            Ok(Node::new(NodeKind::Do { block: Box::new(expr) }, SourceLocation { start, end }))
+            let end = expr.location.end();
+            Ok(Node::new(NodeKind::Do { block: Box::new(expr) }, SourceLocation::new(start, end)))
         }
     }
 
@@ -788,11 +788,11 @@ impl<'a> Parser<'a> {
 
         // Parse the body block
         let body = self.parse_given_block()?;
-        let end = body.location.end;
+        let end = body.location.end();
 
         Ok(Node::new(
             NodeKind::Given { expr: Box::new(expr), body: Box::new(body) },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -866,7 +866,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::RightBrace)?;
         let end = self.previous_position();
 
-        Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
+        Ok(Node::new(NodeKind::Block { statements }, SourceLocation::new(start, end)))
     }
 
     /// Parse when statement
@@ -880,11 +880,11 @@ impl<'a> Parser<'a> {
 
         // Parse the body block
         let body = self.parse_block()?;
-        let end = body.location.end;
+        let end = body.location.end();
 
         Ok(Node::new(
             NodeKind::When { condition: Box::new(condition), body: Box::new(body) },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -912,7 +912,7 @@ impl<'a> Parser<'a> {
             // No block follows — produce an empty placeholder
             Node::new(
                 NodeKind::Block { statements: vec![] },
-                SourceLocation { start, end: self.previous_position() },
+                SourceLocation::new(start, self.previous_position()),
             )
         };
 
@@ -922,7 +922,7 @@ impl<'a> Parser<'a> {
         // the block contents.  The error is already recorded above.
         let synthetic_cond = Node::new(
             NodeKind::Number { value: "1".to_string() },
-            SourceLocation { start, end: start },
+            SourceLocation::new(start, start),
         );
 
         Ok(Node::new(
@@ -933,7 +933,7 @@ impl<'a> Parser<'a> {
                 else_branch: None,
                 keyword: None,
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1011,7 +1011,7 @@ impl<'a> Parser<'a> {
                 else_branch,
                 keyword: None,
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1021,9 +1021,9 @@ impl<'a> Parser<'a> {
 
         // Parse the body block
         let body = self.parse_block()?;
-        let end = body.location.end;
+        let end = body.location.end();
 
-        Ok(Node::new(NodeKind::Default { body: Box::new(body) }, SourceLocation { start, end }))
+        Ok(Node::new(NodeKind::Default { body: Box::new(body) }, SourceLocation::new(start, end)))
     }
 }
 

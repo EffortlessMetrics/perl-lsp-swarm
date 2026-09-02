@@ -831,8 +831,8 @@ impl RecoverySalvageProfile {
         ) {
             if let perl_ast::NodeKind::Error { message, .. } = &node.kind {
                 *error_node_count = error_node_count.saturating_add(1);
-                if node.location.start < *first_start {
-                    *first_start = node.location.start;
+                if node.location.start() < *first_start {
+                    *first_start = node.location.start();
                     *first_unrecovered_error_node = Some(message.clone());
                 }
             }
@@ -1366,7 +1366,7 @@ mod tests {
 
         let ast = Node::new(
             NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
         let output = ParseOutput::success(ast);
 
@@ -1382,7 +1382,7 @@ mod tests {
 
         let ast = Node::new(
             NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
         let errors = vec![ParseError::syntax("error 1", 0), ParseError::syntax("error 2", 5)];
         let output = ParseOutput::with_errors(ast, errors);
@@ -1398,7 +1398,7 @@ mod tests {
 
         let ast = Node::new(
             NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
         let errors = vec![ParseError::syntax("error 1", 0)];
 
@@ -1530,7 +1530,7 @@ mod tests {
 
         let ast = Node::new(
             NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
         let errors = vec![
             ParseError::syntax("error 1", 0),
@@ -1557,7 +1557,7 @@ mod tests {
 
         let ast = Node::new(
             NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
         let output = ParseOutput::success(ast);
         assert_eq!(output.recovered_count, 0);
@@ -1569,7 +1569,7 @@ mod tests {
 
         let ast = Node::new(
             NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
         let errors = vec![
             ParseError::syntax("error", 0),

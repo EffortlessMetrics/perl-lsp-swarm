@@ -659,8 +659,8 @@ impl LspServer {
 
     /// Build a complexity summary string for a subroutine node.
     pub(super) fn build_complexity_info(node: &Node, text: &str) -> String {
-        let start = node.location.start;
-        let end = node.location.end.min(text.len());
+        let start = node.location.start();
+        let end = node.location.end().min(text.len());
         let span = &text[start..end];
         let lines = span.chars().filter(|&c| c == '\n').count() + 1;
         let branches = Self::count_branches(node);

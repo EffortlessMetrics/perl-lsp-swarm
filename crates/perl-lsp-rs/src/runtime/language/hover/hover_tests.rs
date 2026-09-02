@@ -377,7 +377,7 @@ fn module_hover_lookup_boundary_rejects_emoji_for_use_and_require() {
 
     let unsafe_use = Node::new(
         NodeKind::Use { module: "Foo::💥".to_string(), args: vec![], has_filter_risk: false },
-        SourceLocation { start: 0, end: 32 },
+        SourceLocation::new(0, 32),
     );
     assert_eq!(LspServer::find_use_module_at_offset(&unsafe_use, 8), None);
 
@@ -392,7 +392,7 @@ fn module_hover_lookup_boundary_rejects_emoji_for_use_and_require() {
         NodeKind::Use {
             module: "Δοκιμή::設定".to_string(), args: vec![], has_filter_risk: false
         },
-        SourceLocation { start: 0, end: 32 },
+        SourceLocation::new(0, 32),
     );
     assert_eq!(
         LspServer::find_use_module_at_offset(&valid_use, 8).as_deref(),
@@ -600,14 +600,14 @@ fn find_phase_block_at_offset_returns_none_when_offset_out_of_node_range() {
 
     // A PhaseBlock node spanning [10, 30].
     let block =
-        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation { start: 11, end: 29 });
+        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(11, 29));
     let node = Node::new(
         NodeKind::PhaseBlock {
             phase: "BEGIN".to_string(),
             phase_span: None,
             block: Box::new(block),
         },
-        SourceLocation { start: 10, end: 30 },
+        SourceLocation::new(10, 30),
     );
 
     assert_eq!(
@@ -628,14 +628,14 @@ fn find_phase_block_at_offset_returns_phase_name_when_offset_in_node_and_no_phas
 
     // No phase_span: any offset within [10, 30] must return the phase name.
     let block =
-        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation { start: 11, end: 29 });
+        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(11, 29));
     let node = Node::new(
         NodeKind::PhaseBlock {
             phase: "BEGIN".to_string(),
             phase_span: None,
             block: Box::new(block),
         },
-        SourceLocation { start: 10, end: 30 },
+        SourceLocation::new(10, 30),
     );
 
     assert_eq!(
@@ -661,14 +661,14 @@ fn find_phase_block_at_offset_respects_phase_span_boundary() {
 
     // phase_span = [10, 14] (just "BEGIN"), whole node = [10, 30].
     let block =
-        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation { start: 16, end: 29 });
+        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(16, 29));
     let node = Node::new(
         NodeKind::PhaseBlock {
             phase: "BEGIN".to_string(),
-            phase_span: Some(SourceLocation { start: 10, end: 14 }),
+            phase_span: Some(SourceLocation::new(10, 14)),
             block: Box::new(block),
         },
-        SourceLocation { start: 10, end: 30 },
+        SourceLocation::new(10, 30),
     );
 
     // Inside phase_span: returns Some.
@@ -701,18 +701,18 @@ fn find_phase_block_at_offset_recurses_through_program_to_find_phase_block() {
 
     // Program { statements: [PhaseBlock { "END", [40,50] }] } spanning [0, 60].
     let block_inner =
-        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation { start: 45, end: 49 });
+        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(45, 49));
     let phase_node = Node::new(
         NodeKind::PhaseBlock {
             phase: "END".to_string(),
             phase_span: None,
             block: Box::new(block_inner),
         },
-        SourceLocation { start: 40, end: 50 },
+        SourceLocation::new(40, 50),
     );
     let program = Node::new(
         NodeKind::Program { statements: vec![phase_node] },
-        SourceLocation { start: 0, end: 60 },
+        SourceLocation::new(0, 60),
     );
 
     // Offset inside the nested phase block: must find it.

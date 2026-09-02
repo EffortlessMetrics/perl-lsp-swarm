@@ -666,7 +666,7 @@ fn collect_named_test_subs_in_scope(
                 return;
             };
             let name_range = name_span
-                .and_then(|span| span_range(index, span.start, span.end, source_len))
+                .and_then(|span| span_range(index, span.start(), span.end(), source_len))
                 .filter(|name_range| {
                     name_range.start_byte >= range.start_byte
                         && name_range.end_byte <= range.end_byte
@@ -762,7 +762,7 @@ fn strip_string_quotes(value: &str) -> &str {
 }
 
 fn node_range(index: &Utf8LineIndex, node: &Node, source_len: u32) -> Option<SourceRange> {
-    span_range(index, node.location.start, node.location.end, source_len)
+    span_range(index, node.location.start(), node.location.end(), source_len)
 }
 
 fn span_range(

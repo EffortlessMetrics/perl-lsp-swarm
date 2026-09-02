@@ -53,7 +53,7 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source.get(node.location.start..node.location.end).map(str::to_owned)
+    source.get(node.location.start()..node.location.end()).map(str::to_owned)
 }
 
 fn exact_block_call(source: &str, block: &Node) -> Option<(String, String, String, Vec<String>)> {
@@ -121,7 +121,7 @@ fn try_call_and_try_statement_keep_exact_distinct_ownership() -> Result<(), Stri
                 catch.and_then(|(variable, _)| variable.as_ref()).map(|(name, _)| name.clone());
             let catch_name_span = catch
                 .and_then(|(variable, _)| variable.as_ref())
-                .and_then(|(_, location)| source.get(location.start..location.end))
+                .and_then(|(_, location)| source.get(location.start()..location.end()))
                 .map(str::to_owned);
             let catch_body = catch.and_then(|(_, block)| source_text(source, block));
             let catch_is_block =
@@ -241,7 +241,7 @@ fn every_phase_keyword_label_remains_distinct_from_its_phase_block() -> Result<(
         NodeKind::PhaseBlock { phase, phase_span, block } if PHASES.contains(&phase.as_str()) => {
             phase_blocks.push((
                 phase.clone(),
-                phase_span.and_then(|span| source.get(span.start..span.end)).map(str::to_owned),
+                phase_span.and_then(|span| source.get(span.start()..span.end())).map(str::to_owned),
                 source_text(source, node),
                 source_text(source, block),
                 matches!(&block.kind, NodeKind::Block { .. }),

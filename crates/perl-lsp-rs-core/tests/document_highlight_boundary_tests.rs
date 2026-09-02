@@ -115,7 +115,7 @@ fn highlight_subscript_container_at_trailing_edge_normalizes_sigil()
 
     let decl_start = SUBSCRIPT_FIXTURE.find("@arr").ok_or("fixture must contain @arr decl")?;
     assert!(
-        highlights.iter().any(|h| h.location.start == decl_start),
+        highlights.iter().any(|h| h.location.start() == decl_start),
         "the `@arr` declaration must be among the highlights, got {highlights:?}"
     );
 

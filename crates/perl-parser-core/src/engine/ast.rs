@@ -10,7 +10,7 @@
 //! use perl_parser_core::engine::ast::{Node, NodeKind};
 //! use perl_parser_core::SourceLocation;
 //!
-//! let node = Node::new(NodeKind::Empty, SourceLocation { start: 0, end: 0 });
+//! let node = Node::new(NodeKind::Empty, SourceLocation::new(0, 0));
 //! assert!(matches!(node.kind, NodeKind::Empty));
 //! ```
 

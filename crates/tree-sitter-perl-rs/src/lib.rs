@@ -572,8 +572,8 @@ impl<'tree> SemanticOverlay<'tree> {
             name: symbol.name.clone(),
             qualified_name: symbol.qualified_name.clone(),
             kind: format!("{:?}", symbol.kind),
-            start_byte: symbol.location.start,
-            end_byte: symbol.location.end,
+            start_byte: symbol.location.start(),
+            end_byte: symbol.location.end(),
         })
     }
 
@@ -738,12 +738,12 @@ impl<'tree> Node<'tree> {
 
     /// Returns the start byte offset in the source text (inclusive).
     pub fn start_byte(&self) -> usize {
-        self.inner.location.start
+        self.inner.location.start()
     }
 
     /// Returns the end byte offset in the source text (exclusive).
     pub fn end_byte(&self) -> usize {
-        self.inner.location.end.min(self.tree_source.len())
+        self.inner.location.end().min(self.tree_source.len())
     }
 
     /// Returns the start position as a tree-sitter-compatible [`Point`].
@@ -769,8 +769,8 @@ impl<'tree> Node<'tree> {
     /// the available range rather than panicking. This can happen when `source` is a
     /// different buffer than the one used to build the tree.
     pub fn utf8_text<'a>(&self, source: &'a [u8]) -> Result<&'a str, std::str::Utf8Error> {
-        let start = self.inner.location.start.min(source.len());
-        let end = self.inner.location.end.min(source.len());
+        let start = self.inner.location.start().min(source.len());
+        let end = self.inner.location.end().min(source.len());
         std::str::from_utf8(&source[start..end])
     }
 
@@ -975,9 +975,9 @@ fn collect_visible_use_imports(
     // with a `use` token, producing imports with incorrect statement byte ranges.
     // Use nodes have no children (for_each_child is a no-op), so they are visited
     // exactly once per tree traversal — no inner dedup needed.
-    if matches!(node.kind, NodeKind::Use { .. }) && node.location.start <= offset {
-        let start = node.location.start.min(source.len());
-        let end = node.location.end.min(source.len());
+    if matches!(node.kind, NodeKind::Use { .. }) && node.location.start() <= offset {
+        let start = node.location.start().min(source.len());
+        let end = node.location.end().min(source.len());
         let statement_text = &source[start..end];
         if let Some(import_head) = parse_module_import_head(statement_text) {
             out.push(VisibleImport {

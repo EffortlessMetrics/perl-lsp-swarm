@@ -463,7 +463,7 @@ impl LspServer {
         };
 
         if let Some(symbol_info) =
-            analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
+            analyzer.symbol_at(crate::SourceLocation::new(offset, offset))
             && let Some(modifier_kind) =
                 symbol_info.attributes.iter().find_map(|a| a.strip_prefix("modifier="))
         {
@@ -612,7 +612,7 @@ impl LspServer {
 
             // For variables, show declaration line and scope context.
             let (decl_line_info, scope_context_info) = if symbol_info.kind.is_variable() {
-                let decl_offset = symbol_info.location.start;
+                let decl_offset = symbol_info.location.start();
                 let (line_0based, _col) = byte_to_line_col(text, decl_offset);
                 let decl_line = format!("\n**Declared at**: line {}", line_0based + 1);
                 let scope_ctx = Self::build_variable_scope_context(&analyzer, symbol_info);
@@ -963,7 +963,7 @@ impl LspServer {
         analyzer: &crate::semantic::SemanticAnalyzer,
         symbol: &crate::symbol::Symbol,
     ) -> String {
-        let decl_offset = symbol.location.start;
+        let decl_offset = symbol.location.start();
         let table = analyzer.symbol_table();
 
         // Find the innermost (smallest span) subroutine that contains decl_offset.
@@ -973,10 +973,10 @@ impl LspServer {
         for syms in table.symbols.values() {
             for sym in syms {
                 if sym.kind == crate::symbol::SymbolKind::Subroutine
-                    && sym.location.start < decl_offset
-                    && sym.location.end > decl_offset
+                    && sym.location.start() < decl_offset
+                    && sym.location.end() > decl_offset
                 {
-                    let span = sym.location.end - sym.location.start;
+                    let span = sym.location.end() - sym.location.start();
                     if span < best_span {
                         best_sub_name = Some(sym.name.clone());
                         best_span = span;
@@ -1349,7 +1349,7 @@ impl LspServer {
 
     /// Walk the AST to find a `use Module` node whose location spans `offset`.
     fn find_use_module_at_offset(node: &Node, offset: usize) -> Option<String> {
-        if offset < node.location.start || offset > node.location.end {
+        if offset < node.location.start() || offset > node.location.end() {
             return None;
         }
 
@@ -1395,7 +1395,7 @@ impl LspServer {
     /// Returns the phase name (e.g. `"BEGIN"`) when the cursor is positioned on the
     /// keyword token of a phase block, or `None` otherwise.
     fn find_phase_block_at_offset(node: &Node, offset: usize) -> Option<String> {
-        if offset < node.location.start || offset > node.location.end {
+        if offset < node.location.start() || offset > node.location.end() {
             return None;
         }
 
@@ -1404,7 +1404,7 @@ impl LspServer {
             // fall back to the whole node span so hover still works if phase_span
             // is absent (e.g. in hand-constructed test ASTs).
             let in_phase_span =
-                phase_span.as_ref().map(|s| offset >= s.start && offset <= s.end).unwrap_or(true);
+                phase_span.as_ref().map(|s| offset >= s.start() && offset <= s.end()).unwrap_or(true);
             if in_phase_span {
                 return Some(phase.clone());
             }
@@ -1573,7 +1573,7 @@ impl LspServer {
     fn role_name_at_offset(node: &Node, offset: usize) -> Option<String> {
         match &node.kind {
             NodeKind::String { value, .. } => {
-                if offset >= node.location.start && offset <= node.location.end {
+                if offset >= node.location.start() && offset <= node.location.end() {
                     let trimmed = value.trim().trim_matches('\'').trim_matches('"').trim();
                     if !trimmed.is_empty() {
                         return Some(trimmed.to_string());

@@ -116,7 +116,11 @@ fn apply_incremental_edit(
 }
 
 fn collect_span_fingerprint(node: &Node, fingerprint: &mut Vec<(String, usize, usize)>) {
-    fingerprint.push((node.kind.kind_name().to_string(), node.location.start, node.location.end));
+    fingerprint.push((
+        node.kind.kind_name().to_string(),
+        node.location.start(),
+        node.location.end(),
+    ));
     for child in node.children() {
         collect_span_fingerprint(child, fingerprint);
     }

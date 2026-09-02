@@ -170,17 +170,18 @@ pub fn assemble_callable_summaries(
         // MAXIMAL one (it encloses every nested candidate); only a tie
         // between distinct maximal candidates is genuinely ambiguous.
         let decl_range = normalize_range(decl.item.range);
-        let candidates: Vec<(usize, &HirBody, usize, usize)> = callable_bodies
-            .iter()
-            .filter_map(|(body_idx, body)| {
-                if !owner_matches(body, decl.is_method, &decl.name) {
-                    return None;
-                }
-                let root = body.source_map.block_range(body.root_block).map(normalize_range)?;
-                (decl_range.start <= root.start && root.end <= decl_range.end)
-                    .then_some((*body_idx, *body, root.start, root.end))
-            })
-            .collect();
+        let candidates: Vec<(usize, &HirBody, usize, usize)> =
+            callable_bodies
+                .iter()
+                .filter_map(|(body_idx, body)| {
+                    if !owner_matches(body, decl.is_method, &decl.name) {
+                        return None;
+                    }
+                    let root = body.source_map.block_range(body.root_block).map(normalize_range)?;
+                    (decl_range.start() <= root.start() && root.end() <= decl_range.end())
+                        .then_some((*body_idx, *body, root.start(), root.end()))
+                })
+                .collect();
         let pairing = select_direct_body(candidates);
         match pairing {
             Ok((body_idx, body)) => {
@@ -385,8 +386,8 @@ fn offset_u32(offset: usize) -> u32 {
 
 /// Normalize a possibly degenerate (inverted) range.
 fn normalize_range(range: perl_parser_core::SourceLocation) -> perl_parser_core::SourceLocation {
-    if range.end < range.start {
-        perl_parser_core::SourceLocation { start: range.end, end: range.start }
+    if range.end() < range.start() {
+        perl_parser_core::SourceLocation::new(range.end(), range.start())
     } else {
         range
     }
@@ -396,10 +397,10 @@ fn normalize_range(range: perl_parser_core::SourceLocation) -> perl_parser_core:
 fn to_anchor(range: perl_parser_core::SourceLocation, document: FileId) -> SourceAnchor {
     let range = normalize_range(range);
     SourceAnchor::new(
-        Some(AnchorId(range.start as u64)),
+        Some(AnchorId(range.start() as u64)),
         document,
-        offset_u32(range.start),
-        offset_u32(range.end),
+        offset_u32(range.start()),
+        offset_u32(range.end()),
     )
 }
 
@@ -473,8 +474,8 @@ fn callable_entity_id(
         .field("document", &ctx.document.0.to_string())
         .field("body", &body_idx.to_string())
         .field("name", name.unwrap_or("<anonymous>"))
-        .field("anchor-start", &range.start.to_string())
-        .field("anchor-end", &range.end.to_string())
+        .field("anchor-start", &range.start().to_string())
+        .field("anchor-end", &range.end().to_string())
         .finish();
     // Derive the u64 by a deterministic byte-fold over the full fingerprint
     // string (FNV-style wrapping multiply-add over every byte): no parsing,
@@ -520,7 +521,7 @@ fn body_identity(
             &node
                 .source_anchor
                 .range
-                .map(|range| format!("{}:{}", range.start, range.end))
+                .map(|range| format!("{}:{}", range.start(), range.end()))
                 .unwrap_or_else(|| "none".to_string()),
         );
     }

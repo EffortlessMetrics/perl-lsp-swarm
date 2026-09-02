@@ -227,12 +227,12 @@ fn make_diagnostic(node: &Node, has_prior_source: bool) -> Diagnostic {
     };
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::EvalErrorFlow.as_str().to_string()),
         message,
         related_information: vec![RelatedInformation {
-            location: (node.location.start, node.location.end),
+            location: (node.location.start(), node.location.end()),
             message: "Move the exception check immediately after the `eval { ... }` or `try { ... }` statement.".to_string(),
         }],
         tags: Vec::new(),

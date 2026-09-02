@@ -10,7 +10,7 @@ mod tests {
 
     fn parse_without_error(input: &str) -> perl_ast::ast::Node {
         let ast = parse_code(input).unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "unexpected ERROR while parsing `{input}`: {sexp}");
@@ -24,7 +24,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -53,7 +53,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -75,7 +75,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -98,7 +98,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -126,7 +126,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -152,7 +152,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -174,7 +174,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -201,7 +201,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -224,7 +224,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -247,7 +247,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -268,7 +268,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             assert!(!statements.is_empty(), "tied statement should parse");
@@ -281,7 +281,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             assert!(!statements.is_empty(), "tied in conditional should parse");
@@ -294,7 +294,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -316,7 +316,7 @@ mod tests {
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             assert!(!statements.is_empty(), "tie with local should parse");

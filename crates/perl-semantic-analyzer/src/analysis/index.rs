@@ -84,8 +84,8 @@ impl WorkspaceIndex {
                     name: symbol.name.clone(),
                     kind: symbol.kind,
                     uri: uri.to_string(),
-                    start: symbol.location.start,
-                    end: symbol.location.end,
+                    start: symbol.location.start(),
+                    end: symbol.location.end(),
                 };
 
                 self.by_name.entry(name).or_default().push(def);
@@ -338,7 +338,7 @@ mod tests {
             name: "test_func".to_string(),
             qualified_name: "main::test_func".to_string(),
             kind: SymbolKind::Subroutine,
-            location: SourceLocation { start: 0, end: 10 },
+            location: SourceLocation::new(0, 10),
             scope_id: 0,
             declaration: Some("sub".to_string()),
             documentation: None,

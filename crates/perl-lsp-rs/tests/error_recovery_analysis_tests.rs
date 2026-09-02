@@ -231,7 +231,7 @@ mod error_recovery_analysis {
 
         let ast_node = Node::new(
             NodeKind::Program { statements: vec![] },
-            SourceLocation { start: 0, end: 0 },
+            SourceLocation::new(0, 0),
         );
         let ast_arc = Some(std::sync::Arc::new(ast_node));
 

@@ -76,9 +76,9 @@ fn additional_edits_order(
 ) -> Ordering {
     for ((left_range, left_text), (right_range, right_text)) in left.iter().zip(right.iter()) {
         let order = left_range
-            .start
-            .cmp(&right_range.start)
-            .then_with(|| left_range.end.cmp(&right_range.end))
+            .start()
+            .cmp(&right_range.start())
+            .then_with(|| left_range.end().cmp(&right_range.end()))
             .then_with(|| left_text.cmp(right_text));
         if !matches!(order, Ordering::Equal) {
             return order;
@@ -148,10 +148,9 @@ mod tests {
         let first = CompletionCandidate::semantic(EntityId(2), "default_export", item("first"))
             .with_insertion_plan_id("import:Alpha");
         let mut second_item = item("second");
-        second_item.additional_edits.push((
-            perl_parser_core::SourceLocation { start: 0, end: 0 },
-            "use Beta;\n".to_string(),
-        ));
+        second_item
+            .additional_edits
+            .push((perl_parser_core::SourceLocation::new(0, 0), "use Beta;\n".to_string()));
         let second = CompletionCandidate::semantic(EntityId(2), "default_export", second_item)
             .with_insertion_plan_id("import:Beta");
 

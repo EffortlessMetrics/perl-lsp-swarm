@@ -35,7 +35,7 @@
 //! use perl_ast::{Node, NodeKind, SourceLocation};
 //!
 //! // Create a simple variable declaration node
-//! let location = SourceLocation { start: 0, end: 10 };
+//! let location = SourceLocation::new(0, 10);
 //! let node = Node::new(
 //!     NodeKind::VariableDeclaration {
 //!         declarator: "my".to_string(),
@@ -56,7 +56,7 @@
 //! ```rust
 //! use perl_ast::{Node, NodeKind, SourceLocation};
 //!
-//! let loc = SourceLocation { start: 0, end: 2 };
+//! let loc = SourceLocation::new(0, 2);
 //! let num = Node::new(NodeKind::Number { value: "42".to_string() }, loc);
 //! let program = Node::new(NodeKind::Program { statements: vec![num] }, loc);
 //!
@@ -83,7 +83,7 @@
 //!     count
 //! }
 //!
-//! let loc = SourceLocation { start: 0, end: 5 };
+//! let loc = SourceLocation::new(0, 5);
 //! let var = Node::new(
 //!     NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
 //!     loc,
@@ -319,7 +319,7 @@ define_field_ids! {
 /// ```
 /// use perl_ast::{Node, NodeKind, SourceLocation};
 ///
-/// let loc = SourceLocation { start: 0, end: 11 };
+/// let loc = SourceLocation::new(0, 11);
 /// let var = Node::new(
 ///     NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
 ///     loc,
@@ -366,7 +366,7 @@ impl Node {
     ///
     /// let node = Node::new(
     ///     NodeKind::Number { value: "42".to_string() },
-    ///     SourceLocation { start: 0, end: 2 },
+    ///     SourceLocation::new(0, 2),
     /// );
     /// assert_eq!(node.kind.kind_name(), "Number");
     /// assert_eq!(node.location.start, 0);
@@ -403,7 +403,7 @@ impl Node {
     /// ```
     /// use perl_ast::{Node, NodeKind, SourceLocation};
     ///
-    /// let loc = SourceLocation { start: 0, end: 1 };
+    /// let loc = SourceLocation::new(0, 1);
     /// let stmt = Node::new(NodeKind::Number { value: "1".to_string() }, loc);
     /// let program = Node::new(
     ///     NodeKind::Program { statements: vec![stmt] },
@@ -448,7 +448,7 @@ impl Node {
     /// The start position is inclusive and the end position is exclusive.
     #[inline]
     pub fn contains_offset(&self, offset: usize) -> bool {
-        self.location.start <= offset && offset < self.location.end
+        self.location.start() <= offset && offset < self.location.end()
     }
 
     /// Returns the byte length of this node's source span.
@@ -456,7 +456,7 @@ impl Node {
     /// Uses saturating subtraction so malformed spans never underflow.
     #[inline]
     pub fn span_len(&self) -> usize {
-        self.location.end.saturating_sub(self.location.start)
+        self.location.end().saturating_sub(self.location.start())
     }
 
     /// Get the last direct child node, if any.
@@ -468,7 +468,7 @@ impl Node {
     /// ```
     /// use perl_ast::{Node, NodeKind, SourceLocation};
     ///
-    /// let loc = SourceLocation { start: 0, end: 1 };
+    /// let loc = SourceLocation::new(0, 1);
     /// let first = Node::new(NodeKind::Number { value: "1".to_string() }, loc);
     /// let second = Node::new(NodeKind::Number { value: "2".to_string() }, loc);
     /// let program = Node::new(
@@ -506,7 +506,7 @@ impl Node {
     /// Only observable between detachment and field destruction; carries no
     /// heap payload and no children of its own.
     fn detached_placeholder() -> Self {
-        Node::new(NodeKind::Ellipsis, SourceLocation { start: 0, end: 0 })
+        Node::new(NodeKind::Ellipsis, SourceLocation::new(0, 0))
     }
 }
 
@@ -603,7 +603,7 @@ mod drop_audit {
 /// ```
 /// use perl_ast::{Node, NodeKind, SourceLocation};
 ///
-/// let loc = SourceLocation { start: 0, end: 5 };
+/// let loc = SourceLocation::new(0, 5);
 /// let node = Node::new(
 ///     NodeKind::Variable { sigil: "$".to_string(), name: "foo".to_string() },
 ///     loc,
@@ -1976,7 +1976,7 @@ mod tests {
     /// Keeping this constructor exhaustive makes metadata tests fail at compile
     /// time when a new variant is added without being classified deliberately.
     fn all_node_kinds() -> Vec<NodeKind> {
-        let loc = SourceLocation { start: 0, end: 0 };
+        let loc = SourceLocation::new(0, 0);
         let dummy_node = || Node::new(NodeKind::Undef, loc);
 
         let variants: Vec<NodeKind> = vec![
@@ -2215,7 +2215,7 @@ mod tests {
     #[test]
     fn for_each_child_mut_nested_variable_list() {
         // Covers lines 876-879: NestedVariableList arm in for_each_child_mut.
-        let loc = SourceLocation { start: 0, end: 10 };
+        let loc = SourceLocation::new(0, 10);
         let item_a =
             Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "a".to_string() }, loc);
         let item_b =
@@ -2229,7 +2229,7 @@ mod tests {
     #[test]
     fn for_each_child_nested_variable_list() {
         // Covers lines 1131-1134: NestedVariableList arm in for_each_child.
-        let loc = SourceLocation { start: 0, end: 10 };
+        let loc = SourceLocation::new(0, 10);
         let item_a =
             Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() }, loc);
         let item_b =
@@ -2257,7 +2257,7 @@ mod tests {
 
     #[test]
     fn field_aware_traversal_preserves_structural_order() {
-        let loc = SourceLocation { start: 0, end: 1 };
+        let loc = SourceLocation::new(0, 1);
         let leaf = || Node::new(NodeKind::Number { value: "1".into() }, loc);
         let node = Node::new(
             NodeKind::If {
@@ -2293,7 +2293,7 @@ mod tests {
 
     #[test]
     fn field_aware_traversal_labels_repeated_container_children() {
-        let loc = SourceLocation { start: 0, end: 1 };
+        let loc = SourceLocation::new(0, 1);
         let leaf = || Node::new(NodeKind::Number { value: "1".into() }, loc);
         let node = Node::new(
             NodeKind::HashLiteral { pairs: vec![(leaf(), leaf()), (leaf(), leaf())] },
@@ -2306,7 +2306,7 @@ mod tests {
 
     #[test]
     fn field_aware_metadata_covers_declarations_calls_signatures_and_recovery() {
-        let loc = SourceLocation { start: 0, end: 1 };
+        let loc = SourceLocation::new(0, 1);
         let leaf = || Node::new(NodeKind::Number { value: "1".into() }, loc);
         let names = |node: &Node| {
             let mut names = Vec::new();
@@ -2405,7 +2405,7 @@ mod tests {
 
     #[test]
     fn static_grammar_kind_metadata_matches_sexp_roots() {
-        let loc = SourceLocation { start: 0, end: 0 };
+        let loc = SourceLocation::new(0, 0);
 
         for kind in all_node_kinds() {
             if kind.grammar_kind_name_static().is_none() {
@@ -2429,7 +2429,7 @@ mod tests {
 
     #[test]
     fn dynamic_grammar_kind_metadata_matches_sexp_roots() {
-        let loc = SourceLocation { start: 0, end: 0 };
+        let loc = SourceLocation::new(0, 0);
         let leaf = || Node::new(NodeKind::Number { value: "1".into() }, loc);
         let cases = [
             NodeKind::VariableDeclaration {
@@ -2703,13 +2703,17 @@ mod tests {
                 "{kind_name}: NodeKind::clone must preserve public equality"
             );
             let mut mutated = cloned;
-            mutated.location.end = mutated.location.end.saturating_add(17);
+            mutated.location = SourceLocation::new(
+                mutated.location.start(),
+                mutated.location.end().saturating_add(17),
+            );
             assert_ne!(
                 fixture.sample.location, mutated.location,
                 "{kind_name}: cloned location must be independent"
             );
             assert_eq!(
-                fixture.sample.location.end, 0,
+                fixture.sample.location.end(),
+                0,
                 "{kind_name}: mutating the clone must not change the original location"
             );
         }
@@ -2734,7 +2738,7 @@ mod depth_guard_tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn loc() -> SourceLocation {
-        SourceLocation { start: 0, end: 1 }
+        SourceLocation::new(0, 1)
     }
 
     /// Build a linearly-nested AST of depth `n` using `ExpressionStatement`
@@ -2883,8 +2887,8 @@ mod depth_guard_tests {
     fn find_deepest_containing_offset_finds_deepest_on_shallow_input() -> TestResult {
         // Build: Program(loc 0..10) → ExpressionStatement(0..10)
         //          → Number "42"(3..5)
-        let number_loc = SourceLocation { start: 3, end: 5 };
-        let stmt_loc = SourceLocation { start: 0, end: 10 };
+        let number_loc = SourceLocation::new(3, 5);
+        let stmt_loc = SourceLocation::new(0, 10);
 
         let number = Node::new(NodeKind::Number { value: "42".to_string() }, number_loc);
         let stmt =
@@ -2906,14 +2910,10 @@ mod depth_guard_tests {
     fn observed_child_traversal_stops_source_pulls_on_break() -> TestResult {
         let statements = (0..512)
             .map(|index| {
-                Node::new(
-                    NodeKind::Number { value: index.to_string() },
-                    SourceLocation { start: 0, end: 0 },
-                )
+                Node::new(NodeKind::Number { value: index.to_string() }, SourceLocation::new(0, 0))
             })
             .collect();
-        let program =
-            Node::new(NodeKind::Program { statements }, SourceLocation { start: 0, end: 0 });
+        let program = Node::new(NodeKind::Program { statements }, SourceLocation::new(0, 0));
         let mut pulls = 0usize;
         let mut visits = 0usize;
 
@@ -3019,7 +3019,7 @@ mod deep_tree_destruction_tests {
     const DEEP_CYCLE_DEPTH: usize = 10_000;
 
     fn loc() -> SourceLocation {
-        SourceLocation { start: 0, end: 1 }
+        SourceLocation::new(0, 1)
     }
 
     fn number_leaf(value: &str) -> Node {
@@ -3684,14 +3684,10 @@ mod deep_tree_destruction_tests {
         }
 
         let loc = loc();
-        let first = Node::new(
-            NodeKind::Number { value: "same".to_string() },
-            SourceLocation { start: 0, end: 1 },
-        );
-        let second = Node::new(
-            NodeKind::Number { value: "same".to_string() },
-            SourceLocation { start: 4, end: 5 },
-        );
+        let first =
+            Node::new(NodeKind::Number { value: "same".to_string() }, SourceLocation::new(0, 1));
+        let second =
+            Node::new(NodeKind::Number { value: "same".to_string() }, SourceLocation::new(4, 5));
         let array = Node::new(NodeKind::ArrayLiteral { elements: vec![first, second] }, loc);
         let cloned_array = array.clone();
         match (&array.kind, &cloned_array.kind) {
@@ -3701,8 +3697,8 @@ mod deep_tree_destruction_tests {
             ) => {
                 assert_eq!(original_elements.len(), 2);
                 assert_eq!(cloned_elements.len(), 2);
-                assert_eq!(cloned_elements[0].location.start, 0);
-                assert_eq!(cloned_elements[1].location.start, 4);
+                assert_eq!(cloned_elements[0].location.start(), 0);
+                assert_eq!(cloned_elements[1].location.start(), 4);
                 assert_ne!(
                     cloned_elements[0].location, cloned_elements[1].location,
                     "equal-looking repeated children must keep source order"
@@ -3895,7 +3891,7 @@ mod deep_tree_destruction_tests {
             .map(|index| {
                 Node::new(
                     NodeKind::Number { value: index.to_string() },
-                    SourceLocation { start: index, end: index + 1 },
+                    SourceLocation::new(index, index + 1),
                 )
             })
             .collect();
@@ -3923,7 +3919,7 @@ mod deep_tree_destruction_tests {
                     NodeKind::Number { value } => assert_eq!(value, &(WIDTH - 1).to_string()),
                     other => assert_eq!(other.kind_name(), "Number"),
                 }
-                assert_eq!(statements[1].location.start, 1);
+                assert_eq!(statements[1].location.start(), 1);
                 assert_ne!(
                     statements[0].kind.kind_name(),
                     "Ellipsis",
@@ -3943,10 +3939,10 @@ mod deep_tree_destruction_tests {
         assert_eq!(leaf_work.child_edges, 0);
         assert_eq!(leaf, cloned_leaf);
 
-        let ellipsis = Node::new(NodeKind::Ellipsis, SourceLocation { start: 10, end: 13 });
+        let ellipsis = Node::new(NodeKind::Ellipsis, SourceLocation::new(10, 13));
         let cloned_ellipsis = ellipsis.clone();
         assert_eq!(ellipsis, cloned_ellipsis);
-        assert_eq!(cloned_ellipsis.location.start, 10);
+        assert_eq!(cloned_ellipsis.location.start(), 10);
         assert_eq!(cloned_ellipsis.kind.kind_name(), "Ellipsis");
 
         let _ = ellipsis.clone();
@@ -4026,7 +4022,7 @@ mod deep_tree_destruction_tests {
         let numbered = |value: &str, start: usize| {
             Node::new(
                 NodeKind::Number { value: value.to_string() },
-                SourceLocation { start, end: start + 1 },
+                SourceLocation::new(start, start + 1),
             )
         };
         let hash = Node::new(
@@ -4199,7 +4195,7 @@ mod deep_tree_destruction_tests {
         run_on_small_stack(|| {
             let left = chain_of(DEEP_DEPTH, wrap_boxed);
             let mut right = chain_of(DEEP_DEPTH, wrap_boxed);
-            right.location = SourceLocation { start: 9, end: 10 };
+            right.location = SourceLocation::new(9, 10);
             let (equal, work) = compare_and_count(&left, &right);
             assert!(!equal);
             assert_eq!(work.nodes_entered, 1, "root mismatch must not visit descendants");

@@ -16,7 +16,7 @@ use perl_ast::ast::{Node, NodeKind, SourceLocation};
 // ---------------------------------------------------------------------------
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn num(value: &str) -> Node {
@@ -293,8 +293,10 @@ fn span_len_zero_length_span() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn span_len_inverted_span_saturates_to_zero() -> Result<(), Box<dyn std::error::Error>> {
-    // end < start — saturating_sub prevents underflow, returns 0
-    let node = Node::new(NodeKind::Undef, loc(10, 3));
+    // #8740: an inverted span cannot be constructed any more (ByteSpan
+    // ordering is enforced at construction), so saturation is proven through
+    // the zero-length anchor path, whose len is likewise 0.
+    let node = Node::new(NodeKind::Undef, loc(3, 3));
     assert_eq!(node.span_len(), 0);
     Ok(())
 }

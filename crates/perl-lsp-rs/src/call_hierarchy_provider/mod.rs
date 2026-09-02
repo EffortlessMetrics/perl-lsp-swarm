@@ -149,7 +149,7 @@ impl CallHierarchyProvider {
 
     /// Find a callable item at the given position
     fn find_callable_at_position(&self, node: &Node, offset: usize) -> Option<CallHierarchyItem> {
-        if offset >= node.location.start && offset <= node.location.end {
+        if offset >= node.location.start() && offset <= node.location.end() {
             let uri = &self.uri;
             match &node.kind {
                 NodeKind::Subroutine {
@@ -161,7 +161,7 @@ impl CallHierarchyProvider {
                 } => {
                     let includes_offset = name_span
                         .as_ref()
-                        .is_none_or(|span| offset >= span.start && offset <= span.end);
+                        .is_none_or(|span| offset >= span.start() && offset <= span.end());
                     if includes_offset {
                         return Some(self.call_hierarchy_subroutine_item(
                             node,
@@ -623,8 +623,8 @@ impl CallHierarchyProvider {
 
     /// Convert node to LSP range
     fn node_to_range(&self, node: &Node) -> Range {
-        let start = self.offset_to_position(node.location.start);
-        let end = self.offset_to_position(node.location.end);
+        let start = self.offset_to_position(node.location.start());
+        let end = self.offset_to_position(node.location.end());
         Range { start, end }
     }
 
@@ -651,8 +651,8 @@ impl CallHierarchyProvider {
     ) -> Range {
         match name_span {
             Some(span) => Range {
-                start: self.offset_to_position(span.start),
-                end: self.offset_to_position(span.end),
+                start: self.offset_to_position(span.start()),
+                end: self.offset_to_position(span.end()),
             },
             None => *full_range,
         }
@@ -878,7 +878,7 @@ sub target_func {
     #[test]
     fn visit_children_walks_if_branches_with_keyword_metadata() {
         let provider = CallHierarchyProvider::new(String::new(), "file:///test.pl".to_string());
-        let loc = |start, end| SourceLocation { start, end };
+        let loc = |start, end| SourceLocation::new(start, end);
         let ident = |name: &str, start| {
             Node::new(
                 NodeKind::Identifier { name: name.to_string() },

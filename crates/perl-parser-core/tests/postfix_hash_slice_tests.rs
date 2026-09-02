@@ -19,11 +19,11 @@ fn clean_ast(source: &str) -> Node {
 }
 
 fn source_text<'a>(source: &'a str, node: &Node) -> Result<&'a str, String> {
-    source.get(node.location.start..node.location.end).ok_or_else(|| {
+    source.get(node.location.start()..node.location.end()).ok_or_else(|| {
         format!(
             "node span {}..{} is outside source of {} bytes",
-            node.location.start,
-            node.location.end,
+            node.location.start(),
+            node.location.end(),
             source.len()
         )
     })
@@ -521,8 +521,8 @@ fn postfix_hash_slice_reaches_canonical_hir_lowering() -> TestResult {
             "lowering retained {argument_count} operands, expected target plus two keys"
         ));
     }
-    let lowered_text = source.get(range.start..range.end).ok_or_else(|| {
-        format!("HIR source range {}..{} is outside the source", range.start, range.end)
+    let lowered_text = source.get(range.start()..range.end()).ok_or_else(|| {
+        format!("HIR source range {}..{} is outside the source", range.start(), range.end())
     })?;
     if lowered_text != "$href->@{'alpha', $key}" {
         return Err(format!("unexpected lowered HashSlice span: {lowered_text:?}"));

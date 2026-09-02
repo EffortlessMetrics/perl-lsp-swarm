@@ -905,8 +905,8 @@ impl LspServer {
                     .into_iter()
                     .map(|edit| {
                         let (start_line, start_char) =
-                            self.offset_to_pos16(doc, edit.location.start);
-                        let (end_line, end_char) = self.offset_to_pos16(doc, edit.location.end);
+                            self.offset_to_pos16(doc, edit.location.start());
+                        let (end_line, end_char) = self.offset_to_pos16(doc, edit.location.end());
                         json!({
                             "range": {
                                 "start": {"line": start_line, "character": start_char},
@@ -967,8 +967,8 @@ impl LspServer {
                     .into_iter()
                     .map(|edit| {
                         let (start_line, start_char) =
-                            self.offset_to_pos16(doc, edit.location.start);
-                        let (end_line, end_char) = self.offset_to_pos16(doc, edit.location.end);
+                            self.offset_to_pos16(doc, edit.location.start());
+                        let (end_line, end_char) = self.offset_to_pos16(doc, edit.location.end());
                         json!({
                             "range": {
                                 "start": {"line": start_line, "character": start_char},

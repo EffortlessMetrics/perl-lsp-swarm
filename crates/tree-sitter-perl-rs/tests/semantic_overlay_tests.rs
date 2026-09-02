@@ -377,7 +377,7 @@ fn when_inner_is_called_then_location_start_matches_start_byte() {
 
     let ast_node = root.inner();
     assert_eq!(
-        ast_node.location.start,
+        ast_node.location.start(),
         root.start_byte(),
         "inner().location.start must match Node::start_byte()"
     );
@@ -412,7 +412,7 @@ fn when_inner_is_called_then_location_end_matches_end_byte_before_clamp() {
     assert!(root.end_byte() <= source.len(), "Node::end_byte() must not exceed source length");
 
     // The inner location might be equal to or slightly beyond — just verify no panic
-    let _raw_end = inner.location.end;
+    let _raw_end = inner.location.end();
 }
 
 // ---------------------------------------------------------------------------

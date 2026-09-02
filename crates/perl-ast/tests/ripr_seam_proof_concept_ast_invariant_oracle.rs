@@ -3,7 +3,7 @@ use perl_ast::{
 };
 
 fn location(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn number(value: &str, start: usize, end: usize) -> Node {
@@ -48,14 +48,13 @@ fn valid_tree_has_a_deterministic_clean_report() {
 }
 
 #[test]
-fn reversed_and_out_of_bounds_ranges_are_distinct() {
-    let reversed = number("1", 2, 1);
+fn out_of_bounds_ranges_are_reported_and_reversed_ranges_are_unrepresentable() {
+    // #8740: reversed spans cannot be constructed any more (ByteSpan ordering
+    // is enforced at construction and in deserialization), so the oracle's
+    // former ReversedRange row is unreachable for in-memory trees. The
+    // out-of-bounds oracle row remains observable.
     let out_of_bounds = number("1", 0, 4);
 
-    assert_eq!(
-        codes("12", &reversed, AstInvariantOptions::default()),
-        vec![AstInvariantCode::ReversedRange]
-    );
     assert_eq!(
         codes("12", &out_of_bounds, AstInvariantOptions::default()),
         vec![AstInvariantCode::RangeOutOfBounds]
@@ -109,8 +108,8 @@ fn zero_width_policy_is_explicit() {
 
 #[test]
 fn zero_finding_limit_retains_nothing_and_marks_the_report_incomplete() {
-    let reversed = number("1", 2, 1);
-    let report = validate_ast("12", &reversed, AstInvariantOptions::default().with_max_findings(0));
+    let invalid = number("1", 0, 4);
+    let report = validate_ast("12", &invalid, AstInvariantOptions::default().with_max_findings(0));
 
     assert!(report.findings.is_empty());
     assert!(report.truncated);
@@ -134,7 +133,7 @@ fn depth_and_finding_budgets_bound_adversarial_trees() {
     assert!(depth_report.truncated);
 
     let invalid_root =
-        Node::new(NodeKind::Program { statements: vec![number("2", 2, 1)] }, location(3, 1));
+        Node::new(NodeKind::Program { statements: vec![number("2", 0, 4)] }, location(0, 4));
     let bounded =
         validate_ast("1", &invalid_root, AstInvariantOptions::default().with_max_findings(1));
     assert_eq!(bounded.findings.len(), 1);

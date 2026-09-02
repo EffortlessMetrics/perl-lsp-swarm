@@ -47,8 +47,8 @@ fn test_method_has_name_span() -> Result<(), String> {
     let span = must_some(name_span.as_ref());
     // The name 'foo' should span from position 7 to position 10 (0-indexed)
     // "method foo { }" = 0:m 1:e 2:t 3:h 4:o 5:d 6:space 7:f 8:o 9:o
-    if span.start != 7 || span.end != 10 {
-        return Err(format!("expected name_span to be 7..10, got {}..{}", span.start, span.end));
+    if span.start() != 7 || span.end() != 10 {
+        return Err(format!("expected name_span to be 7..10, got {}..{}", span.start(), span.end()));
     }
 
     Ok(())
@@ -73,8 +73,8 @@ fn test_method_with_signature_has_correct_name_span() -> Result<(), String> {
 
     let span = must_some(name_span.as_ref());
     // "method foo($x, $y) { }" — name_span should cover only 'foo' at 7..10
-    if span.start != 7 || span.end != 10 {
-        return Err(format!("expected name_span to be 7..10, got {}..{}", span.start, span.end));
+    if span.start() != 7 || span.end() != 10 {
+        return Err(format!("expected name_span to be 7..10, got {}..{}", span.start(), span.end()));
     }
 
     Ok(())
@@ -99,8 +99,8 @@ fn test_method_with_attributes_has_correct_name_span() -> Result<(), String> {
 
     let span = must_some(name_span.as_ref());
     // "method foo :lvalue { }" — name_span should cover only 'foo' at 7..10
-    if span.start != 7 || span.end != 10 {
-        return Err(format!("expected name_span to be 7..10, got {}..{}", span.start, span.end));
+    if span.start() != 7 || span.end() != 10 {
+        return Err(format!("expected name_span to be 7..10, got {}..{}", span.start(), span.end()));
     }
 
     Ok(())
@@ -128,8 +128,8 @@ fn test_class_has_name_span() -> Result<(), String> {
     let span = must_some(name_span.as_ref());
     // "class Foo { }" = 0:c 1:l 2:a 3:s 4:s 5:space 6:F 7:o 8:o
     // name_span should be 6..9
-    if span.start != 6 || span.end != 9 {
-        return Err(format!("expected name_span to be 6..9, got {}..{}", span.start, span.end));
+    if span.start() != 6 || span.end() != 9 {
+        return Err(format!("expected name_span to be 6..9, got {}..{}", span.start(), span.end()));
     }
 
     Ok(())
@@ -154,8 +154,8 @@ fn test_class_with_parents_has_correct_name_span() -> Result<(), String> {
 
     let span = must_some(name_span.as_ref());
     // "class Foo :isa(Parent) { }" — name_span should cover only 'Foo' at 6..9
-    if span.start != 6 || span.end != 9 {
-        return Err(format!("expected name_span to be 6..9, got {}..{}", span.start, span.end));
+    if span.start() != 6 || span.end() != 9 {
+        return Err(format!("expected name_span to be 6..9, got {}..{}", span.start(), span.end()));
     }
 
     Ok(())
@@ -182,8 +182,8 @@ fn test_format_has_name_span() -> Result<(), String> {
 
     let span = must_some(name_span.as_ref());
     // "format MYFORMAT =" — name_span should cover 'MYFORMAT' at 7..15
-    if span.start != 7 || span.end != 15 {
-        return Err(format!("expected name_span to be 7..15, got {}..{}", span.start, span.end));
+    if span.start() != 7 || span.end() != 15 {
+        return Err(format!("expected name_span to be 7..15, got {}..{}", span.start(), span.end()));
     }
 
     Ok(())

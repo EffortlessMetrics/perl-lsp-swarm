@@ -23,7 +23,7 @@
 //! use perl_ast::{Node, NodeKind, SourceLocation};
 //!
 //! // Build a small AST by hand
-//! let loc = SourceLocation { start: 0, end: 2 };
+//! let loc = SourceLocation::new(0, 2);
 //! let num = Node::new(NodeKind::Number { value: "42".to_string() }, loc);
 //!
 //! assert_eq!(num.kind.kind_name(), "Number");

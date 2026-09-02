@@ -49,7 +49,7 @@ fn body_shape(
                 (
                     format!("{:?}", node.operation),
                     node.id.index(),
-                    node.source_anchor.range.map(|range| (range.start, range.end)),
+                    node.source_anchor.range.map(|range| (range.start(), range.end())),
                 )
             })
             .collect(),
@@ -145,7 +145,7 @@ fn callable_summary_input_identity_preserves_body_boundaries() -> TestResult {
             matches!(&item.kind, perl_parser_core::hir::HirKind::SubDecl(decl)
                 if decl.name.as_deref() == Some("f"))
         })
-        .map(|item| (item.range.start, item.range.end))
+        .map(|item| (item.range.start(), item.range.end()))
         .ok_or("sub f declaration item exists")?;
     for (_, _, range) in &f_shape {
         let (start, end) = range.ok_or("sub f nodes are source-anchored")?;

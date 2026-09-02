@@ -155,12 +155,12 @@ fn check_spans_rec(node: &Node, source_len: usize, errors: &mut Vec<String>) {
     use NodeKind::*;
 
     // Check this node's span - only report if significantly out of bounds
-    if node.location.end > source_len + 10 {
+    if node.location.end() > source_len + 10 {
         // Allow small overruns from trailing newlines
         errors.push(format!(
             "Node {} has span end {} beyond source length {}",
             node.kind.kind_name(),
-            node.location.end,
+            node.location.end(),
             source_len
         ));
     }
@@ -444,12 +444,12 @@ proptest! {
         let mut parser = Parser::new(&code);
         if let Ok(ast) = parser.parse() {
             // Root span should start at 0 and cover most of the source
-            prop_assert_eq!(ast.location.start, 0, "Root span should start at 0");
+            prop_assert_eq!(ast.location.start(), 0, "Root span should start at 0");
             // Allow some tolerance for trailing whitespace/newlines
             prop_assert!(
-                ast.location.end <= code.len(),
+                ast.location.end() <= code.len(),
                 "Root span end {} exceeds source length {}",
-                ast.location.end,
+                ast.location.end(),
                 code.len()
             );
         }

@@ -155,8 +155,8 @@ fn collect_keyword_usages(node: &Node, names: &[&str], out: &mut Vec<(String, u3
         {
             out.push((
                 name.clone(),
-                u32::try_from(node.location.start).unwrap_or(0),
-                u32::try_from(node.location.end).unwrap_or(0),
+                u32::try_from(node.location.start()).unwrap_or(0),
+                u32::try_from(node.location.end()).unwrap_or(0),
             ));
         }
         _ => {}

@@ -71,7 +71,7 @@ fn walk(node: &Node, file_id: FileId, out: &mut Vec<(EntityFact, AnchorFact, Occ
     if let NodeKind::Eval { block } = &node.kind {
         // Only literal string evals produce evidence.
         if let NodeKind::String { value, .. } = &block.kind {
-            extract_from_eval_string(value, node.location.start, node.location.end, file_id, out);
+            extract_from_eval_string(value, node.location.start(), node.location.end(), file_id, out);
         }
         // Recurse into the block for nested evals.
         walk(block, file_id, out);

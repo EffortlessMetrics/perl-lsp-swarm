@@ -92,15 +92,15 @@ fn is_variable_sigil_byte(byte: u8) -> bool {
 /// Shift one span by `shift`, saturating at the source origin.
 fn shift_location(location: SourceLocation, shift: isize) -> SourceLocation {
     if shift >= 0 {
-        SourceLocation {
-            start: location.start.saturating_add(shift as usize),
-            end: location.end.saturating_add(shift as usize),
-        }
+        SourceLocation::new(
+            location.start().saturating_add(shift as usize),
+            location.end().saturating_add(shift as usize),
+        )
     } else {
-        SourceLocation {
-            start: location.start.saturating_sub((-shift) as usize),
-            end: location.end.saturating_sub((-shift) as usize),
-        }
+        SourceLocation::new(
+            location.start().saturating_sub((-shift) as usize),
+            location.end().saturating_sub((-shift) as usize),
+        )
     }
 }
 
@@ -216,12 +216,12 @@ impl IncrementalTree {
             return None;
         }
         let root = &self.root;
-        if !(root.location.start <= start && root.location.end >= end) {
+        if !(root.location.start() <= start && root.location.end() >= end) {
             return None;
         }
 
         let mut best = root;
-        let mut best_width = root.location.end - root.location.start;
+        let mut best_width = root.location.end() - root.location.start();
         let mut best_depth = 0usize;
         // Frames of containing nodes only, visited in canonical preorder:
         // children are collected in field order and pushed reversed so the
@@ -230,7 +230,7 @@ impl IncrementalTree {
         let mut children: Vec<&Node> = Vec::new();
 
         while let Some((node, depth)) = stack.pop() {
-            let width = node.location.end - node.location.start;
+            let width = node.location.end() - node.location.start();
             if width < best_width || (width == best_width && depth > best_depth) {
                 best = node;
                 best_width = width;
@@ -238,7 +238,7 @@ impl IncrementalTree {
             }
             children.clear();
             node.for_each_child(|child| {
-                if child.location.start <= start && child.location.end >= end {
+                if child.location.start() <= start && child.location.end() >= end {
                     children.push(child);
                 }
             });
@@ -565,7 +565,7 @@ impl IncrementalParserV2 {
             _ => {}
         }
 
-        (node.location.start == start).then_some(node)
+        (node.location.start() == start).then_some(node)
     }
 
     fn is_simple_value_edit(&self, tree: &IncrementalTree) -> bool {
@@ -591,24 +591,24 @@ impl IncrementalParserV2 {
                     match &node.kind {
                         // Support string and numeric literals
                         NodeKind::Number { .. } | NodeKind::String { .. }
-                            if original_start >= node.location.start
-                                && original_end <= node.location.end =>
+                            if original_start >= node.location.start()
+                                && original_end <= node.location.end() =>
                         {
                             cumulative_shift += edit.byte_shift();
                             continue;
                         }
                         // Support simple identifier edits (variable names)
                         NodeKind::Variable { .. }
-                            if original_start >= node.location.start
-                                && original_end <= node.location.end =>
+                            if original_start >= node.location.start()
+                                && original_end <= node.location.end() =>
                         {
                             cumulative_shift += edit.byte_shift();
                             continue;
                         }
                         // Support identifier edits (identifiers can often be treated like simple values)
                         NodeKind::Identifier { .. }
-                            if original_start >= node.location.start
-                                && original_end <= node.location.end =>
+                            if original_start >= node.location.start()
+                                && original_end <= node.location.end() =>
                         {
                             cumulative_shift += edit.byte_shift();
                             continue;
@@ -686,24 +686,24 @@ impl IncrementalParserV2 {
         }
 
         // Position boundary validation
-        if node.location.start > source.len() || node.location.end > source.len() {
+        if node.location.start() > source.len() || node.location.end() > source.len() {
             return false;
         }
 
-        if node.location.start > node.location.end {
+        if node.location.start() > node.location.end() {
             return false;
         }
 
         // Unicode boundary validation - ensure positions fall on character boundaries
-        if !source.is_char_boundary(node.location.start)
-            || !source.is_char_boundary(node.location.end)
+        if !source.is_char_boundary(node.location.start())
+            || !source.is_char_boundary(node.location.end())
         {
             return false;
         }
 
         // Structural validation - ensure node content matches source
-        if node.location.start < node.location.end {
-            let node_text = &source[node.location.start..node.location.end];
+        if node.location.start() < node.location.end() {
+            let node_text = &source[node.location.start()..node.location.end()];
 
             // Validate node content makes sense for node type
             match &node.kind {
@@ -758,8 +758,8 @@ impl IncrementalParserV2 {
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
                 // Validate all child statements are within parent bounds
                 for stmt in statements {
-                    if stmt.location.start < node.location.start
-                        || stmt.location.end > node.location.end
+                    if stmt.location.start() < node.location.start()
+                        || stmt.location.end() > node.location.end()
                     {
                         return false;
                     }
@@ -823,8 +823,8 @@ impl IncrementalParserV2 {
         // Original geometry drives every mapping. Children are disjoint from
         // this node's own `location` field, so updating them first cannot
         // skew the coordinates read here.
-        let original_start = node.location.start;
-        let original_end = node.location.end;
+        let original_start = node.location.start();
+        let original_end = node.location.end();
         let mut valid = true;
         node.for_each_child_mut(|child| {
             valid &= self.update_subtree_in_place(child, new_source, old_source);
@@ -867,20 +867,23 @@ impl IncrementalParserV2 {
             // leaving them at pre-shift offsets here would make the two
             // remapping paths disagree. A recovery token that cannot keep
             // its validated byte width declines the edit into a full parse.
-            if !node.kind.map_payload_locations_in_place(|location| SourceLocation {
-                start: isize_to_usize_clamped(
-                    location.start as isize + self.calculate_shift_exclusive(location.start),
-                ),
-                end: isize_to_usize_clamped(
-                    location.end as isize + self.calculate_shift_at(location.end),
-                ),
+            if !node.kind.map_payload_locations_in_place(|location| {
+                SourceLocation::new(
+                    isize_to_usize_clamped(
+                        location.start() as isize
+                            + self.calculate_shift_exclusive(location.start()),
+                    ),
+                    isize_to_usize_clamped(
+                        location.end() as isize + self.calculate_shift_at(location.end()),
+                    ),
+                )
             }) {
                 return false;
             }
             (new_start, new_end)
         };
 
-        node.location = SourceLocation { start: patched_span.0, end: patched_span.1 };
+        node.location = SourceLocation::new(patched_span.0, patched_span.1);
         true
     }
 
@@ -1201,8 +1204,8 @@ impl IncrementalParserV2 {
     /// beyond its leaf, leaving that leaf's payload stale while the tree is
     /// still accepted.
     fn is_node_affected(&self, node: &Node) -> bool {
-        let start = node.location.start;
-        let end = node.location.end;
+        let start = node.location.start();
+        let end = node.location.end();
         let mut shift = 0isize;
         for edit in self.pending_edits.edits() {
             let original_start = isize_to_usize_clamped(edit.start_byte as isize - shift);
@@ -1420,7 +1423,7 @@ mod tests {
 
     #[test]
     fn whitespace_map_preserves_if_keyword_metadata() -> Result<(), Box<dyn std::error::Error>> {
-        let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
+        let loc = |start, end| perl_parser_core::ast::SourceLocation::new(start, end);
         let number =
             |start| Node::new(NodeKind::Number { value: "1".to_string() }, loc(start, start + 1));
         let block = |start, end| {
@@ -1473,7 +1476,7 @@ mod tests {
     #[test]
     fn vstring_nodes_match_only_when_version_text_matches() {
         let parser = IncrementalParserV2::new();
-        let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
+        let loc = |start, end| perl_parser_core::ast::SourceLocation::new(start, end);
         let vstring = |value: &str| {
             Node::new(NodeKind::VString { value: value.to_string() }, loc(0, value.len()))
         };
@@ -1491,7 +1494,7 @@ mod tests {
     #[test]
     fn advanced_reuse_selects_only_exact_old_subtrees() {
         let parser = IncrementalParserV2::new();
-        let location = |start, end| SourceLocation { start, end };
+        let location = |start, end| SourceLocation::new(start, end);
         let old_tree = Node::new(
             NodeKind::Program {
                 statements: vec![
@@ -2317,8 +2320,8 @@ if ($condition) {
                 variable, initializer: Some(initializer), ..
             } = &statements[0].kind
         {
-            assert_eq!(variable.location, SourceLocation { start: 3, end: 5 });
-            assert_eq!(initializer.location, SourceLocation { start: 10, end: 12 });
+            assert_eq!(variable.location, SourceLocation::new(3, 5));
+            assert_eq!(initializer.location, SourceLocation::new(10, 12));
         } else {
             return Err(perl_parser_core::error::ParseError::UnexpectedEof);
         }
@@ -2426,8 +2429,8 @@ if ($condition) {
                 variable, initializer: Some(initializer), ..
             } = &statements[0].kind
         {
-            assert_eq!(variable.location, SourceLocation { start: 3, end: 5 });
-            assert_eq!(initializer.location, SourceLocation { start: 10, end: 12 });
+            assert_eq!(variable.location, SourceLocation::new(3, 5));
+            assert_eq!(initializer.location, SourceLocation::new(10, 12));
         } else {
             return Err(perl_parser_core::error::ParseError::UnexpectedEof);
         }
@@ -2463,7 +2466,7 @@ if ($condition) {
             assert_eq!(statements[0].location, old_first);
             assert_eq!(
                 statements[1].location,
-                SourceLocation { start: old_second.start + 1, end: old_second.end + 1 }
+                SourceLocation::new(old_second.start() + 1, old_second.end() + 1)
             );
         } else {
             return Err(perl_parser_core::error::ParseError::UnexpectedEof);
@@ -2994,7 +2997,7 @@ if ($condition) {
     /// Every fixture node spans `[start..total_end]`; the chain descends one
     /// start byte per level down to the number literal.
     fn assert_chain_spans(node: &Node, start: usize, total_end: usize, visited: &mut usize) {
-        assert_eq!(node.location, SourceLocation { start, end: total_end }, "node span moved");
+        assert_eq!(node.location, SourceLocation::new(start, total_end), "node span moved");
         *visited += 1;
         match &node.kind {
             NodeKind::Program { statements } => {
@@ -3021,7 +3024,7 @@ if ($condition) {
     fn whitespace_reuse_is_linear_in_tree_depth() {
         const DEPTH: usize = 20_000;
         let total_end = DEPTH + 1;
-        let loc = |start: usize, end: usize| SourceLocation { start, end };
+        let loc = |start: usize, end: usize| SourceLocation::new(start, end);
         let mut chain =
             Node::new(NodeKind::Number { value: "1".to_string() }, loc(DEPTH, total_end));
         for start in (0..DEPTH).rev() {

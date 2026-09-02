@@ -50,10 +50,10 @@ fn parser_430_ac1_error_variant_structure() {
 #[test]
 fn parser_430_ac2_missing_node_variants_exist() {
     // Test that these variants exist by pattern matching
-    let missing_expr = Node::new(NodeKind::MissingExpression, SourceLocation { start: 0, end: 0 });
-    let missing_stmt = Node::new(NodeKind::MissingStatement, SourceLocation { start: 0, end: 0 });
-    let missing_ident = Node::new(NodeKind::MissingIdentifier, SourceLocation { start: 0, end: 0 });
-    let missing_block = Node::new(NodeKind::MissingBlock, SourceLocation { start: 0, end: 0 });
+    let missing_expr = Node::new(NodeKind::MissingExpression, SourceLocation::new(0, 0));
+    let missing_stmt = Node::new(NodeKind::MissingStatement, SourceLocation::new(0, 0));
+    let missing_ident = Node::new(NodeKind::MissingIdentifier, SourceLocation::new(0, 0));
+    let missing_block = Node::new(NodeKind::MissingBlock, SourceLocation::new(0, 0));
 
     // Verify these compile and match correctly
     assert!(matches!(missing_expr.kind, NodeKind::MissingExpression));
@@ -77,11 +77,12 @@ fn parser_430_ac3_error_nodes_preserve_location() {
         for stmt in statements {
             if let NodeKind::Error { .. } = &stmt.kind {
                 // Verify location is captured (start is always >= 0 for usize)
-                assert!(stmt.location.end >= stmt.location.start, "End should be >= start");
+                assert!(stmt.location.end() >= stmt.location.start(), "End should be >= start");
 
                 println!(
                     "AC3: Error node location: start={}, end={}",
-                    stmt.location.start, stmt.location.end
+                    stmt.location.start(),
+                    stmt.location.end()
                 );
                 found_error = true;
                 break;
@@ -265,7 +266,7 @@ fn parser_430_ac8_missing_expression_node() {
 #[test]
 fn parser_430_ac9_missing_statement_capability() {
     // Validate MissingStatement variant exists and can be used
-    let missing_stmt = Node::new(NodeKind::MissingStatement, SourceLocation { start: 0, end: 0 });
+    let missing_stmt = Node::new(NodeKind::MissingStatement, SourceLocation::new(0, 0));
 
     assert!(matches!(missing_stmt.kind, NodeKind::MissingStatement));
     println!("AC9: MissingStatement capability available");

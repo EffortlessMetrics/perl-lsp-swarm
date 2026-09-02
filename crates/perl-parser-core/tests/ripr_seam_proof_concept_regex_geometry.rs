@@ -12,7 +12,7 @@ fn geometry(
 }
 
 fn absolute(source_start: usize, start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start: source_start + start, end: source_start + end }
+    SourceLocation::new(source_start + start, source_start + end)
 }
 
 #[test]

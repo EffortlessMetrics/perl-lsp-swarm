@@ -205,22 +205,22 @@ fn validate_node_invariants(
 ) -> Result<(), proptest::test_runner::TestCaseError> {
     // Range bounds checking using location field
     prop_assert!(
-        node.location.start <= input.len(),
+        node.location.start() <= input.len(),
         "Node start position {} exceeds input length {}",
-        node.location.start,
+        node.location.start(),
         input.len()
     );
     prop_assert!(
-        node.location.end <= input.len(),
+        node.location.end() <= input.len(),
         "Node end position {} exceeds input length {}",
-        node.location.end,
+        node.location.end(),
         input.len()
     );
     prop_assert!(
-        node.location.start <= node.location.end,
+        node.location.start() <= node.location.end(),
         "Node range start {} > end {}",
-        node.location.start,
-        node.location.end
+        node.location.start(),
+        node.location.end()
     );
 
     // Recursively validate child nodes by pattern matching
@@ -274,7 +274,7 @@ fn validate_node_ranges(
     let input_len = input.len();
 
     prop_assert!(
-        node.location.start <= input_len && node.location.end <= input_len,
+        node.location.start() <= input_len && node.location.end() <= input_len,
         "Node range {:?} exceeds input bounds (length: {})",
         node.location,
         input_len
@@ -426,7 +426,7 @@ fn validate_syntax_safe(ast: &Node) -> Vec<String> {
 /// Recursively validate syntax
 fn validate_syntax_recursive(node: &Node, diagnostics: &mut Vec<String>) {
     // Basic syntax validation - look for potential issues
-    if node.location.start > node.location.end {
+    if node.location.start() > node.location.end() {
         diagnostics.push(format!("Invalid range: {:?}", node.location));
     }
 
@@ -473,10 +473,10 @@ fn find_references_safe(ast: &Node, symbol: &str) -> Vec<(usize, usize)> {
 fn find_references_recursive(node: &Node, symbol: &str, references: &mut Vec<(usize, usize)>) {
     match &node.kind {
         NodeKind::FunctionCall { name, .. } if name == symbol => {
-            references.push((node.location.start, node.location.end));
+            references.push((node.location.start(), node.location.end()));
         }
         NodeKind::Variable { name, .. } if name == symbol => {
-            references.push((node.location.start, node.location.end));
+            references.push((node.location.start(), node.location.end()));
         }
         _ => {}
     }
@@ -646,12 +646,12 @@ fn validate_memory_safety(ast: &Node, input: &str) -> bool {
 /// Recursively validate memory bounds
 fn validate_memory_bounds_recursive(node: &Node, input: &str) -> bool {
     // Check that node ranges don't exceed input bounds
-    if node.location.start > input.len() || node.location.end > input.len() {
+    if node.location.start() > input.len() || node.location.end() > input.len() {
         return false;
     }
 
     // Check that node ranges don't wrap around (overflow)
-    if node.location.start > node.location.end {
+    if node.location.start() > node.location.end() {
         return false;
     }
 

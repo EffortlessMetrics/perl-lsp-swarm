@@ -55,7 +55,7 @@ fn repetition_assignment_builds_assignment_ast() -> Result<(), String> {
         return Err(format!("expected numeric repetition count, got: {:?}", rhs.kind));
     }
     let end = source.find(';').ok_or("expected statement terminator")?;
-    if assignment.location.start != 0 || assignment.location.end != end {
+    if assignment.location.start() != 0 || assignment.location.end() != end {
         return Err(format!("unexpected x= assignment span: {:?}", assignment.location));
     }
     Ok(())
@@ -202,7 +202,7 @@ fn repetition_assignment_preserves_hir_declaration_reachability() -> Result<(), 
         ));
     }
     let initializer_source = source
-        .get(initializer_range.start..initializer_range.end)
+        .get(initializer_range.start()..initializer_range.end())
         .ok_or("HIR initializer range must be valid UTF-8 source bounds")?;
     if !initializer_source.contains("x=") {
         return Err(format!("HIR initializer lost x= semantics: {initializer_source:?}"));
@@ -294,10 +294,10 @@ fn repetition_assignment_recovers_missing_rhs_with_exact_spans() -> Result<(), S
         let missing = find_missing_expression(assignment)
             .ok_or_else(|| format!("expected missing RHS:\n{}", output.ast.to_sexp()))?;
 
-        if assignment.location.start != assignment_start
-            || assignment.location.end != recovery_offset
-            || missing.location.start != recovery_offset
-            || missing.location.end != recovery_offset
+        if assignment.location.start() != assignment_start
+            || assignment.location.end() != recovery_offset
+            || missing.location.start() != recovery_offset
+            || missing.location.end() != recovery_offset
         {
             return Err(format!(
                 "recovery spans must stop at the missing RHS: assignment={:?}, missing={:?}",

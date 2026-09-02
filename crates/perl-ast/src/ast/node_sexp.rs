@@ -202,7 +202,7 @@ impl Node {
     /// ```
     /// use perl_ast::{Node, NodeKind, SourceLocation};
     ///
-    /// let loc = SourceLocation { start: 0, end: 2 };
+    /// let loc = SourceLocation::new(0, 2);
     /// let num = Node::new(NodeKind::Number { value: "42".to_string() }, loc);
     /// let program = Node::new(
     ///     NodeKind::Program { statements: vec![num] },
@@ -809,7 +809,7 @@ mod tests {
     use crate::ast::{Node, NodeKind, SourceLocation};
 
     fn loc() -> SourceLocation {
-        SourceLocation { start: 0, end: 1 }
+        SourceLocation::new(0, 1)
     }
 
     #[test]

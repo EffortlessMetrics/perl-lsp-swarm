@@ -47,8 +47,8 @@ impl TypeDefinitionProvider {
         let type_name = self
             .extract_has_type_constraint_name(
                 ast,
-                target_node.location.start,
-                target_node.location.end,
+                target_node.location.start(),
+                target_node.location.end(),
             )
             // Fall back to generic class / object / `isa` expression handling.
             .or_else(|| self.extract_type_name(&target_node))?;
@@ -284,8 +284,8 @@ impl TypeDefinitionProvider {
             NodeKind::HashLiteral { pairs } => {
                 for (key, pair_value) in pairs {
                     if matches!(&key.kind, NodeKind::String { value: key_name, .. } if key_name == "isa")
-                        && target_start >= pair_value.location.start
-                        && target_end <= pair_value.location.end
+                        && target_start >= pair_value.location.start()
+                        && target_end <= pair_value.location.end()
                     {
                         return match &pair_value.kind {
                             NodeKind::Identifier { name } => Some(name.clone()),
@@ -299,8 +299,8 @@ impl TypeDefinitionProvider {
             NodeKind::Binary { op, left, right }
                 if op == "=>"
                     && matches!(&left.kind, NodeKind::Identifier { name } if name == "isa")
-                    && target_start >= right.location.start
-                    && target_end <= right.location.end =>
+                    && target_start >= right.location.start()
+                    && target_end <= right.location.end() =>
             {
                 return match &right.kind {
                     NodeKind::Identifier { name } => Some(name.clone()),
@@ -516,12 +516,12 @@ impl TypeDefinitionProvider {
         let (target_start_line, target_start_char) =
             perl_parser_core::engine::position::offset_to_utf16_line_col(
                 source_text,
-                node.location.start,
+                node.location.start(),
             );
         let (target_end_line, target_end_char) =
             perl_parser_core::engine::position::offset_to_utf16_line_col(
                 source_text,
-                node.location.end,
+                node.location.end(),
             );
 
         let target_range = lsp_types::Range {
@@ -682,7 +682,7 @@ impl TypeDefinitionProvider {
     #[cfg(feature = "lsp-compat")]
     fn find_node_at_offset(&self, node: &Node, offset: usize) -> Option<Node> {
         // Check if offset is within this node's range
-        if offset < node.location.start || offset > node.location.end {
+        if offset < node.location.start() || offset > node.location.end() {
             return None;
         }
 
@@ -692,10 +692,10 @@ impl TypeDefinitionProvider {
             if let Some(found) = self.find_node_at_offset(child, offset) {
                 // Prefer the smallest (most specific) node
                 if best_match.is_none()
-                    || found.location.end - found.location.start
+                    || found.location.end() - found.location.start()
                         < best_match
                             .as_ref()
-                            .map_or(usize::MAX, |n: &Node| n.location.end - n.location.start)
+                            .map_or(usize::MAX, |n: &Node| n.location.end() - n.location.start())
                 {
                     best_match = Some(found);
                 }

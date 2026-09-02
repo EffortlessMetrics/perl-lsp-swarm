@@ -135,7 +135,7 @@ fn source_backed_document_symbol(
         || symbol.kind == SymbolKind::Subroutine
     {
         for (scope_id, scope) in &symbol_table.scopes {
-            if scope.location.start == symbol.location.start {
+            if scope.location.start() == symbol.location.start() {
                 if let Some(child_symbols) = symbols_by_scope.get(scope_id) {
                     for child in child_symbols {
                         if child.location == symbol.location
@@ -149,8 +149,8 @@ fn source_backed_document_symbol(
                         {
                             children.push((
                                 document_symbol_priority(child),
-                                child.location.start,
-                                child.location.end,
+                                child.location.start(),
+                                child.location.end(),
                                 child_symbol,
                             ));
                         }
@@ -212,11 +212,11 @@ fn source_backed_trace() -> ProviderFactTrace {
 }
 
 fn is_source_backed(symbol: &Symbol, source: &str) -> bool {
-    symbol.location.start <= symbol.location.end && symbol.location.end <= source.len()
+    symbol.location.start() <= symbol.location.end() && symbol.location.end() <= source.len()
 }
 
 fn symbol_range(source: &str, symbol: &Symbol) -> WireRange {
-    WireRange::from_byte_offsets(source, symbol.location.start, symbol.location.end)
+    WireRange::from_byte_offsets(source, symbol.location.start(), symbol.location.end())
 }
 
 /// Return a [`WireRange`] spanning only the symbol's identifier name, not its full declaration.
@@ -233,7 +233,7 @@ fn symbol_name_range(source: &str, symbol: &Symbol) -> WireRange {
     if symbol.name.is_empty() {
         return symbol_range(source, symbol);
     }
-    let slice = match source.get(symbol.location.start..symbol.location.end) {
+    let slice = match source.get(symbol.location.start()..symbol.location.end()) {
         Some(s) => s,
         None => return symbol_range(source, symbol),
     };
@@ -241,10 +241,10 @@ fn symbol_name_range(source: &str, symbol: &Symbol) -> WireRange {
         Some(o) => o,
         None => return symbol_range(source, symbol),
     };
-    let abs_start = symbol.location.start + rel_offset;
+    let abs_start = symbol.location.start() + rel_offset;
     let abs_end = abs_start + symbol.name.len();
     // Guard: name end must not exceed the symbol's declared bounds.
-    if abs_end > symbol.location.end {
+    if abs_end > symbol.location.end() {
         return symbol_range(source, symbol);
     }
     WireRange::from_byte_offsets(source, abs_start, abs_end)

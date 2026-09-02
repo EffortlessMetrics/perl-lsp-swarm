@@ -31,8 +31,8 @@ pub(super) fn handle_variable<'a>(
             issues.push(ScopeIssue {
                 kind: super::IssueKind::CaptureVarWithoutRegexMatch,
                 variable_name: full_name.clone(),
-                line: context.get_line(node.location.start),
-                range: (node.location.start, node.location.end),
+                line: context.get_line(node.location.start()),
+                range: (node.location.start(), node.location.end()),
                 description: format!(
                     "Capture variable '{}' used without a preceding regex match in scope",
                     full_name
@@ -243,8 +243,8 @@ pub(super) fn handle_identifier(
         issues.push(ScopeIssue {
             kind: super::IssueKind::UnquotedBareword,
             variable_name: name.to_string(),
-            line: context.get_line(node.location.start),
-            range: (node.location.start, node.location.end),
+            line: context.get_line(node.location.start()),
+            range: (node.location.start(), node.location.end()),
             description: format!("Bareword '{}' not allowed under 'use strict'", name),
         });
     }

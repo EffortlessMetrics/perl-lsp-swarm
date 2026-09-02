@@ -69,14 +69,14 @@ pub fn check_loop_control_labels(
         }
 
         diagnostics.push(Diagnostic {
-            range: (node.location.start, node.location.end),
+            range: (node.location.start(), node.location.end()),
             severity: DiagnosticSeverity::Warning,
             code: Some(DiagnosticCode::LoopControlUndefinedLabel.as_str().to_string()),
             message: format!(
                 "`{op} {label_name}` references a label that is not defined in this file"
             ),
             related_information: vec![RelatedInformation {
-                location: (node.location.start, node.location.end),
+                location: (node.location.start(), node.location.end()),
                 message:
                     "Add a matching `LABEL:` on an enclosing loop, or drop the label to target the innermost loop."
                         .to_string(),

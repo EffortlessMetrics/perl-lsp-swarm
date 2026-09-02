@@ -47,20 +47,20 @@ fn synthetic_ranges(node: &Node) -> Vec<(usize, usize)> {
         // so the expansion goes: name -> signature -> body -> full sub
         NodeKind::Subroutine { name_span, signature, body, .. } => {
             if let Some(span) = name_span {
-                extras.push((span.start, span.end));
+                extras.push((span.start(), span.end()));
             }
             if let Some(sig) = signature {
-                extras.push((sig.location.start, sig.location.end));
+                extras.push((sig.location.start(), sig.location.end()));
             }
-            extras.push((body.location.start, body.location.end));
+            extras.push((body.location.start(), body.location.end()));
         }
         // Method: name is a String, but we don't have a span for it — use
         // signature and body.
         NodeKind::Method { signature, body, .. } => {
             if let Some(sig) = signature {
-                extras.push((sig.location.start, sig.location.end));
+                extras.push((sig.location.start(), sig.location.end()));
             }
-            extras.push((body.location.start, body.location.end));
+            extras.push((body.location.start(), body.location.end()));
         }
         _ => {}
     }
@@ -110,7 +110,7 @@ pub fn selection_chain(
             first = false;
         }
 
-        let span = (node.location.start, node.location.end);
+        let span = (node.location.start(), node.location.end());
         ranges.push(span);
 
         // Also inject synthetics from the parent node (for when the cursor
@@ -135,7 +135,7 @@ pub fn selection_chain(
     }
 
     // Ensure file-level range is the outermost
-    let file_span = (ast.location.start, ast.location.end);
+    let file_span = (ast.location.start(), ast.location.end());
     if ranges.last().is_none_or(|&last| last != file_span) {
         ranges.push(file_span);
     }
@@ -193,7 +193,7 @@ fn find_deepest_node_at_offset(node: &Node, offset: usize) -> Option<&Node> {
         }
     }
     // Only claim *this* node if the offset is within its own span.
-    if offset >= node.location.start && offset <= node.location.end {
+    if offset >= node.location.start() && offset <= node.location.end() {
         return Some(node);
     }
     None

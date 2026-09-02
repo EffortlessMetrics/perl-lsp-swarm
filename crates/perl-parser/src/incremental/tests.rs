@@ -307,7 +307,7 @@ fn parse_checkpoints_restore_block_locals_before_later_sibling() -> Result<()> {
     // Direct-AST discriminator for scope-exit: after `{ my $inner; }`, a later
     // sibling block must not see `$inner`. A walker that mutates one shared
     // snapshot and never restores it fails this assertion.
-    let location = |start, end| SourceLocation { start, end };
+    let location = |start, end| SourceLocation::new(start, end);
     let inner = Node::new(
         NodeKind::VariableDeclaration {
             declarator: "my".to_string(),
@@ -391,7 +391,7 @@ fn parse_checkpoints_restore_inner_block_without_dropping_enclosing_locals() -> 
     // Opposite-direction control for restore: clearing the whole snapshot on
     // block exit would drop `$outer` as well as `$inner`. A later sibling
     // inside the same enclosing block must still see the enclosing local.
-    let location = |start, end| SourceLocation { start, end };
+    let location = |start, end| SourceLocation::new(start, end);
     let outer = Node::new(
         NodeKind::VariableDeclaration {
             declarator: "my".to_string(),
@@ -437,7 +437,7 @@ fn parse_checkpoints_restore_inner_block_without_dropping_enclosing_locals() -> 
 
 #[test]
 fn parse_checkpoints_accumulate_nested_scalar_locals_in_source_order() -> Result<()> {
-    let location = |start, end| SourceLocation { start, end };
+    let location = |start, end| SourceLocation::new(start, end);
     let first = Node::new(
         NodeKind::VariableDeclaration {
             declarator: "my".to_string(),

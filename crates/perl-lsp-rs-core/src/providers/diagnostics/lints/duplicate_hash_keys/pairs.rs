@@ -24,7 +24,7 @@ pub(super) fn check_hash_literal_pairs(pairs: &[(Node, Node)], diagnostics: &mut
         if let Some(&first_occurrence) = seen.get(&key_text) {
             diagnostics.push(duplicate_key_diagnostic(key, &key_text, first_occurrence));
         } else {
-            seen.insert(key_text, (key.location.start, key.location.end));
+            seen.insert(key_text, (key.location.start(), key.location.end()));
         }
     }
 }

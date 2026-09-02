@@ -46,7 +46,7 @@ fn compiler_ranges(
     body.facts
         .iter()
         .filter(|f| f.name.name == name && f.source_anchor.is_anchored())
-        .filter_map(|f| f.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
+        .filter_map(|f| f.source_anchor.range.as_ref().map(|r| (r.start(), r.end())))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()

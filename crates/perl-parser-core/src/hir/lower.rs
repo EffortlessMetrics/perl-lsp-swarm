@@ -218,7 +218,7 @@ impl Lowerer {
                             declaration_range: node.location,
                             declaration_item: item_id,
                             scope_id: Some(sub_scope),
-                            anchor_id: AnchorId(prototype.location.start as u64),
+                            anchor_id: AnchorId(prototype.location.start() as u64),
                             provenance: CompileProvenance::ExactAst,
                             confidence: CompileConfidence::High,
                         });
@@ -481,7 +481,7 @@ impl Lowerer {
                     range: node.location,
                     source_item: item_id,
                     scope_id: Some(self.current_scope()),
-                    anchor_id: AnchorId(node.location.start as u64),
+                    anchor_id: AnchorId(node.location.start() as u64),
                     provenance: CompileProvenance::ExactAst,
                     confidence: CompileConfidence::High,
                 });
@@ -654,7 +654,7 @@ impl Lowerer {
                         self.package_context.clone(),
                         Some(self.current_scope()),
                     );
-                    if !self.strict_refs_enabled_at(node.location.start)
+                    if !self.strict_refs_enabled_at(node.location.start())
                         && is_proven_symbolic_name(operand)
                     {
                         let reason = "symbolic reference dereference is deferred to runtime";
@@ -1716,12 +1716,12 @@ impl Lowerer {
         let entries = self.pragma_environment.map().entries().to_vec();
         for entry in entries {
             let range = SourceLocation::new(entry.range.start, entry.range.end);
-            if self.is_dynamic_pragma_offset(range.start) {
+            if self.is_dynamic_pragma_offset(range.start()) {
                 continue;
             }
 
             let (directive_item, scope_id, package_context) =
-                self.compile_environment_metadata_at(range.start);
+                self.compile_environment_metadata_at(range.start());
             self.compile_environment.pragma_state_facts.push(pragma_state_fact(
                 range,
                 &entry.snapshot,
@@ -1739,7 +1739,7 @@ impl Lowerer {
     fn is_dynamic_pragma_offset(&self, offset: usize) -> bool {
         self.compile_environment.dynamic_boundaries.iter().any(|boundary| {
             boundary.kind == CompileEnvironmentBoundaryKind::DynamicPragmaArgs
-                && boundary.range.start == offset
+                && boundary.range.start() == offset
         })
     }
 
@@ -1751,7 +1751,7 @@ impl Lowerer {
             .compile_environment
             .pragma_effects
             .iter()
-            .find(|effect| effect.range.start == offset)
+            .find(|effect| effect.range.start() == offset)
         {
             return (effect.directive_item, effect.scope_id, effect.package_context.clone());
         }
@@ -1760,7 +1760,7 @@ impl Lowerer {
             .compile_environment
             .directives
             .iter()
-            .find(|directive| directive.range.start == offset)
+            .find(|directive| directive.range.start() == offset)
         {
             return (directive.item_id, directive.scope_id, directive.package_context.clone());
         }
@@ -1776,8 +1776,8 @@ impl Lowerer {
         self.scope_graph
             .scopes
             .iter()
-            .filter(|scope| scope.range.start <= offset && offset <= scope.range.end)
-            .max_by_key(|scope| (scope.range.start, scope.id.index()))
+            .filter(|scope| scope.range.start() <= offset && offset <= scope.range.end())
+            .max_by_key(|scope| (scope.range.start(), scope.id.index()))
     }
 
     fn record_inc_root_effects(
@@ -2643,7 +2643,7 @@ fn pragma_state_fact(
     let state = snapshot.state();
     PragmaStateFact {
         range,
-        anchor_id: AnchorId(range.start as u64),
+        anchor_id: AnchorId(range.start() as u64),
         directive_item,
         scope_id,
         package_context,
@@ -3348,10 +3348,7 @@ impl<'a> BodyBuilder2<'a> {
                     let rhs_id = self.lower_expr(init_node);
 
                     // Assign node spanning from variable to end of initializer.
-                    let assign_range = SourceLocation {
-                        start: variable.location.start,
-                        end: init_node.location.end,
-                    };
+                    let assign_range = SourceLocation::new(variable.location.start(), init_node.location.end(),);
                     let assign_expr =
                         HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
                     self.alloc_expr(assign_expr, assign_range)
@@ -4182,8 +4179,8 @@ fn find_body_scope(scope_graph: &ScopeGraph, body_loc: SourceLocation) -> HirSco
     for frame in &scope_graph.scopes {
         let range = frame.range;
         // Check that this scope frame fully contains the body location.
-        if range.start <= body_loc.start && range.end >= body_loc.end {
-            let size = range.end - range.start;
+        if range.start() <= body_loc.start() && range.end() >= body_loc.end() {
+            let size = range.end() - range.start();
             let is_better = best.is_none_or(|(prev_size, _)| size < prev_size);
             if is_better {
                 best = Some((size, frame.id));

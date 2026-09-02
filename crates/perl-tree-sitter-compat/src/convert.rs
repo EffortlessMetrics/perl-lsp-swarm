@@ -84,8 +84,8 @@ pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
 /// byte offsets within the row, matching tree-sitter's `Point`.
 #[must_use]
 pub fn to_ts_node(node: &Node, line_index: &Utf8LineIndex) -> TsNode {
-    let start_byte = u32::try_from(node.location.start).unwrap_or(u32::MAX);
-    let end_byte = u32::try_from(node.location.end).unwrap_or(u32::MAX);
+    let start_byte = u32::try_from(node.location.start()).unwrap_or(u32::MAX);
+    let end_byte = u32::try_from(node.location.end()).unwrap_or(u32::MAX);
     let (start_row, start_column) = line_index.line_col(start_byte);
     let (end_row, end_column) = line_index.line_col(end_byte);
     TsNode {

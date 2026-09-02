@@ -12,7 +12,7 @@ impl<'a> Parser<'a> {
                 let t = self.consume_token()?;
                 statements.push(Node::new(
                     NodeKind::UnknownRest,
-                    SourceLocation { start: t.start(), end: t.end() },
+                    SourceLocation::new(t.start(), t.end()),
                 ));
                 // The truncated program still parses "successfully": record
                 // the terminal cause at this exact branch so the Ok path of
@@ -66,7 +66,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Program { statements }, SourceLocation { start, end }))
+        Ok(Node::new(NodeKind::Program { statements }, SourceLocation::new(start, end)))
     }
 
     /// Parse a single statement
@@ -187,7 +187,7 @@ impl<'a> Parser<'a> {
             // Produce a String node (autoquoting) and continue as an expression statement
             let key_node = Node::new(
                 NodeKind::String { value: token.text.to_string(), interpolated: false },
-                SourceLocation { start: token.start(), end: token.end() },
+                SourceLocation::new(token.start(), token.end()),
             );
             // Now parse the rest of the expression (=> value, more pairs, etc.)
             // Re-enter the comma parser with the key already consumed
@@ -221,7 +221,7 @@ impl<'a> Parser<'a> {
         let mut stmt = if self.is_async_sub_start() {
             let async_token = self.consume_token()?;
             let mut sub_node = self.parse_subroutine()?;
-            sub_node.location.start = async_token.start();
+            sub_node.location = SourceLocation::new(async_token.start(), sub_node.location.end());
             if let NodeKind::Subroutine { attributes, .. } = &mut sub_node.kind
                 && !attributes.iter().any(|attr| attr == "async")
             {
@@ -237,7 +237,7 @@ impl<'a> Parser<'a> {
                 // Return an empty block as a no-op placeholder
                 return Ok(Node::new(
                     NodeKind::Block { statements: vec![] },
-                    SourceLocation { start: pos, end: pos },
+                    SourceLocation::new(pos, pos),
                 ));
             }
 
@@ -247,7 +247,7 @@ impl<'a> Parser<'a> {
                 if matches!(self.tokens.peek_second().map(|t| t.kind()), Ok(TokenKind::Sub)) {
                     let decl_token = self.consume_token()?;
                     let mut sub_node = self.parse_subroutine()?;
-                    sub_node.location.start = decl_token.start();
+                    sub_node.location = SourceLocation::new(decl_token.start(), sub_node.location.end());
                     // Inject the declarator into the Subroutine node
                     if let NodeKind::Subroutine { declarator, name, .. } = &mut sub_node.kind {
                         *declarator = Some(decl_token.text.to_string());
@@ -292,7 +292,7 @@ impl<'a> Parser<'a> {
                         (NodeKind::VariableDeclaration { variable, .. }, _) => *variable,
                         (kind, location) => Node::new(kind, location),
                     };
-                    let call_start = variable.location.start;
+                    let call_start = variable.location.start();
                     let mut args = vec![variable];
 
                     while matches!(self.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
@@ -309,10 +309,10 @@ impl<'a> Parser<'a> {
                         args.push(self.parse_assignment_or_declaration()?);
                     }
 
-                    let end = args.last().map(|arg| arg.location.end).unwrap_or(call_start);
+                    let end = args.last().map(|arg| arg.location.end()).unwrap_or(call_start);
                     let call = Node::new(
                         NodeKind::FunctionCall { name: "field".to_string(), args },
-                        SourceLocation { start: call_start, end },
+                        SourceLocation::new(call_start, end),
                     );
                     Ok(self.parse_word_or_expr(call)?)
                 } else {
@@ -570,8 +570,8 @@ impl<'a> Parser<'a> {
             // missing terminator in the file is silently suppressed (#12852
             // review).
             if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
-                let start = stmt.location.start.min(self.src_bytes.len());
-                let end = stmt.location.end.min(self.src_bytes.len());
+                let start = stmt.location.start().min(self.src_bytes.len());
+                let end = stmt.location.end().min(self.src_bytes.len());
                 let first_line_is_tag = std::str::from_utf8(&self.src_bytes[start..end])
                     .map(|text| text.lines().next().map(str::trim) == Some(tag))
                     .unwrap_or(false);
@@ -667,8 +667,8 @@ impl<'a> Parser<'a> {
         // must be processed normally — otherwise every later missing
         // terminator in the file is silently accepted (#12852 review).
         if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
-            let start = stmt.location.start.min(self.src_bytes.len());
-            let end = stmt.location.end.min(self.src_bytes.len());
+            let start = stmt.location.start().min(self.src_bytes.len());
+            let end = stmt.location.end().min(self.src_bytes.len());
             let source = std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("");
             if source.trim() == tag {
                 // Pure delimiter line: the body ends here; skip it.
@@ -871,7 +871,7 @@ impl<'a> Parser<'a> {
     /// behind one.
     fn statement_span_heredoc_tag(&mut self, stmt: &Node) -> Option<String> {
         let end = self.current_position().min(self.src_bytes.len());
-        let start = stmt.location.start.min(end);
+        let start = stmt.location.start().min(end);
         let span = &self.src_bytes[start..end];
 
         let mut quote: Option<u8> = None;
@@ -1110,7 +1110,7 @@ impl<'a> Parser<'a> {
             // the braces even when it has no statements.
             NodeKind::Subroutine { body, .. }
             | NodeKind::Class { body, .. }
-            | NodeKind::Method { body, .. } => body.location.start != body.location.end,
+            | NodeKind::Method { body, .. } => body.location.start() != body.location.end(),
             _ => Self::is_compound_statement(node),
         }
     }
@@ -1164,7 +1164,7 @@ impl<'a> Parser<'a> {
     /// Produces an `ExpressionStatement` wrapping the resulting list / hash
     /// expression.
     fn finish_expression_from(&mut self, first: Node) -> ParseResult<Node> {
-        let start = first.location.start;
+        let start = first.location.start();
         let mut expr = self.collect_comma_fat_arrow_continuation(first)?;
 
         // Handle trailing word operators (or, and, xor)
@@ -1173,7 +1173,7 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         Ok(Node::new(
             NodeKind::ExpressionStatement { expression: Box::new(expr) },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1207,12 +1207,12 @@ impl<'a> Parser<'a> {
 
         // Prefer the later of expression end and the last consumed token so
         // wrappers such as `(42)` keep their closing delimiter in the span.
-        let end = expr.location.end.max(self.previous_position());
+        let end = expr.location.end().max(self.previous_position());
 
         // Wrap the expression in an ExpressionStatement node
         Ok(Node::new(
             NodeKind::ExpressionStatement { expression: Box::new(expr) },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1286,14 +1286,14 @@ impl<'a> Parser<'a> {
         let had_args = !args.is_empty();
         let end = args
             .last()
-            .map(|arg| arg.location.end)
+            .map(|arg| arg.location.end())
             .unwrap_or_else(|| self.previous_position());
         let mut expr = Node::new(
             NodeKind::FunctionCall {
                 name: func_name.to_string(),
                 args,
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         );
 
         // `pos` is an lvalue-capable builtin in Perl: `pos $s = value` and
@@ -1305,14 +1305,14 @@ impl<'a> Parser<'a> {
             && let Some((op, _op_start)) = self.consume_assignment_operator()?
         {
             let rhs = self.parse_assignment()?;
-            let assign_end = rhs.location.end;
+            let assign_end = rhs.location.end();
             expr = Node::new(
                 NodeKind::Assignment {
                     lhs: Box::new(expr),
                     rhs: Box::new(rhs),
                     op: op.to_string(),
                 },
-                SourceLocation { start, end: assign_end },
+                SourceLocation::new(start, assign_end),
             );
             return self.parse_named_unary_statement_tail(expr);
         }
@@ -1405,7 +1405,7 @@ impl<'a> Parser<'a> {
                     let end = self.previous_position();
                     Ok(Node::new(
                         NodeKind::Tie { variable, package, args },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     ))
                 }
                 "untie" => {
@@ -1418,7 +1418,7 @@ impl<'a> Parser<'a> {
                     let end = self.previous_position();
                     Ok(Node::new(
                         NodeKind::Untie { variable },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     ))
                 }
                 "new" => {
@@ -1480,7 +1480,7 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
                             Ok(Node::new(
                                 NodeKind::FunctionCall { name: func_name.to_string(), args: vec![] },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             ))
                         }
                         _ => {
@@ -1669,11 +1669,11 @@ impl<'a> Parser<'a> {
                             // calls still end at the last argument.
                             let end = args
                                 .last()
-                                .map(|arg| arg.location.end.max(self.previous_position()))
+                                .map(|arg| arg.location.end().max(self.previous_position()))
                                 .unwrap_or_else(|| self.previous_position());
                             let call = Node::new(
                                 NodeKind::FunctionCall { name: func_name.to_string(), args },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                             let call = self
                                 .parse_lvalue_builtin_assignment_tail(func_name.as_ref(), call)?;
@@ -1705,8 +1705,8 @@ impl<'a> Parser<'a> {
             self.parse_expression()?
         };
 
-        let start = statement.location.start;
-        let end = condition.location.end;
+        let start = statement.location.start();
+        let end = condition.location.end();
 
         Ok(Node::new(
             NodeKind::StatementModifier {
@@ -1714,7 +1714,7 @@ impl<'a> Parser<'a> {
                 modifier,
                 condition: Box::new(condition),
             },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1806,7 +1806,7 @@ impl<'a> Parser<'a> {
             }
             let end = s.previous_position();
 
-            Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
+            Ok(Node::new(NodeKind::Block { statements }, SourceLocation::new(start, end)))
         })
     }
 
@@ -1900,7 +1900,7 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         Ok(Node::new(
             NodeKind::LabeledStatement { label, statement },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1933,7 +1933,7 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         Ok(Node::new(
             NodeKind::LoopControl { op, label },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1960,7 +1960,7 @@ impl<'a> Parser<'a> {
         let end = self.previous_position();
         Ok(Node::new(
             NodeKind::LabeledStatement { label, statement },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -1969,7 +1969,7 @@ impl<'a> Parser<'a> {
             let pos = self.current_position();
             return Ok(Box::new(Node::new(
                 NodeKind::Block { statements: Vec::new() },
-                SourceLocation { start: pos, end: pos },
+                SourceLocation::new(pos, pos),
             )));
         }
 

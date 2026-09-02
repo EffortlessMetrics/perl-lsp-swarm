@@ -19,7 +19,7 @@ $test
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -45,7 +45,7 @@ $val
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];
@@ -66,7 +66,7 @@ $val
         let ast_opt = parse_code(source);
         assert!(ast_opt.is_some());
         let ast = ast_opt.unwrap_or_else(|| {
-            Node::new(NodeKind::UnknownRest, SourceLocation { start: 0, end: 0 })
+            Node::new(NodeKind::UnknownRest, SourceLocation::new(0, 0))
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let stmt = &statements[0];

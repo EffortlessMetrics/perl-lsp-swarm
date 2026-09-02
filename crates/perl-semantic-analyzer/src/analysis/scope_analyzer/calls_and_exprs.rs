@@ -67,8 +67,8 @@ pub(super) fn handle_function_call<'a>(
             issues.push(ScopeIssue {
                 kind: IssueKind::FeatureNotEnabled,
                 variable_name: name.to_string(),
-                line: context.get_line(node.location.start),
-                range: (node.location.start, node.location.end),
+                line: context.get_line(node.location.start()),
+                range: (node.location.start(), node.location.end()),
                 description: format!(
                     "'{name}' requires `use feature '{feature}'` (or a `use vX.Y` bundle that enables it)"
                 ),
@@ -257,8 +257,8 @@ fn check_qualified_call(
     issues.push(ScopeIssue {
         kind: IssueKind::UnresolvedQualifiedCall,
         variable_name: name.to_string(),
-        line: context.get_line(node.location.start),
-        range: (node.location.start, node.location.end),
+        line: context.get_line(node.location.start()),
+        range: (node.location.start(), node.location.end()),
         description: format!(
             "Undefined subroutine '{name}' called under `use strict 'subs'` (package '{pkg}' is declared in this file but no sub '{sub}' is defined)"
         ),

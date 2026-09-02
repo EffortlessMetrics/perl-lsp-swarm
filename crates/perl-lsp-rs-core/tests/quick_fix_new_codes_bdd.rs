@@ -42,10 +42,10 @@ fn actions_for(source: &str, diags: &[Diagnostic]) -> Vec<CodeAction> {
 /// Apply the first matching edit from an action and return the resulting source.
 fn edited(source: &str, action: &CodeAction) -> String {
     let mut edits = action.edit.changes.clone();
-    edits.sort_by_key(|edit| std::cmp::Reverse(edit.location.start));
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.location.start()));
     let mut out = source.to_string();
     for edit in edits {
-        out.replace_range(edit.location.start..edit.location.end, &edit.new_text);
+        out.replace_range(edit.location.start()..edit.location.end(), &edit.new_text);
     }
     out
 }
@@ -120,7 +120,7 @@ fn withdrawn_pl700_cannot_delete_entire_line() -> Result<(), Box<dyn std::error:
             continue;
         }
         for change in &action.edit.changes {
-            let covered = &source[change.location.start..change.location.end];
+            let covered = &source[change.location.start()..change.location.end()];
             let deletes_import = covered.contains("use POSIX;");
             assert!(
                 !(deletes_import && change.new_text.is_empty()),
@@ -443,7 +443,7 @@ fn surviving_new_codes_reach_handlers_while_pl700_stays_withdrawn()
     let has_use_foo_deletion = actions.iter().any(|a| {
         a.kind == CodeActionKind::QuickFix
             && a.edit.changes.iter().any(|change| {
-                (&source[change.location.start..change.location.end]).contains("use Foo;")
+                (&source[change.location.start()..change.location.end()]).contains("use Foo;")
                     && change.new_text.is_empty()
             })
     });

@@ -225,12 +225,12 @@ fn hook_from_expression(
     let [name_node, code_node] = args.as_slice() else {
         return None;
     };
-    let keyword_start = expression.location.start;
+    let keyword_start = expression.location.start();
     Some(Dancer2HookDeclaration {
         package: current_package.clone(),
         file_id,
         declaration_start_byte: span_u32(keyword_start),
-        declaration_end_byte: span_u32(expression.location.end),
+        declaration_end_byte: span_u32(expression.location.end()),
         hook: HookDeclaration {
             declaration_index,
             keyword: name.clone(),
@@ -242,7 +242,7 @@ fn hook_from_expression(
 }
 
 fn name_from_node(node: &Node, file_id: FileId) -> HookNameSelection {
-    let name_anchor = anchor(node.location.start, node.location.end, file_id);
+    let name_anchor = anchor(node.location.start(), node.location.end(), file_id);
     let NodeKind::String { value, interpolated } = &node.kind else {
         return HookNameSelection::Dynamic {
             reason: "computed hook name operand".to_string(),

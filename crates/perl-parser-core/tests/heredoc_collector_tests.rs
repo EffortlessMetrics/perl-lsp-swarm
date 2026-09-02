@@ -15,7 +15,7 @@ fn pending(label: &str, allow_indent: bool, quote: QuoteKind) -> PendingHeredoc 
         label: Arc::from(label),
         allow_indent,
         quote,
-        decl_span: perl_parser_core::heredoc_collector::Span { start: 0, end: 0 },
+        decl_span: perl_parser_core::heredoc_collector::Span::new(0, 0),
         body_start: 0,
     }
 }
@@ -23,7 +23,7 @@ fn pending(label: &str, allow_indent: bool, quote: QuoteKind) -> PendingHeredoc 
 // Helper: extract the bytes for a segment from the source.
 fn segment_text<'a>(src: &'a [u8], content: &HeredocContent, idx: usize) -> &'a [u8] {
     let seg = &content.segments[idx];
-    &src[seg.start..seg.end]
+    &src[seg.start()..seg.end()]
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +307,6 @@ fn test_full_span_covers_segments() {
 
     // We already asserted segments.len() == 3 above, so indexing is safe here.
     // full_span.start == first segment start, full_span.end == last segment end.
-    assert_eq!(content.full_span.start, content.segments[0].start);
-    assert_eq!(content.full_span.end, content.segments[2].end);
+    assert_eq!(content.full_span.start(), content.segments[0].start());
+    assert_eq!(content.full_span.end(), content.segments[2].end());
 }

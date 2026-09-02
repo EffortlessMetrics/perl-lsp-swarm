@@ -7,7 +7,7 @@
 
 use super::incremental_edit::{IncrementalEdit, IncrementalEditSet};
 use perl_parser_core::{
-    ast::{Node, NodeKind},
+    ast::{Node, NodeKind, SourceLocation},
     error::ParseResult,
     parser::Parser,
 };
@@ -362,20 +362,20 @@ impl IncrementalDocument {
     /// Update a single token in the tree
     fn update_token_in_tree(&self, node: &mut Node, source: &str, edit: &IncrementalEdit) -> bool {
         // Check if this node contains the edit
-        if node.location.start <= edit.start_byte && node.location.end >= edit.old_end_byte {
+        if node.location.start() <= edit.start_byte && node.location.end() >= edit.old_end_byte {
             match &mut node.kind {
                 NodeKind::Number { .. } => {
                     // Re-parse just this number
                     let delta = edit.byte_shift();
-                    let new_end = (node.location.end as isize + delta).max(0) as usize;
+                    let new_end = (node.location.end() as isize + delta).max(0) as usize;
 
                     // Safely extract new text with bounds checking
                     if new_end <= source.len()
-                        && source.is_char_boundary(node.location.start)
+                        && source.is_char_boundary(node.location.start())
                         && source.is_char_boundary(new_end)
                     {
-                        node.location.end = new_end;
-                        let new_text = &source[node.location.start..node.location.end];
+                        node.location = SourceLocation::new(node.location.start(), new_end);
+                        let new_text = &source[node.location.start()..node.location.end()];
                         if let Ok(value) = new_text.parse::<f64>() {
                             node.kind = NodeKind::Number { value: value.to_string() };
                             return true;
@@ -385,15 +385,15 @@ impl IncrementalDocument {
                 NodeKind::String { value, .. } | NodeKind::VString { value } => {
                     // Update literal content
                     let delta = edit.byte_shift();
-                    let new_end = (node.location.end as isize + delta).max(0) as usize;
+                    let new_end = (node.location.end() as isize + delta).max(0) as usize;
 
                     // Safely extract new literal value with bounds checking
                     if new_end <= source.len()
-                        && source.is_char_boundary(node.location.start)
+                        && source.is_char_boundary(node.location.start())
                         && source.is_char_boundary(new_end)
                     {
-                        node.location.end = new_end;
-                        let new_text = &source[node.location.start..node.location.end];
+                        node.location = SourceLocation::new(node.location.start(), new_end);
+                        let new_text = &source[node.location.start()..node.location.end()];
                         *value = new_text.to_string();
                         return true;
                     }
@@ -401,15 +401,15 @@ impl IncrementalDocument {
                 NodeKind::Identifier { name } => {
                     // Update identifier
                     let delta = edit.byte_shift();
-                    let new_end = (node.location.end as isize + delta).max(0) as usize;
+                    let new_end = (node.location.end() as isize + delta).max(0) as usize;
 
                     // Safely extract identifier name with bounds checking
                     if new_end <= source.len()
-                        && source.is_char_boundary(node.location.start)
+                        && source.is_char_boundary(node.location.start())
                         && source.is_char_boundary(new_end)
                     {
-                        node.location.end = new_end;
-                        *name = source[node.location.start..node.location.end].to_string();
+                        node.location = SourceLocation::new(node.location.start(), new_end);
+                        *name = source[node.location.start()..node.location.end()].to_string();
                         return true;
                     }
                 }
@@ -528,8 +528,8 @@ impl IncrementalDocument {
 
     /// Replace matching nodes in `target` with a reusable subtree
     fn insert_reusable(&self, target: &mut Node, reusable: &Arc<Node>) -> bool {
-        if target.location.start == reusable.location.start
-            && target.location.end == reusable.location.end
+        if target.location.start() == reusable.location.start()
+            && target.location.end() == reusable.location.end()
             && std::mem::discriminant(&target.kind) == std::mem::discriminant(&reusable.kind)
         {
             *target = (**reusable).clone();
@@ -640,13 +640,12 @@ impl IncrementalDocument {
         let mut adjusted = node.clone();
 
         // Checked conversion to prevent underflow when delta is negative
-        let new_start = adjusted.location.start as isize + delta;
-        let new_end = adjusted.location.end as isize + delta;
+        let new_start = adjusted.location.start() as isize + delta;
+        let new_end = adjusted.location.end() as isize + delta;
         if new_start < 0 || new_end < 0 {
             return None;
         }
-        adjusted.location.start = new_start as usize;
-        adjusted.location.end = new_end as usize;
+        adjusted.location = SourceLocation::new(new_start as usize, new_end as usize);
 
         // Recursively adjust children
         match &mut adjusted.kind {
@@ -714,7 +713,7 @@ impl IncrementalDocument {
     }
 
     fn find_in_node<'a>(&self, node: &'a Node, pos: usize) -> Option<&'a Node> {
-        if node.location.start <= pos && node.location.end > pos {
+        if node.location.start() <= pos && node.location.end() > pos {
             // Check children for more specific match
             match &node.kind {
                 NodeKind::Program { statements } | NodeKind::Block { statements } => {
@@ -813,7 +812,7 @@ impl IncrementalDocument {
 
     fn cache_node(&mut self, node: &Node) {
         // Cache this subtree by range
-        let range = (node.location.start, node.location.end);
+        let range = (node.location.start(), node.location.end());
         self.subtree_cache.by_range.insert(range, Arc::new(node.clone()));
 
         // Cache by content hash for common patterns
@@ -1298,7 +1297,7 @@ mod tests {
     }
 
     fn loc(start: usize, end: usize) -> perl_parser_core::ast::SourceLocation {
-        perl_parser_core::ast::SourceLocation { start, end }
+        perl_parser_core::ast::SourceLocation::new(start, end)
     }
 
     fn number(start: usize, value: &str) -> Node {
@@ -1331,9 +1330,12 @@ mod tests {
         doc.root = Arc::new(if_tree());
 
         assert_eq!(doc.count_nodes(&doc.root), 9);
-        assert_eq!(doc.find_node_at_position(6).map(|node| node.location.start), Some(6));
+        assert_eq!(doc.find_node_at_position(6).map(|node| node.location.start()), Some(6));
 
-        assert_eq!(doc.adjust_node_position(&doc.root, 2).map(|node| node.location.start), Some(2));
+        assert_eq!(
+            doc.adjust_node_position(&doc.root, 2).map(|node| node.location.start()),
+            Some(2)
+        );
 
         let reusable = Arc::new(number(25, "9"));
         let mut target = if_tree();

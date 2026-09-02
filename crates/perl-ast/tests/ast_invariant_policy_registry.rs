@@ -339,7 +339,7 @@ fn misclassifying_an_observed_child_is_a_load_bearing_failure()
 fn typed_lookup_derives_the_canonical_token_from_the_enum() {
     use perl_ast::{Node, SourceLocation, ast_node_policy_of};
 
-    let loc = SourceLocation { start: 0, end: 1 };
+    let loc = SourceLocation::new(0, 1);
     let number = Node::new(NodeKind::Number { value: "1".to_string() }, loc);
     let typed = ast_node_policy_of(&number.kind);
     let named = ast_node_policy("Number");

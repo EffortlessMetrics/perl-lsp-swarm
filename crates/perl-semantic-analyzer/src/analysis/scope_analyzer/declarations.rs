@@ -86,7 +86,7 @@ pub(super) fn handle_variable_declaration<'a>(
         scope,
         sigil,
         var_name_part,
-        variable.location.start,
+        variable.location.start(),
         is_our,
         is_initialized,
         context,
@@ -128,7 +128,7 @@ pub(super) fn handle_variable_declaration<'a>(
             };
 
             if emit_error {
-                let line = context.get_line(variable.location.start);
+                let line = context.get_line(variable.location.start());
                 let full_name = extracted.as_string();
                 let description =
                     format!("Variable '{}' is already declared in this scope", full_name);
@@ -136,13 +136,13 @@ pub(super) fn handle_variable_declaration<'a>(
                     kind: IssueKind::VariableRedeclaration,
                     variable_name: full_name,
                     line,
-                    range: (variable.location.start, variable.location.end),
+                    range: (variable.location.start(), variable.location.end()),
                     description,
                 });
             }
         }
         Some(issue_kind) => {
-            let line = context.get_line(variable.location.start);
+            let line = context.get_line(variable.location.start());
             // Optimization: Only allocate full name string when we actually have an issue to report
             let full_name = extracted.as_string();
             // Build description first (borrows full_name), then move full_name into struct
@@ -159,7 +159,7 @@ pub(super) fn handle_variable_declaration<'a>(
                 kind: issue_kind,
                 variable_name: full_name,
                 line,
-                range: (variable.location.start, variable.location.end),
+                range: (variable.location.start(), variable.location.end()),
                 description,
             });
         }
@@ -210,7 +210,7 @@ pub(super) fn handle_variable_list_declaration<'a>(
             scope,
             sigil,
             var_name_part,
-            variable.location.start,
+            variable.location.start(),
             is_our,
             is_initialized,
             context,
@@ -239,7 +239,7 @@ pub(super) fn handle_variable_list_declaration<'a>(
                 };
 
                 if emit_error {
-                    let line = context.get_line(variable.location.start);
+                    let line = context.get_line(variable.location.start());
                     let full_name = extracted.as_string();
                     let description =
                         format!("Variable '{}' is already declared in this scope", full_name);
@@ -247,13 +247,13 @@ pub(super) fn handle_variable_list_declaration<'a>(
                         kind: IssueKind::VariableRedeclaration,
                         variable_name: full_name,
                         line,
-                        range: (variable.location.start, variable.location.end),
+                        range: (variable.location.start(), variable.location.end()),
                         description,
                     });
                 }
             }
             Some(issue_kind) => {
-                let line = context.get_line(variable.location.start);
+                let line = context.get_line(variable.location.start());
                 // Optimization: Only allocate full name string when we actually have an issue to report
                 let full_name = extracted.as_string();
                 // Build description first (borrows full_name), then move full_name into struct
@@ -270,7 +270,7 @@ pub(super) fn handle_variable_list_declaration<'a>(
                     kind: issue_kind,
                     variable_name: full_name,
                     line,
-                    range: (variable.location.start, variable.location.end),
+                    range: (variable.location.start(), variable.location.end()),
                     description,
                 });
             }
@@ -313,7 +313,7 @@ pub(super) fn handle_use(
                                 scope,
                                 sigil,
                                 name,
-                                node.location.start,
+                                node.location.start(),
                                 true,
                                 true,
                                 context,
@@ -331,7 +331,7 @@ pub(super) fn handle_use(
                             scope,
                             sigil,
                             name,
-                            node.location.start,
+                            node.location.start(),
                             true,
                             true,
                             context,

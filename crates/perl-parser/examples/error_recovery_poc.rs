@@ -69,7 +69,7 @@ impl<'a> RecoveryParser<'a> {
         } else {
             Some(Node::new(
                 NodeKind::Program { statements },
-                SourceLocation { start: 0, end: self.source.len() },
+                SourceLocation::new(0, self.source.len()),
             ))
         }
     }
@@ -106,7 +106,7 @@ impl<'a> RecoveryParser<'a> {
         // Create an error node
         Some(Node::new(
             NodeKind::String { value: format!("ERROR: {}", line), interpolated: false },
-            SourceLocation { start: 0, end: line.len() },
+            SourceLocation::new(0, line.len()),
         ))
     }
 

@@ -143,19 +143,19 @@ impl WhitespaceEditMap {
         // trivia moves its first statement, not the Program anchor.
         // `leading_trivia_insertion_matches_a_fresh_parse` (incremental_v2)
         // pins start, end, and full-tree equality against `Parser::parse`.
-        cloned.location.start = root.location.start;
+        cloned.location = SourceLocation::new(root.location.start(), cloned.location.end());
         Some(cloned)
     }
 
     fn map_location(&self, location: SourceLocation) -> SourceLocation {
-        if location.start == location.end {
-            let anchor = self.map_position(location.start, BoundaryBias::Right);
-            return SourceLocation { start: anchor, end: anchor };
+        if location.start() == location.end() {
+            let anchor = self.map_position(location.start(), BoundaryBias::Right);
+            return SourceLocation::new(anchor, anchor);
         }
 
-        let start = self.map_position(location.start, BoundaryBias::Right);
-        let end = self.map_position(location.end, BoundaryBias::Left).max(start);
-        SourceLocation { start, end }
+        let start = self.map_position(location.start(), BoundaryBias::Right);
+        let end = self.map_position(location.end(), BoundaryBias::Left).max(start);
+        SourceLocation::new(start, end)
     }
 
     fn map_position(&self, position: usize, bias: BoundaryBias) -> usize {
@@ -334,7 +334,7 @@ mod tests {
     }
 
     fn loc(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn leaf(name: &str, start: usize, end: usize) -> Node {

@@ -131,8 +131,8 @@ fn body_idx_for_occurrence(
     for body in &receipt.bodies {
         for fact in &body.facts {
             if let Some(range) = fact.source_anchor.range.as_ref()
-                && range.start == expected_start
-                && range.end == expected_end
+                && range.start() == expected_start
+                && range.end() == expected_end
             {
                 return Ok(fact.body_idx);
             }

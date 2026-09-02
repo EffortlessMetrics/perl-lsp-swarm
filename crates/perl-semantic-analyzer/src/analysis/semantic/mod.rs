@@ -222,8 +222,10 @@ impl SemanticAnalyzer {
         // Search through all symbols for the most specific one at this location
         for symbols in self.symbol_table.symbols.values() {
             for symbol in symbols {
-                if symbol.location.start <= location.start && symbol.location.end >= location.end {
-                    let span = symbol.location.end - symbol.location.start;
+                if symbol.location.start() <= location.start()
+                    && symbol.location.end() >= location.end()
+                {
+                    let span = symbol.location.end() - symbol.location.start();
                     if span < best_span {
                         best = Some(symbol);
                         best_span = span;
@@ -239,7 +241,7 @@ impl SemanticAnalyzer {
         // First, find if there's a reference at this position
         for refs in self.symbol_table.references.values() {
             for reference in refs {
-                if reference.location.start <= position && reference.location.end >= position {
+                if reference.location.start() <= position && reference.location.end() >= position {
                     let symbols = self.resolve_reference_to_symbols(reference);
                     if let Some(first_symbol) = symbols.first() {
                         return Some(self.resolve_definition_target(first_symbol));
@@ -249,7 +251,7 @@ impl SemanticAnalyzer {
         }
 
         // If no reference found, check if we're on a definition itself
-        self.symbol_at(SourceLocation { start: position, end: position })
+        self.symbol_at(SourceLocation::new(position, position))
             .map(|symbol| self.resolve_definition_target(symbol))
     }
 
@@ -1312,12 +1314,12 @@ my $y = $x;
         let inner_ref_pos = code.find("return $x").ok_or("return $x not found")? + "return ".len();
         let inner_def = analyzer.find_definition(inner_ref_pos).ok_or("inner def not found")?;
         let expected_inner = code.find("my $x = 1").ok_or("my $x = 1 not found")? + 3;
-        assert_eq!(inner_def.location.start, expected_inner);
+        assert_eq!(inner_def.location.start(), expected_inner);
 
         let outer_ref_pos = code.rfind("$x;").ok_or("$x; not found")?;
         let outer_def = analyzer.find_definition(outer_ref_pos).ok_or("outer def not found")?;
         let expected_outer = code.find("my $x = 0").ok_or("my $x = 0 not found")? + 3;
-        assert_eq!(outer_def.location.start, expected_outer);
+        assert_eq!(outer_def.location.start(), expected_outer);
         Ok(())
     }
 
@@ -1568,9 +1570,9 @@ my $documented = 42;
 
         // 2. Declaration must come before reference
         assert!(
-            symbol.location.start < ref_pos,
+            symbol.location.start() < ref_pos,
             "Declaration {:?} should precede reference at byte {}",
-            symbol.location.start,
+            symbol.location.start(),
             ref_pos
         );
         Ok(())
@@ -1605,9 +1607,9 @@ my $documented = 42;
             assert_eq!(symbol.name, "x");
             assert_eq!(symbol.kind, SymbolKind::scalar());
             assert!(
-                symbol.location.start < byte_offset,
+                symbol.location.start() < byte_offset,
                 "Declaration {:?} should precede reference at byte {}",
-                symbol.location.start,
+                symbol.location.start(),
                 byte_offset
             );
         }
@@ -1630,9 +1632,9 @@ my $documented = 42;
         assert_eq!(symbol.name, "START");
         assert_eq!(symbol.kind, SymbolKind::Label);
         assert!(
-            symbol.location.start < ref_pos,
+            symbol.location.start() < ref_pos,
             "Label definition {:?} should precede goto reference at byte {}",
-            symbol.location.start,
+            symbol.location.start(),
             ref_pos
         );
         Ok(())
@@ -1665,7 +1667,7 @@ my $closure = sub {
         let hover_exists = analyzer
             .hover_info
             .iter()
-            .any(|(loc, _)| loc.start <= sub_position && loc.end >= sub_position);
+            .any(|(loc, _)| loc.start() <= sub_position && loc.end() >= sub_position);
 
         assert!(hover_exists, "Should have hover info for anonymous subroutine");
         Ok(())
@@ -1779,7 +1781,7 @@ my $adder = sub {
         let hover = analyzer
             .hover_info
             .iter()
-            .find(|(loc, _)| loc.start <= sub_position && loc.end >= sub_position)
+            .find(|(loc, _)| loc.start() <= sub_position && loc.end() >= sub_position)
             .map(|(_, h)| h);
 
         assert!(hover.is_some(), "Should have hover info");
@@ -2049,8 +2051,10 @@ push @items, 5;
 
         // Find the hover info for 'push' function call
         let push_pos = code.find("push").ok_or("push not found")?;
-        let hover_for_push =
-            analyzer.hover_info.iter().find(|(loc, _)| loc.start <= push_pos && loc.end > push_pos);
+        let hover_for_push = analyzer
+            .hover_info
+            .iter()
+            .find(|(loc, _)| loc.start() <= push_pos && loc.end() > push_pos);
 
         assert!(hover_for_push.is_some(), "Should have hover info for 'push' builtin");
         let (_, hover) = hover_for_push.unwrap();
@@ -2078,7 +2082,7 @@ CORE::length($value);
         let hover = analyzer
             .hover_info
             .iter()
-            .find(|(loc, _)| loc.start <= length_pos && loc.end > length_pos);
+            .find(|(loc, _)| loc.start() <= length_pos && loc.end() > length_pos);
 
         assert!(hover.is_some(), "Should have hover info for CORE::length builtin");
         let (_, hover) = hover.ok_or("missing hover for CORE::length")?;
@@ -2104,7 +2108,7 @@ utf8::encode($value);
         let hover = analyzer
             .hover_info
             .iter()
-            .find(|(loc, _)| loc.start <= encode_pos && loc.end > encode_pos);
+            .find(|(loc, _)| loc.start() <= encode_pos && loc.end() > encode_pos);
 
         assert!(hover.is_some(), "Should have hover info for utf8::encode builtin");
         let (_, hover) = hover.ok_or("missing hover for utf8::encode")?;
@@ -2263,7 +2267,7 @@ my %config = (key => "value");
         let scalar_hover = analyzer
             .hover_info
             .iter()
-            .find(|(loc, _)| loc.start <= scalar_pos && loc.end > scalar_pos);
+            .find(|(loc, _)| loc.start() <= scalar_pos && loc.end() > scalar_pos);
         assert!(scalar_hover.is_some(), "Should have hover for $count");
         let (_, hover) = scalar_hover.unwrap();
         assert!(
@@ -2277,7 +2281,7 @@ my %config = (key => "value");
         let array_hover = analyzer
             .hover_info
             .iter()
-            .find(|(loc, _)| loc.start <= array_pos && loc.end > array_pos);
+            .find(|(loc, _)| loc.start() <= array_pos && loc.end() > array_pos);
         assert!(array_hover.is_some(), "Should have hover for @items");
         let (_, hover) = array_hover.unwrap();
         assert!(
@@ -2288,8 +2292,10 @@ my %config = (key => "value");
 
         // Check hash variable hover
         let hash_pos = code.find("%config").ok_or("%config not found")?;
-        let hash_hover =
-            analyzer.hover_info.iter().find(|(loc, _)| loc.start <= hash_pos && loc.end > hash_pos);
+        let hash_hover = analyzer
+            .hover_info
+            .iter()
+            .find(|(loc, _)| loc.start() <= hash_pos && loc.end() > hash_pos);
         assert!(hash_hover.is_some(), "Should have hover for %config");
         let (_, hover) = hash_hover.unwrap();
         assert!(
@@ -2438,7 +2444,8 @@ my %config = (key => "value");
             assert_eq!(sym.name, "save", "modifier target should resolve to save");
             let method_start = code.find("sub save").ok_or("method declaration not found")?;
             assert_eq!(
-                sym.location.start, method_start,
+                sym.location.start(),
+                method_start,
                 "modifier target should resolve to the underlying method declaration"
             );
             assert_eq!(

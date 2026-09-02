@@ -17,11 +17,11 @@ use perl_ast::{
 };
 
 fn loc() -> SourceLocation {
-    SourceLocation { start: 0, end: 1 }
+    SourceLocation::new(0, 1)
 }
 
 fn loc_at(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn num(value: &str) -> Node {

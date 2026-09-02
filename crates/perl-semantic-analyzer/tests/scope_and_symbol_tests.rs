@@ -59,7 +59,7 @@ fn has_symbol_with_declaration(
             symbol.kind == kind
                 && symbol.declaration.as_deref() == Some(declaration)
                 && source
-                    .get(symbol.location.start..symbol.location.end)
+                    .get(symbol.location.start()..symbol.location.end())
                     .is_some_and(|text| text == expected_text)
         })
     })
@@ -488,13 +488,13 @@ try {
     let refs = table.references.get("err").ok_or("expected catch variable reference")?;
     let usage = refs
         .iter()
-        .find(|reference| &code[reference.location.start..reference.location.end] == "$err")
+        .find(|reference| &code[reference.location.start()..reference.location.end()] == "$err")
         .ok_or("expected usage reference for $err inside catch block")?;
     let defs = table.find_symbol("err", usage.scope_id, SymbolKind::scalar());
     let def = defs.first().ok_or("expected catch variable definition in symbol table")?;
 
     assert_eq!(def.declaration.as_deref(), Some("my"));
-    assert_eq!(&code[def.location.start..def.location.end], "$err");
+    assert_eq!(&code[def.location.start()..def.location.end()], "$err");
     Ok(())
 }
 
@@ -3887,9 +3887,9 @@ fn phase_block_symbol_location_within_source() -> Result<(), Box<dyn std::error:
     let table = parse_and_extract(code);
     let syms = table.symbols.get("BEGIN").ok_or("BEGIN not found")?;
     let sym = syms.first().ok_or("no symbols for BEGIN")?;
-    assert!(sym.location.start <= code.len(), "start offset must be within source");
-    assert!(sym.location.end <= code.len(), "end offset must be within source");
-    assert!(sym.location.start < sym.location.end, "start must be before end");
+    assert!(sym.location.start() <= code.len(), "start offset must be within source");
+    assert!(sym.location.end() <= code.len(), "end offset must be within source");
+    assert!(sym.location.start() < sym.location.end(), "start must be before end");
     Ok(())
 }
 

@@ -222,11 +222,11 @@ fn parser_ac8_preserve_source_location() -> ParseResult<()> {
     if let NodeKind::Program { statements } = &ast.kind {
         // Check that error node has valid location
         let error_loc = statements[0].location;
-        assert!(error_loc.start <= error_loc.end, "Error node should have valid location");
+        assert!(error_loc.start() <= error_loc.end(), "Error node should have valid location");
 
         // Check that recovered statement has correct location
         let valid_loc = statements[1].location;
-        assert!(valid_loc.start >= error_loc.end, "Recovered statement should be after error");
+        assert!(valid_loc.start() >= error_loc.end(), "Recovered statement should be after error");
     }
     Ok(())
 }

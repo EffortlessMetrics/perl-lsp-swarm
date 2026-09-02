@@ -312,7 +312,7 @@ fn function_call_args_are_both_repeated_children_and_grammar_inputs()
 
 #[test]
 fn vacuous_grammar_witness_fails() {
-    let loc = SourceLocation { start: 0, end: 0 };
+    let loc = SourceLocation::new(0, 0);
     let witnesses = [GrammarInputWitness {
         kind_name: "String",
         input: "interpolated",

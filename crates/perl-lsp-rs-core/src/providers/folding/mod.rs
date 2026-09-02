@@ -376,8 +376,8 @@ impl FoldingRangeExtractor {
     /// Add a folding range from a node
     fn add_range_from_node(&mut self, node: &Node, kind: Option<FoldingRangeKind>) {
         // Use actual offsets from location
-        let start_offset = node.location.start;
-        let end_offset = node.location.end;
+        let start_offset = node.location.start();
+        let end_offset = node.location.end();
 
         // Only add if it's not trivial
         if end_offset > start_offset.saturating_add(1) {
@@ -392,8 +392,8 @@ impl FoldingRangeExtractor {
         end: &SourceLocation,
         kind: Option<FoldingRangeKind>,
     ) {
-        let start_offset = start.start;
-        let end_offset = end.end;
+        let start_offset = start.start();
+        let end_offset = end.end();
 
         if end_offset > start_offset.saturating_add(1) {
             self.ranges.push(FoldingRange { start_offset, end_offset, kind });
@@ -406,7 +406,7 @@ mod tests {
     use super::*;
 
     fn loc(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn empty_block(start: usize, end: usize) -> Node {
@@ -441,7 +441,7 @@ mod tests {
     }
 
     fn import_ranges(statements: Vec<Node>) -> Vec<FoldingRange> {
-        let end = statements.last().map(|node| node.location.end).unwrap_or(0);
+        let end = statements.last().map(|node| node.location.end()).unwrap_or(0);
         let root = Node::new(NodeKind::Program { statements }, loc(0, end));
         let mut extractor = FoldingRangeExtractor::new();
         extractor.extract(&root)

@@ -408,9 +408,9 @@ fn adjust_position_handles_negative_delta_safely() -> Result<(), Box<dyn std::er
             // All node positions should be within source bounds
             for stmt in statements {
                 assert!(
-                    stmt.location.end <= doc.text().len(),
+                    stmt.location.end() <= doc.text().len(),
                     "node end {} exceeds source length {}",
-                    stmt.location.end,
+                    stmt.location.end(),
                     doc.text().len()
                 );
             }

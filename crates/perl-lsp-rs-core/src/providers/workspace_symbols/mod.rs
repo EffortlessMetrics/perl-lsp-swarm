@@ -448,7 +448,7 @@ impl WorkspaceSymbolsProvider {
     ) -> WorkspaceSymbol {
         // Use canonical UTF-16 conversion from perl-position-tracking
         let range =
-            WireRange::from_byte_offsets(source, symbol.location.start, symbol.location.end);
+            WireRange::from_byte_offsets(source, symbol.location.start(), symbol.location.end());
 
         WorkspaceSymbol {
             name: symbol.name.clone(),

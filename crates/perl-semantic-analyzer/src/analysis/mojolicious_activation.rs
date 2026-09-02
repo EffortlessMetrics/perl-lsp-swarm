@@ -213,11 +213,11 @@ fn walk_activation_sites(
 ) {
     match &node.kind {
         NodeKind::Use { module, args, .. } if is_exact_mojolicious_lite_import(module) => {
-            let span_start = node.location.start.min(u32::MAX as usize) as u32;
-            let span_end = node.location.end.min(u32::MAX as usize) as u32;
+            let span_start = node.location.start().min(u32::MAX as usize) as u32;
+            let span_end = node.location.end().min(u32::MAX as usize) as u32;
             sites.push(MojoliciousLiteActivationSite {
                 file_id,
-                anchor_id: AnchorId(node.location.start as u64),
+                anchor_id: AnchorId(node.location.start() as u64),
                 anchor: MojoliciousSiteAnchor::new(
                     current_package.clone(),
                     span_start,

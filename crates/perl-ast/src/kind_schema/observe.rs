@@ -32,7 +32,7 @@ pub struct TraversalObservation {
 fn stamp_direct_child_visit_ids(node: &mut Node) {
     let mut next = 1_usize;
     let _ = node.try_for_each_child_mut_with_field(|_, child| {
-        child.location = SourceLocation { start: next, end: next };
+        child.location = SourceLocation::new(next, next);
         next = next.saturating_add(1);
         ControlFlow::<()>::Continue(())
     });
@@ -58,7 +58,7 @@ pub fn observe_kind_traversal(node: &Node) -> TraversalObservation {
             }
             *count = count.saturating_add(1);
         }
-        immutable_visit_ids.push(child.location.start);
+        immutable_visit_ids.push(child.location.start());
         ControlFlow::<()>::Continue(())
     });
 
@@ -68,7 +68,7 @@ pub fn observe_kind_traversal(node: &Node) -> TraversalObservation {
         if let Some(field) = field {
             mutable_field_sequence.push(FieldId::name(field));
         }
-        mutable_visit_ids.push(child.location.start);
+        mutable_visit_ids.push(child.location.start());
         ControlFlow::<()>::Continue(())
     });
 

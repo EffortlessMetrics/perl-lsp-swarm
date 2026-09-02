@@ -79,8 +79,8 @@ fn contains_key_value_slice(
             &target.kind,
             NodeKind::Variable { sigil, name } if sigil == "%" && name == "config"
         )
-        && target.location.start == node.location.start
-        && node.location.start.checked_add("%config".len()) == Some(target.location.end)
+        && target.location.start() == node.location.start()
+        && node.location.start().checked_add("%config".len()) == Some(target.location.end())
         && node_source(node, source) == Some(expected_span)
         && node_source(keys, source) == Some(expected_keys_span)
         && key_list_matches(keys, expected_keys)
@@ -127,7 +127,7 @@ fn any_child(node: &Node, mut predicate: impl FnMut(&Node) -> bool) -> bool {
 }
 
 fn node_source<'a>(node: &Node, source: &'a str) -> Option<&'a str> {
-    source.get(node.location.start..node.location.end)
+    source.get(node.location.start()..node.location.end())
 }
 
 fn workspace_root() -> PathBuf {

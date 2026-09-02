@@ -311,11 +311,11 @@ fn entity_id_from_node(node: &Node) -> EntityId {
     const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
     let mut hash = FNV_OFFSET;
-    for byte in (node.location.start as u64).to_le_bytes() {
+    for byte in (node.location.start() as u64).to_le_bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
-    for byte in (node.location.end as u64).to_le_bytes() {
+    for byte in (node.location.end() as u64).to_le_bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }

@@ -324,7 +324,7 @@ fn find_keyword_usage(
             return;
         }
     }
-    let covers = node.location.start <= offset && offset < node.location.end;
+    let covers = node.location.start() <= offset && offset < node.location.end();
     if covers {
         let name = match &node.kind {
             perl_parser_core::NodeKind::Identifier { name }

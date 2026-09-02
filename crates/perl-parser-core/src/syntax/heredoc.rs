@@ -155,18 +155,18 @@ fn collect_one(src: &[u8], mut off: usize, hd: &PendingHeredoc) -> (HeredocConte
         .iter()
         .map(|ln| {
             if baseline_indent.is_empty() {
-                ByteSpan { start: ln.start, end: ln.end_no_eol }
+                ByteSpan::new(ln.start, ln.end_no_eol)
             } else {
                 let bytes = &src[ln.start..ln.end_no_eol];
                 let strip = common_prefix_len(bytes, &baseline_indent);
-                ByteSpan { start: ln.start + strip, end: ln.end_no_eol }
+                ByteSpan::new(ln.start + strip, ln.end_no_eol)
             }
         })
         .collect();
 
     let full_span = match (segments.first(), segments.last()) {
-        (Some(f), Some(l)) => ByteSpan { start: f.start, end: l.end },
-        _ => ByteSpan { start: off, end: off }, // empty heredoc
+        (Some(f), Some(l)) => ByteSpan::new(f.start(), l.end()),
+        _ => ByteSpan::new(off, off), // empty heredoc
     };
 
     if !found {
@@ -239,13 +239,13 @@ mod tests {
             label: Arc::from(label),
             allow_indent,
             quote: QuoteKind::Unquoted,
-            decl_span: ByteSpan { start: 0, end: 0 },
+            decl_span: ByteSpan::new(0, 0),
             body_start,
         }
     }
 
     fn slice(src: &[u8], span: ByteSpan) -> Result<&str, Box<dyn std::error::Error>> {
-        Ok(std::str::from_utf8(&src[span.start..span.end])?)
+        Ok(std::str::from_utf8(&src[span.start()..span.end()])?)
     }
 
     #[test]
@@ -332,7 +332,7 @@ mod tests {
         assert!(content.terminated);
         assert_eq!(slice(src, content.segments[0])?, "  first");
         assert_eq!(slice(src, content.segments[1])?, "second");
-        assert_eq!(content.full_span, ByteSpan { start: 2, end: 18 });
+        assert_eq!(content.full_span, ByteSpan::new(2, 18));
         assert_eq!(result.next_offset, 25);
 
         Ok(())
@@ -349,7 +349,7 @@ mod tests {
 
         assert_eq!(result.terminators_found, vec![true]);
         assert_eq!(slice(src, content.segments[0])?, "alpha");
-        assert_eq!(content.full_span, ByteSpan { start: 0, end: 5 });
+        assert_eq!(content.full_span, ByteSpan::new(0, 5));
         assert_eq!(result.next_offset, 12);
 
         Ok(())
@@ -432,7 +432,7 @@ mod tests {
         assert_eq!(result.terminators_found, vec![false]);
         assert!(!content.terminated);
         assert!(content.segments.is_empty());
-        assert_eq!(content.full_span, ByteSpan { start: 0, end: 0 });
+        assert_eq!(content.full_span, ByteSpan::new(0, 0));
         assert_eq!(result.next_offset, 0);
     }
 
@@ -445,7 +445,7 @@ mod tests {
         let result = collect_all(src, 0, pending_docs);
 
         assert_eq!(slice(src, result.contents[0].segments[0])?, "  content");
-        assert_eq!(result.contents[0].full_span, ByteSpan { start: 0, end: 9 });
+        assert_eq!(result.contents[0].full_span, ByteSpan::new(0, 9));
 
         Ok(())
     }

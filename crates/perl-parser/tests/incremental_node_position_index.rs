@@ -141,12 +141,9 @@ fn finds_argument_inside_method_call() -> TestResult {
 
 #[test]
 fn identical_ranges_select_deepest_node_deterministically() {
-    let inner =
-        Node::new(NodeKind::Number { value: "7".to_string() }, SourceLocation { start: 0, end: 3 });
-    let mid =
-        Node::new(NodeKind::Block { statements: vec![inner] }, SourceLocation { start: 0, end: 3 });
-    let root =
-        Node::new(NodeKind::Block { statements: vec![mid] }, SourceLocation { start: 0, end: 3 });
+    let inner = Node::new(NodeKind::Number { value: "7".to_string() }, SourceLocation::new(0, 3));
+    let mid = Node::new(NodeKind::Block { statements: vec![inner] }, SourceLocation::new(0, 3));
+    let root = Node::new(NodeKind::Block { statements: vec![mid] }, SourceLocation::new(0, 3));
     let tree = IncrementalTree::new(root, "abc".to_string());
 
     let first = kind_name_at(&tree, 0, 3);
@@ -204,7 +201,7 @@ fn unicode_before_probe_preserves_byte_geometry() -> TestResult {
     assert_eq!(kind_name_at(&tree, start, end), Some("String"));
     let node = tree.find_containing_node(start, end).ok_or("containing node must exist")?;
     assert_eq!(
-        &source[node.location.start..node.location.end],
+        &source[node.location.start()..node.location.end()],
         "\"ok\"",
         "the returned node span must be exact byte geometry after multibyte text"
     );
@@ -268,12 +265,12 @@ fn deep_chain_construction_and_lookup_stay_stack_safe() {
 
     let mut current = Node::new(
         NodeKind::Number { value: "1".to_string() },
-        SourceLocation { start: DEPTH, end: DEPTH + 1 },
+        SourceLocation::new(DEPTH, DEPTH + 1),
     );
     for depth in (0..DEPTH).rev() {
         current = Node::new(
             NodeKind::Unary { op: "!".to_string(), operand: Box::new(current) },
-            SourceLocation { start: depth, end: DEPTH + 1 },
+            SourceLocation::new(depth, DEPTH + 1),
         );
     }
 
@@ -285,5 +282,5 @@ fn deep_chain_construction_and_lookup_stay_stack_safe() {
     assert_eq!(found.map(|n| n.kind.kind_name()), Some("Number"));
     let mid = tree.find_containing_node(1, 2);
     assert_eq!(mid.map(|n| n.kind.kind_name()), Some("Unary"));
-    assert_eq!(mid.map(|n| n.location.start), Some(1));
+    assert_eq!(mid.map(|n| n.location.start()), Some(1));
 }

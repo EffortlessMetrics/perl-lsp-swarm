@@ -37,8 +37,8 @@ proptest! {
         prop_assert!(union.contains_span(b));
         prop_assert!(union.len() >= a.len());
         prop_assert!(union.len() >= b.len());
-        prop_assert_eq!(union.start, a.start.min(b.start));
-        prop_assert_eq!(union.end, a.end.max(b.end));
+        prop_assert_eq!(union.start(), a.start().min(b.start()));
+        prop_assert_eq!(union.end(), a.end().max(b.end()));
     }
 
     #[test]

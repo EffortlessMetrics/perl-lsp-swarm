@@ -113,21 +113,21 @@ fn fuzz_semantic_pipeline_preserves_location_invariants() -> Result<(), Box<dyn 
 
         for symbols in symbol_table.symbols.values() {
             for symbol in symbols {
-                assert!(symbol.location.start <= symbol.location.end);
-                assert!(symbol.location.end <= len);
+                assert!(symbol.location.start() <= symbol.location.end());
+                assert!(symbol.location.end() <= len);
             }
         }
 
         for references in symbol_table.references.values() {
             for reference in references {
-                assert!(reference.location.start <= reference.location.end);
-                assert!(reference.location.end <= len);
+                assert!(reference.location.start() <= reference.location.end());
+                assert!(reference.location.end() <= len);
             }
         }
 
         for token in semantic.semantic_tokens() {
-            assert!(token.location.start <= token.location.end);
-            assert!(token.location.end <= len);
+            assert!(token.location.start() <= token.location.end());
+            assert!(token.location.end() <= len);
         }
 
         for issue in scope_issues {

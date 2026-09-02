@@ -50,10 +50,10 @@ fn actions_for(source: &str, diags: &[Diagnostic]) -> Vec<CodeAction> {
 fn apply_all(source: &str, actions: &[CodeAction]) -> String {
     let mut edits =
         actions.iter().flat_map(|action| action.edit.changes.clone()).collect::<Vec<_>>();
-    edits.sort_by_key(|edit| std::cmp::Reverse(edit.location.start));
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.location.start()));
     let mut out = source.to_string();
     for edit in edits {
-        out.replace_range(edit.location.start..edit.location.end, &edit.new_text);
+        out.replace_range(edit.location.start()..edit.location.end(), &edit.new_text);
     }
     out
 }
@@ -163,7 +163,7 @@ fn pl700_withdrawal_is_omission_not_enabled_noop_or_disabled_stub() -> Result<()
 
     for action in &actions {
         let touches_import = action.edit.changes.iter().any(|edit| {
-            let covered = &source[edit.location.start..edit.location.end];
+            let covered = &source[edit.location.start()..edit.location.end()];
             covered.contains("use M;")
         });
         if touches_import && action.edit.changes.iter().all(|edit| edit.new_text.is_empty()) {

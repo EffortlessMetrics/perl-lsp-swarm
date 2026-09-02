@@ -1351,14 +1351,14 @@ fn collect_node_line_tags(
     by_line: &mut BTreeMap<u64, BTreeSet<LineTag>>,
 ) {
     if let Some(tag) = line_tag_for_node(node) {
-        let line = line_for_offset(line_starts, node.location.start);
+        let line = line_for_offset(line_starts, node.location.start());
         by_line.entry(line).or_default().insert(tag);
     }
     if let NodeKind::FunctionCall { name, args } = &node.kind
         && name == "require"
         && args.first().is_some_and(|arg| matches!(arg.kind, NodeKind::Variable { .. }))
     {
-        let line = line_for_offset(line_starts, node.location.start);
+        let line = line_for_offset(line_starts, node.location.start());
         by_line.entry(line).or_default().insert(LineTag::DynamicBoundary);
     }
     node.for_each_child(|child| collect_node_line_tags(child, line_starts, by_line));
@@ -1662,7 +1662,7 @@ fn parse_error_location(error: &ParseError) -> Option<usize> {
 
 fn collect_error_node_lines(node: &Node, line_starts: &[usize], lines: &mut BTreeSet<u64>) {
     if matches!(node.kind, NodeKind::Error { .. }) {
-        lines.insert(line_for_offset(line_starts, node.location.start));
+        lines.insert(line_for_offset(line_starts, node.location.start()));
     }
     node.for_each_child(|child| collect_error_node_lines(child, line_starts, lines));
 }
@@ -3016,12 +3016,12 @@ fn collect_scale_from_node(node: &Node, source: &str, depth: u64, score: &mut Sc
 }
 
 fn node_span_len(source: &str, node: &Node) -> u64 {
-    if node.location.end <= source.len()
-        && node.location.start <= node.location.end
-        && source.is_char_boundary(node.location.start)
-        && source.is_char_boundary(node.location.end)
+    if node.location.end() <= source.len()
+        && node.location.start() <= node.location.end()
+        && source.is_char_boundary(node.location.start())
+        && source.is_char_boundary(node.location.end())
     {
-        (node.location.end - node.location.start) as u64
+        (node.location.end() - node.location.start()) as u64
     } else {
         0
     }
@@ -3663,9 +3663,9 @@ fn collect_ast_predictions(
     if is_ast_scored_node(node) {
         predictions.push(AstPrediction {
             kind: node.kind.kind_name().to_string(),
-            line: line_for_offset(line_starts, node.location.start),
+            line: line_for_offset(line_starts, node.location.start()),
             span_text: source
-                .get(node.location.start..node.location.end)
+                .get(node.location.start()..node.location.end())
                 .unwrap_or_default()
                 .to_string(),
             parent_kind: parent_kind.map(ToString::to_string),

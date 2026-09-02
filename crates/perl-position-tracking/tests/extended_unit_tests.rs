@@ -36,8 +36,8 @@ fn bytespan_single_byte() {
 fn bytespan_whole_empty_source() {
     let s = ByteSpan::whole("");
     assert!(s.is_empty());
-    assert_eq!(s.start, 0);
-    assert_eq!(s.end, 0);
+    assert_eq!(s.start(), 0);
+    assert_eq!(s.end(), 0);
 }
 
 #[test]
@@ -191,8 +191,8 @@ fn bytespan_try_slice_empty() {
 #[test]
 fn bytespan_from_range() {
     let span: ByteSpan = (3..7usize).into();
-    assert_eq!(span.start, 3);
-    assert_eq!(span.end, 7);
+    assert_eq!(span.start(), 3);
+    assert_eq!(span.end(), 7);
 }
 
 #[test]
@@ -226,13 +226,13 @@ fn source_location_alias() {
 fn bytespan_default_is_empty_at_zero() {
     let d: ByteSpan = Default::default();
     assert!(d.is_empty());
-    assert_eq!(d.start, 0);
+    assert_eq!(d.start(), 0);
 }
 
 #[test]
 fn bytespan_eq_via_fields() {
     let a = ByteSpan::new(1, 5);
-    let b = ByteSpan { start: 1, end: 5 };
+    let b = ByteSpan::new(1, 5);
     assert_eq!(a, b);
 }
 
@@ -312,11 +312,13 @@ fn position_display() {
 }
 
 #[test]
-fn position_default_is_zero() {
+fn position_default_matches_documented_origin() {
+    // #8740: the zero-derived default is corrected to the documented origin.
     let p: Position = Default::default();
     assert_eq!(p.byte, 0);
-    assert_eq!(p.line, 0);
-    assert_eq!(p.column, 0);
+    assert_eq!(p.line, 1);
+    assert_eq!(p.column, 1);
+    assert_eq!(p, Position::start());
 }
 
 // ─── Range (engine type) ─────────────────────────────────────────────────────
@@ -371,9 +373,12 @@ fn range_overlaps_partial() {
 }
 
 #[test]
-fn range_len_saturating() {
-    // Artificially reversed bytes (start > end)
-    let r = Range::new(Position::new(10, 2, 1), Position::new(5, 1, 6));
+fn range_len_saturating_and_reversed_is_distinct() {
+    // Artificially reversed bytes (start > end), written through the public
+    // fields because the trusted `Range::new` asserts ordering in debug builds.
+    let r = Range { start: Position::new(10, 2, 1), end: Position::new(5, 1, 6) };
+    assert!(r.is_reversed());
+    assert!(!r.is_empty());
     assert_eq!(r.len(), 0); // saturating_sub prevents underflow
 }
 
@@ -411,11 +416,14 @@ fn range_display() {
 }
 
 #[test]
-fn range_from_source_location() {
+fn range_try_new_replaces_source_free_conversion() -> Result<(), Box<dyn std::error::Error>> {
+    // #8740: byte-only spans no longer convert into engine ranges with
+    // invented line/column values; construction is checked instead.
     let sl = SourceLocation::new(3, 9);
-    let r: Range = sl.into();
+    let r = Range::try_new(Position::new(sl.start(), 1, 1), Position::new(sl.end(), 1, 7))?;
     assert_eq!(r.start.byte, 3);
     assert_eq!(r.end.byte, 9);
+    Ok(())
 }
 
 // ─── WirePosition ────────────────────────────────────────────────────────────

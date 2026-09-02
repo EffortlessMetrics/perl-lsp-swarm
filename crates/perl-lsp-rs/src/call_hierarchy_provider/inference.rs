@@ -6,7 +6,7 @@ use super::{CallHierarchyItem, CallHierarchyProvider};
 
 impl CallHierarchyProvider {
     pub(super) fn extract_qualified_call_name(&self, node: &Node) -> Option<String> {
-        let snippet = self.source.get(node.location.start..node.location.end)?.trim();
+        let snippet = self.source.get(node.location.start()..node.location.end())?.trim();
         let callee = snippet.split('(').next()?.trim().trim_start_matches('&');
         callee.contains("::").then(|| callee.to_string())
     }
@@ -32,7 +32,7 @@ impl CallHierarchyProvider {
                 })
             })
             .or_else(|| {
-                self.source.get(..func_node.location.start).and_then(|prefix| {
+                self.source.get(..func_node.location.start()).and_then(|prefix| {
                     prefix.lines().rev().find_map(|line| {
                         let line = line.trim();
                         line.strip_prefix("package ")

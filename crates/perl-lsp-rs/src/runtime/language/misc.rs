@@ -723,8 +723,8 @@ impl LspServer {
                 .then(|| Self::find_subroutine_node(ast, short_name))
                 .flatten()
         })?;
-        let (start_line, start_char) = self.offset_to_pos16(doc, sub_node.location.start);
-        let (end_line, end_char) = self.offset_to_pos16(doc, sub_node.location.end);
+        let (start_line, start_char) = self.offset_to_pos16(doc, sub_node.location.start());
+        let (end_line, end_char) = self.offset_to_pos16(doc, sub_node.location.end());
 
         Some(json!({
             "uri": uri,

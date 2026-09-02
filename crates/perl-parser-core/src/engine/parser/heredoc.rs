@@ -114,7 +114,7 @@ impl<'a> Parser<'a> {
             label: Arc::from(label.as_str()),
             allow_indent,
             quote,
-            decl_span: heredoc_collector::Span { start: decl_start, end: decl_end },
+            decl_span: heredoc_collector::Span::new(decl_start, decl_end),
             body_start: after_line_break(self.src_bytes, decl_end),
         });
     }
@@ -179,19 +179,19 @@ impl<'a> Parser<'a> {
                 // actual body offset.
                 self.errors.push(ParseError::SyntaxError {
                     message: format!("Unterminated heredoc: {}", label),
-                    location: decl.decl_span.start,
+                    location: decl.decl_span.start(),
                 });
-                let body_location = if body.full_span.start < body.full_span.end {
-                    Some(body.full_span.start)
+                let body_location = if body.full_span.start() < body.full_span.end() {
+                    Some(body.full_span.start())
                 } else if decl.body_start < self.src_bytes.len()
-                    && decl.body_start != decl.decl_span.start
+                    && decl.body_start != decl.decl_span.start()
                 {
                     Some(decl.body_start)
                 } else {
                     None
                 };
                 if let Some(body_location) = body_location
-                    && body_location != decl.decl_span.start {
+                    && body_location != decl.decl_span.start() {
                         self.errors.push(ParseError::SyntaxError {
                             message: format!("Unterminated heredoc body: {}", label),
                             location: body_location,
@@ -204,7 +204,7 @@ impl<'a> Parser<'a> {
             if !attached {
                 eprintln!(
                     "[WARNING] drain_pending_heredocs: Failed to attach heredoc content at span {}..{} - no matching Heredoc node found in AST",
-                    decl.decl_span.start, decl.decl_span.end
+                    decl.decl_span.start(), decl.decl_span.end()
                 );
             }
         }
@@ -239,7 +239,7 @@ impl<'a> Parser<'a> {
     ) -> bool {
         // Check if this node's span matches the declaration span
         let node_matches =
-            node.location.start == decl_span.start && node.location.end == decl_span.end;
+            node.location.start() == decl_span.start() && node.location.end() == decl_span.end();
 
         if node_matches {
             // Try to attach at this node
@@ -247,8 +247,8 @@ impl<'a> Parser<'a> {
                 // Reify the body bytes from src_bytes using the collector's segments
                 let mut s = String::new();
                 for (i, seg) in body.segments.iter().enumerate() {
-                    if seg.end > seg.start {
-                        let bytes = &self.src_bytes[seg.start..seg.end];
+                    if seg.end() > seg.start() {
+                        let bytes = &self.src_bytes[seg.start()..seg.end()];
                         // Source is valid UTF-8 (enforced by lexer)
                         s.push_str(std::str::from_utf8(bytes).unwrap_or_default());
                     }
@@ -260,11 +260,8 @@ impl<'a> Parser<'a> {
                 *content = s;
 
                 // Store body span for breakpoint detection
-                *body_span = if body.full_span.start < body.full_span.end {
-                    Some(SourceLocation {
-                        start: body.full_span.start,
-                        end: body.full_span.end,
-                    })
+                *body_span = if body.full_span.start() < body.full_span.end() {
+                    Some(SourceLocation::new(body.full_span.start(), body.full_span.end(),))
                 } else {
                     None // Empty heredoc
                 };
@@ -285,7 +282,7 @@ impl<'a> Parser<'a> {
         if !found && node_matches {
             eprintln!(
                 "warn: no Heredoc node found for decl span {}..{} (matched span but not Heredoc kind)",
-                decl_span.start, decl_span.end
+                decl_span.start(), decl_span.end()
             );
         }
 
@@ -308,8 +305,8 @@ impl<'a> Parser<'a> {
             if unresolved {
                 let mut text = String::new();
                 for (i, seg) in body.segments.iter().enumerate() {
-                    if seg.end > seg.start {
-                        let bytes = &self.src_bytes[seg.start..seg.end];
+                    if seg.end() > seg.start() {
+                        let bytes = &self.src_bytes[seg.start()..seg.end()];
                         text.push_str(std::str::from_utf8(bytes).unwrap_or_default());
                     }
                     if i + 1 < body.segments.len() {
@@ -318,11 +315,8 @@ impl<'a> Parser<'a> {
                 }
 
                 *content = text;
-                *body_span = if body.full_span.start < body.full_span.end {
-                    Some(SourceLocation {
-                        start: body.full_span.start,
-                        end: body.full_span.end,
-                    })
+                *body_span = if body.full_span.start() < body.full_span.end() {
+                    Some(SourceLocation::new(body.full_span.start(), body.full_span.end(),))
                 } else {
                     None
                 };

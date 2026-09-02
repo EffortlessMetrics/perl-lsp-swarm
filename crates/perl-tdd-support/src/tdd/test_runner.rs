@@ -256,7 +256,7 @@ impl TestRunner {
                     let label = description.unwrap_or_else(|| name.clone());
 
                     let test_item = TestItem {
-                        id: format!("{}::{}::{}", self.uri, name, node.location.start),
+                        id: format!("{}::{}::{}", self.uri, name, node.location.start()),
                         label,
                         uri: self.uri.clone(),
                         range: self.node_to_range(node),
@@ -366,8 +366,8 @@ impl TestRunner {
 
     /// Convert node to test range
     fn node_to_range(&self, node: &Node) -> TestRange {
-        let (start_line, start_char) = self.offset_to_position(node.location.start);
-        let (end_line, end_char) = self.offset_to_position(node.location.end);
+        let (start_line, start_char) = self.offset_to_position(node.location.start());
+        let (end_line, end_char) = self.offset_to_position(node.location.end());
 
         TestRange { start_line, start_character: start_char, end_line, end_character: end_char }
     }
@@ -887,7 +887,7 @@ sub test_nested {
         let subroutine = node(
             NodeKind::Subroutine {
                 name: Some("test_nested".to_string()),
-                name_span: Some(SourceLocation { start: 20, end: 31 }),
+                name_span: Some(SourceLocation::new(20, 31)),
                 declarator: None,
                 prototype: None,
                 signature: None,
@@ -998,7 +998,7 @@ pass();
     }
 
     fn node(kind: NodeKind, start: usize, end: usize) -> Node {
-        Node::new(kind, SourceLocation { start, end })
+        Node::new(kind, SourceLocation::new(start, end))
     }
 
     // ── Hermeticity tests for hermetic_perl_command (#8689) ──────────────────

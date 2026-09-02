@@ -239,7 +239,7 @@ fn try_classify_standalone_class_import(node: &Node, file_id: FileId) -> Option<
         file_id: Some(file_id),
         anchor_id: Some(anchor_id),
         scope_id: None,
-        span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
+        span_start_byte: Some(node.location.start().min(u32::MAX as usize) as u32),
     })
 }
 
@@ -291,7 +291,7 @@ fn walk_statements(statements: &[Node], file_id: FileId, out: &mut Vec<ImportSpe
                 file_id: Some(file_id),
                 anchor_id: Some(anchor_id),
                 scope_id: None,
-                span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
+                span_start_byte: Some(require_node.location.start().min(u32::MAX as usize) as u32),
             });
             consumed.insert(i);
             consumed.insert(i + 1);
@@ -306,7 +306,7 @@ fn walk_statements(statements: &[Node], file_id: FileId, out: &mut Vec<ImportSpe
                 file_id: Some(file_id),
                 anchor_id: Some(anchor_id),
                 scope_id: None,
-                span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
+                span_start_byte: Some(require_node.location.start().min(u32::MAX as usize) as u32),
             });
             consumed.insert(i);
         }
@@ -351,7 +351,7 @@ fn make_dynamic_require(file_id: FileId, node: &Node) -> ImportSpec {
         file_id: Some(file_id),
         anchor_id: Some(anchor_id),
         scope_id: None,
-        span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
+        span_start_byte: Some(node.location.start().min(u32::MAX as usize) as u32),
     }
 }
 
@@ -479,14 +479,14 @@ fn classify_use(module: &str, args: &[String], file_id: FileId, node: &Node) -> 
         file_id: Some(file_id),
         anchor_id: Some(anchor_id),
         scope_id: None,
-        span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
+        span_start_byte: Some(node.location.start().min(u32::MAX as usize) as u32),
     })
 }
 
 fn classify_args(args: &[String], module: &str, node: &Node) -> (ImportKind, ImportSymbols) {
     if args.is_empty() {
         let bare_len = "use ".len() + module.len() + 1; // +1 for ';'
-        let span_len = node.location.end.saturating_sub(node.location.start);
+        let span_len = node.location.end().saturating_sub(node.location.start());
         if span_len > bare_len {
             return (ImportKind::UseEmpty, ImportSymbols::None);
         }
@@ -616,7 +616,7 @@ fn classify_use_constant(args: &[String], file_id: FileId, anchor_id: AnchorId) 
 // ── Utility helpers ──────────────────────────────────────────────────────────
 
 fn anchor_from_node(node: &Node) -> AnchorId {
-    AnchorId(node.location.start as u64)
+    AnchorId(node.location.start() as u64)
 }
 
 fn is_version_pragma(module: &str) -> bool {

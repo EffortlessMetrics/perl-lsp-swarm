@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 
 fn loc() -> SourceLocation {
-    SourceLocation { start: 0, end: 0 }
+    SourceLocation::new(0, 0)
 }
 
 fn dummy() -> Node {

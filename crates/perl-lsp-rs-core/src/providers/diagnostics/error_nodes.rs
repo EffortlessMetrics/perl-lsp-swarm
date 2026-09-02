@@ -35,8 +35,8 @@ pub fn check_error_nodes(
                 full_message.push_str(&format!(": {}", message));
             }
 
-            let start = n.location.start;
-            let end = n.location.end.min(source.len());
+            let start = n.location.start();
+            let end = n.location.end().min(source.len());
 
             // Build related information with suggestion and explanation
             let mut related_info = Vec::new();

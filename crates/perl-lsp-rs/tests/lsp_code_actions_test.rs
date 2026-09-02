@@ -135,7 +135,7 @@ fn test_parse_error_semicolon_fix() -> Result<(), Box<dyn std::error::Error>> {
         // Create error node for test
         perl_parser::Node::new(
             perl_parser::NodeKind::Program { statements: vec![] },
-            perl_parser::SourceLocation { start: 0, end: source.len() },
+            perl_parser::SourceLocation::new(0, source.len()),
         )
     });
 

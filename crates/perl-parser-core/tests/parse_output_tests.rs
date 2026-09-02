@@ -11,7 +11,7 @@ use perl_parser_core::{
 fn success_output_has_no_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
     let ast = V1Node::new(
         V1NodeKind::Program { statements: vec![] },
-        SourceLocation { start: 0, end: 0 },
+        SourceLocation::new(0, 0),
     );
     let output = ParseOutput::success(ast);
     assert!(output.diagnostics.is_empty());
@@ -24,7 +24,7 @@ fn success_output_has_no_diagnostics() -> Result<(), Box<dyn std::error::Error>>
 fn with_errors_output_tracks_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
     let ast = V1Node::new(
         V1NodeKind::Program { statements: vec![] },
-        SourceLocation { start: 0, end: 0 },
+        SourceLocation::new(0, 0),
     );
     let diags = vec![CatastrophicParseError::UnexpectedEof];
     let output = ParseOutput::with_errors(ast, diags);

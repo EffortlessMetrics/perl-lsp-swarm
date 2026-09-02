@@ -208,18 +208,18 @@ fn target_of(node: &Node, file_id: FileId) -> SubroutineTarget {
         unreachable!("target_of is only called on Subroutine nodes");
     };
     let name = name.clone().unwrap_or_default();
-    let name_anchor = name_span
-        .as_ref()
-        .map(|span| anchor(span.start, span.end, file_id))
-        .unwrap_or_else(|| anchor(node.location.start, node.location.start + name.len(), file_id));
-    let declaration_anchor = anchor(node.location.start, node.location.end, file_id);
+    let name_anchor =
+        name_span.as_ref().map(|span| anchor(span.start(), span.end(), file_id)).unwrap_or_else(
+            || anchor(node.location.start(), node.location.start() + name.len(), file_id),
+        );
+    let declaration_anchor = anchor(node.location.start(), node.location.end(), file_id);
     // Every `Block` with a real source span retains its body anchor — an
     // empty `{}` body is a body. Only the degenerate zero-width body of a
     // `sub name;` forward stub records `None`; the spans distinguish the two
     // because the parser shapes them identically at the node-kind level.
     let body_anchor = match &body.kind {
-        NodeKind::Block { .. } if body.location.start < body.location.end => {
-            Some(anchor(body.location.start, body.location.end, file_id))
+        NodeKind::Block { .. } if body.location.start() < body.location.end() => {
+            Some(anchor(body.location.start(), body.location.end(), file_id))
         }
         _ => None,
     };
@@ -238,7 +238,7 @@ pub fn handler_from_node(
     current_package: Option<&str>,
     targets: &SubroutineTargetIndex,
 ) -> FrameworkHandler {
-    let operand_anchor = anchor(node.location.start, node.location.end, file_id);
+    let operand_anchor = anchor(node.location.start(), node.location.end(), file_id);
     match &node.kind {
         NodeKind::Subroutine { name, .. } if name.is_none() => {
             FrameworkHandler::InlineSub { anchor: operand_anchor }

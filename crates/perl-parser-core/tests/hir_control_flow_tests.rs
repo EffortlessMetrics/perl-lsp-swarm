@@ -79,7 +79,7 @@ fn if_elsif_else_lowers_to_branch_shell_with_condition_anchor() -> TestResult {
     assert!(branch.has_else);
 
     // Source anchor points at the primary condition expression.
-    let condition = &source[branch.condition_range.start..branch.condition_range.end];
+    let condition = &source[branch.condition_range.start()..branch.condition_range.end()];
     assert!(condition.contains("$x"), "condition anchor was {condition:?}");
     Ok(())
 }
@@ -268,7 +268,7 @@ fn statement_modifiers_lower_with_modifier_kind_and_anchor() -> TestResult {
             .map_err(|_| format!("expected modifier shell for {source:?}"))?;
         assert_eq!(shell.modifier, expected, "source: {source:?}");
         assert!(
-            shell.condition_range.end >= shell.condition_range.start,
+            shell.condition_range.end() >= shell.condition_range.start(),
             "condition anchor should be ordered for {source:?}"
         );
     }
@@ -307,7 +307,7 @@ fn branch_form_modifier_does_not_capture_label() -> TestResult {
 fn control_flow_items_preserve_source_anchor_and_parse_confidence() -> TestResult {
     let file = lower_source("if ($x) { return 1 } else { return 2 }\n");
     for item in &file.items {
-        assert!(item.range.end >= item.range.start, "HIR item range should be ordered: {item:?}");
+        assert!(item.range.end() >= item.range.start(), "HIR item range should be ordered: {item:?}");
         assert_eq!(item.range, item.anchor.range, "anchor range mirrors item range");
         assert_eq!(item.recovery_confidence, RecoveryConfidence::Parsed);
     }

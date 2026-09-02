@@ -54,7 +54,7 @@ impl SemanticAnalyzer {
                     // Add hover info
                     let hover = HoverInfo {
                         signature: format!("{} {}{}", declarator, sigil, name),
-                        documentation: self.extract_documentation(node.location.start),
+                        documentation: self.extract_documentation(node.location.start()),
                         details: if attributes.is_empty() {
                             vec![]
                         } else {
@@ -115,7 +115,7 @@ impl SemanticAnalyzer {
                         documentation: symbol.documentation.clone(),
                         details: vec![format!(
                             "Defined at line {}",
-                            self.line_number(symbol.location.start)
+                            self.line_number(symbol.location.start())
                         )],
                         // Exact source-backed declaration at this location.
                         confidence: Confidence::High,
@@ -153,7 +153,7 @@ impl SemanticAnalyzer {
 
                     let hover = HoverInfo {
                         signature: signature_str,
-                        documentation: self.extract_sub_documentation(node.location.start, body),
+                        documentation: self.extract_sub_documentation(node.location.start(), body),
                         details: if attributes.is_empty() {
                             vec![]
                         } else {
@@ -169,10 +169,10 @@ impl SemanticAnalyzer {
                     // Anonymous subroutine (closure)
                     // Add semantic token for the 'sub' keyword
                     self.semantic_tokens.push(SemanticToken {
-                        location: SourceLocation {
-                            start: node.location.start,
-                            end: node.location.start + 3, // "sub"
-                        },
+                        location: SourceLocation::new(
+                            node.location.start(),
+                            node.location.start() + 3, // "sub"
+                        ),
                         token_type: SemanticTokenType::Keyword,
                         modifiers: vec![],
                     });
@@ -191,7 +191,7 @@ impl SemanticAnalyzer {
 
                     let hover = HoverInfo {
                         signature: signature_str,
-                        documentation: self.extract_sub_documentation(node.location.start, body),
+                        documentation: self.extract_sub_documentation(node.location.start(), body),
                         details,
                         // Exact source-backed declaration at this location.
                         confidence: Confidence::High,
@@ -226,7 +226,7 @@ impl SemanticAnalyzer {
                 // Add hover info
                 let hover = HoverInfo {
                     signature: format!("method {}", name),
-                    documentation: self.extract_sub_documentation(node.location.start, body),
+                    documentation: self.extract_sub_documentation(node.location.start(), body),
                     details: if attributes.is_empty() {
                         vec![]
                     } else {
@@ -318,7 +318,7 @@ impl SemanticAnalyzer {
                 // Try POD docs first, then fall back to leading comments
                 let documentation = self
                     .extract_pod_name_section(name)
-                    .or_else(|| self.extract_documentation(node.location.start));
+                    .or_else(|| self.extract_documentation(node.location.start()));
 
                 let hover = HoverInfo {
                     signature: format!("package {}", name),
@@ -512,7 +512,7 @@ impl SemanticAnalyzer {
                         // Add hover info
                         let hover = HoverInfo {
                             signature: format!("{} {}{}", declarator, sigil, name),
-                            documentation: self.extract_documentation(var.location.start),
+                            documentation: self.extract_documentation(var.location.start()),
                             details: if attributes.is_empty() {
                                 vec![]
                             } else {
@@ -703,10 +703,10 @@ impl SemanticAnalyzer {
                 self.analyze_node(object, scope_id);
 
                 if let Some(offset) =
-                    self.find_substring_in_source_after(node, method, object.location.end)
+                    self.find_substring_in_source_after(node, method, object.location.end())
                 {
                     self.semantic_tokens.push(SemanticToken {
-                        location: SourceLocation { start: offset, end: offset + method.len() },
+                        location: SourceLocation::new(offset, offset + method.len()),
                         token_type: SemanticTokenType::Method,
                         modifiers: vec![],
                     });
@@ -720,7 +720,7 @@ impl SemanticAnalyzer {
             NodeKind::IndirectCall { method, object, args } => {
                 if let Some(offset) = self.find_method_name_in_source(node, method) {
                     self.semantic_tokens.push(SemanticToken {
-                        location: SourceLocation { start: offset, end: offset + method.len() },
+                        location: SourceLocation::new(offset, offset + method.len()),
                         token_type: SemanticTokenType::Method,
                         modifiers: vec![],
                     });
@@ -733,18 +733,15 @@ impl SemanticAnalyzer {
 
             NodeKind::Use { module, args, .. } => {
                 self.semantic_tokens.push(SemanticToken {
-                    location: SourceLocation {
-                        start: node.location.start,
-                        end: node.location.start + 3,
-                    },
+                    location: SourceLocation::new(node.location.start(), node.location.start() + 3),
                     token_type: SemanticTokenType::Keyword,
                     modifiers: vec![],
                 });
 
-                let mut args_start = node.location.start + 3;
+                let mut args_start = node.location.start() + 3;
                 if let Some(offset) = self.find_substring_in_source(node, module) {
                     self.semantic_tokens.push(SemanticToken {
-                        location: SourceLocation { start: offset, end: offset + module.len() },
+                        location: SourceLocation::new(offset, offset + module.len()),
                         token_type: SemanticTokenType::Namespace,
                         modifiers: vec![],
                     });
@@ -756,18 +753,15 @@ impl SemanticAnalyzer {
 
             NodeKind::No { module, args, .. } => {
                 self.semantic_tokens.push(SemanticToken {
-                    location: SourceLocation {
-                        start: node.location.start,
-                        end: node.location.start + 2,
-                    },
+                    location: SourceLocation::new(node.location.start(), node.location.start() + 2),
                     token_type: SemanticTokenType::Keyword,
                     modifiers: vec![],
                 });
 
-                let mut args_start = node.location.start + 2;
+                let mut args_start = node.location.start() + 2;
                 if let Some(offset) = self.find_substring_in_source(node, module) {
                     self.semantic_tokens.push(SemanticToken {
-                        location: SourceLocation { start: offset, end: offset + module.len() },
+                        location: SourceLocation::new(offset, offset + module.len()),
                         token_type: SemanticTokenType::Namespace,
                         modifiers: vec![],
                     });
@@ -779,10 +773,7 @@ impl SemanticAnalyzer {
 
             NodeKind::Given { expr, body } => {
                 self.semantic_tokens.push(SemanticToken {
-                    location: SourceLocation {
-                        start: node.location.start,
-                        end: node.location.start + 5,
-                    }, // given
+                    location: SourceLocation::new(node.location.start(), node.location.start() + 5), // given
                     token_type: SemanticTokenType::KeywordControl,
                     modifiers: vec![],
                 });
@@ -792,10 +783,7 @@ impl SemanticAnalyzer {
 
             NodeKind::When { condition, body } => {
                 self.semantic_tokens.push(SemanticToken {
-                    location: SourceLocation {
-                        start: node.location.start,
-                        end: node.location.start + 4,
-                    }, // when
+                    location: SourceLocation::new(node.location.start(), node.location.start() + 4), // when
                     token_type: SemanticTokenType::KeywordControl,
                     modifiers: vec![],
                 });
@@ -805,10 +793,7 @@ impl SemanticAnalyzer {
 
             NodeKind::Default { body } => {
                 self.semantic_tokens.push(SemanticToken {
-                    location: SourceLocation {
-                        start: node.location.start,
-                        end: node.location.start + 7,
-                    }, // default
+                    location: SourceLocation::new(node.location.start(), node.location.start() + 7), // default
                     token_type: SemanticTokenType::KeywordControl,
                     modifiers: vec![],
                 });
@@ -817,10 +802,7 @@ impl SemanticAnalyzer {
 
             NodeKind::Return { value } => {
                 self.semantic_tokens.push(SemanticToken {
-                    location: SourceLocation {
-                        start: node.location.start,
-                        end: node.location.start + 6,
-                    }, // return
+                    location: SourceLocation::new(node.location.start(), node.location.start() + 6), // return
                     token_type: SemanticTokenType::KeywordControl,
                     modifiers: vec![],
                 });
@@ -831,17 +813,14 @@ impl SemanticAnalyzer {
 
             NodeKind::Class { name, body, .. } => {
                 self.semantic_tokens.push(SemanticToken {
-                    location: SourceLocation {
-                        start: node.location.start,
-                        end: node.location.start + 5,
-                    }, // class
+                    location: SourceLocation::new(node.location.start(), node.location.start() + 5), // class
                     token_type: SemanticTokenType::Keyword,
                     modifiers: vec![],
                 });
 
                 if let Some(offset) = self.find_substring_in_source(node, name) {
                     self.semantic_tokens.push(SemanticToken {
-                        location: SourceLocation { start: offset, end: offset + name.len() },
+                        location: SourceLocation::new(offset, offset + name.len()),
                         token_type: SemanticTokenType::Class,
                         modifiers: vec![SemanticTokenModifier::Declaration],
                     });
@@ -1040,7 +1019,7 @@ impl SemanticAnalyzer {
                 });
                 let hover = HoverInfo {
                     signature: format!("{} {}{}", declarator, sigil, name),
-                    documentation: self.extract_documentation(node.location.start),
+                    documentation: self.extract_documentation(node.location.start()),
                     details: if attributes.is_empty() {
                         vec![]
                     } else {
@@ -1156,8 +1135,8 @@ impl SemanticAnalyzer {
     pub(super) fn find_pod_in_node_body(&self, body: &Node) -> Option<String> {
         static BODY_POD_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 
-        let start = body.location.start;
-        let end = body.location.end;
+        let start = body.location.start();
+        let end = body.location.end();
         if self.source.is_empty() || end <= start || end > self.source.len() {
             return None;
         }
@@ -1220,8 +1199,8 @@ impl SemanticAnalyzer {
     pub(super) fn get_scope_for(&self, node: &Node, kind: ScopeKind) -> ScopeId {
         for scope in self.symbol_table.scopes.values() {
             if scope.kind == kind
-                && scope.location.start == node.location.start
-                && scope.location.end == node.location.end
+                && scope.location.start() == node.location.start()
+                && scope.location.end() == node.location.end()
             {
                 return scope.id;
             }
@@ -1236,12 +1215,12 @@ impl SemanticAnalyzer {
 
     /// Find substring in source within node's range
     pub(super) fn find_substring_in_source(&self, node: &Node, substring: &str) -> Option<usize> {
-        if self.source.len() < node.location.end {
+        if self.source.len() < node.location.end() {
             return None;
         }
-        let node_text = &self.source[node.location.start..node.location.end];
+        let node_text = &self.source[node.location.start()..node.location.end()];
         if let Some(pos) = node_text.find(substring) {
-            return Some(node.location.start + pos);
+            return Some(node.location.start() + pos);
         }
         None
     }
@@ -1262,20 +1241,20 @@ impl SemanticAnalyzer {
         substring: &str,
         after: usize,
     ) -> Option<usize> {
-        if self.source.len() < node.location.end || after >= node.location.end {
+        if self.source.len() < node.location.end() || after >= node.location.end() {
             return None;
         }
 
-        let start_rel = after.saturating_sub(node.location.start);
+        let start_rel = after.saturating_sub(node.location.start());
 
-        let node_text = &self.source[node.location.start..node.location.end];
+        let node_text = &self.source[node.location.start()..node.location.end()];
         if start_rel >= node_text.len() {
             return None;
         }
 
         let text_to_search = &node_text[start_rel..];
         if let Some(pos) = text_to_search.find(substring) {
-            return Some(node.location.start + start_rel + pos);
+            return Some(node.location.start() + start_rel + pos);
         }
         None
     }
@@ -1291,7 +1270,7 @@ impl SemanticAnalyzer {
         for arg in args {
             if let Some(offset) = self.find_substring_in_source_after(node, arg, current_offset) {
                 self.semantic_tokens.push(SemanticToken {
-                    location: SourceLocation { start: offset, end: offset + arg.len() },
+                    location: SourceLocation::new(offset, offset + arg.len()),
                     token_type: SemanticTokenType::String,
                     modifiers: vec![],
                 });
@@ -1413,7 +1392,7 @@ mod tests {
     use perl_tdd_support::must;
 
     fn loc() -> SourceLocation {
-        SourceLocation { start: 0, end: 1 }
+        SourceLocation::new(0, 1)
     }
 
     fn var(sigil: &str, name: &str) -> Node {

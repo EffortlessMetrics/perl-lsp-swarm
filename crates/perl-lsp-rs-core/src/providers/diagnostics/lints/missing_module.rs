@@ -295,7 +295,7 @@ fn collect_use_statements(node: &Node) -> Vec<(String, usize, usize)> {
     let mut use_statements: Vec<(String, usize, usize)> = Vec::new();
     walk_node(node, &mut |n| {
         if let NodeKind::Use { module, .. } = &n.kind {
-            use_statements.push((module.clone(), n.location.start, n.location.end));
+            use_statements.push((module.clone(), n.location.start(), n.location.end()));
         }
     });
     use_statements
@@ -725,12 +725,10 @@ mod tests {
         // This simulates what the parser emits during error recovery.
         let use_node = Node::new(
             NodeKind::Use { module: String::new(), args: vec![], has_filter_risk: false },
-            SourceLocation { start: 0, end: 4 },
+            SourceLocation::new(0, 4),
         );
-        let program = Node::new(
-            NodeKind::Program { statements: vec![use_node] },
-            SourceLocation { start: 0, end: 4 },
-        );
+        let program =
+            Node::new(NodeKind::Program { statements: vec![use_node] }, SourceLocation::new(0, 4));
         let mut diags = vec![];
         check_missing_modules(&program, "", resolver_never_finds, &[], &mut diags);
         assert!(
