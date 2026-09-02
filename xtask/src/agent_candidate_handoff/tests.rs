@@ -3594,6 +3594,135 @@ fn a_destination_created_mid_export_cannot_be_clobbered() -> Result<()> {
     Ok(())
 }
 
+/// The receipt is the last thing published, so a partial move is never valid.
+///
+/// Publication is no longer one atomic directory rename — it moves entries into
+/// a destination this export has held since before it built anything. That is
+/// what removes the dependency on how a platform renames onto an existing
+/// directory, which broke three earlier attempts at this seam. The cost is that
+/// the destination is briefly incomplete, so consistency has to come from
+/// somewhere else.
+///
+/// It comes from the receipt rule the format already enforces: `check_handoff`
+/// refuses an envelope whose receipt is absent or still `pending`. This drives
+/// that rule directly — every proper prefix of the published set must be
+/// refused, so no reader can accept a half-moved envelope.
+///
+/// It does **not** prove that `publish` moves the receipt last, and saying so
+/// matters because the first version of this test was written as though it did.
+/// It rebuilds the partial states itself, so it never observes the real
+/// ordering: with the receipt moved *first* in production, this control still
+/// passed. The ordering is proved separately by
+/// `the_receipt_is_ordered_last_for_publication`, against the function that
+/// decides it.
+#[test]
+fn every_partial_publication_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let complete = Destination::new()?;
+    export_valid(&fixture, &complete)?;
+
+    // Rebuild the destination one entry at a time, receipt last, and require
+    // every incomplete state to be refused.
+    let mut names: Vec<PathBuf> = fs::read_dir(complete.envelope())?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    names.sort();
+    names.sort_by_key(|path| path.file_name().is_some_and(|name| name == RECEIPT_FILE_NAME));
+    assert!(names.len() >= 3, "the fixture must publish manifest, pack, and receipt");
+    assert_eq!(
+        names.last().and_then(|path| path.file_name()),
+        Some(std::ffi::OsStr::new(RECEIPT_FILE_NAME)),
+        "the receipt must sort last, or the ordering this test relies on is wrong"
+    );
+
+    let partial = Destination::new()?;
+    fs::create_dir(partial.envelope())?;
+    for source in &names[..names.len() - 1] {
+        let Some(name) = source.file_name() else { bail!("entry without a name") };
+        if source.is_dir() {
+            fs::create_dir_all(partial.envelope().join(name))?;
+            for inner in fs::read_dir(source)?.filter_map(std::result::Result::ok) {
+                fs::copy(inner.path(), partial.envelope().join(name).join(inner.file_name()))?;
+            }
+        } else {
+            fs::copy(source, partial.envelope().join(name))?;
+        }
+        assert_ne!(
+            check_handoff(&partial.envelope()).outcome,
+            HandoffOutcome::ValidHandoff,
+            "a destination without its receipt must never validate: {name:?} present"
+        );
+    }
+
+    // Anti-vacuity: the same set *with* the receipt must validate, or the loop
+    // above would be asserting against something that could never be valid.
+    let receipt = names.last().context("receipt entry")?;
+    fs::copy(receipt, partial.envelope().join(RECEIPT_FILE_NAME))?;
+    assert_eq!(
+        check_handoff(&partial.envelope()).outcome,
+        HandoffOutcome::ValidHandoff,
+        "the complete set must validate once the receipt lands"
+    );
+    Ok(())
+}
+
+/// Publication orders the receipt last, whatever the directory listing says.
+///
+/// The falsifier for the ordering, which the partial-publication control above
+/// is not. `publish` moves entries into a destination it already holds, so the
+/// only reader-visible protection against a half-moved envelope is that the
+/// receipt arrives after everything it vouches for. Nothing about a real export
+/// can show that: the destination is observable before or after the move, and
+/// every intermediate state is refused either way.
+#[test]
+fn the_receipt_is_ordered_last_for_publication() {
+    use super::create::publication_order;
+
+    let root = Path::new("/envelope");
+    // Deliberately supplied in an order where the receipt is already first, so
+    // a no-op implementation cannot pass by accident.
+    let entries = vec![
+        root.join(RECEIPT_FILE_NAME),
+        root.join(PACK_FILE_NAME),
+        root.join(MANIFEST_FILE_NAME),
+        root.join(PROOF_DIR_NAME),
+    ];
+    let ordered = publication_order(entries);
+
+    assert_eq!(
+        ordered.last().and_then(|path| path.file_name()),
+        Some(std::ffi::OsStr::new(RECEIPT_FILE_NAME)),
+        "the receipt must be published last, after everything it vouches for"
+    );
+    // Anti-vacuity: everything else must still be there, and in a stable order,
+    // or "receipt last" could be satisfied by dropping entries.
+    assert_eq!(ordered.len(), 4, "ordering must not drop entries");
+    let mut without_receipt: Vec<_> =
+        ordered[..3].iter().filter_map(|path| path.file_name()).collect();
+    without_receipt.sort_unstable();
+    assert_eq!(
+        without_receipt,
+        vec![
+            std::ffi::OsStr::new(PACK_FILE_NAME),
+            std::ffi::OsStr::new(MANIFEST_FILE_NAME),
+            std::ffi::OsStr::new(PROOF_DIR_NAME),
+        ],
+        "every non-receipt entry must precede the receipt"
+    );
+    // The same input in a different order must produce the same output, or the
+    // sequence would depend on directory iteration order.
+    let reversed = publication_order(vec![
+        root.join(PROOF_DIR_NAME),
+        root.join(MANIFEST_FILE_NAME),
+        root.join(RECEIPT_FILE_NAME),
+        root.join(PACK_FILE_NAME),
+    ]);
+    assert_eq!(ordered, reversed, "publication order must not depend on input order");
+}
+
 /// An abandoned reservation is named as one, not reported as an envelope.
 ///
 /// `Drop` releases the reservation on every ordinary failure path, but a killed

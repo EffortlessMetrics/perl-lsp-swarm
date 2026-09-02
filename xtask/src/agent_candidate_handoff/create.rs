@@ -244,10 +244,13 @@ struct ClaimedDestination {
 impl Drop for ClaimedDestination {
     fn drop(&mut self) {
         if !self.published {
-            // `remove_dir`, never `remove_dir_all`: this reservation is an empty
-            // directory this process created. If anything now occupies it, that
-            // is not ours to delete, and the removal simply fails.
-            let _ = fs::remove_dir(&self.path);
+            // The reservation is created by an atomic `create_dir` and is never
+            // released before publication, so from creation to publication this
+            // path and everything under it belongs exclusively to this
+            // invocation. That is what makes removing its contents safe here:
+            // nothing else can have put anything in it. A partially populated
+            // destination is this export's own abandoned work.
+            let _ = fs::remove_dir_all(&self.path);
         }
     }
 }
@@ -282,10 +285,14 @@ impl StagedEnvelope {
     /// keeps the refusal path readable.
     fn discard(self) {}
 
-    /// Write the validated receipt, then move the directory into place.
+    /// Write the validated receipt, then move the envelope into the reservation.
     ///
-    /// The rename is the publication step and is atomic on the destination's
-    /// own filesystem, so a reader never observes a half-written envelope.
+    /// Publication moves the staged entries one at a time into the destination
+    /// this export has held since before it built anything, with the receipt
+    /// last. It is not one atomic step, and does not need to be: a reader is
+    /// kept consistent by the receipt rule rather than by filesystem atomicity,
+    /// because `check_handoff` refuses an envelope whose receipt is absent or
+    /// still `pending`.
     fn publish(
         mut self,
         destination: &Path,
@@ -309,68 +316,90 @@ impl StagedEnvelope {
         if let Err(error) = fs::write(self.directory.join(RECEIPT_FILE_NAME), receipt_json) {
             return Err(failed(error, "write the validated receipt"));
         }
-        // Publish onto the reservation, and stay correct whichever way this
-        // platform renames onto an existing directory.
+        // Publish into the reservation without ever releasing it, and without
+        // depending on what this platform does when a rename meets an existing
+        // directory.
         //
-        // The two possibilities are mutually exclusive, and each makes a
-        // *different* protocol safe:
+        // That dependency was the defect in the three previous attempts at this
+        // seam. Renaming the staging *directory* onto the destination needs the
+        // destination to be replaceable, which Unix allows for an empty
+        // directory and Windows may or may not, depending on filesystem support
+        // for `FileRenameInfoEx`. Every protocol built on knowing which holds
+        // either failed on one platform or reopened a window on the other.
         //
-        // - If the platform replaces an existing empty directory (Unix always;
-        //   Windows possibly, since Rust's `fs::rename` may use
-        //   `FileRenameInfoEx` with POSIX semantics where the filesystem
-        //   supports it), then renaming straight onto the reservation is safe:
-        //   the path was held by this process for the whole build, so what is
-        //   replaced is our own claim and there is never a window.
+        // Moving the entries instead needs no replacement semantics at all: the
+        // reservation is empty and exclusively ours, so each entry renames into
+        // a slot that does not exist, which is well defined everywhere. The
+        // claim is held from `create_dir` through to the last move, so there is
+        // no interval in which another process can take the path.
         //
-        // - If the platform refuses to replace an existing directory (classic
-        //   Windows `MoveFileEx`), the first rename fails and tells us so. And
-        //   that refusal is precisely the property that makes releasing the
-        //   reservation and retrying harmless: a competitor arriving in the gap
-        //   makes the retry fail rather than clobber anything.
-        //
-        // So the refusal is not an error to work around, it is the evidence
-        // that the fallback is safe on this platform. Deciding by `cfg` instead
-        // would be resting a safety property on which semantics Windows
-        // happens to have — the thing this is written to avoid.
-        match fs::rename(&self.directory, destination) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                // `AlreadyExists` is specific evidence that this platform
-                // refuses to replace an existing directory, which is what makes
-                // releasing the reservation safe. `PermissionDenied` is
-                // deliberately *not* accepted here: it has unrelated causes — an
-                // ACL, a lock, an open handle — so treating it as the same
-                // evidence would release the reservation on a filesystem that
-                // does replace, and reopen the race this exists to close. A
-                // permission failure is simply a failure.
-                if let Err(error) = fs::remove_dir(destination) {
-                    return Err(failed(error, "release the destination reservation"));
-                }
-                // The reservation is no longer ours the moment it is removed, so
-                // `Drop` must not touch that path again — including when the
-                // retry below fails because someone else took it.
-                if let Some(claim) = self.claim.as_mut() {
-                    claim.published = true;
-                }
-                if let Err(error) = fs::rename(&self.directory, destination) {
-                    return Err(failed(error, "publish the envelope"));
+        // The receipt moves last, and that ordering is what gives a reader a
+        // consistent view: `check_handoff` requires a `validated_before_publish`
+        // receipt, so a directory observed mid-move has no receipt yet and is
+        // refused rather than read as a partial envelope.
+        let mut entries: Vec<PathBuf> = Vec::new();
+        match fs::read_dir(&self.directory) {
+            Ok(listing) => {
+                for entry in listing {
+                    match entry {
+                        Ok(entry) => entries.push(entry.path()),
+                        Err(error) => return Err(failed(error, "list the staged envelope")),
+                    }
                 }
             }
-            Err(error) => return Err(failed(error, "publish the envelope")),
+            Err(error) => return Err(failed(error, "list the staged envelope")),
+        }
+        let entries = publication_order(entries);
+
+        for source in entries {
+            let Some(name) = source.file_name() else {
+                return Err((
+                    HandoffOutcome::InstrumentFailure,
+                    "a staged envelope entry has no name".to_string(),
+                ));
+            };
+            if let Err(error) = fs::rename(&source, destination.join(name)) {
+                return Err(failed(error, "publish an envelope entry"));
+            }
         }
 
-        // The claim is now the published envelope, so its `Drop` must not
-        // remove it. Releasing it here rather than at the top of `publish`
-        // keeps every earlier failure path still owning the reservation.
+        // The reservation is now the published envelope, so its `Drop` must not
+        // remove it. Releasing it here rather than earlier keeps every failure
+        // path above still owning the destination and its partial contents.
         if let Some(claim) = self.claim.as_mut() {
             claim.published = true;
         }
 
-        // The directory no longer exists under its staging name; claiming it
-        // does would make `Drop` remove whatever later occupies that path.
+        // The staging directory is now empty rather than gone, so it still has
+        // to be removed — but by the ordinary `Drop` path, not by claiming a
+        // publication that already happened. Marking it published stops `Drop`
+        // from touching the destination, and the empty staging directory is
+        // cleaned up separately.
+        let _ = fs::remove_dir(&self.directory);
         self.published = true;
         Ok(())
     }
+}
+
+/// Order staged entries for publication, with the receipt last.
+///
+/// Separate from `publish` so the ordering is testable on its own. Driving it
+/// through a real export cannot discriminate it: the destination is only
+/// observable before or after the move, and every intermediate state is refused
+/// by the receipt rule whatever order the entries went in. So a test that
+/// rebuilds partial states by hand proves the *rule* and says nothing about the
+/// *order* — which is exactly what happened to the first version of that
+/// control here.
+///
+/// The order is load-bearing anyway: `check_handoff` refuses an envelope whose
+/// receipt is absent, so moving the receipt last is what makes every partially
+/// published destination refuse rather than validate against missing files.
+/// Sorting first keeps the sequence deterministic rather than dependent on
+/// directory iteration order.
+pub(super) fn publication_order(mut entries: Vec<PathBuf>) -> Vec<PathBuf> {
+    entries.sort();
+    entries.sort_by_key(|path| path.file_name().is_some_and(|name| name == RECEIPT_FILE_NAME));
+    entries
 }
 
 /// Compute the semantic identity digest over a manifest's stable projection.
