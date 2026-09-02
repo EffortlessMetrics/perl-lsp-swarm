@@ -1748,3 +1748,175 @@ fn an_honest_object_package_still_survives_the_transport_boundary() -> Result<()
     decoded.validate()?;
     Ok(())
 }
+
+// ── Member-level answers through an incompatible shape (found by Devin) ───
+
+#[test]
+fn an_operator_cannot_reach_a_member_through_a_shape_that_cannot_carry_it()
+-> Result<(), Box<dyn Error>> {
+    // `$a->{b}` selects a hash reference; the next hop indexes it as an array.
+    // A claimed *selection* was already refused. A claimed absence is just as
+    // dishonest: `$hashref->[0]` is not an array whose element 0 is missing,
+    // so recording `AbsentMember` would collapse wrong-shape into legitimate
+    // absence — a distinction #13619 explicitly requires be kept.
+    let head = selecting_hop(
+        0,
+        base_variable(),
+        StructuralAccessOperator::HashRefSlot,
+        StructuralAccessSelector::StaticKey("b".to_string()),
+        "->{b}",
+        ValueShape::HashRef,
+    )?;
+    let build = |outcome, completeness, budget| {
+        StructuralAccessHop::new(
+            1,
+            StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+            StructuralAccessOperator::ArrayIndex,
+            StructuralAccessSelector::StaticIndex(0),
+            spelling("[0]", 10, 13)?,
+            outcome,
+            StructuralHopCertainty::Definite,
+            completeness,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticReasonCode::ExactSource,
+            budget,
+            Vec::new(),
+        )
+    };
+    let chain = |hop| StructuralAccessChain::new(subject()?, vec![head.clone(), hop]);
+    let ordinary = StructuralAccessBudget::new(99, 98)?;
+
+    // Rejected: both member-level answers.
+    contract_error(chain(build(
+        StructuralHopOutcome::AbsentMember,
+        StructuralAggregateCompleteness::Closed,
+        ordinary,
+    )?))?;
+    contract_error(chain(build(
+        StructuralHopOutcome::UnknownMember,
+        StructuralAggregateCompleteness::Open,
+        ordinary,
+    )?))?;
+
+    // Accepted: the honest conflict record, and the three outcomes that
+    // stopped before any member lookup could happen. Refusing these would
+    // reject truthful records.
+    chain(build(
+        StructuralHopOutcome::ShapeMismatch { observed: ValueShape::HashRef },
+        StructuralAggregateCompleteness::Closed,
+        ordinary,
+    )?)?;
+    chain(build(
+        StructuralHopOutcome::StaleGeneration,
+        StructuralAggregateCompleteness::Closed,
+        ordinary,
+    )?)?;
+    chain(build(
+        StructuralHopOutcome::BudgetExhausted,
+        StructuralAggregateCompleteness::Closed,
+        StructuralAccessBudget::new(99, 0)?,
+    )?)?;
+    chain(build(
+        StructuralHopOutcome::Boundary(dynamic_boundary(
+            BoundaryKind::SymbolicReference,
+            SemanticReasonCode::UnsupportedEffect,
+        )),
+        StructuralAggregateCompleteness::Closed,
+        ordinary,
+    )?)?;
+    Ok(())
+}
+
+#[test]
+fn a_permissive_shape_still_admits_a_member_level_answer() -> Result<(), Box<dyn Error>> {
+    // Negative control for the law above: `Unknown` and `Object` assert too
+    // little to contradict any operator, so an absence recorded after one of
+    // them is honest and must still validate. Without this, the law could be
+    // tightened into rejecting every non-selecting follow-on.
+    for shape in [
+        ValueShape::Unknown,
+        ValueShape::Object { package: "Staff".to_string(), confidence: Confidence::High },
+    ] {
+        let head = selecting_hop(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("b".to_string()),
+            "->{b}",
+            shape,
+        )?;
+        let absent = StructuralAccessHop::new(
+            1,
+            StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+            StructuralAccessOperator::ArrayIndex,
+            StructuralAccessSelector::StaticIndex(0),
+            spelling("[0]", 10, 13)?,
+            StructuralHopOutcome::AbsentMember,
+            StructuralHopCertainty::Definite,
+            StructuralAggregateCompleteness::Closed,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticReasonCode::ExactSource,
+            StructuralAccessBudget::new(99, 98)?,
+            Vec::new(),
+        )?;
+        StructuralAccessChain::new(subject()?, vec![head, absent])?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_dishonest_absence_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    // The serialised chain is the honest two-hop record: a hash reference,
+    // then an array index recorded as the mismatch it is. Only the final hop
+    // is mutated, and only its outcome, so the "no member through an
+    // incompatible shape" law is the single law left to reject it.
+    //
+    // This deliberately does not mutate `nested_chain`: that chain has three
+    // hops, so turning a middle hop non-selecting is caught by the "only the
+    // final hop may fail to select" law instead, and the test would pass
+    // without the law it claims to cover.
+    let head = selecting_hop(
+        0,
+        base_variable(),
+        StructuralAccessOperator::HashRefSlot,
+        StructuralAccessSelector::StaticKey("b".to_string()),
+        "->{b}",
+        ValueShape::HashRef,
+    )?;
+    let mismatch = StructuralAccessHop::new(
+        1,
+        StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+        StructuralAccessOperator::ArrayIndex,
+        StructuralAccessSelector::StaticIndex(0),
+        spelling("[0]", 10, 13)?,
+        StructuralHopOutcome::ShapeMismatch { observed: ValueShape::HashRef },
+        StructuralHopCertainty::Definite,
+        StructuralAggregateCompleteness::Closed,
+        StructuralAggregateDisposition::Stable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(crate::Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticReasonCode::ExactSource,
+        StructuralAccessBudget::new(99, 98)?,
+        Vec::new(),
+    )?;
+    let honest = StructuralAccessChain::new(subject()?, vec![head, mismatch])?;
+
+    let mut value = serde_json::to_value(&honest)?;
+    value["hops"][1]["outcome"] = serde_json::json!("AbsentMember");
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "an absence claimed through an incompatible shape must not survive transport"
+    );
+    // Control: the unmutated chain validates, so the rejection is the outcome
+    // swap and not some incidental defect in the fixture.
+    honest.validate()?;
+    Ok(())
+}

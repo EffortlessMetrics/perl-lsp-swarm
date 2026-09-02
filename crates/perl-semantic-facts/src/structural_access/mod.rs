@@ -744,6 +744,38 @@ impl StructuralHopOutcome {
         }
     }
 
+    /// Whether this outcome claims an answer about a *member* of the aggregate.
+    ///
+    /// [`Self::Selected`], [`Self::AbsentMember`] and [`Self::UnknownMember`]
+    /// all assert something about looking a member up — that one was found,
+    /// that none is there, or that it could not be established. Reaching any
+    /// of them means the operator applied to the aggregate in the first place.
+    ///
+    /// The rest are excluded, each for its own reason:
+    ///
+    /// - [`Self::ShapeMismatch`] is the honest record of the operator *not*
+    ///   applying, so it must remain available exactly where the others are
+    ///   refused; forbidding it would leave no way to record the conflict.
+    /// - [`Self::StaleGeneration`], [`Self::BudgetExhausted`] and
+    ///   [`Self::Boundary`] stopped before any member lookup happened, so
+    ///   they say nothing about members at all.
+    ///
+    /// This is deliberately *not* [`Self::depends_on_aggregate_contents`],
+    /// which includes `ShapeMismatch`. The two predicates answer different
+    /// questions — "is this claim about what the aggregate holds?" versus
+    /// "did this claim require the operator to apply?" — and collapsing them
+    /// would either forbid honest mismatches or admit dishonest absences.
+    #[must_use]
+    pub const fn claims_member_answer(&self) -> bool {
+        match self {
+            Self::Selected { .. } | Self::AbsentMember | Self::UnknownMember => true,
+            Self::ShapeMismatch { .. }
+            | Self::StaleGeneration
+            | Self::BudgetExhausted
+            | Self::Boundary(_) => false,
+        }
+    }
+
     /// Fold this outcome's identity into a fingerprint.
     pub(super) fn fold(&self, accumulator: Fingerprint) -> Fingerprint {
         let accumulator = accumulator.discriminant("outcome-kind", self.tag());

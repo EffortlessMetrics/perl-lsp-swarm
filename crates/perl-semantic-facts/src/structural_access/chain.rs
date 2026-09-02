@@ -89,11 +89,15 @@ impl StructuralAccessChain {
     ///    real conflict about the shape in hand: the operator must be one the
     ///    predecessor's known shape cannot carry, and the observed shape must
     ///    be the one the predecessor selected.
-    /// 7. A hop cannot claim a successful selection through an operator the
+    /// 7. A hop cannot claim any *member-level* answer through an operator the
     ///    predecessor's known shape cannot carry — a hash operator on a known
     ///    array reference, the reverse, or any subscript on a plain scalar, a
-    ///    code reference or a package name. `ShapeMismatch` says that honestly,
-    ///    and a symbolic dereference says so with its own boundary.
+    ///    code reference or a package name. That covers a claimed selection,
+    ///    but equally a claimed absence: `$scalar->{k}` is a strict-refs error,
+    ///    not a hash whose member happens to be missing, so recording it as
+    ///    `AbsentMember` would collapse wrong-shape into legitimate absence —
+    ///    a distinction #13619 requires be kept. `ShapeMismatch` says it
+    ///    honestly, and a symbolic dereference says so with its own boundary.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -169,9 +173,9 @@ impl StructuralAccessChain {
             // `ShapeMismatch` remains available to record a genuine mismatch.
             if let StructuralHopOutcome::Selected { shape, .. } = previous.outcome() {
                 let carries = shape_carries(shape, next.operator().is_keyed());
-                if next.outcome().is_selecting() && !carries {
+                if next.outcome().claims_member_answer() && !carries {
                     return Err(StructuralAccessContractError::ContradictoryStatus(
-                        "an operator cannot select through a shape that cannot carry it",
+                        "an operator cannot reach a member through a shape that cannot carry it",
                     ));
                 }
 
