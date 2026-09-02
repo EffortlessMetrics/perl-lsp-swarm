@@ -852,8 +852,22 @@ fn enumerate_objects(
     repository: &Path,
     candidate: &CandidateIdentity,
 ) -> Result<Vec<String>, (HandoffOutcome, String)> {
-    let mut arguments: Vec<&str> =
-        vec!["rev-list", "--objects", "--no-walk", "--end-of-options", &candidate.commit];
+    // `--no-object-names` is load-bearing, not a tidiness flag. Without it
+    // `rev-list --objects` emits `<id> <path>` lines, and a tracked path may
+    // contain a newline: the text after it becomes its own line, and if that
+    // text begins with forty hex characters it parses as another transported
+    // object. The candidate would then declare an object its closure does not
+    // contain, and `check` would refuse an envelope for a candidate that was
+    // never malformed. Asking Git not to print paths removes the ambiguity at
+    // the source rather than trying to out-parse it.
+    let mut arguments: Vec<&str> = vec![
+        "rev-list",
+        "--objects",
+        "--no-object-names",
+        "--no-walk",
+        "--end-of-options",
+        &candidate.commit,
+    ];
     for parent in &candidate.parents {
         arguments.push(parent);
     }
@@ -866,12 +880,25 @@ fn enumerate_objects(
         ));
     }
 
+    // Every line is now an object id and nothing else, so a line that is not one
+    // is unexpected Git output rather than something to step over. Skipping it
+    // would silently shrink the declared set — the same failure this module
+    // refuses in the inventory and gitlink readers — and an incomplete
+    // `object_ids` is exactly what makes an envelope validate as a candidate it
+    // does not carry.
     let mut ids: BTreeSet<String> = BTreeSet::new();
     for line in output.stdout().lines() {
-        let id = line.split(' ').next().unwrap_or_default().trim();
-        if is_full_object_id(id) {
-            ids.insert(id.to_string());
+        let id = line.trim();
+        if id.is_empty() {
+            continue;
         }
+        if !is_full_object_id(id) {
+            return Err((
+                HandoffOutcome::InstrumentFailure,
+                "object enumeration produced a record that is not an object id".to_string(),
+            ));
+        }
+        ids.insert(id.to_string());
     }
     if !ids.contains(&candidate.commit) {
         return Err((

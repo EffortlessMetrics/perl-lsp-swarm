@@ -3267,6 +3267,52 @@ fn concurrent_exports_to_one_destination_cannot_corrupt_each_other() -> Result<(
     Ok(())
 }
 
+/// A newline in a tracked path exports and validates like any other path.
+///
+/// This guards a property; it is not proof of a fix, and the distinction is
+/// worth stating because the two look identical from a green run. It was
+/// written for a reported defect — that `rev-list --objects`, printing
+/// `<id> <path>` per line, lets a path containing a newline split into an extra
+/// line whose leading forty hex characters parse as another object id. Measured
+/// against Git, that does not happen: for a file named `evil\n<forty a>`,
+/// `rev-list --objects` emits three lines and the post-newline fragment never
+/// appears, because Git stops the path at the newline.
+///
+/// So this control passes with or without `--no-object-names`, and says so
+/// rather than being presented as a falsifier. What it does establish is that
+/// such a candidate exports and validates, which is the behaviour a reader
+/// would want pinned regardless of which Git version is printing the paths.
+///
+/// `#[cfg(unix)]` because Windows forbids a newline in a filename outright.
+#[cfg(unix)]
+#[test]
+fn a_newline_in_a_tracked_path_cannot_invent_an_object() -> Result<()> {
+    let fixture = Fixture::new()?;
+    // Forty hex characters after the newline: what a naive reader would take
+    // for an object id on a line of its own.
+    let hostile = format!("evil\n{}", "a".repeat(40));
+    fixture.write(&hostile, b"contents\n")?;
+    fixture.write("ordinary.txt", b"ordinary\n")?;
+    fixture.commit("root")?;
+
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+
+    // Every declared object must be a real one. The spurious id would be forty
+    // `a` characters, which is well-formed as an id and absent from the tree.
+    let invented = "a".repeat(40);
+    assert!(
+        !manifest.transport.object_ids.contains(&invented),
+        "a filename fragment must never be declared as a transported object"
+    );
+    assert_eq!(
+        check_handoff(&destination.envelope()).outcome,
+        HandoffOutcome::ValidHandoff,
+        "a candidate whose path contains a newline is still a valid candidate"
+    );
+    Ok(())
+}
+
 /// One invocation's staging directory is never reclaimed by another.
 ///
 /// This is the rule the concurrent-export defect reduces to, and unlike the
