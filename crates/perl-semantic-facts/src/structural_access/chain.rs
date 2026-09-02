@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     STRUCTURAL_ACCESS_CHAIN_SCHEMA_VERSION, STRUCTURAL_ACCESS_SCHEMA_TAG,
-    StructuralAccessAggregate, StructuralAccessContractError, StructuralAccessHop,
-    StructuralAccessSubject, StructuralHopOutcome,
+    StructuralAccessContractError, StructuralAccessHop, StructuralAccessSubject,
+    StructuralHopOutcome,
 };
 use crate::semantic_identity::SemanticIdentityFingerprint;
 
@@ -19,9 +19,9 @@ use crate::semantic_identity::SemanticIdentityFingerprint;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuralAccessChain {
     /// Contract schema version.
-    pub schema_version: u32,
+    schema_version: u32,
     /// Source, document, project, and root generation the chain holds under.
-    pub subject: StructuralAccessSubject,
+    subject: StructuralAccessSubject,
     /// Ordered hops, first written first.
     hops: Vec<StructuralAccessHop>,
 }
@@ -41,6 +41,18 @@ impl StructuralAccessChain {
         Ok(chain)
     }
 
+    /// Contract schema version this chain was built under.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Source, document, project, and root generation the chain holds under.
+    #[must_use]
+    pub const fn subject(&self) -> &StructuralAccessSubject {
+        &self.subject
+    }
+
     /// Ordered hop view.
     #[must_use]
     pub fn hops(&self) -> &[StructuralAccessHop] {
@@ -53,7 +65,7 @@ impl StructuralAccessChain {
     /// read that hop's outcome rather than substituting an absence.
     #[must_use]
     pub fn selected(&self) -> Option<&StructuralHopOutcome> {
-        self.hops.last().map(|hop| &hop.outcome).filter(|outcome| outcome.is_selecting())
+        self.hops.last().map(StructuralAccessHop::outcome).filter(|outcome| outcome.is_selecting())
     }
 
     /// Validate the chain and every hop in it.
@@ -70,6 +82,8 @@ impl StructuralAccessChain {
     ///    more remaining units than its predecessor ended with.
     /// 5. Every hop is anchored in the subject's own document. A chain is one
     ///    access in one file; a hop anchored elsewhere is not part of it.
+    /// 6. The subject itself validates. A chain reconstructed by serde never
+    ///    ran the subject's constructor, so this is where that check lands.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -79,6 +93,7 @@ impl StructuralAccessChain {
                 "chain schema version is not the version this contract validates",
             ));
         }
+        self.subject.validate()?;
         if self.hops.is_empty() {
             return Err(StructuralAccessContractError::MalformedChain(
                 "a structural access chain must contain at least one hop",
@@ -88,7 +103,7 @@ impl StructuralAccessChain {
         for (position, hop) in self.hops.iter().enumerate() {
             hop.validate()?;
 
-            if hop.spelling.anchor.file_id != self.subject.document {
+            if hop.spelling().anchor.file_id != self.subject.document {
                 return Err(StructuralAccessContractError::MalformedChain(
                     "every hop must be anchored in the chain subject's own document",
                 ));
@@ -99,38 +114,29 @@ impl StructuralAccessChain {
                     "chain length exceeds the ordinal space",
                 ));
             };
-            if hop.ordinal != expected {
+            if hop.ordinal() != expected {
                 return Err(StructuralAccessContractError::AggregateChainPosition {
-                    ordinal: hop.ordinal,
+                    ordinal: hop.ordinal(),
                     reason: "hop ordinals must be a dense ascending sequence from zero",
                 });
             }
 
-            // A hop's own `validate` already proves it names ordinal - 1; this
-            // re-derives the link against the actual predecessor so a chain
-            // assembled from separately valid hops cannot smuggle in a gap.
-            if let StructuralAccessAggregate::PrecedingHop { ordinal } = &hop.aggregate {
-                let predecessor = position.checked_sub(1).and_then(|index| self.hops.get(index));
-                match predecessor {
-                    Some(previous) if previous.ordinal == *ordinal => {}
-                    _ => {
-                        return Err(StructuralAccessContractError::AggregateChainPosition {
-                            ordinal: hop.ordinal,
-                            reason: "the named preceding hop is not this hop's predecessor",
-                        });
-                    }
-                }
-            }
+            // The predecessor link needs no separate check here. A hop's own
+            // `validate` proves a `PrecedingHop` aggregate names `ordinal - 1`,
+            // and the dense-ordinal check above proves `ordinal == position`;
+            // together those force the named predecessor to be the hop at
+            // `position - 1`, which this loop already validated. An explicit
+            // re-derivation would be unreachable code.
         }
 
         for window in self.hops.windows(2) {
             let (previous, next) = (&window[0], &window[1]);
-            if !previous.outcome.is_selecting() {
+            if !previous.outcome().is_selecting() {
                 return Err(StructuralAccessContractError::ContradictoryStatus(
                     "only the final hop may fail to select; nothing can be selected out of nothing",
                 ));
             }
-            if next.budget.units_before > previous.budget.units_after {
+            if next.budget().units_before > previous.budget().units_after {
                 return Err(StructuralAccessContractError::MalformedBudget(
                     "a hop cannot begin with more remaining units than its predecessor left",
                 ));

@@ -122,7 +122,7 @@ fn nested_chain() -> Result<StructuralAccessChain, StructuralAccessContractError
 #[test]
 fn nested_chain_round_trips_and_preserves_written_operator_order() -> Result<(), Box<dyn Error>> {
     let chain = nested_chain()?;
-    let operators: Vec<_> = chain.hops().iter().map(|hop| hop.operator).collect();
+    let operators: Vec<_> = chain.hops().iter().map(StructuralAccessHop::operator).collect();
     assert_eq!(
         operators,
         [
@@ -368,32 +368,81 @@ fn absence_unknown_mismatch_stale_and_exhaustion_are_all_distinct() -> Result<()
 #[test]
 fn spelling_is_evidence_and_never_participates_in_identity() -> Result<(), Box<dyn Error>> {
     // Negative control for "no source substring scan may decide the operator
-    // class": two hops that differ only in written text and position are the
-    // same access, and a hop whose text *looks* like an arrow is still
-    // classified by its operator field alone.
-    let mut moved = selecting_hop(
-        0,
-        base_variable(),
-        StructuralAccessOperator::HashSlot,
-        StructuralAccessSelector::StaticKey("groups".to_string()),
-        "{groups}",
-        ValueShape::HashRef,
-    )?;
-    let original_fingerprint = moved.fingerprint();
+    // class": hops that differ only in written text and position are the same
+    // access, and a hop whose text *looks* like an arrow is still classified
+    // by its operator field alone.
+    let build = |text: &str, start: u32, end: u32| {
+        StructuralAccessHop::new(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("groups".to_string()),
+            spelling(text, start, end)?,
+            StructuralHopOutcome::Selected { shape: ValueShape::HashRef, value_fact: None },
+            StructuralHopCertainty::Definite,
+            StructuralAggregateCompleteness::Closed,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticReasonCode::ExactSource,
+            StructuralAccessBudget::new(10, 9)?,
+            Vec::new(),
+        )
+    };
+    let original = build("{groups}", 0, 8)?;
 
-    moved.spelling = spelling("  {groups}  ", 4096, 4108)?;
+    // Reformatted and relocated: same access.
+    let moved = build("  {groups}  ", 4096, 4108)?;
     assert_eq!(
         moved.fingerprint(),
-        original_fingerprint,
+        original.fingerprint(),
         "reformatting or moving a hop must not change what it is"
     );
 
     // Text containing an earlier arrow cannot make this a hashref slot.
-    moved.spelling = spelling("->{outer}{groups}", 0, 17)?;
-    moved.validate()?;
-    assert_eq!(moved.operator, StructuralAccessOperator::HashSlot);
-    assert!(!moved.operator.dereferences());
-    assert_eq!(moved.fingerprint(), original_fingerprint);
+    let arrow_text = build("->{outer}{groups}", 0, 17)?;
+    assert_eq!(arrow_text.operator(), StructuralAccessOperator::HashSlot);
+    assert!(!arrow_text.operator().dereferences());
+    assert_eq!(arrow_text.fingerprint(), original.fingerprint());
+    Ok(())
+}
+
+#[test]
+fn a_dynamic_key_hop_never_digests_as_a_dynamic_index_hop() -> Result<(), Box<dyn Error>> {
+    // Law 1 forbids pairing a dynamic index with a keyed operator, so the
+    // realistic pair varies operator and selector together. The selector-kind
+    // discriminant must still keep them apart on its own: dropping it would
+    // leave both folding the identical boundary text.
+    let boundary = dynamic_boundary(BoundaryKind::DynamicValue, SemanticReasonCode::DynamicValue);
+    let build = |operator, selector| {
+        StructuralAccessHop::new(
+            0,
+            base_variable(),
+            operator,
+            selector,
+            spelling("[$i]", 0, 4)?,
+            StructuralHopOutcome::Boundary(boundary.clone()),
+            StructuralHopCertainty::Possible,
+            StructuralAggregateCompleteness::Open,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::DynamicBoundary),
+            SemanticConfidence::Known(Confidence::Low),
+            SemanticReasonCode::DynamicValue,
+            StructuralAccessBudget::new(10, 9)?,
+            vec![StructuralAccessLimitation::DynamicSelector],
+        )
+    };
+    let keyed = build(
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessSelector::DynamicKey(boundary.clone()),
+    )?;
+    let indexed = build(
+        StructuralAccessOperator::ArrayIndex,
+        StructuralAccessSelector::DynamicIndex(boundary.clone()),
+    )?;
+    assert_ne!(keyed.fingerprint(), indexed.fingerprint());
     Ok(())
 }
 
@@ -756,7 +805,7 @@ fn an_unnameable_aggregate_uses_a_typed_identity_not_a_rendered_label() -> Resul
         vec![StructuralAccessLimitation::OpenAggregate],
     )?;
     assert_ne!(by_fact.fingerprint(), by_boundary.fingerprint());
-    assert_ne!(by_fact.aggregate.tag(), by_boundary.aggregate.tag());
+    assert_ne!(by_fact.aggregate().tag(), by_boundary.aggregate().tag());
     Ok(())
 }
 
@@ -1041,6 +1090,30 @@ fn a_hop_anchored_in_another_document_cannot_join_the_chain() -> Result<(), Box<
     assert!(
         StructuralAccessChain::new(subject()?, vec![foreign]).is_err(),
         "a hop anchored in another document must not join this chain"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_blank_workspace_root_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["subject"]["workspace_root"] = serde_json::json!("   ");
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "a blank workspace root must not survive the transport boundary"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_impossible_budget_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["hops"][0]["budget"]["units_after"] = serde_json::json!(u32::MAX);
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "a hop that gained units must not survive the transport boundary"
     );
     Ok(())
 }

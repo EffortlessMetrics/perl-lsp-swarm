@@ -22,33 +22,33 @@ use crate::{SemanticConfidence, SemanticProducer, SemanticProvenance, SemanticRe
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuralAccessHop {
     /// Zero-based position of this hop in its chain.
-    pub ordinal: u32,
+    ordinal: u32,
     /// What this hop selected out of.
-    pub aggregate: StructuralAccessAggregate,
+    aggregate: StructuralAccessAggregate,
     /// The local operator exactly as written at this position.
-    pub operator: StructuralAccessOperator,
+    operator: StructuralAccessOperator,
     /// Canonical identity of the member selected.
-    pub selector: StructuralAccessSelector,
+    selector: StructuralAccessSelector,
     /// Source spelling and range. Evidence only; never folded into identity.
-    pub spelling: StructuralAccessSpelling,
+    spelling: StructuralAccessSpelling,
     /// What the hop produced, or why it produced nothing.
-    pub outcome: StructuralHopOutcome,
+    outcome: StructuralHopOutcome,
     /// Whether the outcome holds on every path or only on some path.
-    pub certainty: StructuralHopCertainty,
+    certainty: StructuralHopCertainty,
     /// Whether the aggregate's member set is closed.
-    pub completeness: StructuralAggregateCompleteness,
+    completeness: StructuralAggregateCompleteness,
     /// Whether the aggregate escaped or was mutated.
-    pub disposition: StructuralAggregateDisposition,
+    disposition: StructuralAggregateDisposition,
     /// Producer subsystem that derived the hop.
-    pub producer: SemanticProducer,
+    producer: SemanticProducer,
     /// How the hop was derived.
-    pub provenance: SemanticProvenance,
+    provenance: SemanticProvenance,
     /// Confidence in the hop.
-    pub confidence: SemanticConfidence,
+    confidence: SemanticConfidence,
     /// Why the hop is exact, degraded, or refused.
-    pub reason_code: SemanticReasonCode,
+    reason_code: SemanticReasonCode,
     /// Work accounting across this hop.
-    pub budget: StructuralAccessBudget,
+    budget: StructuralAccessBudget,
     /// Canonical limitation view; sorted and de-duplicated by the constructor.
     limitations: Vec<StructuralAccessLimitation>,
 }
@@ -109,6 +109,90 @@ impl StructuralAccessHop {
         &self.limitations
     }
 
+    /// Zero-based position of this hop in its chain.
+    #[must_use]
+    pub const fn ordinal(&self) -> u32 {
+        self.ordinal
+    }
+
+    /// What this hop selected out of.
+    #[must_use]
+    pub const fn aggregate(&self) -> &StructuralAccessAggregate {
+        &self.aggregate
+    }
+
+    /// The local operator exactly as written at this position.
+    #[must_use]
+    pub const fn operator(&self) -> StructuralAccessOperator {
+        self.operator
+    }
+
+    /// Canonical identity of the member selected.
+    #[must_use]
+    pub const fn selector(&self) -> &StructuralAccessSelector {
+        &self.selector
+    }
+
+    /// Source spelling and range. Evidence only; never part of identity.
+    #[must_use]
+    pub const fn spelling(&self) -> &StructuralAccessSpelling {
+        &self.spelling
+    }
+
+    /// What the hop produced, or why it produced nothing.
+    #[must_use]
+    pub const fn outcome(&self) -> &StructuralHopOutcome {
+        &self.outcome
+    }
+
+    /// Whether the outcome holds on every path or only on some path.
+    #[must_use]
+    pub const fn certainty(&self) -> StructuralHopCertainty {
+        self.certainty
+    }
+
+    /// Whether the aggregate's member set is closed.
+    #[must_use]
+    pub const fn completeness(&self) -> StructuralAggregateCompleteness {
+        self.completeness
+    }
+
+    /// Whether the aggregate escaped or was mutated.
+    #[must_use]
+    pub const fn disposition(&self) -> StructuralAggregateDisposition {
+        self.disposition
+    }
+
+    /// Producer subsystem that derived the hop.
+    #[must_use]
+    pub const fn producer(&self) -> SemanticProducer {
+        self.producer
+    }
+
+    /// How the hop was derived.
+    #[must_use]
+    pub const fn provenance(&self) -> SemanticProvenance {
+        self.provenance
+    }
+
+    /// Confidence in the hop.
+    #[must_use]
+    pub const fn confidence(&self) -> SemanticConfidence {
+        self.confidence
+    }
+
+    /// Why the hop is exact, degraded, or refused.
+    #[must_use]
+    pub const fn reason_code(&self) -> SemanticReasonCode {
+        self.reason_code
+    }
+
+    /// Work accounting across this hop.
+    #[must_use]
+    pub const fn budget(&self) -> StructuralAccessBudget {
+        self.budget
+    }
+
     /// Validate every law this hop must satisfy on its own.
     ///
     /// Chain-position agreement beyond the hop's own ordinal, and cross-hop
@@ -135,6 +219,7 @@ impl StructuralAccessHop {
     /// Returns the first violated law as a [`StructuralAccessContractError`].
     pub fn validate(&self) -> Result<(), StructuralAccessContractError> {
         self.aggregate.validate()?;
+        self.budget.validate()?;
 
         if self.spelling.text.trim().is_empty() {
             return Err(StructuralAccessContractError::EmptyIdentityField(
@@ -228,8 +313,9 @@ impl StructuralAccessHop {
     /// The fingerprint folds the schema tag, ordinal, aggregate, operator,
     /// selector, outcome, and honesty state. It deliberately excludes the
     /// source spelling and anchor: reformatting a file must not change what a
-    /// hop *is*. It also excludes producer/confidence/budget, which record how
-    /// the hop was obtained rather than which access it describes.
+    /// hop *is*. It likewise excludes producer, provenance, confidence,
+    /// reason code, budget, and limitations — each records how the hop was
+    /// obtained or how far it can be trusted, not which access it describes.
     ///
     /// Fingerprint equality is a candidate match to be confirmed by structural
     /// equality, never proof of identity.

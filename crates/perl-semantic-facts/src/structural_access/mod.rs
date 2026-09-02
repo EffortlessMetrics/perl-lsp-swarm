@@ -46,6 +46,13 @@
 //! fingerprint match as a candidate confirmed by structural equality rather
 //! than as proof of identity.
 //!
+//! [`StructuralAccessHop`] and [`StructuralAccessChain`] therefore keep their
+//! fields private behind validated constructors and read-only accessors, as
+//! [`crate::semantic_identity`] does. The laws here are cross-field — a
+//! certainty is only honest relative to a disposition, an ordinal only
+//! relative to an aggregate — so a record whose fields could be reassigned
+//! after construction would carry no guarantee at all.
+//!
 //! # Ownership fence
 //!
 //! This module owns no LSP protocol type, parser type, AST type, provider
@@ -414,14 +421,30 @@ impl StructuralAccessSubject {
         workspace_root: Option<String>,
         project_generation: Option<SourceGeneration>,
     ) -> Result<Self, StructuralAccessContractError> {
-        if let Some(root) = workspace_root.as_ref()
+        let subject = Self { document, source_generation, workspace_root, project_generation };
+        subject.validate()?;
+        Ok(subject)
+    }
+
+    /// Validate the subject.
+    ///
+    /// Separate from [`Self::new`] because a subject can also arrive through
+    /// serde, which reconstructs the shape without running the constructor.
+    /// [`StructuralAccessChain::validate`] calls this so the documented
+    /// transport trust boundary actually holds.
+    ///
+    /// # Errors
+    /// Returns [`StructuralAccessContractError::EmptyIdentityField`] when the
+    /// workspace root is present but blank.
+    pub fn validate(&self) -> Result<(), StructuralAccessContractError> {
+        if let Some(root) = self.workspace_root.as_ref()
             && root.trim().is_empty()
         {
             return Err(StructuralAccessContractError::EmptyIdentityField(
                 "StructuralAccessSubject.workspace_root",
             ));
         }
-        Ok(Self { document, source_generation, workspace_root, project_generation })
+        Ok(())
     }
 
     /// Fold this subject's identity into a fingerprint.
@@ -497,12 +520,30 @@ impl StructuralAccessBudget {
         units_before: u32,
         units_after: u32,
     ) -> Result<Self, StructuralAccessContractError> {
-        if units_after > units_before {
+        let budget = Self { units_before, units_after };
+        match budget.validate() {
+            Ok(()) => Ok(budget),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Validate the accounting.
+    ///
+    /// Separate from [`Self::new`] because a budget can also arrive through
+    /// serde, which reconstructs the shape without running the constructor.
+    /// [`StructuralAccessHop::validate`] calls this so the documented
+    /// transport trust boundary actually holds.
+    ///
+    /// # Errors
+    /// Returns [`StructuralAccessContractError::MalformedBudget`] when the
+    /// remaining units increased across the hop.
+    pub const fn validate(&self) -> Result<(), StructuralAccessContractError> {
+        if self.units_after > self.units_before {
             return Err(StructuralAccessContractError::MalformedBudget(
                 "remaining units cannot increase across a hop",
             ));
         }
-        Ok(Self { units_before, units_after })
+        Ok(())
     }
 
     /// Whether the hop consumed the last remaining unit.
