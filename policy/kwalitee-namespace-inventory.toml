@@ -62,7 +62,7 @@ schema_version = "kwalitee_namespace_inventory.v1"
 controller_issue = 8752
 
 [[excluded_surface]]
-pattern = "target"
+pattern = "target/**"
 owner_issue = 8752
 reason = "Ephemeral build output; generated receipts under target/ are artifacts of runs, never repository callers."
 
@@ -88,7 +88,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["dd559eb5d5181b9a", "3caa21752901b6d0", "de691b5109d705c3", "bafb9de490c49ac7"]
+line_hashes = ["97394a8a5c3d4d64de64db773a0737b927a0035c621e0c626404d10754fdbe07", "78b23f8151286b6d0182972300ab22f1f2d0c68b99c92723f4814b04831655c1", "141e6333170293a6f1f31971efa446ad75ef07cd576595c1485cfb7b4227d2be", "e5f3583478009b59332f16a282dadf41d25c577edb0c3be19cf2c341acaae594"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/legacy_reader.json"
@@ -98,7 +98,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["aebd5f1350af3af0"]
+line_hashes = ["0eff6f33884088c8b13e7a343d4e3101afb53910331b2bcdf056547cf4b2aee2"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/migration_reference.md"
@@ -108,7 +108,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["a34e2cb5c1f14d05", "75aeeb12fb100987", "047f7c897d7999c5", "da9b375e8c801bab", "e0551a36ea4ddfc0", "8542ce169d920e62"]
+line_hashes = ["5da9851a631be4caac76d582b7f39db2abc4c3574f0485c73738ac0408e956a3", "c1f3e4a383cb54bbcfebd61dc9120d4225c70db19848f9d53a6bc4e0ad639723", "bd928cdb7ee87126b34f06f97b1032e44738730e8b49595bf4c2a6422162530e", "60d44894326cfb11586a7c5adad8d3612d9fade25d70eb71454ed420b26e8747", "9ecc602ffd5de91460a0692b727aa054015d4bb8346944d80598464223b1b043", "96227b9e76e9b41e52700c36228c8573bb4ba594e50e07bde397a27eb41eeea4"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_non_strict.json"
@@ -118,7 +118,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["aebd5f1350af3af0", "49aab56d9dd6d6cb", "d1bed83ca339c106", "9d14e1819241f5c9"]
+line_hashes = ["0eff6f33884088c8b13e7a343d4e3101afb53910331b2bcdf056547cf4b2aee2", "5a5459a260605c2c3f2ff794aca2c823e42e801a7f68990b2baa5f61b61b3953", "3bb594010a170434a60855da27327930d6992c93fafee4bbc1cb039af7fc8a84", "461cfe362f1cc3f313e3b76429a5af6f6c8216573f46c926ad8a51b211a3f5b1"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_non_strict.md"
@@ -128,7 +128,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["1f1161f39f1855eb", "f45c07cbd8550067"]
+line_hashes = ["ad0045e34d31c545c44b205100187db75f7292127dc2d127ad56f7cbf2404575", "4ba8a6336ffe4091aceb000a9a86be8c5cbec91881a55280ffe328a7eab674e0"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_strict.json"
@@ -138,7 +138,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["aebd5f1350af3af0", "49aab56d9dd6d6cb", "d1bed83ca339c106", "9d14e1819241f5c9"]
+line_hashes = ["0eff6f33884088c8b13e7a343d4e3101afb53910331b2bcdf056547cf4b2aee2", "5a5459a260605c2c3f2ff794aca2c823e42e801a7f68990b2baa5f61b61b3953", "3bb594010a170434a60855da27327930d6992c93fafee4bbc1cb039af7fc8a84", "461cfe362f1cc3f313e3b76429a5af6f6c8216573f46c926ad8a51b211a3f5b1"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/nightly_strict.md"
@@ -148,7 +148,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["1f1161f39f1855eb", "f45c07cbd8550067"]
+line_hashes = ["ad0045e34d31c545c44b205100187db75f7292127dc2d127ad56f7cbf2404575", "4ba8a6336ffe4091aceb000a9a86be8c5cbec91881a55280ffe328a7eab674e0"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_non_strict.json"
@@ -158,7 +158,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["aebd5f1350af3af0", "49aab56d9dd6d6cb", "d1bed83ca339c106", "9d14e1819241f5c9"]
+line_hashes = ["0eff6f33884088c8b13e7a343d4e3101afb53910331b2bcdf056547cf4b2aee2", "5a5459a260605c2c3f2ff794aca2c823e42e801a7f68990b2baa5f61b61b3953", "3bb594010a170434a60855da27327930d6992c93fafee4bbc1cb039af7fc8a84", "461cfe362f1cc3f313e3b76429a5af6f6c8216573f46c926ad8a51b211a3f5b1"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_non_strict.md"
@@ -168,7 +168,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["1f1161f39f1855eb", "f45c07cbd8550067"]
+line_hashes = ["ad0045e34d31c545c44b205100187db75f7292127dc2d127ad56f7cbf2404575", "4ba8a6336ffe4091aceb000a9a86be8c5cbec91881a55280ffe328a7eab674e0"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_strict.json"
@@ -178,7 +178,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["aebd5f1350af3af0", "49aab56d9dd6d6cb", "d1bed83ca339c106", "9d14e1819241f5c9"]
+line_hashes = ["0eff6f33884088c8b13e7a343d4e3101afb53910331b2bcdf056547cf4b2aee2", "5a5459a260605c2c3f2ff794aca2c823e42e801a7f68990b2baa5f61b61b3953", "3bb594010a170434a60855da27327930d6992c93fafee4bbc1cb039af7fc8a84", "461cfe362f1cc3f313e3b76429a5af6f6c8216573f46c926ad8a51b211a3f5b1"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/pr_strict.md"
@@ -188,7 +188,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["1f1161f39f1855eb", "f45c07cbd8550067"]
+line_hashes = ["ad0045e34d31c545c44b205100187db75f7292127dc2d127ad56f7cbf2404575", "4ba8a6336ffe4091aceb000a9a86be8c5cbec91881a55280ffe328a7eab674e0"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.json"
@@ -198,7 +198,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["aebd5f1350af3af0", "49aab56d9dd6d6cb", "d1bed83ca339c106", "9d14e1819241f5c9"]
+line_hashes = ["0eff6f33884088c8b13e7a343d4e3101afb53910331b2bcdf056547cf4b2aee2", "5a5459a260605c2c3f2ff794aca2c823e42e801a7f68990b2baa5f61b61b3953", "3bb594010a170434a60855da27327930d6992c93fafee4bbc1cb039af7fc8a84", "461cfe362f1cc3f313e3b76429a5af6f6c8216573f46c926ad8a51b211a3f5b1"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_non_strict.md"
@@ -208,7 +208,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["1f1161f39f1855eb", "f45c07cbd8550067"]
+line_hashes = ["ad0045e34d31c545c44b205100187db75f7292127dc2d127ad56f7cbf2404575", "4ba8a6336ffe4091aceb000a9a86be8c5cbec91881a55280ffe328a7eab674e0"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.json"
@@ -218,7 +218,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["aebd5f1350af3af0", "49aab56d9dd6d6cb", "d1bed83ca339c106", "9d14e1819241f5c9"]
+line_hashes = ["0eff6f33884088c8b13e7a343d4e3101afb53910331b2bcdf056547cf4b2aee2", "5a5459a260605c2c3f2ff794aca2c823e42e801a7f68990b2baa5f61b61b3953", "3bb594010a170434a60855da27327930d6992c93fafee4bbc1cb039af7fc8a84", "461cfe362f1cc3f313e3b76429a5af6f6c8216573f46c926ad8a51b211a3f5b1"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/expected/release_strict.md"
@@ -228,7 +228,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["1f1161f39f1855eb", "f45c07cbd8550067"]
+line_hashes = ["ad0045e34d31c545c44b205100187db75f7292127dc2d127ad56f7cbf2404575", "4ba8a6336ffe4091aceb000a9a86be8c5cbec91881a55280ffe328a7eab674e0"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/input/legacy_receipt_v1.json"
@@ -238,7 +238,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["aebd5f1350af3af0"]
+line_hashes = ["0eff6f33884088c8b13e7a343d4e3101afb53910331b2bcdf056547cf4b2aee2"]
 
 [[entry]]
 path = ".ci/fixtures/perl-kwalitee-legacy-parity/manifest.json"
@@ -248,7 +248,7 @@ owner_issue = 7192
 removal_condition = "Deleted with the frozen parity proof when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Byte-level parity fixture for the frozen perl_kwalitee.v1 reader; proof, not an active caller."
-line_hashes = ["6892d63b4d5cd9b9", "1a3158906f879a74", "30a037cc933c3732"]
+line_hashes = ["7fe6d47f30db9a569b7513ff691c7b740a4a0cc64700811c587ae3fa1e4fd574", "773ffdb9dc6ec549b67a40cf8966f510a4809212b1ba0ea831a5eef10ee890a9", "d3db4ec5f22e6d0bd8468af01da7777d3dae405c170298012c20293470a8d0fe"]
 
 [[entry]]
 path = ".ci/gate-policy.yaml"
@@ -258,7 +258,7 @@ owner_issue = 7166
 removal_condition = "Package gate rows re-point at the readiness crate rename (#7166) and then at the reclaimed native analyser (#7185)."
 allowed_to_remain = true
 note = "CI package occupancy of the namespace, not an evaluator caller."
-line_hashes = ["1cb6a27f1b139bc3", "24bc5382ec182c2c"]
+line_hashes = ["3866c3bd52429f7faee96d7ba7761cf9e987139bb4bd3919feab80f78668e7f9", "057d3d7d7aa8360b5de8b5e4567232bc746fdab07782f4bc4b9155d84d03f369"]
 
 [[entry]]
 path = ".ci/kwalitee/perlcriticrc"
@@ -268,7 +268,7 @@ owner_issue = 4791
 removal_condition = "Profile rows move with the critic/formatter compatibility gates onto the engineering-evidence rails (#4791)."
 allowed_to_remain = true
 note = "Active gate input for the compatibility indicators."
-line_hashes = ["a8864590fae1d5c6"]
+line_hashes = ["3cf72306c5df6b1a3354e2da6b55f9042f1fb61bd9b13b89d9935d5cf8ae3f2a"]
 
 [[entry]]
 path = ".ci/kwalitee/perltidyrc"
@@ -278,7 +278,7 @@ owner_issue = 4791
 removal_condition = "Profile rows move with the critic/formatter compatibility gates onto the engineering-evidence rails (#4791)."
 allowed_to_remain = true
 note = "Active gate input for the compatibility indicators."
-line_hashes = ["07b6e9429ae677b7"]
+line_hashes = ["61ced3271f4ddc57345c9d8a465ea066581ae9fdf57753935d842891c5698f77"]
 
 [[entry]]
 path = ".ci/policies/agent-context-policy.toml"
@@ -288,7 +288,7 @@ owner_issue = 7166
 removal_condition = "Tracked-context package row follows the crate rename (#7166)."
 allowed_to_remain = true
 note = "Names the package as data for agent context sizing."
-line_hashes = ["5ff379aca61ed5d1"]
+line_hashes = ["6c1e53e25357fb32271c0622e1f4003e27d19d522b3a124cf0e2150d6ac94e07"]
 
 [[entry]]
 path = ".github/workflows/ci-nightly.yml"
@@ -298,7 +298,7 @@ owner_issue = 7191
 removal_condition = "The live nightly readiness caller leaves the namespace when the rails own the gate (#7191); the alias is removed by #7192."
 allowed_to_remain = true
 note = "The active command caller this inventory must distinguish from archived readability."
-line_hashes = ["c9a4088e338af573", "6116cfdb98c1bd6d", "51c4c95621242dd0", "ba6906359ad07d1f", "718a44a18667b3c4", "a2f48d79a09b5d9e", "38322a64e79aa538", "c42871bdaf8fc72a", "a2bb5a43c9d1ce82", "530671de83f14355", "fe58b8844e770755"]
+line_hashes = ["6e4fc7620ba6cbd0c085c4dfce9fd248d36eb784a91f6ea950a486fc28b7be2e", "e7dec40ab10fb27033175b68a4aeee4fada18ca405f0ec4e61d9f1f06a775581", "bc748dc1c3f4139bbaf1d8d131be2563a056e730063a02548f9c4ef4a6208509", "b6a9c099edecc51ca04384b37691d9bca9d20caf7a07d7e1257bf3c6e4befa5e", "d83b3d335b42caed708c0dd2ffdaaa822f768bee9cc6c60bac15f033e5eb729b", "c69bd28e30f8dd7b7076143d80dce49f8c584169dac165df754d8a9583602de4", "7c3d1357cb060a425789a5a7e6782e25d6ae1d4acd8959a0da46907216b31adc", "6d0b48c82804700d0ee784865f24648c938cda79cf047a4482f635a101f6e0aa", "9d1c477270c538961aef6455c707ac8b1e1882e3feb1e64f34097cf8e6aa9c5b", "69701e5ca80a5195abe290a6ce2bb311812b3a283c921cb59faa50a21ebd01db", "63ca523db0b89b30f7ecb4bb02c0abbce77ea4a6d97e35fc049d8546db9611ac"]
 
 [[entry]]
 path = ".github/workflows/ci.yml"
@@ -308,7 +308,7 @@ owner_issue = 7192
 removal_condition = "Parity lanes retire with the frozen compatibility proof (#7192)."
 allowed_to_remain = true
 note = "Runs the legacy parity suites; proof wiring, not a readiness caller."
-line_hashes = ["1f8fd5da697e72f5", "c6a31282b18f575b"]
+line_hashes = ["89819569adb0b10790d4e45fe406596a7039671e88cdccfe6fafef67ed1f273d", "f4b28321b150729d58480c0d9665e393b764d4c21b3caeceb472fcc8a3407e7e"]
 
 [[entry]]
 path = ".spec/11246-clippy-map-err-ignore-boundaries/activation-plan.md"
@@ -318,7 +318,7 @@ owner_issue = 8752
 removal_condition = "None; archived narrative history stays readable."
 allowed_to_remain = true
 note = "Archived narrative mentioning the namespace as history; carries no authority and no execution."
-line_hashes = ["7851ba7090f2212b"]
+line_hashes = ["0f36e7067c787d9a855f097d457faf357474c9cb70d63b659b9c646b534eb993"]
 
 [[entry]]
 path = "Cargo.lock"
@@ -328,7 +328,7 @@ owner_issue = 7166
 removal_condition = "Lockfile rows re-point at the readiness crate rename (#7166)."
 allowed_to_remain = true
 note = "Generated lockfile occupancy of the package name."
-line_hashes = ["5ff379aca61ed5d1", "edc4a5a81bb25f40"]
+line_hashes = ["3cbe9af2387428a76acda6827ee32d7cb3979d37fb6464f9108850a4fcf836f6", "f01fb841fc977b0f4e18a902a75cf4d14dc9ba0112b854cd6bdeea3608922628"]
 
 [[entry]]
 path = "Cargo.toml"
@@ -338,7 +338,7 @@ owner_issue = 7166
 removal_condition = "Workspace member and dependency rows re-point at the rename (#7166); the name is then reclaimed (#7185)."
 allowed_to_remain = true
 note = "Workspace occupancy of the namespace."
-line_hashes = ["ac1b3d2191613b52", "c3605fa3732a6739", "bd43cd465a60b5ad"]
+line_hashes = ["74f0c332773303f3ab1e2145e7a8230c72eeb5407013341a419ed83d181197df", "c68de37534948ffb5b89290a595581e0cad233621c5fe76ecff153ba171949f8", "a7f9cac3f7f395baa728efac3d05146b6cfbda8c7c9c57564d3d61b009381b0e"]
 
 [[entry]]
 path = "ci/panic_test_identities.json"
@@ -348,7 +348,7 @@ owner_issue = 7166
 removal_condition = "Generated identity row follows the CLI test surface rename (#8425)."
 allowed_to_remain = true
 note = "Generated inventory row naming the legacy CLI test path."
-line_hashes = ["2a83941518efdf1a"]
+line_hashes = ["c8cea880dc1fa4ae6793233d1b9560c53a8ced94801419049a21c993a864fcbc"]
 
 [[entry]]
 path = "crates/perl-ci-hygiene/tests/test_quality_baseline_infrastructure.rs"
@@ -358,7 +358,7 @@ owner_issue = 7166
 removal_condition = "Baseline assertions follow the package rename (#7166)."
 allowed_to_remain = true
 note = "References the package by name for baseline hygiene facts."
-line_hashes = ["8f8848a9ee298431", "f42bbb55dc106044", "43d886e0a9ba629f", "769513c895886713", "004e0eb95bf295c7", "352a4e624e8865a4", "061b478889c35c08"]
+line_hashes = ["4fe0bd3aefc31157db6889998ad2b1a81d8313096ecf55103e4c46a77dd1b17b", "474473b4374f992a73f17ab147419cf8a468995621421228324e99a92d6ff9fb", "89d26c7ad22a96bb57af02a1e68d445a544ead1c871dc9a8ea7623473026714e", "0305369a0d4e82cfbf0933149666686db8509b8ed1cb81e9b576a529604f72c5", "129d1e80a7df4733d0265d5b29d26c8a92bed3bce90bd8c7832c343d9bfe5996", "2c095f62f7745019d05900b72877d808bd25a76bb082651ddf89fab3e27681b3", "309a1eca92b3ccb33347bfea550635ee51d8f326449c1ccf407e03d76a3c6af0"]
 
 [[entry]]
 path = "crates/perl-kwalitee/Cargo.toml"
@@ -368,7 +368,7 @@ owner_issue = 7166
 removal_condition = "The frozen crate identity renames to perl-release-readiness (#7166); the namespace is reclaimed by the native analyser (#7185)."
 allowed_to_remain = true
 note = "The frozen crate manifest documenting its own rename plan."
-line_hashes = ["5ff379aca61ed5d1", "350dfce5ead8a783", "68cceef30f58e8ce", "5f24d4dd3aa2fd97"]
+line_hashes = ["8d67eba45efcf4b5e781878c22682debb0be8871f720969a4c0e7e451370a1cf", "4d2cbae2c60a878e87a7dcc60d82dc54adf15e9faf8f35a90b13300e59a67d7d", "d2c970950e2cd1bb05cd74038ce857090f75b574e30e0bb7ddbf1057210555de", "7c0bea528f00ebcc5a8ce604d07498e4234c51fb05ee31537e3e0759b305e957"]
 
 [[entry]]
 path = "crates/perl-kwalitee/README.md"
@@ -378,7 +378,7 @@ owner_issue = 7192
 removal_condition = "Retires with historical receipt readability (#7192)."
 allowed_to_remain = true
 note = "Frozen-contract README; distinguishes the historical evaluator from the native analyser."
-line_hashes = ["1122f44d99616947", "cedc16fb625a1143", "5b8ab643d71acdad", "af47ffcd286b4d6b", "e6469aafb0c530e7", "1019c891796e072d", "34aac0217ad353ec"]
+line_hashes = ["bd84b9d7872f71d494ca8e7c47a5820a129417a40ee5ddb6dd28a2659f26df6a", "40296b047107e53c46be93527a07859b421488bb19a6d7cecbbb1c8c8c1c2a61", "1038c5ead25d3c6d81f8f8a6edc6dd6927fc31f0b3f08ac4fe942082ab46b0a0", "a9b62bc0414b126046eac299e19f22f4411547fe50b5a9bfde65ce73883fbc9c", "d02253545419317cbacb096c99fe7bfa148f4894c744eb09fccad51b4b3bef43", "9eb5a9a7dfd9c109b77edb30805c3305d080ec0896f7aae264beff67156074cc", "45b7424f5403ead29aed5a0c28f258df14426d101ba83ffe53dbc880bb80a05a"]
 
 [[entry]]
 path = "crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/META.json"
@@ -388,7 +388,7 @@ owner_issue = 4745
 removal_condition = "None; belongs to the native distribution analyser and its frozen fixture identity (#4745)."
 allowed_to_remain = true
 note = "CPANTS-style fixture content for the native catalog."
-line_hashes = ["0ee72eebfc59a55d"]
+line_hashes = ["90cd2eb6e8f2faf32b78fd5c7f7d80b94a8d285a1df78dde8b4dca41aa847b09"]
 
 [[entry]]
 path = "crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/META.yml"
@@ -398,7 +398,7 @@ owner_issue = 4745
 removal_condition = "None; belongs to the native distribution analyser and its frozen fixture identity (#4745)."
 allowed_to_remain = true
 note = "CPANTS-style fixture content for the native catalog."
-line_hashes = ["42bfd27532bb49c8"]
+line_hashes = ["53819210ce6fc18fa68103ad0e43188ee5f3b5693ae02b345b5eab7169540971"]
 
 [[entry]]
 path = "crates/perl-kwalitee/fixtures/legacy_receipt_v1.json"
@@ -408,7 +408,7 @@ owner_issue = 7192
 removal_condition = "Deleted when historical receipt readability retires (#7192)."
 allowed_to_remain = true
 note = "Historical receipt fixture."
-line_hashes = ["aebd5f1350af3af0"]
+line_hashes = ["0eff6f33884088c8b13e7a343d4e3101afb53910331b2bcdf056547cf4b2aee2"]
 
 [[entry]]
 path = "crates/perl-kwalitee/legacy_indicator_migrations.toml"
@@ -418,7 +418,7 @@ owner_issue = 7192
 removal_condition = "Retained while historical receipts are readable; retires with the frozen ledger (#7192)."
 allowed_to_remain = true
 note = "The one-to-one indicator migration ledger itself."
-line_hashes = ["9066a2f626168adc", "868555f95dc18b50"]
+line_hashes = ["dc7a56ee779983520b1170f1e4d030318c0286d2f52d2cffda7b36dc5cc5bef2", "11692a43efd920b3a4ac155acac456eb8ad8ed7c93b290a0915e84b2c1f24f2e"]
 
 [[entry]]
 path = "crates/perl-kwalitee/src/distribution_kwalitee/mod.rs"
@@ -428,7 +428,7 @@ owner_issue = 4745
 removal_condition = "None; the native analyser module is independent of the frozen evaluator and survives the reclaim (#4745/#7185)."
 allowed_to_remain = true
 note = "Native CPANTS-compatible module naming the namespace it will reclaim."
-line_hashes = ["b2406acd28472f34"]
+line_hashes = ["2b8ed7c0586981dc871de63b7491f4e04d3e7f33fb8e18c9c6466d72dbdd9e4b"]
 
 [[entry]]
 path = "crates/perl-kwalitee/src/distribution_kwalitee/render.rs"
@@ -438,7 +438,7 @@ owner_issue = 4745
 removal_condition = "None; the native analyser module is independent of the frozen evaluator and survives the reclaim (#4745/#7185)."
 allowed_to_remain = true
 note = "Native CPANTS-compatible module naming the namespace it will reclaim."
-line_hashes = ["3be9e457b408d47b"]
+line_hashes = ["f8385ce3bb88576867a11c21da7c9ed1eb521439847ed5b81d38d27fb38f7287"]
 
 [[entry]]
 path = "crates/perl-kwalitee/src/evaluator.rs"
@@ -448,7 +448,7 @@ owner_issue = 7166
 removal_condition = "Moves with the frozen evaluator implementation to perl-release-readiness (#7166)."
 allowed_to_remain = true
 note = "Frozen evaluator source naming its own crate paths."
-line_hashes = ["f7eed86cc8f6508b", "aeaf7c06a6338c29", "b668b7c5fbf53c57", "77974705344c7822"]
+line_hashes = ["8fe22c817a9a9b1e62864bdb60d698a4d452b3c0370ce5d5be8a6b52b976527f", "91b5e5d2c25f0021e5496ad15d96c1b1ea094c6ac79a8d25c016417b65bd9174", "6f353654b4db0895339c47eea80e533acff8f4cc772fd56fc3e68109d1752a50", "ee359dc7a74dfee34af17299ba127cecc86f69c3ac961c3c1bdaaaf8854f36b8"]
 
 [[entry]]
 path = "crates/perl-kwalitee/src/evidence/cargo_manifest.rs"
@@ -458,7 +458,7 @@ owner_issue = 7166
 removal_condition = "Moves with the frozen evaluator implementation to perl-release-readiness (#7166)."
 allowed_to_remain = true
 note = "Frozen evaluator source naming its own crate paths."
-line_hashes = ["5e0ff7a4a57c94b5", "304021e6cf08f048", "359cba9bdbadab18", "eeaaa83c414d75b2", "70d4cd40d4b816a1", "f3930af8ade10f3a", "dec777c85335ce6c", "d84335b5189904e9", "0590f6ca2f5e5328", "df608e375cb9ed0f", "114b1f9f91b834e3", "a119dba4d0571b7b", "a119dba4d0571b7b", "a119dba4d0571b7b", "d133ae7b07c8f46c", "9d5c69f52880597f", "3e9451f0a912c2f9", "e1325c033773a41f", "dc13871be3fb02be"]
+line_hashes = ["9374e1506b5fa332ff91f91576ea177ac273214ffef5911fd48564bfdf02fdd5", "7aaaa3b4d3ccef800c163fcb04d4217bfd796de1d65676c0ef138e00f4364ebf", "7e7df8efaf093aa13e5e3d868cef16ba856701905dc8ed20a0d60b6f87233a53", "ce2390579b5a85fbbbee8997d133f5593b66a3b05ddff1e467028b01a7d52332", "714558e9cc1163b98799ee51f5dfc355d156799460ba6444444843f1d804a7c7", "6616a52986a678a94559c6c76549a03f04efa9a8ad6d3279ff9ef45d73baa2c2", "65268de24d0cf5b603c7f2ce47f02084f18415e498f52de1734ec80849d14c9b", "006ad330563be34fbd47f8c95d7e30d93e6266853f18776849b14f1f30c06045", "8449e9e4722466f6af2f20eea6d93bc558a7004347ef2fb2c773d01dac7eca92", "8b9c9db9951e51bf8724c8d408966e5af79b15d3288342295633cb4872dff1c8", "272e94e9535206f39057ebeeeb1efc3a988dc1e2f41de43bdbfe45a9b4800556", "89fa706cc01c625835448a0bd2b209604eac117553c81218f7c804dae97475ef", "d68320a3569ae238abfdcb342e94af60057e2dcde42e72e1cefda6ecbf3a7b69", "50dbc1b9cdfe70e573b4290a75671a44533bb9b74e8d1c74d0aaf3e2a79fa947", "88b14a777ec48b3b4e60fa8c4cca2d0e3deade409d9a9fabd3b7d3f96c18b7b1", "378f39d261914516582108332dd7a431ed55ca4af9fee984b55d9842ec747d10", "7eb163de090214434d96e7b50e68192db28191100a92f48fd8b95ebf3d607da8", "7240a82cf7c987e605ccc6b0da9c2a6d9a486b64e6b5360ebc26ba00de063bbd", "b110e30c4ae2481b9ac1d63676c11dc7864adecf697f011f86646aac825fa557"]
 
 [[entry]]
 path = "crates/perl-kwalitee/src/evidence/product_surface.rs"
@@ -468,7 +468,7 @@ owner_issue = 7166
 removal_condition = "Moves with the frozen evaluator implementation to perl-release-readiness (#7166)."
 allowed_to_remain = true
 note = "Frozen evaluator source naming its own crate paths."
-line_hashes = ["47c01cad4a3457f2"]
+line_hashes = ["f7d028e942663db971219150c12264f21de9fab1f60b45a96b0cd3e2a792cc11"]
 
 [[entry]]
 path = "crates/perl-kwalitee/src/indicator.rs"
@@ -478,7 +478,7 @@ owner_issue = 7166
 removal_condition = "Moves with the frozen evaluator implementation to perl-release-readiness (#7166)."
 allowed_to_remain = true
 note = "Frozen evaluator source naming its own crate paths."
-line_hashes = ["bcdb16d81d25efd4", "dcd3c1252c0f3681", "0fdea1c04118a94d", "7e78f06fcd69ecd6"]
+line_hashes = ["d22cdc530f116fa1c3ee80199edb2228959db3b09c43f2a6dfbda87bc9dba951", "0c94838373172856b136b77f819a21a1e73a57839871b7cd3bf8f21a7d37f84f", "19c7387a28c5968569b060625a57a0eb51e2ec52b73219fa7cc87c7bdc796e13", "5983aec96de893e1de2ca96b76a2dd56b4b1358065a11d0108f6a2378243bf41"]
 
 [[entry]]
 path = "crates/perl-kwalitee/src/legacy.rs"
@@ -488,7 +488,7 @@ owner_issue = 7192
 removal_condition = "The fail-closed historical receipt reader retires when no readable historical receipt needs it (#7192)."
 allowed_to_remain = true
 note = "The compatibility authority: receipt kind perl_kwalitee, schema 1."
-line_hashes = ["29545c971b732ab2", "e0ed09bbe6a91215", "2fcbe5fa8013b644", "675bb32db1acf939", "544bdb2cfce0041d", "20b4de1584a32f41"]
+line_hashes = ["38c35091dfdf330f0e6e6001565334985cf3b83258dc823d098619aebf576e02", "06f59af515c0fcbe55e676eeabaae2325210f781e5cc2d7b8d59be99f097daa3", "2e5cd389030bc8845d8138dbbe3bf97957e12d180cae0ad671dc82c58b5d65fc", "310f0fd47701e2d8f17e1ad9adb0ebad9ec00cea57bcb30754da22c6f4550ba5", "303fd15453551f14325931a8525e4c0f4c90321e67b03da8bb880d639d6d2f6e", "48801e85ca2536420c3940b1e1c60f8b57af3fb3a1b6eca842cd3e2d2322f246"]
 
 [[entry]]
 path = "crates/perl-kwalitee/src/lib.rs"
@@ -498,7 +498,7 @@ owner_issue = 7192
 removal_condition = "Crate doc retires with the frozen contract at the reclaim (#7192)."
 allowed_to_remain = true
 note = "Crate-level doc for the frozen compatibility surface."
-line_hashes = ["13ed885ac10d1a2c", "9e37a42033ea60bd", "27bfec666c08a4e1", "50048a9c0bbbe013"]
+line_hashes = ["6508a0e317c9be288c1f2d70ce68ae20bec5821388819d5fcee500d1f3f52ca1", "67848a2d15a9b4284e2d2353d22811a78b6105ac4983a96afa3dccb2b5f70f08", "939dbcee389671f35ebd02e994c385e46cabbeac98f8dad65657a9d262e4a872", "8d12092bb3f700f4cc6cd866a88fe0f30b337ed4cd071c2669284119444c7f59"]
 
 [[entry]]
 path = "crates/perl-kwalitee/src/receipt.rs"
@@ -508,7 +508,7 @@ owner_issue = 7192
 removal_condition = "Receipt-kind definition retires with historical receipt readability (#7192)."
 allowed_to_remain = true
 note = "Defines receipt kind perl_kwalitee, schema 1."
-line_hashes = ["0ebf9ceb825cadac", "1ab0fcebea9c1d10", "a498202b5d00f7f4"]
+line_hashes = ["0898cd68749c0c21649977e92241b9a661f562461fa11b5c5b155d7d6db68891", "c85b120c2eb450ada31fdecad797d599ca10d910d43985a23e39e22ed6518978", "5dd2647963fe64d42cd57622e7b79d24ec5d25584a332c4f3d2f80e569bf62af"]
 
 [[entry]]
 path = "crates/perl-kwalitee/tests/legacy_parity.rs"
@@ -518,7 +518,7 @@ owner_issue = 7192
 removal_condition = "Byte-parity proof retires with the frozen reader (#7192)."
 allowed_to_remain = true
 note = "Proves historical receipts stay readable and unmodified."
-line_hashes = ["37c5314bb9fa7905", "82e512fafd998d4c", "4a00d56a1fc58c74", "8ee9b6a419a6c666", "be2fc8148c34711e", "ededbcabf4e1c1d4", "81f34b215b318bb1", "d8c1777d9e499f0e", "f855841d03e6a167"]
+line_hashes = ["0e6122d37e204a67a98fea9e82c958845aecc1391a71f56c7fd330c1fd4c05af", "232fa9086d17e485117d07d82adaf7c4ab65d2171a09b71bca04fa9f605af563", "628a149b820a8e18ae7718906c0477cc1a0d75d27240de87d476ecc1b9af7c19", "c14258426776e0eec07b373e8cf3f0cc692dcfbc873f2e7d01a531c329206bb3", "dc2686434733d27e31863cfb4b040342b120a278d979bcd5318459d2e2839255", "f29ecdd80a54470d8105dc371d3142b18b0005032e3781616fd969c067b65039", "04e6d10c2df15f4a49e877296b9a56f4462d6bd7ebf01efc4f55b1e156a15163", "f6d63e89d9472cf3eaff13d3d084c8a10fcd809f354e533610cc5cc35b65b429", "406cacf301ab2239995f1718f16c3f1fa196edca125bcd051204a6878e9b859b"]
 
 [[entry]]
 path = "crates/perl-source-identity/tests/dependency_contract.rs"
@@ -528,7 +528,7 @@ owner_issue = 7166
 removal_condition = "Dependency contract row follows the package rename (#7166)."
 allowed_to_remain = true
 note = "Names the package in a dependency-shape contract."
-line_hashes = ["edc4a5a81bb25f40"]
+line_hashes = ["4bc6f5113334bb3d5095e5da9bc8be01b4720ab20278a3617afca137d493d5e3"]
 
 [[entry]]
 path = "crates/perl-workspace-core/README.md"
@@ -538,7 +538,7 @@ owner_issue = 7166
 removal_condition = "Namespace-boundary prose is updated at the rename and reclaim (#7166/#7185)."
 allowed_to_remain = true
 note = "Current-fact prose separating the substrate from the readiness evaluator."
-line_hashes = ["22139ff447a4c922"]
+line_hashes = ["12a8c39a192d1162df740ca6979770235291cd8676dc448d4be1bff28d9a1ba4"]
 
 [[entry]]
 path = "docs/adr/PLSP-ADR-0006-perl-workspace-core-facts-substrate.md"
@@ -548,7 +548,7 @@ owner_issue = 8752
 removal_condition = "None; archived narrative history stays readable."
 allowed_to_remain = true
 note = "Archived narrative mentioning the namespace as history; carries no authority and no execution."
-line_hashes = ["9646077eb108a71f", "f1d94ea38a5abef7", "23cbc201fdc08ca8", "8df593e8ebce0ea8"]
+line_hashes = ["73aa5d7fbe1d1320a7195100b52651f21a6abefc0103956a983716020c365e6a", "f095a154e20ff48ecae16152d189a986c71993209b459454aac51ac29471b549", "496afbd6cd0aa042acf065dd53dc53be108dcc7f221d88edd1a06bf344f0c724", "df72232e1f5092f6b347d21c767d953f379ae708ef0273b34711361664aae172"]
 
 [[entry]]
 path = "docs/architecture/repository-topology.md"
@@ -558,7 +558,7 @@ owner_issue = 7166
 removal_condition = "Generated projection regenerates when the package row renames (#7166)."
 allowed_to_remain = true
 note = "Generated projection; tracked here so generated files cannot hide occupancy."
-line_hashes = ["c926f1cca5103255"]
+line_hashes = ["bec4226a861707286d50efdbb6d87a85c6fbc0849f9a89b8c6ea6993a9ef1324"]
 
 [[entry]]
 path = "docs/project/status/quality.md"
@@ -568,7 +568,7 @@ owner_issue = 7191
 removal_condition = "Status output regenerates from the rails once they own the readiness decision (#7191)."
 allowed_to_remain = true
 note = "Status generator consuming the legacy readiness score."
-line_hashes = ["9e3fd5f7187a88ce"]
+line_hashes = ["f9650ac219221b90b8ef3fd098803908a63d464629408c48a456087884e13e0c"]
 
 [[entry]]
 path = "docs/reference/DISTRIBUTION_KWALITEE_CATALOG.md"
@@ -578,7 +578,7 @@ owner_issue = 4745
 removal_condition = "None; generated view of the native catalog and follows it (#4745)."
 allowed_to_remain = true
 note = "Generated catalog view for the native analyser."
-line_hashes = ["0c1dd7ee7995a4c7"]
+line_hashes = ["599fce569161a4d27186696e4f914f92d7cfb3b9a6e6d6ef5da8a1ff663906ab"]
 
 [[entry]]
 path = "docs/reference/NATIVE_STACK_POLICY.md"
@@ -588,7 +588,7 @@ owner_issue = 4745
 removal_condition = "None; names the native dist-quality crate end state (#4745)."
 allowed_to_remain = true
 note = "Native stack plan row for the real kwalitee domain."
-line_hashes = ["1ceddf2cd9aea1fa", "ea5fc1dc4e16cc6c"]
+line_hashes = ["51cd03a2cb2088d81e422c14a8d700627c91f4066297f93284435ab7b628ceff", "e5e57314e38025a27e8a011e2f06a53865b1902183ea2abe43efc1ab7453545e"]
 
 [[entry]]
 path = "docs/reference/PERL_KWALITEE.md"
@@ -598,7 +598,7 @@ owner_issue = 7192
 removal_condition = "Reference retires with the frozen contract at the cutover (#7192)."
 allowed_to_remain = true
 note = "Reference for the historical command and receipt contract."
-line_hashes = ["e67d0962379f178e", "07cc4cac081283f6", "e1fe192a380a63a6", "462975f19e086117", "56811a68331130de", "c42871bdaf8fc72a", "a2bb5a43c9d1ce82", "10efd817926d51fa"]
+line_hashes = ["4045a2329d943f7b9fd2ab772f7a8a0621b9d0b64b87160f8e7af698feb88eae", "2082043f74e36dae86a7daa4ac439d43eca72da584262750857ee20244133e68", "d673f9e4bd18f8fac2271597c138f5649c95fe942e12274fa5c749f74ffd2a73", "abc512fb09e117fee83c99bcbfaa4e4ab90c726d4db67dab28c10975701c4005", "5f5690ebf7307cb01c82974b29b64fcc9bc10b8c5bc6b72764e44754174912fa", "e09f93b002243db12dd538c2c3394f020b488e7d465949b1a0f4805d64e43d3c", "ccca83d94e4c320d33c6a22a580386f23d47fdb2bdde9ddfb6c613ac48661288", "16d142eea4d23ae594e97217d9b7caee459f18a6abd022486a65c04999b13d96"]
 
 [[entry]]
 path = "docs/reference/PERL_KWALITEE_MIGRATION.md"
@@ -608,7 +608,7 @@ owner_issue = 7192
 removal_condition = "Generated migration reference retires with the frozen ledger (#7192)."
 allowed_to_remain = true
 note = "Generated, byte-pinned migration reference; historical readability, not a caller."
-line_hashes = ["a34e2cb5c1f14d05", "75aeeb12fb100987", "047f7c897d7999c5", "da9b375e8c801bab", "e0551a36ea4ddfc0", "8542ce169d920e62"]
+line_hashes = ["5da9851a631be4caac76d582b7f39db2abc4c3574f0485c73738ac0408e956a3", "c1f3e4a383cb54bbcfebd61dc9120d4225c70db19848f9d53a6bc4e0ad639723", "bd928cdb7ee87126b34f06f97b1032e44738730e8b49595bf4c2a6422162530e", "60d44894326cfb11586a7c5adad8d3612d9fade25d70eb71454ed420b26e8747", "9ecc602ffd5de91460a0692b727aa054015d4bb8346944d80598464223b1b043", "96227b9e76e9b41e52700c36228c8573bb4ba594e50e07bde397a27eb41eeea4"]
 
 [[entry]]
 path = "docs/reviews/3313-deep-review.md"
@@ -618,7 +618,7 @@ owner_issue = 8752
 removal_condition = "None; archived narrative history stays readable."
 allowed_to_remain = true
 note = "Archived narrative mentioning the namespace as history; carries no authority and no execution."
-line_hashes = ["f0f1f91ef58713fb", "8af2e382138d15d0", "ccb5721cdf579ba3", "5a39f4b8ec878ecf", "8ea8a9a335a1a5fc"]
+line_hashes = ["c45b523a34ff4860b27a75be8d02517860535af075e77f5479b8207830c53ed7", "97bfeba1af59abe044df26b2ed015b559a6b869c41a98932faa7081eb8e35e6d", "56266bea95901e7536e00fa56025b50adecd2bad3e34b6b7953658a304d039fc", "36562124216d6ed4baf709322dd319ab2fc20598be43d60b81c3407f5653e901", "f699242e6c758b665c739cb3394080150a3c821c3181d8099e42d53b973900bd"]
 
 [[entry]]
 path = "docs/specs/protocol-type-substrate-matrix.json"
@@ -628,7 +628,7 @@ owner_issue = 7166
 removal_condition = "Generated matrix rows follow the package rename (#7166)."
 allowed_to_remain = true
 note = "Generated dependency-shape matrix naming the package."
-line_hashes = ["a06e92acd9c60861"]
+line_hashes = ["8ea4988f43a11971272a873b7ebe5cbb300011b283d520558dcc73838f093365"]
 
 [[entry]]
 path = "docs/specs/protocol-type-substrate-matrix.md"
@@ -638,7 +638,17 @@ owner_issue = 7166
 removal_condition = "Generated matrix rows follow the package rename (#7166)."
 allowed_to_remain = true
 note = "Generated dependency-shape matrix naming the package."
-line_hashes = ["40087e14e229805c"]
+line_hashes = ["7640f171488652ba7ae33083d93a265c0257b5efe6d08581c80cb105afa7d2b7"]
+
+[[entry]]
+path = "policy/quality-gate-exceptions.toml"
+classification = "historical_prose"
+migration_target = "none"
+owner_issue = 6216
+removal_condition = "The project-coverage exception is retired after the 95% final target is reached (#6216)."
+allowed_to_remain = true
+note = "Current-main coverage evidence names the legacy kwalitee ratchet failure as historical context."
+line_hashes = ["17c7efde4ed227f6417290fb889ce96e55e289a3d49b34e91fdcdf32c852c02d"]
 
 [[entry]]
 path = "policy/non-rust-allowlist.toml"
@@ -648,7 +658,7 @@ owner_issue = 4745
 removal_condition = "None; authority rows for the native catalog and its fixture trees (#4745/#7170)."
 allowed_to_remain = true
 note = "Non-Rust authority rows for the real kwalitee domain."
-line_hashes = ["6f1d9d2a2af12f3e", "7bc4b17c66703381", "77d6ab89c306bb2f", "09f206b85608ce6c", "77d6ab89c306bb2f", "f34c86657bd727a4", "77d6ab89c306bb2f"]
+line_hashes = ["a03dc628ac4268353bb3dfdac23e7739182489582d4f531f213307a18656c1bf", "27a9bd08cab29c7a7d67370c31f3c8498400bf862aae17ca9974eff33127d166", "93e3a3a6ef2d4f2c712eba072c7e2487a28edad8f57db43f8c9163286f92670a", "a9e76a0696c17a788f50d1e754cb8ac01eace03d5a52ff3a61e87ebba1a14659", "d788f875c8b0418fa2ab9e189f4f724e144d89c628c56fc2ad34d8108ab600ed", "58b70fa27de0207375e0da1e5a75a5916207b66433232226b275dee0fbb22b94", "c57ab5255b7847ba8d9007bf5f8a7f7599b4203bc06190a46d0496dec80fa86c"]
 
 [[entry]]
 path = "policy/repository-topology.toml"
@@ -658,7 +668,7 @@ owner_issue = 7166
 removal_condition = "Package row re-points at the rename; ownership facts stay authoritative (#7166)."
 allowed_to_remain = true
 note = "Single package-ownership row for the namespace occupant."
-line_hashes = ["5ff379aca61ed5d1", "789062607856b8e0"]
+line_hashes = ["df18bad69688cbccf07cc8af74a6887cd122085f9cf03e20b221975a1334442b", "3454f628e4d2ff3830cb97cf3c22722dd0dbaa090b181848924ba2bf2165bf65"]
 
 [[entry]]
 path = "xtask/Cargo.toml"
@@ -668,7 +678,7 @@ owner_issue = 7166
 removal_condition = "The dependency renames with the frozen evaluator (#7166)."
 allowed_to_remain = true
 note = "xtask dependency occupancy of the frozen crate."
-line_hashes = ["15d8d88b6a326873"]
+line_hashes = ["ed75e58b7b3ca1f0dbfec517a3bc8c8168d7896b13005f7c664ed196bec31872"]
 
 [[entry]]
 path = "xtask/src/main.rs"
@@ -678,7 +688,7 @@ owner_issue = 8425
 removal_condition = "The legacy command becomes a delegating alias under #8425 and is removed by #7192 once active callers reach zero."
 allowed_to_remain = true
 note = "The active command surface this inventory tracks to zero."
-line_hashes = ["0ab40f6e5c2f7617", "4093db611db99e96", "4743abf5a5868b68", "4b8a9eece87e9214", "657830e851992539", "6b77e3a25c7be7a6", "95cf7356d9642a57", "a06e15a8e55ab203", "a06e15a8e55ab203", "a604832db8520841", "b27397fae6ee191b", "be65eca1810dc4cd", "d28961345950077c", "d9d17e0d0d55a175", "ddc30a98f27bbb36"]
+line_hashes = ["a23d34a6059c2d9a1c695bc9039fe91e88b77669a524342cb15bda44ee94ca93", "afd796ead86c0328a091a9b552650f49c55397e35504d031a68ccc0d3f776ea5", "79d0e1b2ff0ea83c96e50471a1285931432557ef26bd389dcd56ce863dd39143", "c0c2bf8c73abc88414cac836379a2423d2ef64eb7b25d3f235115579ee7ae9ee", "c0e186cfa50cac9a5bcdcd1b0d046e6e83a3daecba8c3fb69328fae45f540964", "acc3ea20795aafc6564977348ee553bbdf1dd44d3d9dded50aca625300f10f7d", "663b8e7a707cf14fe7374096ef7a4bafd4f22677a4e12bbabe98d536f2227bd8", "245083a32f42448a7fcca6daf137583f99dc8afe48568b642d606eff462cb5d5", "fc06fbb004289c6631c23f5f32b1b6df7d7af8ac95279b4b34c3453f6e60ea24", "4db44f8e00587c48bcf7e9e84af2b77c93a99832c10cba9287395dfd1c583e72", "787ffaa2c5d69d8e7c08b3bef06e1ac2e9200c758782f3c60d554bacfda1aced", "e5c4940c55f5327a95b778d136191413d94e967f83ef766a05b5c10f7fb7ef6a", "79078ca50da52d9224c83a89d3788bcf9e6c851d23f8801265942091f5aad5bc", "a4e487e6908d8a827b0ee11168dc81d70d71cfb0e1cac7ccd185d952d64e0bb0", "e59c21bf119745c7587d38958a0d52a587a13536c3e066378a2e107564222ae6"]
 
 [[entry]]
 path = "xtask/src/tasks/kwalitee_namespace_inventory.rs"
@@ -688,7 +698,7 @@ owner_issue = 8752
 removal_condition = "Retires together with this ledger at the #7192 cutover."
 allowed_to_remain = true
 note = "This inventory authority and its proof; names the namespace as data, not as a dependency."
-line_hashes = ["05decb6317637452", "2ee0a7ba49f3c485", "33967b76ecfc476b", "3fbb41d3c29c61d2", "441cb1c93a3ce2ef", "7935422536ad872a", "7e6c571d00871886", "92c61ac1ae325040", "9daed03f931273fd", "a1cdcd3a00333953", "b335059b78c048d8", "ea17e2e07cb70cac", "f7bfe854e1181650", "f8743c6395b01466"]
+line_hashes = ["ce54d092a2cac8861ebd4d58a7e2993e496a005a81d7bbb926759389cd62ed19", "145a29b419972ad18c84ac67ac805de7944d5db0459f522c1df3e44d9b8f66d6", "431d4423d92417e6229afbbbc702be0494f3af51bc3f67ad1d0774dc91896adf", "d1df877b38b964f037c5492115b338775bf995da0b64091e2a2ab24e1d075935", "676ffafccc20e9f3f7a77c2e5d3b0c3a879e94ab69512e1a85d08163a30cbeb7", "7e6c326559abc4877e5e59159a8143f9d3077286e6dfe122b31eab5aad1ff0fc", "7bea921924701860b49ca903ba9586a5305b06570d2fef355310db1f39fcf2ba", "2776de232a711639b04698780502cea9676da4b7d0fb5bb042595fc2146d027b", "b653123ffa7a94544602895129dcd4fe5d7b6d1479ba875519a07855e36e4e68", "c61ac7228feb229f931a8a7e027458e3c627c4c4d8842aa0a61bf69316ece0b5", "8a6b719b3fda4ef931ac2278ed17ff9869d9aeb117b2a37cc9ad8f1df20ad993", "af3c40e288baba7ff834fe986be3fabc040582cbae25e6b0a6b4a5b17d95e471", "e6663fb6d3d85ca4018af111ef8fc1259f702bb740cfb9d4d2c8a9c1618823d8", "03e89f1a7942280718ac16b8857cda3880de7c508cab1a1c57b9a28a7d7c5d43", "e1ab4797392a319448c560ce9077371e2200ea0ee51683af187f8e6f6768cf2f"]
 
 [[entry]]
 path = "xtask/src/tasks/mod.rs"
@@ -698,7 +708,7 @@ owner_issue = 8425
 removal_condition = "The legacy command becomes a delegating alias under #8425 and is removed by #7192 once active callers reach zero."
 allowed_to_remain = true
 note = "The active command surface this inventory tracks to zero."
-line_hashes = ["6b67731bafd873af"]
+line_hashes = ["2da7fa2e8af75dde7b62ef0124af9930e32865d1d0a87df06257cc84dcc749f3"]
 
 [[entry]]
 path = "xtask/src/tasks/perl_kwalitee.rs"
@@ -708,7 +718,7 @@ owner_issue = 8425
 removal_condition = "The legacy command becomes a delegating alias under #8425 and is removed by #7192 once active callers reach zero."
 allowed_to_remain = true
 note = "The active command surface this inventory tracks to zero."
-line_hashes = ["b6df8182a247b270", "0fab6451a128acac", "82e512fafd998d4c", "a6c355db76d5f381", "f465c1460a1b305f", "198de858af1eda01", "eaa4a6306c4d331a", "83c3f69df3e6a22e", "c45a99f64641df10", "0611ca610d831030", "fea4ed0d728bcc5b", "785ee31a0ace501c", "11a3988f2bbcb19e", "f0c83d685be534cd", "11a3988f2bbcb19e", "31750fe63624e0e6", "11a3988f2bbcb19e", "1b0e4da519ca60fd", "e8b72e1386b105a5", "59a8f5e568dfe6e5", "7ed3b5cca7549de7", "6f70abdf3deb6f88", "a8202ef71593cd09", "6c7e45078cccb46d"]
+line_hashes = ["d6c4873a11cc4f19c640425f35022c72b968ebd16d033afbdda274b7f3729570", "6bcf57bff6ce18e50eb5b4252e384c439276de1026fc491cf1469ad009e6886d", "3dfe3295c4710da09f27737a6921c0b552cc0ef45d4fa86cbc8e3988a01505dc", "39c22b38e21a6bf8afa3e2c70b4f26d0d9d68bce7e126cb1c7318c943f9fea97", "190e550eb1ca47a1e680027d09ead68431dab989d348fc3d28f3ebd3ebbfd049", "8aec2014629ad4f73ccce7521f5ffd7f549df73eba8ae093e6a80a4f48d41647", "d32eacb4feff79e11e3d70b117a06aa1e5284109a2816e57a5c64742c6622c9d", "7e2a09bcd0d992e63dd9c7fe67aa6ea636af6541bb6bdab00b2e86b3d4e8ddfb", "3eb9b7cfe58fcf50ab9b3da593ad9d1f725c259c265f2c7d14cf5a89e7680ede", "2d2141045c53514986c0dde51bcacea93d78116e7ccd8c0ef085c5bdd54ab8eb", "ae5e4c4db39a8817e775031d493744b1fc00fa83afc10c1393d85ba21db22409", "ec2ddb0e4ee07ac51427eb5feadf135139599176ad31454781af854c211d645e", "faa20c1f61b1b672e49bc50f188c580c22007db0effd77929641e75b77f03cb5", "e98abb572449f8b15b7a251a1d61a7abc4f436018eeb2f00e74783068af2f270", "51c547b82a962af589c5cc4bb69686279c2c2ae287c3950df0774a9394152a68", "dadf0c5bddbd94bd1afe1690ac30eb68df05cece947e425d0bfbcedd324e4445", "a9220eb3f77d8f0a0326356115aa43601c1f98477c06d45ebb976b4a109a7d03", "55c5cb854ec85369ab3b21b7c0898fe9cd83d615acae9a28afd57bd24bac940d", "8a20805983ee3ad11b8f697582e18f39f7a614023ee604051caca4243551c2f6", "c32fccbf3eae1934506a82d69f9dccea3e5f773737e3f633737e83b25624524d", "0af408705070cbecdc1ecffd3b43b62c238ffb9dc15b6ed1b50b32d70052a896", "c3cf4cc7cd51e8dd6fab4984088b5a61a659281a03bcdb1b2630bcb7a6d13548", "2274adec4f2c4f99b6b52ff1f7fd87163d2e5a088bb7240dfdbe048e5c5143ec", "bab8eedb709dffd4a18a2695fd8d750cf24a6072a0eec75e4734f4e900690c03"]
 
 [[entry]]
 path = "xtask/tests/kwalitee_namespace_inventory_cli.rs"
@@ -718,7 +728,7 @@ owner_issue = 8752
 removal_condition = "Retires together with this ledger at the #7192 cutover."
 allowed_to_remain = true
 note = "This inventory authority and its proof; names the namespace as data, not as a dependency."
-line_hashes = ["3524557167c1c93a", "398998ca22cd1f4d", "67f53b7393b977c9", "732f4cbc59c1f597", "756a2fa1ea3b25e7", "a6e7a3e1c2ff5196", "c01ab974e7ecb3b6", "d27654d40ec5cb7a", "e0fa938a747b3d83", "e87bd061caf14721", "ec5a54e6ee828866"]
+line_hashes = ["f103d70a73eaa173386742bd442031da6528ce56fe21061f8714d8ca327cde54", "1fd9feb54223d8665466572f35d3d724776a21b11a7e797048ca871d6e6d2282", "2d7c1d6517a00b18a7e60357e2787dd9ff7f183120f283916bb906755b1fa9fa", "a11fa879e0b0e59a8c24a8de22f13dd46234b2080365245d0d3e398d7cb17d22", "945bf68cb894a3d890dce19dfc20b4a30990f1f46faaa1a67a7d36b9ce350c7a", "01182e32bc8d2a9d8035491737a13516f437d1de56c788a1bd183d2d9e7b0f13", "fdd48ff7270f8f82e87f0228f27c96302be826cbb68b66f9db4d52a8bbd775c5", "430648b4c952ba9dfc09bc0e7cce4ad5304751ea4bcf091d4043ae0c36faf007", "f5fc24fc272ec3c51a9e0a0bacc384a5d11478ea770414fc2d382dcbce02715a", "a00e53d5ed42c3e42f9273360a466c7b8b92521e79333042d2cededa3f53ec65", "05d363186903165060529b985ef8821c0c44df6f14255f80b194f3bf2a8281a1", "2f212a77e7ff03be8cf0411e785ff62c84539731c0fbc499d7c20a56204b6548"]
 
 [[entry]]
 path = "xtask/tests/map_err_ignore_c0_coverage.rs"
@@ -728,7 +738,7 @@ owner_issue = 7166
 removal_condition = "Coverage list row follows the package rename (#7166)."
 allowed_to_remain = true
 note = "Names the package in a clippy-debt coverage list."
-line_hashes = ["edc4a5a81bb25f40"]
+line_hashes = ["575f3ea14e915eacab87009b01ed8b7f21d066e85ef27b0804bf31c1e894f37a"]
 
 [[entry]]
 path = "xtask/tests/perl_kwalitee_cli.rs"
@@ -738,7 +748,7 @@ owner_issue = 8425
 removal_condition = "CLI contract tests follow the command to its canonical surface (#8425)."
 allowed_to_remain = true
 note = "Contract proof for the active command surface."
-line_hashes = ["3870a3731e4ea493", "666f2cdf33797395", "49e87fa00e903393", "0590f6ca2f5e5328", "77974705344c7822", "03f913d38a6504d5", "ce07e6a3dc17a83d", "92743582f37479c6", "8a907d25cf62a9e6", "9efbab626ee4bf1b", "a992f9ba60d2a2f7", "88a4ee639e099058", "414a8a78e8f2616c", "414a8a78e8f2616c"]
+line_hashes = ["cce68b1ea32a952a4c49bccf7e0e772cea9ce472b73b0b6879dd258e7f1a0778", "eda01ef627b88e2c7cd89aac75465312fdc05eb977912f0a8e663098fa849d7c", "bdbdc01273d11824fa37a05e41f3cc626a526d9d654ea5c846c8398d3cdb1665", "740f185ee87ed42444c1f99d1a3d63b6d8613ac05b077ed652870c797cc3cef6", "85cd2ba67d32dd550cb84a7cdcc0f26535560c2d3a85fb13e19e097a65754f2d", "57777d64511a106cc47bc1940fd48a12b3b836f3edc2d4a0231d5d41187caac0", "07210a74755520cae9912f8c48e0280a828dc48a90bfe220c23d5b4eae513754", "d20efed671e78cc0bf3e6e054d08c54f26ed43e7cbb6ad2244199cf32833c0f4", "a8c1d7197543c46b32d4b0bc17874c1c5a199d7ec58ca8f1f62b35f4873ca08a", "86520ec6c6856ff447faba8d86360d42f8d355300469a067c2559a10ba72bb79", "060ed4bcdf6960c7a07c37a6e896a479fe85ab299129002212705197c0efd63d", "33f6d01731f426bae2137a87ea46786260387299d764b64a7634c1fcbd5f66a6", "cc1a064738b3f408645f600dbb1cfd1efed72355ed7c7477582d4a58ad1f52f5", "71c50d3024c4d2717d1398cc3792549ffe91cae08b99ef239d1494621714ec12"]
 
 [[entry]]
 path = "xtask/tests/perl_kwalitee_parity.rs"
@@ -748,7 +758,7 @@ owner_issue = 8425
 removal_condition = "Frozen-surface parity proof retires when the command reaches its canonical surface (#8425)."
 allowed_to_remain = true
 note = "Parity between the command and the frozen library corpus."
-line_hashes = ["51f5db2cbc077a57", "e09625ddb15eaed5", "a6795d6ddac24430", "81f34b215b318bb1", "858b0b57e20b22c6", "88e8b11223f30982", "235ae6936c7c3a1c", "d8c1777d9e499f0e", "9da181da378b9e6e", "47d617379be68f17", "0ffe10a846412b52", "9da181da378b9e6e"]
+line_hashes = ["8c8ca25a610300fe70975d436a19b812877ff02f8a2c20c91d8b61d0c36c6a44", "3ac63aade0eb63f6fe8e5630b7cfbf103b16d68df5c9da5c96b4750628b9d934", "42bea968260de8a6466300f9674df335a6b66893232522ed63bd40a9ce293f87", "4c4cfbc1743fd06cb2460f8f05d176d39ef359fbb83793e4282758c60763cb87", "71541de7e571f394aa003597eabb4c4857eeb817ddf04623dc713272be774575", "bde05a91cbf806c4f3f85490a5156bf4cbf25b2f23fe438b48561a3bb29c514f", "0528e15cac522797fc7de7db44120c25e9ae4cf3bcce695bc3aea1179a7f8b75", "20afb7e748ba2502680887ad14c26866bc007cda152a23161c6f99f4683761a1", "4faf91131cd2270d395b26ece2a607dbc11cbb527b112f37d50eac7934ae8331", "b62cec0f0ffa314eee5bb0ebe0bcc819fb3872adf265c77cd4875b0bdea75f53", "c7322fb4dd79fa41bb5481ffb54734b6e97641e43998eb25410a7121ff9a429d", "88ff5676885bb464ecdb07cfec7bb81ed1b9edd8b21f9fe8cca0a9a5dff51ef9"]
 
 [[entry]]
 path = "xtask/tests/quality_ci_wiring_policy.rs"
@@ -758,7 +768,7 @@ owner_issue = 7191
 removal_condition = "Wiring policy rewires when the rails own the readiness gate (#7191)."
 allowed_to_remain = true
 note = "Pins the command-to-CI-lane wiring for the readiness gate."
-line_hashes = ["ecd7a058d4310973", "edc4a5a81bb25f40", "b7bf0f2d53007946", "ecd7a058d4310973"]
+line_hashes = ["5ec0c2762348dab5cc2f9e45b3ea664c58b85f7ca895f29bb2fc54bfe57692a8", "508d3829eaa50889408ff2bb7e716a3db290e8cf59e909708a1a765ab6da8d24", "894be8df75bd2249d90add328c21def7453bcf41f0b1381729989213b829eeba", "b62714ae1d8fd22a389772e9a51c7ae9ebf3c59cd5826258936230e121ca27d5"]
 
 [[entry]]
 path = "docs/policy/NON_RUST_INVENTORY.md"
@@ -768,7 +778,7 @@ owner_issue = 4745
 removal_condition = "None; authority rows for the native catalog and fixture trees (#4745/#7170)."
 allowed_to_remain = true
 note = "Generated inventory row naming the native kwalitee catalog/fixture surface."
-line_hashes = ["1470c23cea020d36", "f57f77a2d39d0b72", "de20e520c217f845", "f4d8a99dcbac1cbc", "1d1bf788a6aa9214", "9f68d8a68c65062b", "407ebbc7f923a7e5", "6d9c77ee731c9ca4", "a2b69e57a993c80e", "664ef2293c27dd00", "1f1751a32ed79228"]
+line_hashes = ["32179ecdd48f0f3534360c6f0a3ba9330e98fa101f1d28e675d36c1b6abed9f8", "bcdeeef19610c80ff3e28763e8124353a24b1f85ad97c4f9866241e84ff843be", "a4f76f9d3ae6515557f2549f8d9397964a1d6d3ded000c1487b3df646f4539a0", "838a2cf16e9cf5b7b501dee8552616e6d59b778db7b69228b8b6c379ff7e2691", "30502aca0544e8255702863b5561c6972f857eb68002dadf7fa5c0e5dd6106b9", "6836a37ed632c25a9575f8166af9a2bf15dc70032759fa2bcc6e09a392f5235a", "6b7466d2f2fb8d127f0ffae816ec9497dfcd466d9f4eb73a6172c39b9db16c5d", "4d59cbc4f6c032ad7d7cc722d1f67e5a21780538a698736bbaffdb7d1b08fe94", "8761179ef3f6005ae12f7a8ff28b7b575b39eba41db018d3a6d1a89c4d69f9e7", "08b9db6479625aa3d205d89bfaa1ccd03c196ea9594765376fab12f26c4a209a", "238bd38e4b69f241efc1fd4e65080285b4b4a424a9986c480d0245f1c8419884", "df49cde2af50512de60632477682157cd62fd95588545143bdc8865351233ea6"]
 
 [[entry]]
 path = "docs/policy/NON_RUST_INVENTORY.md"
@@ -778,5 +788,4 @@ owner_issue = 7192
 removal_condition = "Regenerates at the retirement of the legacy fixture surface (#7192)."
 allowed_to_remain = true
 note = "Generated inventory row naming the legacy fixture surface."
-line_hashes = ["d29a32df91302a82", "18a7b5269ecf2711", "54416de3053c8791", "432dcf7d088de1c0", "f8dc0e4dcc5da3c6", "92adef1f50532389", "dd711d0e9278b3fe", "963a4fa3c4aaf0d1", "9167c975469f8109", "cbd0f6abaa6b8866", "a76fba3423e8fbe1", "c8a35893b1738d0f", "7faba32d38635921", "bff5b7a9c12b1ec0", "a1b0400022aaa6c4", "04cb8d2e9a8e7857", "4899ee08238f69f5", "16950bbad1ad36e7", "c906e07c8b2967fe", "20018faeebb32ff8", "6398baac6fd26e7f", "f2b1ce2f3be34540"]
-
+line_hashes = ["131634c864a5c242fcade2a0afe9551a2ac211c9612c9efc68427bc1b66f623c", "124355470b484dc6cf790c0b6614713b6417956078873cf322cdeb60de86ec81", "48719d1b128da7074ad69cf62dd9e679f759cede4ecba189ebd2be2db8f95910", "fc8e088d42b0531cfa9ee7bce5f2d4a9ae528fb0f1292fba9733def9629205ac", "04242da226b17a97766184e86dede2a2dcd3e29221895df40cd0056cf381c315", "67bb1ac71bd1b0b113c0c0a3bc59eedc8c5a64189a677beb7045036e69ba768c", "7817641bf1d5ede1350f611c601cf20586cf3e99e1aa59be346a08dee0262048", "38d0c914813330bd408c3d94cce7b654ff5c1866c22660da3fa9f7d5f24dedb8", "03fecbdf0b1c14a6ee8bb6de8740dfe3bec27832d400f2fcbb6f73fbe41621c7", "a49eab4b87a0c065b63a4043ab28448bf465b7346763abe7137b3ae266606c2a", "c31cdc84297d460491304158e590ce3252936b630d4a406a02861056efa839d1", "48bafcb103c40c11b45e2fa1427f0fd3d8339a180b58ae298fef0245281d9f02", "f0bde5c168ff18e1825fb0ba8af41cc1433fd749d1abb3745e267005d9cb1a14", "e6c81c1de2cadcac343d99097d01dc46da2df35447fb79c20018b07c57b55198", "6e4dc77d1ea26ceb379bc719612db12189c7a7924de6c046c147711edf0e9b41", "5de0747b5590e957eb3031f1a2153ffaa9d81797c902454df9a1899ba97707e1", "72785105dfd7dd95a1428aaf9df24f1fba7a91f6a9ebfde0ff327188ea2f03f3", "9e7ff01abb16aae771fa38e2827c7bb269240d7be72aa49cdfdeda23c3ecc890", "da44842a40003860f1b6d980e3cc2c0235d1be848f90d4d03fc22e0adb428d3e", "ba16cc8541274d39f1bd8d175a5a133db612c9b3d72da21b6ae37b877f4267ec", "e636810d4a05da5a43ceed4af85ddb0ad1136e045b8e1f3389efca9589406d50"]

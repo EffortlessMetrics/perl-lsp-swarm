@@ -15,20 +15,29 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// Recreate the ledger's line-identity contract: SHA-256 over the trimmed line
-/// bytes, first 16 hex digits. Recomputed here independently of the task code
-/// so a hashing regression cannot prove itself.
-fn hash_line(line: &str) -> String {
-    let digest = Sha256::digest(line.trim().as_bytes());
-    let mut hex = String::new();
-    for byte in digest.iter().take(8) {
+/// Recreate the ledger's line-identity contract: full SHA-256 over the
+/// one-based line number and trimmed line bytes. Recomputed independently of
+/// the task code so a hashing regression cannot prove itself.
+fn hash_line(line_no: usize, line: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(line_no.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(line.trim().as_bytes());
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
         hex.push_str(&format!("{byte:02x}"));
     }
     hex
 }
 
 fn hashes(lines: &[&str]) -> String {
-    lines.iter().map(|l| format!("{:?}", hash_line(l))).collect::<Vec<_>>().join(", ")
+    lines
+        .iter()
+        .enumerate()
+        .map(|(idx, line)| format!("{:?}", hash_line(idx + 1, line)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn entry(path: &str, classification: &str, target: &str, lines: &[&str]) -> String {
@@ -47,7 +56,7 @@ fn entry(path: &str, classification: &str, target: &str, lines: &[&str]) -> Stri
 
 const EXCLUDED_TARGET: &str = "\
 [[excluded_surface]]\n\
-pattern = \"target\"\n\
+pattern = \"target/**\"\n\
 owner_issue = 8752\n\
 reason = \"test: ephemeral build output\"\n\n";
 
@@ -171,6 +180,32 @@ fn source_movement_invalidates_the_stale_classification() {
         "failure must explain the vanished path: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    // Relocating unchanged source text also invalidates its reviewed identity.
+    let dir = classified_tree().expect("fixture tree");
+    write(&dir, "ci/nightly.sh", &format!("# moved down\n{CALLER_LINE}\n"))
+        .expect("relocate caller");
+    let output = inventory(dir.path()).arg("--check").output().expect("run kwalitee-inventory");
+    assert!(!output.status.success(), "a relocated classified line must fail as stale");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("stale classification"),
+        "failure must identify the relocated row: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn duplicate_identical_occurrence_is_not_covered_by_one_claim() {
+    let dir = classified_tree().expect("fixture tree");
+    write(&dir, "ci/nightly.sh", &format!("{CALLER_LINE}\n{CALLER_LINE}\n"))
+        .expect("duplicate caller");
+    let output = inventory(dir.path()).arg("--check").output().expect("run kwalitee-inventory");
+    assert!(!output.status.success(), "an extra identical occurrence must be unclassified");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unclassified reference") && stderr.contains("ci/nightly.sh"),
+        "failure must name the extra occurrence and its file: {stderr}"
+    );
 }
 
 #[test]
@@ -235,6 +270,22 @@ fn generated_and_ignored_surfaces_cannot_hide_callers() {
         "declared non-content surfaces are excluded: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    // A tracked fixture directory named `target` below the repository root is
+    // content and must not inherit the root build-output exclusion.
+    write(
+        &dir,
+        "crates/example/tests/fixtures/nested/target/hidden.rs",
+        "const COMMAND: &str = \"perl-kwalitee report\";\n",
+    )
+    .expect("write nested tracked target fixture");
+    let output = inventory(dir.path()).arg("--check").output().expect("run kwalitee-inventory");
+    assert!(!output.status.success(), "a nested target fixture must remain visible");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("nested/target/hidden.rs"),
+        "failure must name the nested target fixture: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -250,7 +301,7 @@ fn scaffold_prints_hashes_but_writes_nothing() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("path = \"extra/new.md\""), "scaffold covers new files:\n{stdout}");
     assert!(
-        stdout.contains(&hash_line("mentions perl-kwalitee once")),
+        stdout.contains(&hash_line(1, "mentions perl-kwalitee once")),
         "scaffold prints the exact current line hash:\n{stdout}"
     );
     let ledger = fs::read_to_string(dir.path().join("policy/kwalitee-namespace-inventory.toml"))

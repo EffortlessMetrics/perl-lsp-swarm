@@ -73,10 +73,10 @@ const UNRESOLVED_CLASSES: [&str; 3] =
 const SELF_ARTIFACTS: &[&str] = &[LEDGER_REL];
 
 /// One classification row: every occurrence of the namespace in `path` whose
-/// trimmed source line hashes into `line_hashes` carries exactly this
+/// source occurrences hash into `line_hashes` carries exactly this
 /// classification. `line_hashes` is a multiset (one entry per occurrence) of
-/// the first 16 hex digits of SHA-256 over the trimmed line bytes, so any
-/// source movement on a classified line invalidates the row instead of
+/// full SHA-256 digests over the one-based line number and trimmed line bytes,
+/// so moving or editing a classified line invalidates the row instead of
 /// silently passing.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,12 +120,16 @@ struct Occurrence {
     hash: String,
 }
 
-/// Hash the trimmed line the way [`Entry::line_hashes`] stores it: the first
-/// 16 hex digits of SHA-256 over the trimmed line bytes.
-fn line_hash(trimmed: &str) -> String {
-    let digest = Sha256::digest(trimmed.as_bytes());
-    let mut hex = String::with_capacity(16);
-    for byte in digest.iter().take(8) {
+/// Hash a source occurrence the way [`Entry::line_hashes`] stores it: full
+/// SHA-256 over the one-based line number, a separator, and the trimmed line.
+fn line_hash(line_no: usize, trimmed: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(line_no.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(trimmed.as_bytes());
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
         let _ = write!(hex, "{byte:02x}");
     }
     hex
@@ -221,7 +225,7 @@ fn scan_file(path: &Path) -> Result<Vec<Occurrence>> {
             out.push(Occurrence {
                 line_no: idx + 1,
                 text: trimmed.to_string(),
-                hash: line_hash(trimmed),
+                hash: line_hash(idx + 1, trimmed),
             });
         }
     }
@@ -279,8 +283,8 @@ impl Ledger {
                 bail!("entry {}: line_hashes is empty; delete the stale row instead", entry.path);
             }
             for hash in &entry.line_hashes {
-                if hash.len() != 16 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                    bail!("entry {}: line hash {hash:?} is not 16 hex digits", entry.path);
+                if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                    bail!("entry {}: line hash {hash:?} is not 64 hex digits", entry.path);
                 }
             }
         }
@@ -386,11 +390,19 @@ fn reconcile(ledger: &Ledger, observed: &BTreeMap<String, Vec<Occurrence>>) -> R
 
         for (hash, claimants) in &claims {
             let observed_count = observed_counts.get(hash).copied().unwrap_or(0);
-            if claimants.len() <= observed_count {
+            if claimants.len() == observed_count {
+                continue;
+            }
+            if claimants.len() < observed_count {
+                errors.push(format!(
+                    "unclassified duplicate occurrence(s) in {path}: {} row claim(s) for line \
+                     hash {hash} but {observed_count} occurrence(s) on disk",
+                    claimants.len()
+                ));
                 continue;
             }
             let distinct: BTreeSet<_> = claimants.iter().copied().collect();
-            let kind = if distinct.len() > 1 || claimants.len() > 1 {
+            let kind = if distinct.len() > 1 {
                 "duplicate classification"
             } else {
                 "stale classification"
@@ -549,21 +561,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn line_hash_is_deterministic_and_hex16() {
-        let a = line_hash("cargo xtask perl-kwalitee report");
-        let b = line_hash("cargo xtask perl-kwalitee report");
+    fn line_hash_is_deterministic_full_sha256_and_position_bound() {
+        let a = line_hash(7, "cargo xtask perl-kwalitee report");
+        let b = line_hash(7, "cargo xtask perl-kwalitee report");
         assert_eq!(a, b);
-        assert_eq!(a.len(), 16);
+        assert_eq!(a.len(), 64);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(a, line_hash("cargo xtask perl-kwalitee check"));
+        assert_ne!(a, line_hash(8, "cargo xtask perl-kwalitee report"));
+        assert_ne!(a, line_hash(7, "cargo xtask perl-kwalitee check"));
     }
 
     #[test]
     fn leading_whitespace_does_not_change_the_scanned_hash() {
         // Trimming happens at the scan layer; the hash sees the trimmed line.
         assert_eq!(
-            line_hash("  indented perl_kwalitee ref".trim()),
-            line_hash("indented perl_kwalitee ref")
+            line_hash(1, "  indented perl_kwalitee ref".trim()),
+            line_hash(1, "indented perl_kwalitee ref")
         );
     }
 
@@ -587,7 +600,7 @@ mod tests {
             removal_condition: "n/a".to_string(),
             allowed_to_remain: true,
             note: String::new(),
-            line_hashes: vec![line_hash("perl-kwalitee")],
+            line_hashes: vec![line_hash(1, "perl-kwalitee")],
         };
         assert!(validate_pairing(&entry).is_err());
         entry.migration_target = "none".to_string();
@@ -599,9 +612,9 @@ mod tests {
 
     #[test]
     fn surface_exclusion_matches_components_and_prefixes() {
-        let excluded = ["target", ".wt-*", "generated/**"];
+        let excluded = ["target/**", ".wt-*", "generated/**"];
         assert!(surface_excluded("target", "target", &excluded));
-        assert!(surface_excluded("target", "crates/x/target", &excluded));
+        assert!(!surface_excluded("target", "crates/x/target", &excluded));
         assert!(surface_excluded(".wt-1234", ".wt-1234/sub/file", &excluded));
         assert!(surface_excluded("generated", "generated/out.json", &excluded));
         assert!(!surface_excluded("src", "src/lib.rs", &excluded));

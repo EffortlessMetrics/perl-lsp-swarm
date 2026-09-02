@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12585 |
-| Rust-family files | 3909 |
-| Non-Rust files | 8676 |
-| Allowlisted | 6437 |
+| Total tracked files | 12644 |
+| Rust-family files | 3934 |
+| Non-Rust files | 8710 |
+| Allowlisted | 6471 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 500 |
-| documentation | 2837 |
+| config | 502 |
+| documentation | 2843 |
 | generated | 2 |
-| production | 349 |
-| test | 2069 |
+| production | 354 |
+| test | 2090 |
 | tooling | 680 |
 | unclassified | 2239 |
 
@@ -2357,6 +2357,7 @@
 | `.changes/unreleased/product-13890-Fixed-225841.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14076-Fixed-024700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14213-Added-carmel-root-state-r1.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14281-Fixed-014013.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14362-Added-000001.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2526,6 +2527,7 @@
 | `.changes/unreleased/vscode-11780-Changed-233600.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-11909-Performance-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-12808-Security-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/vscode-14447-Fixed-193000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-3904-Changed-232653.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-4712-Fixed-002852.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-4732-Fixed-091746.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2923,6 +2925,7 @@
 | `.github/workflows/ci.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/composite-action-contracts.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/corpus-windows-reparse-proof.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/critic-rule-proof.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-editor-transport.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-protocol-authority.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-scorecard.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3165,6 +3168,9 @@
 | `.spec/10918-emacs-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11036-lsp-runtime-train-schema/lsp_runtime_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11076-process-domain-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11076-process-domain-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11076-process-domain-contract/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5240,6 +5246,7 @@
 | `docs/project/status/compiler_backed_lsp_burndown.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/compiler_facts.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/coverage_and_ripr_enforcement.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/project/status/critic_rule_proof.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/dap-smoke-receipt.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/dap.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/development-moved-to-perl-lsp-swarm.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6242,6 +6249,27 @@
 | `fixtures/agent_review_packet/invalid/unverified_obligation.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/invalid/weak_discriminator.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
 | `fixtures/agent_review_packet/shuffled/challenger_service_marker_shuffled.v1.json` | test | `non-rust-agent-review-packet-fixtures` | tooling/agent-review |
+| `fixtures/critic-rule-proof/assignment_in_condition/boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/assignment_in_condition/near_miss.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/assignment_in_condition/positive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/assignment_in_condition/project_shaped.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/assignment_in_condition/suppression.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/capture_without_match/boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/capture_without_match/near_miss.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/capture_without_match/positive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/capture_without_match/project_shaped.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/capture_without_match/suppression.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/manifest.json` | test | `non-rust-critic-rule-proof-manifest` | native-critic |
+| `fixtures/critic-rule-proof/require_use_strict/boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/require_use_strict/near_miss.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/require_use_strict/positive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/require_use_strict/project_shaped.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/require_use_strict/suppression.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/string_eval/boundary.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/string_eval/near_miss.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/string_eval/positive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/string_eval/project_shaped.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/critic-rule-proof/string_eval/suppression.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fixtures/experience/standalone_candidate_selection/01_complete_archive_pair.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
@@ -6450,6 +6478,7 @@
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
 | `schemas/blocker_closeout.v1.schema.json` | config | `non-rust-blocker-closeout-schema` | release/ci |
 | `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
+| `schemas/critic_rule_proof.v1.schema.json` | config | `non-rust-critic-rule-proof-schema` | native-critic |
 | `schemas/import_cleanup_train.v1.schema.json` | config | `non-rust-import-cleanup-train-schema` | tooling/train-graph |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
 | `schemas/loaded_module_reload_family.v1.schema.json` | config | `non-rust-loaded-module-reload-family-schema` | identity |
@@ -8445,6 +8474,8 @@
 | `vscode-extension/src/commandResults.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationMigrationRegistry.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationMigrationRuntime.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/configurationOwnership.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/configurationPull.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/crashRecoveryArbiter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/criticCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/debugAdapter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8528,6 +8559,9 @@
 | `vscode-extension/src/test/configuration.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/configurationMigrationRegistry.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/configurationMigrationRuntime.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/configurationOwnership.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/configurationPull.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/configurationTransportWiring.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/crashRecoveryArbiter.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/crashRecoveryGeneration.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/criticCommandGroup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
