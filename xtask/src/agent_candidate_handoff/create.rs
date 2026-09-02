@@ -465,6 +465,10 @@ pub(super) struct CommitHeaders {
 /// commit — leaving `is_merge_commit`, the ordered parents, and the object
 /// closure derived from a candidate that was never read correctly. Unexpected
 /// output is refused instead.
+///
+/// A repeated singular header is refused for the same reason and is reachable
+/// from a real repository, since `git hash-object --literally` will write such a
+/// commit; see the refusal at its site below.
 pub(super) fn parse_commit_headers(
     headers: &str,
     commit: &str,
@@ -473,6 +477,27 @@ pub(super) fn parse_commit_headers(
     let mut parents: Vec<String> = Vec::new();
     let mut author: Option<CommitPerson> = None;
     let mut committer: Option<CommitPerson> = None;
+
+    // `tree`, `author`, and `committer` are singular. Keeping the last copy of a
+    // repeated one would drop the first from a manifest that documents each as
+    // the commit's verbatim identity, while the dropped bytes still travel
+    // inside the transported commit object — and `content_safety` scans only the
+    // manifest copies, so a credential in a dropped `author` would never be
+    // scanned. `check` reruns this function against the imported object, so
+    // producer and validator would agree on the same lossy projection. Git
+    // itself resolves such a commit from its *first* `tree`, so the projection
+    // could also name a tree Git does not use. This format cannot retain the
+    // object faithfully, so it refuses it rather than choosing a copy.
+    let duplicate = |what: &str| {
+        (
+            HandoffOutcome::UnsupportedObjectClass,
+            format!(
+                "commit {commit} records more than one `{what}` header, which this format \
+                 cannot retain as one verbatim identity"
+            ),
+        )
+    };
+
     for line in headers.lines() {
         // A multi-line header (`gpgsig`) continues with a leading space. None
         // of the fields read here are multi-line, so continuations are skipped
@@ -488,9 +513,14 @@ pub(super) fn parse_commit_headers(
             ));
         };
         match name {
+            "tree" if tree.is_some() => return Err(duplicate("tree")),
             "tree" => tree = Some(value.to_string()),
+            // `parent` is the one repeatable header read here: a merge commit
+            // records one per parent, in order.
             "parent" => parents.push(value.to_string()),
+            "author" if author.is_some() => return Err(duplicate("author")),
             "author" => author = Some(parse_commit_person(value, commit, "author")?),
+            "committer" if committer.is_some() => return Err(duplicate("committer")),
             "committer" => committer = Some(parse_commit_person(value, commit, "committer")?),
             // Headers this format does not retain — `gpgsig`, `encoding`,
             // `mergetag`. Ignoring a header whose name was read is not the same

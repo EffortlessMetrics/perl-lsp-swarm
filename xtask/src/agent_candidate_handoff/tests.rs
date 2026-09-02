@@ -2451,6 +2451,95 @@ fn a_credential_in_the_commit_date_is_refused() -> Result<()> {
     Ok(())
 }
 
+/// A commit recording a singular header twice is refused, not projected onto
+/// whichever copy happens to come last.
+///
+/// `parse_commit_headers` assigned `tree`, `author`, and `committer` on every
+/// occurrence, so a second record silently replaced the first. The manifest
+/// documents one of each as the commit's verbatim identity and `content_safety`
+/// scans those manifest copies, so a credential in the dropped `author` was
+/// never scanned while it still travelled inside the transported commit object.
+/// `check` reruns this same parse against the imported object, so producer and
+/// validator agreed on the same lossy projection and no dimension could see the
+/// disagreement with the commit.
+///
+/// The duplicated `tree` is the same defect without a secret: Git resolves such
+/// a commit from the first `tree` record, so keeping the last one would put a
+/// tree in the manifest that Git itself does not use.
+///
+/// Measured before the fix, for the `author` case: `create` published and
+/// `check` returned `VALID_HANDOFF` with the token absent from the manifest and
+/// present in `candidate.pack`.
+#[test]
+fn a_commit_recording_a_singular_header_twice_is_refused() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let first_tree = fixture.git(&["rev-parse", "HEAD^{tree}"])?.trim().to_string();
+    fixture.write("b.txt", b"b\n")?;
+    fixture.commit("second")?;
+    let tree = fixture.git(&["rev-parse", "HEAD^{tree}"])?.trim().to_string();
+
+    let token = synthetic_github_token();
+    let author = "author Fixture Author <fixture@example.invalid> 1600000000 +0000";
+    let committer = "committer Fixture Author <fixture@example.invalid> 1600000000 +0000";
+    let well_formed = format!("tree {tree}\n{author}\n{committer}\n\nordinary subject\n");
+
+    // Each case duplicates exactly one singular header. The first copy is the
+    // one a lossy projection drops, so it carries what must not disappear: a
+    // credential for `author`, and a tree Git would actually resolve for `tree`.
+    let cases = [
+        (
+            "tree",
+            format!("tree {first_tree}\ntree {tree}\n{author}\n{committer}\n\nordinary subject\n"),
+        ),
+        (
+            "author",
+            format!(
+                "tree {tree}\n\
+                 author Fixture Author <{token}@example.invalid> 1600000000 +0000\n\
+                 {author}\n{committer}\n\nordinary subject\n"
+            ),
+        ),
+        ("committer", format!("tree {tree}\n{author}\n{committer}\n{committer}\n\nsubject\n")),
+    ];
+
+    for (header, raw_commit) in &cases {
+        fs::write(fixture.path().join("raw-commit.bin"), raw_commit.as_bytes())?;
+        let commit = fixture
+            .git(&["hash-object", "-t", "commit", "-w", "--literally", "--", "raw-commit.bin"])?
+            .trim()
+            .to_string();
+        fixture.git(&["update-ref", "refs/heads/main", &commit])?;
+
+        let destination = Destination::new()?;
+        let Err((outcome, detail)) = create_handoff(&request(&fixture, &destination)) else {
+            bail!("a commit with two `{header}` headers must not reach a published envelope");
+        };
+        assert_eq!(
+            outcome,
+            HandoffOutcome::UnsupportedObjectClass,
+            "a duplicated `{header}` is an object class this format cannot retain: {detail}"
+        );
+        assert!(detail.contains(header), "the refusal must name the duplicated header: {detail}");
+        assert!(!destination.envelope().exists(), "a refused export publishes nothing");
+    }
+
+    // Anti-vacuity: the same commit shape with one of each header must still
+    // export, or this control would pass for a producer that refused every
+    // literal commit.
+    fs::write(fixture.path().join("raw-commit.bin"), well_formed.as_bytes())?;
+    let clean = fixture
+        .git(&["hash-object", "-t", "commit", "-w", "--literally", "--", "raw-commit.bin"])?
+        .trim()
+        .to_string();
+    fixture.git(&["update-ref", "refs/heads/main", &clean])?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    assert_eq!(manifest.candidate.tree, tree);
+    Ok(())
+}
+
 /// A credential shaped like a proof id is refused, not admitted as well-formed.
 ///
 /// `is_proof_id` accepts lowercase alphanumerics with `.`, `_`, and `-` up to
