@@ -1035,8 +1035,15 @@ mod tests {
             // next source line. Retain its opener so the final comment pass
             // can discard the entire comment instead of leaking its body.
             .unwrap_or(raw_suffix);
-        let _ = test_cfg_attribute_start(suffix, source_lexical_state);
+        advance_lexical_state(suffix, source_lexical_state);
         suffix
+    }
+
+    fn advance_lexical_state(mut source: &str, state: &mut LexicalState) {
+        while let Some(attribute_start) = test_cfg_attribute_start(source, state) {
+            let next = attribute_start + "#[cfg(test)]".len();
+            source = source.get(next..).unwrap_or_default();
+        }
     }
 
     fn test_cfg_attribute_start(source: &str, state: &mut LexicalState) -> Option<usize> {
@@ -1531,8 +1538,15 @@ fn production() { client.send_request("production/after-multiline"); }
 client.send_request("comment-only/suffix");
 */
 fn after_comment() { client.send_request("production/after-comment"); }
+#[cfg(test)] mod before_second_comment {} #[cfg(test)] const MARKER: () = (); /* second trailing comment begins
+client.send_request("comment-only/second-cfg-suffix");
+*/
+fn after_second_comment() { client.send_request("production/after-second-comment"); }
 #[cfg(test)] mod before_raw {} const RAW: &str = r###"
 #[cfg(test)] mod fake_raw { client.send_request("raw-only/suffix"); }
+"###;
+#[cfg(test)] mod before_second_raw {} #[cfg(test)] const SECOND_RAW: &str = r###"
+#[cfg(test)] mod fake_second_raw { client.send_request("raw-only/second-cfg-suffix"); }
 "###;
 #[cfg(test)] mod later_real {
     fn send() { client.send_request("test-only/later-real"); }
@@ -1544,7 +1558,10 @@ fn after_raw() { client.send_request("production/after-raw"); }
 
         assert!(!stripped.contains("comment-only/suffix"));
         assert!(stripped.contains("production/after-comment"));
+        assert!(!stripped.contains("comment-only/second-cfg-suffix"));
+        assert!(stripped.contains("production/after-second-comment"));
         assert!(stripped.contains("raw-only/suffix"));
+        assert!(stripped.contains("raw-only/second-cfg-suffix"));
         assert!(!stripped.contains("test-only/later-real"));
         assert!(stripped.contains("production/after-raw"));
     }
