@@ -249,11 +249,17 @@ not require a new full review merely because another commit was pushed.
 Before resolving a substantive thread, reply with one supported disposition:
 
 ```text
-Disposition: fixed | refuted | superseded | follow-up
+Disposition: fixed | refuted | superseded | post-merge-follow-up
+             (terminal: resolves the thread)
+Disposition: current-blocker | blocked-by-prerequisite | not-proven
+             (non-terminal: the thread stays open)
 Evidence: current candidate, focused test or oracle, governing source, or linked follow-up
 ```
 
-Thread resolution is not itself evidence.
+Terminal classes resolve the thread; non-terminal classes record a live blocker
+or missing evidence and keep the thread open. The legacy `follow-up` class is
+rejected because it does not say which of those the finding is. Thread
+resolution is not itself evidence.
 
 ## Related pull request synthesis
 

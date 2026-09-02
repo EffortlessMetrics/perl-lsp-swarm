@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::{Command, Output};
 
+use serde_json::Value;
+
 fn project_root() -> Result<PathBuf, Box<dyn Error>> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -285,6 +287,97 @@ fn terminal_dispositions_resolve_and_live_blockers_do_not() -> Result<(), Box<dy
     assert!(!current_calls.contains("unresolveReviewThread"));
     assert!(!current_calls.lines().any(|line| line.contains(" resolveReviewThread")));
     assert!(output_text(&current).contains("kept thread PRRT_test unresolved"));
+
+    Ok(())
+}
+
+/// The receipt schema must accept every marker shape the disposition script can
+/// emit, and its class enum must stay in lockstep with the script's vocabulary.
+/// Platform-neutral: needs no bash, gh, or jq, so it proves the schema contract
+/// on Windows too.
+#[test]
+fn receipt_schema_accepts_emitted_marker_shapes() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+    let schema: Value = serde_json::from_str(&fs::read_to_string(
+        root.join(".ci/receipts/schemas/review-disposition.schema.json"),
+    )?)?;
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| format!("review-disposition schema is invalid: {error}"))?;
+
+    let classes: Vec<&str> = schema
+        .pointer("/properties/class/enum")
+        .and_then(Value::as_array)
+        .ok_or("schema has no class enum")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for emitted in [
+        "fixed",
+        "refuted",
+        "superseded",
+        "post-merge-follow-up",
+        "current-blocker",
+        "blocked-by-prerequisite",
+        "not-proven",
+    ] {
+        assert!(classes.contains(&emitted), "schema rejects emitted class: {emitted}");
+    }
+    assert!(
+        classes.contains(&"follow-up"),
+        "legacy follow-up must remain valid so historical markers still parse"
+    );
+
+    let marker = |class: &str, transition: &str, evidence: Value| {
+        serde_json::json!({
+            "v": 1,
+            "class": class,
+            "thread_id": "PRRT_test",
+            "by": "reviewer",
+            "head": "0123456789012345678901234567890123456789",
+            "evidence": evidence,
+            "thread_transition": transition,
+        })
+    };
+
+    let emitted = [
+        marker("fixed", "resolve", serde_json::json!({"commit": "abc1234"})),
+        marker("refuted", "resolve", serde_json::json!({"argument": "does not hold"})),
+        marker("superseded", "resolve", serde_json::json!({"superseded_by": "#13366"})),
+        marker(
+            "post-merge-follow-up",
+            "resolve",
+            serde_json::json!({"issue": 13342, "argument": "claim already satisfied"}),
+        ),
+        marker("current-blocker", "keep_open", serde_json::json!({"argument": "defect remains"})),
+        marker(
+            "blocked-by-prerequisite",
+            "keep_open",
+            serde_json::json!({"issue": 13342, "argument": "defect remains"}),
+        ),
+        marker("not-proven", "keep_open", serde_json::json!({"argument": "evidence missing"})),
+    ];
+    for instance in &emitted {
+        assert!(
+            validator.is_valid(instance),
+            "schema rejects a marker shape the script emits: {instance}"
+        );
+    }
+
+    // Historical v1 markers predate thread_transition; they must still validate.
+    let historical = serde_json::json!({
+        "v": 1,
+        "class": "follow-up",
+        "thread_id": "PRRT_historical",
+        "by": "reviewer",
+        "head": "0123456789012345678901234567890123456789",
+        "evidence": {"issue": 13342},
+    });
+    assert!(validator.is_valid(&historical), "historical v1 marker must remain valid");
+
+    // additionalProperties stays closed against unknown envelope fields.
+    let mut unknown = marker("fixed", "resolve", serde_json::json!({"commit": "abc1234"}));
+    unknown["surprise"] = Value::Bool(true);
+    assert!(!validator.is_valid(&unknown), "schema must stay closed to unknown fields");
 
     Ok(())
 }
