@@ -1081,7 +1081,7 @@ The release archive may have an unexpected layout."
 # (-alpha.1, +build.7) is accepted with its restricted alphabet.
 validate_source_version_spec() {
     local _spec="$1"
-    if [[ ! "$_spec" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+    if [[ ! "$_spec" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
         err "invalid VERSION=$_spec for source mode: expected a full X.Y.Z semver (v0.12.0) with optional prerelease/build metadata"
     fi
 }
@@ -1104,7 +1104,7 @@ verify_source_install_identity() {
     _resolved_ver="$(printf '%s\n' "$_resolved" | awk -v expected="$BIN_NAME" '
         $1 == expected {
             for (i = 2; i <= NF; i++) {
-                if ($i ~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/) {
+                if ($i ~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/) {
                     print $i
                 }
             }
@@ -1154,6 +1154,7 @@ build_from_source() {
 
     local _target_arg=()
     local _version_arg=()
+    local _has_version_arg=0
 
     if [ -n "${TARGET:-}" ]; then
         need_cmd rustup
@@ -1176,6 +1177,7 @@ build_from_source() {
         v[0-9]*|[0-9]*)
             validate_source_version_spec "$VERSION_NUM"
             _version_arg=(--version "$VERSION_NUM")
+            _has_version_arg=1
             info "building from source for the exact registry subject: perllsp $VERSION_NUM"
             ;;
         *)
@@ -1190,7 +1192,7 @@ build_from_source() {
         ${_version_arg[@]+"${_version_arg[@]}"} \
         ${_target_arg[@]+"${_target_arg[@]}"} \
         --root "$TMPDIR/install-root"; then
-        if [ "${#_version_arg[@]}" -gt 0 ]; then
+        if [ "$_has_version_arg" -eq 1 ]; then
             err "cargo could not build/install perllsp $VERSION_NUM from the registry (see the cargo output above: the exact requested version may not exist on crates.io, or its lockfile is incompatible). No existing installation was modified."
         fi
         err "cargo failed to build/install perllsp from source (see the cargo output above). No existing installation was modified."

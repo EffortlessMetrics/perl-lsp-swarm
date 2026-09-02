@@ -165,6 +165,19 @@ cargo_argv_contains() {
     tr -d '\n' < "$FAKE_CARGO_INSTALL_LOG" | grep -qz -- "$1"
 }
 
+cargo_argv_has_exact_pair() {
+    python3 - "$FAKE_CARGO_INSTALL_LOG" "$1" "$2" <<'PY'
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    argv = handle.read().split(b"\0")[:-1]
+flag, value = sys.argv[2].encode(), sys.argv[3].encode()
+if any(argv[index:index + 2] == [flag, value] for index in range(len(argv) - 1)):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 expect_success() {
     local label="$1"
     shift
@@ -204,7 +217,7 @@ expect_failure_with() {
 # ---------------------------------------------------------------------------
 
 expect_success "exact VERSION=v0.12.0 pins the cargo subject" "v0.12.0" "0.12.0" ok
-if cargo_argv_contains --version && cargo_argv_contains 0.12.0; then
+if cargo_argv_has_exact_pair --version 0.12.0; then
     pass "exact request passes --version 0.12.0 to cargo"
 else
     fail "exact request passes --version 0.12.0 to cargo" \
@@ -261,6 +274,13 @@ if cargo_argv_contains --version; then
 else
     pass "latest request passes no --version selector"
 fi
+latest_output="$(run_source_build latest 0.99.0 ok 2>&1)"
+if [[ "$latest_output" == *"resolved registry subject: perllsp 0.99.0"* ]]; then
+    pass "latest request surfaces the resolved registry subject"
+else
+    fail "latest request surfaces the resolved registry subject" \
+        "resolved identity was not surfaced: $latest_output"
+fi
 
 # ---------------------------------------------------------------------------
 # Argv-safety and semver-shape rejection before cargo runs
@@ -296,6 +316,15 @@ if [[ -s "$FAKE_CARGO_INSTALL_LOG" ]]; then
 else
     pass "a leading-zero VERSION never reaches cargo"
 fi
+
+expect_failure_with \
+    "a leading-zero prerelease identifier is rejected" \
+    "expected a full X.Y.Z semver" \
+    "v0.12.0-01" "0.12.0-01" ok
+
+expect_success \
+    "a combined prerelease and build suffix is accepted" \
+    "v0.12.0-alpha+build.7" "0.12.0-alpha+build.7" ok
 
 expect_failure_with \
     "an underscore VERSION is rejected with a typed semver reason" \
