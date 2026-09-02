@@ -3513,10 +3513,124 @@ fn a_staging_directory_claiming_validation_is_refused() -> Result<()> {
     Ok(())
 }
 
+/// The destination is reserved for the whole build, not merely checked.
+///
+/// `out.exists()` and the publishing rename were two operations with a window
+/// between them, and the window was exploitable rather than theoretical:
+/// `rename` over an existing *empty* directory succeeds on Unix and replaces it
+/// (a non-empty one fails `ENOTEMPTY`). A destination created after the check
+/// was therefore silently clobbered, against both the `must not already exist`
+/// contract and the immutability claim.
+///
+/// This drives the window deterministically instead of racing for it. The
+/// injected validator runs at exactly the point the defect needed — after the
+/// envelope is staged, before it is published — so the probe inside it stands
+/// in for any other creator arriving mid-build. Under the old check-then-rename
+/// code the probe *succeeds* and its directory is then replaced; under the
+/// atomic claim it must fail, because the path was reserved before staging
+/// began.
+#[test]
+#[serial]
+fn a_destination_created_mid_export_cannot_be_clobbered() -> Result<()> {
+    /// Destination to probe, and what the probe observed.
+    static PROBE: std::sync::Mutex<Option<(PathBuf, Option<std::io::ErrorKind>)>> =
+        std::sync::Mutex::new(None);
+
+    /// Validate as usual, but first try to claim the destination mid-export.
+    fn probing_validator(staged: &Path) -> super::check::CheckReport {
+        if let Ok(mut probe) = PROBE.lock()
+            && let Some((destination, observed)) = probe.as_mut()
+        {
+            *observed = Some(
+                fs::create_dir(&*destination)
+                    .err()
+                    .map_or(std::io::ErrorKind::Other, |error| error.kind()),
+            );
+        }
+        check_staged(staged)
+    }
+
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+
+    if let Ok(mut probe) = PROBE.lock() {
+        *probe = Some((destination.envelope(), None));
+    }
+    let outcome =
+        create_handoff_with_validator(&request(&fixture, &destination), probing_validator);
+
+    let observed = PROBE
+        .lock()
+        .ok()
+        .and_then(|probe| probe.as_ref().and_then(|(_, observed)| *observed))
+        .context("the probe must have run inside the validator")?;
+    if let Ok(mut probe) = PROBE.lock() {
+        *probe = None;
+    }
+
+    assert_eq!(
+        observed,
+        std::io::ErrorKind::AlreadyExists,
+        "the destination must already be reserved while the envelope is staged; \
+         a probe that succeeds here is the directory the rename would replace"
+    );
+    assert!(outcome.is_ok(), "reserving the destination must not break an ordinary export");
+    assert_eq!(
+        check_handoff(&destination.envelope()).outcome,
+        HandoffOutcome::ValidHandoff,
+        "the published envelope must still validate"
+    );
+    Ok(())
+}
+
+/// A refused export leaves no reservation behind for the next attempt.
+///
+/// The reservation is created before the build, so it has to be released when
+/// the build fails — otherwise a refused export would leave an empty directory
+/// and the next attempt would be refused as a duplicate of nothing.
+#[test]
+fn a_refused_export_releases_its_destination_reservation() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+
+    // A validator that always refuses, so the export fails after staging.
+    fn refusing_validator(_staged: &Path) -> super::check::CheckReport {
+        super::check::CheckReport {
+            schema_version: CHECK_REPORT_SCHEMA_V1.to_string(),
+            envelope: String::new(),
+            candidate_commit: None,
+            candidate_identity_digest: None,
+            dimensions: Vec::new(),
+            outcome: HandoffOutcome::DigestMismatch,
+        }
+    }
+
+    assert!(
+        create_handoff_with_validator(&request(&fixture, &destination), refusing_validator)
+            .is_err(),
+        "a refused self-check must not publish"
+    );
+    assert!(
+        !destination.envelope().exists(),
+        "the reservation must be released, not left as an empty directory"
+    );
+
+    // The decisive consequence: a retry must be possible.
+    let manifest = export_valid(&fixture, &destination)?;
+    assert!(!manifest.candidate.commit.is_empty());
+    Ok(())
+}
+
 /// Two concurrent exports to one destination cannot corrupt each other.
 ///
-/// The destination check cannot exclude this: `out` stays absent for the whole
-/// of staging — only `publish` creates it — so both callers pass it. When the
+/// The destination check could not exclude this while `out` stayed absent for
+/// the whole of staging — only `publish` created it — so both callers passed
+/// it. (The destination is now reserved up front, which closes that half; see
+/// `a_destination_created_mid_export_cannot_be_clobbered`.) When the
 /// staging name was derived from the destination and the process id alone, both
 /// derived the same path, and the second deleted the first's *live* directory
 /// and recreated it. From there their manifest, pack, proof, receipt, and

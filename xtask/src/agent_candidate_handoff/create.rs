@@ -225,6 +225,31 @@ fn require_supported_object_format(repository: &Path) -> Result<(), (HandoffOutc
 pub(super) struct StagedEnvelope {
     directory: PathBuf,
     published: bool,
+    /// The reserved destination, held from before the build until publication.
+    claim: Option<ClaimedDestination>,
+}
+
+/// An atomically reserved envelope destination.
+///
+/// Created by `fs::create_dir`, which both answers "does this path exist" and
+/// reserves the answer in one step. Held for the whole build so the destination
+/// cannot be taken between the check and the rename, and removed again if the
+/// export never publishes — otherwise a refused export would leave an empty
+/// directory that makes the next attempt look like a duplicate.
+struct ClaimedDestination {
+    path: PathBuf,
+    published: bool,
+}
+
+impl Drop for ClaimedDestination {
+    fn drop(&mut self) {
+        if !self.published {
+            // `remove_dir`, never `remove_dir_all`: this reservation is an empty
+            // directory this process created. If anything now occupies it, that
+            // is not ours to delete, and the removal simply fails.
+            let _ = fs::remove_dir(&self.path);
+        }
+    }
 }
 
 impl Drop for StagedEnvelope {
@@ -248,7 +273,7 @@ impl StagedEnvelope {
     /// the ownership rule can be tested at the point that owns it.
     #[cfg(test)]
     pub(super) fn for_test(directory: PathBuf, published: bool) -> Self {
-        Self { directory, published }
+        Self { directory, published, claim: None }
     }
 
     /// Drop the staging directory without publishing it.
@@ -284,8 +309,17 @@ impl StagedEnvelope {
         if let Err(error) = fs::write(self.directory.join(RECEIPT_FILE_NAME), receipt_json) {
             return Err(failed(error, "write the validated receipt"));
         }
+        // The reservation is an empty directory at exactly this path, so the
+        // rename replaces our own claim rather than someone else's envelope.
         if let Err(error) = fs::rename(&self.directory, destination) {
             return Err(failed(error, "publish the envelope"));
+        }
+
+        // The claim is now the published envelope, so its `Drop` must not
+        // remove it. Releasing it here rather than at the top of `publish`
+        // keeps every earlier failure path still owning the reservation.
+        if let Some(claim) = self.claim.as_mut() {
+            claim.published = true;
         }
 
         // The directory no longer exists under its staging name; claiming it
@@ -1355,12 +1389,6 @@ fn stage_envelope(
         (HandoffOutcome::InstrumentFailure, format!("could not write {what}: {error}"))
     };
 
-    if out.exists() {
-        return Err((
-            HandoffOutcome::InstrumentFailure,
-            format!("`{}` already exists; a handoff envelope is immutable", out.display()),
-        ));
-    }
     let Some(file_name) = out.file_name().map(|name| name.to_string_lossy().into_owned()) else {
         return Err((
             HandoffOutcome::InstrumentFailure,
@@ -1370,8 +1398,30 @@ fn stage_envelope(
     let parent = out.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|error| io(error, "the destination directory"))?;
 
+    // Claim the destination before building anything, and claim it by creating
+    // it rather than by asking whether it exists.
+    //
+    // `out.exists()` followed by a rename is two operations, and the window
+    // between them is not empty: `rename` over an existing *empty* directory
+    // succeeds on Unix and replaces it (measured; a non-empty destination fails
+    // `ENOTEMPTY`). So a destination that appeared after the check was silently
+    // clobbered, which contradicts both the `must not already exist` contract
+    // and the immutability claim. `create_dir` answers the same question and
+    // reserves the answer in one atomic step, so the path is held for the whole
+    // build rather than merely observed to be free at the start.
+    let claimed = match fs::create_dir(out) {
+        Ok(()) => ClaimedDestination { path: out.to_path_buf(), published: false },
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err((
+                HandoffOutcome::InstrumentFailure,
+                format!("`{}` already exists; a handoff envelope is immutable", out.display()),
+            ));
+        }
+        Err(error) => return Err(io(error, "the envelope destination")),
+    };
+
     let staging = allocate_staging(parent, &file_name)?;
-    let staged = StagedEnvelope { directory: staging, published: false };
+    let staged = StagedEnvelope { directory: staging, published: false, claim: Some(claimed) };
 
     let write =
         |relative: &Path, bytes: &[u8], what: &str| -> Result<(), (HandoffOutcome, String)> {
