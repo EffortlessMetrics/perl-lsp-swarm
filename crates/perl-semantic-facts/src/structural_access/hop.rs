@@ -221,13 +221,18 @@ impl StructuralAccessHop {
     ///    [`validate_shape_identity`].
     /// 7. Limitations are sorted and duplicate-free, as the constructor
     ///    leaves them.
-    /// 9. An arrow subscript cannot reach a member through a named `@` or `%`
-    ///    variable: Perl rejects an array or hash used as a reference. `$`,
-    ///    `&` and `*` all dereference legitimately.
     /// 8. A boundary that refuses promotion cannot carry a promoted value
     ///    fact. Only the promotion is refused: a shape claim with no
     ///    `value_fact` stays legal, since refusing to evaluate a dynamic key
     ///    does not stop a producer knowing what shape any member has.
+    /// 9. A plain subscript on a named variable addresses that variable's own
+    ///    container: `$config{groups}` reads `%config` and `$config[0]` reads
+    ///    `@config`. This is an identity law and holds whatever the outcome.
+    /// 10. An arrow subscript cannot reach a member through a named `@` or
+    ///     `%` variable: Perl rejects an array or hash used as a reference.
+    ///     `$`, `&` and `*` all dereference legitimately. This is a
+    ///     reachability law, so it is gated on the outcome claiming a member
+    ///     answer.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -246,7 +251,7 @@ impl StructuralAccessHop {
                 end_byte: self.spelling.anchor.end_byte,
             });
         }
-        // Law 10: a plain subscript on a named variable addresses that
+        // Law 9: a plain subscript on a named variable addresses that
         // variable's own container, never a scalar that merely shares its name.
         //
         // `$config{groups}` reads `%config` and `$config[0]` reads `@config`;
@@ -281,7 +286,7 @@ impl StructuralAccessHop {
                 ));
             }
 
-            // Law 11: an arrow subscript dereferences what the base yields, and
+            // Law 10: an arrow subscript dereferences what the base yields, and
             // an array or hash container is not a reference. Perl says so
             // outright — `@a->[0]` is "Can't use an array as a reference" and
             // `%h->{k}` is "Can't use a hash as a reference" — so no member can
@@ -313,7 +318,7 @@ impl StructuralAccessHop {
             }
         }
 
-        // Law 9: a boundary that refuses promotion cannot carry a promoted
+        // Law 8: a boundary that refuses promotion cannot carry a promoted
         // value fact.
         //
         // `BoundaryDisposition::Refuse` is documented as refusing *promotion*,

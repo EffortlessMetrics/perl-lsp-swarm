@@ -85,10 +85,6 @@ impl StructuralAccessChain {
     ///    access in one file; a hop anchored elsewhere is not part of it.
     /// 6. The subject itself validates. A chain reconstructed by serde never
     ///    ran the subject's constructor, so this is where that check lands.
-    /// 8. A recorded [`StructuralHopOutcome::ShapeMismatch`] must describe a
-    ///    real conflict about the shape in hand: the operator must be one the
-    ///    predecessor's known shape cannot carry, and the observed shape must
-    ///    be the one the predecessor selected.
     /// 7. A hop cannot claim any *member-level* answer through an operator the
     ///    predecessor's known shape cannot carry — a hash operator on a known
     ///    array reference, the reverse, or any subscript on a plain scalar, a
@@ -98,6 +94,10 @@ impl StructuralAccessChain {
     ///    `AbsentMember` would collapse wrong-shape into legitimate absence —
     ///    a distinction #13619 requires be kept. `ShapeMismatch` says it
     ///    honestly, and a symbolic dereference says so with its own boundary.
+    /// 8. A recorded [`StructuralHopOutcome::ShapeMismatch`] must describe a
+    ///    real conflict about the shape in hand: the operator must be one the
+    ///    predecessor's known shape cannot carry, and the observed shape must
+    ///    be the one the predecessor selected.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
