@@ -499,13 +499,19 @@ fn classify_use(module: &str, args: &[String], file_id: FileId, node: &Node) -> 
 /// which is worse than the imprecision it replaces.
 /// Whether the `{` at `open` begins Sub::Exporter's per-symbol option hash.
 ///
-/// `foo => { -as => 'bar' }` describes the symbol being imported; the option
-/// names are documented and dash-prefixed, and the parser splits `-as` into
-/// `-` and `as`. Two families are in scope and they differ on one name:
-/// Sub::Exporter spells the trailing rename `-suffix`, while `Test2::Util::Importer`
-/// spells it `-postfix` (`docs/reference/TEST2_PINNED_SOURCE_RECEIPT.md` records
-/// "`-as`, prefix, and postfix local names" for the Test2 bundles). Both are
-/// accepted. Requiring one of those names, rather than any dashed key,
+/// `foo => { -as => 'bar' }` describes the symbol being imported, and `bar` is
+/// literally the installed name, so keeping that hash keeps a real symbol. The
+/// parser splits `-as` into `-` and `as`.
+///
+/// Only `-as` qualifies. The affix options — Sub::Exporter's `-prefix`/`-suffix`
+/// and `Test2::Util::Importer`'s `-prefix`/`-postfix` — carry a *fragment*, not
+/// a name: `ok => { -postfix => '_ok' }` installs `ok_ok`, as
+/// `providers/testing/test2.rs` composes it. Keeping such a hash would publish
+/// `_ok`, which is nothing at all, so those are skipped like any other
+/// configuration. Composing the affix is rename modelling, which this pass does
+/// not do; the Test2 provider already does it where it matters.
+///
+/// Requiring the option name, rather than any dashed key,
 /// keeps an ordinary module configuration hash that happens to open with a
 /// dashed key — `use M 'foo', { -config => 'value' }` — on the skipped side.
 ///
@@ -515,10 +521,7 @@ fn classify_use(module: &str, args: &[String], file_id: FileId, node: &Node) -> 
 /// here, so this errs toward skipping and keeps the retained case narrow.
 fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
     args.get(open + 1).map(|token| token.trim()) == Some("-")
-        && args
-            .get(open + 2)
-            .map(|token| token.trim())
-            .is_some_and(|name| matches!(name, "as" | "prefix" | "suffix" | "postfix"))
+        && args.get(open + 2).map(|token| token.trim()).is_some_and(|name| name == "as")
 }
 
 fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
@@ -1093,13 +1096,13 @@ mod tests {
     }
 
     #[test]
-    fn the_importer_postfix_rename_keeps_its_installed_name()
+    fn an_affix_rename_hash_publishes_neither_the_fragment_nor_a_composed_name()
     -> Result<(), Box<dyn std::error::Error>> {
-        // `Test2::Util::Importer` spells the trailing rename `-postfix` where
-        // Sub::Exporter spells it `-suffix`, and this repository's Test2 pinned
-        // source receipt records "`-as`, prefix, and postfix local names" for
-        // the Test2 bundles. Both families reach these classifiers, so both
-        // spellings must keep their option hash.
+        // `-postfix` carries a fragment, not a name: `ok => { -postfix => '_ok' }`
+        // installs `ok_ok`, as `perl-lsp-rs-core`'s Test2 provider composes it.
+        // Keeping the hash would publish `_ok`, which is nothing at all, so the
+        // affix options are skipped like any other configuration. Composing the
+        // alias is rename modelling and is not done here.
         let specs = parse_and_extract("use Test2::V0 ok => { -postfix => '_ok' };");
         let spec = specs
             .iter()
@@ -1107,10 +1110,16 @@ mod tests {
             .ok_or("expected an ImportSpec for Test2::V0")?;
 
         match &spec.symbols {
-            ImportSymbols::Explicit(names) => assert!(
-                names.iter().any(|name| name == "_ok"),
-                "the postfix alias must survive: {names:?}"
-            ),
+            ImportSymbols::Explicit(names) => {
+                assert!(
+                    !names.iter().any(|name| name == "_ok"),
+                    "a fragment is not an imported symbol: {names:?}"
+                );
+                assert!(
+                    !names.iter().any(|name| name == "postfix"),
+                    "an option key is not an imported symbol: {names:?}"
+                );
+            }
             other => return Err(format!("expected an explicit list, got {other:?}").into()),
         }
         Ok(())

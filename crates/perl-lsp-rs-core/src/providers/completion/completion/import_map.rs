@@ -115,13 +115,19 @@ fn collect(node: &Node, map: &mut ImportMap) {
 /// installed — while keeping `foo`, which is not.
 /// Whether the `{` at `open` begins Sub::Exporter's per-symbol option hash.
 ///
-/// `foo => { -as => 'bar' }` describes the symbol being imported; the option
-/// names are documented and dash-prefixed, and the parser splits `-as` into
-/// `-` and `as`. Two families are in scope and they differ on one name:
-/// Sub::Exporter spells the trailing rename `-suffix`, while `Test2::Util::Importer`
-/// spells it `-postfix` (`docs/reference/TEST2_PINNED_SOURCE_RECEIPT.md` records
-/// "`-as`, prefix, and postfix local names" for the Test2 bundles). Both are
-/// accepted. Requiring one of those names, rather than any dashed key,
+/// `foo => { -as => 'bar' }` describes the symbol being imported, and `bar` is
+/// literally the installed name, so keeping that hash keeps a real symbol. The
+/// parser splits `-as` into `-` and `as`.
+///
+/// Only `-as` qualifies. The affix options — Sub::Exporter's `-prefix`/`-suffix`
+/// and `Test2::Util::Importer`'s `-prefix`/`-postfix` — carry a *fragment*, not
+/// a name: `ok => { -postfix => '_ok' }` installs `ok_ok`, as
+/// `providers/testing/test2.rs` composes it. Keeping such a hash would publish
+/// `_ok`, which is nothing at all, so those are skipped like any other
+/// configuration. Composing the affix is rename modelling, which this pass does
+/// not do; the Test2 provider already does it where it matters.
+///
+/// Requiring the option name, rather than any dashed key,
 /// keeps an ordinary module configuration hash that happens to open with a
 /// dashed key — `use M 'foo', { -config => 'value' }` — on the skipped side.
 ///
@@ -131,10 +137,7 @@ fn collect(node: &Node, map: &mut ImportMap) {
 /// here, so this errs toward skipping and keeps the retained case narrow.
 fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
     args.get(open + 1).map(|token| token.trim()) == Some("-")
-        && args
-            .get(open + 2)
-            .map(|token| token.trim())
-            .is_some_and(|name| matches!(name, "as" | "prefix" | "suffix" | "postfix"))
+        && args.get(open + 2).map(|token| token.trim()).is_some_and(|name| name == "as")
 }
 
 fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
@@ -273,17 +276,19 @@ mod tests {
         assert!(symbols.contains("bar"), "the installed name must survive; got: {symbols:?}");
     }
 
-    /// `Test2::Util::Importer` spells the trailing rename `-postfix` where
-    /// Sub::Exporter spells it `-suffix`. Both families reach this filter.
+    /// An affix option carries a fragment, not a name: `ok => { -postfix => '_ok' }`
+    /// installs `ok_ok`, which the Test2 provider composes. Publishing `_ok` into
+    /// the completion filter would name nothing, so affix hashes are skipped.
     #[test]
-    fn the_importer_postfix_rename_keeps_its_installed_name_in_the_filter() {
+    fn an_affix_rename_hash_publishes_no_fragment_into_the_filter() {
         let code = "use Test2::V0 ok => { -postfix => '_ok' };\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
         let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("Test2::V0"));
-        assert!(symbols.contains("_ok"), "the postfix alias must survive; got: {symbols:?}");
+        assert!(!symbols.contains("_ok"), "a fragment is not a symbol; got: {symbols:?}");
+        assert!(!symbols.contains("postfix"), "an option key is not a symbol; got: {symbols:?}");
     }
 
     /// A dashed first key alone does not mark a hash as per-symbol options; an
