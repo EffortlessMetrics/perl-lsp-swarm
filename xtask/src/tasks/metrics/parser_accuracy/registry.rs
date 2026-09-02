@@ -354,6 +354,20 @@ impl MetricRegistry {
             let MetricRow::Measured { value, sample_count, direction, confidence, cadence, .. } =
                 row
             else {
+                // An insufficient_data row carries no value, so most of the policy has nothing
+                // to bind to — but `confidence` does. `apply` sets every such row to `Low`,
+                // and a row published as "not enough data" while claiming stronger confidence
+                // is incoherent on its face. Checking it here closes the same bypass hazard
+                // that `a_row_added_after_apply_fails_conformance` guards for measured rows:
+                // a row constructed after `apply` never passes through that normalization.
+                if let MetricRow::InsufficientData { confidence, .. } = row
+                    && *confidence != Confidence::Low
+                {
+                    bail!(
+                        "parser accuracy metric '{metric}' is reported as insufficient_data but \
+                         claims {confidence:?} confidence; insufficient rows carry Low"
+                    );
+                }
                 continue;
             };
 
@@ -533,6 +547,41 @@ cadences = ["pr"]
         let registry = ratio_registry();
         registry.validate_conformance(&[]).expect("a reduced artifact is still sound");
         assert!(registry.validate_completeness(&[]).is_err());
+    }
+
+    fn insufficient(metric: &str, sample_count: u64, confidence: Confidence) -> MetricRow {
+        MetricRow::InsufficientData {
+            metric: metric.to_string(),
+            reason: "not wired yet".to_string(),
+            sample_count,
+            confidence,
+        }
+    }
+
+    /// An insufficient_data row may not claim more than `Low` confidence.
+    ///
+    /// Raised in review: insufficient rows previously passed conformance on the strength of
+    /// being registered, so nothing bound their `confidence`. A row that says "not enough
+    /// data" while claiming `High` is incoherent, and it is reachable the same way the
+    /// `peak_rss_mb` direction bug was — by constructing a row after `apply` has run.
+    #[test]
+    fn over_confident_insufficient_row_is_rejected() {
+        let registry = ratio_registry();
+        let rows = vec![insufficient("sample_rate", 0, Confidence::High)];
+        let err = registry
+            .validate_conformance(&rows)
+            .expect_err("an over-confident insufficient row must fail");
+        assert!(err.to_string().contains("claims High confidence"), "{err}");
+    }
+
+    /// The positive control: a well-formed insufficient row still passes.
+    ///
+    /// Without this the rule above could be satisfied by rejecting every insufficient row.
+    #[test]
+    fn low_confidence_insufficient_row_is_accepted() {
+        let registry = ratio_registry();
+        let rows = vec![insufficient("sample_rate", 0, Confidence::Low)];
+        registry.validate_conformance(&rows).expect("a Low insufficient row is well formed");
     }
 
     #[test]

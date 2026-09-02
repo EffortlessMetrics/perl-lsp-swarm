@@ -9980,6 +9980,63 @@ sub dynamic_boundary_case {
         Ok(())
     }
 
+    /// The ratchet baseline and the registry must not disagree about which way is better.
+    ///
+    /// `metrics/ratchet.rs` infers better/worse from its own convention (a `_count`, `_nodes`,
+    /// or `_unreadable` suffix, plus an explicit `lower_is_better` list) rather than from this
+    /// registry. Migrating it is retained on the parent issue, so until then the two are
+    /// genuinely separate authorities over one question.
+    ///
+    /// Raised in review: while they stay separate, a metric added to the baseline whose name
+    /// carries no lower-is-better signal is silently enforced in the direction opposite to the
+    /// one the registry publishes. This binds the seam without duplicating either rule — it
+    /// calls the ratchet's own predicate rather than restating the suffix convention, so the
+    /// ratchet remains the sole authority for its side of the comparison.
+    #[test]
+    fn ratchet_baseline_directions_agree_with_the_registry() -> Result<()> {
+        let root = project_root()?;
+        let baseline = super::super::ratchet::load_baseline(&root, "parser_accuracy")?;
+        let registry = registry::MetricRegistry::load()?;
+
+        let mut checked = 0usize;
+        let mut disagreements = Vec::new();
+        for metric in baseline.floor_metrics.keys().chain(baseline.improvement_metrics.keys()) {
+            let Some(policy) = registry.policy(metric) else {
+                // A baseline metric absent from the registry is the completeness check's
+                // business, not this one's.
+                continue;
+            };
+            let ratchet_says_lower_is_better =
+                super::super::ratchet::is_lower_better_metric(metric, &baseline.lower_is_better);
+            let registry_says_lower_is_better = match policy.direction {
+                Direction::Down => true,
+                Direction::Up => false,
+                // Neither authority claims a preferred direction; nothing to contradict.
+                Direction::Flat | Direction::Neutral => continue,
+            };
+            if ratchet_says_lower_is_better != registry_says_lower_is_better {
+                disagreements.push(format!(
+                    "'{metric}': the registry declares {:?} but the ratchet treats it as \
+                     {}-is-better",
+                    policy.direction,
+                    if ratchet_says_lower_is_better { "lower" } else { "higher" }
+                ));
+            }
+            checked += 1;
+        }
+
+        assert!(
+            disagreements.is_empty(),
+            "{} ratchet baseline metric(s) are enforced against the registry's declared \
+             direction; add the metric to the baseline's `lower_is_better` list or correct its \
+             registry entry:\n  {}",
+            disagreements.len(),
+            disagreements.join("\n  ")
+        );
+        assert!(checked > 0, "the parser_accuracy baseline governs no registered metric");
+        Ok(())
+    }
+
     /// Every metric's declared `family` must match the function that actually emits it.
     ///
     /// `family` is the one registry field with no counterpart on `MetricRow`, so
