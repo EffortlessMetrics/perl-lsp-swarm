@@ -113,13 +113,15 @@ impl LineIndex {
         // UTF-16 boundary column remains addressable; the next line's first
         // byte must not resolve through this line (#9837).
         let line_end = self.line_starts.get(line + 1).map_or(self.text_len, |next_start| {
-            // Keep the complete line terminator's first byte in the line
-            // slice. This preserves the established UTF-16 column at the
-            // CRLF boundary (column 3 for `"ab\r\n"`) while still rejecting
-            // the next line's start (column 4).
-            next_start.saturating_sub(1)
-        });
-        let line_text = text.get(line_start..line_end)?;
+            let terminator_len = if *next_start >= 2
+                && text.as_bytes().get(*next_start - 2..*next_start) == Some(b"\r\n")
+            {
+                2
+            } else {
+                1
+            };
+            next_start.saturating_sub(terminator_len)
+        });        let line_text = text.get(line_start..line_end)?;
 
         // Walk the line, accumulating UTF-16 units until we reach `column`.
         let mut utf16_units: usize = 0;
