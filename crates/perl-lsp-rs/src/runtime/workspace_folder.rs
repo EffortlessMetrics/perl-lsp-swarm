@@ -25,6 +25,8 @@ pub struct WorkspaceFolderState {
     pub name: Option<String>,
     /// Project configuration loaded from `.perl-lsp.toml` in this folder
     pub project_config: Option<ProjectConfig>,
+    /// Accepted project-configuration generation for this folder.
+    pub project_config_generation: u64,
     /// Effective workspace configuration for this folder
     ///
     /// This will eventually be computed by merging:
@@ -43,6 +45,7 @@ impl WorkspaceFolderState {
             path: None,
             name: None,
             project_config: None,
+            project_config_generation: 0,
             effective_workspace_config: WorkspaceConfig::default(),
         }
     }
