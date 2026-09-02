@@ -1595,3 +1595,71 @@ fn test_refs_method_receiver_package_component_does_not_report_method() -> TestR
 
     Ok(())
 }
+
+/// Regression (#1849, review finding): the qualified-name *fallback* must also refuse
+/// a prefix cursor, not just the early guard.
+///
+/// The early guard only runs when `symbol_at_cursor_with_source` resolves a bare sub.
+/// When it resolves nothing -- a `Foo::bar` written inside a comment or a string, an
+/// unresolved module name -- the request still reaches the regex fallback further down,
+/// which builds a `SymKind::Sub` key from the match's final component. An earlier
+/// revision of this PR removed that fallback's own cursor-component check, reasoning it
+/// was unreachable; that was true only while the early guard was unconditional, and
+/// stopped being true once the guard was narrowed to bare subs.
+///
+/// Verified against `origin/main`: a cursor on `Foo` in `# see Foo::bar for info`
+/// returned `[]` on main and `[1, 1]` -- the `sub bar` declaration -- with the check
+/// removed. This test therefore locks a real regression, not a hypothetical one.
+#[test]
+fn test_refs_qualified_prefix_in_comment_or_string_is_not_reported() -> TestResult {
+    let doc = concat!(
+        "package Foo;\n",            // 0
+        "sub bar { return 2; }\n",   // 1 -- discriminator
+        "package main;\n",           // 2
+        "# see Foo::bar for info\n", // 3 -- comment: F=6, b=11
+        "my $s = \"Foo::bar\";\n",   // 4 -- string:  F=9, b=14
+    );
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///refs_prefix_comment.pl", doc)?;
+
+    let reference_lines = |harness: &mut LspHarness,
+                           line: u32,
+                           character: u64|
+     -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+        let result = harness.request(
+            "textDocument/references",
+            json!({
+                "textDocument": {"uri": "file:///refs_prefix_comment.pl"},
+                "position": {"line": line, "character": character},
+                "context": {"includeDeclaration": true}
+            }),
+        )?;
+        Ok(reported_lines(&result))
+    };
+
+    // Negative control: the cursor on the *final* component inside the comment does
+    // reach `sub bar`. This proves the fallback is live for this fixture, so the
+    // prefix assertions below cannot pass merely because nothing resolves here.
+    let on_final = reference_lines(&mut harness, 3, 11)?;
+    assert!(
+        on_final.contains(&1),
+        "negative control failed: cursor on `bar` in the comment must reach the \
+         `sub bar` declaration on line 1, otherwise the fallback is not exercised \
+         and the prefix assertions below prove nothing; got {on_final:?}"
+    );
+
+    for (label, line, character) in [("comment", 3u32, 6u64), ("string", 4, 9)] {
+        let on_prefix = reference_lines(&mut harness, line, character)?;
+        assert!(
+            !on_prefix.contains(&1),
+            "cursor on the `Foo` prefix inside a {label} must not report `sub bar`, \
+             but line 1 was returned; got {on_prefix:?}. The early guard does not run \
+             when no bare-sub symbol resolves, so the qualified-name fallback needs its \
+             own cursor-component check (#1849)."
+        );
+    }
+
+    Ok(())
+}

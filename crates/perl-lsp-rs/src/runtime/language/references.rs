@@ -1171,13 +1171,26 @@ impl LspServer {
                                         {
                                             let parts: Vec<&str> = m.as_str().split("::").collect();
                                             if parts.len() >= 2 {
-                                                // A cursor on a package-prefix component never
-                                                // reaches here: the `FqnCursorComponent::Prefix`
-                                                // guard at the top of this function already
-                                                // returned an empty result over the same text
-                                                // window (#1849). Reaching this point therefore
-                                                // means the cursor is on the final component,
-                                                // which is the sub name.
+                                                // The cursor must be on this match's *final*
+                                                // component for it to name the sub whose
+                                                // references we are about to report (#1849).
+                                                //
+                                                // The guard earlier in this function does not
+                                                // cover every path here. It runs only when the
+                                                // resolved symbol is a bare sub, so a prefix
+                                                // cursor whose symbol key is absent or of another
+                                                // kind -- a `Foo::bar` inside a comment or string,
+                                                // an unresolved module name -- reaches this
+                                                // fallback unclassified. Without this check the
+                                                // package prefix in `# see Foo::bar for info`
+                                                // reports `sub bar`'s references.
+                                                let final_component_start =
+                                                    m.as_str().rfind("::").map_or(0, |i| i + 2);
+                                                if cursor_in_text
+                                                    < m.start() + final_component_start
+                                                {
+                                                    break;
+                                                }
                                                 let name =
                                                     parts.last().copied().unwrap_or("").to_string();
                                                 let pkg = parts[..parts.len() - 1].join("::");
