@@ -18,6 +18,26 @@ pub enum StreamChannel {
 }
 
 /// Whether a channel's retained bytes are the whole of what was observed.
+///
+/// # Obligations this places on a backend
+///
+/// A channel reports exactly one of these states, and each carries an exact
+/// byte count that [`ProcessResult::new`] enforces. Two consequences bind
+/// whoever implements a real supervisor:
+///
+/// - **Reads must be bounded by the remaining budget.** Reporting
+///   [`Self::ObservationTruncated`] asserts that observation stopped *at*
+///   `limit_bytes`, so a backend must clamp each read to what is left of the
+///   budget. A backend that reads fixed-size buffers and stops after the read
+///   that crosses the limit will have observed *more* than `limit_bytes` and
+///   its result will be refused as
+///   [`ResultInconsistency::TruncationLimitContradicted`] — correctly, because
+///   it did not in fact stop where it says it did.
+/// - **One channel cannot report both bounds.** A channel whose observation
+///   was capped *and* whose retention was separately capped below that cap has
+///   no variant naming both; a backend must report the bound that actually
+///   stopped it. Carrying both is a modelling change owned by #11085, where
+///   retained projections are first produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TruncationState {
     /// Everything observed was retained.
@@ -25,6 +45,8 @@ pub enum TruncationState {
     /// Observation stopped at the budget, so more output may have existed.
     ObservationTruncated {
         /// The observation limit that was reached.
+        ///
+        /// Exactly the number of bytes observed — see the type's obligations.
         limit_bytes: u64,
     },
     /// Everything was observed but retention stopped at the budget.
@@ -432,7 +454,12 @@ pub enum Limitation {
 pub struct WorkMetadata {
     /// Wall-clock time from start attempt to settlement.
     pub wall_time: Duration,
-    /// How many events the run emitted.
+    /// How many events the run admitted to its ledger.
+    ///
+    /// This counts what the run produced, including a terminal event the
+    /// supervisor synthesized — not what any one consumer happened to retrieve
+    /// before calling `wait`. A caller that never polls still sees the full
+    /// count.
     pub events_emitted: u64,
 }
 
