@@ -1,0 +1,57 @@
+{
+  "contract": "zed_managed_route.v1",
+  "revision": 1,
+  "claim": {
+    "route": "extension route = managed public artifact",
+    "explicit_binary_override": "absent",
+    "worktree_path_candidate": "absent",
+    "path_candidate": "absent",
+    "selected_provider": "perllsp",
+    "other_providers": "disabled",
+    "server_command": "perllsp --stdio",
+    "asset_subject_authority": "#7980",
+    "host_subject_authority": "#7984"
+  },
+  "first_mile": {
+    "prior_managed_cache": "prior_managed_cache_absent",
+    "first_mile_row": "cache-absent install through the managed route only"
+  },
+  "resolution_route": "managed_public_artifact",
+  "selection": {
+    "selected": "perllsp",
+    "fallback_server_id": null,
+    "fallback_allowed": false,
+    "older_versions_preserved_until_launch": true,
+    "cache_reuse_after_restart": "managed cache reused without re-download",
+    "normal_disable": "extension disabled without deleting managed cache",
+    "shutdown": "no orphan perllsp process after shutdown"
+  },
+  "failure_invariants": {
+    "provider_fallback_forbidden": true,
+    "path_route_forbidden": true,
+    "worktree_route_forbidden": true,
+    "binary_override_forbidden": true,
+    "partial_download_install_forbidden": true,
+    "unsafe_archive_member_forbidden": true,
+    "checksum_mismatch_install_forbidden": true
+  },
+  "recovery_scenarios": [
+    "missing_asset",
+    "duplicate_matching_asset",
+    "wrong_target",
+    "checksum_mismatch",
+    "unsafe_archive_member",
+    "missing_expected_executable",
+    "partial_download"
+  ],
+  "required_journeys": [
+    "first_mile_install",
+    "restart_cache_reuse",
+    "normal_disable",
+    "shutdown_no_orphan"
+  ],
+  "digests": {
+    "selected_subject_sha256": "sha256: recorded for the exact installed artifact",
+    "restart_subject_sha256": "sha256: recorded after restart for cache-reuse parity"
+  }
+}
