@@ -169,6 +169,23 @@ mod tests {
             "review date {} has a non-digit component",
             provenance.reviewed_on
         );
+
+        // Digit-shaped is not the same as a date: `2026-99-99` is neither. Range
+        // the month and day so a transposed or mistyped field is caught. This
+        // deliberately stops short of full calendar arithmetic, so it would
+        // still accept a February 30th.
+        let month = parts.get(1).and_then(|part| part.parse::<u32>().ok());
+        let day = parts.get(2).and_then(|part| part.parse::<u32>().ok());
+        assert!(
+            matches!(month, Some(1..=12)),
+            "review date {} has an impossible month",
+            provenance.reviewed_on
+        );
+        assert!(
+            matches!(day, Some(1..=31)),
+            "review date {} has an impossible day",
+            provenance.reviewed_on
+        );
     }
 
     #[test]

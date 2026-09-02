@@ -178,21 +178,29 @@ fn reference_attributes(document: &str) -> Result<BTreeSet<String>> {
 }
 
 fn reference_headers(document: &str) -> Result<BTreeMap<String, HtmxHeaderDirection>> {
-    let mut headers: BTreeMap<String, HtmxHeaderDirection> = BTreeMap::new();
+    let request: BTreeSet<String> =
+        section_names(document, &REQUEST_HEADERS)?.into_iter().collect();
+    let response: BTreeSet<String> =
+        section_names(document, &RESPONSE_HEADERS)?.into_iter().collect();
 
-    for name in section_names(document, &REQUEST_HEADERS)? {
-        headers.insert(name, HtmxHeaderDirection::Request);
-    }
-    // A header listed in both reference tables is bidirectional, which is how
+    // Direction is decided by section membership, not by insertion order. A
+    // name repeated inside one table must not promote itself to bidirectional:
+    // merging row by row would let a duplicated response row report a false
+    // direction change against a catalog that is actually correct.
+    //
+    // A header listed in both tables is genuinely bidirectional, which is how
     // the catalog spells `HX-Trigger`.
-    for name in section_names(document, &RESPONSE_HEADERS)? {
-        headers
-            .entry(name)
-            .and_modify(|direction| *direction = HtmxHeaderDirection::RequestAndResponse)
-            .or_insert(HtmxHeaderDirection::Response);
-    }
-
-    Ok(headers)
+    Ok(request
+        .union(&response)
+        .map(|name| {
+            let direction = match (request.contains(name), response.contains(name)) {
+                (true, true) => HtmxHeaderDirection::RequestAndResponse,
+                (true, false) => HtmxHeaderDirection::Request,
+                _ => HtmxHeaderDirection::Response,
+            };
+            (name.clone(), direction)
+        })
+        .collect())
 }
 
 /// Translate an upstream attribute spelling into the catalog's spelling.
@@ -217,20 +225,34 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
 
     let mut names = Vec::new();
     let mut in_body = false;
-    let mut in_fence = false;
+    let mut fence: Option<(char, usize)> = None;
 
     for line in document.lines().skip(heading_line + 1) {
         let trimmed = line.trim_start();
 
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            // A fenced example can contain pipe-table-shaped lines. Reading
-            // those as data would invent names, and a fenced separator row
-            // would make the following sample lines look like unreadable data.
-            in_fence = !in_fence;
-            in_body = false;
+        // A fenced example can contain pipe-table-shaped lines. Reading those
+        // as data would invent names, and a fenced separator row would make the
+        // following sample lines look like unreadable data.
+        //
+        // Track the opening marker rather than toggling a flag: a `~~~` inside a
+        // ``` fence would otherwise read as the close, so the example's own
+        // lines would be parsed and the real closing fence would re-open,
+        // silently swallowing every genuine row after it.
+        if let Some((marker, length)) = fence_marker(trimmed) {
+            match fence {
+                None => {
+                    fence = Some((marker, length));
+                    in_body = false;
+                }
+                Some((open_marker, open_length)) => {
+                    if marker == open_marker && length >= open_length {
+                        fence = None;
+                    }
+                }
+            }
             continue;
         }
-        if in_fence {
+        if fence.is_some() {
             continue;
         }
         if trimmed.starts_with('#') {
@@ -340,6 +362,19 @@ fn locate_section(document: &str, section: &SectionSpec) -> Result<(usize, usize
 /// ATX heading depth: the number of leading `#` characters, 0 if not a heading.
 fn heading_depth(trimmed_line: &str) -> usize {
     trimmed_line.chars().take_while(|character| *character == '#').count()
+}
+
+/// A code-fence delimiter as its marker character and run length.
+///
+/// Both markers and the length matter: a fence closes only on the same
+/// character, at least as long as the one that opened it.
+fn fence_marker(trimmed_line: &str) -> Option<(char, usize)> {
+    let marker = trimmed_line.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let length = trimmed_line.chars().take_while(|character| *character == marker).count();
+    (length >= 3).then_some((marker, length))
 }
 
 /// Read the name out of a reference table row.
@@ -595,6 +630,62 @@ mod tests {
 ";
 
         assert!(section_names(fenced, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
+    }
+
+    #[test]
+    fn a_fence_closes_only_on_its_own_marker() {
+        // A `~~~` inside a ``` fence is example text, not the close. Toggling on
+        // either marker would end the fence early, parse the example's own
+        // lines, and then treat the real closing fence as an opener — silently
+        // swallowing every genuine row after it.
+        let mixed = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+```markdown
+~~~
+| `hx-phantom` | only an example |
+~~~
+```
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-post`](@/attributes/hx-post.md) | issues a POST |
+";
+
+        assert!(
+            section_names(mixed, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-post"])
+        );
+    }
+
+    #[test]
+    fn a_header_repeated_within_one_table_keeps_that_table_s_direction() {
+        // Merging row by row would let the second response row promote the name
+        // to bidirectional, reporting a false direction change against a
+        // catalog that is actually correct.
+        let repeated = "\
+### Request Headers Reference {#request_headers}
+
+| Header | Description |
+|--------|-------------|
+| `HX-Request` | set to true on htmx requests |
+
+### Response Headers Reference {#response_headers}
+
+| Header | Description |
+|--------|-------------|
+| [`HX-Redirect`](@/headers/hx-redirect.md) | client-side redirect |
+| [`HX-Redirect`](@/headers/hx-redirect.md) | listed twice upstream |
+";
+
+        assert!(reference_headers(repeated).is_ok_and(|headers| {
+            headers.get("HX-Redirect") == Some(&HtmxHeaderDirection::Response)
+                && headers.get("HX-Request") == Some(&HtmxHeaderDirection::Request)
+        }));
     }
 
     #[test]
