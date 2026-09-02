@@ -430,25 +430,45 @@ fn assert_generic_slice_controls(ast: &Node, source: &str) -> Result<(), String>
         return Err(format!("arrow element control carried op {op:?}, expected \"->{{}}\""));
     }
 
-    // Zero-match negative controls: the dedicated postfix matchers must bind
-    // nothing for control-only payloads, so a nearby generic form can never
-    // satisfy a postfix expectation.
-    for (receiver, selector) in
-        [("$control_hash", "'alpha', 'beta'"), ("$control_hash", "qw(alpha beta)")]
-    {
+    // Zero-match negative controls must use each control node's actual
+    // receiver and selector spans.  Keeping this collection rooted at the
+    // resolved control node also prevents a legitimate postfix occurrence
+    // elsewhere in the fixture from making the negative control vacuous.
+    for text in [
+        "@control_hash{'alpha', 'beta'}",
+        "%control_hash{qw(alpha beta)}",
+        "@$href{'alpha', 'beta'}",
+        "%$href{qw(alpha beta)}",
+    ] {
+        let control = exact_node(ast, source, text)?;
+        let (receiver, selector) = match &control.kind {
+            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => (
+                node_source(target, source)
+                    .ok_or_else(|| format!("control {text:?} has an invalid receiver span"))?,
+                node_source(keys, source)
+                    .ok_or_else(|| format!("control {text:?} has an invalid selector span"))?,
+            ),
+            other => {
+                return Err(format!(
+                    "control {text:?} produced {}, expected a slice node",
+                    other.kind_name()
+                ));
+            }
+        };
+
         let mut found = Vec::new();
-        collect_postfix_slice(ast, source, receiver, selector, &mut found);
+        collect_postfix_slice(control, source, receiver, selector, &mut found);
         if !found.is_empty() {
             return Err(format!(
-                "control payload ({receiver}, {selector}) satisfied a postfix slice expectation"
+                "control {text:?} ({receiver}, {selector}) satisfied a postfix slice expectation"
             ));
         }
         for star_op in ["->$*", "->$#*", "->@*", "->%*", "->&*", "->**"] {
             let mut found = Vec::new();
-            collect_star_unary(ast, source, star_op, receiver, &mut found);
+            collect_star_unary(control, source, star_op, receiver, &mut found);
             if !found.is_empty() {
                 return Err(format!(
-                    "control receiver {receiver} satisfied the star-form postfix expectation {star_op}"
+                    "control {text:?} receiver {receiver} satisfied the star-form postfix expectation {star_op}"
                 ));
             }
         }
