@@ -1879,11 +1879,15 @@ fn parse_policy_date(
 /// Broad-glob heuristic for policy schema validation. Mirrors the original
 /// Python gate and intentionally catches more than the strict enforcement
 /// broad-glob helper.
+///
+/// Breadth is decided by `**`, the only token that crosses a directory
+/// boundary. `*.md` used to be listed here because the loose matcher let its
+/// `*` cross `/`, making it a whole-repository grab; with segment-aware
+/// matching (#9994) it reaches only the repository root, so demanding a
+/// `broad_glob_reason` for it would force a misleading justification onto a
+/// genuinely narrow rule. Refs: #9994, #14583.
 fn is_policy_broad_glob(glob_str: &str) -> bool {
-    glob_str.starts_with("**")
-        || glob_str.ends_with("/**")
-        || glob_str == "*.md"
-        || glob_str.starts_with("**/")
+    glob_str.starts_with("**") || glob_str.ends_with("/**") || glob_str.starts_with("**/")
 }
 
 // ---------------------------------------------------------------------------
@@ -3753,6 +3757,26 @@ review_after = "2026-06-01"
     }
 
     #[test]
+    fn broad_glob_detection_tracks_segment_aware_matching() {
+        // `**` is the only token that crosses a directory boundary, so it is
+        // the only thing that makes a matcher broad.
+        for broad in ["**/*.md", "**/*.pl", "docs/**", "**/LICENSE-*", "**"] {
+            assert!(is_policy_broad_glob(broad), "{broad} reaches a whole tree");
+        }
+
+        // Single-segment matchers govern one directory. Requiring a
+        // broad-glob justification for these would force a misleading
+        // rationale onto a narrow rule — and would block #14583 from
+        // narrowing the markdown entry back to repository-root governance
+        // docs, whose matcher is exactly `*.md`.
+        for narrow in
+            ["*.md", ".changes/unreleased/*.yaml", "badges/*.json", "crates/*/features_sot.toml"]
+        {
+            assert!(!is_policy_broad_glob(narrow), "{narrow} governs one directory level");
+        }
+    }
+
+    #[test]
     fn broad_changes_tree_glob_is_rejected_without_a_reason() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let allowlist = temp.path().join("allow.toml");
@@ -3893,6 +3917,10 @@ review_after = "2026-11-13"
         run_git(root, &["init", "-q"])?;
         run_git(root, &["config", "user.email", "fixture@example.invalid"])?;
         run_git(root, &["config", "user.name", "fixture"])?;
+        // A global `commit.gpgSign=true` with no usable key is inherited here
+        // and would abort the fixture commits before any matcher or merge
+        // behaviour is exercised, turning a host setting into a test failure.
+        run_git(root, &["config", "commit.gpgsign", "false"])?;
         // Name the base branch without depending on `git init -b` or on the
         // host's `init.defaultBranch`.
         run_git(root, &["checkout", "-q", "-b", "base"])?;
@@ -4606,7 +4634,6 @@ review_after = "2026-08-13"
         assert_eq!(add_days((1970, 1, 1), 31), (1970, 2, 1));
         assert_eq!(fmt_ymd((2026, 6, 9)), "2026-06-09");
         assert!(is_past_date("not-a-date"));
-        assert!(is_policy_broad_glob("*.md"));
         assert!(is_policy_broad_glob("docs/**"));
         assert!(is_broad_glob("**/*"));
         assert!(!is_broad_glob("docs/*.md"));
