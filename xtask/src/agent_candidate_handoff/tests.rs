@@ -3494,11 +3494,73 @@ fn an_unreadable_envelope_file_is_an_instrument_failure() -> Result<()> {
         "a file that exists but cannot be read is not a defective candidate"
     );
 
+    // The same must hold for every declared file, not only the manifest. The
+    // pack and the receipt are read by dimensions that classify their own
+    // failures — a digest mismatch, a disagreeing receipt — and an unreadable
+    // file reaching those dimensions as a content verdict would report a wrong
+    // candidate (exit 2) for a disk that never answered (exit 4).
+    for name in [PACK_FILE_NAME, RECEIPT_FILE_NAME] {
+        let separate = Destination::new()?;
+        export_valid(&fixture, &separate)?;
+        let target = separate.envelope().join(name);
+        let permissions = fs::metadata(&target)?.permissions();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o000))?;
+        let report = check_handoff(&separate.envelope());
+        fs::set_permissions(&target, permissions)?;
+        assert_eq!(
+            report.outcome,
+            HandoffOutcome::InstrumentFailure,
+            "`{name}` exists and could not be read; that is not a candidate defect"
+        );
+    }
+
     // The absent case stays an envelope defect, which is the distinction.
     let second = Destination::new()?;
     export_valid(&fixture, &second)?;
     fs::remove_file(second.envelope().join(MANIFEST_FILE_NAME))?;
     assert_eq!(check_handoff(&second.envelope()).outcome, HandoffOutcome::InvalidManifest);
+    Ok(())
+}
+
+/// A human projection reports producer claims; it must not let one rewrite it.
+///
+/// `explain` deliberately performs no shape validation, so a manifest string
+/// reaches the terminal exactly as the producer wrote it. An ESC sequence there
+/// would repaint lines the reader has already accepted — the projection would
+/// be telling the reader whatever the envelope chose, which is precisely the
+/// authority `explain` disclaims. The JSON projection needs no equivalent
+/// because `serde_json` escapes every character below U+0020.
+#[test]
+fn control_characters_cannot_rewrite_a_human_projection() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let destination = Destination::new()?;
+    export_valid(&fixture, &destination)?;
+
+    // `explain` reads the manifest as-is, so this is what an untrusted envelope
+    // can put in front of a reader.
+    let mut raw = raw_manifest(&destination.envelope())?;
+    raw["repository_identity"]["value"] =
+        serde_json::Value::String("owner/repo\u{1b}[2K\u{1b}[Avalid handoff".to_string());
+    rewrite_manifest_raw(&destination.envelope(), &raw)?;
+
+    let Ok(document) = super::render::explain(&destination.envelope()) else {
+        bail!("`explain` reads a manifest without validating it");
+    };
+    let human = super::render::render_explain_human(&document);
+    assert!(!human.contains('\u{1b}'), "an escape sequence must not reach the terminal: {human:?}");
+    assert!(
+        human.contains("<U+001B>"),
+        "the reader must be told the field carried a control character: {human:?}"
+    );
+
+    // The JSON projection carries the raw claim, escaped by the encoder, so a
+    // machine consumer still sees exactly what the manifest said.
+    let Ok(json) = super::render::render(&document, &human, true) else {
+        bail!("the document must render as canonical JSON");
+    };
+    assert!(!json.contains('\u{1b}'), "JSON must escape rather than emit the control character");
     Ok(())
 }
 
@@ -3564,5 +3626,60 @@ fn proof_collection_is_bounded_in_aggregate() -> Result<()> {
     assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
     assert!(detail.contains("total"), "the refusal must name the aggregate rule: {detail}");
     assert!(!second.envelope().exists(), "nothing is published");
+    Ok(())
+}
+
+/// The aggregate ceiling bounds the bytes retained, not the bytes declared.
+///
+/// A `--proof` argument names a file the producer does not own, and the file
+/// can change between being measured and being read. Charging the aggregate
+/// budget the size a file reported before it was opened, while the read itself
+/// is allowed to deliver up to the per-artifact ceiling, means the aggregate
+/// bounds nothing an adversary controls: files that measure as empty can still
+/// hand back the count ceiling times the per-artifact ceiling.
+///
+/// The fixture needs a real file whose reported size understates its content,
+/// which `/proc` provides on Linux without any timing race: `status` reports
+/// `st_size` 0 and reads back several kilobytes. The budget is injected so the
+/// arithmetic is exercised at eight bytes rather than at the format's 128 MiB.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_aggregate_proof_ceiling_counts_bytes_actually_retained() -> Result<()> {
+    use super::create::{ProofBudget, collect_proofs_within};
+
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    let commit = fixture.commit("root")?;
+
+    // The fixture is only meaningful if this file really does understate
+    // itself. A control that silently stopped discriminating would otherwise
+    // keep passing forever.
+    let understated = PathBuf::from("/proc/self/status");
+    let declared = fs::metadata(&understated)?.len();
+    let actual = fs::read(&understated)?.len();
+    if declared != 0 || actual == 0 {
+        // Not the kernel this control was written for; it proves nothing here.
+        return Ok(());
+    }
+
+    let exact = fixture.path().join("exact.txt");
+    fs::write(&exact, b"12345678")?;
+    let budget = ProofBudget { max_count: 8, max_each: 64, max_total: 8 };
+
+    // Negative control: the budget accepts what genuinely fits inside it.
+    let Ok(accepted) = collect_proofs_within(std::slice::from_ref(&exact), &commit, &budget) else {
+        bail!("eight bytes must fit inside an eight-byte budget");
+    };
+    assert_eq!(accepted.len(), 1, "the artifact that fits is the one collected");
+
+    // The same eight bytes, followed by a file that declares nothing and
+    // delivers kilobytes. Counting the declared size leaves the budget looking
+    // untouched and accepts the whole set.
+    let Err((outcome, detail)) = collect_proofs_within(&[exact, understated], &commit, &budget)
+    else {
+        bail!("a proof that delivers more than it declared must still be charged for it");
+    };
+    assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
+    assert!(detail.contains("total"), "the refusal must name the aggregate rule: {detail}");
     Ok(())
 }

@@ -1084,9 +1084,11 @@ enum Commands {
     ///
     /// Turns one exact local Git candidate into an immutable envelope that a
     /// later authenticated context can reconstruct without the producing
-    /// workspace. Every operation is read-only and credential-free: this
-    /// command publishes no branch, opens no pull request, claims no hosted
-    /// check, and grants no integration authority.
+    /// workspace. The repository is only ever read: `create` writes the
+    /// envelope directory it is given and nothing else, while `check` and
+    /// `explain` write nothing at all. Every operation is credential-free and
+    /// offline: this command publishes no branch, opens no pull request,
+    /// claims no hosted check, and grants no integration authority.
     ///
     /// `check` exit codes: 0 = valid handoff, 2 = the candidate claim is
     /// wrong, 3 = reconstructable but repository identity is not proven,

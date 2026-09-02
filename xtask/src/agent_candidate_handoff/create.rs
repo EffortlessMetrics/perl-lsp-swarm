@@ -124,10 +124,6 @@ pub fn create_handoff_with_validator(
     let object_ids = enumerate_objects(repository, &candidate)?;
     let pack_bytes = build_pack(repository, &object_ids)?;
 
-    // Refuse before writing anything: a secret must not reach disk in an
-    // envelope that a later step might still hand onward.
-    guard_retained_content(&candidate, &repository_identity)?;
-
     let proofs = collect_proofs(&request.proofs, &commit)?;
 
     let mut manifest = Manifest {
@@ -155,6 +151,19 @@ pub fn create_handoff_with_validator(
         },
     };
     manifest.candidate_identity_digest = compute_identity_digest(&manifest)?;
+
+    // Refuse before writing anything: a secret must not reach disk in an
+    // envelope that a later step might still hand onward.
+    //
+    // This is the validator's own scanner, not a producer-side reimplementation
+    // of it. Two field lists drifted the moment one side grew a field the other
+    // did not — a credential-shaped inventory path was scanned by `check` and
+    // not by `create`, so it reached disk and was only refused afterwards by the
+    // staged self-check. One function means the producer cannot write what the
+    // validator would reject.
+    if let Some(detail) = super::check::find_unsafe_content(&manifest) {
+        return Err((HandoffOutcome::UnsafeContent, format!("{detail}; refusing to export")));
+    }
 
     // Stage, validate, then publish. Writing straight to the destination would
     // leave a directory carrying a receipt that asserts a validation which
@@ -794,14 +803,26 @@ pub fn collect_gitlinks(
     let mut gitlinks = Vec::new();
     // Parse the exact bytes for the same reason the diff parser does: a
     // gitlink path must reach the manifest as the tree spells it.
+    // A record this reader cannot parse is unexpected Git output, not an
+    // absent submodule. Skipping it would silently shrink the derived set: a
+    // dropped `160000` row leaves `gitlinks` empty, the manifest never declares
+    // `SubmoduleGitlinkNotTransported`, and an envelope that quietly omits a
+    // submodule reference reads as one that had none. The validator already
+    // treats the identical condition as an instrument failure.
+    let malformed = || {
+        (
+            HandoffOutcome::InstrumentFailure,
+            format!("tree {tree} produced an unreadable entry record"),
+        )
+    };
     for entry in output.stdout_bytes.split(|byte| *byte == 0).filter(|entry| !entry.is_empty()) {
         let Some(separator) = entry.iter().position(|byte| *byte == b'\t') else {
-            continue;
+            return Err(malformed());
         };
         let metadata = decode_utf8(&entry[..separator], "an ls-tree entry")?;
         let columns: Vec<&str> = metadata.split_whitespace().collect();
         let [mode, kind, object] = columns.as_slice() else {
-            continue;
+            return Err(malformed());
         };
         if *mode == "160000" && *kind == "commit" {
             if !is_full_object_id(object) {
@@ -889,39 +910,8 @@ fn build_pack(
     Ok(output.stdout_bytes)
 }
 
-/// Refuse to export content that would carry credentials across a boundary.
-fn guard_retained_content(
-    candidate: &CandidateIdentity,
-    repository_identity: &RepositoryIdentity,
-) -> Result<(), (HandoffOutcome, String)> {
-    let mut fields: Vec<(&str, &str)> = vec![
-        ("candidate.message", candidate.message.as_str()),
-        ("candidate.author.name", candidate.author.name.as_str()),
-        ("candidate.author.email", candidate.author.email.as_str()),
-        ("candidate.committer.name", candidate.committer.name.as_str()),
-        ("candidate.committer.email", candidate.committer.email.as_str()),
-    ];
-    if let Some(value) = &repository_identity.value {
-        fields.push(("repository_identity.value", value.as_str()));
-    }
-
-    for (field, value) in fields {
-        let findings = scan_secrets(field, value);
-        if let Some(finding) = findings.first() {
-            return Err((
-                HandoffOutcome::UnsafeContent,
-                format!(
-                    "`{}` contains {} material; refusing to export",
-                    finding.field, finding.kind
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// A proof artifact and the bytes that back it.
-struct PreparedProof {
+pub(super) struct PreparedProof {
     reference: ProofReference,
     bytes: Vec<u8>,
 }
@@ -934,13 +924,45 @@ fn collect_proofs(
     paths: &[PathBuf],
     commit: &str,
 ) -> Result<Vec<PreparedProof>, (HandoffOutcome, String)> {
-    if paths.len() > MAX_PROOFS {
+    collect_proofs_within(paths, commit, &ProofBudget::FORMAT)
+}
+
+/// The ceilings `collect_proofs` enforces.
+///
+/// Taken as a value rather than read from the constants directly so the bound
+/// can be exercised at a size a test can actually reach. Proving the aggregate
+/// ceiling against the format's own 128 MiB would mean writing and buffering
+/// 128 MiB of adversarially-sized artifacts inside a unit test; proving it at
+/// eight bytes exercises the same arithmetic. `ProofBudget::FORMAT` is the only
+/// budget production ever uses.
+pub(super) struct ProofBudget {
+    /// Most artifacts accepted in one export.
+    pub(super) max_count: usize,
+    /// Most bytes retained from any single artifact.
+    pub(super) max_each: u64,
+    /// Most bytes retained across every artifact together.
+    pub(super) max_total: u64,
+}
+
+impl ProofBudget {
+    /// The ceilings `agent_candidate_handoff.v1` defines.
+    pub(super) const FORMAT: Self =
+        Self { max_count: MAX_PROOFS, max_each: MAX_PROOF_BYTES, max_total: MAX_TOTAL_PROOF_BYTES };
+}
+
+/// `collect_proofs` against an explicit budget.
+pub(super) fn collect_proofs_within(
+    paths: &[PathBuf],
+    commit: &str,
+    budget: &ProofBudget,
+) -> Result<Vec<PreparedProof>, (HandoffOutcome, String)> {
+    let max_count = budget.max_count;
+    let max_each = budget.max_each;
+    let max_total = budget.max_total;
+    if paths.len() > max_count {
         return Err((
             HandoffOutcome::InstrumentFailure,
-            format!(
-                "{} proof artifacts were supplied, above the {MAX_PROOFS} ceiling",
-                paths.len()
-            ),
+            format!("{} proof artifacts were supplied, above the {max_count} ceiling", paths.len()),
         ));
     }
 
@@ -989,44 +1011,61 @@ fn collect_proofs(
                 format!("proof artifact `{}` is not a regular file", path.display()),
             ));
         }
-        if metadata.len() > MAX_PROOF_BYTES {
+        if metadata.len() > max_each {
             return Err((
                 HandoffOutcome::InstrumentFailure,
                 format!(
-                    "proof artifact `{}` is {} bytes, above the {MAX_PROOF_BYTES}-byte ceiling",
+                    "proof artifact `{}` is {} bytes, above the {max_each}-byte ceiling",
                     path.display(),
                     metadata.len()
                 ),
             ));
         }
-        total_bytes = total_bytes.saturating_add(metadata.len());
-        if total_bytes > MAX_TOTAL_PROOF_BYTES {
+        // Refuse on the declared sizes first, so a set that cannot possibly fit
+        // is rejected before anything is read at all.
+        if total_bytes.saturating_add(metadata.len()) > max_total {
             return Err((
                 HandoffOutcome::InstrumentFailure,
                 format!(
-                    "the supplied proof artifacts total more than the \
-                     {MAX_TOTAL_PROOF_BYTES}-byte ceiling"
+                    "the supplied proof artifacts total more than the {max_total}-byte ceiling"
                 ),
             ));
         }
 
-        // One byte past the ceiling, so an artifact that grew after it was
-        // measured is refused rather than silently truncated into the envelope.
-        let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        file.by_ref()
-            .take(MAX_PROOF_BYTES.saturating_add(1))
-            .read_to_end(&mut bytes)
-            .map_err(io)?;
-        if bytes.len() as u64 > MAX_PROOF_BYTES {
+        // The aggregate ceiling has to bound the bytes actually *retained*, not
+        // the bytes each file claimed before it was opened. Accounting
+        // `metadata.len()` and then permitting a growing file to deliver up to
+        // MAX_PROOF_BYTES let a set of files that measured as empty hand back
+        // MAX_PROOFS × MAX_PROOF_BYTES, so the ceiling bounded nothing the
+        // producer had to hold. Each read is therefore capped by whichever is
+        // smaller: this file's own ceiling, or what the aggregate budget has
+        // left. Reading one byte past that cap distinguishes "it fits" from
+        // "it grew", so an artifact that changed under us is refused rather
+        // than silently truncated into the envelope.
+        let remaining = max_total.saturating_sub(total_bytes);
+        let ceiling = max_each.min(remaining);
+        let mut bytes = Vec::with_capacity(metadata.len().min(ceiling) as usize);
+        file.by_ref().take(ceiling.saturating_add(1)).read_to_end(&mut bytes).map_err(io)?;
+        let retained = bytes.len() as u64;
+        if retained > max_each {
             return Err((
                 HandoffOutcome::InstrumentFailure,
                 format!(
-                    "proof artifact `{}` grew past the {MAX_PROOF_BYTES}-byte ceiling while \
-                     it was being read",
+                    "proof artifact `{}` grew past the {max_each}-byte ceiling while it was \
+                     being read",
                     path.display()
                 ),
             ));
         }
+        if retained > remaining {
+            return Err((
+                HandoffOutcome::InstrumentFailure,
+                format!(
+                    "the supplied proof artifacts total more than the {max_total}-byte ceiling"
+                ),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(retained);
 
         let id = proof_id_for(path)?;
         if prepared.iter().any(|existing| existing.reference.id == id) {

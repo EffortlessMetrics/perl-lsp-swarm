@@ -272,8 +272,8 @@ fn check_envelope(envelope: &Path, stage: ReceiptStage) -> CheckReport {
     // certifying bytes it never read.
     builder.pass("content_safety", "no credential material in retained manifest strings");
 
-    if let Err(detail) = verify_envelope_closure(envelope, &manifest, stage) {
-        return builder.fail("envelope_closure", HandoffOutcome::InvalidManifest, detail);
+    if let Err((outcome, detail)) = verify_envelope_closure(envelope, &manifest, stage) {
+        return builder.fail("envelope_closure", outcome, detail);
     }
     builder.pass(
         "envelope_closure",
@@ -282,9 +282,7 @@ fn check_envelope(envelope: &Path, stage: ReceiptStage) -> CheckReport {
 
     let pack_bytes = match verify_transport(envelope, &manifest) {
         Ok(bytes) => bytes,
-        Err(detail) => {
-            return builder.fail("transport_integrity", HandoffOutcome::DigestMismatch, detail);
-        }
+        Err((outcome, detail)) => return builder.fail("transport_integrity", outcome, detail),
     };
     builder.pass("transport_integrity", "declared transport sizes and digests match the bytes");
 
@@ -605,7 +603,7 @@ fn validate_shape(manifest: &Manifest) -> Result<(), (HandoffOutcome, String)> {
 ///
 /// "Every" is the load-bearing word: a field excluded here makes the
 /// `content_safety` dimension assert something false about the document.
-fn find_unsafe_content(manifest: &Manifest) -> Option<String> {
+pub(super) fn find_unsafe_content(manifest: &Manifest) -> Option<String> {
     let candidate = &manifest.candidate;
     let mut fields: Vec<(String, &str)> = vec![
         ("candidate.message".to_string(), candidate.message.as_str()),
@@ -657,7 +655,8 @@ fn verify_envelope_closure(
     envelope: &Path,
     manifest: &Manifest,
     stage: ReceiptStage,
-) -> Result<(), String> {
+) -> Result<(), (HandoffOutcome, String)> {
+    let malformed = |detail: String| (HandoffOutcome::InvalidManifest, detail);
     let mut declared: BTreeSet<String> = BTreeSet::new();
     declared.insert(MANIFEST_FILE_NAME.to_string());
     declared.insert(RECEIPT_FILE_NAME.to_string());
@@ -673,11 +672,11 @@ fn verify_envelope_closure(
 
     let undeclared: Vec<&String> = present.difference(&declared).collect();
     if let Some(extra) = undeclared.first() {
-        return Err(format!("`{extra}` is present but not declared by the manifest"));
+        return Err(malformed(format!("`{extra}` is present but not declared by the manifest")));
     }
     let missing: Vec<&String> = declared.difference(&present).collect();
     if let Some(absent) = missing.first() {
-        return Err(format!("`{absent}` is declared but absent from the envelope"));
+        return Err(malformed(format!("`{absent}` is declared but absent from the envelope")));
     }
 
     verify_receipt_agrees(envelope, manifest, stage)
@@ -693,40 +692,51 @@ fn verify_receipt_agrees(
     envelope: &Path,
     manifest: &Manifest,
     stage: ReceiptStage,
-) -> Result<(), String> {
+) -> Result<(), (HandoffOutcome, String)> {
+    let malformed = |detail: String| (HandoffOutcome::InvalidManifest, detail);
+    // The reader already separated "could not read" from "broke a rule"; keep
+    // that distinction instead of collapsing an unreadable receipt into a
+    // defective one.
     let bytes = read_envelope_file(envelope, RECEIPT_FILE_NAME, MAX_DOCUMENT_BYTES)
-        .map_err(|error| error.detail)?;
-    let receipt: ProducerReceipt = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("`{RECEIPT_FILE_NAME}` is not a valid receipt: {error}"))?;
+        .map_err(|error| (error.outcome, error.detail))?;
+    let receipt: ProducerReceipt = serde_json::from_slice(&bytes).map_err(|error| {
+        malformed(format!("`{RECEIPT_FILE_NAME}` is not a valid receipt: {error}"))
+    })?;
 
     if receipt.schema_version != HANDOFF_RECEIPT_SCHEMA_V1 {
-        return Err(format!(
+        return Err(malformed(format!(
             "receipt schema `{}` is not `{HANDOFF_RECEIPT_SCHEMA_V1}`",
             receipt.schema_version
-        ));
+        )));
     }
     if receipt.candidate_commit != manifest.candidate.commit {
-        return Err("the receipt and the manifest name different candidates".to_string());
+        return Err(malformed(
+            "the receipt and the manifest name different candidates".to_string(),
+        ));
     }
     if receipt.candidate_identity_digest != manifest.candidate_identity_digest {
-        return Err("the receipt and the manifest name different candidate identities".to_string());
+        return Err(malformed(
+            "the receipt and the manifest name different candidate identities".to_string(),
+        ));
     }
     // A receipt that repeats the digest but contradicts the limitation list is
     // not an agreeing receipt. Limitations are the manifest's admissions, and a
     // receipt is the producer's statement that it validated *those* admissions.
     if receipt.limitations != manifest.limitations {
-        return Err("the receipt and the manifest declare different limitations".to_string());
+        return Err(malformed(
+            "the receipt and the manifest declare different limitations".to_string(),
+        ));
     }
     match stage {
         // Before publication the producer has not yet run its own check, so
         // `pending` is the only honest token; `create` validates in this mode.
         ReceiptStage::Staged => {
             if receipt.producer_self_check != SELF_CHECK_PENDING {
-                return Err(format!(
+                return Err(malformed(format!(
                     "receipt self-check is `{}`, not `{SELF_CHECK_PENDING}`; a staging \
                      directory has not been validated yet by definition",
                     receipt.producer_self_check
-                ));
+                )));
             }
         }
         // A published envelope carries the receipt `publish` rewrote after the
@@ -734,11 +744,11 @@ fn verify_receipt_agrees(
         // never validated — or one lifted out of staging — read as one that was.
         ReceiptStage::Published => {
             if receipt.producer_self_check != SELF_CHECK_VALIDATED {
-                return Err(format!(
+                return Err(malformed(format!(
                     "receipt self-check is `{}`, not `{SELF_CHECK_VALIDATED}`; this envelope was \
                      never published by a successful producer check",
                     receipt.producer_self_check
-                ));
+                )));
             }
         }
     }
@@ -753,33 +763,41 @@ fn collect_relative_files(
     root: &Path,
     directory: &Path,
     into: &mut BTreeSet<String>,
-) -> Result<(), String> {
-    let entries = fs::read_dir(directory)
-        .map_err(|error| format!("could not read `{}`: {error}", directory.display()))?;
+) -> Result<(), (HandoffOutcome, String)> {
+    // A directory this process cannot read is the instrument failing, not the
+    // envelope being malformed. Reporting it as an invalid manifest would tell
+    // automation the producer got it wrong when the truth is that the receiver
+    // never saw the bytes.
+    let instrument = |detail: String| (HandoffOutcome::InstrumentFailure, detail);
+    let malformed = |detail: String| (HandoffOutcome::InvalidManifest, detail);
+    let entries = fs::read_dir(directory).map_err(|error| {
+        instrument(format!("could not read `{}`: {error}", directory.display()))
+    })?;
     for entry in entries {
-        let entry = entry.map_err(|error| format!("could not read a directory entry: {error}"))?;
+        let entry = entry
+            .map_err(|error| instrument(format!("could not read a directory entry: {error}")))?;
         let path = entry.path();
         // `DirEntry::file_type` reports the link itself, so a symlink is
         // rejected here rather than silently traversed or read through.
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("could not classify `{}`: {error}", path.display()))?;
+        let file_type = entry.file_type().map_err(|error| {
+            instrument(format!("could not classify `{}`: {error}", path.display()))
+        })?;
         let relative = path
             .strip_prefix(root)
-            .map_err(|_| format!("`{}` escaped the envelope root", path.display()))?
+            .map_err(|_| malformed(format!("`{}` escaped the envelope root", path.display())))?
             .to_string_lossy()
             .replace('\\', "/");
         if file_type.is_symlink() {
-            return Err(format!(
+            return Err(malformed(format!(
                 "`{relative}` is a symbolic link; an envelope must be self-contained"
-            ));
+            )));
         }
         if file_type.is_dir() {
             collect_relative_files(root, &path, into)?;
         } else if file_type.is_file() {
             into.insert(relative);
         } else {
-            return Err(format!("`{relative}` is not a regular file"));
+            return Err(malformed(format!("`{relative}` is not a regular file")));
         }
     }
     Ok(())
@@ -881,23 +899,34 @@ pub(super) fn read_envelope_file(
 /// This is an integrity claim about *this* envelope only. It says nothing
 /// about whether those bytes carry the candidate, which object import and
 /// the closure comparison establish separately.
-fn verify_transport(envelope: &Path, manifest: &Manifest) -> Result<Vec<u8>, String> {
+fn verify_transport(
+    envelope: &Path,
+    manifest: &Manifest,
+) -> Result<Vec<u8>, (HandoffOutcome, String)> {
+    let malformed = |detail: String| (HandoffOutcome::InvalidManifest, detail);
+    let corrupt = |detail: String| (HandoffOutcome::DigestMismatch, detail);
     // Shape validation already established there is exactly one transport row.
     let Some(file) = manifest.transport.files.first() else {
-        return Err("no transport file is declared".to_string());
+        return Err(malformed("no transport file is declared".to_string()));
     };
+    // A pack this validator cannot read has not been shown to disagree with
+    // anything. Calling that a digest mismatch would report a bad candidate
+    // (exit 2) for a failed instrument (exit 4).
     let bytes = read_envelope_file(envelope, &file.name, MAX_ENVELOPE_FILE_BYTES)
-        .map_err(|error| error.detail)?;
+        .map_err(|error| (error.outcome, error.detail))?;
     if bytes.len() as u64 != file.bytes {
-        return Err(format!(
+        return Err(corrupt(format!(
             "transport `{}` declares {} bytes but carries {}",
             file.name,
             file.bytes,
             bytes.len()
-        ));
+        )));
     }
     if super::content_digest_hex(&bytes) != file.sha256 {
-        return Err(format!("transport `{}` does not match its declared digest", file.name));
+        return Err(corrupt(format!(
+            "transport `{}` does not match its declared digest",
+            file.name
+        )));
     }
     Ok(bytes)
 }

@@ -9,10 +9,11 @@ body: >-
   object set into a temporary object database and re-derives the object
   closure, commit, tree, ordered parents, file modes, renames, deletions, and
   binary content, so a candidate can be reconstructed after the producing
-  workspace is gone. Credential-bearing content is refused rather than
-  redacted, repository identity is observed, declared, or NOT_PROVEN rather
-  than guessed, and every outcome is a distinct typed class, grouped into
-  category-specific exit codes. Creating or checking a handoff publishes no
+  workspace is gone. Credential-bearing content in the manifest, receipt, and
+  proof artifacts is refused rather than redacted; the transported object bytes
+  are carried, not secret-scanned, and the manifest says so. Repository identity
+  is observed, declared, or NOT_PROVEN rather than guessed, and every outcome is
+  a distinct typed class, grouped into category-specific exit codes. Creating or checking a handoff publishes no
   branch, opens no pull request, and claims no hosted check.
 time: 2026-09-01T19:30:00Z
 custom:

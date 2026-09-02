@@ -110,17 +110,46 @@ pub fn describe(manifest: &Manifest) -> ExplainDocument {
     }
 }
 
+/// Render one producer-supplied string safely into a terminal projection.
+///
+/// `explain` deliberately performs no shape validation, so every string it
+/// prints is whatever the manifest happened to contain. A commit id, repository
+/// name, or proof id carrying an ESC sequence would otherwise reach the
+/// terminal as control codes and repaint lines the reader has already seen —
+/// a projection that reports claims must not let a claim rewrite the report
+/// around it. Control characters are shown as their code point instead of
+/// executed, so the reader sees that the field contained one.
+///
+/// The JSON projection needs no equivalent: `serde_json` already escapes every
+/// character below U+0020, and nothing interprets the result as a terminal
+/// stream.
+fn plain(value: &str) -> String {
+    if !value.chars().any(|character| character.is_control()) {
+        return value.to_string();
+    }
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                format!("<U+{:04X}>", character as u32)
+            } else {
+                character.to_string()
+            }
+        })
+        .collect()
+}
+
 /// Stable human projection of an explanation.
 #[must_use]
 pub fn render_explain_human(document: &ExplainDocument) -> String {
     let mut lines = vec![
-        format!("candidate: {}", document.candidate_commit),
-        format!("identity: {}", document.candidate_identity_digest),
+        format!("candidate: {}", plain(&document.candidate_commit)),
+        format!("identity: {}", plain(&document.candidate_identity_digest)),
         format!(
             "repository: {} ({})",
             match (&document.repository_identity_value, &document.repository_identity_host) {
-                (Some(value), Some(host)) => format!("{host}/{value}"),
-                (Some(value), None) => value.clone(),
+                (Some(value), Some(host)) => format!("{}/{}", plain(host), plain(value)),
+                (Some(value), None) => plain(value),
                 (None, _) => "none".to_string(),
             },
             document.repository_identity_status
@@ -136,7 +165,8 @@ pub fn render_explain_human(document: &ExplainDocument) -> String {
     if document.proof_ids.is_empty() {
         lines.push("proof: none carried".to_string());
     } else {
-        lines.push(format!("proof: {}", document.proof_ids.join(", ")));
+        let ids: Vec<String> = document.proof_ids.iter().map(|id| plain(id)).collect();
+        lines.push(format!("proof: {}", ids.join(", ")));
     }
     for limitation in &document.limitations {
         lines.push(format!("limitation: {}", limitation_token(*limitation)));
@@ -153,15 +183,21 @@ pub fn render_explain_human(document: &ExplainDocument) -> String {
 pub fn render_check_human(report: &CheckReport) -> String {
     let mut lines = vec![
         format!("agent-candidate-handoff: {}", report.outcome.as_str()),
-        format!("envelope: {}", report.envelope),
-        format!("candidate: {}", report.candidate_commit.as_deref().unwrap_or("not_available")),
+        format!("envelope: {}", plain(&report.envelope)),
+        format!(
+            "candidate: {}",
+            plain(report.candidate_commit.as_deref().unwrap_or("not_available"))
+        ),
     ];
     for dimension in &report.dimensions {
+        // A dimension detail quotes the envelope's own strings — a file name, a
+        // proof id, a serde error carrying manifest text — so it is producer
+        // content on the same footing as the manifest fields above.
         lines.push(format!(
             "{:<24} {:<14} {}",
             dimension.id,
             verdict_token(dimension.verdict),
-            dimension.detail
+            plain(&dimension.detail)
         ));
     }
     lines.push(String::new());

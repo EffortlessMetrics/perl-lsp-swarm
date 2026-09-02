@@ -282,6 +282,14 @@ pub struct ProofReference {
 /// Bounded, stable statements about what this envelope does not establish.
 ///
 /// Codes rather than prose so the semantic identity stays host-independent.
+///
+/// **Declaration order is part of the format contract.** `Ord` is derived, so
+/// the variant order here is the order limitations are sorted into the manifest,
+/// and the manifest's limitation list feeds the candidate identity digest.
+/// Reordering or inserting a variant would therefore change the digest computed
+/// for an unchanged candidate, and every envelope produced before the change
+/// would stop matching one produced after it. New codes are appended at the end;
+/// existing ones are never moved or renumbered.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LimitationCode {
