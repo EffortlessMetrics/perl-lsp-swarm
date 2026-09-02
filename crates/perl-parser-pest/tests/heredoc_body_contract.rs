@@ -673,7 +673,37 @@ fn scanner_and_grammar_agree_on_openers() {
 }
 
 #[test]
-fn when_the_scanner_misses_an_opener_the_grammar_found_then_the_outcome_says_so() {
+fn when_the_scanner_and_grammar_disagree_then_the_outcome_reports_it() -> Result<(), String> {
+    // POD prose reading `=cutlass` is a genuine disagreement: the grammar's own
+    // POD handling ends the block on any `=cut` prefix and reports an opener in
+    // the prose, while the scanner (correctly) keeps the block closed and owns
+    // nothing. A missed opener creates no capture, so no per-capture defect can
+    // fire — this diagnostic is the only thing that can see it, and the test
+    // fails if that block is removed.
+    let source =
+        "my $x=1;\n=pod\n\n=cutlass\n\nmy $y = <<EOF;\nhi\nEOF\n\n=cut\nprint \"after\";\n";
+    let captured = perl_parser_pest::heredoc::scan(source).captures().len();
+    assert!(
+        grammar_openers(source) > captured,
+        "fixture must actually make the grammar see more openers than the scanner"
+    );
+
+    let mut parser = PureRustPerlParser::new();
+    let ParseAttempt::Outcome(outcome) = parser.parse_heredoc_outcome(source) else {
+        return Err("expected a parser-domain outcome".to_string());
+    };
+    assert_eq!(outcome.completeness(), ParseCompleteness::Recovered);
+    assert!(
+        outcome.diagnostics().iter().any(|d| d.message().contains("scanner owned")),
+        "the disagreement must be reported; got {:?}",
+        outcome.diagnostics()
+    );
+    assert!(!outcome.recovery_ranges().is_empty(), "the disagreement must carry a range");
+    Ok(())
+}
+
+#[test]
+fn when_the_scanner_owns_a_user_sub_opener_then_the_outcome_is_complete() {
     // A missed opener creates no capture, so no per-capture defect can fire.
     // This is the only check that can see it, and without it the outcome would
     // report `Complete` while a body was left to be parsed as code.
@@ -889,4 +919,87 @@ fn filehandle_form_heredocs_are_a_known_grammar_limitation_not_a_scanner_gap() {
             "the scanner must agree with the grammar for {source:?}"
         );
     }
+}
+
+// --- Review round 3 ---------------------------------------------------------
+//
+// Every row here is a *completed term* followed by `<<`, which Perl and the
+// grammar both read as a left shift. The preceding byte alone cannot tell them
+// apart — `/a/i` ends in a word byte, `$!` in punctuation, `0xff` in a letter —
+// so each one was a false positive that deleted following source.
+
+#[test]
+fn when_a_completed_term_precedes_the_shift_then_no_body_is_owned() {
+    let rows: [(&str, &str); 8] = [
+        ("completed bare regex", "my $y = /a/ <<2;\nmy $z = 3;\n"),
+        ("regex with flags", "my $y = /a/i <<2;\nmy $z = 3;\n"),
+        ("special variable $!", "my $y = $! <<2;\nmy $z = 3;\n"),
+        ("special variable $?", "my $y = $? <<2;\nmy $z = 3;\n"),
+        ("special variable $@", "my $y = $@ <<2;\nmy $z = 3;\n"),
+        ("qualified name", "my $y = Foo::BAR <<2;\nmy $z = 3;\n"),
+        ("hexadecimal literal", "my $y = 0xff <<2;\nmy $z = 3;\n"),
+        ("string literal", "my $y = \"s\" <<2;\nmy $z = 3;\n"),
+    ];
+    for (label, source) in rows {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(
+            scan.captures().len(),
+            grammar_openers(source),
+            "{label}: scanner and grammar must agree for {source:?}"
+        );
+        assert!(scan.captures().is_empty(), "{label}: a shift owns no body");
+        assert_eq!(scan.stripped(), source, "{label}: no source may be removed");
+    }
+}
+
+#[test]
+fn when_a_name_merely_starts_with_a_quote_like_letter_then_it_is_not_an_operator() {
+    // `$s->trim()` is not an `s///`. Treating it as one consumes to a bogus
+    // delimiter and desynchronizes the scan, which surfaces as a *later*
+    // heredoc silently losing its body — the subtlest failure in this family.
+    let source = "my $t = $s->trim();\nmy $x = <<EOF;\nbody\nEOF\nmy $z = 3;\n";
+    assert_eq!(
+        heredoc_contents(source),
+        vec![("EOF".to_string(), "body\n".to_string())],
+        "a later heredoc must still own its body"
+    );
+    assert_eq!(perl_parser_pest::heredoc::scan(source).captures().len(), grammar_openers(source));
+}
+
+#[test]
+fn when_source_uses_bare_cr_line_endings_then_bodies_are_still_owned() {
+    // Recognizing only LF would make a bare-CR file one enormous line, so no
+    // terminator could ever be found and the body would stay in the parsed text.
+    let source = "my $x = <<EOF;\rbody\rEOF\rmy $z = 3;\r";
+    let scan = perl_parser_pest::heredoc::scan(source);
+    assert_eq!(scan.captures().len(), 1);
+    assert_eq!(scan.captures()[0].content(), "body\r");
+    assert!(scan.captures()[0].terminated());
+    assert!(!scan.stripped().contains("body"), "the body must leave the parsed text");
+    assert!(scan.stripped().contains("my $z = 3;"), "following code must survive");
+}
+
+#[test]
+fn when_openers_exceed_the_depth_budget_then_the_excess_is_recorded_not_dropped() {
+    // Silently truncating left those openers with no capture at all, so nothing
+    // explained their empty content.
+    let mut line = String::from("my @x = (");
+    for index in 0..=MAX_HEREDOC_DEPTH {
+        line.push_str(&format!("<<M{index}, "));
+    }
+    line.push_str(");\n");
+
+    let scan = perl_parser_pest::heredoc::scan(&line);
+    assert_eq!(scan.completeness(), ParseCompleteness::Unsupported);
+    assert!(
+        scan.captures().iter().any(|c| c.defect() == Some(HeredocDefect::DepthOverBudget)),
+        "openers past the budget must be recorded with the depth defect"
+    );
+    assert!(
+        scan.captures()
+            .iter()
+            .filter(|c| c.defect() == Some(HeredocDefect::DepthOverBudget))
+            .all(|c| !c.terminated() && c.content().is_empty()),
+        "an over-depth opener owns no body and claims no terminator"
+    );
 }

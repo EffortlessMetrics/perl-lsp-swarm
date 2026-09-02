@@ -81,8 +81,8 @@ real source. Two invariants keep that safe, and both have drift guards:
   returning a clean parse, because an opener the scanner misses creates no capture and
   no per-capture defect could otherwise see it;
 - non-code regions own no openers — comments, strings, quote-like operators and bare
-  regex literals including runs left open across lines, POD, and everything after
-  `__DATA__`/`__END__`.
+  regex literals including runs left open across lines, POD, `format` bodies, and
+  everything after `__DATA__`/`__END__`.
 
 Expectations in `tests/heredoc_body_contract.rs` are derived from real `perl` behavior,
 not from this crate's output; keep it that way when extending them. When adding a

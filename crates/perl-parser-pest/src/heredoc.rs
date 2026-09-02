@@ -266,7 +266,9 @@ impl HeredocScan {
     /// Completeness of the **heredoc** contract for this source.
     ///
     /// `Complete` when every opener owns a terminated, in-budget body.
-    /// `Unsupported` when the depth budget was exceeded. `Recovered` otherwise.
+    /// `Unsupported` for any unsupported-syntax diagnostic — the depth budget,
+    /// or a Perl-illegal separated bare marker such as `<< EOF`. `Recovered`
+    /// otherwise.
     #[must_use]
     pub fn completeness(&self) -> ParseCompleteness {
         completeness_for(&self.diagnostics)
@@ -375,17 +377,27 @@ impl<'a> Scanner<'a> {
                 continue;
             }
 
-            if openers.len() > MAX_HEREDOC_DEPTH {
+            let over_depth = openers.len() > MAX_HEREDOC_DEPTH;
+            if over_depth {
                 self.record_depth_over_budget(line);
-                openers.truncate(MAX_HEREDOC_DEPTH);
             }
 
-            for opener in openers {
+            for (position, opener) in openers.into_iter().enumerate() {
+                // Openers past the depth budget own no body, but they are still
+                // recorded so the queue stays aligned with the openers the
+                // grammar will produce and their empty content is explained.
+                if over_depth && position >= MAX_HEREDOC_DEPTH {
+                    let (LineOpener::Owned(opener) | LineOpener::Unowned(opener)) = opener;
+                    self.record_unowned_with(opener, HeredocDefect::DepthOverBudget);
+                    continue;
+                }
                 match opener {
                     LineOpener::Owned(opener) => {
                         index = self.consume_body(&lines, index, opener);
                     }
-                    LineOpener::Unowned(opener) => self.record_unowned(opener),
+                    LineOpener::Unowned(opener) => {
+                        self.record_unowned_with(opener, HeredocDefect::SeparatedBareMarker);
+                    }
                 }
             }
         }
@@ -528,17 +540,19 @@ impl<'a> Scanner<'a> {
     ///
     /// It is still a capture, so the queue stays aligned with the openers the
     /// grammar produces; its empty content is explained by the diagnostic.
-    fn record_unowned(&mut self, opener: PendingOpener) {
-        self.record_defect(
-            opener.opener,
-            ParseDiagnosticKind::UnsupportedSyntax,
-            RecoveryAction::Skip,
-            format!(
-                "`<<` separated from bare marker `{}` by whitespace is not a heredoc in Perl; \
-                 this opener owns no body",
-                opener.marker
-            ),
-        );
+    fn record_unowned_with(&mut self, opener: PendingOpener, defect: HeredocDefect) {
+        if defect == HeredocDefect::SeparatedBareMarker {
+            self.record_defect(
+                opener.opener,
+                ParseDiagnosticKind::UnsupportedSyntax,
+                RecoveryAction::Skip,
+                format!(
+                    "`<<` separated from bare marker `{}` by whitespace is not a heredoc in Perl; \
+                     this opener owns no body",
+                    opener.marker
+                ),
+            );
+        }
         self.captures.push(HeredocCapture {
             marker: opener.marker,
             form: opener.form,
@@ -546,7 +560,7 @@ impl<'a> Scanner<'a> {
             content: String::new(),
             opener: opener.opener,
             body: opener.opener,
-            defect: Some(HeredocDefect::SeparatedBareMarker),
+            defect: Some(defect),
             terminated: false,
         });
     }
@@ -599,20 +613,33 @@ struct PhysicalLine {
     end: usize,
 }
 
+/// Split `source` into physical lines on LF, CRLF, and bare CR.
+///
+/// All three are line separators to the grammar. Recognizing only LF would make
+/// a bare-CR file one enormous line, so no heredoc body could ever be found.
 fn physical_lines(source: &str) -> Vec<PhysicalLine> {
     let bytes = source.as_bytes();
     let mut lines = Vec::new();
     let mut start = 0;
-    for (index, byte) in bytes.iter().enumerate() {
-        if *byte != b'\n' {
-            continue;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\n' => {
+                lines.push(PhysicalLine { start, content_end: index, end: index + 1 });
+                index += 1;
+            }
+            b'\r' => {
+                // CRLF is one separator; a bare CR is also one.
+                let end = if bytes.get(index + 1) == Some(&b'\n') { index + 2 } else { index + 1 };
+                lines.push(PhysicalLine { start, content_end: index, end });
+                index = end;
+            }
+            _ => {
+                index += 1;
+                continue;
+            }
         }
-        let mut content_end = index;
-        if content_end > start && bytes[content_end - 1] == b'\r' {
-            content_end -= 1;
-        }
-        lines.push(PhysicalLine { start, content_end, end: index + 1 });
-        start = index + 1;
+        start = index;
     }
     if start < bytes.len() {
         lines.push(PhysicalLine { start, content_end: bytes.len(), end: bytes.len() });
@@ -765,6 +792,11 @@ fn scan_line_openers(
 ) -> Option<OpenConstruct> {
     let bytes = line.as_bytes();
     let mut index = 0;
+    // End offset of the last construct that completed a term on this line: a
+    // string, a quote-like operator, or a bare regex. A `<<` immediately after
+    // one is a shift, which the preceding byte alone cannot tell us — `/a/i`
+    // ends in a word byte and `"s"` in a quote.
+    let mut last_term_end = usize::MAX;
 
     if let Some(construct) = carried {
         let (next, still_open) = continue_construct(bytes, construct);
@@ -772,6 +804,7 @@ fn scan_line_openers(
             return Some(open);
         }
         index = next;
+        last_term_end = index;
     }
 
     while index < bytes.len() {
@@ -784,11 +817,12 @@ fn scan_line_openers(
                     return Some(open);
                 }
                 index = next;
+                last_term_end = index;
             }
             // A `/` in term position opens a bare regex; in operator position
             // it is division. The grammar makes the same split, so `/<<EOF/`
             // must not yield an opener.
-            b'/' if is_term_position(line, bytes, index) => {
+            b'/' if is_term_position(line, bytes, index, last_term_end) => {
                 let (next, open) = skip_delimited(bytes, index, b'/');
                 if let Some(open) = open {
                     return Some(open);
@@ -797,9 +831,10 @@ fn scan_line_openers(
                 while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
                     index += 1;
                 }
+                last_term_end = index;
             }
             b'<' if bytes.get(index + 1) == Some(&b'<') => {
-                match parse_opener(line, bytes, index, line_start) {
+                match parse_opener(line, bytes, index, line_start, last_term_end) {
                     Some((opener, next)) => {
                         out.push(opener);
                         index = next;
@@ -809,7 +844,10 @@ fn scan_line_openers(
             }
             _ => match skip_quote_like(line, bytes, index) {
                 Some((_next, Some(open))) => return Some(open),
-                Some((next, None)) => index = next,
+                Some((next, None)) => {
+                    index = next;
+                    last_term_end = index;
+                }
                 None => index += 1,
             },
         }
@@ -874,6 +912,15 @@ fn skip_quote_like(
     bytes: &[u8],
     index: usize,
 ) -> Option<(usize, Option<OpenConstruct>)> {
+    // `$s->trim()` is not an `s///`: a sigil, an arrow, or an adjacent word all
+    // mean this letter belongs to a name, not to a quote-like operator. Firing
+    // here would consume to a bogus delimiter and desynchronize the whole scan,
+    // which shows up as a *later* heredoc losing its body.
+    if index > 0
+        && matches!(bytes[index - 1], b'$' | b'@' | b'%' | b'&' | b'*' | b'-' | b'>' | b':' | b'_')
+    {
+        return None;
+    }
     if index > 0 && is_word_byte(bytes[index - 1]) {
         return None;
     }
@@ -979,8 +1026,9 @@ fn parse_opener(
     bytes: &[u8],
     index: usize,
     line_start: usize,
+    last_term_end: usize,
 ) -> Option<(LineOpener, usize)> {
-    if !is_term_position(line, bytes, index) {
+    if !is_term_position(line, bytes, index, last_term_end) {
         return None;
     }
     let mut cursor = index + 2;
@@ -1053,10 +1101,14 @@ fn read_quoted_marker(
 /// Mirrors the production lexer's `ExpectOperator` split: after a value —
 /// an identifier that is not a list operator, a number, a closing bracket, a
 /// variable, or a string — `<<` is a left shift.
-fn is_term_position(line: &str, bytes: &[u8], index: usize) -> bool {
+fn is_term_position(line: &str, bytes: &[u8], index: usize, last_term_end: usize) -> bool {
     let mut cursor = index;
     while cursor > 0 && matches!(bytes[cursor - 1], b' ' | b'\t') {
         cursor -= 1;
+    }
+    // A string, quote-like operator, or bare regex just completed a term.
+    if cursor == last_term_end {
+        return false;
     }
     let Some(previous) = cursor.checked_sub(1).and_then(|at| bytes.get(at)) else {
         return true;
@@ -1073,12 +1125,27 @@ fn is_term_position(line: &str, bytes: &[u8], index: usize) -> bool {
                 .get(..cursor)
                 .map(|head| head.trim_end_matches(is_word_char).len())
                 .unwrap_or(cursor);
-            // A sigil before the word makes it a variable, not a bareword.
+            // A number literal is a value, so `0xff <<2` is a shift. The digit
+            // arm above only sees the *last* byte, which is `f` here.
+            if line
+                .get(word_start..cursor)
+                .is_some_and(|word| word.starts_with(|c: char| c.is_ascii_digit()))
+            {
+                return false;
+            }
+            // A sigil before the word makes it a variable; `::` makes it a
+            // qualified name, which the grammar also treats as a value.
+            if word_start >= 2 && bytes.get(word_start - 2..word_start) == Some(b"::") {
+                return false;
+            }
             !word_start
                 .checked_sub(1)
                 .and_then(|at| bytes.get(at))
                 .is_some_and(|byte| matches!(byte, b'$' | b'@' | b'%' | b'&' | b'*'))
         }
+        // A punctuation-named special variable (`$!`, `$?`, `$@`, `$.`, …) is a
+        // completed term, so a following `<<` is a shift.
+        _ if cursor >= 2 && bytes.get(cursor - 2) == Some(&b'$') => false,
         _ => true,
     }
 }
